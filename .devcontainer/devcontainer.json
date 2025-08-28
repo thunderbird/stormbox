@@ -1,0 +1,104 @@
+{
+  // Name for the dev container
+  "name": "ThunderMail Vue Dev Container",
+
+  // Use docker-compose for more flexibility
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+
+  // Features to add to the dev container
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // Configure VS Code settings and extensions
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": true
+        },
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "[vue]": {
+          "editor.defaultFormatter": "Vue.volar"
+        },
+        "[javascript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[json]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "files.exclude": {
+          "**/node_modules": true,
+          "**/.git": true,
+          "**/dist": true
+        }
+      },
+      "extensions": [
+        // Vue development
+        "Vue.volar",
+        "Vue.vscode-typescript-vue-plugin",
+
+        // Code quality
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+
+        // Development productivity
+        "christian-kohler.npm-intellisense",
+        "christian-kohler.path-intellisense",
+        "formulahendry.auto-rename-tag",
+        "naumovs.color-highlight",
+        "mikestead.dotenv",
+        "usernamehw.errorlens",
+
+        // Git
+        "mhutchie.git-graph",
+        "eamodio.gitlens",
+
+        // Icons and themes
+        "PKief.material-icon-theme",
+
+        // Utilities
+        "yzhang.markdown-all-in-one",
+        "streetsidesoftware.code-spell-checker",
+        "ms-azuretools.vscode-docker",
+        "humao.rest-client"
+      ]
+    }
+  },
+
+  // Port forwarding for Vite dev server
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Vite Dev Server",
+      "onAutoForward": "notify"
+    }
+  },
+
+  // Run commands after container is created
+  "postCreateCommand": "npm ci",
+
+  // Run commands when container starts
+  "postStartCommand": "git config --global --add safe.directory /workspace",
+
+  // Commands to run when attaching to the container
+  "postAttachCommand": {
+    "server": "npm run dev"
+  },
+
+  // Environment variables
+  "remoteEnv": {
+    "NODE_ENV": "development"
+  },
+
+  // User to run as in the container
+  "remoteUser": "node"
+}

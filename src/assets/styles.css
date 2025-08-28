@@ -1,0 +1,212 @@
+:root {
+  /* Default to dark; system light overrides below */
+  --bg: #0b0c0f;
+  --panel: #11131a;
+  --panel2: #0f1117;
+  --border: #1e2230;
+  --text: #e6e8ef;
+  --muted: #9aa3b2;
+  --accent: #4f8cff;
+  --rowHover: #14182a;
+  --rowActive: #182041;
+  color-scheme: dark light;
+}
+
+/* Explicit theme overrides via attribute on <html> */
+:root[data-theme="dark"],
+[data-theme="dark"] {
+  --bg: #0b0c0f;
+  --panel: #11131a;
+  --panel2: #0f1117;
+  --border: #1e2230;
+  --text: #e6e8ef;
+  --muted: #9aa3b2;
+  --accent: #4f8cff;
+  --rowHover: #14182a;
+  --rowActive: #182041;
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
+  --bg: #f6f8fc;
+  --panel: #ffffff;
+  --panel2: #f4f7fb;
+  --border: #dbe1ea;
+  --text: #111827;
+  --muted: #6b7280;
+  --accent: #4f8cff;
+  --rowHover: #eef2ff; /* soft accent-tint for hover */
+  --rowActive: #e0e9ff; /* slightly stronger for selected */
+}
+
+/* If user prefers light and no explicit theme chosen, use light */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f8fc;
+    --panel: #ffffff;
+    --panel2: #f4f7fb;
+    --border: #dbe1ea;
+    --text: #111827;
+    --muted: #6b7280;
+    --rowHover: #eef2ff;
+    --rowActive: #e0e9ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, Segoe UI, Roboto, sans-serif;
+  height: 100vh;
+  overflow: hidden;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+/* Hide app chrome until connected */
+body:not(.connected) header,
+body:not(.connected) main {
+  display: none;
+}
+
+/* Root app grid: header + main */
+#app {
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+header {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+header strong {
+  font-weight: 700;
+}
+
+header .spacer {
+  flex: 1;
+}
+
+/* Main: 3-column layout with fixed reading pane width */
+main {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 280px 1fr 930px;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-columns 0.15s ease;
+}
+
+main.hide-detail {
+  grid-template-columns: 280px 1fr 0;
+}
+
+main.hide-detail .detail {
+  display: none;
+}
+
+.list,
+.detail {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Theme toggle button */
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: transparent;
+  color: var(--text);
+}
+
+.theme-toggle:hover {
+  background: var(--panel2);
+}
+
+/* Global button styles */
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Global input styles */
+input,
+select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Utility classes */
+.meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+  text-align: center;
+}
+
+.err {
+  color: #ff6b6b;
+  white-space: pre-wrap;
+  font-size: 13px;
+  margin-top: 6px;
+  text-align: center;
+}
+
+/* Row grid layout for forms */
+.row {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.row label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.row input,
+.row select {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--panel2);
+  color: var(--text);
+  outline: none;
+}
+
+.row input::placeholder {
+  color: #9aa3b2;
+}
+
+.row input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0px 1000px var(--panel2) inset;
+  -webkit-text-fill-color: var(--text);
+}

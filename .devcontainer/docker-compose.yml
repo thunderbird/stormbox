@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  app:
+    # Build from the Dockerfile in the same directory
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+      args:
+        # Update these to match your host user if needed
+        USER_UID: 1000
+        USER_GID: 1000
+
+    # Container name
+    container_name: thundermail-dev
+
+    # Mount the project directory
+    volumes:
+      # Mount the entire project
+      - ..:/workspace:cached
+
+      # Mount local user's git config
+      - ~/.gitconfig:/home/node/.gitconfig:ro
+      - ~/.ssh:/home/node/.ssh:ro
+
+      # VS Code extensions volume
+      - vscode-extensions:/home/node/.vscode-server/extensions
+      - vscode-extensions-insiders:/home/node/.vscode-server-insiders/extensions
+
+    # Keep container running
+    command: sleep infinity
+
+    # Network mode - use host networking for easier debugging
+    # Change to bridge if you need network isolation
+    network_mode: bridge
+
+    # Environment variables
+    environment:
+      - NODE_ENV=development
+      - CHOKIDAR_USEPOLLING=true # Helps with file watching in containers
+      - WATCHPACK_POLLING=true # For webpack file watching
+
+    # Port mapping
+    ports:
+      - "3000:3000" # Vite dev server
+      - "5173:5173" # Vite HMR port (alternative)
+      - "9229:9229" # Node.js debugging port
+
+    # Resource limits (optional - adjust as needed)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '1'
+    #       memory: 2G
+
+# Named volumes for VS Code extensions
+volumes:
+  vscode-extensions:
+  vscode-extensions-insiders:
