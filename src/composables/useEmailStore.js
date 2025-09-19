@@ -107,7 +107,7 @@ export function useEmailStore() {
 
     try {
       client.value = new JMAPClient({
-        baseUrl: import.meta.env.JMAP_SERVER_URL || "https://mail.tb.pro",
+        baseUrl: import.meta.env.VITE_JMAP_SERVER_URL || "https://mail.tb.pro",
         username: credentials.username.trim(),
         password: credentials.password,
       });
