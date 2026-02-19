@@ -87,7 +87,7 @@
   "postCreateCommand": "npm ci",
 
   // Run commands when container starts
-  "postStartCommand": "git config --global --add safe.directory /workspace",
+  "postStartCommand": "git config --global safe.directory /workspace",
 
   // Commands to run when attaching to the container
   "postAttachCommand": {

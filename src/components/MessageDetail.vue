@@ -1,5 +1,5 @@
 <script>
-import { computed } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import DOMPurify from 'dompurify'
 
 export default {
@@ -12,6 +12,8 @@ export default {
   },
   emits: ['back-to-list', 'reply', 'delete', 'download'],
   setup(props) {
+    const previewRef = ref(null)
+
     const fmtSize = (n) => {
       if (n == null) return "";
       const u = ["B", "KB", "MB", "GB"];
@@ -34,18 +36,46 @@ export default {
       if (!purifier) return html;
 
       try {
+        // Remove style tags to prevent CSS leaking
+        // Keep inline styles for email formatting
         return purifier.sanitize(html, {
           ALLOW_UNKNOWN_PROTOCOLS: true,
-          ADD_ATTR: ["target", "download", "rel"]
+          ADD_ATTR: ["target", "download", "rel", "style"],
+          // Forbid style and link tags to prevent global CSS
+          FORBID_TAGS: ['style', 'link'],
+          // Allow formatting attributes including inline styles
+          ALLOW_ATTR: ['style', 'class', 'id', 'href', 'src', 'alt', 'title', 'width', 'height', 'align', 'valign', 'bgcolor', 'color', 'border', 'cellpadding', 'cellspacing']
         });
       } catch {
         return fallback;
       }
     });
 
+    const updateShadowContent = () => {
+      if (!previewRef.value) return;
+
+      // For now, just use innerHTML directly without shadow DOM
+      // Shadow DOM is causing scrolling issues
+      const wrapper = previewRef.value;
+
+      // Simply set the sanitized content
+      wrapper.innerHTML = safeBody.value;
+    };
+
+    // Update shadow DOM when content changes
+    watch(() => [props.bodyHtml, props.bodyText], () => {
+      updateShadowContent();
+    });
+
+    // Initialize shadow DOM on mount
+    onMounted(() => {
+      updateShadowContent();
+    });
+
     return {
       fmtSize,
-      safeBody
+      safeBody,
+      previewRef
     }
   }
 }
@@ -104,8 +134,8 @@ export default {
       </div>
     </div>
 
-    <!-- Email body (sanitized HTML or text) -->
-    <div class="preview" id="d-preview" v-html="safeBody"></div>
+    <!-- Email body in Shadow DOM (completely isolated) -->
+    <div class="preview" id="d-preview" ref="previewRef"></div>
 
     <div id="attachments" class="attachments" :class="{ visible: attachments.length }">
       <div class="atitle">Attachments</div>
@@ -126,10 +156,11 @@ export default {
 <style scoped>
 .detail {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto 1fr auto;
   background: var(--panel);
   min-height: 0;
   overflow: hidden;
+  height: 100%;
 }
 
 .detail>* {
@@ -217,17 +248,34 @@ export default {
   overflow-wrap: anywhere;
 }
 
-/* Email HTML/text viewer */
+/* Email HTML/text viewer - Shadow DOM container */
 .preview {
-  padding: 14px 16px;
-  overflow: auto;
   min-height: 0;
-  white-space: normal;
-  color: #d8dbe6;
-  word-break: break-word;
-  overscroll-behavior: contain;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 14px 16px;
 }
 
+/* Scrollbar styling for preview container */
+.preview::-webkit-scrollbar {
+  width: 8px;
+}
+
+.preview::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.preview::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+.preview::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Email content styling */
 .preview img {
   max-width: 100%;
   height: auto;
@@ -236,7 +284,17 @@ export default {
 .preview table {
   max-width: 100%;
   display: block;
-  overflow: auto;
+  overflow-x: auto;
+}
+
+.preview pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.preview a {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* Attachments */

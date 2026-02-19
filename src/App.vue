@@ -1,7 +1,9 @@
 <script>
-import { computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useEmailStore } from './composables/useEmailStore.js'
 import { useTheme } from './composables/useTheme.js'
+import { initOidc, getOidc } from './services/auth.js'
+import { JMAP_SERVER_URL } from './defines.js'
 import LoginForm from './components/LoginForm.vue'
 import FolderList from './components/FolderList.vue'
 import MessageList from './components/MessageList.vue'
@@ -21,8 +23,11 @@ export default {
     const emailStore = useEmailStore()
     const { theme, cycle } = useTheme()
 
+    const oidcReady = ref(false)
+    const oidcLoading = ref(true)
+
     const serverName = computed(() => {
-      const url = import.meta.env.VITE_JMAP_SERVER_URL || "https://mail.tb.pro"
+      const url = JMAP_SERVER_URL
       try {
         return new URL(url).hostname
       } catch {
@@ -30,8 +35,46 @@ export default {
       }
     })
 
+    const handleOAuthLogin = async () => {
+      const oidc = getOidc()
+      if (!oidc) return
+      if (!oidc.isUserLoggedIn) {
+        await oidc.login()
+        return
+      }
+      await emailStore.connectWithOAuth(oidc)
+    }
+
+    const handleLogout = async () => {
+      const oidc = getOidc()
+      if (oidc && oidc.isUserLoggedIn) {
+        await oidc.logout({ redirectTo: "home" })
+      } else {
+        window.location.reload()
+      }
+    }
+
+    onMounted(async () => {
+      try {
+        const oidc = await initOidc()
+        oidcReady.value = true
+        oidcLoading.value = false
+
+        if (oidc.isUserLoggedIn) {
+          await emailStore.connectWithOAuth(oidc)
+        }
+      } catch (e) {
+        console.error('OIDC initialization failed:', e)
+        oidcLoading.value = false
+      }
+    })
+
     return {
       ...emailStore,
+      oidcReady,
+      oidcLoading,
+      handleOAuthLogin,
+      handleLogout,
       currentTheme: theme,
       cycle,
       serverName,
@@ -44,7 +87,7 @@ export default {
 <template>
   <div id="app">
     <!-- Login Form -->
-    <LoginForm :connected="connected" :status="status" :error="error" @connect="connect" />
+    <LoginForm :connected="connected" :status="status" :error="error" :oidc-ready="oidcReady" :oidc-loading="oidcLoading" @connect="connect" @oauth-login="handleOAuthLogin" />
 
     <!-- Header -->
     <header v-if="connected">
@@ -65,6 +108,11 @@ export default {
         <!-- Moon icon for dark -->
         <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <path d="M21.64 13a9 9 0 11-10.63-10.6A9 9 0 0021.64 13z" />
+        </svg>
+      </button>
+      <button class="logout-btn" @click="handleLogout" title="Sign out">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M5 5h7V3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h7v-2H5V5zm16 7l-4-4v3H9v2h8v3l4-4z"/>
         </svg>
       </button>
       <div id="err" class="err" v-if="error">{{ error }}</div>

@@ -19,8 +19,7 @@ services:
       # Mount the entire project
       - ..:/workspace:cached
 
-      # Mount local user's git config
-      - ~/.gitconfig:/home/node/.gitconfig:ro
+      # Mount local user's SSH keys (read-only)
       - ~/.ssh:/home/node/.ssh:ro
 
       # VS Code extensions volume
