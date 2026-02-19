@@ -1,6 +1,7 @@
 import { ref, reactive, computed, onMounted } from "vue";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/vue-query";
 import { JMAPClient } from "../services/jmap.js";
+import { JMAP_SERVER_URL } from "../defines.js";
 
 export function useEmailStore() {
   // Connection state
@@ -95,7 +96,43 @@ export function useEmailStore() {
       .join(", ");
   };
 
-  // Connect to JMAP server
+  // Shared post-connect setup (mailboxes, identities, initial fetch)
+  const _postConnect = async () => {
+    mailboxes.value = await client.value.listMailboxes();
+    identities.value = await client.value.listIdentities();
+
+    currentMailboxId.value = client.value.ids.inbox || mailboxes.value[0]?.id;
+    connected.value = true;
+    document.body.classList.add("connected");
+
+    startDeltaUpdates();
+
+    if (DEBUG_LOAD)
+      console.debug(
+        "[vue-query] Priming initial mailbox",
+        currentMailboxId.value
+      );
+
+    try {
+      await mailboxInfinite.refetch();
+      if (DEBUG_LOAD) console.debug("[vue-query] Refetch completed");
+    } catch (e) {
+      if (DEBUG_LOAD) console.debug("[vue-query] Refetch error", e);
+    }
+
+    for (let i = 0; i < 3; i++) {
+      try {
+        await mailboxInfinite.fetchNextPage();
+        if (DEBUG_LOAD)
+          console.debug("[vue-query] fetchNextPage completed", i + 1);
+      } catch (e) {
+        if (DEBUG_LOAD) console.debug("[vue-query] fetchNextPage error", e);
+        break;
+      }
+    }
+  };
+
+  // Connect to JMAP server with username/password (Basic Auth)
   const connect = async (credentials) => {
     if (!credentials || !credentials.username || !credentials.password) {
       error.value = "Username and password required.";
@@ -107,50 +144,38 @@ export function useEmailStore() {
 
     try {
       client.value = new JMAPClient({
-        baseUrl: import.meta.env.VITE_JMAP_SERVER_URL || "https://mail.tb.pro",
+        baseUrl: JMAP_SERVER_URL,
         username: credentials.username.trim(),
         password: credentials.password,
       });
       await client.value.fetchSession();
-
-      mailboxes.value = await client.value.listMailboxes();
-      identities.value = await client.value.listIdentities();
-
-      currentMailboxId.value = client.value.ids.inbox || mailboxes.value[0]?.id;
-      connected.value = true;
-      document.body.classList.add("connected");
-
-      // Save username only for auto-connect (password not stored for security)
       localStorage.setItem("jmap.username", credentials.username.trim());
+      await _postConnect();
+    } catch (e) {
+      status.value = "Failed.";
+      error.value =
+        e.message +
+        (e.message?.includes("Failed to fetch")
+          ? "\nLikely CORS/network issue."
+          : "");
+    }
+  };
 
-      // Start automatic delta updates
-      startDeltaUpdates();
+  // Connect to JMAP server with an OAuth access token (Bearer Auth)
+  const connectWithOAuth = async (oidc) => {
+    error.value = "";
+    status.value = "Connecting with OAuth…";
 
-      // Prime Vue Query pages for the initial mailbox
-      if (DEBUG_LOAD)
-        console.debug(
-          "[vue-query] Priming initial mailbox",
-          currentMailboxId.value
-        );
-
-      try {
-        await mailboxInfinite.refetch();
-        if (DEBUG_LOAD) console.debug("[vue-query] Refetch completed");
-      } catch (e) {
-        if (DEBUG_LOAD) console.debug("[vue-query] Refetch error", e);
-      }
-
-      // Load initial pages
-      for (let i = 0; i < 3; i++) {
-        try {
-          await mailboxInfinite.fetchNextPage();
-          if (DEBUG_LOAD)
-            console.debug("[vue-query] fetchNextPage completed", i + 1);
-        } catch (e) {
-          if (DEBUG_LOAD) console.debug("[vue-query] fetchNextPage error", e);
-          break;
-        }
-      }
+    try {
+      client.value = new JMAPClient({
+        baseUrl: JMAP_SERVER_URL,
+        getToken: async () => {
+          const { accessToken } = await oidc.getTokens();
+          return accessToken;
+        },
+      });
+      await client.value.fetchSession();
+      await _postConnect();
     } catch (e) {
       status.value = "Failed.";
       error.value =
@@ -976,6 +1001,7 @@ export function useEmailStore() {
 
     // Actions
     connect,
+    connectWithOAuth,
     switchMailbox,
     refreshCurrentMailbox,
     setView,

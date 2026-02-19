@@ -6,10 +6,16 @@ const te = new TextEncoder();
 const b64 = (s) => btoa(String.fromCharCode(...te.encode(s)));
 
 export class JMAPClient {
-  constructor({ baseUrl, username, password }) {
+  constructor({ baseUrl, username, password, getToken }) {
     this.base = (baseUrl || "").replace(/\/$/, "");
     this.sessionUrl = this.base + "/.well-known/jmap";
-    this.AUTH = "Basic " + b64(`${username}:${password}`);
+    this._getToken = getToken || null;
+
+    if (!getToken && username && password) {
+      this._staticAuth = "Basic " + b64(`${username}:${password}`);
+    } else {
+      this._staticAuth = null;
+    }
 
     this.apiUrl = null;
     this.accountId = null;
@@ -27,20 +33,25 @@ export class JMAPClient {
     this._controllers = new Set();
   }
 
+  async _getAuth() {
+    if (this._getToken) {
+      const token = await this._getToken();
+      return `Bearer ${token}`;
+    }
+    return this._staticAuth;
+  }
+
   /* ---------- low-level ---------- */
   async fetchSession() {
+    const auth = await this._getAuth();
+    const headers = { Accept: "application/json" };
+    if (auth) headers.Authorization = auth;
+
     let r = await fetch(this.sessionUrl, {
-      headers: { Accept: "application/json" },
+      headers,
       mode: "cors",
       credentials: "omit",
     });
-    if (r.status === 401) {
-      r = await fetch(this.sessionUrl, {
-        headers: { Accept: "application/json", Authorization: this.AUTH },
-        mode: "cors",
-        credentials: "omit",
-      });
-    }
     if (!r.ok)
       throw new Error(`Session fetch failed: ${r.status} ${r.statusText}`);
     const s = await r.json();
@@ -55,12 +66,13 @@ export class JMAPClient {
   }
 
   async jmap(body) {
+    const auth = await this._getAuth();
     const ctrl = new AbortController();
     this._controllers.add(ctrl);
     const r = await fetch(this.apiUrl, {
       method: "POST",
       headers: {
-        Authorization: this.AUTH,
+        Authorization: auth,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -78,6 +90,7 @@ export class JMAPClient {
   }
 
   async jmapRaw(body) {
+    const auth = await this._getAuth();
     const req = JSON.stringify(body);
     const started = new Date().toISOString();
     const ctrl = new AbortController();
@@ -85,7 +98,7 @@ export class JMAPClient {
     const r = await fetch(this.apiUrl, {
       method: "POST",
       headers: {
-        Authorization: this.AUTH,
+        Authorization: auth,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -331,9 +344,10 @@ export class JMAPClient {
   }
 
   async downloadAttachment(blobId, name, type) {
+    const auth = await this._getAuth();
     const url = this.makeDownloadUrl(blobId, name);
     const r = await fetch(url, {
-      headers: { Authorization: this.AUTH, Accept: type || "*/*" },
+      headers: { Authorization: auth, Accept: type || "*/*" },
       mode: "cors",
       credentials: "omit",
     });
@@ -350,10 +364,10 @@ export class JMAPClient {
   }
 
   async downloadPartText(part) {
-    // Download the raw part and decode using declared charset (fallback utf-8).
+    const auth = await this._getAuth();
     const url = this.makeDownloadUrl(part.blobId, part.name || "body.txt");
     const r = await fetch(url, {
-      headers: { Authorization: this.AUTH },
+      headers: { Authorization: auth },
       mode: "cors",
       credentials: "omit",
     });
