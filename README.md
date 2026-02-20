@@ -4,7 +4,14 @@ A Vue 3 email client using JMAP (JSON Meta Application Protocol) for email.
 
 ## Quick Start
 
-### Recommended: Dev Container
+### Recommended: Container
+
+```bash
+# Start dev container
+podman run --name stormbox -p 8080:8080 --replace --pull=always -e JMAP_SERVER=mail.tb.pro ghcr.io/thunderbird/stormbox:latest
+```
+
+### Dev Container
 
 The easiest way to get started is using the dev container which provides a consistent environment:
 
