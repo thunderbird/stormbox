@@ -22,7 +22,7 @@ export default {
     const { theme, cycle } = useTheme()
 
     const serverName = computed(() => {
-      const url = import.meta.env.JMAP_SERVER_URL || "https://mail.tb.pro"
+      const url = import.meta.env.VITE_JMAP_SERVER_URL || "https://mail.tb.pro"
       try {
         return new URL(url).hostname
       } catch {
@@ -99,3 +99,4 @@ export default {
 <style>
 /* Global styles are imported from assets/styles.css */
 </style>
+

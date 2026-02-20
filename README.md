@@ -29,7 +29,7 @@ cd thundermail-vue
 npm install
 
 # Configure JMAP server (required)
-export JMAP_SERVER_URL="https://your-jmap-server.com"
+export VITE_JMAP_SERVER_URL="https://your-jmap-server.com"
 
 # Start development server
 npm run dev
@@ -41,10 +41,10 @@ Set your JMAP server endpoint before running:
 
 ```bash
 # Environment variable
-export JMAP_SERVER_URL="https://your-jmap-server.com"
+export VITE_JMAP_SERVER_URL="https://your-jmap-server.com"
 
 # Or create .env.local file
-echo "JMAP_SERVER_URL=https://your-jmap-server.com" > .env.local
+echo "VITE_JMAP_SERVER_URL=https://your-jmap-server.com" > .env.local
 ```
 
 ## Usage
@@ -79,3 +79,4 @@ src/
 - **Quill.js**: Rich text editor for email composition
 - **@tanstack/vue-query**: Syncing client/server data state
 - **@tanstack/vue-virtual**: High-performance virtual scrolling
+
