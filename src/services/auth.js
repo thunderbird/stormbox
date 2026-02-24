@@ -13,6 +13,7 @@ export async function initOidc() {
   oidcPromise = createOidc({
     issuerUri: OIDC_ISSUER,
     clientId: OIDC_CLIENT_ID,
+    sessionRestorationMethod: "full page redirect",
   });
 
   oidcInstance = await oidcPromise;
