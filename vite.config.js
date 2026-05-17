@@ -12,5 +12,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     assetsDir: "assets",
+    target: "esnext",
+  },
+  // wa-sqlite ships its own ES modules + WASM. Pre-bundling them through
+  // esbuild breaks the WASM URL imports the AccessHandlePoolVFS uses, so
+  // exclude them from optimizeDeps.
+  optimizeDeps: {
+    exclude: ["wa-sqlite"],
+  },
+  worker: {
+    format: "es",
   },
 });
