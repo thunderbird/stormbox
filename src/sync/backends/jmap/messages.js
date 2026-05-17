@@ -53,24 +53,45 @@ export async function syncFolderWindow({
   const filter = { inMailbox: folder.remote_id };
   const sort = [{ property: sortProp, isAscending: false }];
 
-  const queryResult = await callJmap(transport, {
+  // Single round trip: Email/query + Email/get chained via JMAP back
+  // reference (RFC 8620 §3.1.3). The server resolves "ids" of the get
+  // call from the result of the query, so we never have to wait for the
+  // ID list before requesting metadata. This roughly halves first-paint
+  // latency and is the main reason to talk JMAP over an open WebSocket
+  // versus paying TLS handshakes per HTTP POST.
+  const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/query',
-      {
-        accountId: account.remote_account_id,
-        filter,
-        sort,
-        position,
-        limit,
-        calculateTotal: true,
-        collapseThreads,
-      },
-      'q1',
-    ]],
+    methodCalls: [
+      [
+        'Email/query',
+        {
+          accountId: account.remote_account_id,
+          filter,
+          sort,
+          position,
+          limit,
+          calculateTotal: true,
+          collapseThreads,
+        },
+        'q1',
+      ],
+      [
+        'Email/get',
+        {
+          accountId: account.remote_account_id,
+          '#ids': {
+            resultOf: 'q1',
+            name: 'Email/query',
+            path: '/ids',
+          },
+          properties: EMAIL_LIST_PROPERTIES,
+        },
+        'g1',
+      ],
+    ],
     useWebSocket,
   });
-  const query = pickResponse(queryResult, 'Email/query');
+  const query = pickResponse(result, 'Email/query');
   if (!query) {
     throw new Error('Email/query returned no payload');
   }
@@ -91,29 +112,11 @@ export async function syncFolderWindow({
   await recordQueryViewRange({ handlers, viewId, start: position, end: position + ids.length });
 
   let fetched = 0;
-  if (ids.length > 0) {
-    const known = new Set(
-      (await engineSelectRemoteIds(handlers, account.id, ids)).map((row) => row.remote_id),
-    );
-    const missing = ids.filter((id) => !known.has(id));
-    if (missing.length > 0) {
-      const got = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [[
-          'Email/get',
-          {
-            accountId: account.remote_account_id,
-            ids: missing,
-            properties: EMAIL_LIST_PROPERTIES,
-          },
-          'g1',
-        ]],
-        useWebSocket,
-      });
-      const list = pickResponse(got, 'Email/get')?.list ?? [];
-      await persistEmails({ account, emails: list, handlers });
-      fetched = list.length;
-    }
+  const got = pickResponse(result, 'Email/get');
+  const list = got?.list ?? [];
+  if (list.length > 0) {
+    await persistEmails({ account, emails: list, handlers });
+    fetched = list.length;
   }
 
   return {
@@ -140,20 +143,38 @@ export async function syncFolderWindowChanges({
   const filter = { inMailbox: folder.remote_id };
   const sort = [{ property: sortProp, isAscending: false }];
 
+  // Email/queryChanges + Email/get for the newly-added ids in a single
+  // round trip via back reference. The server resolves
+  // /added/*/id from the queryChanges response into the get's ids.
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/queryChanges',
-      {
-        accountId: account.remote_account_id,
-        filter,
-        sort,
-        sinceQueryState,
-        maxChanges,
-        collapseThreads,
-      },
-      'qc1',
-    ]],
+    methodCalls: [
+      [
+        'Email/queryChanges',
+        {
+          accountId: account.remote_account_id,
+          filter,
+          sort,
+          sinceQueryState,
+          maxChanges,
+          collapseThreads,
+        },
+        'qc1',
+      ],
+      [
+        'Email/get',
+        {
+          accountId: account.remote_account_id,
+          '#ids': {
+            resultOf: 'qc1',
+            name: 'Email/queryChanges',
+            path: '/added/*/id',
+          },
+          properties: EMAIL_LIST_PROPERTIES,
+        },
+        'g2',
+      ],
+    ],
     useWebSocket,
   });
   const change = pickResponse(result, 'Email/queryChanges');
@@ -190,30 +211,11 @@ export async function syncFolderWindowChanges({
   }
 
   let fetched = 0;
-  const newIds = additions.map((a) => a.id);
-  if (newIds.length > 0) {
-    const known = new Set(
-      (await engineSelectRemoteIds(handlers, account.id, newIds)).map((row) => row.remote_id),
-    );
-    const missing = newIds.filter((id) => !known.has(id));
-    if (missing.length > 0) {
-      const got = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [[
-          'Email/get',
-          {
-            accountId: account.remote_account_id,
-            ids: missing,
-            properties: EMAIL_LIST_PROPERTIES,
-          },
-          'g2',
-        ]],
-        useWebSocket,
-      });
-      const list = pickResponse(got, 'Email/get')?.list ?? [];
-      await persistEmails({ account, emails: list, handlers });
-      fetched = list.length;
-    }
+  const got = pickResponse(result, 'Email/get');
+  const list = got?.list ?? [];
+  if (list.length > 0) {
+    await persistEmails({ account, emails: list, handlers });
+    fetched = list.length;
   }
 
   return {

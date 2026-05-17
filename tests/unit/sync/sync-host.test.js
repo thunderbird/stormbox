@@ -6,6 +6,7 @@ import { DB_RPC } from '../../../src/db/protocol.js';
 import { makeSyncRpcHandlers } from '../../../src/sync/sync-host.js';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
 import { FakeWebSocket } from './_fake-ws.js';
+import { resolveResultRefs } from './_mock-transport.js';
 
 const SESSION = {
   apiUrl: 'https://mail.example.com/jmap',
@@ -89,12 +90,17 @@ function makeFetch() {
     }
     const body = JSON.parse(init.body);
     const responses = [];
-    for (const [methodName, params, callId] of body.methodCalls) {
+    const byCallId = new Map();
+    for (const [methodName, rawParams, callId] of body.methodCalls) {
       const handler = SCENARIO[methodName];
       if (!handler) {
         throw new Error(`No handler for ${methodName}`);
       }
-      responses.push([methodName, await handler(params, callId), callId]);
+      const params = resolveResultRefs(rawParams, byCallId);
+      const payload = await handler(params, callId);
+      const tuple = [methodName, payload, callId];
+      responses.push(tuple);
+      byCallId.set(callId, tuple);
     }
     return jsonResponse({ methodResponses: responses });
   });

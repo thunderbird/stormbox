@@ -134,7 +134,7 @@ describe('syncFolderWindow', () => {
     expect(addresses.find((r) => r.kind === 'sender')?.n).toBe(3);
   });
 
-  it('skips Email/get for ids we already have', async () => {
+  it('issues a single chained method-call request via JMAP back reference', async () => {
     const transport = new MockTransport();
     transport.handle('Email/query', () => ({
       ids: ['e-1', 'e-2'],
@@ -143,17 +143,40 @@ describe('syncFolderWindow', () => {
       canCalculateChanges: true,
       position: 0,
     }));
-    let getCalls = 0;
-    transport.handle('Email/get', (params) => {
-      getCalls += 1;
-      return {
-        list: params.ids.map((id) => emailFixture({ id })),
-        state: 'es',
-      };
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es',
+    }));
+    await syncFolderWindow({ transport, account, folder: inbox, handlers });
+    expect(transport.requests).toHaveLength(1);
+    const [{ methodCalls }] = transport.requests;
+    expect(methodCalls).toHaveLength(2);
+    expect(methodCalls[0][0]).toBe('Email/query');
+    expect(methodCalls[1][0]).toBe('Email/get');
+    expect(methodCalls[1][1]['#ids']).toEqual({
+      resultOf: 'q1',
+      name: 'Email/query',
+      path: '/ids',
     });
+  });
+
+  it('persists idempotently when the same window is fetched twice', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'],
+      total: 2,
+      queryState: 'qs',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es',
+    }));
     await syncFolderWindow({ transport, account, folder: inbox, handlers });
     await syncFolderWindow({ transport, account, folder: inbox, handlers });
-    expect(getCalls).toBe(1);
+    const messages = await handlers[DB_RPC.MESSAGE_LIST_FOR_FOLDER]({ folderId: inbox.id });
+    expect(messages.map((m) => m.remote_id).sort()).toEqual(['e-1', 'e-2']);
   });
 
   it('builds folder_messages entries linking the message to the inbox', async () => {
@@ -242,6 +265,9 @@ describe('syncFolderWindowChanges', () => {
     transport.handle('Email/queryChanges', () => ({
       type: 'cannotCalculateChanges',
     }));
+    // Chained Email/get still runs (back reference resolves to []
+    // because the queryChanges response has no added array).
+    transport.handle('Email/get', () => ({ list: [], state: 'es' }));
     const result = await syncFolderWindowChanges({
       transport, account, folder: inbox, handlers,
       sinceQueryState: 'qs-1',
