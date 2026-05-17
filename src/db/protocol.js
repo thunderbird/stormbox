@@ -50,6 +50,15 @@ export const DB_RPC = Object.freeze({
   PENDING_MUTATION_LIST_PENDING: 'pendingMutation.listPending',
   SYNC_JOB_INSERT: 'syncJob.insert',
   SYNC_JOB_NEXT_BATCH: 'syncJob.nextBatch',
+
+  SYNC_START_ACCOUNT: 'sync.startAccount',
+  SYNC_STOP_ACCOUNT: 'sync.stopAccount',
+  SYNC_ENSURE_FOLDER_TREE: 'sync.ensureFolderTree',
+  SYNC_ENSURE_FOLDER_WINDOW: 'sync.ensureFolderWindow',
+  SYNC_ENSURE_MESSAGE_BODY: 'sync.ensureMessageBody',
+  SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
+  SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
+  SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',
 });
 
 /**

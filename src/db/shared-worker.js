@@ -17,6 +17,7 @@ import {
   RPC_RESPONSE,
 } from './rpc-dispatch.js';
 import { BROADCAST_CHANNEL } from './protocol.js';
+import { makeSyncRpcHandlers } from '../sync/sync-host.js';
 
 const channel = new BroadcastChannel(BROADCAST_CHANNEL);
 const broadcaster = makeBroadcaster(channel);
@@ -29,7 +30,9 @@ function getHandlers() {
   }
   handlersPromise = (async () => {
     const engine = await bootProductionEngine();
-    return makeHandlers(engine, broadcaster);
+    const repoHandlers = makeHandlers(engine, broadcaster);
+    const syncHandlers = makeSyncRpcHandlers({ handlers: repoHandlers });
+    return { ...repoHandlers, ...syncHandlers };
   })();
   return handlersPromise;
 }

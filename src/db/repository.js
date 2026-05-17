@@ -219,6 +219,40 @@ export class Repository {
     return this.call(DB_RPC.SYNC_JOB_NEXT_BATCH, options);
   }
 
+  // Sync control plane ------------------------------------------------
+
+  startSyncAccount(input) {
+    return this.call(DB_RPC.SYNC_START_ACCOUNT, input);
+  }
+
+  stopSyncAccount(accountId) {
+    return this.call(DB_RPC.SYNC_STOP_ACCOUNT, { accountId });
+  }
+
+  ensureFolderTree(accountId) {
+    return this.call(DB_RPC.SYNC_ENSURE_FOLDER_TREE, { accountId });
+  }
+
+  ensureFolderWindow(accountId, folderId, range = {}) {
+    return this.call(DB_RPC.SYNC_ENSURE_FOLDER_WINDOW, { accountId, folderId, range });
+  }
+
+  ensureMessageBody(accountId, messageId) {
+    return this.call(DB_RPC.SYNC_ENSURE_MESSAGE_BODY, { accountId, messageId });
+  }
+
+  ensureIdentities(accountId) {
+    return this.call(DB_RPC.SYNC_ENSURE_IDENTITIES, { accountId });
+  }
+
+  ensureAddressbooks(accountId) {
+    return this.call(DB_RPC.SYNC_ENSURE_ADDRESSBOOKS, { accountId });
+  }
+
+  ensureContacts(accountId, addressbookId) {
+    return this.call(DB_RPC.SYNC_ENSURE_CONTACTS, { accountId, addressbookId });
+  }
+
   // Internals ----------------------------------------------------------
 
   _onMessage(msg) {
