@@ -90,6 +90,7 @@ export const useMailStore = defineStore('mail', () => {
       folders.value = await repo.listFolders(authStore.accountId);
     } catch (err) {
       error.value = err?.message ?? String(err);
+      console.error('[mail-store] refreshFolders failed', err);
     }
   }
 

@@ -16,6 +16,7 @@
 export const RPC_REQUEST = 'rpc.request';
 export const RPC_RESPONSE = 'rpc.response';
 export const TABLES_TOUCHED = 'tables.touched';
+export const WORKER_LOG = 'worker.log';
 
 /**
  * Dispatch a single inbound RPC message. Returns the response object the

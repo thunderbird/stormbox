@@ -9,7 +9,7 @@
 
 import { assertSupportedBrowser } from './availability.js';
 import { BROADCAST_CHANNEL, DB_RPC } from './protocol.js';
-import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED } from './rpc-dispatch.js';
+import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch.js';
 
 /**
  * @typedef {import('./protocol.js').DB_RPC} DBRpcMethods
@@ -278,15 +278,23 @@ export class Repository {
 
   _onBroadcast(msg) {
     const data = msg.data;
-    if (!data || data.type !== TABLES_TOUCHED || !Array.isArray(data.tables)) {
+    if (!data) return;
+
+    if (data.type === WORKER_LOG) {
+      // Mirror SharedWorker logs onto the main-thread console so they
+      // are visible in devtools and to Playwright's page.on('console').
+      const fn = console[data.level] ?? console.log;
+      fn(`[worker:${data.source}] ${data.message}`);
       return;
     }
-    for (const listener of this._listeners) {
-      try {
-        listener(data.tables);
-      } catch (err) {
-        // A misbehaving subscriber should not break delivery to others.
-        console.error('Repository subscriber threw', err);
+
+    if (data.type === TABLES_TOUCHED && Array.isArray(data.tables)) {
+      for (const listener of this._listeners) {
+        try {
+          listener(data.tables);
+        } catch (err) {
+          console.error('Repository subscriber threw', err);
+        }
       }
     }
   }

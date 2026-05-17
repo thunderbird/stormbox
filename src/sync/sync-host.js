@@ -12,6 +12,7 @@
 
 import { DB_RPC } from '../db/protocol.js';
 import { SERVICE_KIND } from '../constants/states.js';
+import { wlog } from '../db/worker-log.js';
 import { SyncClient } from './sync-client.js';
 import { JmapTransport } from './backends/jmap/transport.js';
 import { JmapBackend } from './backends/jmap/backend.js';
@@ -51,6 +52,7 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
 
   return {
     [DB_RPC.SYNC_START_ACCOUNT]: async (input) => {
+      wlog.info('sync-host', `startAccount ${input.serverOrigin} (auth=${input.auth?.kind})`);
       const transport = new JmapTransport({
         sessionUrl: input.sessionUrl,
         getAuthHeader: makeAuthHeader(input.auth),
@@ -63,16 +65,18 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
         handlers,
         options: { useWebSocket: input.useWebSocket ?? true },
       });
-      await backend.start();
+      try {
+        await backend.start();
+      } catch (err) {
+        wlog.error('sync-host', 'backend.start() threw', err);
+        throw err;
+      }
       backends.set(backend.account.id, backend);
       syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_MAIL, backend);
-      // The same JmapBackend services jmap-contacts because the JMAP
-      // transport carries every JMAP capability advertised by the server.
-      // SyncClient routes ensureAddressbooks/ensureContacts through the
-      // jmap-contacts service kind.
       if (backend.services.some((s) => s.serviceKind === SERVICE_KIND.JMAP_CONTACTS)) {
         syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_CONTACTS, backend);
       }
+      wlog.info('sync-host', `startAccount complete; accountId=${backend.account.id}, services=${backend.services.map((s) => s.serviceKind).join(',')}`);
       return { accountId: backend.account.id };
     },
 

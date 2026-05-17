@@ -25,6 +25,7 @@
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_TYPE, SERVICE_KIND, KEYWORD } from '../../../constants/states.js';
+import { wlog } from '../../../db/worker-log.js';
 import { ingestSession } from './session.js';
 import { syncMailboxes, syncMailboxChanges } from './mailboxes.js';
 import {
@@ -74,7 +75,9 @@ export class JmapBackend {
     if (this._started) {
       return;
     }
+    wlog.info('jmap-backend', 'fetchSession');
     const session = await this.transport.fetchSession();
+    wlog.info('jmap-backend', `session ok, primaryMail=${session.primaryAccounts?.['urn:ietf:params:jmap:mail']}, caps=${Object.keys(session.capabilities ?? {}).length}`);
     const ingest = await ingestSession({
       session,
       serverOrigin: this.serverOrigin,
@@ -82,28 +85,35 @@ export class JmapBackend {
     });
     this.account = ingest.account;
     this.services = ingest.services;
+    wlog.info('jmap-backend', `account ingested id=${this.account.id} remote=${this.account.remote_account_id} services=${this.services.map((s) => s.serviceKind).join(',')}`);
 
-    await syncMailboxes({
+    const mbResult = await syncMailboxes({
       transport: this.transport,
       account: this.account,
       handlers: this.handlers,
     });
-    await syncIdentities({
+    wlog.info('jmap-backend', `syncMailboxes -> ${mbResult.count} folders, state=${mbResult.state}`);
+
+    const idResult = await syncIdentities({
       transport: this.transport,
       account: this.account,
       handlers: this.handlers,
     });
+    wlog.info('jmap-backend', `syncIdentities -> ${idResult.count} identities`);
+
     if (this._hasContactsService()) {
-      await syncAddressBooks({
+      const abResult = await syncAddressBooks({
         transport: this.transport,
         account: this.account,
         handlers: this.handlers,
       });
-      await syncContacts({
+      wlog.info('jmap-backend', `syncAddressBooks -> ${abResult.count}`);
+      const cResult = await syncContacts({
         transport: this.transport,
         account: this.account,
         handlers: this.handlers,
       });
+      wlog.info('jmap-backend', `syncContacts -> ${cResult.fetched} fetched of ${cResult.total}`);
     }
 
     if (this.useWebSocket) {

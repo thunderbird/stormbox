@@ -17,10 +17,19 @@ import {
   RPC_RESPONSE,
 } from './rpc-dispatch.js';
 import { BROADCAST_CHANNEL } from './protocol.js';
+import { attachWorkerLogger, wlog } from './worker-log.js';
 import { makeSyncRpcHandlers } from '../sync/sync-host.js';
 
 const channel = new BroadcastChannel(BROADCAST_CHANNEL);
 const broadcaster = makeBroadcaster(channel);
+attachWorkerLogger(channel);
+
+self.addEventListener('error', (event) => {
+  wlog.error('shared-worker', 'uncaught error', event.message ?? event.error);
+});
+self.addEventListener('unhandledrejection', (event) => {
+  wlog.error('shared-worker', 'unhandled rejection', event.reason);
+});
 
 let handlersPromise = null;
 
@@ -29,12 +38,30 @@ function getHandlers() {
     return handlersPromise;
   }
   handlersPromise = (async () => {
+    wlog.info('shared-worker', 'booting OPFS engine');
     const engine = await bootProductionEngine();
+    wlog.info('shared-worker', 'engine ready');
     const repoHandlers = makeHandlers(engine, broadcaster);
     const syncHandlers = makeSyncRpcHandlers({ handlers: repoHandlers });
     return { ...repoHandlers, ...syncHandlers };
   })();
   return handlersPromise;
+}
+
+/**
+ * SQL operations on the wa-sqlite engine are not safe to run
+ * concurrently on the same db handle - statements interleave at the
+ * step level and deadlock. We serialise every inbound RPC through a
+ * single tail-of-promise queue. This matches the pattern in
+ * thunderbird/thunderbolt's wa-sqlite worker.
+ */
+let serial = Promise.resolve();
+function enqueue(fn) {
+  const next = serial.then(fn, fn);
+  // Don't propagate failures into the chain; each task gets its own
+  // tail. Catch silently here to keep the serial chain alive.
+  serial = next.catch(() => {});
+  return next;
 }
 
 self.addEventListener('connect', (event) => {
@@ -45,18 +72,17 @@ self.addEventListener('connect', (event) => {
     if (!message || message.type !== RPC_REQUEST) {
       return;
     }
-    let handlers;
+    let response;
     try {
-      handlers = await getHandlers();
+      const handlers = await getHandlers();
+      response = await enqueue(() => dispatchRpc(message, handlers));
     } catch (error) {
-      port.postMessage({
+      response = {
         type: RPC_RESPONSE,
         id: message.id,
         error: `Database failed to initialise: ${error?.message ?? error}`,
-      });
-      return;
+      };
     }
-    const response = await dispatchRpc(message, handlers);
     port.postMessage(response);
   });
 });

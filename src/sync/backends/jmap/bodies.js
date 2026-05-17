@@ -10,11 +10,16 @@
  */
 
 import { DB_RPC } from '../../../db/protocol.js';
+import { wlog } from '../../../db/worker-log.js';
 import { JMAP_CAPS } from './transport.js';
 
 const BODY_PROPERTIES = [
   'id', 'blobId', 'threadId', 'mailboxIds', 'keywords',
   'bodyStructure', 'textBody', 'htmlBody', 'attachments',
+  // bodyValues is the keyed map that fetchTextBodyValues /
+  // fetchHTMLBodyValues populates. Stalwart only includes it in the
+  // response when it's explicitly listed as a requested property.
+  'bodyValues',
 ];
 
 const BODY_PART_PROPERTIES = [
@@ -57,6 +62,13 @@ export async function fetchEmailBodies({
   const list = pickResponse(result, 'Email/get')?.list ?? [];
   if (list.length === 0) {
     return { fetched: 0 };
+  }
+  for (const email of list) {
+    const bvKeys = Object.keys(email.bodyValues ?? {});
+    wlog.info(
+      'jmap-bodies',
+      `email=${email.id} bodyStructure.type=${email.bodyStructure?.type} subParts=${email.bodyStructure?.subParts?.length ?? 0} textBody.parts=${(email.textBody ?? []).length} htmlBody.parts=${(email.htmlBody ?? []).length} bodyValues.keys=${bvKeys.join(',') || '(none)'}`,
+    );
   }
   await persistBodies({ account, emails: list, handlers });
   return { fetched: list.length };

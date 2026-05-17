@@ -14,7 +14,15 @@ export function getRepositoryAsync() {
   if (!repoPromise) {
     repoPromise = (async () => {
       const workerUrl = new URL('../db/shared-worker.js', import.meta.url);
-      return createRepository({ workerUrl });
+      const repo = await createRepository({ workerUrl });
+      // Expose on window in dev/test builds so Playwright (and you in
+      // devtools) can poke at the repository directly. No-op in
+      // production builds because import.meta.env.DEV is false.
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-undef
+        globalThis.__repo = repo;
+      }
+      return repo;
     })();
   }
   return repoPromise;
