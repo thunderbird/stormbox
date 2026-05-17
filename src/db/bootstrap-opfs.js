@@ -1,17 +1,27 @@
 /**
- * Production engine bootstrap. Used by the SharedWorker. Mounts the
- * AccessHandlePoolVFS, which uses synchronous OPFS access handles - this
- * only works inside a Worker context, so do not call from the main thread.
+ * Production engine bootstrap. Used by the SharedWorker.
+ *
+ * Stores the database in OPFS via @journeyapps/wa-sqlite's
+ * OPFSAnyContextVFS. This VFS uses the async OPFS APIs
+ * (FileSystemFileHandle.getFile / createWritable) rather than the
+ * synchronous access-handle API that Firefox restricts to dedicated
+ * workers. As a result it works in any worker context - including the
+ * SharedWorker that Stormbox needs for multi-tab safety - on every
+ * browser that supports OPFS at all (Chromium, Firefox, Safari).
+ *
+ * Pairs with the asyncify build of wa-sqlite (`wa-sqlite-async.mjs`)
+ * and the built-in WebLocksMixin for SQLite-style locking across
+ * connections.
  */
 
-import SQLiteESMFactory from 'wa-sqlite/dist/wa-sqlite.mjs';
-import * as SQLite from 'wa-sqlite';
-import { AccessHandlePoolVFS } from 'wa-sqlite/src/examples/AccessHandlePoolVFS.js';
+import SQLiteAsyncESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs';
+import * as SQLite from '@journeyapps/wa-sqlite';
+import { OPFSAnyContextVFS } from '@journeyapps/wa-sqlite/src/examples/OPFSAnyContextVFS.js';
 
 import { openEngine } from './engine.js';
 
 const DB_NAME = 'stormbox.sqlite';
-const VFS_DIR = '/stormbox';
+const VFS_NAME = 'opfs-stormbox';
 
 let bootPromise = null;
 
@@ -29,13 +39,21 @@ export function bootProductionEngine() {
 }
 
 async function doBoot() {
-  const module = await SQLiteESMFactory();
+  const module = await SQLiteAsyncESMFactory();
   const sqlite3 = SQLite.Factory(module);
 
-  const vfs = new AccessHandlePoolVFS(VFS_DIR);
-  await vfs.isReady;
-  sqlite3.vfs_register(vfs, true);
+  // VFS registration is process-singleton; vfs_register throws on a
+  // duplicate. During dev HMR reloads we may run this twice on the same
+  // module instance, so tolerate the duplicate error.
+  try {
+    const vfs = await OPFSAnyContextVFS.create(VFS_NAME, module);
+    sqlite3.vfs_register(vfs, true);
+  } catch (error) {
+    if (!/already registered/.test(error?.message ?? '')) {
+      throw error;
+    }
+  }
 
-  const db = await sqlite3.open_v2(DB_NAME);
+  const db = await sqlite3.open_v2(DB_NAME, undefined, VFS_NAME);
   return openEngine({ sqlite3, db });
 }

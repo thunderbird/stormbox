@@ -9,11 +9,11 @@ export default defineConfig({
     globals: false,
     server: {
       deps: {
-        inline: ["wa-sqlite"],
+        inline: ["@journeyapps/wa-sqlite"],
       },
     },
   },
   optimizeDeps: {
-    exclude: ["wa-sqlite"],
+    exclude: ["@journeyapps/wa-sqlite"],
   },
 });

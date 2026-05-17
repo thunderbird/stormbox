@@ -11,8 +11,8 @@
  * for the package's relative wa-sqlite.wasm URL.
  */
 
-import SQLiteESMFactory from 'wa-sqlite/dist/wa-sqlite.mjs';
-import * as SQLite from 'wa-sqlite';
+import SQLiteESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite.mjs';
+import * as SQLite from '@journeyapps/wa-sqlite';
 
 import { openEngine } from './engine.js';
 
@@ -33,7 +33,7 @@ function getSqlite3() {
       const { readFileSync } = await import('node:fs');
       const { fileURLToPath } = await import('node:url');
       const wasmUrl = new URL(
-        '../../node_modules/wa-sqlite/dist/wa-sqlite.wasm',
+        '../../node_modules/@journeyapps/wa-sqlite/dist/wa-sqlite.wasm',
         import.meta.url,
       );
       const wasmBinary = readFileSync(fileURLToPath(wasmUrl));

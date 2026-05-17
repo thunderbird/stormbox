@@ -8,7 +8,7 @@
  *   bootstrap-memory.js - tests and stories (built-in default VFS, ':memory:')
  */
 
-import * as SQLite from 'wa-sqlite';
+import * as SQLite from '@journeyapps/wa-sqlite';
 
 import migration001 from './migrations/001_init.sql?raw';
 
