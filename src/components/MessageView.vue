@@ -108,9 +108,11 @@ async function destroy() {
 <style scoped>
 .message-view {
   background: var(--panel);
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto 1fr;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 .message-view__empty {
   display: grid;

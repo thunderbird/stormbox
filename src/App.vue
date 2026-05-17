@@ -102,15 +102,23 @@ function startCompose() {
   color: var(--text);
   overflow: hidden;
 }
+/* Grid items default to min-height: auto, which makes inner
+ * overflow:auto containers grow to their content instead of scrolling.
+ * Force every shell column to be allowed to shrink so its children can
+ * own the vertical scroll. */
+.shell > * { min-height: 0; min-width: 0; }
 .shell > .contacts { grid-column: 3 / span 2; }
 
 .sidebar {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
   background: var(--panel);
   border-right: 1px solid var(--border);
   min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
+.sidebar > :nth-child(3) { min-height: 0; overflow-y: auto; }
 .sidebar__header {
   padding: 10px 12px 8px;
   border-bottom: 1px solid var(--border-soft);

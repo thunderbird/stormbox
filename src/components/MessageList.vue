@@ -88,11 +88,16 @@ function shortFrom(text) {
 
 <style scoped>
 .msg-list {
-  display: flex;
-  flex-direction: column;
+  /* grid (rather than flex) so the message list row can be the only
+   * shrinkable track. min-height:0 lets it actually shrink below its
+   * intrinsic content size so the inner overflow-y:auto can scroll. */
+  display: grid;
+  grid-template-rows: auto 1fr;
   border-right: 1px solid var(--border);
   background: var(--panel);
   min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 .msg-list__header {
   display: flex;
@@ -144,7 +149,8 @@ function shortFrom(text) {
   margin: 0;
   padding: 0;
   overflow-y: auto;
-  flex: 1;
+  overflow-x: hidden;
+  min-height: 0;
 }
 .msg-list__items li { position: relative; }
 .msg-list__items li.is-selected .msg-list__item { background: var(--rowActive); }

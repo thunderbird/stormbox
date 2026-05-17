@@ -47,7 +47,7 @@ test.describe('Stage Thundermail e2e', () => {
     await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
     const after = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-after-login.png`, { body: after, contentType: 'image/png' });
-    await page.screenshot({ path: testInfo.outputPath(`${browserName}-01-after-login.png`), fullPage: true });
+    await page.screenshot({ path: `screenshots/${browserName}-01-after-login.png`, fullPage: true });
 
     // 2. Folder tree populates with at least one row.
     await expect.poll(
@@ -81,7 +81,7 @@ test.describe('Stage Thundermail e2e', () => {
 
     const folderShot = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-folder-opened.png`, { body: folderShot, contentType: 'image/png' });
-    await page.screenshot({ path: testInfo.outputPath(`${browserName}-02-folder-opened.png`), fullPage: true });
+    await page.screenshot({ path: `screenshots/${browserName}-02-folder-opened.png`, fullPage: true });
 
     // 4. Open the first message and wait for its body.
     await page.locator('.msg-list__item').first().click();
@@ -106,7 +106,41 @@ test.describe('Stage Thundermail e2e', () => {
 
     const msgShot = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-message-opened.png`, { body: msgShot, contentType: 'image/png' });
-    await page.screenshot({ path: testInfo.outputPath(`${browserName}-03-message-opened.png`), fullPage: true });
+    await page.screenshot({ path: `screenshots/${browserName}-03-message-opened.png`, fullPage: true });
+
+    // 5. Verify message list scrolls. Pages with 32 messages must
+    //    overflow the viewport at our default sizes.
+    const scrollable = await page.evaluate(() => {
+      const el = document.querySelector('.msg-list__items');
+      if (!el) return null;
+      return { sh: el.scrollHeight, ch: el.clientHeight, overflow: el.scrollHeight > el.clientHeight };
+    });
+    console.log(`[test] msg-list scroll metrics: ${JSON.stringify(scrollable)}`);
+    if (!scrollable?.overflow) {
+      throw new Error(`Message list is not scrollable: ${JSON.stringify(scrollable)}`);
+    }
+    // Actually scroll and check that scrollTop moves.
+    const scrolledTo = await page.evaluate(() => {
+      const el = document.querySelector('.msg-list__items');
+      el.scrollTop = 200;
+      return el.scrollTop;
+    });
+    if (scrolledTo === 0) {
+      throw new Error('Message list did not respond to scrollTop');
+    }
+
+    // 6. Open the compose dialog and make sure Squire RTE mounted.
+    await page.getByRole('button', { name: /new message/i }).click();
+    await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 5_000 });
+    const composeOk = await page.evaluate(() => {
+      const editor = document.querySelector('.compose-dialog .editor');
+      return !!editor && editor.isContentEditable;
+    });
+    if (!composeOk) {
+      throw new Error('Compose editor did not mount as contenteditable');
+    }
+    await page.screenshot({ path: `screenshots/${browserName}-04-compose-open.png`, fullPage: true });
+    await page.getByRole('button', { name: /^discard$/i }).click();
 
     // Dump last 80 console lines so failures are diagnosable from the
     // terminal output alone.

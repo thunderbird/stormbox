@@ -74,7 +74,7 @@ function pickFolder(id) { mailStore.selectFolder(id); }
   display: flex;
   flex-direction: column;
   padding: 4px 6px;
-  overflow-y: auto;
   gap: 1px;
+  min-height: 0;
 }
 </style>
