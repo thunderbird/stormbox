@@ -48,3 +48,6 @@ screenshots/
 *.tmp
 *.temp
 .cache/
+
+# Cloudflare Workers (infra/ws-proxy) local state
+.wrangler/

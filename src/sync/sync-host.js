@@ -52,10 +52,12 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
 
   return {
     [DB_RPC.SYNC_START_ACCOUNT]: async (input) => {
-      wlog.info('sync-host', `startAccount ${input.serverOrigin} (auth=${input.auth?.kind})`);
+      wlog.info('sync-host', `startAccount ${input.serverOrigin} (auth=${input.auth?.kind}, wsProxy=${input.wsProxyUrl ?? 'none'})`);
       const transport = new JmapTransport({
         sessionUrl: input.sessionUrl,
         getAuthHeader: makeAuthHeader(input.auth),
+        getWsCredential: makeWsCredential(input.auth),
+        wsProxyUrl: input.wsProxyUrl ?? null,
         fetch: boundFetch,
         WebSocketImpl: wsCtor,
       });
@@ -125,6 +127,22 @@ function makeAuthHeader(auth) {
     return async () => `Basic ${encoded}`;
   }
   throw new Error(`Unsupported auth kind: ${auth?.kind}`);
+}
+
+/**
+ * Producer for the credential placed on the WebSocket URL when a
+ * ws-proxy is in front of Stalwart. The proxy turns this into a
+ * proper Authorization header on the upstream upgrade request.
+ */
+function makeWsCredential(auth) {
+  if (auth?.kind === 'bearer') {
+    return async () => ({ kind: 'bearer', token: auth.token });
+  }
+  if (auth?.kind === 'basic') {
+    const encoded = base64Utf8(`${auth.username}:${auth.password}`);
+    return async () => ({ kind: 'basic', token: encoded });
+  }
+  return async () => null;
 }
 
 function base64Utf8(input) {

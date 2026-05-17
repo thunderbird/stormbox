@@ -1,0 +1,26 @@
+name = "stormbox-ws-proxy"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+account_id = "407a3cd7b36b3ec71bf765856c90ae8c"
+workers_dev = false
+
+# wsmail.stage-thundermail.com is bound as a Workers Custom Domain
+# (Cloudflare manages the DNS record automatically once `wrangler deploy`
+# is run with this config). The custom-domain mode terminates TLS on
+# Cloudflare's edge, which is what we want for browsers.
+routes = [
+  { pattern = "wsmail.stage-thundermail.com", custom_domain = true },
+]
+
+[vars]
+UPSTREAM_BASE = "https://mail.stage-thundermail.com"
+
+[observability]
+enabled = true
+
+# Strip the bearer token from request logs. Without this Cloudflare's
+# default access log would record the full URI including
+# ?access_token=<jwt>.
+[observability.logs]
+head_sampling_rate = 1.0
+invocation_logs = true

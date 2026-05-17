@@ -10,7 +10,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import { initOidc, getOidc } from '../services/auth.js';
-import { JMAP_SERVER_URL } from '../defines.js';
+import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL } from '../defines.js';
 import { AUTH_STATE } from '../constants/states.js';
 import { getRepositoryAsync } from '../composables/use-repository.js';
 
@@ -104,6 +104,7 @@ export const useAuthStore = defineStore('auth', () => {
         sessionUrl: `${JMAP_SERVER_URL.replace(/\/$/, '')}/.well-known/jmap`,
         serverOrigin: serverOrigin.value,
         auth,
+        wsProxyUrl: JMAP_WS_PROXY_URL || null,
       });
       accountId.value = result.accountId;
       username.value = displayName;

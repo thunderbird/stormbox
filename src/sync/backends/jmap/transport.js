@@ -11,6 +11,8 @@
  * for fetch and WebSocket without monkey-patching globals.
  */
 
+import { wlog } from '../../../db/worker-log.js';
+
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail';
 const JMAP_SUBMISSION = 'urn:ietf:params:jmap:submission';
@@ -26,12 +28,31 @@ export const JMAP_CAPS = Object.freeze({
 });
 
 /**
+ * @typedef {object} WsCredential
+ * @property {'bearer'|'basic'} kind  How to encode the credential in
+ *                                    the WebSocket URL.
+ * @property {string} token           Bearer JWT or base64(user:pass).
+ */
+
+/**
  * @typedef {object} TransportOptions
  * @property {string} sessionUrl       Absolute URL of the JMAP session
  *                                     document (https://host/.well-known/jmap).
  * @property {() => Promise<string>} getAuthHeader
  *                                     Async producer of the value for the
  *                                     Authorization header (Basic/Bearer).
+ * @property {() => Promise<WsCredential>} [getWsCredential]
+ *                                     Async producer of the credential
+ *                                     attached to the WebSocket upgrade
+ *                                     URL. Required if WebSocket is used.
+ * @property {string} [wsProxyUrl]     If set, this URL is used as the
+ *                                     base of the WebSocket connection
+ *                                     instead of the URL Stalwart
+ *                                     advertises in the session
+ *                                     document. The proxy is expected
+ *                                     to read the credential off the
+ *                                     query string and convert it to
+ *                                     the Authorization header upstream.
  * @property {typeof fetch} [fetch]    Optional fetch impl. Defaults to globalThis.fetch.
  * @property {typeof WebSocket} [WebSocketImpl]
  *                                     Optional WebSocket constructor. Defaults
@@ -43,6 +64,8 @@ export class JmapTransport {
   constructor(options) {
     this._sessionUrl = options.sessionUrl;
     this._getAuthHeader = options.getAuthHeader;
+    this._getWsCredential = options.getWsCredential ?? null;
+    this._wsProxyUrl = options.wsProxyUrl ?? null;
     this._fetch = options.fetch ?? globalThis.fetch;
     this._WebSocket = options.WebSocketImpl ?? globalThis.WebSocket;
     this._session = null;
@@ -100,18 +123,29 @@ export class JmapTransport {
       await this.fetchSession();
     }
     const auth = await this._getAuthHeader();
-    const response = await this._fetch(this._session.apiUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: auth,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      mode: 'cors',
-      credentials: 'omit',
-      body: JSON.stringify({ using, methodCalls }),
-      signal: opts.signal,
-    });
+    const summary = methodCalls.map(([name, params]) =>
+      `${name}(${params?.position != null ? `pos=${params.position}` : ''}${params?.limit != null ? ` lim=${params.limit}` : ''})`,
+    ).join(' + ');
+    wlog.info('jmap-transport', `httpRequest ${summary}`);
+    let response;
+    try {
+      response = await this._fetch(this._session.apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: auth,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        mode: 'cors',
+        credentials: 'omit',
+        body: JSON.stringify({ using, methodCalls }),
+        signal: opts.signal,
+      });
+    } catch (err) {
+      wlog.warn('jmap-transport', `httpRequest fetch threw: ${err?.message}`);
+      throw err;
+    }
+    wlog.info('jmap-transport', `httpResponse ${summary} status=${response.status}`);
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       throw new Error(`JMAP request failed: ${response.status} ${response.statusText}\n${detail}`);
@@ -141,7 +175,20 @@ export class JmapTransport {
       if (!wsCap?.url) {
         throw new Error('Server does not advertise urn:ietf:params:jmap:websocket');
       }
-      const ws = new this._WebSocket(wsCap.url, ['jmap']);
+      // If a proxy URL is configured, the credential rides on the
+      // query string and the proxy converts it to an Authorization
+      // header before forwarding to Stalwart. Otherwise we use the
+      // URL Stalwart advertises directly (which only works for
+      // non-browser clients that can set Authorization headers).
+      const baseUrl = this._wsProxyUrl ?? wsCap.url;
+      const wsUrl = new URL(baseUrl);
+      if (this._wsProxyUrl && this._getWsCredential) {
+        const cred = await this._getWsCredential();
+        if (cred?.kind === 'bearer') wsUrl.searchParams.set('access_token', cred.token);
+        else if (cred?.kind === 'basic') wsUrl.searchParams.set('basic', cred.token);
+      }
+      wlog.info('jmap-transport', `openWebSocket via ${wsUrl.host}${wsUrl.pathname}`);
+      const ws = new this._WebSocket(wsUrl.toString(), ['jmap']);
       this._ws = ws;
       await waitForOpen(ws);
       ws.addEventListener('message', (event) => this._onWsMessage(event));
@@ -175,8 +222,15 @@ export class JmapTransport {
     }
     const requestId = `r${this._nextWsId}`;
     this._nextWsId += 1;
+    const summary = methodCalls.map(([name, params]) =>
+      `${name}(${params?.position != null ? `pos=${params.position}` : ''}${params?.limit != null ? ` lim=${params.limit}` : ''})`,
+    ).join(' + ');
+    wlog.info('jmap-transport', `wsRequest ${requestId}: ${summary}`);
     return new Promise((resolve, reject) => {
-      this._wsPending.set(requestId, { resolve, reject });
+      this._wsPending.set(requestId, {
+        resolve: (v) => { wlog.info('jmap-transport', `wsResponse ${requestId} ok`); resolve(v); },
+        reject: (e) => { wlog.warn('jmap-transport', `wsResponse ${requestId} err: ${e?.message}`); reject(e); },
+      });
       this._ws.send(JSON.stringify({
         '@type': 'Request',
         id: requestId,
@@ -229,14 +283,18 @@ export class JmapTransport {
     try {
       payload = JSON.parse(event.data);
     } catch {
+      wlog.warn('jmap-transport', 'ws frame parse fail');
       return;
     }
+    wlog.info('jmap-transport', `ws frame: @type=${payload['@type']} id=${payload.requestId ?? payload.pushState ?? '-'}`);
     switch (payload['@type']) {
       case 'Response': {
         const pending = this._wsPending.get(payload.requestId);
         if (pending) {
           this._wsPending.delete(payload.requestId);
           pending.resolve(payload);
+        } else {
+          wlog.warn('jmap-transport', `ws Response for unknown requestId=${payload.requestId}`);
         }
         return;
       }

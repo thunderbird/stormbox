@@ -179,8 +179,9 @@ export class JmapBackend {
   }
 
   async ensureFolderWindow(folderId, range = {}) {
+    wlog.info('jmap-backend', `ensureFolderWindow folderId=${folderId} offset=${range.offset ?? 0} limit=${range.limit ?? 100}`);
     const folder = await this._loadFolder(folderId);
-    return syncFolderWindow({
+    const r = await syncFolderWindow({
       transport: this.transport,
       account: this.account,
       folder,
@@ -191,6 +192,8 @@ export class JmapBackend {
       collapseThreads: range.collapseThreads ?? false,
       useWebSocket: this._wsReady(),
     });
+    wlog.info('jmap-backend', `ensureFolderWindow done offset=${range.offset} fetched=${r?.fetched} total=${r?.total}`);
+    return r;
   }
 
   async ensureMessageBody(messageId) {
