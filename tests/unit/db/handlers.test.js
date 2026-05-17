@@ -378,6 +378,104 @@ describe('thread + message + membership handlers', () => {
     expect(b).toHaveLength(1);
     expect(a[0].id).toBe(b[0].id);
   });
+
+  it('reads positionally from a stored Email/query view (offset 200/limit 50 over 250 items)', async () => {
+    // Why this test exists:
+    // MESSAGE_LIST_FOR_FOLDER reads via SQL OFFSET over folder_messages
+    // and only works when the cache is densely populated from position 0.
+    // The deep-scroll path needs MESSAGE_LIST_FOR_VIEW which reads
+    // query_view_items.position directly, so it returns the right rows
+    // for any window the JMAP layer has actually persisted -- including
+    // pages we never put into folder_messages because the user never
+    // scrolled through them.
+    const account = await seedAccount();
+    const archives = await seedFolder(account.id, {
+      remoteId: 'mb-archive',
+      name: 'Archives',
+      role: 'archive',
+    });
+
+    const total = 250;
+    const pageOffset = 200;
+    const pageLimit = 50;
+    const t0 = 1_700_000_000_000;
+
+    // Insert 250 messages without folder_messages rows: this is the
+    // shape the cache takes after we've fetched a deep page from JMAP
+    // but never fetched the early pages, so OFFSET reads would return
+    // nothing.
+    const messages = Array.from({ length: total }, (_, i) => ({
+      remoteId: `e-${String(i).padStart(4, '0')}`,
+      remoteThreadId: `t-${i}`,
+      subject: `Message #${i}`,
+      preview: `preview ${i}`,
+      receivedAt: t0 - i * 1000,
+      sentAt: t0 - i * 1000,
+      keywordsJson: '{}',
+      keywords: [],
+      isSeen: false,
+      isFlagged: false,
+      isAnswered: false,
+      isDraft: false,
+      isForwarded: false,
+      isJunk: false,
+      addresses: [],
+    }));
+    await h[DB_RPC.THREAD_UPSERT_MANY]({
+      accountId: account.id,
+      threads: messages.map((m) => ({ remoteId: m.remoteThreadId })),
+    });
+    await h[DB_RPC.MESSAGE_UPSERT_MANY]({ accountId: account.id, messages });
+
+    // Hand-write a query_views row matching what
+    // sync/backends/jmap/messages.js#upsertQueryView would produce, plus
+    // the matching query_view_items rows for positions 0..249. The
+    // strings have to byte-for-byte match the production writer; that's
+    // exactly the contract MESSAGE_LIST_FOR_VIEW relies on.
+    const filterJson = JSON.stringify({ inMailbox: archives.remote_id });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?)`,
+      params: [
+        account.id, 'mailbox-window', archives.id, filterJson, sortJson,
+        'qs-1', total, Date.now(), Date.now(), Date.now(),
+      ],
+    });
+    const viewRow = await engine.get(
+      `SELECT id FROM query_views WHERE account_id = ? AND folder_id = ? AND view_type = 'mailbox-window'`,
+      [account.id, archives.id],
+    );
+    await h[DB_RPC.TRANSACTION]({
+      statements: messages.map((m, i) => ({
+        sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+              VALUES (?, ?, NULL, ?)`,
+        params: [viewRow.id, i, m.remoteId],
+      })),
+    });
+
+    const rows = await h[DB_RPC.MESSAGE_LIST_FOR_VIEW]({
+      accountId: account.id,
+      folderId: archives.id,
+      sort: 'received',
+      offset: pageOffset,
+      limit: pageLimit,
+    });
+    expect(rows).toHaveLength(pageLimit);
+    expect(rows[0].view_position).toBe(pageOffset);
+    expect(rows.at(-1).view_position).toBe(pageOffset + pageLimit - 1);
+    expect(rows[0].remote_id).toBe(`e-${String(pageOffset).padStart(4, '0')}`);
+    expect(rows.at(-1).remote_id).toBe(`e-${String(pageOffset + pageLimit - 1).padStart(4, '0')}`);
+    // And confirm the other reader returns NOTHING for the same offset
+    // when the cache is sparse, which is the bug we're fixing.
+    const sparse = await h[DB_RPC.MESSAGE_LIST_FOR_FOLDER]({
+      folderId: archives.id, offset: pageOffset, limit: pageLimit,
+    });
+    expect(sparse).toHaveLength(0);
+  });
 });
 
 describe('contacts and autocomplete', () => {

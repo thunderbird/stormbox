@@ -32,6 +32,7 @@ export const DB_RPC = Object.freeze({
 
   MESSAGE_UPSERT_MANY: 'message.upsertMany',
   MESSAGE_LIST_FOR_FOLDER: 'message.listForFolder',
+  MESSAGE_LIST_FOR_VIEW: 'message.listForView',
   MESSAGE_GET_BY_REMOTE: 'message.getByRemote',
   MESSAGE_LIST_FOR_THREAD: 'message.listForThread',
   MESSAGE_FIND_BY_RFC822_MESSAGE_ID: 'message.findByRfc822MessageId',

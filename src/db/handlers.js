@@ -408,6 +408,54 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
       );
     },
 
+    /**
+     * Positional read out of a stored Email/query result. Unlike
+     * MESSAGE_LIST_FOR_FOLDER (which uses SQL OFFSET over folder_messages
+     * and only works when the cache is dense from position 0), this
+     * reads the JMAP "position" column out of query_view_items. That
+     * means it correctly returns rows at offset=1500 in a 3000-message
+     * folder even when only a few hundred rows are cached locally,
+     * because the rows we have for that page are keyed by their actual
+     * position in the server-side query result.
+     *
+     * The handler reproduces the JSON strings that
+     * sync/backends/jmap/messages.js#upsertQueryView writes when it
+     * inserts the matching query_views row, so the lookup can use the
+     * UNIQUE(account_id, view_type, folder_id, filter_json, sort_json,
+     * collapse_threads) constraint as an index probe.
+     */
+    [DB_RPC.MESSAGE_LIST_FOR_VIEW]: async ({
+      accountId, folderId, sort = 'received', offset = 0, limit = 100,
+    }) => {
+      const folder = await engine.get(
+        `SELECT id, remote_id FROM folders WHERE id = ? AND account_id = ?`,
+        [folderId, accountId],
+      );
+      if (!folder?.remote_id) return [];
+      const sortProp = sort === 'sent' ? 'sentAt' : 'receivedAt';
+      const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
+      const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+      return engine.all(
+        `SELECT m.*, qi.position AS view_position
+           FROM query_view_items qi
+           JOIN query_views v
+             ON v.id = qi.view_id
+            AND v.account_id = ?
+            AND v.folder_id = ?
+            AND v.view_type = 'mailbox-window'
+            AND v.filter_json = ?
+            AND v.sort_json = ?
+            AND v.collapse_threads = 0
+           JOIN messages m
+             ON m.account_id = ?
+            AND m.remote_id = qi.remote_id
+          WHERE qi.position >= ?
+            AND qi.position < ?
+          ORDER BY qi.position`,
+        [accountId, folderId, filterJson, sortJson, accountId, offset, offset + limit],
+      );
+    },
+
     [DB_RPC.MESSAGE_GET_BY_REMOTE]: async ({ accountId, remoteId }) =>
       engine.get(
         `SELECT * FROM messages WHERE account_id = ? AND remote_id = ?`,

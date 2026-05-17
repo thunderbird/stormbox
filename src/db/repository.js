@@ -140,6 +140,23 @@ export class Repository {
     return this.call(DB_RPC.MESSAGE_LIST_FOR_FOLDER, { folderId, ...options });
   }
 
+  /**
+   * Positional read of a folder's mailbox-window view. Unlike
+   * listMessagesForFolder (SQL OFFSET over folder_messages), this
+   * returns rows by their JMAP `position` so it works correctly at
+   * deep offsets in a sparsely-cached folder.
+   *
+   * @param {object} args
+   * @param {number} args.accountId
+   * @param {number} args.folderId
+   * @param {'received'|'sent'} [args.sort='received']
+   * @param {number} [args.offset=0]
+   * @param {number} [args.limit=100]
+   */
+  listMessagesForView({ accountId, folderId, sort = 'received', offset = 0, limit = 100 }) {
+    return this.call(DB_RPC.MESSAGE_LIST_FOR_VIEW, { accountId, folderId, sort, offset, limit });
+  }
+
   getMessageByRemote(accountId, remoteId) {
     return this.call(DB_RPC.MESSAGE_GET_BY_REMOTE, { accountId, remoteId });
   }
