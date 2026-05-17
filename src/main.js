@@ -1,10 +1,11 @@
-import { createApp } from "vue";
-import { VueQueryPlugin, QueryClient } from "@tanstack/vue-query";
-import App from "./App.vue";
-import "./assets/styles.css";
-import "quill/dist/quill.snow.css";
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
+import { VueQueryPlugin, QueryClient } from '@tanstack/vue-query';
+
+import App from './App.vue';
+import './assets/styles.css';
 
 const app = createApp(App);
-const queryClient = new QueryClient();
-app.use(VueQueryPlugin, { queryClient });
-app.mount("#app");
+app.use(createPinia());
+app.use(VueQueryPlugin, { queryClient: new QueryClient() });
+app.mount('#app');

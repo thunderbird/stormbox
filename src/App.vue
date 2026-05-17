@@ -1,150 +1,131 @@
-<script>
-import { ref, computed, onMounted } from 'vue'
-import { useEmailStore } from './composables/useEmailStore.js'
-import { useTheme } from './composables/useTheme.js'
-import { initOidc, getOidc } from './services/auth.js'
-import { JMAP_SERVER_URL } from './defines.js'
-import LoginForm from './components/LoginForm.vue'
-import FolderList from './components/FolderList.vue'
-import MessageList from './components/MessageList.vue'
-import ComposePanel from './components/ComposePanel.vue'
-import MessageDetail from './components/MessageDetail.vue'
+<script setup>
+import { computed, onMounted, ref } from 'vue';
 
-export default {
-  name: 'App',
-  components: {
-    LoginForm,
-    FolderList,
-    MessageList,
-    ComposePanel,
-    MessageDetail
-  },
-  setup() {
-    const emailStore = useEmailStore()
-    const { theme, cycle } = useTheme()
+import { useAuthStore } from './stores/auth-store.js';
+import { useMailStore } from './stores/mail-store.js';
+import { useContactsStore } from './stores/contacts-store.js';
+import { useComposeStore } from './stores/compose-store.js';
+import { AUTH_STATE } from './constants/states.js';
 
-    const oidcReady = ref(false)
-    const oidcLoading = ref(true)
+import AppSpaces from './components/AppSpaces.vue';
+import LoginGate from './components/LoginGate.vue';
+import FolderTree from './components/FolderTree.vue';
+import MessageList from './components/MessageList.vue';
+import MessageView from './components/MessageView.vue';
+import ComposeDialog from './components/ComposeDialog.vue';
+import ContactsView from './components/ContactsView.vue';
 
-    const serverName = computed(() => {
-      const url = JMAP_SERVER_URL
-      try {
-        return new URL(url).hostname
-      } catch {
-        return url
-      }
-    })
+const authStore = useAuthStore();
+const mailStore = useMailStore();
+const contactsStore = useContactsStore();
+const composeStore = useComposeStore();
 
-    const handleOAuthLogin = async () => {
-      const oidc = getOidc()
-      if (!oidc) return
-      if (!oidc.isUserLoggedIn) {
-        await oidc.login()
-        return
-      }
-      await emailStore.connectWithOAuth(oidc)
-    }
+const space = ref('mail');
 
-    const handleLogout = async () => {
-      const oidc = getOidc()
-      if (oidc && oidc.isUserLoggedIn) {
-        await oidc.logout({ redirectTo: "home" })
-      } else {
-        window.location.reload()
-      }
-    }
+const showLogin = computed(() =>
+  authStore.status !== AUTH_STATE.CONNECTED,
+);
 
-    onMounted(async () => {
-      try {
-        const oidc = await initOidc()
-        oidcReady.value = true
-        oidcLoading.value = false
+const totalUnread = computed(() => {
+  return mailStore.folders.reduce((sum, f) => sum + (Number(f.unread_emails) || 0), 0);
+});
 
-        if (oidc.isUserLoggedIn) {
-          await emailStore.connectWithOAuth(oidc)
-        }
-      } catch (e) {
-        console.error('OIDC initialization failed:', e)
-        oidcLoading.value = false
-      }
-    })
+onMounted(async () => {
+  await authStore.initialize();
+  await mailStore.attach();
+  await contactsStore.attach();
+  await composeStore.attach();
+});
 
-    return {
-      ...emailStore,
-      oidcReady,
-      oidcLoading,
-      handleOAuthLogin,
-      handleLogout,
-      currentTheme: theme,
-      cycle,
-      serverName,
-      themeTitle: computed(() => theme.value === 'system' ? 'Theme: system (click to light)' : (theme.value === 'light' ? 'Theme: light (click to dark)' : 'Theme: dark (click to system)'))
-    }
-  }
+function startCompose() {
+  composeStore.open();
 }
 </script>
 
 <template>
-  <div id="app">
-    <!-- Login Form -->
-    <LoginForm :connected="connected" :status="status" :error="error" :oidc-ready="oidcReady" :oidc-loading="oidcLoading" @connect="connect" @oauth-login="handleOAuthLogin" />
+  <LoginGate v-if="showLogin" />
+  <div v-else class="shell">
+    <AppSpaces :active="space" :unread-count="totalUnread" @change="space = $event" />
 
-    <!-- Header -->
-    <header v-if="connected">
-      <strong>Mail — {{ serverName }}</strong>
-      <span class="spacer"></span>
-      <button class="theme-toggle" @click="cycle" :title="themeTitle" aria-label="Theme: system/light/dark">
-        <!-- System icon (computer) -->
-        <svg v-if="currentTheme === 'system'" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
-          aria-hidden="true">
-          <path d="M4 5h16a1 1 0 011 1v10a1 1 0 01-1 1h-6l1.5 2h-6L9 17H4a1 1 0 01-1-1V6a1 1 0 011-1zm1 2v8h14V7H5z" />
-        </svg>
-        <!-- Sun icon for light -->
-        <svg v-else-if="currentTheme === 'light'" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
-          aria-hidden="true">
-          <path
-            d="M6.76 4.84l-1.8-1.79-1.41 1.41 1.79 1.8 1.42-1.42zM1 13h3v-2H1v2zm10 10h2v-3h-2v3zm9-10v-2h-3v2h3zM6.76 19.16l-1.42 1.42-1.79-1.8 1.41-1.41 1.8 1.79zM13 1h-2v3h2V1zm7.66 3.46l-1.41-1.41-1.8 1.79 1.42 1.42 1.79-1.8zM12 6a6 6 0 100 12 6 6 0 000-12z" />
-        </svg>
-        <!-- Moon icon for dark -->
-        <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M21.64 13a9 9 0 11-10.63-10.6A9 9 0 0021.64 13z" />
-        </svg>
-      </button>
-      <button class="logout-btn" @click="handleLogout" title="Sign out">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <path d="M5 5h7V3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h7v-2H5V5zm16 7l-4-4v3H9v2h8v3l4-4z"/>
-        </svg>
-      </button>
-      <div id="err" class="err" v-if="error">{{ error }}</div>
-    </header>
+    <aside class="sidebar">
+      <header class="sidebar__header">
+        <button class="primary" type="button" @click="startCompose">+ New Message</button>
+      </header>
+      <FolderTree v-if="space === 'mail'" />
+      <p v-else class="sidebar__hint">Switch to Mail to navigate folders.</p>
+      <footer class="sidebar__footer">
+        <span class="sidebar__user">{{ authStore.username || authStore.serverHostname }}</span>
+        <button class="link" type="button" @click="authStore.logout()">Sign out</button>
+      </footer>
+    </aside>
 
-    <!-- Main Content -->
-    <main id="main" :class="(!selectedEmailId && !composeOpen) ? 'hide-detail' : ''" v-if="connected">
-      <!-- Folder List -->
-      <FolderList :mailboxes="mailboxes" :current-mailbox-id="currentMailboxId" @compose="toggleCompose"
-        @reload="refreshCurrentMailbox" @switch-mailbox="switchMailbox" />
+    <template v-if="space === 'mail'">
+      <MessageList />
+      <MessageView />
+    </template>
+    <ContactsView v-else-if="space === 'contacts'" />
 
-      <!-- Message List -->
-      <MessageList :current-mailbox-id="currentMailboxId" :selected-email-id="selectedEmailId" :view-mode="viewMode"
-        :visible-messages="visibleMessages" :total-count="totalEmailsCount" @set-view="setView"
-        @select-message="selectMessage" @virt-range="onVirtRange" @update:filter-text="filterText = $event" />
-
-      <!-- Detail & Compose -->
-      <section class="detail">
-        <!-- Compose Panel -->
-        <ComposePanel :compose-open="composeOpen" :compose="compose" :identities="identities" :sending="sending"
-          :compose-status="composeStatus" :compose-debug="composeDebug" @send="send" @discard="discard"
-          @update:compose="Object.assign(compose, $event)" />
-
-        <!-- Message Detail -->
-        <MessageDetail :detail="detail" :attachments="attachments" :body-html="bodyHtml" :body-text="bodyText"
-          @back-to-list="backToList" @reply="replyToCurrent" @delete="deleteCurrent" @download="download" />
-      </section>
-    </main>
+    <ComposeDialog />
   </div>
 </template>
 
 <style>
-/* Global styles are imported from assets/styles.css */
-</style>
+:root {
+  --bg: #f5f6f9;
+  --surface: #ffffff;
+  --fg: #161821;
+  --muted: #6b7388;
+  --border: #e3e6ee;
+  --border-soft: #eef0f5;
+  --accent-bg: #e2e9fb;
+  --accent-fg: #1d4ed8;
+  --space-rail-bg: #20283d;
+  --space-rail-fg: #cfd6e8;
+}
+html, body, #app { height: 100%; margin: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--fg); background: var(--bg); }
 
+.shell {
+  display: grid;
+  grid-template-columns: 56px 240px 1.2fr 2fr;
+  height: 100vh;
+}
+.shell > .contacts { grid-column: 3 / span 2; }
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  min-width: 0;
+}
+.sidebar__header { padding: 12px; border-bottom: 1px solid var(--border-soft); }
+.sidebar__header .primary {
+  width: 100%;
+  background: #2563eb;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font: inherit;
+}
+.sidebar__hint { padding: 16px; color: var(--muted); font-size: 13px; }
+.sidebar__footer {
+  margin-top: auto;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+}
+.sidebar__footer .link {
+  background: none;
+  border: 0;
+  color: #2563eb;
+  cursor: pointer;
+  font: inherit;
+}
+</style>
