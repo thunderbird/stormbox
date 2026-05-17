@@ -1,0 +1,30 @@
+name: stormbox-stalwart
+
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16
+    container_name: stormbox-stalwart
+    # Stalwart v0.16 starts in bootstrap mode unless STALWART_RECOVERY_ADMIN
+    # is provided. The recovery admin can perform initial setup and
+    # provision the permanent administrator + test users via the admin
+    # API. Once seed.sh has run, normal authentication via the regular
+    # admin account is in effect.
+    environment:
+      - STALWART_RECOVERY_ADMIN=admin:admin-pass-test
+    ports:
+      - "18080:8080"   # HTTP (JMAP, admin)
+      - "18025:25"     # SMTP
+      - "18587:587"    # SMTP submission
+      - "18993:993"    # IMAPS (unused by tests)
+    volumes:
+      # config.toml is intentionally NOT mounted - Stalwart v0.16
+      # generates its own when STALWART_RECOVERY_ADMIN is set.
+      - stormbox-stalwart-data:/opt/stalwart/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/.well-known/jmap || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  stormbox-stalwart-data:
