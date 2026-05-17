@@ -70,45 +70,48 @@ function startCompose() {
 </template>
 
 <style>
+/*
+  Surface and accent tokens are defined in assets/styles.css (dark by
+  default, light via prefers-color-scheme or data-theme). The shell
+  only adds layout-level rules.
+*/
 :root {
-  --bg: #f5f6f9;
-  --surface: #ffffff;
-  --fg: #161821;
-  --muted: #6b7388;
-  --border: #e3e6ee;
-  --border-soft: #eef0f5;
-  --accent-bg: #e2e9fb;
-  --accent-fg: #1d4ed8;
-  --space-rail-bg: #20283d;
-  --space-rail-fg: #cfd6e8;
+  --surface: var(--panel);
+  --fg: var(--text);
+  --border-soft: color-mix(in srgb, var(--border) 60%, transparent);
+  --accent-bg: color-mix(in srgb, var(--accent) 22%, var(--panel2));
+  --accent-fg: var(--accent);
+  --space-rail-bg: var(--panel2);
+  --space-rail-fg: var(--muted);
 }
-html, body, #app { height: 100%; margin: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--fg); background: var(--bg); }
 
 .shell {
   display: grid;
   grid-template-columns: 56px 240px 1.2fr 2fr;
   height: 100vh;
+  background: var(--bg);
+  color: var(--text);
 }
 .shell > .contacts { grid-column: 3 / span 2; }
 
 .sidebar {
   display: flex;
   flex-direction: column;
-  background: var(--surface);
+  background: var(--panel);
   border-right: 1px solid var(--border);
   min-width: 0;
 }
-.sidebar__header { padding: 12px; border-bottom: 1px solid var(--border-soft); }
+.sidebar__header { padding: 12px; border-bottom: 1px solid var(--border); }
 .sidebar__header .primary {
   width: 100%;
-  background: #2563eb;
+  background: var(--accent);
   color: #fff;
   border: 0;
-  border-radius: 8px;
-  padding: 8px 12px;
+  border-radius: 10px;
+  padding: 9px 12px;
   cursor: pointer;
   font: inherit;
+  font-weight: 500;
 }
 .sidebar__hint { padding: 16px; color: var(--muted); font-size: 13px; }
 .sidebar__footer {
@@ -118,13 +121,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
-  border-top: 1px solid var(--border-soft);
+  border-top: 1px solid var(--border);
   color: var(--muted);
 }
 .sidebar__footer .link {
   background: none;
   border: 0;
-  color: #2563eb;
+  color: var(--accent);
   cursor: pointer;
   font: inherit;
 }

@@ -7,7 +7,16 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 3000,
-    open: true,
+    open: false,
+    // Vite 5 host-header allowlist. The EC2 instance hostname is added
+    // explicitly so dev access from outside the box works without
+    // tripping the cross-site-WebSocket protection.
+    allowedHosts: [
+      "localhost",
+      "127.0.0.1",
+      "sancus.thunderbird.net",
+      ".thunderbird.net",
+    ],
   },
   build: {
     outDir: "dist",

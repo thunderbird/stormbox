@@ -3,9 +3,11 @@ import { computed, ref } from 'vue';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { AUTH_STATE } from '../constants/states.js';
+import ThunderbirdLogo from './ThunderbirdLogo.vue';
 
 const authStore = useAuthStore();
 
+const showPasswordForm = ref(false);
 const username = ref('');
 const password = ref('');
 
@@ -16,61 +18,96 @@ const isBusy = computed(() =>
 
 const statusLabel = computed(() => {
   switch (authStore.status) {
-    case AUTH_STATE.OIDC_LOADING: return 'Initialising authentication…';
-    case AUTH_STATE.CONNECTING: return 'Connecting…';
-    case AUTH_STATE.FAILED: return 'Failed.';
-    case AUTH_STATE.OIDC_READY:
-    case AUTH_STATE.IDLE:
-    default:
-      return 'Sign in to your mail server.';
+    case AUTH_STATE.OIDC_LOADING: return 'Initialising…';
+    case AUTH_STATE.CONNECTING:   return 'Connecting…';
+    case AUTH_STATE.FAILED:       return 'Failed.';
+    default:                      return 'Not connected.';
   }
 });
 
-async function submit(event) {
-  event.preventDefault();
-  await authStore.connectWithPassword({ username: username.value, password: password.value });
+async function signInWithThunderbird() {
+  await authStore.connectViaOidc();
 }
 
-async function oauth() {
-  await authStore.connectViaOidc();
+async function submitPassword(event) {
+  event.preventDefault();
+  await authStore.connectWithPassword({
+    username: username.value,
+    password: password.value,
+  });
+}
+
+function togglePassword() {
+  showPasswordForm.value = !showPasswordForm.value;
 }
 </script>
 
 <template>
   <div class="login-gate">
-    <form class="login-card" @submit="submit">
-      <h1>Stormbox</h1>
-      <p class="login-server">{{ authStore.serverHostname }}</p>
-      <p class="login-status">{{ statusLabel }}</p>
+    <div class="login-card">
+      <ThunderbirdLogo :size="56" class="login-card__logo" />
+      <h1 class="login-card__title">Thundermail</h1>
+      <p class="login-card__subtitle">Sign in with your Thunderbird account.</p>
 
-      <label>
-        <span>Username</span>
-        <input
-          v-model="username"
-          type="text"
-          autocomplete="username"
-          :disabled="isBusy"
-          required
-        />
-      </label>
-      <label>
-        <span>Password</span>
-        <input
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
-          :disabled="isBusy"
-          required
-        />
-      </label>
-
-      <button class="primary" type="submit" :disabled="isBusy">Sign in</button>
-      <button class="secondary" type="button" :disabled="isBusy || !authStore.isOidcReady" @click="oauth">
-        Sign in with OIDC
+      <button
+        class="login-card__primary"
+        type="button"
+        :disabled="isBusy || !authStore.isOidcReady"
+        @click="signInWithThunderbird"
+      >
+        Sign in with Thunderbird
       </button>
 
-      <p v-if="authStore.error" class="login-error">{{ authStore.error }}</p>
-    </form>
+      <button
+        v-if="!showPasswordForm"
+        class="login-card__link"
+        type="button"
+        :disabled="isBusy"
+        @click="togglePassword"
+      >
+        Use app password instead
+      </button>
+
+      <form v-else class="login-card__password" @submit="submitPassword">
+        <label>
+          <span>Username</span>
+          <input
+            v-model="username"
+            type="text"
+            autocomplete="username"
+            :disabled="isBusy"
+            required
+          />
+        </label>
+        <label>
+          <span>App password</span>
+          <input
+            v-model="password"
+            type="password"
+            autocomplete="current-password"
+            :disabled="isBusy"
+            required
+          />
+        </label>
+        <div class="login-card__password-actions">
+          <button class="login-card__secondary" type="submit" :disabled="isBusy">
+            Sign in
+          </button>
+          <button
+            class="login-card__link"
+            type="button"
+            :disabled="isBusy"
+            @click="togglePassword"
+          >
+            Back
+          </button>
+        </div>
+      </form>
+
+      <p class="login-card__status">{{ statusLabel }}</p>
+
+      <p v-if="authStore.error" class="login-card__error">{{ authStore.error }}</p>
+    </div>
   </div>
 </template>
 
@@ -79,58 +116,129 @@ async function oauth() {
   display: grid;
   place-items: center;
   min-height: 100vh;
-  background: var(--login-bg, #f5f6f9);
+  background: var(--bg);
+  color: var(--text);
+  padding: 24px;
 }
+
 .login-card {
   width: 360px;
-  padding: 24px;
-  background: var(--surface, #fff);
-  border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(13, 22, 42, 0.08);
+  padding: 32px 28px 24px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  align-items: stretch;
+  gap: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
-.login-card h1 {
+
+.login-card__logo {
+  align-self: center;
+  margin-bottom: 4px;
+}
+
+.login-card__title {
   margin: 0;
+  text-align: center;
   font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
 }
-.login-server {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted, #6b7388);
-}
-.login-status {
-  margin: 0 0 4px;
-  color: var(--muted, #6b7388);
+
+.login-card__subtitle {
+  margin: 0 0 16px;
+  text-align: center;
+  color: var(--muted);
   font-size: 13px;
 }
-.login-card label {
+
+.login-card__primary {
+  appearance: none;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+.login-card__primary:hover:not(:disabled) { filter: brightness(1.05); }
+.login-card__primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.login-card__secondary {
+  appearance: none;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.login-card__secondary:hover:not(:disabled) { background: var(--panel2); }
+
+.login-card__link {
+  appearance: none;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 6px 0 0;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  align-self: center;
+}
+.login-card__link:hover:not(:disabled) { color: var(--text); }
+
+.login-card__password {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.login-card__password label {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 13px;
+  font-size: 12px;
+  color: var(--muted);
 }
-.login-card input {
-  padding: 8px 10px;
-  border: 1px solid var(--border, #d6d9e2);
+.login-card__password input {
+  padding: 9px 11px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
   border-radius: 8px;
+  color: var(--text);
   font-size: 14px;
-  background: #fff;
-  color: var(--fg, #111);
+  outline: none;
 }
-.login-card button {
-  padding: 9px 12px;
-  border-radius: 8px;
-  border: 0;
-  cursor: pointer;
-  font-weight: 500;
+.login-card__password input:focus { border-color: var(--accent); }
+.login-card__password-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
-.primary { background: #2563eb; color: #fff; }
-.secondary { background: transparent; color: #2563eb; border: 1px solid #c9d4ee; }
-.login-error {
-  margin: 0;
-  color: #b3261e;
-  font-size: 13px;
+
+.login-card__status {
+  margin: 6px 0 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-card__error {
+  margin: 6px 0 0;
+  text-align: center;
+  color: #ff6b6b;
+  font-size: 12px;
+  white-space: pre-wrap;
 }
 </style>
