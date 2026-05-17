@@ -5,4 +5,4 @@ export const OIDC_ISSUER =
   import.meta.env.VITE_OIDC_ISSUER || "https://auth-stage.tb.pro/realms/tbpro";
 
 export const OIDC_CLIENT_ID =
-  import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox";
+  import.meta.env.VITE_OIDC_CLIENT_ID || "bulwark-test";

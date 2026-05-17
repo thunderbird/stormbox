@@ -31,6 +31,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.8.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "@vitejs/plugin-vue": "^5.0.0",
     "@vitest/ui": "^4.1.6",
     "@vue/test-utils": "^2.4.10",
