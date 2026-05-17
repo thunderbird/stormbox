@@ -33,10 +33,18 @@ import { JmapBackend } from './backends/jmap/backend.js';
  * Build the RPC handler map. Caller (SharedWorker) merges this into the
  * full handler map keyed by DB_RPC method names.
  */
-export function makeSyncRpcHandlers({ handlers, fetch = globalThis.fetch, WebSocketImpl = globalThis.WebSocket } = {}) {
+export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
   if (!handlers) {
     throw new Error('makeSyncRpcHandlers requires the repository handler map');
   }
+  // Firefox enforces that fetch and WebSocket be invoked with their
+  // global as the receiver. An unbound reference like `const f =
+  // globalThis.fetch; f(url)` throws "called on an object that does
+  // not implement interface WorkerGlobalScope" inside a SharedWorker.
+  // Bind explicitly so JmapTransport (and any test fake) can call
+  // them without caring.
+  const boundFetch = fetch ?? globalThis.fetch.bind(globalThis);
+  const wsCtor = WebSocketImpl ?? globalThis.WebSocket;
   const syncClient = new SyncClient();
   /** @type {Map<number, JmapBackend>} */
   const backends = new Map();
@@ -46,8 +54,8 @@ export function makeSyncRpcHandlers({ handlers, fetch = globalThis.fetch, WebSoc
       const transport = new JmapTransport({
         sessionUrl: input.sessionUrl,
         getAuthHeader: makeAuthHeader(input.auth),
-        fetch,
-        WebSocketImpl,
+        fetch: boundFetch,
+        WebSocketImpl: wsCtor,
       });
       const backend = new JmapBackend({
         transport,
