@@ -43,6 +43,22 @@ export class Engine {
     this.sqlite3 = sqlite3;
     this.db = db;
     this._closed = false;
+    // wa-sqlite uses a single connection handle and step() yields the
+    // event loop between rows. Two concurrent operations on the same
+    // handle interleave at the step level and deadlock. We serialise
+    // every public SQL call on a per-engine promise tail.
+    this._tail = Promise.resolve();
+  }
+
+  /**
+   * Acquire the engine lock and run fn with it held. The lock chain
+   * stays alive even on rejection, so failures do not poison later
+   * tasks.
+   */
+  _withLock(fn) {
+    const next = this._tail.then(fn, fn);
+    this._tail = next.catch(() => {});
+    return next;
   }
 
   /**
@@ -50,6 +66,10 @@ export class Engine {
    * (e.g. migration files). Result rows are discarded.
    */
   async exec(sql) {
+    return this._withLock(() => this._execRaw(sql));
+  }
+
+  async _execRaw(sql) {
     for await (const stmt of this.sqlite3.statements(this.db, sql)) {
       while ((await this.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
         // Multi-statement DDL may include SELECTs; discard their rows.
@@ -63,6 +83,10 @@ export class Engine {
    * are not supported here; use exec() for that.
    */
   async all(sql, params = []) {
+    return this._withLock(() => this._allRaw(sql, params));
+  }
+
+  async _allRaw(sql, params) {
     return this._withStatement(sql, async (stmt) => {
       this._bindParams(stmt, params);
       const rows = [];
@@ -91,6 +115,10 @@ export class Engine {
    * under the single-threaded JS model.
    */
   async run(sql, params = []) {
+    return this._withLock(() => this._runRaw(sql, params));
+  }
+
+  async _runRaw(sql, params) {
     const result = await this._withStatement(sql, async (stmt) => {
       this._bindParams(stmt, params);
       while ((await this.sqlite3.step(stmt)) === SQLite.SQLITE_ROW) {
@@ -113,20 +141,30 @@ export class Engine {
 
   /**
    * Run a callback inside a deferred transaction. Rolls back on throw.
-   * Callback receives this Engine instance.
+   * The whole transaction acquires the engine lock once and the
+   * callback receives a TxContext that lets it run SQL on the held
+   * connection without re-acquiring (which would deadlock against the
+   * lock the transaction itself owns).
+   *
+   * Important: do NOT call methods on the parent Engine from inside
+   * the callback - those would queue behind the very transaction
+   * holding the lock. Always use the `tx` argument.
    */
   async transaction(callback) {
-    await this.exec('BEGIN');
-    try {
-      const result = await callback(this);
-      await this.exec('COMMIT');
-      return result;
-    } catch (error) {
-      await this.exec('ROLLBACK').catch(() => {
-        // We are unwinding from a primary error; ROLLBACK errors are noise.
-      });
-      throw error;
-    }
+    return this._withLock(async () => {
+      const tx = new TxContext(this);
+      await this._execRaw('BEGIN');
+      try {
+        const result = await callback(tx);
+        await this._execRaw('COMMIT');
+        return result;
+      } catch (error) {
+        await this._execRaw('ROLLBACK').catch(() => {
+          // We are unwinding from a primary error; ROLLBACK errors are noise.
+        });
+        throw error;
+      }
+    });
   }
 
   async runMigrations() {
@@ -151,15 +189,14 @@ export class Engine {
 
   async _applyMigration(migration) {
     try {
-      await this.exec('BEGIN');
-      await this.exec(migration.sql);
-      await this.run(
-        'INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)',
-        ['schema_version', String(migration.version)],
-      );
-      await this.exec('COMMIT');
+      await this.transaction(async (tx) => {
+        await tx.exec(migration.sql);
+        await tx.run(
+          'INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)',
+          ['schema_version', String(migration.version)],
+        );
+      });
     } catch (error) {
-      await this.exec('ROLLBACK').catch(() => {});
       const wrapped = new Error(
         `Migration ${migration.name} (v${migration.version}) failed: ${error.message}`,
       );
@@ -238,6 +275,35 @@ export class Engine {
     }
     await this.sqlite3.close(this.db);
     this._closed = true;
+  }
+}
+
+/**
+ * Lock-free SQL view of the engine, only valid within a transaction
+ * callback. Mirrors the public Engine SQL interface but routes through
+ * the engine's *Raw private methods so it doesn't try to re-acquire the
+ * lock the transaction is already holding.
+ */
+class TxContext {
+  constructor(engine) {
+    this._engine = engine;
+  }
+
+  exec(sql) {
+    return this._engine._execRaw(sql);
+  }
+
+  async all(sql, params = []) {
+    return this._engine._allRaw(sql, params);
+  }
+
+  async get(sql, params = []) {
+    const rows = await this._engine._allRaw(sql, params);
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  run(sql, params = []) {
+    return this._engine._runRaw(sql, params);
   }
 }
 

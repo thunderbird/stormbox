@@ -49,21 +49,11 @@ function getHandlers() {
 }
 
 /**
- * SQL operations on the wa-sqlite engine are not safe to run
- * concurrently on the same db handle - statements interleave at the
- * step level and deadlock. We serialise every inbound RPC through a
- * single tail-of-promise queue. This matches the pattern in
- * thunderbird/thunderbolt's wa-sqlite worker.
+ * RPC dispatch. SQL serialisation lives inside Engine itself (it owns
+ * the per-handle promise tail); this dispatcher just routes messages.
+ * That allows non-RPC SQL paths (e.g. background sync writes started by
+ * one RPC and continuing after it returned) to share the same lock.
  */
-let serial = Promise.resolve();
-function enqueue(fn) {
-  const next = serial.then(fn, fn);
-  // Don't propagate failures into the chain; each task gets its own
-  // tail. Catch silently here to keep the serial chain alive.
-  serial = next.catch(() => {});
-  return next;
-}
-
 self.addEventListener('connect', (event) => {
   const port = event.ports[0];
   port.start();
@@ -75,7 +65,7 @@ self.addEventListener('connect', (event) => {
     let response;
     try {
       const handlers = await getHandlers();
-      response = await enqueue(() => dispatchRpc(message, handlers));
+      response = await dispatchRpc(message, handlers);
     } catch (error) {
       response = {
         type: RPC_RESPONSE,

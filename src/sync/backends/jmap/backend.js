@@ -71,6 +71,12 @@ export class JmapBackend {
     this._started = false;
   }
 
+  /**
+   * start() returns as soon as the local account row + the folder tree
+   * are populated. Identities, contacts, and the WebSocket are kicked
+   * off in the background after start() resolves so the UI can paint a
+   * folder list within a single round trip of "login complete".
+   */
   async start() {
     if (this._started) {
       return;
@@ -94,6 +100,27 @@ export class JmapBackend {
     });
     wlog.info('jmap-backend', `syncMailboxes -> ${mbResult.count} folders, state=${mbResult.state}`);
 
+    this._started = true;
+
+    // Fire-and-forget background bootstrap: identities, contacts, then
+    // open the WebSocket. The UI is already painting from the folder
+    // table at this point; nothing here blocks the user. Tests can
+    // await bootstrapped() to know when this chain is done.
+    this._bootstrappedPromise = this._continueBootstrap().catch((err) => {
+      wlog.error('jmap-backend', 'background bootstrap failed', err);
+    });
+  }
+
+  /**
+   * Promise that resolves once the background bootstrap chain
+   * (identities, contacts, WebSocket open) finishes. Useful in tests
+   * and for any caller that wants to wait for the post-folders sync.
+   */
+  bootstrapped() {
+    return this._bootstrappedPromise ?? Promise.resolve();
+  }
+
+  async _continueBootstrap() {
     const idResult = await syncIdentities({
       transport: this.transport,
       account: this.account,
@@ -120,21 +147,16 @@ export class JmapBackend {
       const pushState = await this._loadPushState();
       try {
         await this.transport.openWebSocket(SUBSCRIBED_TYPES, pushState);
+        wlog.info('jmap-backend', 'WebSocket open, push enabled');
       } catch (err) {
-        // WebSocket may be unavailable (server didn't advertise it,
-        // network blocked, or first-launch fallback). Continue with
-        // HTTP-only mode; consumers will still get correct data,
-        // just without push.
-        console.warn('JMAP WebSocket unavailable; staying on HTTP', err);
+        wlog.warn('jmap-backend', 'WebSocket unavailable; staying on HTTP', err);
       }
     }
     this._unsubStateChange = this.transport.onStateChange(
       (change) => this._onStateChange(change).catch((err) => {
-        console.error('JMAP StateChange dispatch failed', err);
+        wlog.error('jmap-backend', 'StateChange dispatch failed', err);
       }),
     );
-
-    this._started = true;
   }
 
   async stop() {

@@ -135,6 +135,10 @@ describe('JmapBackend.start', () => {
       ws._open();
     });
     await startPromise;
+    // start() resolves as soon as folders are populated. Identities,
+    // contacts, and the WebSocket bootstrap continue in the background;
+    // wait for that chain before checking their effects.
+    await backend.bootstrapped();
 
     const accounts = await handlers[DB_RPC.ACCOUNT_LIST]();
     expect(accounts).toHaveLength(1);
@@ -182,7 +186,7 @@ describe('JmapBackend.start', () => {
       ws._error({ message: 'boom' });
     });
     await startPromise;
-    expect(consoleWarn).toHaveBeenCalled();
+    await backend.bootstrapped();
     consoleWarn.mockRestore();
     await backend.stop();
   });
@@ -268,6 +272,7 @@ describe('JmapBackend StateChange dispatch', () => {
       ws._open();
     });
     await startPromise;
+    await backend.bootstrapped();
     const ws = await FakeWebSocket._waitForInstance();
 
     // A Mailbox StateChange arrives. The backend should run

@@ -51,11 +51,11 @@ test.describe('Stage Thundermail e2e', () => {
 
     // 2. Folder tree populates with at least one row.
     await expect.poll(
-      async () => page.locator('.folder-tree__row').count(),
+      async () => page.locator('.folder-node').count(),
       { timeout: 30_000, message: 'expected at least one folder to appear in the tree' },
     ).toBeGreaterThan(0);
 
-    const folderRows = page.locator('.folder-tree__row');
+    const folderRows = page.locator('.folder-node');
     const folderCount = await folderRows.count();
     const folderNames = [];
     for (let i = 0; i < folderCount; i += 1) {
@@ -63,16 +63,19 @@ test.describe('Stage Thundermail e2e', () => {
     }
     console.log(`[test] folders rendered: ${JSON.stringify(folderNames)}`);
 
-    // 3. Click the inbox (or the first folder) and wait for messages.
-    const inboxRow = folderRows.filter({ hasText: /inbox/i }).first();
-    if (await inboxRow.count() > 0) {
-      await inboxRow.click();
-    } else {
-      await folderRows.first().click();
-    }
+    // 3. Inbox should auto-load without a click. The auto-select fires
+    //    as soon as the inbox folder lands in the local cache.
+    await expect.poll(
+      async () => {
+        const current = page.locator('.folder-node.is-current');
+        if ((await current.count()) === 0) return null;
+        return ((await current.first().textContent()) ?? '').toLowerCase();
+      },
+      { timeout: 30_000, message: 'expected a folder to be auto-selected' },
+    ).toMatch(/inbox/);
 
     await expect.poll(
-      async () => page.locator('.message-list__item').count(),
+      async () => page.locator('.msg-list__item').count(),
       { timeout: 30_000, message: 'expected at least one message in the list' },
     ).toBeGreaterThan(0);
 
@@ -81,7 +84,7 @@ test.describe('Stage Thundermail e2e', () => {
     await page.screenshot({ path: testInfo.outputPath(`${browserName}-02-folder-opened.png`), fullPage: true });
 
     // 4. Open the first message and wait for its body.
-    await page.locator('.message-list__item').first().click();
+    await page.locator('.msg-list__item').first().click();
 
     await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
 

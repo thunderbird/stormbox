@@ -4,9 +4,15 @@
  * "tables touched" broadcasts; this store re-runs the relevant queries
  * when its tables change.
  *
- * No JMAP or fetch calls here. Mutations are submitted as
- * pending_mutations rows + sync requests so the optimistic UI stays
- * decoupled from network latency.
+ * Loading philosophy:
+ *   - SQLite is the source of truth for what the UI renders.
+ *   - Every read returns whatever is cached locally, immediately. No
+ *     awaiting a server round-trip before we draw anything.
+ *   - The sync layer is asked to refresh in the background; the
+ *     "tables touched" broadcast triggers another read once the
+ *     newer data lands.
+ *
+ * No JMAP or fetch calls here.
  */
 
 import { defineStore } from 'pinia';
@@ -32,6 +38,7 @@ export const useMailStore = defineStore('mail', () => {
 
   let repo = null;
   let unsubscribe = null;
+  let bodyFetchToken = 0;
 
   const currentFolder = computed(
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
@@ -53,6 +60,9 @@ export const useMailStore = defineStore('mail', () => {
       () => authStore.accountId,
       (newId) => {
         if (newId) {
+          // Render whatever is already in OPFS immediately, then ask the
+          // sync layer to catch up. The "tables touched" broadcast will
+          // re-read once new rows land.
           refreshFolders();
         } else {
           folders.value = [];
@@ -64,6 +74,15 @@ export const useMailStore = defineStore('mail', () => {
       },
       { immediate: true },
     );
+
+    // Auto-pick inbox when folders first arrive. Reactive on the
+    // computed; this fires once and won't override an explicit user
+    // choice on later refreshes.
+    watch(inbox, (newInbox) => {
+      if (newInbox && currentFolderId.value == null) {
+        selectFolder(newInbox.id);
+      }
+    });
   }
 
   function detach() {
@@ -76,8 +95,14 @@ export const useMailStore = defineStore('mail', () => {
     if (tables.includes(TABLE_FAMILIES.FOLDERS)) {
       refreshFolders();
     }
-    if (tables.includes(TABLE_FAMILIES.MESSAGES) && currentFolderId.value != null) {
-      refreshMessages();
+    if (tables.includes(TABLE_FAMILIES.MESSAGES)) {
+      if (currentFolderId.value != null) {
+        refreshMessages();
+      }
+      // If the currently-open message's body just arrived, refresh it.
+      if (selectedMessageId.value != null) {
+        refreshMessageBody(selectedMessageId.value);
+      }
     }
   }
 
@@ -94,7 +119,12 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  async function selectFolder(folderId) {
+  /**
+   * Switch the open folder. Reads cached messages immediately so the
+   * list paints from disk; the network refresh runs in the background
+   * and a fresh read is triggered by the broadcast when it lands.
+   */
+  function selectFolder(folderId) {
     currentFolderId.value = folderId;
     selectedMessageId.value = null;
     messageBody.value = null;
@@ -102,22 +132,23 @@ export const useMailStore = defineStore('mail', () => {
       messages.value = [];
       return;
     }
-    isLoading.value = true;
-    try {
-      // Render whatever we have in cache immediately, then ask the sync
-      // layer to refresh the visible window. The "tables touched"
-      // broadcast will trigger another refresh once the sync lands.
-      await refreshMessages();
-      if (authStore.accountId != null) {
-        await repo.ensureFolderWindow(authStore.accountId, folderId, {
+    // Synchronous-feeling cache read; no await here. The async refresh
+    // below will populate via the broadcast.
+    refreshMessages();
+    if (authStore.accountId != null && repo) {
+      isLoading.value = true;
+      repo
+        .ensureFolderWindow(authStore.accountId, folderId, {
           offset: 0,
           limit: pageSize.value,
+        })
+        .catch((err) => {
+          error.value = err?.message ?? String(err);
+          console.error('[mail-store] ensureFolderWindow failed', err);
+        })
+        .finally(() => {
+          isLoading.value = false;
         });
-      }
-    } catch (err) {
-      error.value = err?.message ?? String(err);
-    } finally {
-      isLoading.value = false;
     }
   }
 
@@ -125,28 +156,63 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || currentFolderId.value == null) {
       return;
     }
-    const sortProp = currentFolder.value?.role === 'sent'
-      || currentFolder.value?.role === 'drafts'
+    const folder = currentFolder.value;
+    const sortProp = folder?.role === 'sent' || folder?.role === 'drafts'
       ? 'sent'
       : 'received';
-    messages.value = await repo.listMessagesForFolder(currentFolderId.value, {
+    const list = await repo.listMessagesForFolder(currentFolderId.value, {
       sort: sortProp,
       limit: pageSize.value,
     });
+    // Avoid stomping if the user has already moved on to another folder.
+    if (folder?.id === currentFolderId.value) {
+      messages.value = list;
+    }
   }
 
-  async function selectMessage(messageId) {
+  /**
+   * Open a message. Renders the cached body immediately if we have one;
+   * always asks the sync layer to refresh in the background.
+   */
+  function selectMessage(messageId) {
     selectedMessageId.value = messageId;
-    messageBody.value = null;
-    if (messageId == null || authStore.accountId == null) return;
-    try {
-      await repo.ensureMessageBody(authStore.accountId, messageId);
-      messageBody.value = await loadBody(messageId);
-      if (!_isSeenInList(messageId)) {
-        await markRead(messageId);
-      }
-    } catch (err) {
-      error.value = err?.message ?? String(err);
+    if (messageId == null || authStore.accountId == null) {
+      messageBody.value = null;
+      return;
+    }
+    // 1. Paint from cache instantly.
+    refreshMessageBody(messageId);
+
+    // 2. Background optimistic mark-read so the sender weight in the
+    //    list flips immediately.
+    if (!_isSeenInList(messageId)) {
+      markRead(messageId).catch((err) => {
+        console.warn('[mail-store] markRead failed', err);
+      });
+    }
+
+    // 3. Background body fetch from the server. Fire-and-forget; the
+    //    broadcast that follows the SQLite write will trigger another
+    //    refreshMessageBody so the UI updates without a second click.
+    const token = ++bodyFetchToken;
+    repo
+      .ensureMessageBody(authStore.accountId, messageId)
+      .then(() => {
+        // If the user has already moved on, leave them alone.
+        if (token === bodyFetchToken && selectedMessageId.value === messageId) {
+          refreshMessageBody(messageId);
+        }
+      })
+      .catch((err) => {
+        console.warn('[mail-store] ensureMessageBody failed', err);
+      });
+  }
+
+  async function refreshMessageBody(messageId) {
+    if (!repo) return;
+    const body = await loadBody(messageId);
+    if (selectedMessageId.value === messageId) {
+      messageBody.value = body;
     }
   }
 
@@ -157,9 +223,7 @@ export const useMailStore = defineStore('mail', () => {
 
   async function loadBody(messageId) {
     const rows = await repo.call('db.query', {
-      sql: `SELECT bv.kind, bv.value, bv.is_truncated
-              FROM body_values bv
-             WHERE bv.message_id = ?`,
+      sql: 'SELECT bv.kind, bv.value, bv.is_truncated FROM body_values bv WHERE bv.message_id = ?',
       params: [messageId],
     });
     const text = rows.find((r) => r.kind === 'text')?.value ?? '';
@@ -170,14 +234,14 @@ export const useMailStore = defineStore('mail', () => {
              ORDER BY position`,
       params: [messageId],
     });
+    if (rows.length === 0 && attachments.length === 0) {
+      // Don't blow away an existing body if the read raced before the
+      // sync write landed; let the broadcast retry.
+      return null;
+    }
     return { text, html, attachments };
   }
 
-  /**
-   * Optimistically mark a message as read locally and queue a JMAP
-   * mutation. The outbox runs against pending_mutations and the
-   * Email/changes path will reconcile.
-   */
   async function markRead(messageId) {
     if (!repo || authStore.accountId == null) return;
     const local = messages.value.find((m) => m.id === messageId);
@@ -211,7 +275,6 @@ export const useMailStore = defineStore('mail', () => {
 
   async function refresh() {
     if (!repo || authStore.accountId == null) return;
-    isLoading.value = true;
     try {
       await repo.ensureFolderTree(authStore.accountId);
       if (currentFolderId.value != null) {
@@ -220,8 +283,8 @@ export const useMailStore = defineStore('mail', () => {
           limit: pageSize.value,
         });
       }
-    } finally {
-      isLoading.value = false;
+    } catch (err) {
+      console.warn('[mail-store] refresh failed', err);
     }
   }
 

@@ -1,0 +1,96 @@
+<script setup>
+import { computed } from 'vue';
+
+const props = defineProps({
+  folder: { type: Object, required: true },
+  isCurrent: { type: Function, required: true },
+  onPick: { type: Function, required: true },
+});
+
+const current = computed(() => props.isCurrent(props.folder.id));
+const unread = computed(() => Number(props.folder.unread_emails) || 0);
+const Icon = computed(() => props.folder.icon);
+const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
+</script>
+
+<template>
+  <button
+    type="button"
+    class="folder-node"
+    :class="{ 'is-current': current }"
+    :style="{ paddingLeft: indent }"
+    @click="onPick(folder.id)"
+  >
+    <component :is="Icon" :size="18" :stroke-width="1.75" class="folder-node__icon" />
+    <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
+    <span v-if="unread > 0" class="folder-node__count">{{ unread > 99 ? '99+' : unread }}</span>
+  </button>
+  <FolderNode
+    v-for="child in folder.children"
+    :key="child.id"
+    :folder="child"
+    :is-current="isCurrent"
+    :on-pick="onPick"
+  />
+</template>
+
+<script>
+export default { name: 'FolderNode' };
+</script>
+
+<style scoped>
+.folder-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  width: 100%;
+  min-width: 0;
+}
+.folder-node:hover { background: var(--rowHover); }
+.folder-node:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.folder-node.is-current {
+  background: var(--rowActive);
+  color: var(--text);
+  font-weight: 500;
+}
+.folder-node__icon {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.folder-node.is-current .folder-node__icon { color: var(--accent); }
+.folder-node__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.folder-node__count {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.folder-node.is-current .folder-node__count {
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+</style>
