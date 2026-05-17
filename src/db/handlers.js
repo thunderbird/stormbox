@@ -611,31 +611,39 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
       if (!lowered) {
         return [];
       }
-      const pattern = `${lowered.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      // Use a half-open range over email_lower so the planner uses
+      // contact_emails_lookup directly. LIKE with parameter binding does
+      // not get rewritten into a range scan because the column has BINARY
+      // collation, but `>= prefix AND < prefixUpperBound` always does.
+      const upper = nextPrefix(lowered);
       const contactRows = await engine.all(
         `SELECT 'contact' AS source, c.display_name AS name, ce.email AS email, ce.is_preferred AS is_preferred
            FROM contact_emails ce
            JOIN contacts c ON c.id = ce.contact_id
           WHERE c.account_id = ?
             AND c.is_deleted = 0
-            AND ce.email_lower LIKE ? ESCAPE '\\'
+            AND ce.email_lower >= ?
+            AND ce.email_lower < ?
           ORDER BY ce.is_preferred DESC, c.display_name COLLATE NOCASE
           LIMIT ?`,
-        [accountId, pattern, limit],
+        [accountId, lowered, upper, limit],
       );
       const historyLimit = Math.max(0, limit - contactRows.length);
       if (historyLimit === 0) {
         return contactRows;
       }
+      // message_addresses(email COLLATE NOCASE) lets us prefix-scan the
+      // sender/recipient history without lowercasing on read.
       const historyRows = await engine.all(
         `SELECT DISTINCT 'history' AS source, ma.name, ma.email, 0 AS is_preferred
            FROM message_addresses ma
            JOIN messages m ON m.id = ma.message_id
           WHERE m.account_id = ?
             AND ma.email IS NOT NULL
-            AND lower(ma.email) LIKE ? ESCAPE '\\'
+            AND ma.email >= ? COLLATE NOCASE
+            AND ma.email < ? COLLATE NOCASE
           LIMIT ?`,
-        [accountId, pattern, historyLimit],
+        [accountId, lowered, upper, historyLimit],
       );
       return [...contactRows, ...historyRows];
     },
@@ -725,6 +733,26 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
   };
 
   return h;
+}
+
+/**
+ * Half-open upper bound for a prefix range scan. For 'pers' returns 'pert';
+ * for 'foo\uffff' returns the next code point. Returns null when there is
+ * no representable next code point - callers should fall back to LIKE then.
+ */
+function nextPrefix(prefix) {
+  if (!prefix) {
+    return prefix;
+  }
+  const codePoints = Array.from(prefix);
+  for (let i = codePoints.length - 1; i >= 0; i -= 1) {
+    const cp = codePoints[i].codePointAt(0);
+    if (cp < 0x10ffff) {
+      codePoints[i] = String.fromCodePoint(cp + 1);
+      return codePoints.slice(0, i + 1).join('');
+    }
+  }
+  return null;
 }
 
 /**
