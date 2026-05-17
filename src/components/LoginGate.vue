@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { Loader2 } from 'lucide-vue-next';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { AUTH_STATE } from '../constants/states.js';
@@ -15,6 +16,8 @@ const isBusy = computed(() =>
   authStore.status === AUTH_STATE.OIDC_LOADING
   || authStore.status === AUTH_STATE.CONNECTING,
 );
+
+const isFailed = computed(() => authStore.status === AUTH_STATE.FAILED);
 
 const statusLabel = computed(() => {
   switch (authStore.status) {
@@ -49,64 +52,66 @@ function togglePassword() {
       <h1 class="login-card__title">Thundermail</h1>
       <p class="login-card__subtitle">Sign in with your Thunderbird account.</p>
 
-      <button
-        class="login-card__primary"
-        type="button"
-        :disabled="isBusy || !authStore.isOidcReady"
-        @click="signInWithThunderbird"
-      >
-        Sign in with Thunderbird
-      </button>
+      <div v-if="isBusy" class="login-card__busy" role="status" aria-live="polite">
+        <Loader2 :size="32" :stroke-width="2" class="login-card__spinner" />
+        <p class="login-card__status">{{ statusLabel }}</p>
+      </div>
 
-      <button
-        v-if="!showPasswordForm"
-        class="login-card__link"
-        type="button"
-        :disabled="isBusy"
-        @click="togglePassword"
-      >
-        Use app password instead
-      </button>
+      <template v-else>
+        <button
+          class="login-card__primary"
+          type="button"
+          :disabled="!authStore.isOidcReady"
+          @click="signInWithThunderbird"
+        >
+          Sign in with Thunderbird
+        </button>
 
-      <form v-else class="login-card__password" @submit="submitPassword">
-        <label>
-          <span>Username</span>
-          <input
-            v-model="username"
-            type="text"
-            autocomplete="username"
-            :disabled="isBusy"
-            required
-          />
-        </label>
-        <label>
-          <span>App password</span>
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            :disabled="isBusy"
-            required
-          />
-        </label>
-        <div class="login-card__password-actions">
-          <button class="login-card__secondary" type="submit" :disabled="isBusy">
-            Sign in
-          </button>
-          <button
-            class="login-card__link"
-            type="button"
-            :disabled="isBusy"
-            @click="togglePassword"
-          >
-            Back
-          </button>
-        </div>
-      </form>
+        <button
+          v-if="!showPasswordForm"
+          class="login-card__link"
+          type="button"
+          @click="togglePassword"
+        >
+          Use app password instead
+        </button>
 
-      <p class="login-card__status">{{ statusLabel }}</p>
+        <form v-else class="login-card__password" @submit="submitPassword">
+          <label>
+            <span>Username</span>
+            <input
+              v-model="username"
+              type="text"
+              autocomplete="username"
+              required
+            />
+          </label>
+          <label>
+            <span>App password</span>
+            <input
+              v-model="password"
+              type="password"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+          <div class="login-card__password-actions">
+            <button class="login-card__secondary" type="submit">
+              Sign in
+            </button>
+            <button
+              class="login-card__link"
+              type="button"
+              @click="togglePassword"
+            >
+              Back
+            </button>
+          </div>
+        </form>
 
-      <p v-if="authStore.error" class="login-card__error">{{ authStore.error }}</p>
+        <p v-if="isFailed" class="login-card__status">{{ statusLabel }}</p>
+        <p v-if="authStore.error" class="login-card__error">{{ authStore.error }}</p>
+      </template>
     </div>
   </div>
 </template>
@@ -225,6 +230,21 @@ function togglePassword() {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.login-card__busy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 0 6px;
+}
+.login-card__spinner {
+  color: var(--accent);
+  animation: login-spin 1s linear infinite;
+}
+@keyframes login-spin {
+  to { transform: rotate(360deg); }
 }
 
 .login-card__status {
