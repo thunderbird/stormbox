@@ -24,7 +24,11 @@ test.skip(
 );
 
 test.describe('Stage Thundermail e2e', () => {
-  test.setTimeout(120_000);
+  // Firefox's async OPFS VFS is 5-10x slower than Chromium for bulk
+  // writes. The Archives leg pulls two 100-message pages over the
+  // network and persists them via persistEmails (~500 SQL ops each
+  // behind the engine lock), so we leave a generous budget.
+  test.setTimeout(180_000);
 
   test('login -> folder tree -> messages -> message body', async ({ page, browserName }, testInfo) => {
     const consoleLines = [];
@@ -45,8 +49,8 @@ test.describe('Stage Thundermail e2e', () => {
 
     // 1. Shell appears.
     await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-    const after = await page.screenshot({ fullPage: true });
-    await testInfo.attach(`${browserName}-after-login.png`, { body: after, contentType: 'image/png' });
+    const afterLogin = await page.screenshot({ fullPage: true });
+    await testInfo.attach(`${browserName}-after-login.png`, { body: afterLogin, contentType: 'image/png' });
     await page.screenshot({ path: `screenshots/${browserName}-01-after-login.png`, fullPage: true });
 
     // 2. Folder tree populates with at least one row.
@@ -108,28 +112,142 @@ test.describe('Stage Thundermail e2e', () => {
     await testInfo.attach(`${browserName}-message-opened.png`, { body: msgShot, contentType: 'image/png' });
     await page.screenshot({ path: `screenshots/${browserName}-03-message-opened.png`, fullPage: true });
 
-    // 5. Verify message list scrolls. Pages with 32 messages must
-    //    overflow the viewport at our default sizes.
-    const scrollable = await page.evaluate(() => {
-      const el = document.querySelector('.msg-list__items');
-      if (!el) return null;
-      return { sh: el.scrollHeight, ch: el.clientHeight, overflow: el.scrollHeight > el.clientHeight };
+    // 5. Verify the (virtualised) message list actually scrolls and
+    //    that the visible window changes when we scroll. The inner
+    //    .msg-list__items has total height = totalSize, the outer
+    //    .msg-list__scroller is what owns the scrollbar.
+    const initial = await page.evaluate(() => {
+      const sc = document.querySelector('.msg-list__scroller');
+      const inner = document.querySelector('.msg-list__items');
+      if (!sc || !inner) return null;
+      return {
+        scrollHeight: sc.scrollHeight,
+        clientHeight: sc.clientHeight,
+        innerHeight: inner.offsetHeight,
+        topRowIndex: Number(document.querySelector('.msg-list__items > li')?.dataset.index ?? -1),
+      };
     });
-    console.log(`[test] msg-list scroll metrics: ${JSON.stringify(scrollable)}`);
-    if (!scrollable?.overflow) {
-      throw new Error(`Message list is not scrollable: ${JSON.stringify(scrollable)}`);
+    console.log(`[test] msg-list initial: ${JSON.stringify(initial)}`);
+    if (!initial || initial.scrollHeight <= initial.clientHeight) {
+      throw new Error(`Message list is not scrollable: ${JSON.stringify(initial)}`);
     }
-    // Actually scroll and check that scrollTop moves.
-    const scrolledTo = await page.evaluate(() => {
-      const el = document.querySelector('.msg-list__items');
-      el.scrollTop = 200;
-      return el.scrollTop;
+    // Scroll halfway down and confirm the rendered window moves.
+    const after = await page.evaluate(async () => {
+      const sc = document.querySelector('.msg-list__scroller');
+      sc.scrollTop = sc.scrollHeight / 2;
+      // Yield two frames so the virtualiser's scroll listener can run.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const lis = Array.from(document.querySelectorAll('.msg-list__items > li'));
+      return {
+        scrollTop: sc.scrollTop,
+        firstRowIndex: Number(lis[0]?.dataset.index ?? -1),
+        lastRowIndex: Number(lis[lis.length - 1]?.dataset.index ?? -1),
+        rowCount: lis.length,
+      };
     });
-    if (scrolledTo === 0) {
+    console.log(`[test] msg-list after scroll: ${JSON.stringify(after)}`);
+    if (after.scrollTop === 0) {
       throw new Error('Message list did not respond to scrollTop');
     }
+    // The virtualiser should be rendering rows around the middle of
+    // the list, not the top. For a folder with hundreds of messages
+    // the visible window must include indices well past row 100.
+    if (initial.scrollHeight > 10_000 && after.firstRowIndex < 100) {
+      throw new Error(`Virtualiser still showing low rows after mid-scroll: first=${after.firstRowIndex}`);
+    }
 
-    // 6. Open the compose dialog and make sure Squire RTE mounted.
+    // 6. Switch to Archives (~3k messages). Confirm:
+    //    a) The scrollbar reflects the FOLDER TOTAL after the first
+    //       Email/query, not just the loaded count.
+    //    b) Scrolling deep into the unloaded region renders skeleton
+    //       placeholders and triggers ensureLoaded prefetches that
+    //       hydrate the visible window.
+    //    c) Virtualisation is real: ~30 rendered rows even at row 1500.
+    const archives = page.locator('.folder-node').filter({ hasText: /archive/i }).first();
+    if (await archives.count() > 0) {
+      await archives.click();
+      await expect.poll(
+        async () => page.evaluate(() => {
+          const inner = document.querySelector('.msg-list__items');
+          if (!inner) return 0;
+          return Math.round(inner.offsetHeight / 88);
+        }),
+        { timeout: 30_000, message: 'archives total never landed on the scrollbar' },
+      ).toBeGreaterThan(1000);
+
+      // Wait for page 0 to paint at least one real row before scrolling.
+      // Firefox's async OPFS VFS is materially slower than Chromium's
+      // sync access handles for bulk writes (the 100-message
+      // persistEmails for one page can take 30s+); bump the budget.
+      await expect.poll(
+        async () => page.evaluate(() => {
+          const real = Array.from(document.querySelectorAll('.msg-list__items > li'))
+            .filter((li) => li.dataset.placeholder !== 'true');
+          return real.length;
+        }),
+        { timeout: 45_000, message: 'page 0 never painted real rows' },
+      ).toBeGreaterThan(0);
+
+      const archivesScroll = await page.evaluate(async () => {
+        const sc = document.querySelector('.msg-list__scroller');
+        sc.scrollTop = 1500 * 88;
+        // Up to 60s; Stalwart's deep Email/query + Email/get is ~1.4s
+        // and persistEmails for 100 records does ~500 OPFS writes
+        // behind the engine lock. Firefox's async OPFS path is
+        // significantly slower than Chromium's sync access handles.
+        for (let i = 0; i < 300; i += 1) {
+          await new Promise((r) => setTimeout(r, 200));
+          const lis = Array.from(document.querySelectorAll('.msg-list__items > li'));
+          const real = lis.filter((li) => li.dataset.placeholder !== 'true');
+          const idx = real.map((li) => Number(li.dataset.index));
+          if (idx.length && Math.max(...idx) >= 1400) {
+            return {
+              scrollTop: sc.scrollTop,
+              rendered: lis.length,
+              firstReal: Math.min(...idx),
+              lastReal: Math.max(...idx),
+              tookMs: i * 200,
+            };
+          }
+        }
+        return { timedOut: true };
+      });
+      console.log(`[test] archives mid-scroll: ${JSON.stringify(archivesScroll)}`);
+      if (archivesScroll.timedOut) {
+        throw new Error('Archives lazy fetch did not hydrate row >= 1400');
+      }
+      if (archivesScroll.rendered > 60) {
+        throw new Error(`Virtualiser rendered too many rows (${archivesScroll.rendered}); should be ~30`);
+      }
+      await page.screenshot({ path: `screenshots/${browserName}-05-archives-scrolled.png`, fullPage: true });
+
+      // Switch back to Inbox: this MUST be cached, no spinner, paints
+      // synchronously. The paint criterion is "real rows visible
+      // within 250 ms of the click", which only works when the
+      // selectFolder path reuses folderStates.
+      const inboxRow = page.locator('.folder-node').filter({ hasText: /^inbox/i }).first();
+      const navStart = Date.now();
+      await inboxRow.click();
+      await expect.poll(
+        async () => page.evaluate(() => {
+          const real = Array.from(document.querySelectorAll('.msg-list__items > li'))
+            .filter((li) => li.dataset.placeholder !== 'true');
+          return real.length;
+        }),
+        { timeout: 1_000, message: 'inbox re-entry did not paint cached rows quickly' },
+      ).toBeGreaterThan(0);
+      const navMs = Date.now() - navStart;
+      console.log(`[test] inbox re-entry paint: ${navMs}ms`);
+      if (navMs > 500) {
+        throw new Error(`inbox re-entry took ${navMs}ms; should be < 500ms (cache hit)`);
+      }
+      const spinnerVisible = await page.locator('.msg-list__loader').count();
+      if (spinnerVisible > 0) {
+        throw new Error('inbox re-entry showed the loading spinner; should be cache-only');
+      }
+    }
+
+    // 7. Open the compose dialog and make sure Squire RTE mounted.
     await page.getByRole('button', { name: /new message/i }).click();
     await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 5_000 });
     const composeOk = await page.evaluate(() => {
