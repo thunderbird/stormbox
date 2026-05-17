@@ -25,6 +25,7 @@ export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
   MOVE_TO_FOLDERS: 'moveToFolders',
   DESTROY: 'destroy',
+  SEND: 'send',
 });
 
 /**
@@ -65,6 +66,8 @@ async function runOne({ transport, account, handlers, row, useWebSocket }) {
       return runMoveToFolders({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DESTROY:
       return runDestroy({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.SEND:
+      return runSend({ transport, account, handlers, row, request, useWebSocket });
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
@@ -108,6 +111,97 @@ async function runDestroy({ transport, account, handlers, row, request, useWebSo
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   return submitEmailSet({ transport, account, useWebSocket, destroy: [remoteId] });
+}
+
+/**
+ * Send a composed message. Writes Email/set + EmailSubmission/set in
+ * one round trip, with onSuccessUpdateEmail moving the message out of
+ * the Outbox/Drafts folder and into Sent on success.
+ *
+ * request shape:
+ *   {
+ *     identityId: 'i1',
+ *     from: { name?, email },
+ *     to: [{ name?, email }, ...],
+ *     cc, bcc, replyTo, subject,
+ *     textBody?, htmlBody?,
+ *     draftsRemoteId?, sentRemoteId?, outboxRemoteId?,
+ *   }
+ */
+async function runSend({ transport, account, handlers, row, request, useWebSocket }) {
+  const targetBox = request.outboxRemoteId
+    ?? request.draftsRemoteId
+    ?? null;
+  const hasHtml = !!(request.htmlBody && /\S/.test(request.htmlBody));
+  const [bodyStructure, bodyValues] = hasHtml
+    ? [
+      {
+        type: 'multipart/alternative',
+        subParts: [
+          { type: 'text/plain', partId: 'p1' },
+          { type: 'text/html', partId: 'h1' },
+        ],
+      },
+      { p1: { value: request.textBody ?? '' }, h1: { value: request.htmlBody } },
+    ]
+    : [
+      { type: 'text/plain', partId: 'p1' },
+      { p1: { value: request.textBody ?? '' } },
+    ];
+
+  const emailCreate = {
+    ...(targetBox ? { mailboxIds: { [targetBox]: true } } : {}),
+    ...(targetBox === request.draftsRemoteId ? { keywords: { $draft: true } } : {}),
+    from: [{
+      ...(request.from?.name ? { name: request.from.name } : {}),
+      email: request.from.email,
+    }],
+    to: request.to ?? [],
+    ...(request.cc?.length ? { cc: request.cc } : {}),
+    ...(request.bcc?.length ? { bcc: request.bcc } : {}),
+    ...(request.replyTo?.length ? { replyTo: request.replyTo } : {}),
+    subject: request.subject ?? '',
+    bodyStructure,
+    bodyValues,
+  };
+
+  const onSuccessUpdate = {
+    ...(request.sentRemoteId ? { [`mailboxIds/${request.sentRemoteId}`]: true } : {}),
+    ...(targetBox ? { [`mailboxIds/${targetBox}`]: null } : {}),
+    'keywords/$draft': null,
+  };
+
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
+    methodCalls: [
+      ['Email/set', { accountId: account.remote_account_id, create: { c1: emailCreate } }, 'c1'],
+      [
+        'EmailSubmission/set',
+        {
+          accountId: account.remote_account_id,
+          create: {
+            s1: {
+              identityId: request.identityId,
+              emailId: '#c1',
+              envelope: {
+                mailFrom: { email: request.from.email },
+                rcptTo: (request.to ?? []).map((a) => ({ email: a.email })),
+              },
+            },
+          },
+          onSuccessUpdateEmail: { '#s1': onSuccessUpdate },
+        },
+        's1',
+      ],
+    ],
+    useWebSocket,
+  });
+
+  const submission = pickResponse(result, 'EmailSubmission/set');
+  if (submission?.notCreated && Object.values(submission.notCreated).length > 0) {
+    return { ok: false, error: { type: 'notSubmitted', detail: submission.notCreated } };
+  }
+  return { ok: true, response: result };
 }
 
 async function submitEmailSet({ transport, account, useWebSocket, update, destroy }) {

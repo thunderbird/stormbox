@@ -1,181 +1,175 @@
-import { defineStore } from 'pinia'
-import { ref, reactive } from 'vue'
-import { useAuthStore } from './auth-store.js'
+/**
+ * Compose state. Holds the in-flight draft and the identity picker.
+ * Send is implemented as a pending_mutations row plus a drainOutbox
+ * call on the worker, so the UI can dismiss the composer immediately
+ * and the actual JMAP submission proceeds asynchronously.
+ */
+
+import { defineStore } from 'pinia';
+import { computed, reactive, ref, watch } from 'vue';
+
+import { getRepositoryAsync } from '../composables/use-repository.js';
+import { useAuthStore } from './auth-store.js';
+import { useMailStore } from './mail-store.js';
+import { COMPOSE_STATE } from '../constants/states.js';
+
+const EMPTY_DRAFT = Object.freeze({
+  fromIdx: 0,
+  to: '',
+  cc: '',
+  bcc: '',
+  subject: '',
+  textBody: '',
+  htmlBody: '',
+});
 
 export const useComposeStore = defineStore('compose', () => {
-  const authStore = useAuthStore()
+  const authStore = useAuthStore();
+  const mailStore = useMailStore();
 
-  const identities = ref([])
-  const sending = ref(false)
-  const composeStatus = ref('')
-  const composeDebug = ref('')
-  const compose = reactive({
-    fromIdx: 0,
-    to: '',
-    subject: '',
-    html: '',
-    text: '',
-  })
+  const status = ref(COMPOSE_STATE.IDLE);
+  const error = ref(null);
+  const isOpen = ref(false);
+  const identities = ref([]);
+  const draft = reactive({ ...EMPTY_DRAFT });
+  let repo = null;
 
-  async function loadIdentities() {
-    if (!authStore.client) return
-    identities.value = await authStore.client.listIdentities()
+  const fromIdentity = computed(() =>
+    identities.value[draft.fromIdx] ?? identities.value[0] ?? null,
+  );
+
+  async function attach() {
+    if (repo) return;
+    repo = await getRepositoryAsync();
+    watch(
+      () => authStore.accountId,
+      async (newId) => {
+        if (newId) {
+          await refreshIdentities();
+        } else {
+          identities.value = [];
+        }
+      },
+      { immediate: true },
+    );
   }
 
-  function resetCompose() {
-    compose.fromIdx = 0
-    compose.to = ''
-    compose.subject = ''
-    compose.html = ''
-    compose.text = ''
-    composeStatus.value = ''
-    composeDebug.value = ''
+  async function refreshIdentities() {
+    if (!repo || authStore.accountId == null) return;
+    identities.value = await repo.listIdentities(authStore.accountId);
+  }
+
+  function open(prefill = {}) {
+    Object.assign(draft, EMPTY_DRAFT, prefill);
+    isOpen.value = true;
+    status.value = COMPOSE_STATE.EDITING;
+    error.value = null;
+  }
+
+  function close() {
+    isOpen.value = false;
+    status.value = COMPOSE_STATE.IDLE;
+    Object.assign(draft, EMPTY_DRAFT);
+    error.value = null;
   }
 
   function prepareReply({ to, subject, html, text }) {
-    compose.to = to
-    compose.subject = subject
-    compose.html = html
-    compose.text = text
-    composeStatus.value = ''
-    composeDebug.value = ''
-  }
-
-  function parseAddrList(input) {
-    return (input || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((p) => {
-        const m = p.match(/^(.+?)\s*<(.+?)>$/)
-        return m
-          ? { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() }
-          : { email: p }
-      })
-  }
-
-  function sanitizeForDebug(obj) {
-    const copy = JSON.parse(JSON.stringify(obj))
-    try {
-      const calls = copy.methodCalls || []
-      for (const c of calls) {
-        if (c[0] === 'Email/set' && c[1]?.create) {
-          for (const k of Object.keys(c[1].create)) {
-            if (c[1].create[k]?.bodyValues) {
-              for (const pid of Object.keys(c[1].create[k].bodyValues)) {
-                const v = c[1].create[k].bodyValues[pid].value || ''
-                c[1].create[k].bodyValues[pid].value =
-                  v.length > 500 ? v.slice(0, 500) + '…[truncated]' : v
-              }
-            }
-          }
-        }
-      }
-    } catch {}
-    return copy
-  }
-
-  function extractMethodErrors(json) {
-    if (!json) return ''
-    const issues = []
-    try {
-      for (const [name, payload] of json.methodResponses || []) {
-        ;['notCreated', 'notUpdated', 'notDestroyed', 'notSubmitted'].forEach(
-          (k) => {
-            if (payload?.[k]) {
-              Object.entries(payload[k]).forEach(([id, err]) => {
-                issues.push(
-                  `${name}/${k}/${id}: ${err.type || 'error'} - ${
-                    err.description || 'unknown'
-                  }`
-                )
-              })
-            }
-          }
-        )
-      }
-    } catch {}
-    return issues.join('\n')
+    open({
+      to: to ?? '',
+      subject: subject ?? '',
+      htmlBody: html ?? '',
+      textBody: text ?? '',
+    });
   }
 
   async function send() {
-    if (!identities.value.length) {
-      composeStatus.value = 'No identities.'
-      return false
+    if (!repo || authStore.accountId == null) {
+      status.value = COMPOSE_STATE.FAILED;
+      error.value = 'Not connected.';
+      return false;
     }
-    const id = identities.value[compose.fromIdx] || identities.value[0]
-    const from = {
-      email: (id.email || '').trim(),
-      name: (id.name || '').trim() || undefined,
+    const identity = fromIdentity.value;
+    if (!identity) {
+      status.value = COMPOSE_STATE.FAILED;
+      error.value = 'No identities are configured.';
+      return false;
     }
-    const toList = parseAddrList(compose.to)
-    if (!from.email || !id.id) {
-      composeStatus.value = 'From/Identity missing.'
-      return false
-    }
-    if (!toList.length) {
-      composeStatus.value = 'Add at least one recipient.'
-      return false
+    const toList = parseAddressList(draft.to);
+    if (toList.length === 0) {
+      status.value = COMPOSE_STATE.FAILED;
+      error.value = 'Add at least one recipient.';
+      return false;
     }
 
+    const drafts = mailStore.folders.find((f) => f.role === 'drafts');
+    const sent = mailStore.folders.find((f) => f.role === 'sent');
+    const outbox = mailStore.folders.find((f) => f.role === 'outbox');
+
+    status.value = COMPOSE_STATE.SENDING;
+    error.value = null;
     try {
-      sending.value = true
-      composeStatus.value = 'Sending…'
-      composeDebug.value = ''
-
-      const res = await authStore.client.sendMultipartAlternative({
-        from,
-        identityId: id.id,
-        toList,
-        subject: compose.subject || '',
-        text: compose.text || '',
-        html: compose.html || '',
-        draftsId: authStore.client.ids.drafts,
-        sentId: authStore.client.ids.sent,
-      })
-
-      const methodIssues = extractMethodErrors(res.json)
-      composeDebug.value = `Started: ${res.started}\nStatus: ${res.status} ${
-        res.statusText
-      }\n\nRequest:\n${JSON.stringify(
-        sanitizeForDebug(JSON.parse(res.req)),
-        null,
-        2
-      )}\n\nResponse:\n${res.text}${
-        methodIssues ? '\nMethod issues:\n' + methodIssues : ''
-      }`
-
-      if (!res.ok) {
-        composeStatus.value = `Send failed: ${res.status} ${res.statusText}`
-        return false
+      await repo.insertPendingMutation({
+        accountId: authStore.accountId,
+        mutationType: 'send',
+        targetMessageId: null,
+        requestJson: JSON.stringify({
+          identityId: identity.remote_id,
+          from: { name: identity.name, email: identity.email },
+          to: toList,
+          cc: parseAddressList(draft.cc),
+          bcc: parseAddressList(draft.bcc),
+          subject: draft.subject,
+          textBody: draft.textBody,
+          htmlBody: draft.htmlBody,
+          draftsRemoteId: drafts?.remote_id ?? null,
+          sentRemoteId: sent?.remote_id ?? null,
+          outboxRemoteId: outbox?.remote_id ?? null,
+        }),
+        optimisticPatchJson: null,
+      });
+      const result = await repo.drainOutbox(authStore.accountId);
+      if (result.failed > 0) {
+        status.value = COMPOSE_STATE.FAILED;
+        error.value = 'Send failed; the message stays in your outbox.';
+        return false;
       }
-      if (methodIssues) {
-        const firstLine =
-          String(methodIssues).split('\n').find(Boolean) ||
-          'Unknown method error'
-        composeStatus.value = 'Send may have failed: ' + firstLine
-        return false
-      }
-      composeStatus.value = 'Sent.'
-      resetCompose()
-      return true
-    } catch (e) {
-      composeStatus.value = 'Send failed: ' + e.message
-      return false
-    } finally {
-      sending.value = false
+      status.value = COMPOSE_STATE.SENT;
+      close();
+      return true;
+    } catch (err) {
+      status.value = COMPOSE_STATE.FAILED;
+      error.value = err?.message ?? String(err);
+      return false;
     }
   }
 
   return {
+    status,
+    error,
+    isOpen,
     identities,
-    sending,
-    composeStatus,
-    composeDebug,
-    compose,
-    loadIdentities,
-    resetCompose,
+    draft,
+    fromIdentity,
+    attach,
+    refreshIdentities,
+    open,
+    close,
     prepareReply,
     send,
-  }
-})
+  };
+});
+
+function parseAddressList(input) {
+  if (!input) return [];
+  return input
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const m = part.match(/^(.+?)\s*<(.+?)>$/);
+      if (m) {
+        return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
+      }
+      return { email: part };
+    });
+}

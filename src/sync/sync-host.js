@@ -93,6 +93,14 @@ export function makeSyncRpcHandlers({ handlers, fetch = globalThis.fetch, WebSoc
 
     [DB_RPC.SYNC_ENSURE_CONTACTS]: async ({ accountId, addressbookId }) =>
       syncClient.ensureContacts(accountId, addressbookId),
+
+    [DB_RPC.SYNC_DRAIN_OUTBOX]: async ({ accountId, limit = 25 }) => {
+      const backend = backends.get(accountId);
+      if (!backend) {
+        return { attempted: 0, succeeded: 0, failed: 0 };
+      }
+      return backend.drainOutbox(limit);
+    },
   };
 }
 

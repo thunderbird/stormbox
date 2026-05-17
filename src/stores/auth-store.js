@@ -1,124 +1,153 @@
-import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { initOidc, getOidc } from '../services/auth.js'
-import { JMAPClient } from '../services/jmap.js'
-import { JMAP_SERVER_URL } from '../defines.js'
+/**
+ * Auth + connection lifecycle. Holds the OIDC handle, the active local
+ * account id, and an enum-typed status that the UI maps to its
+ * presentation states. No DOM manipulation here - components are
+ * responsible for any class toggles or focus management; this store
+ * only exposes state and actions.
+ */
+
+import { defineStore } from 'pinia';
+import { computed, ref } from 'vue';
+
+import { initOidc, getOidc } from '../services/auth.js';
+import { JMAP_SERVER_URL } from '../defines.js';
+import { AUTH_STATE } from '../constants/states.js';
+import { getRepositoryAsync } from '../composables/use-repository.js';
 
 export const useAuthStore = defineStore('auth', () => {
-  const client = ref(null)
-  const connected = ref(false)
-  const status = ref('Not connected.')
-  const error = ref('')
-  const oidcReady = ref(false)
-  const oidcLoading = ref(true)
+  const status = ref(AUTH_STATE.IDLE);
+  const accountId = ref(null);
+  const username = ref(null);
+  const error = ref(null);
 
-  const serverName = computed(() => {
+  const serverOrigin = computed(() => {
     try {
-      return new URL(JMAP_SERVER_URL).hostname
+      return new URL(JMAP_SERVER_URL).origin;
     } catch {
-      return JMAP_SERVER_URL
+      return JMAP_SERVER_URL ?? '';
     }
-  })
+  });
 
-  async function initializeOidc() {
+  const serverHostname = computed(() => {
     try {
-      const oidc = await initOidc()
-      oidcReady.value = true
-      oidcLoading.value = false
-      return oidc
-    } catch (e) {
-      console.error('OIDC initialization failed:', e)
-      oidcLoading.value = false
-      return null
+      return new URL(JMAP_SERVER_URL).hostname;
+    } catch {
+      return JMAP_SERVER_URL ?? '';
+    }
+  });
+
+  const isOidcReady = computed(() =>
+    status.value === AUTH_STATE.OIDC_READY
+    || status.value === AUTH_STATE.CONNECTED,
+  );
+
+  const isConnected = computed(() => status.value === AUTH_STATE.CONNECTED);
+
+  /**
+   * Run the OIDC bootstrap and, if the user already has a session, kick
+   * off a connect right away. Safe to call once on app boot.
+   */
+  async function initialize() {
+    if (status.value !== AUTH_STATE.IDLE) {
+      return;
+    }
+    status.value = AUTH_STATE.OIDC_LOADING;
+    try {
+      const oidc = await initOidc();
+      status.value = AUTH_STATE.OIDC_READY;
+      if (oidc?.isUserLoggedIn) {
+        await connectViaOidc();
+      }
+    } catch (err) {
+      status.value = AUTH_STATE.FAILED;
+      error.value = err?.message ?? String(err);
     }
   }
 
-  async function connect(credentials) {
-    if (!credentials?.username || !credentials?.password) {
-      error.value = 'Username and password required.'
-      return false
+  /**
+   * Connect with username + password (self-host basic auth).
+   */
+  async function connectWithPassword({ username: u, password }) {
+    if (!u || !password) {
+      error.value = 'Username and password are required.';
+      status.value = AUTH_STATE.FAILED;
+      return false;
     }
-    error.value = ''
-    status.value = 'Connecting…'
-    try {
-      client.value = new JMAPClient({
-        baseUrl: JMAP_SERVER_URL,
-        username: credentials.username.trim(),
-        password: credentials.password,
-      })
-      await client.value.fetchSession()
-      localStorage.setItem('jmap.username', credentials.username.trim())
-      connected.value = true
-      document.body.classList.add('connected')
-      return true
-    } catch (e) {
-      status.value = 'Failed.'
-      error.value =
-        e.message +
-        (e.message?.includes('Failed to fetch')
-          ? '\nLikely CORS/network issue.'
-          : '')
-      return false
-    }
+    return _connect({ kind: 'basic', username: u.trim(), password }, u.trim());
   }
 
-  async function connectWithOAuth(oidc) {
-    error.value = ''
-    status.value = 'Connecting with OAuth…'
-    try {
-      client.value = new JMAPClient({
-        baseUrl: JMAP_SERVER_URL,
-        getToken: async () => {
-          const { accessToken } = await oidc.getTokens()
-          return accessToken
-        },
-      })
-      await client.value.fetchSession()
-      connected.value = true
-      document.body.classList.add('connected')
-      return true
-    } catch (e) {
-      status.value = 'Failed.'
-      error.value =
-        e.message +
-        (e.message?.includes('Failed to fetch')
-          ? '\nLikely CORS/network issue.'
-          : '')
-      return false
+  /**
+   * Connect via OIDC. If the user is not yet logged in this redirects
+   * them to the IdP; on return, initialize() will pick the session up.
+   */
+  async function connectViaOidc() {
+    const oidc = getOidc();
+    if (!oidc) {
+      error.value = 'OIDC is not available on this server.';
+      status.value = AUTH_STATE.FAILED;
+      return false;
     }
-  }
-
-  async function handleOAuthLogin() {
-    const oidc = getOidc()
-    if (!oidc) return false
     if (!oidc.isUserLoggedIn) {
-      await oidc.login()
-      return false
+      await oidc.login();
+      return false;
     }
-    return await connectWithOAuth(oidc)
+    const tokens = await oidc.getTokens();
+    return _connect({ kind: 'bearer', token: tokens.accessToken }, tokens?.decodedIdToken?.email ?? null);
   }
 
-  async function handleLogout() {
-    const oidc = getOidc()
-    if (oidc && oidc.isUserLoggedIn) {
-      await oidc.logout({ redirectTo: 'home' })
-    } else {
-      window.location.reload()
+  async function _connect(auth, displayName) {
+    status.value = AUTH_STATE.CONNECTING;
+    error.value = null;
+    try {
+      const repo = await getRepositoryAsync();
+      const result = await repo.startSyncAccount({
+        sessionUrl: `${JMAP_SERVER_URL.replace(/\/$/, '')}/.well-known/jmap`,
+        serverOrigin: serverOrigin.value,
+        auth,
+      });
+      accountId.value = result.accountId;
+      username.value = displayName;
+      status.value = AUTH_STATE.CONNECTED;
+      return true;
+    } catch (err) {
+      status.value = AUTH_STATE.FAILED;
+      error.value = err?.message ?? String(err);
+      return false;
+    }
+  }
+
+  async function logout() {
+    if (accountId.value != null) {
+      try {
+        const repo = await getRepositoryAsync();
+        await repo.stopSyncAccount(accountId.value);
+      } catch (err) {
+        // We are tearing down; surface the error but do not block.
+        console.warn('stopSyncAccount failed during logout', err);
+      }
+    }
+    accountId.value = null;
+    username.value = null;
+    error.value = null;
+    status.value = AUTH_STATE.IDLE;
+    const oidc = getOidc();
+    if (oidc?.isUserLoggedIn) {
+      await oidc.logout({ redirectTo: 'home' });
     }
   }
 
   return {
-    client,
-    connected,
     status,
+    accountId,
+    username,
     error,
-    oidcReady,
-    oidcLoading,
-    serverName,
-    initializeOidc,
-    connect,
-    connectWithOAuth,
-    handleOAuthLogin,
-    handleLogout,
-  }
-})
+    serverOrigin,
+    serverHostname,
+    isOidcReady,
+    isConnected,
+    initialize,
+    connectWithPassword,
+    connectViaOidc,
+    logout,
+  };
+});

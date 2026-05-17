@@ -39,6 +39,7 @@ import {
   syncContacts,
   syncContactCardChanges,
 } from './contacts.js';
+import { drainOutbox } from './outbox.js';
 
 const SUBSCRIBED_TYPES = [
   JMAP_TYPE.MAILBOX,
@@ -214,9 +215,21 @@ export class JmapBackend {
     });
   }
 
+  async drainOutbox(limit = 25) {
+    return drainOutbox({
+      transport: this.transport,
+      account: this.account,
+      handlers: this.handlers,
+      limit,
+      useWebSocket: this._wsReady(),
+    });
+  }
+
   async runMutation(_mutationId) {
-    // Wired in the next commit when the outbox runner lands.
-    throw new Error('runMutation not implemented yet');
+    // Per-row mutation runs are not wired today; the SharedWorker
+    // calls drainOutbox(limit) which iterates the queue. Keep this
+    // for future per-mutation retry hooks.
+    return this.drainOutbox(1);
   }
 
   // ----- StateChange dispatch -----------------------------------------

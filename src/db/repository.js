@@ -253,6 +253,10 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_CONTACTS, { accountId, addressbookId });
   }
 
+  drainOutbox(accountId, limit = 25) {
+    return this.call(DB_RPC.SYNC_DRAIN_OUTBOX, { accountId, limit });
+  }
+
   // Internals ----------------------------------------------------------
 
   _onMessage(msg) {

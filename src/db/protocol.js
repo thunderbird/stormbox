@@ -59,6 +59,7 @@ export const DB_RPC = Object.freeze({
   SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
   SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
   SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',
+  SYNC_DRAIN_OUTBOX: 'sync.drainOutbox',
 });
 
 /**

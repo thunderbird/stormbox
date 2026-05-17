@@ -177,6 +177,53 @@ describe('drainOutbox', () => {
     expect(remaining[0].error_json).toMatch(/notUpdated/);
   });
 
+  it('runs send via Email/set + EmailSubmission/set with onSuccessUpdateEmail', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      requestJson: JSON.stringify({
+        identityId: 'id-1',
+        from: { name: 'Tester', email: 'tester@example.com' },
+        to: [{ email: 'rcpt@example.com' }],
+        subject: 'Hello',
+        textBody: 'Hi.',
+        htmlBody: '<p>Hi.</p>',
+        draftsRemoteId: 'mb-drafts',
+        sentRemoteId: 'mb-sent',
+        outboxRemoteId: null,
+      }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    let submitParams;
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
+    });
+    transport.handle('EmailSubmission/set', (params) => {
+      submitParams = params;
+      return { created: { s1: { id: 'sub-1', sendAt: '2026-05-01T12:00:00Z' } } };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+
+    expect(setParams.create.c1.from[0].email).toBe('tester@example.com');
+    expect(setParams.create.c1.subject).toBe('Hello');
+    // multipart/alternative because htmlBody is non-trivial.
+    expect(setParams.create.c1.bodyStructure.type).toBe('multipart/alternative');
+    expect(setParams.create.c1.mailboxIds).toEqual({ 'mb-drafts': true });
+    expect(setParams.create.c1.keywords).toEqual({ $draft: true });
+
+    expect(submitParams.create.s1.identityId).toBe('id-1');
+    expect(submitParams.create.s1.emailId).toBe('#c1');
+    expect(submitParams.create.s1.envelope.rcptTo[0].email).toBe('rcpt@example.com');
+    expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
+    expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
+    expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
+  });
+
   it('marks the row conflicted on transport errors', async () => {
     await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,
