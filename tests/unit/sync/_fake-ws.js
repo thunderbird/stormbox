@@ -10,7 +10,9 @@ export class FakeWebSocket {
 
   static _reset() {
     FakeWebSocket.instances = [];
-    FakeWebSocket._waiters.forEach((w) => w.reject(new Error('reset')));
+    // Drop pending waiters silently. Rejecting them would surface as
+    // unhandled rejections in the next test even though nothing is
+    // actually wrong: the previous test simply opted out of the WS path.
     FakeWebSocket._waiters = [];
   }
 
