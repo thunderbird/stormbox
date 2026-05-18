@@ -7,6 +7,7 @@ import { SERVICE_KIND } from '../../../src/constants/states.js';
 import { JmapBackend } from '../../../src/sync/backends/jmap/backend.js';
 import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
 import { FakeWebSocket } from './_fake-ws.js';
+import { MockTransport } from './_mock-transport.js';
 
 const SESSION = {
   apiUrl: 'https://mail.example.com/jmap',
@@ -189,6 +190,126 @@ describe('JmapBackend.start', () => {
     await backend.bootstrapped();
     consoleWarn.mockRestore();
     await backend.stop();
+  });
+});
+
+describe('JmapBackend.ensureMessageBodies', () => {
+  it('maps local message ids to remote ids, skips already-fetched bodies, and fetches in one batch', async () => {
+    const accountResult = await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    });
+    const account = accountResult.row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' }],
+    });
+    await handlers[DB_RPC.THREAD_UPSERT_MANY]({
+      accountId: account.id,
+      threads: [{ remoteId: 't-1' }, { remoteId: 't-2' }],
+    });
+    const threads = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id, remote_id FROM threads WHERE account_id = ?',
+      params: [account.id],
+    });
+    const threadId = (remoteId) => threads.find((t) => t.remote_id === remoteId).id;
+    await handlers[DB_RPC.MESSAGE_UPSERT_MANY]({
+      accountId: account.id,
+      messages: [
+        {
+          remoteId: 'e-1',
+          threadId: threadId('t-1'),
+          remoteThreadId: 't-1',
+          subject: 'one',
+          preview: 'p1',
+          receivedAt: Date.now(),
+          sentAt: Date.now(),
+          hasAttachment: false,
+          keywordsJson: '{}',
+          keywords: [],
+          isSeen: false,
+          isFlagged: false,
+          isAnswered: false,
+          isDraft: false,
+          isForwarded: false,
+          isJunk: false,
+          addresses: [],
+        },
+        {
+          remoteId: 'e-2',
+          threadId: threadId('t-2'),
+          remoteThreadId: 't-2',
+          subject: 'two',
+          preview: 'p2',
+          receivedAt: Date.now(),
+          sentAt: Date.now(),
+          hasAttachment: false,
+          keywordsJson: '{}',
+          keywords: [],
+          isSeen: false,
+          isFlagged: false,
+          isAnswered: false,
+          isDraft: false,
+          isForwarded: false,
+          isJunk: false,
+          addresses: [],
+        },
+      ],
+    });
+    const messages = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id, remote_id FROM messages WHERE account_id = ? ORDER BY remote_id',
+      params: [account.id],
+    });
+
+    const transport = new MockTransport();
+    let seenIds = null;
+    transport.handle('Email/get', (params) => {
+      seenIds = params.ids;
+      return {
+        state: 'es-1',
+        list: params.ids.map((id) => ({
+          id,
+          blobId: `blob-${id}`,
+          threadId: id === 'e-1' ? 't-1' : 't-2',
+          mailboxIds: { 'mb-inbox': true },
+          keywords: {},
+          bodyStructure: { partId: `body-${id}`, type: 'text/plain', size: 12 },
+          textBody: [{ partId: `body-${id}` }],
+          htmlBody: [],
+          attachments: [],
+          bodyValues: {
+            [`body-${id}`]: { value: `hello ${id}`, isTruncated: false },
+          },
+        })),
+      };
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = {
+      id: account.id,
+      remote_account_id: account.remote_account_id,
+    };
+
+    const result = await backend.ensureMessageBodies(messages.map((m) => m.id));
+    expect(result.fetched).toBe(2);
+    expect(seenIds).toEqual(['e-1', 'e-2']);
+    const bodies = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT kind, value FROM body_values ORDER BY value',
+      params: [],
+    });
+    expect(bodies.map((b) => b.value)).toEqual(['hello e-1', 'hello e-2']);
+
+    seenIds = null;
+    const second = await backend.ensureMessageBodies(messages.map((m) => m.id));
+    expect(second.fetched).toBe(0);
+    expect(seenIds).toBeNull();
   });
 });
 

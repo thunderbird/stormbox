@@ -30,6 +30,8 @@ import { KEYWORD } from '../constants/states.js';
 // positional reads. ~100 metadata records per Email/get is well below
 // the ~50KB-per-record envelope and fits in one WS frame.
 const PAGE_SIZE = 100;
+const BODY_PREFETCH_BATCH = 4;
+const INITIAL_BODY_PREFETCH = 5;
 
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
@@ -42,6 +44,7 @@ export const useMailStore = defineStore('mail', () => {
   // true total.
   const messages = ref([]);
   const totalForFolder = ref(0);
+  const folderProgress = ref(new Map());
   const selectedMessageId = ref(null);
   const messageBody = ref(null);
   const isLoading = ref(false);
@@ -57,7 +60,7 @@ export const useMailStore = defineStore('mail', () => {
    * @property {number} folderId
    * @property {number} total          authoritative once Email/query lands
    * @property {Array<object|undefined>} rows  positional, sparse OK
-   * @property {Set<number>} paintedOffsets   page-aligned offsets we've loaded
+   * @property {Array<{start:number,end:number}>} paintedRanges
    * @property {'received'|'sent'} sortProp
    * @property {number} scrollTop
    *
@@ -70,6 +73,9 @@ export const useMailStore = defineStore('mail', () => {
   let repo = null;
   let unsubscribe = null;
   let bodyFetchToken = 0;
+  const bodyQueue = [];
+  const bodyQueued = new Set();
+  let bodyPrefetchRunning = false;
 
   const currentFolder = computed(
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
@@ -98,8 +104,11 @@ export const useMailStore = defineStore('mail', () => {
           currentFolderId.value = null;
           selectedMessageId.value = null;
           messageBody.value = null;
+          folderProgress.value = new Map();
           folderStates.clear();
           folderState = null;
+          bodyQueue.length = 0;
+          bodyQueued.clear();
         }
       },
       { immediate: true },
@@ -129,6 +138,7 @@ export const useMailStore = defineStore('mail', () => {
       if (currentFolderId.value != null) {
         refreshLoadedPages();
       }
+      refreshFolderProgress();
       if (selectedMessageId.value != null) {
         refreshMessageBody(selectedMessageId.value);
       }
@@ -142,10 +152,43 @@ export const useMailStore = defineStore('mail', () => {
     }
     try {
       folders.value = await repo.listFolders(authStore.accountId);
+      await refreshFolderProgress();
     } catch (err) {
       error.value = err?.message ?? String(err);
       console.error('[mail-store] refreshFolders failed', err);
     }
+  }
+
+  async function refreshFolderProgress() {
+    if (!repo || authStore.accountId == null || folders.value.length === 0) return;
+    const next = new Map(folderProgress.value);
+    await Promise.all(folders.value.map(async (folder) => {
+      if (Number(folder.total_emails ?? 0) <= PAGE_SIZE) {
+        next.set(folder.id, {
+          total: Number(folder.total_emails ?? 0),
+          covered: Number(folder.total_emails ?? 0),
+          percent: 100,
+        });
+        return;
+      }
+      const progress = await repo.queryViewProgress({
+        accountId: authStore.accountId,
+        folderId: folder.id,
+        sort: _sortPropFor(folder),
+      });
+      next.set(folder.id, progress);
+    }));
+    folderProgress.value = next;
+    folders.value = folders.value.map((folder) => {
+      const progress = next.get(folder.id);
+      if (!progress) return folder;
+      return {
+        ...folder,
+        index_total: progress.total,
+        index_covered: progress.covered,
+        index_percent: progress.percent,
+      };
+    });
   }
 
   function _sortPropFor(folder) {
@@ -188,7 +231,7 @@ export const useMailStore = defineStore('mail', () => {
         folderId,
         total: Number(folderRow?.total_emails ?? 0) || 0,
         rows: [],
-        paintedOffsets: new Set(),
+        paintedRanges: [],
         sortProp: _sortPropFor(folderRow),
         scrollTop: 0,
       };
@@ -202,12 +245,12 @@ export const useMailStore = defineStore('mail', () => {
     folderState = state;
     totalForFolder.value = state.total;
     messages.value = state.rows;
-    isLoading.value = state.paintedOffsets.size === 0;
+    isLoading.value = state.paintedRanges.length === 0;
 
     // Prime page 0 once. Errors are surfaced via the spinner timing
     // out; we don't throw out of selectFolder so click handlers stay
     // simple.
-    if (state.paintedOffsets.size === 0 && authStore.accountId != null && repo) {
+    if (state.paintedRanges.length === 0 && authStore.accountId != null && repo) {
       await ensureLoaded(0, PAGE_SIZE);
     }
   }
@@ -228,11 +271,11 @@ export const useMailStore = defineStore('mail', () => {
     if (authStore.accountId == null || !repo) return;
     if (pageInflight) return pageInflight;
 
-    const lastIdx = Math.max(start, end - 1);
-    const offset = Math.floor(lastIdx / PAGE_SIZE) * PAGE_SIZE;
-    if (state.paintedOffsets.has(offset)) return;
+    const offset = Math.max(0, Number(start ?? 0));
+    const limit = Math.max(1, Math.min(PAGE_SIZE, Number(end ?? offset + 1) - offset));
+    if (rangeCovered(state.paintedRanges, offset, offset + limit)) return;
 
-    pageInflight = _loadPage(state, offset)
+    pageInflight = _loadPage(state, offset, limit)
       .catch((err) => {
         error.value = err?.message ?? String(err);
         console.error('[mail-store] ensureLoaded failed', { offset, err });
@@ -246,8 +289,9 @@ export const useMailStore = defineStore('mail', () => {
         // setRequestedRange.
         if (folderState === state && state.requestedRange) {
           const { start: s, end: e } = state.requestedRange;
-          const nextOffset = Math.floor(Math.max(s, e - 1) / PAGE_SIZE) * PAGE_SIZE;
-          if (!state.paintedOffsets.has(nextOffset)) {
+          const nextOffset = Math.max(0, Number(s ?? 0));
+          const nextEnd = Math.max(nextOffset + 1, Number(e ?? nextOffset + 1));
+          if (!rangeCovered(state.paintedRanges, nextOffset, nextEnd)) {
             // Don't await; let the chain unwind and fire on a fresh
             // microtask so re-entrancy stays simple.
             ensureLoaded(s, e);
@@ -257,7 +301,7 @@ export const useMailStore = defineStore('mail', () => {
     return pageInflight;
   }
 
-  async function _loadPage(state, offset) {
+  async function _loadPage(state, offset, limit) {
     // Try SQLite first. If a previous JMAP fetch already populated
     // query_view_items for this page (likely after refresh-the-current-
     // folder broadcasts) we can avoid the network entirely.
@@ -266,12 +310,12 @@ export const useMailStore = defineStore('mail', () => {
       folderId: state.folderId,
       sort: state.sortProp,
       offset,
-      limit: PAGE_SIZE,
+      limit,
     });
     if (state !== folderState) return;
     if (cached.length > 0) {
       _splice(state, offset, cached);
-      state.paintedOffsets.add(offset);
+      addRange(state.paintedRanges, offset, offset + cached.length);
       return;
     }
 
@@ -280,7 +324,7 @@ export const useMailStore = defineStore('mail', () => {
     // messages, so the second read is the one that produces UI rows.
     const result = await repo.ensureFolderWindow(authStore.accountId, state.folderId, {
       offset,
-      limit: PAGE_SIZE,
+      limit,
     });
     if (state !== folderState) return;
     if (Number.isFinite(result?.total)) {
@@ -292,11 +336,11 @@ export const useMailStore = defineStore('mail', () => {
       folderId: state.folderId,
       sort: state.sortProp,
       offset,
-      limit: PAGE_SIZE,
+      limit,
     });
     if (state !== folderState) return;
     _splice(state, offset, rows);
-    state.paintedOffsets.add(offset);
+    addRange(state.paintedRanges, offset, offset + rows.length);
   }
 
   /**
@@ -319,6 +363,33 @@ export const useMailStore = defineStore('mail', () => {
       // pointing at the same per-folder buffer.
       messages.value = state.rows.slice();
     }
+    if (offset === 0 && state === folderState) {
+      maybePrefetchInitialBodies(state);
+    }
+  }
+
+  function rangeCovered(ranges, start, end) {
+    if (end <= start) return true;
+    for (const range of ranges) {
+      if (start >= range.start && end <= range.end) return true;
+    }
+    return false;
+  }
+
+  function addRange(ranges, start, end) {
+    if (end <= start) return;
+    ranges.push({ start, end });
+    ranges.sort((a, b) => a.start - b.start || a.end - b.end);
+    for (let i = 0; i < ranges.length - 1;) {
+      const cur = ranges[i];
+      const next = ranges[i + 1];
+      if (next.start <= cur.end) {
+        cur.end = Math.max(cur.end, next.end);
+        ranges.splice(i + 1, 1);
+      } else {
+        i += 1;
+      }
+    }
   }
 
   /**
@@ -329,13 +400,15 @@ export const useMailStore = defineStore('mail', () => {
   async function refreshLoadedPages() {
     const state = folderState;
     if (!repo || !state || state.folderId !== currentFolderId.value) return;
-    for (const offset of state.paintedOffsets) {
+    for (const range of state.paintedRanges) {
+      const offset = range.start;
+      const limit = range.end - range.start;
       const rows = await repo.listMessagesForView({
         accountId: authStore.accountId,
         folderId: state.folderId,
         sort: state.sortProp,
         offset,
-        limit: PAGE_SIZE,
+        limit,
       });
       if (state !== folderState) return;
       if (rows.length > 0) _splice(state, offset, rows);
@@ -361,6 +434,68 @@ export const useMailStore = defineStore('mail', () => {
     if (state) state.requestedRange = { start, end };
   }
 
+  function maybePrefetchInitialBodies(state) {
+    const folder = folders.value.find((f) => f.id === state.folderId);
+    const isSmallFolder = Number(state.total ?? 0) <= PAGE_SIZE;
+    const shouldPrefetch = folder?.role === 'inbox' || isSmallFolder;
+    if (!shouldPrefetch || state.didInitialBodyPrefetch) return;
+    state.didInitialBodyPrefetch = true;
+    const ids = state.rows
+      .slice(0, INITIAL_BODY_PREFETCH)
+      .map((row) => row?.id)
+      .filter(Boolean);
+    enqueueBodyPrefetch(ids);
+  }
+
+  function nearbyMessageIds(messageId) {
+    const idx = messages.value.findIndex((row) => row?.id === messageId);
+    if (idx < 0) return [messageId];
+    const order = [idx, idx + 1, idx + 2, idx - 1];
+    return order
+      .map((i) => messages.value[i]?.id)
+      .filter(Boolean);
+  }
+
+  function enqueueBodyPrefetch(messageIds, { priority = false } = {}) {
+    if (!Array.isArray(messageIds) || messageIds.length === 0) return;
+    const deduped = [];
+    for (const id of messageIds) {
+      if (id == null || bodyQueued.has(id)) continue;
+      bodyQueued.add(id);
+      deduped.push(id);
+    }
+    if (deduped.length === 0) return;
+    if (priority) bodyQueue.unshift(...deduped);
+    else bodyQueue.push(...deduped);
+    drainBodyPrefetchQueue();
+  }
+
+  async function drainBodyPrefetchQueue() {
+    if (bodyPrefetchRunning || !repo || authStore.accountId == null) return;
+    bodyPrefetchRunning = true;
+    try {
+      while (bodyQueue.length > 0 && repo && authStore.accountId != null) {
+        const batch = bodyQueue.splice(0, BODY_PREFETCH_BATCH);
+        for (const id of batch) bodyQueued.delete(id);
+        const selectedAtStart = selectedMessageId.value;
+        await repo.ensureMessageBodies(authStore.accountId, batch);
+        if (selectedAtStart != null && batch.includes(selectedAtStart)) {
+          await refreshMessageBody(selectedAtStart);
+        }
+        // Yield so metadata reads and user-triggered RPCs can get into
+        // the worker queue between body batches.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    } catch (err) {
+      console.warn('[mail-store] body prefetch failed', err);
+    } finally {
+      bodyPrefetchRunning = false;
+      if (bodyQueue.length > 0) {
+        setTimeout(() => drainBodyPrefetchQueue(), 0);
+      }
+    }
+  }
+
   /**
    * Open a message. Renders the cached body immediately if we have one;
    * always asks the sync layer to refresh in the background.
@@ -380,16 +515,12 @@ export const useMailStore = defineStore('mail', () => {
     }
 
     const token = ++bodyFetchToken;
-    repo
-      .ensureMessageBody(authStore.accountId, messageId)
-      .then(() => {
-        if (token === bodyFetchToken && selectedMessageId.value === messageId) {
-          refreshMessageBody(messageId);
-        }
-      })
-      .catch((err) => {
-        console.warn('[mail-store] ensureMessageBody failed', err);
-      });
+    enqueueBodyPrefetch(nearbyMessageIds(messageId), { priority: true });
+    drainBodyPrefetchQueue().finally(() => {
+      if (token === bodyFetchToken && selectedMessageId.value === messageId) {
+        refreshMessageBody(messageId);
+      }
+    });
   }
 
   async function refreshMessageBody(messageId) {
@@ -470,12 +601,12 @@ export const useMailStore = defineStore('mail', () => {
       await repo.ensureFolderTree(authStore.accountId);
       // Re-fetch every page we've already painted so the user sees
       // any server-side changes without losing scroll position.
-      const paintedSorted = [...state.paintedOffsets].sort((a, b) => a - b);
-      for (const offset of paintedSorted) {
+      const paintedSorted = [...state.paintedRanges].sort((a, b) => a.start - b.start);
+      for (const range of paintedSorted) {
         if (state !== folderState) return;
         const result = await repo.ensureFolderWindow(authStore.accountId, state.folderId, {
-          offset,
-          limit: PAGE_SIZE,
+          offset: range.start,
+          limit: range.end - range.start,
         });
         if (Number.isFinite(result?.total)) {
           state.total = Number(result.total);

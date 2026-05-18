@@ -427,33 +427,49 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
     [DB_RPC.MESSAGE_LIST_FOR_VIEW]: async ({
       accountId, folderId, sort = 'received', offset = 0, limit = 100,
     }) => {
-      const folder = await engine.get(
-        `SELECT id, remote_id FROM folders WHERE id = ? AND account_id = ?`,
-        [folderId, accountId],
-      );
-      if (!folder?.remote_id) return [];
-      const sortProp = sort === 'sent' ? 'sentAt' : 'receivedAt';
-      const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
-      const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+      const view = await loadMailboxQueryView(engine, { accountId, folderId, sort });
+      if (!view) return [];
       return engine.all(
         `SELECT m.*, qi.position AS view_position
            FROM query_view_items qi
-           JOIN query_views v
-             ON v.id = qi.view_id
-            AND v.account_id = ?
-            AND v.folder_id = ?
-            AND v.view_type = 'mailbox-window'
-            AND v.filter_json = ?
-            AND v.sort_json = ?
-            AND v.collapse_threads = 0
            JOIN messages m
              ON m.account_id = ?
             AND m.remote_id = qi.remote_id
-          WHERE qi.position >= ?
+          WHERE qi.view_id = ?
+            AND qi.position >= ?
             AND qi.position < ?
           ORDER BY qi.position`,
-        [accountId, folderId, filterJson, sortJson, accountId, offset, offset + limit],
+        [accountId, view.id, offset, offset + limit],
       );
+    },
+
+    [DB_RPC.QUERY_VIEW_PROGRESS]: async ({ accountId, folderId, sort = 'received' }) => {
+      const view = await loadMailboxQueryView(engine, { accountId, folderId, sort });
+      if (!view) {
+        const folder = await engine.get(
+          `SELECT total_emails FROM folders WHERE account_id = ? AND id = ?`,
+          [accountId, folderId],
+        );
+        return {
+          total: Number(folder?.total_emails ?? 0),
+          covered: 0,
+          percent: 0,
+        };
+      }
+      const ranges = await engine.all(
+        `SELECT start_position, end_position
+           FROM query_view_ranges
+          WHERE view_id = ?
+          ORDER BY start_position, end_position`,
+        [view.id],
+      );
+      const total = Number(view.total ?? 0);
+      const covered = mergeRangeCoverage(ranges, total);
+      return {
+        total,
+        covered,
+        percent: total > 0 ? Math.min(100, Math.round((covered / total) * 100)) : 0,
+      };
     },
 
     [DB_RPC.MESSAGE_GET_BY_REMOTE]: async ({ accountId, remoteId }) =>
@@ -801,6 +817,61 @@ function nextPrefix(prefix) {
     }
   }
   return null;
+}
+
+async function loadMailboxQueryView(engine, { accountId, folderId, sort = 'received' }) {
+  const folder = await engine.get(
+    `SELECT id, remote_id FROM folders WHERE id = ? AND account_id = ?`,
+    [folderId, accountId],
+  );
+  if (!folder?.remote_id) return null;
+  const sortProp = sort === 'sent' ? 'sentAt' : 'receivedAt';
+  const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
+  const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+  return engine.get(
+    `SELECT *
+       FROM query_views
+      WHERE account_id = ?
+        AND folder_id = ?
+        AND view_type = 'mailbox-window'
+        AND filter_json = ?
+        AND sort_json = ?
+        AND collapse_threads = 0`,
+    [accountId, folderId, filterJson, sortJson],
+  );
+}
+
+function mergeRangeCoverage(ranges, total = 0) {
+  let covered = 0;
+  let activeStart = null;
+  let activeEnd = null;
+  for (const range of ranges ?? []) {
+    let start = Number(range.start_position ?? 0);
+    let end = Number(range.end_position ?? 0);
+    if (Number.isFinite(total) && total > 0) {
+      start = Math.max(0, Math.min(start, total));
+      end = Math.max(0, Math.min(end, total));
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      continue;
+    }
+    if (activeStart == null) {
+      activeStart = start;
+      activeEnd = end;
+      continue;
+    }
+    if (start <= activeEnd) {
+      activeEnd = Math.max(activeEnd, end);
+    } else {
+      covered += activeEnd - activeStart;
+      activeStart = start;
+      activeEnd = end;
+    }
+  }
+  if (activeStart != null) {
+    covered += activeEnd - activeStart;
+  }
+  return covered;
 }
 
 /**

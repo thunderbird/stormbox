@@ -69,6 +69,8 @@ export class JmapBackend {
     this.services = [];
     this._unsubStateChange = null;
     this._started = false;
+    this._indexerTimer = null;
+    this._indexerRunning = false;
   }
 
   /**
@@ -157,12 +159,17 @@ export class JmapBackend {
         wlog.error('jmap-backend', 'StateChange dispatch failed', err);
       }),
     );
+    this._scheduleMetadataIndexer(1_000);
   }
 
   async stop() {
     if (!this._started) return;
     this._unsubStateChange?.();
     this._unsubStateChange = null;
+    if (this._indexerTimer) {
+      clearTimeout(this._indexerTimer);
+      this._indexerTimer = null;
+    }
     this.transport.closeWebSocket();
     this._started = false;
   }
@@ -199,21 +206,161 @@ export class JmapBackend {
   }
 
   async ensureMessageBody(messageId) {
-    const row = await this.handlers[DB_RPC.QUERY]({
-      sql: 'SELECT remote_id FROM messages WHERE id = ?',
-      params: [messageId],
+    return this.ensureMessageBodies([messageId]);
+  }
+
+  async ensureMessageBodies(messageIds = []) {
+    const ids = [...new Set((messageIds ?? []).filter((id) => id != null))];
+    if (ids.length === 0) return { fetched: 0 };
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT remote_id
+              FROM messages
+             WHERE id IN (${placeholders})
+               AND body_fetched_at IS NULL`,
+      params: ids,
     });
-    const remoteId = row[0]?.remote_id;
-    if (!remoteId) {
-      throw new Error(`Unknown message ${messageId}`);
-    }
+    const remoteIds = rows.map((row) => row.remote_id).filter(Boolean);
+    if (remoteIds.length === 0) return { fetched: 0 };
     return fetchEmailBodies({
       transport: this.transport,
       account: this.account,
       handlers: this.handlers,
-      remoteIds: [remoteId],
+      remoteIds,
       useWebSocket: this._wsReady(),
     });
+  }
+
+  async ensureFolderIndex(folderId, options = {}) {
+    const folder = await this._loadFolder(folderId);
+    const sortProp = options.sortProp ?? this._defaultSortPropFor(folder);
+    const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500));
+    const maxChunks = Math.max(1, Number(options.maxChunks ?? 1));
+    let offset = Number(options.offset ?? 0);
+    let total = Number(options.total ?? folder.total_emails ?? 0);
+    let fetched = 0;
+    for (let i = 0; i < maxChunks; i += 1) {
+      const gap = await this._nextQueryViewGap({ folder, sortProp, startAt: offset, total, limit });
+      if (!gap) break;
+      const result = await syncFolderWindow({
+        transport: this.transport,
+        account: this.account,
+        folder,
+        handlers: this.handlers,
+        sortProp,
+        position: gap.offset,
+        limit: gap.limit,
+        collapseThreads: false,
+        useWebSocket: this._wsReady(),
+      });
+      fetched += result?.fetched ?? 0;
+      total = Number(result?.total ?? total);
+      offset = gap.offset + gap.limit;
+    }
+    return { fetched, total };
+  }
+
+  _scheduleMetadataIndexer(delayMs = 2_500) {
+    if (!this._started || this._indexerTimer) return;
+    this._indexerTimer = setTimeout(() => {
+      this._indexerTimer = null;
+      this._runMetadataIndexerChunk()
+        .catch((err) => wlog.warn('jmap-backend', 'metadata indexer failed', err))
+        .finally(() => {
+          if (this._started) this._scheduleMetadataIndexer(2_500);
+        });
+    }, delayMs);
+  }
+
+  async _runMetadataIndexerChunk() {
+    if (this._indexerRunning || !this.account) return;
+    this._indexerRunning = true;
+    try {
+      const folders = await this.handlers[DB_RPC.QUERY]({
+        sql: `SELECT *
+                FROM folders
+               WHERE account_id = ?
+                 AND is_deleted = 0
+                 AND COALESCE(total_emails, 0) > 0
+               ORDER BY CASE role
+                          WHEN 'inbox' THEN 0
+                          WHEN 'sent' THEN 1
+                          WHEN 'archive' THEN 2
+                          ELSE 3
+                        END,
+                        COALESCE(total_emails, 0) DESC`,
+        params: [this.account.id],
+      });
+      for (const folder of folders) {
+        const progress = await this._queryViewProgress(folder);
+        if (progress.total > 0 && progress.covered >= progress.total) {
+          continue;
+        }
+        const result = await this.ensureFolderIndex(folder.id, {
+          limit: 100,
+          maxChunks: 1,
+          total: progress.total || folder.total_emails,
+        });
+        if ((result?.fetched ?? 0) > 0) {
+          wlog.info(
+            'jmap-backend',
+            `metadata indexer folder=${folder.name} fetched=${result.fetched} total=${result.total}`,
+          );
+        }
+        break;
+      }
+    } finally {
+      this._indexerRunning = false;
+    }
+  }
+
+  async _queryViewProgress(folder) {
+    const sortProp = this._defaultSortPropFor(folder);
+    const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
+    const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+    const views = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT id, total
+              FROM query_views
+             WHERE account_id = ?
+               AND view_type = 'mailbox-window'
+               AND folder_id = ?
+               AND filter_json = ?
+               AND sort_json = ?
+               AND collapse_threads = 0`,
+      params: [this.account.id, folder.id, filterJson, sortJson],
+    });
+    const view = views[0];
+    if (!view) {
+      return { total: Number(folder.total_emails ?? 0), covered: 0 };
+    }
+    const ranges = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT start_position, end_position
+              FROM query_view_ranges
+             WHERE view_id = ?
+             ORDER BY start_position, end_position`,
+      params: [view.id],
+    });
+    const total = Number(view.total ?? folder.total_emails ?? 0);
+    let covered = 0;
+    let start = null;
+    let end = null;
+    for (const range of ranges) {
+      const rs = Math.max(0, Math.min(Number(range.start_position ?? 0), total));
+      const re = Math.max(0, Math.min(Number(range.end_position ?? 0), total));
+      if (re <= rs) continue;
+      if (start == null) {
+        start = rs;
+        end = re;
+      } else if (rs <= end) {
+        end = Math.max(end, re);
+      } else {
+        covered += end - start;
+        start = rs;
+        end = re;
+      }
+    }
+    if (start != null) covered += end - start;
+    return { total, covered };
   }
 
   async ensureIdentities() {
@@ -444,5 +591,49 @@ export class JmapBackend {
             WHERE account_id = ? AND service_kind = ?`,
       params: [pushState, Date.now(), this.account.id, SERVICE_KIND.JMAP_MAIL],
     });
+  }
+
+  async _nextQueryViewGap({ folder, sortProp, startAt = 0, total = 0, limit = 100 }) {
+    const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
+    const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+    const views = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT id, total
+              FROM query_views
+             WHERE account_id = ?
+               AND view_type = 'mailbox-window'
+               AND folder_id = ?
+               AND filter_json = ?
+               AND sort_json = ?
+               AND collapse_threads = 0`,
+      params: [this.account.id, folder.id, filterJson, sortJson],
+    });
+    const view = views[0] ?? null;
+    const effectiveTotal = Number(view?.total ?? total ?? 0);
+    if (!Number.isFinite(effectiveTotal) || effectiveTotal <= 0) {
+      return { offset: 0, limit };
+    }
+    const ranges = view
+      ? await this.handlers[DB_RPC.QUERY]({
+        sql: `SELECT start_position, end_position
+                FROM query_view_ranges
+               WHERE view_id = ?
+               ORDER BY start_position, end_position`,
+        params: [view.id],
+      })
+      : [];
+    let cursor = Math.max(0, Math.min(startAt, effectiveTotal));
+    for (const range of ranges) {
+      const start = Math.max(0, Number(range.start_position ?? 0));
+      const end = Math.min(effectiveTotal, Number(range.end_position ?? 0));
+      if (end <= start) continue;
+      if (cursor < start) {
+        return { offset: cursor, limit: Math.min(limit, start - cursor) };
+      }
+      if (cursor < end) cursor = end;
+      if (cursor >= effectiveTotal) return null;
+    }
+    return cursor < effectiveTotal
+      ? { offset: cursor, limit: Math.min(limit, effectiveTotal - cursor) }
+      : null;
   }
 }

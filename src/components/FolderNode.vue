@@ -11,6 +11,12 @@ const current = computed(() => props.isCurrent(props.folder.id));
 const unread = computed(() => Number(props.folder.unread_emails) || 0);
 const Icon = computed(() => props.folder.icon);
 const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
+const indexPercent = computed(() => Number(props.folder.index_percent ?? 0));
+const showIndexProgress = computed(() =>
+  Number(props.folder.total_emails ?? 0) > 100
+  && indexPercent.value > 0
+  && indexPercent.value < 100,
+);
 </script>
 
 <template>
@@ -23,6 +29,7 @@ const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
   >
     <component :is="Icon" :size="18" :stroke-width="1.75" class="folder-node__icon" />
     <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
+    <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
     <span v-if="unread > 0" class="folder-node__count">{{ unread > 99 ? '99+' : unread }}</span>
   </button>
   <FolderNode
@@ -87,6 +94,15 @@ export default { name: 'FolderNode' };
   padding: 2px 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.folder-node__index {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .folder-node.is-current .folder-node__count {
   color: var(--accent);

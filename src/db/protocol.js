@@ -39,6 +39,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
 
   FOLDER_MEMBERSHIP_REPLACE: 'folderMembership.replace',
+  QUERY_VIEW_PROGRESS: 'queryView.progress',
 
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',
@@ -57,9 +58,11 @@ export const DB_RPC = Object.freeze({
   SYNC_ENSURE_FOLDER_TREE: 'sync.ensureFolderTree',
   SYNC_ENSURE_FOLDER_WINDOW: 'sync.ensureFolderWindow',
   SYNC_ENSURE_MESSAGE_BODY: 'sync.ensureMessageBody',
+  SYNC_ENSURE_MESSAGE_BODIES: 'sync.ensureMessageBodies',
   SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
   SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
   SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',
+  SYNC_ENSURE_FOLDER_INDEX: 'sync.ensureFolderIndex',
   SYNC_DRAIN_OUTBOX: 'sync.drainOutbox',
 });
 

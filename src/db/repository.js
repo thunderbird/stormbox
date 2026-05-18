@@ -157,6 +157,10 @@ export class Repository {
     return this.call(DB_RPC.MESSAGE_LIST_FOR_VIEW, { accountId, folderId, sort, offset, limit });
   }
 
+  queryViewProgress({ accountId, folderId, sort = 'received' }) {
+    return this.call(DB_RPC.QUERY_VIEW_PROGRESS, { accountId, folderId, sort });
+  }
+
   getMessageByRemote(accountId, remoteId) {
     return this.call(DB_RPC.MESSAGE_GET_BY_REMOTE, { accountId, remoteId });
   }
@@ -258,6 +262,10 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_MESSAGE_BODY, { accountId, messageId });
   }
 
+  ensureMessageBodies(accountId, messageIds) {
+    return this.call(DB_RPC.SYNC_ENSURE_MESSAGE_BODIES, { accountId, messageIds });
+  }
+
   ensureIdentities(accountId) {
     return this.call(DB_RPC.SYNC_ENSURE_IDENTITIES, { accountId });
   }
@@ -268,6 +276,10 @@ export class Repository {
 
   ensureContacts(accountId, addressbookId) {
     return this.call(DB_RPC.SYNC_ENSURE_CONTACTS, { accountId, addressbookId });
+  }
+
+  ensureFolderIndex(accountId, folderId, options = {}) {
+    return this.call(DB_RPC.SYNC_ENSURE_FOLDER_INDEX, { accountId, folderId, options });
   }
 
   drainOutbox(accountId, limit = 25) {

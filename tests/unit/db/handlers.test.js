@@ -476,6 +476,49 @@ describe('thread + message + membership handlers', () => {
     });
     expect(sparse).toHaveLength(0);
   });
+
+  it('computes metadata progress from overlapping query_view_ranges', async () => {
+    const account = await seedAccount();
+    const archive = await seedFolder(account.id, {
+      remoteId: 'mb-progress',
+      name: 'Archive',
+      role: 'archive',
+      totalEmails: 500,
+    });
+    const filterJson = JSON.stringify({ inMailbox: archive.remote_id });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'qs', 1, 500, ?, ?, ?)`,
+      params: [account.id, archive.id, filterJson, sortJson, Date.now(), Date.now(), Date.now()],
+    });
+    const view = await engine.get(
+      `SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?`,
+      [account.id, archive.id],
+    );
+    await h[DB_RPC.TRANSACTION]({
+      statements: [
+        [0, 100],
+        [50, 150],
+        [200, 260],
+        [240, 300],
+      ].map(([start, end]) => ({
+        sql: `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at)
+              VALUES (?, ?, ?, ?)`,
+        params: [view.id, start, end, Date.now()],
+      })),
+    });
+
+    const progress = await h[DB_RPC.QUERY_VIEW_PROGRESS]({
+      accountId: account.id,
+      folderId: archive.id,
+      sort: 'received',
+    });
+    expect(progress).toEqual({ total: 500, covered: 250, percent: 50 });
+  });
 });
 
 describe('contacts and autocomplete', () => {

@@ -99,6 +99,9 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
     [DB_RPC.SYNC_ENSURE_MESSAGE_BODY]: async ({ accountId, messageId }) =>
       syncClient.ensureMessageBody(accountId, messageId),
 
+    [DB_RPC.SYNC_ENSURE_MESSAGE_BODIES]: async ({ accountId, messageIds }) =>
+      syncClient.ensureMessageBodies(accountId, messageIds ?? []),
+
     [DB_RPC.SYNC_ENSURE_IDENTITIES]: async ({ accountId }) =>
       syncClient.ensureIdentities(accountId),
 
@@ -107,6 +110,9 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
 
     [DB_RPC.SYNC_ENSURE_CONTACTS]: async ({ accountId, addressbookId }) =>
       syncClient.ensureContacts(accountId, addressbookId),
+
+    [DB_RPC.SYNC_ENSURE_FOLDER_INDEX]: async ({ accountId, folderId, options }) =>
+      syncClient.ensureFolderIndex(accountId, folderId, options ?? {}),
 
     [DB_RPC.SYNC_DRAIN_OUTBOX]: async ({ accountId, limit = 25 }) => {
       const backend = backends.get(accountId);

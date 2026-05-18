@@ -108,6 +108,33 @@ test.describe('Stage Thundermail e2e', () => {
       },
     ).toBeGreaterThan(0);
 
+    // Body prefetch: opening the first message enqueues nearby bodies.
+    // Give the single-concurrency body queue a short moment, then
+    // click the second message. It should render quickly from the
+    // prefetched cache (or from a nearly-complete prefetch), not go
+    // through the full cold path.
+    if (await page.locator('.msg-list__item').count() > 1) {
+      await page.waitForTimeout(750);
+      const secondStart = Date.now();
+      await page.locator('.msg-list__item').nth(1).click();
+      await expect.poll(
+        async () => {
+          const html = await page.locator('.message-view__html').count();
+          const text = await page.locator('.message-view__text').count();
+          return html + text;
+        },
+        {
+          timeout: 5_000,
+          message: 'expected second message body to render quickly after prefetch',
+        },
+      ).toBeGreaterThan(0);
+      const secondBodyMs = Date.now() - secondStart;
+      console.log(`[test] second message body after prefetch: ${secondBodyMs}ms`);
+      if (secondBodyMs > 5_000) {
+        throw new Error(`second message body took ${secondBodyMs}ms after prefetch`);
+      }
+    }
+
     const msgShot = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-message-opened.png`, { body: msgShot, contentType: 'image/png' });
     await page.screenshot({ path: `screenshots/${browserName}-03-message-opened.png`, fullPage: true });
