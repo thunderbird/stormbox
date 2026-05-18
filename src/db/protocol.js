@@ -39,6 +39,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
 
   FOLDER_MEMBERSHIP_REPLACE: 'folderMembership.replace',
+  FOLDER_MEMBERSHIP_REPLACE_MANY: 'folderMembership.replaceMany',
   QUERY_VIEW_PROGRESS: 'queryView.progress',
 
   ADDRESSBOOK_LIST: 'addressbook.list',

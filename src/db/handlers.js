@@ -365,29 +365,66 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
               ts,
             ],
           );
-          const messageRow = await tx.get(
-            `SELECT id FROM messages WHERE account_id = ? AND remote_id = ?`,
-            [accountId, m.remoteId],
-          );
-          const messageId = messageRow.id;
+        }
+
+        const remoteIds = messages.map((m) => m.remoteId).filter(Boolean);
+        const placeholders = remoteIds.map(() => '?').join(',');
+        const rows = placeholders
+          ? await tx.all(
+            `SELECT id, remote_id FROM messages
+              WHERE account_id = ? AND remote_id IN (${placeholders})`,
+            [accountId, ...remoteIds],
+          )
+          : [];
+        const messageIdByRemote = new Map(rows.map((row) => [row.remote_id, row.id]));
+
+        const addressMessageIds = [];
+        const addressRows = [];
+        const keywordMessageIds = [];
+        const keywordRows = [];
+        for (const m of messages) {
+          const messageId = messageIdByRemote.get(m.remoteId);
+          if (!messageId) continue;
           if (m.addresses) {
-            await tx.run(`DELETE FROM message_addresses WHERE message_id = ?`, [messageId]);
+            addressMessageIds.push(messageId);
             for (const addr of m.addresses) {
-              await tx.run(
-                `INSERT INTO message_addresses(message_id, kind, position, name, email)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [messageId, addr.kind, addr.position, addr.name ?? null, addr.email ?? null],
-              );
+              addressRows.push([messageId, addr.kind, addr.position, addr.name ?? null, addr.email ?? null]);
             }
           }
           if (m.keywords) {
-            await tx.run(`DELETE FROM message_keywords WHERE message_id = ?`, [messageId]);
+            keywordMessageIds.push(messageId);
             for (const keyword of m.keywords) {
-              await tx.run(
-                `INSERT INTO message_keywords(message_id, keyword) VALUES (?, ?)`,
-                [messageId, keyword],
-              );
+              keywordRows.push([messageId, keyword]);
             }
+          }
+        }
+
+        if (addressMessageIds.length > 0) {
+          const deletePlaceholders = addressMessageIds.map(() => '?').join(',');
+          await tx.run(
+            `DELETE FROM message_addresses WHERE message_id IN (${deletePlaceholders})`,
+            addressMessageIds,
+          );
+          for (const params of addressRows) {
+            await tx.run(
+              `INSERT INTO message_addresses(message_id, kind, position, name, email)
+               VALUES (?, ?, ?, ?, ?)`,
+              params,
+            );
+          }
+        }
+
+        if (keywordMessageIds.length > 0) {
+          const deletePlaceholders = keywordMessageIds.map(() => '?').join(',');
+          await tx.run(
+            `DELETE FROM message_keywords WHERE message_id IN (${deletePlaceholders})`,
+            keywordMessageIds,
+          );
+          for (const params of keywordRows) {
+            await tx.run(
+              `INSERT INTO message_keywords(message_id, keyword) VALUES (?, ?)`,
+              params,
+            );
           }
         }
       });
@@ -552,6 +589,42 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
       });
       broadcaster.touch(TABLE_FAMILIES.FOLDERS);
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+    },
+
+    [DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]: async ({ accountId, replacements }) => {
+      const items = (replacements ?? []).filter((r) => r?.messageId != null);
+      if (items.length === 0) return { replaced: 0, inserted: 0 };
+      let inserted = 0;
+      await engine.transaction(async (tx) => {
+        const messageIds = [...new Set(items.map((r) => r.messageId))];
+        const placeholders = messageIds.map(() => '?').join(',');
+        await tx.run(`DELETE FROM folder_messages WHERE message_id IN (${placeholders})`, messageIds);
+        for (const item of items) {
+          for (const m of item.memberships ?? []) {
+            await tx.run(
+              `INSERT INTO folder_messages(
+                  folder_id, message_id, account_id,
+                  remote_membership_id, added_at,
+                  sort_received_at, sort_sent_at, instance_state_json
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                m.folderId,
+                item.messageId,
+                accountId,
+                m.remoteMembershipId ?? null,
+                m.addedAt ?? null,
+                m.sortReceivedAt ?? null,
+                m.sortSentAt ?? null,
+                m.instanceStateJson ?? null,
+              ],
+            );
+            inserted += 1;
+          }
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { replaced: items.length, inserted };
     },
 
     [DB_RPC.ADDRESSBOOK_LIST]: async ({ accountId }) =>

@@ -179,6 +179,57 @@ describe('syncFolderWindow', () => {
     expect(messages.map((m) => m.remote_id).sort()).toEqual(['e-1', 'e-2']);
   });
 
+  it('handles overlapping query_view_items windows without remote-id uniqueness errors', async () => {
+    const first = new MockTransport();
+    first.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2', 'e-3'],
+      total: 4,
+      queryState: 'qs-1',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    first.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es-1',
+    }));
+    await syncFolderWindow({
+      transport: first, account, folder: inbox, handlers,
+      position: 0, limit: 3,
+    });
+
+    const overlap = new MockTransport();
+    overlap.handle('Email/query', () => ({
+      ids: ['e-3', 'e-4'],
+      total: 4,
+      queryState: 'qs-2',
+      canCalculateChanges: true,
+      position: 2,
+    }));
+    overlap.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es-2',
+    }));
+    await syncFolderWindow({
+      transport: overlap, account, folder: inbox, handlers,
+      position: 2, limit: 2,
+    });
+
+    const view = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inbox.id],
+    );
+    const items = await engine.all(
+      'SELECT position, remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [view.id],
+    );
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([
+      [0, 'e-1'],
+      [1, 'e-2'],
+      [2, 'e-3'],
+      [3, 'e-4'],
+    ]);
+  });
+
   it('builds folder_messages entries linking the message to the inbox', async () => {
     const transport = new MockTransport();
     transport.handle('Email/query', () => ({

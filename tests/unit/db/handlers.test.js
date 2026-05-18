@@ -330,6 +330,34 @@ describe('thread + message + membership handlers', () => {
     expect(archived).toHaveLength(1);
   });
 
+  it('replaces folder membership for multiple messages in one call', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id, { remoteId: 'inbox', role: 'inbox' });
+    const archive = await seedFolder(account.id, { remoteId: 'archive', role: 'archive' });
+    const t = Date.now();
+    const a = await seedMessage(account.id, inbox.id, { remoteId: 'a', receivedAt: t - 1000 });
+    const b = await seedMessage(account.id, inbox.id, { remoteId: 'b', receivedAt: t });
+
+    const result = await h[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [
+        {
+          messageId: a.messageId,
+          memberships: [{ folderId: archive.id, sortReceivedAt: t - 1000, sortSentAt: t - 1000 }],
+        },
+        {
+          messageId: b.messageId,
+          memberships: [{ folderId: archive.id, sortReceivedAt: t, sortSentAt: t }],
+        },
+      ],
+    });
+
+    expect(result).toEqual({ replaced: 2, inserted: 2 });
+    expect(await h[DB_RPC.MESSAGE_LIST_FOR_FOLDER]({ folderId: inbox.id })).toHaveLength(0);
+    const archived = await h[DB_RPC.MESSAGE_LIST_FOR_FOLDER]({ folderId: archive.id });
+    expect(archived.map((m) => m.remote_id)).toEqual(['b', 'a']);
+  });
+
   it('mirrors keywords to flag columns and rebuilds message_keywords on replace', async () => {
     const account = await seedAccount();
     const inbox = await seedFolder(account.id);
@@ -356,6 +384,66 @@ describe('thread + message + membership handlers', () => {
     });
     const remaining = await engine.all('SELECT keyword FROM message_keywords WHERE message_id = ?', [messageId]);
     expect(remaining.map((k) => k.keyword)).toEqual(['$seen']);
+  });
+
+  it('batch upsert rebuilds addresses and keywords without per-row lookup state leaking', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id);
+    await seedMessage(account.id, inbox.id, {
+      remoteId: 'batch-a',
+      keywords: [KEYWORD.SEEN, 'old'],
+      addresses: [{ kind: 'from', position: 0, name: 'Old', email: 'old@example.com' }],
+    });
+    const before = await engine.get(
+      'SELECT id, thread_id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'batch-a'],
+    );
+
+    await h[DB_RPC.MESSAGE_UPSERT_MANY]({
+      accountId: account.id,
+      messages: [{
+        remoteId: 'batch-a',
+        threadId: before.thread_id,
+        remoteThreadId: 't-default',
+        subject: 'updated',
+        preview: 'updated preview',
+        receivedAt: Date.now(),
+        sentAt: Date.now(),
+        hasAttachment: false,
+        keywordsJson: JSON.stringify({ [KEYWORD.FLAGGED]: true }),
+        keywords: [KEYWORD.FLAGGED],
+        isSeen: false,
+        isFlagged: true,
+        isAnswered: false,
+        isDraft: false,
+        isForwarded: false,
+        isJunk: false,
+        fromText: 'New <new@example.com>',
+        toText: 'Dest <dest@example.com>',
+        addresses: [
+          { kind: 'from', position: 0, name: 'New', email: 'new@example.com' },
+          { kind: 'to', position: 0, name: 'Dest', email: 'dest@example.com' },
+        ],
+      }],
+    });
+
+    const addresses = await engine.all(
+      'SELECT kind, email FROM message_addresses WHERE message_id = ? ORDER BY kind',
+      [before.id],
+    );
+    expect(addresses).toEqual([
+      { kind: 'from', email: 'new@example.com' },
+      { kind: 'to', email: 'dest@example.com' },
+    ]);
+    const keywords = await engine.all(
+      'SELECT keyword FROM message_keywords WHERE message_id = ? ORDER BY keyword',
+      [before.id],
+    );
+    expect(keywords.map((k) => k.keyword)).toEqual([KEYWORD.FLAGGED]);
+    const row = await engine.get('SELECT subject, is_seen, is_flagged FROM messages WHERE id = ?', [before.id]);
+    expect(row.subject).toBe('updated');
+    expect(Number(row.is_seen)).toBe(0);
+    expect(Number(row.is_flagged)).toBe(1);
   });
 
   it('supports many-to-many folder membership for one message', async () => {

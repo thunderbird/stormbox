@@ -357,34 +357,54 @@ async function persistEmails({ account, emails, handlers }) {
   // the JMAP mailboxIds set. Missing mailboxes (i.e. mailboxIds that have
   // not been synced to folders yet) are skipped silently; the next
   // mailbox sync will catch up.
+  const allMailboxIds = uniq(emails.flatMap((e) => Object.keys(e.mailboxIds ?? {})));
+  const folderMap = new Map();
+  if (allMailboxIds.length > 0) {
+    const placeholders = allMailboxIds.map(() => '?').join(',');
+    const folderRows = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT id, remote_id FROM folders
+             WHERE account_id = ? AND remote_id IN (${placeholders})`,
+      params: [account.id, ...allMailboxIds],
+    });
+    for (const row of folderRows) {
+      folderMap.set(row.remote_id, row.id);
+    }
+  }
+
+  const emailIds = emails.map((e) => e.id).filter(Boolean);
+  const messageMap = new Map();
+  if (emailIds.length > 0) {
+    const placeholders = emailIds.map(() => '?').join(',');
+    const messageRows = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT id, remote_id FROM messages
+             WHERE account_id = ? AND remote_id IN (${placeholders})`,
+      params: [account.id, ...emailIds],
+    });
+    for (const row of messageRows) {
+      messageMap.set(row.remote_id, row.id);
+    }
+  }
+
+  const replacements = [];
   for (const e of emails) {
-    const mailboxIds = Object.keys(e.mailboxIds ?? {});
-    if (mailboxIds.length === 0) {
-      continue;
+    const messageId = messageMap.get(e.id);
+    if (!messageId) continue;
+    const memberships = Object.keys(e.mailboxIds ?? {})
+      .map((mailboxId) => folderMap.get(mailboxId))
+      .filter(Boolean)
+      .map((folderId) => ({
+        folderId,
+        sortReceivedAt: parseDate(e.receivedAt),
+        sortSentAt: parseDate(e.sentAt) ?? parseDate(e.receivedAt),
+      }));
+    if (memberships.length > 0) {
+      replacements.push({ messageId, memberships });
     }
-    const placeholders = mailboxIds.map(() => '?').join(',');
-    const rows = await handlers[DB_RPC.QUERY]({
-      sql: `SELECT id FROM folders WHERE account_id = ? AND remote_id IN (${placeholders})`,
-      params: [account.id, ...mailboxIds],
-    });
-    if (rows.length === 0) {
-      continue;
-    }
-    const messageRow = await handlers[DB_RPC.MESSAGE_GET_BY_REMOTE]({
+  }
+  if (replacements.length > 0) {
+    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
       accountId: account.id,
-      remoteId: e.id,
-    });
-    if (!messageRow) continue;
-    const sortRecv = parseDate(e.receivedAt);
-    const sortSent = parseDate(e.sentAt) ?? sortRecv;
-    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE]({
-      accountId: account.id,
-      messageId: messageRow.id,
-      memberships: rows.map((row) => ({
-        folderId: row.id,
-        sortReceivedAt: sortRecv,
-        sortSentAt: sortSent,
-      })),
+      replacements,
     });
   }
 }
@@ -451,7 +471,8 @@ async function upsertQueryViewItems({ handlers, viewId, position, ids, additions
   const stmts = (ids ?? []).map((id, i) => ({
     sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
           VALUES (?, ?, NULL, ?)
-          ON CONFLICT(view_id, position) DO UPDATE SET remote_id = excluded.remote_id`,
+          ON CONFLICT(view_id, position) DO UPDATE SET remote_id = excluded.remote_id
+          ON CONFLICT(view_id, remote_id) DO UPDATE SET position = excluded.position`,
     params: [viewId, position + i, id],
   }));
   if (stmts.length > 0) {

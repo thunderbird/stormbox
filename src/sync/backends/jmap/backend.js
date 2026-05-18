@@ -71,6 +71,7 @@ export class JmapBackend {
     this._started = false;
     this._indexerTimer = null;
     this._indexerRunning = false;
+    this._foregroundFolderWindowCount = 0;
   }
 
   /**
@@ -186,23 +187,28 @@ export class JmapBackend {
   }
 
   async ensureFolderWindow(folderId, range = {}) {
-    const folder = await this._loadFolder(folderId);
-    const r = await syncFolderWindow({
-      transport: this.transport,
-      account: this.account,
-      folder,
-      handlers: this.handlers,
-      sortProp: range.sortProp ?? this._defaultSortPropFor(folder),
-      position: range.offset ?? 0,
-      limit: range.limit ?? 100,
-      collapseThreads: range.collapseThreads ?? false,
-      useWebSocket: this._wsReady(),
-    });
-    wlog.info(
-      'jmap-backend',
-      `ensureFolderWindow offset=${range.offset ?? 0} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
-    );
-    return r;
+    this._foregroundFolderWindowCount += 1;
+    try {
+      const folder = await this._loadFolder(folderId);
+      const r = await syncFolderWindow({
+        transport: this.transport,
+        account: this.account,
+        folder,
+        handlers: this.handlers,
+        sortProp: range.sortProp ?? this._defaultSortPropFor(folder),
+        position: range.offset ?? 0,
+        limit: range.limit ?? 100,
+        collapseThreads: range.collapseThreads ?? false,
+        useWebSocket: this._wsReady(),
+      });
+      wlog.info(
+        'jmap-backend',
+        `ensureFolderWindow offset=${range.offset ?? 0} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
+      );
+      return r;
+    } finally {
+      this._foregroundFolderWindowCount = Math.max(0, this._foregroundFolderWindowCount - 1);
+    }
   }
 
   async ensureMessageBody(messageId) {
@@ -274,6 +280,7 @@ export class JmapBackend {
 
   async _runMetadataIndexerChunk() {
     if (this._indexerRunning || !this.account) return;
+    if (this._foregroundFolderWindowCount > 0) return;
     this._indexerRunning = true;
     try {
       const folders = await this.handlers[DB_RPC.QUERY]({

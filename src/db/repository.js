@@ -192,6 +192,13 @@ export class Repository {
     });
   }
 
+  replaceFolderMemberships(accountId, replacements) {
+    return this.call(DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY, {
+      accountId,
+      replacements,
+    });
+  }
+
   // Contacts -----------------------------------------------------------
 
   listAddressbooks(accountId) {
