@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import {
   Inbox, Send, FileEdit, Archive, Trash2, ShieldAlert, Folder, FolderOpen,
+  Newspaper, Rss,
 } from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
@@ -18,6 +19,23 @@ const ROLE_ICON = {
   junk: ShieldAlert,
 };
 
+const ROLE_COLOR = {
+  inbox: '#1a73e8',
+  sent: '#188038',
+  drafts: '#7e22ce',
+  archive: '#8b5a2b',
+  trash: '#5f6368',
+  junk: '#d93025',
+  important: '#f9ab00',
+  flagged: '#c5221f',
+  all: '#5f6368',
+};
+
+const DEFAULT_FOLDER_BY_NAME = {
+  newsletters: { icon: Newspaper, color: '#7378a6' },
+  feeds: { icon: Rss, color: '#f97316' },
+};
+
 const tree = computed(() => {
   const byParent = new Map();
   for (const folder of mailStore.folders) {
@@ -31,15 +49,30 @@ const tree = computed(() => {
   }
   function children(id) { return byParent.get(id) ?? []; }
   function build(folder, depth) {
+    const childrenForFolder = children(folder.id);
+    const presentation = folderPresentation(folder, childrenForFolder.length > 0);
     return {
       ...folder,
       depth,
-      icon: ROLE_ICON[folder.role] ?? (children(folder.id).length ? FolderOpen : Folder),
-      children: children(folder.id).map((c) => build(c, depth + 1)),
+      icon: presentation.icon,
+      tone: presentation.color,
+      children: childrenForFolder.map((c) => build(c, depth + 1)),
     };
   }
   return (byParent.get('ROOT') ?? []).map((f) => build(f, 0));
 });
+
+function folderPresentation(folder, hasChildren) {
+  const namedDefault = DEFAULT_FOLDER_BY_NAME[defaultFolderKey(folder.name)];
+  return {
+    icon: ROLE_ICON[folder.role] ?? namedDefault?.icon ?? (hasChildren ? FolderOpen : Folder),
+    color: ROLE_COLOR[folder.role] ?? namedDefault?.color ?? null,
+  };
+}
+
+function defaultFolderKey(name) {
+  return String(name ?? '').trim().toLowerCase();
+}
 
 function sortKey(folder) {
   switch (folder.role) {

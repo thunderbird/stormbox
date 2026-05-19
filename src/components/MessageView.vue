@@ -1,6 +1,7 @@
 <script setup>
 import {
   computed,
+  nextTick,
   watch,
   ref,
   onMounted,
@@ -23,6 +24,7 @@ import {
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
 
+const bodyRef = ref(null);
 const iframeRef = ref(null);
 const iframeSrcDoc = ref('');
 const iframeHeight = ref(120);
@@ -40,14 +42,31 @@ const message = computed(() =>
 // (Fastmail model — `selectedMessageId` is the viewer pointer). The
 // "selected" set is independent and driven only by the checkbox
 // column. The moment the user checks even one row, this pane swaps
-// from "read the focused message" to "act on the N selected ones"
-// and shows a preview header for the focused row so the user can
-// still see what they were last reading.
+// from "read the focused message" to a scrollable list of every
+// checked row plus bulk actions.
 const selectionCount = computed(() => mailStore.selectedIds.size);
 const isMultiSelecting = computed(() => selectionCount.value >= 1);
+let resizeObserver = null;
+let iframeMeasurementCleanup = null;
+let themeMediaQuery = null;
+let themeMutationObserver = null;
+
+// Walk the folder list in display order so the summary matches the
+// message list top-to-bottom, not arbitrary Set iteration order.
+const selectedMessages = computed(() => {
+  if (!mailStore.selectedIds.size) return [];
+  const out = [];
+  for (const row of mailStore.messages) {
+    if (row?.id != null && mailStore.selectedIds.has(row.id)) {
+      out.push(row);
+    }
+  }
+  return out;
+});
 
 watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   if (!next?.html) {
+    teardownResizeObserver();
     iframeSrcDoc.value = '';
     iframeHeight.value = 120;
     return;
@@ -68,13 +87,15 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   // measure() already set — leaving the iframe stuck at 120 px on
   // every fresh open.
   if (nextSrcDoc === iframeSrcDoc.value) return;
+  teardownResizeObserver();
   iframeSrcDoc.value = nextSrcDoc;
-  iframeHeight.value = 120;
+  iframeHeight.value = initialIframeHeight();
+  nextTick(() => {
+    if (iframeSrcDoc.value === nextSrcDoc) {
+      iframeHeight.value = Math.max(iframeHeight.value, initialIframeHeight());
+    }
+  });
 }, { immediate: true });
-
-let resizeObserver = null;
-let themeMediaQuery = null;
-let themeMutationObserver = null;
 
 function getEffectiveColorScheme() {
   if (typeof document !== 'undefined') {
@@ -99,6 +120,8 @@ function teardownResizeObserver() {
     resizeObserver.disconnect();
     resizeObserver = null;
   }
+  iframeMeasurementCleanup?.();
+  iframeMeasurementCleanup = null;
 }
 
 function teardownThemeObservers() {
@@ -115,6 +138,10 @@ function teardownThemeObservers() {
     themeMutationObserver.disconnect();
     themeMutationObserver = null;
   }
+}
+
+function initialIframeHeight() {
+  return Math.max(120, bodyRef.value?.clientHeight ?? 0);
 }
 
 onMounted(() => {
@@ -160,12 +187,21 @@ function onIframeLoad() {
     a.setAttribute('rel', 'noopener noreferrer');
   });
 
+  let active = true;
   const measure = () => {
+    if (!active) return;
     const docEl = doc.documentElement;
     const bodyEl = doc.body;
     // documentElement.scrollHeight catches content that overflows
     // the body (e.g. when an email sets html { height:100% }).
-    let next = Math.max(docEl.scrollHeight, bodyEl.scrollHeight);
+    let next = Math.max(
+      docEl.scrollHeight,
+      bodyEl.scrollHeight,
+      docEl.offsetHeight,
+      bodyEl.offsetHeight,
+      Math.ceil(bodyEl.getBoundingClientRect?.().height ?? 0),
+      initialIframeHeight(),
+    );
 
     // If the email's design is wider than the message-view pane, the
     // iframe will paint a horizontal scrollbar. We don't shrink the
@@ -187,6 +223,42 @@ function onIframeLoad() {
   };
   measure();
 
+  const cleanups = [];
+  const scheduleMeasure = (delay) => {
+    if (delay === 'raf') {
+      if (typeof requestAnimationFrame !== 'function') return;
+      const id = requestAnimationFrame(measure);
+      cleanups.push(() => cancelAnimationFrame(id));
+      return;
+    }
+    const id = setTimeout(measure, delay);
+    cleanups.push(() => clearTimeout(id));
+  };
+
+  scheduleMeasure('raf');
+  scheduleMeasure(50);
+  scheduleMeasure(150);
+  scheduleMeasure(300);
+  scheduleMeasure(600);
+
+  for (const img of Array.from(doc.images ?? [])) {
+    if (img.complete) continue;
+    img.addEventListener('load', measure, { once: true });
+    img.addEventListener('error', measure, { once: true });
+    cleanups.push(() => {
+      img.removeEventListener('load', measure);
+      img.removeEventListener('error', measure);
+    });
+  }
+
+  if (doc.fonts?.ready) {
+    doc.fonts.ready.then(measure).catch(() => {});
+  }
+  iframeMeasurementCleanup = () => {
+    active = false;
+    for (const cleanup of cleanups) cleanup();
+  };
+
   if (typeof ResizeObserver === 'function') {
     resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(doc.documentElement);
@@ -198,6 +270,26 @@ function fmtDate(ms) {
   if (!ms) return '';
   const d = new Date(Number(ms));
   return Number.isNaN(d.valueOf()) ? '' : d.toLocaleString();
+}
+
+function shortFrom(text) {
+  if (!text) return '(no sender)';
+  const m = text.match(/^(.+?)\s*<.+>$/);
+  return m ? m[1].replace(/^"|"$/g, '') : text;
+}
+
+function fmtListDate(ms) {
+  if (!ms) return '';
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.valueOf())) return '';
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString(undefined, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function backToList() {
@@ -283,17 +375,20 @@ function clearBulkSelection() {
           </button>
         </div>
       </header>
-      <!-- The focused row's header is still shown so the user can see
-           what they were last reading. Fastmail does the same: a
-           "1 conversation selected" / "10 conversations selected"
-           summary with the most recently viewed message's header
-           inline. -->
-      <article v-if="message" class="message-view__bulk-preview">
-        <div class="message-view__bulk-from">{{ message.from_text }}</div>
-        <div class="message-view__bulk-subject">{{ message.subject || '(no subject)' }}</div>
-        <div class="message-view__bulk-date">{{ fmtDate(message.received_at) }}</div>
-        <p v-if="message.preview" class="message-view__bulk-snippet">{{ message.preview }}</p>
-      </article>
+      <ol class="message-view__bulk-list" role="list">
+        <li
+          v-for="row in selectedMessages"
+          :key="row.id"
+          class="message-view__bulk-item"
+        >
+          <div class="message-view__bulk-item-row1">
+            <span class="message-view__bulk-item-from">{{ shortFrom(row.from_text) }}</span>
+            <span class="message-view__bulk-item-date">{{ fmtListDate(row.received_at) }}</span>
+          </div>
+          <div class="message-view__bulk-item-subject">{{ row.subject || '(no subject)' }}</div>
+          <p v-if="row.preview" class="message-view__bulk-item-preview">{{ row.preview }}</p>
+        </li>
+      </ol>
     </div>
     <div v-else-if="!message" class="message-view__empty">
       <p>Select a message to read it.</p>
@@ -320,7 +415,7 @@ function clearBulkSelection() {
           </button>
         </div>
       </header>
-      <div class="message-view__body">
+      <div ref="bodyRef" class="message-view__body">
         <iframe
           v-if="iframeSrcDoc"
           ref="iframeRef"
@@ -375,8 +470,9 @@ function clearBulkSelection() {
 }
 .message-view__bulk {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto 1fr;
   height: 100%;
+  min-height: 0;
   color: var(--text);
 }
 .message-view__bulk-header {
@@ -390,7 +486,7 @@ function clearBulkSelection() {
   margin: 0;
   flex: 1;
   min-width: 0;
-  font-size: 15px;
+  font-size: 20px;
   font-weight: 600;
   text-align: center;
 }
@@ -399,39 +495,43 @@ function clearBulkSelection() {
   align-items: center;
   gap: 4px;
 }
-.message-view__bulk-preview {
-  margin: 24px;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto auto;
-  column-gap: 12px;
-  row-gap: 2px;
+.message-view__bulk-list {
+  margin: 0;
+  padding: 8px 0;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
 }
-.message-view__bulk-from {
-  grid-column: 1;
-  grid-row: 1;
+.message-view__bulk-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.message-view__bulk-item:last-child {
+  border-bottom: none;
+}
+.message-view__bulk-item-row1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+.message-view__bulk-item-from {
   font-weight: 600;
   font-size: 13px;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
-.message-view__bulk-date {
-  grid-column: 2;
-  grid-row: 1;
+.message-view__bulk-item-date {
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-.message-view__bulk-subject {
-  grid-column: 1 / -1;
-  grid-row: 2;
+.message-view__bulk-item-subject {
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
@@ -439,14 +539,12 @@ function clearBulkSelection() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.message-view__bulk-snippet {
-  grid-column: 1 / -1;
-  grid-row: 3;
+.message-view__bulk-item-preview {
   margin: 4px 0 0;
   font-size: 13px;
   color: var(--muted);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.45;
@@ -541,8 +639,8 @@ function clearBulkSelection() {
   width: 100%;
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document
-   * has laid out; min-height is just an initial reservation while the
-   * srcdoc loads to keep the layout from jumping. The iframe's own
+   * has laid out; min-height is the floor for the first paint when
+   * the body viewport is not measurable yet. The iframe's own
    * scrolling="auto" default takes care of the horizontal scrollbar
    * if the email is wider than the pane. */
   min-height: 120px;

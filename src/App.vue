@@ -33,6 +33,10 @@ const accountLabel = computed(() =>
   authStore.username || authStore.serverHostname,
 );
 
+const showMessageView = computed(() =>
+  mailStore.selectedMessageId != null || mailStore.selectedIds.size > 0,
+);
+
 onMounted(async () => {
   await authStore.initialize();
   await mailStore.attach();
@@ -47,7 +51,11 @@ function startCompose() {
 
 <template>
   <LoginGate v-if="showLogin" />
-  <div v-else class="shell">
+  <div
+    v-else
+    class="shell"
+    :class="{ 'shell--message-view-hidden': space === 'mail' && !showMessageView }"
+  >
     <AppSpaces :active="space" :unread-count="totalUnread" @change="space = $event" />
 
     <aside class="sidebar">
@@ -75,7 +83,7 @@ function startCompose() {
 
     <template v-if="space === 'mail'">
       <MessageList />
-      <MessageView />
+      <MessageView v-if="showMessageView" />
     </template>
     <ContactsView v-else-if="space === 'contacts'" />
 
@@ -102,6 +110,9 @@ function startCompose() {
   color: var(--text);
   overflow: hidden;
 }
+.shell--message-view-hidden {
+  grid-template-columns: 56px 240px minmax(320px, 1fr);
+}
 /* Grid items default to min-height: auto, which makes inner
  * overflow:auto containers grow to their content instead of scrolling.
  * Force every shell column to be allowed to shrink so its children can
@@ -120,27 +131,42 @@ function startCompose() {
 }
 .sidebar > :nth-child(3) { min-height: 0; overflow-y: auto; }
 .sidebar__header {
-  padding: 10px 12px 8px;
+  padding: 12px 24px 10px;
   border-bottom: 1px solid var(--border-soft);
 }
 .sidebar__compose {
-  width: 100%;
-  display: inline-flex;
+  width: calc(100% - 48px);
+  margin: 0 auto;
+  min-height: 34px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   background: var(--accent);
   color: #fff;
-  border: 0;
-  border-radius: 10px;
-  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
+  border-radius: 6px;
+  padding: 0 12px;
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  transition: filter 0.12s ease;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
 }
-.sidebar__compose:hover { filter: brightness(1.06); }
+.sidebar__compose svg {
+  display: block;
+  flex-shrink: 0;
+  transform: translateY(1px);
+}
+.sidebar__compose span {
+  display: block;
+}
+.sidebar__compose:hover {
+  filter: brightness(1.04);
+  box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
+}
 
 .sidebar__account {
   padding: 10px 14px 4px;

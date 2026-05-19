@@ -11,6 +11,10 @@ const current = computed(() => props.currentFolderId === props.folder.id);
 const unread = computed(() => Number(props.folder.unread_emails) || 0);
 const Icon = computed(() => props.folder.icon);
 const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
+const style = computed(() => ({
+  paddingLeft: indent.value,
+  '--folder-tone': props.folder.tone ?? undefined,
+}));
 const indexPercent = computed(() => Number(props.folder.index_percent ?? 0));
 const showIndexProgress = computed(() =>
   Number(props.folder.total_emails ?? 0) > 100
@@ -23,8 +27,8 @@ const showIndexProgress = computed(() =>
   <button
     type="button"
     class="folder-node"
-    :class="{ 'is-current': current }"
-    :style="{ paddingLeft: indent }"
+    :class="{ 'is-current': current, 'has-tone': folder.tone }"
+    :style="style"
     @click="onPick(folder.id)"
   >
     <component :is="Icon" :size="18" :stroke-width="1.75" class="folder-node__icon" />
@@ -76,7 +80,11 @@ export default { name: 'FolderNode' };
   flex-shrink: 0;
   color: var(--muted);
 }
-.folder-node.is-current .folder-node__icon { color: var(--accent); }
+.folder-node.has-tone .folder-node__icon,
+.folder-node.has-tone.is-current .folder-node__icon {
+  color: var(--folder-tone);
+}
+.folder-node.is-current:not(.has-tone) .folder-node__icon { color: var(--accent); }
 .folder-node__name {
   flex: 1;
   min-width: 0;

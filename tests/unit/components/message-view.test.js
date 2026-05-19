@@ -116,6 +116,33 @@ describe('MessageView with a sparse messages array', () => {
     expect(wrapper.text()).toContain('Select a message to read it.');
     expect(wrapper.find('h2').exists()).toBe(false);
   });
+
+  it('lists every checked row in the bulk summary, not the viewed message only', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    await mailStore.attach();
+
+    mailStore.messages = [
+      { id: 1, subject: 'First', from_text: 'a@example.com', received_at: 1 },
+      { id: 2, subject: 'Second', from_text: 'b@example.com', received_at: 2 },
+      { id: 3, subject: 'Third', from_text: 'c@example.com', received_at: 3 },
+    ];
+    mailStore.selectedMessageId = 1;
+    mailStore.selectedIds = new Set([1, 3]);
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    expect(wrapper.find('.message-view__bulk-title').text()).toBe('2 messages selected');
+    const items = wrapper.findAll('.message-view__bulk-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].text()).toContain('First');
+    expect(items[1].text()).toContain('Third');
+    expect(wrapper.find('.message-view__article').exists()).toBe(false);
+  });
 });
 
 describe('MessageView HTML body rendering', () => {
@@ -181,6 +208,44 @@ describe('MessageView HTML body rendering', () => {
     expect(wrapper.find('.message-view__html').exists()).toBe(false);
 
     wrapper.unmount();
+  });
+
+  it('uses the visible body pane as the initial iframe height instead of 120px', async () => {
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'clientHeight',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList?.contains('message-view__body') ? 640 : 0;
+      },
+    });
+
+    try {
+      await makeSelectedMessage({
+        text: '',
+        html: '<p>email body</p>',
+        attachments: [],
+      });
+
+      const wrapper = mount(MessageView, {
+        attachTo: document.body,
+      });
+      await nextTick();
+      await nextTick();
+
+      const iframe = wrapper.find('iframe.message-view__html-frame');
+      expect(iframe.attributes('style')).toContain('height: 640px');
+
+      wrapper.unmount();
+    } finally {
+      if (originalClientHeight) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
+      } else {
+        delete HTMLElement.prototype.clientHeight;
+      }
+    }
   });
 
   it('passes dark-mode defaults into simple HTML iframe bodies', async () => {
