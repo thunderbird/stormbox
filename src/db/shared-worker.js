@@ -41,8 +41,22 @@ function getHandlers() {
     wlog.info('shared-worker', 'booting OPFS engine');
     const engine = await bootProductionEngine();
     wlog.info('shared-worker', 'engine ready');
-    const repoHandlers = makeHandlers(engine, broadcaster);
-    const syncHandlers = makeSyncRpcHandlers({ handlers: repoHandlers });
+    // Shared dispatch carrier: makeSyncRpcHandlers installs a real
+    // dispatch function once it has the backends map; until then
+    // (and for any account that never started a backend) the no-op
+    // default just drops the notification. The outbox runner's
+    // startup sweep + state-change notify path catches those rows
+    // on the next backend.start, so dropping a pre-start notify is
+    // safe.
+    const outboxNotifier = { dispatch: () => {} };
+    const repoHandlers = makeHandlers(engine, broadcaster, {
+      onMutationInserted: ({ accountId, mutationId }) =>
+        outboxNotifier.dispatch(accountId, mutationId),
+    });
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers: repoHandlers,
+      outboxNotifier,
+    });
     return { ...repoHandlers, ...syncHandlers };
   })();
   return handlersPromise;

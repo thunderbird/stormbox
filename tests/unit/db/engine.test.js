@@ -9,7 +9,7 @@ describe('Engine migrations', () => {
       'SELECT value FROM schema_meta WHERE key = ?',
       ['schema_version'],
     );
-    expect(row).toEqual({ value: '1' });
+    expect(row).toEqual({ value: '2' });
     await engine.close();
   });
 
@@ -69,7 +69,7 @@ describe('Engine migrations', () => {
       'body_values_lru',
       'query_view_items_message',
       'sync_jobs_ready',
-      'pending_mutations_pending',
+      'pending_mutations_ready',
       'query_views_lru',
       'contacts_account_display_name',
       'contacts_account_uid',
@@ -89,7 +89,7 @@ describe('Engine migrations', () => {
       'SELECT value FROM schema_meta WHERE key = ?',
       ['schema_version'],
     );
-    expect(row.value).toBe('1');
+    expect(row.value).toBe('2');
     await engine.close();
   });
 });

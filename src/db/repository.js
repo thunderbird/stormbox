@@ -161,6 +161,19 @@ export class Repository {
     return this.call(DB_RPC.QUERY_VIEW_PROGRESS, { accountId, folderId, sort });
   }
 
+  /**
+   * Drop the local mailbox-window view for a folder along with every
+   * query_view_items / query_view_ranges row tied to it (FK cascade).
+   * The next sync of this folder will rebuild the view from scratch
+   * against the server's authoritative list. Use this for the user-
+   * facing "Refresh" recovery path when local cache is suspected of
+   * being out of sync with the server (ghost rows, FK violations,
+   * etc.). The handler broadcasts MESSAGES so other tabs re-paint.
+   */
+  resetViewForFolder(accountId, folderId) {
+    return this.call(DB_RPC.QUERY_VIEW_RESET_FOR_FOLDER, { accountId, folderId });
+  }
+
   getMessageByRemote(accountId, remoteId) {
     return this.call(DB_RPC.MESSAGE_GET_BY_REMOTE, { accountId, remoteId });
   }
@@ -291,6 +304,10 @@ export class Repository {
 
   drainOutbox(accountId, limit = 25) {
     return this.call(DB_RPC.SYNC_DRAIN_OUTBOX, { accountId, limit });
+  }
+
+  runMutation(accountId, mutationId) {
+    return this.call(DB_RPC.SYNC_RUN_MUTATION, { accountId, mutationId });
   }
 
   // Internals ----------------------------------------------------------

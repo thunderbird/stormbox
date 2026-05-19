@@ -11,9 +11,11 @@
 import * as SQLite from '@journeyapps/wa-sqlite';
 
 import migration001 from './migrations/001_init.sql?raw';
+import migration002 from './migrations/002_outbox_runner.sql?raw';
 
 const MIGRATIONS = [
   { version: 1, name: '001_init', sql: migration001 },
+  { version: 2, name: '002_outbox_runner', sql: migration002 },
 ];
 
 /**
@@ -273,6 +275,16 @@ export class Engine {
     if (this._closed) {
       return;
     }
+    // Wait for the engine lock before tearing down the connection.
+    // _withStatement finalizes prepared statements in its finally
+    // block, and that finally only runs after the awaited fn()
+    // resolves; closing while another caller is between the await
+    // and the finally would orphan its statement and the wa-sqlite
+    // close() would throw "unable to close due to unfinalized
+    // statements". Acquiring the lock here drains everything that
+    // is currently queued, including the trailing await iter.return?
+    // microtask, so close observes a quiesced connection.
+    await this._withLock(async () => {});
     await this.sqlite3.close(this.db);
     this._closed = true;
   }
