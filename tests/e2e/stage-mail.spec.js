@@ -93,20 +93,128 @@ test.describe('Stage Thundermail e2e', () => {
     await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
 
     // The body fetch is async (ensureMessageBody hits the server, then
-    // body_values is read back). Poll until either an html or text
-    // body element appears, with the placeholder message-view__placeholder
-    // disappearing.
+    // body_values is read back). Poll until either the HTML iframe or
+    // the plain-text fallback appears, with the
+    // message-view__placeholder disappearing.
     await expect.poll(
       async () => {
-        const html = await page.locator('.message-view__html').count();
+        const frame = await page.locator('iframe.message-view__html-frame').count();
         const text = await page.locator('.message-view__text').count();
-        return html + text;
+        return frame + text;
       },
       {
         timeout: 30_000,
-        message: 'expected the message body to render as html or text',
+        message: 'expected the message body to render as the iframe or the text fallback',
       },
     ).toBeGreaterThan(0);
+
+    // If we ended up on the HTML path, pin the security contract: the
+    // iframe is sandboxed without allow-scripts (so a stray <script>
+    // in any email is inert at runtime), and its srcdoc carries the
+    // email body wrapped in a CSP'd document. The point of these
+    // assertions is that the rendering path stays "iframe-with-srcdoc
+    // + sandbox" forever — the earlier inline-HTML path silently let
+    // every email's <style> bleed across the host UI.
+    if ((await page.locator('iframe.message-view__html-frame').count()) > 0) {
+      const frameInfo = await page.evaluate(() => {
+        const ifr = document.querySelector('iframe.message-view__html-frame');
+        if (!ifr) return null;
+        return {
+          sandbox: ifr.getAttribute('sandbox') ?? '',
+          srcdoc: ifr.getAttribute('srcdoc') ?? '',
+          paneWidth: ifr.parentElement?.getBoundingClientRect().width ?? 0,
+          frameWidth: ifr.getBoundingClientRect().width,
+        };
+      });
+      if (!frameInfo) throw new Error('expected message-view html iframe to be present');
+      if (!/allow-same-origin/.test(frameInfo.sandbox)) {
+        throw new Error(`iframe missing allow-same-origin: sandbox="${frameInfo.sandbox}"`);
+      }
+      if (/allow-scripts/.test(frameInfo.sandbox)) {
+        throw new Error(`iframe must not grant allow-scripts: sandbox="${frameInfo.sandbox}"`);
+      }
+      if (!frameInfo.srcdoc.startsWith('<!DOCTYPE html>')) {
+        throw new Error('iframe srcdoc must be a complete HTML document');
+      }
+      if (!frameInfo.srcdoc.includes('Content-Security-Policy')) {
+        throw new Error('iframe srcdoc must embed a CSP meta tag');
+      }
+      // The iframe paints across the full message-view body so a wide
+      // email can render in its own design width with whitespace
+      // around it (rather than being clipped to some inner column).
+      if (frameInfo.paneWidth > 0 && frameInfo.frameWidth < frameInfo.paneWidth - 2) {
+        throw new Error(
+          `iframe is narrower than its pane: ${frameInfo.frameWidth}px in a ${frameInfo.paneWidth}px pane`,
+        );
+      }
+    }
+
+    // Layout regression — proven by clicking a known-tall HTML email.
+    // The first message in this stage inbox is a one-line plaintext
+    // ("test"), so we look for a marketing email with measurable body
+    // height. PledgeBox is reliably present in the seeded fixture
+    // and is also the visual regression that drove this work; if it
+    // ever falls out of the seed we degrade to "any message whose
+    // iframe ends up taller than the visible body".
+    const tallCandidate = page.locator('.msg-list__item')
+      .filter({ hasText: /pledgebox/i })
+      .first();
+    const targetClick = (await tallCandidate.count()) > 0
+      ? tallCandidate
+      : page.locator('.msg-list__item').nth(1);
+    if ((await targetClick.count()) > 0) {
+      await targetClick.click();
+      // Wait for the iframe to (a) exist and (b) finish auto-sizing
+      // — onIframeLoad sets style.height once the srcdoc has laid
+      // out, replacing the initial 120-px reservation with the real
+      // content height.
+      await expect.poll(
+        async () => page.evaluate(() => {
+          const ifr = document.querySelector('iframe.message-view__html-frame');
+          if (!ifr) return 0;
+          const inline = ifr.style.height || '';
+          return parseInt(inline, 10) || 0;
+        }),
+        { timeout: 30_000, message: 'iframe height inline style never grew past 120px' },
+      ).toBeGreaterThan(120);
+
+      // Now actually verify scrolling works: the body is a real
+      // overflow-y scroll container, AND when the iframe is taller
+      // than the body's visible area the body responds to scrollTop.
+      // This is what guards against the article-grid layout regression
+      // that made tall emails unscrollable (PledgeBox bug).
+      const scrollProbe = await page.evaluate(() => {
+        const bodyEl = document.querySelector('.message-view__body');
+        if (!bodyEl) return null;
+        const style = window.getComputedStyle(bodyEl);
+        const before = bodyEl.scrollTop;
+        bodyEl.scrollTop = 200;
+        const after = bodyEl.scrollTop;
+        bodyEl.scrollTop = 0;
+        return {
+          overflowY: style.overflowY,
+          clientHeight: bodyEl.clientHeight,
+          scrollHeight: bodyEl.scrollHeight,
+          scrollResponded: after > before,
+        };
+      });
+      if (!scrollProbe) throw new Error('expected .message-view__body to be present');
+      if (scrollProbe.overflowY !== 'auto' && scrollProbe.overflowY !== 'scroll') {
+        throw new Error(
+          `message-view body must scroll vertically; overflow-y="${scrollProbe.overflowY}"`,
+        );
+      }
+      if (scrollProbe.scrollHeight <= scrollProbe.clientHeight + 4) {
+        throw new Error(
+          `message-view body has no overflow even on a tall email: scrollHeight=${scrollProbe.scrollHeight} clientHeight=${scrollProbe.clientHeight}`,
+        );
+      }
+      if (!scrollProbe.scrollResponded) {
+        throw new Error(
+          `message-view body did not respond to scrollTop: scrollHeight=${scrollProbe.scrollHeight} clientHeight=${scrollProbe.clientHeight}`,
+        );
+      }
+    }
 
     // Body prefetch: opening the first message enqueues nearby bodies.
     // Give the single-concurrency body queue a short moment, then
@@ -119,9 +227,9 @@ test.describe('Stage Thundermail e2e', () => {
       await page.locator('.msg-list__item').nth(1).click();
       await expect.poll(
         async () => {
-          const html = await page.locator('.message-view__html').count();
+          const frame = await page.locator('iframe.message-view__html-frame').count();
           const text = await page.locator('.message-view__text').count();
-          return html + text;
+          return frame + text;
         },
         {
           timeout: 5_000,
