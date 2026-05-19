@@ -286,6 +286,17 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_MESSAGE_BODIES, { accountId, messageIds });
   }
 
+  /**
+   * Load body content for the reading pane: SQLite first, then a
+   * priority single-message fetch on cache miss (not blocked by an
+   * in-flight scroll prefetch batch).
+   *
+   * @returns {Promise<{ text: string, html: string, attachments: object[] } | null>}
+   */
+  getMessageBodyForDisplay(accountId, messageId) {
+    return this.call(DB_RPC.SYNC_MESSAGE_BODY_FOR_DISPLAY, { accountId, messageId });
+  }
+
   ensureIdentities(accountId) {
     return this.call(DB_RPC.SYNC_ENSURE_IDENTITIES, { accountId });
   }

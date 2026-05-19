@@ -37,6 +37,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_LIST_FOR_THREAD: 'message.listForThread',
   MESSAGE_FIND_BY_RFC822_MESSAGE_ID: 'message.findByRfc822MessageId',
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
+  MESSAGE_BODY_READ: 'message.bodyRead',
 
   FOLDER_MEMBERSHIP_REPLACE: 'folderMembership.replace',
   FOLDER_MEMBERSHIP_REPLACE_MANY: 'folderMembership.replaceMany',
@@ -62,6 +63,7 @@ export const DB_RPC = Object.freeze({
   SYNC_ENSURE_FOLDER_WINDOW: 'sync.ensureFolderWindow',
   SYNC_ENSURE_MESSAGE_BODY: 'sync.ensureMessageBody',
   SYNC_ENSURE_MESSAGE_BODIES: 'sync.ensureMessageBodies',
+  SYNC_MESSAGE_BODY_FOR_DISPLAY: 'sync.messageBodyForDisplay',
   SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
   SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
   SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',

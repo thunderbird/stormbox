@@ -86,6 +86,7 @@ function makeRepo() {
     ensureFolderWindow: 0,
     queryViewProgress: 0,
     ensureMessageBodies: 0,
+    getMessageBodyForDisplay: 0,
     ensureFolderTree: 0,
   };
   let folders = [];
@@ -151,6 +152,15 @@ function makeRepo() {
       return { fetched: 0 };
     },
 
+    async getMessageBodyForDisplay(_accountId, messageId) {
+      calls.getMessageBodyForDisplay += 1;
+      return {
+        text: `body-${messageId}`,
+        html: '',
+        attachments: [],
+      };
+    },
+
     async ensureFolderTree() {
       calls.ensureFolderTree += 1;
       return { count: folders.length };
@@ -182,7 +192,9 @@ function makeRepo() {
       // not short-circuited.
       if (method === 'db.query'
         && /SELECT\s+id\s+FROM\s+messages/i.test(String(params?.sql ?? ''))) {
-        return [{ id: params.params?.[0] ?? 0 }];
+        const queryParams = params.params ?? [];
+        const ids = queryParams.length > 1 ? queryParams.slice(1) : queryParams;
+        return ids.map((id) => ({ id }));
       }
       return [];
     },
@@ -686,6 +698,92 @@ describe('selectMessage marks unread as seen via the auto-drained outbox', () =>
 
     expect(replaceCalls).toBe(0);
     expect(insertCalls).toBe(0);
+  });
+});
+
+describe('moveMessages', () => {
+  it('queues a moveToFolders mutation for the current source folder and clears moved selection state', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });
+    const row = makeRow(7);
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: { 1: { rows: [row], total: 1 } },
+    });
+    await flush();
+    expect(mailStore.currentFolderId).toBe(1);
+    expect(mailStore.canMoveToFolder(2)).toBe(true);
+
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 42 };
+    };
+    const runCalls = [];
+    repo.runMutation = async (accountId, mutationId) => {
+      runCalls.push({ accountId, mutationId });
+      repo.setView(1, { rows: [], total: 0 });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    mailStore.selectedIds = new Set([7]);
+    mailStore.selectMessage(7);
+    await flush();
+
+    const result = await mailStore.moveMessages([7], 2);
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].mutationType).toBe('moveToFolders');
+    expect(insertCalls[0].targetMessageId).toBe(7);
+    expect(JSON.parse(insertCalls[0].requestJson)).toEqual({
+      messageIds: [7],
+      addFolderIds: [2],
+      removeFolderIds: [1],
+    });
+    expect(runCalls).toEqual([{ accountId: 1, mutationId: 42 }]);
+    expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
+  it('skips drops onto the current folder without enqueueing a mutation', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1, may_add_items: 1 });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox],
+      views: { 1: { rows: [makeRow(7)], total: 1 } },
+    });
+    await flush();
+    let insertCalls = 0;
+    repo.insertPendingMutation = async () => {
+      insertCalls += 1;
+      return { id: 1 };
+    };
+
+    const result = await mailStore.moveMessages([7], 1);
+
+    expect(result).toEqual({ succeeded: 0, failed: 0, skipped: 1 });
+    expect(insertCalls).toBe(0);
+    expect(mailStore.canMoveToFolder(1)).toBe(false);
+  });
+
+  it('rejects folders that cannot accept added messages', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
+    const locked = makeFolder(2, { role: 'archive', may_add_items: 0 });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, locked],
+      views: { 1: { rows: [makeRow(7)], total: 1 } },
+    });
+    await flush();
+    let insertCalls = 0;
+    repo.insertPendingMutation = async () => {
+      insertCalls += 1;
+      return { id: 1 };
+    };
+
+    await expect(mailStore.moveMessages([7], 2))
+      .rejects.toThrow('Cannot move messages into that folder.');
+    expect(insertCalls).toBe(0);
+    expect(mailStore.canMoveToFolder(2)).toBe(false);
   });
 });
 

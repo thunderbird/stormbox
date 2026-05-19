@@ -181,7 +181,7 @@ export const useMailStore = defineStore('mail', () => {
       }
       refreshFolderProgress();
       if (selectedMessageId.value != null) {
-        refreshMessageBody(selectedMessageId.value);
+        void loadMessageBodyForDisplay(selectedMessageId.value, bodyFetchToken);
       }
     }
   }
@@ -705,11 +705,9 @@ export const useMailStore = defineStore('mail', () => {
    *
    * Keep this intentionally simple: enqueue any visible row whose
    * metadata is loaded and whose body is not already cached. The
-   * existing bodyQueued Set dedupes pending ids, and the backend's
-   * _bodyFetchInflight map dedupes click-time fetches that collide
-   * with an in-flight prefetch. We do not cancel or reshuffle the
-   * queue here; body batches are small enough that cancellation adds
-   * more edge cases than value.
+   * existing bodyQueued Set dedupes pending ids. Display uses
+   * getMessageBodyForDisplay (priority fetch); prefetch is best-effort
+   * for scroll-ahead only.
    *
    * Sparse rows (undefined slots where the metadata hasn't loaded
    * yet) are skipped silently; the next ensureLoaded round trip
@@ -742,13 +740,8 @@ export const useMailStore = defineStore('mail', () => {
       while (bodyQueue.length > 0 && repo && authStore.accountId != null) {
         const batch = bodyQueue.splice(0, BODY_PREFETCH_BATCH);
         for (const id of batch) bodyQueued.delete(id);
-        const selectedAtStart = selectedMessageId.value;
         await repo.ensureMessageBodies(authStore.accountId, batch);
-        if (selectedAtStart != null && batch.includes(selectedAtStart)) {
-          await refreshMessageBody(selectedAtStart);
-        }
-        // Yield so metadata reads and user-triggered RPCs can get into
-        // the worker queue between body batches.
+        // Yield so display-path RPCs can interleave between prefetch batches.
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     } catch (err) {
@@ -762,8 +755,26 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Open a message. Renders the cached body immediately if we have one;
-   * always asks the sync layer to refresh in the background.
+   * Load body for the reading pane via the repository (cache read, then
+   * priority fetch on miss). Ignores stale responses after fast selection
+   * changes via bodyFetchToken.
+   */
+  async function loadMessageBodyForDisplay(messageId, token) {
+    if (!repo || authStore.accountId == null) return;
+    try {
+      const body = await repo.getMessageBodyForDisplay(authStore.accountId, messageId);
+      if (token === bodyFetchToken && selectedMessageId.value === messageId) {
+        messageBody.value = body;
+      }
+    } catch (err) {
+      console.warn('[mail-store] getMessageBodyForDisplay failed', err);
+    }
+  }
+
+  /**
+   * Open a message. The store only declares which message to show; the
+   * worker/sync layer handles cache vs network (including priority fetch
+   * during an in-flight prefetch batch).
    */
   function selectMessage(messageId) {
     selectedMessageId.value = messageId;
@@ -771,7 +782,10 @@ export const useMailStore = defineStore('mail', () => {
       messageBody.value = null;
       return;
     }
-    refreshMessageBody(messageId);
+
+    const token = ++bodyFetchToken;
+    messageBody.value = null;
+    void loadMessageBodyForDisplay(messageId, token);
 
     if (!_isSeenInList(messageId)) {
       markRead(messageId).catch((err) => {
@@ -779,45 +793,15 @@ export const useMailStore = defineStore('mail', () => {
       });
     }
 
-    const token = ++bodyFetchToken;
-    enqueueBodyPrefetch(nearbyMessageIds(messageId), { priority: true });
-    drainBodyPrefetchQueue().finally(() => {
-      if (token === bodyFetchToken && selectedMessageId.value === messageId) {
-        refreshMessageBody(messageId);
-      }
-    });
-  }
-
-  async function refreshMessageBody(messageId) {
-    if (!repo) return;
-    const body = await loadBody(messageId);
-    if (selectedMessageId.value === messageId) {
-      messageBody.value = body;
+    const neighbors = nearbyMessageIds(messageId).filter((id) => id !== messageId);
+    if (neighbors.length > 0) {
+      enqueueBodyPrefetch(neighbors);
     }
   }
 
   function _isSeenInList(messageId) {
     const m = messages.value.find((row) => row?.id === messageId);
     return !!m && Number(m.is_seen) === 1;
-  }
-
-  async function loadBody(messageId) {
-    const rows = await repo.call('db.query', {
-      sql: 'SELECT bv.kind, bv.value, bv.is_truncated FROM body_values bv WHERE bv.message_id = ?',
-      params: [messageId],
-    });
-    const text = rows.find((r) => r.kind === 'text')?.value ?? '';
-    const html = rows.find((r) => r.kind === 'html')?.value ?? '';
-    const attachments = await repo.call('db.query', {
-      sql: `SELECT part_id, blob_id, name, media_type AS mime_type, size, disposition, cid
-              FROM body_parts WHERE message_id = ? AND is_attachment = 1
-             ORDER BY position`,
-      params: [messageId],
-    });
-    if (rows.length === 0 && attachments.length === 0) {
-      return null;
-    }
-    return { text, html, attachments };
   }
 
   /**
@@ -972,11 +956,82 @@ export const useMailStore = defineStore('mail', () => {
     return destroyMessages([messageId]);
   }
 
+  /**
+   * Move one or more messages from the currently-open folder into a
+   * target folder. The outbox already knows how to apply moveToFolders
+   * locally after Email/set succeeds; the store's job is to validate
+   * the source/target pair, enqueue the mutation, and refresh the
+   * current painted ranges once the cache has changed.
+   */
+  async function moveMessages(ids, targetFolderId) {
+    if (!repo || authStore.accountId == null) {
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    const messageIds = normalizeMessageIds(ids);
+    if (messageIds.length === 0) {
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    const source = currentFolder.value;
+    const target = findFolder(targetFolderId);
+    assertCanMoveToFolder(source, target);
+    if (Number(source.id) === Number(target.id)) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
+
+    const liveIds = await filterExistingMessageIds(messageIds);
+    if (liveIds.length === 0) {
+      clearSelectionFor(messageIds);
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
+
+    const mutation = await repo.insertPendingMutation(buildMoveMutation(liveIds, target.id, source.id));
+    const result = typeof repo.runMutation === 'function'
+      ? await repo.runMutation(authStore.accountId, mutation.id)
+      : await repo.drainOutbox(authStore.accountId);
+    if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
+      const detail = await loadMutationError(mutation.id);
+      const message = describeMutationFailure(result, detail, 'move');
+      const err = new Error(message);
+      err.result = result;
+      err.detail = detail;
+      error.value = message;
+      console.warn('[mail-store] moveMessages failed', {
+        ids: liveIds,
+        targetFolderId: target.id,
+        result,
+        detail,
+      });
+      throw err;
+    }
+
+    clearSelectionFor(liveIds);
+    await refreshLoadedPages();
+    return {
+      succeeded: liveIds.length,
+      failed: 0,
+      skipped: messageIds.length - liveIds.length,
+    };
+  }
+
+  async function moveMessage(messageId, targetFolderId) {
+    const result = await moveMessages([messageId], targetFolderId);
+    return result.succeeded === 1;
+  }
+
+  function canMoveToFolder(targetFolderId) {
+    const source = currentFolder.value;
+    const target = findFolder(targetFolderId);
+    try {
+      assertCanMoveToFolder(source, target);
+    } catch {
+      return false;
+    }
+    return Number(source.id) !== Number(target.id);
+  }
+
   async function filterExistingMessageIds(ids) {
     if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
-    const numeric = ids
-      .map(Number)
-      .filter((n) => Number.isFinite(n));
+    const numeric = normalizeMessageIds(ids);
     if (numeric.length === 0) return [];
     const placeholders = numeric.map(() => '?').join(',');
     const rows = await repo.call('db.query', {
@@ -984,20 +1039,21 @@ export const useMailStore = defineStore('mail', () => {
               WHERE account_id = ? AND id IN (${placeholders})`,
       params: [authStore.accountId, ...numeric],
     });
-    return rows.map((r) => Number(r.id));
+    return (rows ?? []).map((r) => Number(r.id));
   }
 
   function clearSelectionFor(ids) {
-    if (!Array.isArray(ids) || ids.length === 0) return;
-    const set = new Set(ids);
-    if (set.has(selectedMessageId.value)) {
+    const normalized = normalizeMessageIds(ids);
+    if (normalized.length === 0) return;
+    const set = new Set(normalized);
+    if (selectedMessageId.value != null && set.has(Number(selectedMessageId.value))) {
       selectedMessageId.value = null;
       messageBody.value = null;
     }
     if (selectedIds.value.size > 0) {
       let changed = false;
       const next = new Set(selectedIds.value);
-      for (const id of ids) {
+      for (const id of normalized) {
         if (next.delete(id)) changed = true;
       }
       if (changed) selectedIds.value = next;
@@ -1023,20 +1079,20 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function describeMutationFailure(result, detail) {
+  function describeMutationFailure(result, detail, action = 'delete') {
     if (detail?.error_json) {
       try {
         const parsed = JSON.parse(detail.error_json);
         const errType = parsed?.type ?? 'error';
-        return `Could not delete message (${errType}).`;
+        return `Could not ${action} message (${errType}).`;
       } catch {
         // fall through
       }
     }
     if ((result?.attempted ?? 0) === 0) {
-      return 'Could not delete message (no sync backend available).';
+      return `Could not ${action} message (no sync backend available).`;
     }
-    return 'Could not delete message.';
+    return `Could not ${action} message.`;
   }
 
   /**
@@ -1072,6 +1128,57 @@ export const useMailStore = defineStore('mail', () => {
       targetMessageId: target,
       requestJson: JSON.stringify({ messageIds: ids }),
     };
+  }
+
+  function buildMoveMutation(messageIds, targetFolderId, sourceFolderId) {
+    const ids = normalizeMessageIds(messageIds);
+    return {
+      accountId: authStore.accountId,
+      mutationType: 'moveToFolders',
+      targetMessageId: ids.length === 1 ? ids[0] : null,
+      requestJson: JSON.stringify({
+        messageIds: ids,
+        addFolderIds: [Number(targetFolderId)],
+        removeFolderIds: [Number(sourceFolderId)],
+      }),
+    };
+  }
+
+  function findFolder(folderId) {
+    const localId = Number(folderId);
+    if (!Number.isFinite(localId)) return null;
+    return folders.value.find((f) => Number(f.id) === localId) ?? null;
+  }
+
+  function normalizeMessageIds(ids) {
+    const raw = Array.isArray(ids) ? ids : [ids];
+    const out = raw
+      .map(Number)
+      .filter((id) => Number.isFinite(id));
+    return [...new Set(out)];
+  }
+
+  function assertCanMoveToFolder(source, target) {
+    if (!source?.id) {
+      throwMoveError('Cannot move message without a source folder.');
+    }
+    if (!target || Number(target.is_deleted) === 1) {
+      throwMoveError('Cannot move message to that folder.');
+    }
+    if (Number(source.id) === Number(target.id)) {
+      return;
+    }
+    if (source.may_remove_items != null && Number(source.may_remove_items) === 0) {
+      throwMoveError('Cannot move messages out of this folder.');
+    }
+    if (target.may_add_items != null && Number(target.may_add_items) === 0) {
+      throwMoveError('Cannot move messages into that folder.');
+    }
+  }
+
+  function throwMoveError(message) {
+    error.value = message;
+    throw new Error(message);
   }
 
   /**
@@ -1159,6 +1266,9 @@ export const useMailStore = defineStore('mail', () => {
     markManySeen,
     destroyMessage,
     destroyMessages,
+    moveMessage,
+    moveMessages,
+    canMoveToFolder,
     clearSelection,
     refresh,
   };

@@ -416,6 +416,173 @@ describe('JmapBackend.ensureMessageBodies', () => {
   });
 });
 
+describe('JmapBackend.ensureMessageBodyForDisplay', () => {
+  it('returns cached without Email/get when body_fetched_at is set', async () => {
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.THREAD_UPSERT_MANY]({
+      accountId: account.id,
+      threads: [{ remoteId: 't-1' }],
+    });
+    const [thread] = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id FROM threads WHERE account_id = ?',
+      params: [account.id],
+    });
+    await handlers[DB_RPC.MESSAGE_UPSERT_MANY]({
+      accountId: account.id,
+      messages: [{
+        remoteId: 'e-1',
+        threadId: thread.id,
+        remoteThreadId: 't-1',
+        subject: 'one',
+        preview: 'p1',
+        receivedAt: Date.now(),
+        sentAt: Date.now(),
+        hasAttachment: false,
+        keywordsJson: '{}',
+        keywords: [],
+        isSeen: false,
+        isFlagged: false,
+        isAnswered: false,
+        isDraft: false,
+        isForwarded: false,
+        isJunk: false,
+        addresses: [],
+      }],
+    });
+    const [msg] = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id FROM messages WHERE account_id = ?',
+      params: [account.id],
+    });
+    await handlers[DB_RPC.TRANSACTION]({
+      statements: [{
+        sql: 'UPDATE messages SET body_fetched_at = ? WHERE id = ?',
+        params: [Date.now(), msg.id],
+      }],
+    });
+
+    let bodyGetCalls = 0;
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => {
+      bodyGetCalls += 1;
+      return { state: 'es-1', list: [] };
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = { id: account.id, remote_account_id: account.remote_account_id };
+
+    const result = await backend.ensureMessageBodyForDisplay(msg.id);
+    expect(result).toEqual({ fetched: 0, cached: true });
+    expect(bodyGetCalls).toBe(0);
+  });
+
+  it('does not await an in-flight prefetch batch (priority single-id fetch)', async () => {
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' }],
+    });
+    await handlers[DB_RPC.THREAD_UPSERT_MANY]({
+      accountId: account.id,
+      threads: [{ remoteId: 't-1' }, { remoteId: 't-2' }],
+    });
+    const threads = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id, remote_id FROM threads WHERE account_id = ?',
+      params: [account.id],
+    });
+    const threadId = (remoteId) => threads.find((t) => t.remote_id === remoteId).id;
+    await handlers[DB_RPC.MESSAGE_UPSERT_MANY]({
+      accountId: account.id,
+      messages: [
+        { remoteId: 'e-1', threadRemote: 't-1' },
+        { remoteId: 'e-2', threadRemote: 't-2' },
+      ].map(({ remoteId, threadRemote }) => ({
+        remoteId,
+        threadId: threadId(threadRemote),
+        remoteThreadId: threadRemote,
+        subject: remoteId,
+        preview: 'p',
+        receivedAt: Date.now(),
+        sentAt: Date.now(),
+        hasAttachment: false,
+        keywordsJson: '{}',
+        keywords: [],
+        isSeen: false,
+        isFlagged: false,
+        isAnswered: false,
+        isDraft: false,
+        isForwarded: false,
+        isJunk: false,
+        addresses: [],
+      })),
+    });
+    const messages = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id, remote_id FROM messages WHERE account_id = ? ORDER BY remote_id',
+      params: [account.id],
+    });
+    const msgA = messages.find((m) => m.remote_id === 'e-1');
+
+    let batchGateResolve;
+    const batchGate = new Promise((r) => { batchGateResolve = r; });
+    const seenGets = [];
+    const transport = new MockTransport();
+    transport.handle('Email/get', async (params) => {
+      seenGets.push([...params.ids].sort());
+      if (params.ids.length > 1) {
+        await batchGate;
+      }
+      return {
+        state: 'es-1',
+        list: params.ids.map((id) => ({
+          id,
+          blobId: `blob-${id}`,
+          threadId: id,
+          mailboxIds: { 'mb-inbox': true },
+          keywords: {},
+          bodyStructure: { partId: `body-${id}`, type: 'text/plain', size: 5 },
+          textBody: [{ partId: `body-${id}` }],
+          htmlBody: [],
+          attachments: [],
+          bodyValues: { [`body-${id}`]: { value: `hello ${id}`, isTruncated: false } },
+        })),
+      };
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = { id: account.id, remote_account_id: account.remote_account_id };
+
+    const batchPromise = backend.ensureMessageBodies(messages.map((m) => m.id));
+    const displayPromise = backend.ensureMessageBodyForDisplay(msgA.id);
+    const displayResult = await displayPromise;
+
+    expect(displayResult.fetched).toBe(1);
+    expect(seenGets.some((ids) => ids.length === 1 && ids[0] === 'e-1')).toBe(true);
+    expect(backend._bodyFetchInflight.has(msgA.id)).toBe(true);
+
+    batchGateResolve();
+    await batchPromise;
+  });
+});
+
 /**
  * Wire the FakeWebSocket so that JMAP Request frames sent through it are
  * dispatched against the same scenario handler map and replied as

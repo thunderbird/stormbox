@@ -308,6 +308,52 @@ describe('thread + message + membership handlers', () => {
     expect(rows.map((m) => m.remote_id)).toEqual(['a', 'b']);
   });
 
+  it('MESSAGE_BODY_READ returns stored text, html, and attachments', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id);
+    const { messageId } = await seedMessage(account.id, inbox.id, { remoteId: 'm-body' });
+    const ts = Date.now();
+    await h[DB_RPC.TRANSACTION]({
+      statements: [
+        {
+          sql: `INSERT INTO body_values(message_id, part_id, kind, value, is_truncated, fetched_at, last_accessed_at)
+                VALUES (?, 'text-1', 'text', ?, 0, ?, ?)`,
+          params: [messageId, 'plain body', ts, ts],
+        },
+        {
+          sql: `INSERT INTO body_values(message_id, part_id, kind, value, is_truncated, fetched_at, last_accessed_at)
+                VALUES (?, 'html-1', 'html', ?, 0, ?, ?)`,
+          params: [messageId, '<p>html body</p>', ts, ts],
+        },
+        {
+          sql: `INSERT INTO body_parts(
+                  message_id, part_id, position, blob_id, parent_part_id,
+                  media_type, charset, name, disposition, cid,
+                  language, location, size,
+                  is_body_text, is_body_html, is_attachment, is_inline, raw_json
+                ) VALUES (?, 'att-1', 0, NULL, NULL, 'application/pdf', NULL, 'doc.pdf', 'attachment', NULL, NULL, NULL, 42, 0, 0, 1, 0, '{}')`,
+          params: [messageId],
+        },
+      ],
+    });
+
+    const body = await h[DB_RPC.MESSAGE_BODY_READ]({ messageId });
+    expect(body).toEqual({
+      text: 'plain body',
+      html: '<p>html body</p>',
+      attachments: [{
+        part_id: 'att-1',
+        blob_id: null,
+        name: 'doc.pdf',
+        mime_type: 'application/pdf',
+        size: 42,
+        disposition: 'attachment',
+        cid: null,
+      }],
+    });
+    expect(await h[DB_RPC.MESSAGE_BODY_READ]({ messageId: messageId + 999 })).toBeNull();
+  });
+
   it('replaces folder membership atomically', async () => {
     const account = await seedAccount();
     const inbox = await seedFolder(account.id, { remoteId: 'inbox', role: 'inbox' });

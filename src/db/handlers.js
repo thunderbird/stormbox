@@ -661,6 +661,28 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}
         [threadId],
       ),
 
+    [DB_RPC.MESSAGE_BODY_READ]: async ({ messageId }) => {
+      const values = await engine.all(
+        `SELECT kind, value, is_truncated
+           FROM body_values
+          WHERE message_id = ?`,
+        [messageId],
+      );
+      const attachments = await engine.all(
+        `SELECT part_id, blob_id, name, media_type AS mime_type, size, disposition, cid
+           FROM body_parts
+          WHERE message_id = ? AND is_attachment = 1
+          ORDER BY position`,
+        [messageId],
+      );
+      if (values.length === 0 && attachments.length === 0) {
+        return null;
+      }
+      const text = values.find((r) => r.kind === 'text')?.value ?? '';
+      const html = values.find((r) => r.kind === 'html')?.value ?? '';
+      return { text, html, attachments };
+    },
+
     [DB_RPC.MESSAGE_FIND_BY_RFC822_MESSAGE_ID]: async ({ accountId, rfc822MessageId }) =>
       engine.get(
         `SELECT * FROM messages WHERE account_id = ? AND rfc822_message_id = ?`,

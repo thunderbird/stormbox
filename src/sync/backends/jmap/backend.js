@@ -19,6 +19,7 @@
  *
  * Per-need helpers (called by the SyncClient facade):
  *   ensureFolderTree     ensureFolderWindow     ensureMessageBody
+ *   ensureMessageBodyForDisplay (via sync.messageBodyForDisplay RPC)
  *   ensureIdentities     ensureAddressbooks     ensureContacts
  *   runMutation
  */
@@ -83,6 +84,11 @@ export class JmapBackend {
     // checked at the start of each call and doesn't catch overlap
     // before the first finishes.
     this._bodyFetchInflight = new Map();
+    /** @type {Map<number, Promise<{ fetched: number, cached?: boolean }>>}
+     *  Display-path body fetches. Not shared with batch prefetch promises
+     *  so a click during an in-flight ensureMessageBodies batch does not
+     *  wait for the whole batch. */
+    this._bodyPriorityInflight = new Map();
     // Cap on how many bodies we eagerly prefetch per push. A long
     // offline catch-up can land hundreds of newly-visible ids at
     // once; we fetch only the most recent few and let the rest
@@ -305,6 +311,41 @@ export class JmapBackend {
 
   async ensureMessageBody(messageId) {
     return this.ensureMessageBodies([messageId]);
+  }
+
+  /**
+   * Ensure a message body is available for the reading pane. Returns
+   * immediately when body_fetched_at is set. On a cache miss, issues a
+   * single-id fetch that does not piggyback on an in-flight prefetch
+   * batch (see _bodyPriorityInflight).
+   */
+  async ensureMessageBodyForDisplay(messageId) {
+    if (messageId == null) {
+      return { fetched: 0 };
+    }
+    if (await this._bodyCached(messageId)) {
+      return { fetched: 0, cached: true };
+    }
+    const existing = this._bodyPriorityInflight.get(messageId);
+    if (existing) {
+      return existing;
+    }
+    const promise = this._fetchBodiesForLocalIds([messageId]);
+    this._bodyPriorityInflight.set(messageId, promise);
+    promise.finally(() => {
+      if (this._bodyPriorityInflight.get(messageId) === promise) {
+        this._bodyPriorityInflight.delete(messageId);
+      }
+    });
+    return promise;
+  }
+
+  async _bodyCached(messageId) {
+    const rows = await this.handlers[DB_RPC.QUERY]({
+      sql: 'SELECT body_fetched_at FROM messages WHERE id = ? LIMIT 1',
+      params: [messageId],
+    });
+    return rows[0]?.body_fetched_at != null;
   }
 
   /**

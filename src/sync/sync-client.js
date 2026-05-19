@@ -26,6 +26,7 @@ import { SERVICE_KIND } from '../constants/states.js';
  * @property {() => Promise<void>} ensureFolderTree
  * @property {(folderId: number, range: { offset?: number, limit?: number }) => Promise<void>} ensureFolderWindow
  * @property {(messageId: number) => Promise<void>} ensureMessageBody
+ * @property {(messageId: number) => Promise<{ fetched: number, cached?: boolean }>} ensureMessageBodyForDisplay
  * @property {(messageIds: number[]) => Promise<void>} ensureMessageBodies
  * @property {(folderId: number, options: object) => Promise<void>} ensureFolderIndex
  * @property {() => Promise<void>} ensureIdentities
@@ -83,6 +84,11 @@ export class SyncClient {
 
   ensureMessageBodies(accountId, messageIds) {
     return this.getBackend(accountId, SERVICE_KIND.JMAP_MAIL).ensureMessageBodies(messageIds);
+  }
+
+  ensureMessageBodyForDisplay(accountId, messageId) {
+    return this.getBackend(accountId, SERVICE_KIND.JMAP_MAIL)
+      .ensureMessageBodyForDisplay(messageId);
   }
 
   ensureFolderIndex(accountId, folderId, options = {}) {

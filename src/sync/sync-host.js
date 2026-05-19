@@ -120,6 +120,16 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_MESSAGE_BODIES]: async ({ accountId, messageIds }) =>
       syncClient.ensureMessageBodies(accountId, messageIds ?? []),
 
+    [DB_RPC.SYNC_MESSAGE_BODY_FOR_DISPLAY]: async ({ accountId, messageId }) => {
+      let body = await handlers[DB_RPC.MESSAGE_BODY_READ]({ messageId });
+      if (body) {
+        return body;
+      }
+      await syncClient.ensureMessageBodyForDisplay(accountId, messageId);
+      body = await handlers[DB_RPC.MESSAGE_BODY_READ]({ messageId });
+      return body;
+    },
+
     [DB_RPC.SYNC_ENSURE_IDENTITIES]: async ({ accountId }) =>
       syncClient.ensureIdentities(accountId),
 

@@ -44,6 +44,7 @@ function makeRepo() {
     async queryViewProgress() { return { total: 0, covered: 0, percent: 0 }; },
     async ensureFolderWindow() { return { total: 0, fetched: 0 }; },
     async ensureMessageBodies() { return { fetched: 0 }; },
+    async getMessageBodyForDisplay() { return null; },
     async ensureFolderTree() { return { count: 0 }; },
     async insertPendingMutation() { return undefined; },
     async replaceMessageKeywords() { return undefined; },
