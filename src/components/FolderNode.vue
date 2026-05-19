@@ -3,11 +3,11 @@ import { computed } from 'vue';
 
 const props = defineProps({
   folder: { type: Object, required: true },
-  isCurrent: { type: Function, required: true },
+  currentFolderId: { type: [Number, String, null], default: null },
   onPick: { type: Function, required: true },
 });
 
-const current = computed(() => props.isCurrent(props.folder.id));
+const current = computed(() => props.currentFolderId === props.folder.id);
 const unread = computed(() => Number(props.folder.unread_emails) || 0);
 const Icon = computed(() => props.folder.icon);
 const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
@@ -36,7 +36,7 @@ const showIndexProgress = computed(() =>
     v-for="child in folder.children"
     :key="child.id"
     :folder="child"
-    :is-current="isCurrent"
+    :current-folder-id="currentFolderId"
     :on-pick="onPick"
   />
 </template>

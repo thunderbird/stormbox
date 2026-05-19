@@ -53,7 +53,6 @@ function sortKey(folder) {
   }
 }
 
-function isCurrent(id) { return mailStore.currentFolderId === id; }
 function pickFolder(id) { mailStore.selectFolder(id); }
 </script>
 
@@ -63,7 +62,7 @@ function pickFolder(id) { mailStore.selectFolder(id); }
       v-for="folder in tree"
       :key="folder.id"
       :folder="folder"
-      :is-current="isCurrent"
+      :current-folder-id="mailStore.currentFolderId"
       :on-pick="pickFolder"
     />
   </nav>
