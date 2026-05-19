@@ -867,38 +867,37 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Delete a message. The mutation runs end-to-end inside the sync
-   * backend: the outbox issues Email/set and, on success, applies the
-   * resulting state to local SQLite (folder_messages, query_view_items,
-   * query_views.total) before returning. Once we await that round
-   * trip, a MESSAGES broadcast has already fired and refreshLoadedPages
-   * has reconciled the visible list against the new cache state.
+   * Delete one or more messages. Issues exactly one Email/set round
+   * trip regardless of how many ids are passed in: single-row delete
+   * from the open message and multi-select bulk delete go through the
+   * same path, both as a one-row pending_mutations entry whose
+   * request_json carries `messageIds: [...]`.
    *
-   * The store deliberately does NOT optimistically mutate state.rows,
-   * paintedRanges, or totalForFolder. Doing so would race against the
-   * broadcast-driven refresh and re-introduce the desync bug where the
-   * UI splice gets overwritten by a stale SQLite read.
+   * The outbox runs Email/set, applies the local cache update per id
+   * (folder_messages, query_view_items, query_views.total), and
+   * returns once everything is persisted. We then refreshLoadedPages
+   * directly so the UI reflects the change immediately rather than
+   * depending on the post-write MESSAGES broadcast hop (which can be
+   * late or, in some Firefox builds, never arrives).
+   *
+   * Returns once the round trip is complete; the caller can re-read
+   * mailStore.messages right after for the post-delete state.
    */
-  async function destroyMessage(messageId) {
+  async function destroyMessages(ids) {
     if (!repo || authStore.accountId == null) return;
-    // Defensive: if the message no longer exists locally (e.g. a
-    // previous delete attempt already wiped it but the UI still
-    // shows it because the user clicked before the row re-rendered),
-    // treat the delete as already-satisfied. Otherwise we would
-    // INSERT a pending_mutations row with a dangling target_message_id
-    // and trigger "FOREIGN KEY constraint failed".
-    const exists = await repo.call('db.query', {
-      sql: 'SELECT id FROM messages WHERE id = ? AND account_id = ? LIMIT 1',
-      params: [messageId, authStore.accountId],
-    });
-    if (!exists?.length) {
-      if (selectedMessageId.value === messageId) {
-        selectedMessageId.value = null;
-        messageBody.value = null;
-      }
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    // Drop ids that no longer exist in messages (e.g. a previous
+    // delete attempt already wiped them but the UI still shows them
+    // because the user clicked before the row re-rendered). The
+    // PENDING_MUTATION_INSERT FK check would null the target out,
+    // but skipping them here keeps the pending row clean and avoids
+    // an extra outbox dispatch for nothing.
+    const liveIds = await filterExistingMessageIds(ids);
+    if (liveIds.length === 0) {
+      clearSelectionFor(ids);
       return;
     }
-    const mutation = await repo.insertPendingMutation(buildDeleteMutation(messageId));
+    const mutation = await repo.insertPendingMutation(buildDeleteMutation(liveIds));
     const result = typeof repo.runMutation === 'function'
       ? await repo.runMutation(authStore.accountId, mutation.id)
       : await repo.drainOutbox(authStore.accountId);
@@ -909,51 +908,58 @@ export const useMailStore = defineStore('mail', () => {
       err.result = result;
       err.detail = detail;
       error.value = message;
-      console.warn('[mail-store] destroyMessage failed', { messageId, result, detail });
+      console.warn('[mail-store] destroyMessages failed', { ids: liveIds, result, detail });
       throw err;
     }
-    if (selectedMessageId.value === messageId) {
-      selectedMessageId.value = null;
-      messageBody.value = null;
-    }
-    if (selectedIds.value.has(messageId)) {
-      const next = new Set(selectedIds.value);
-      next.delete(messageId);
-      selectedIds.value = next;
-    }
+    clearSelectionFor(liveIds);
     // Belt-and-braces: don't trust the post-write MESSAGES broadcast
     // alone. The outbox already updated SQLite (folder_messages and
     // query_view_items) before runMutation resolved, so reading the
     // painted ranges back NOW gives an authoritative refresh even if
     // the BroadcastChannel hop from the SharedWorker to this tab is
-    // late or, in some Firefox builds, never arrives at all. Without
-    // this the user sees "delete worked on the server but my Inbox
-    // still shows the row".
+    // late or never arrives.
     await refreshLoadedPages();
   }
 
   /**
-   * Bulk delete. Same one-row-per-mutation policy as markManySeen,
-   * for the same reason: each Email/set is small, the outbox is
-   * already happy to drain a queue of them, and we get per-id
-   * failure reporting for free. Returns { succeeded, failed }.
+   * Single-row delete is the N=1 case of destroyMessages. Kept as a
+   * named export so the open-message Delete button and any other
+   * single-target caller stay readable.
    */
-  async function destroyMessages(ids) {
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return { succeeded: 0, failed: 0 };
+  async function destroyMessage(messageId) {
+    return destroyMessages([messageId]);
+  }
+
+  async function filterExistingMessageIds(ids) {
+    if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
+    const numeric = ids
+      .map(Number)
+      .filter((n) => Number.isFinite(n));
+    if (numeric.length === 0) return [];
+    const placeholders = numeric.map(() => '?').join(',');
+    const rows = await repo.call('db.query', {
+      sql: `SELECT id FROM messages
+              WHERE account_id = ? AND id IN (${placeholders})`,
+      params: [authStore.accountId, ...numeric],
+    });
+    return rows.map((r) => Number(r.id));
+  }
+
+  function clearSelectionFor(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const set = new Set(ids);
+    if (set.has(selectedMessageId.value)) {
+      selectedMessageId.value = null;
+      messageBody.value = null;
     }
-    let succeeded = 0;
-    let failed = 0;
-    for (const id of ids) {
-      try {
-        await destroyMessage(id);
-        succeeded += 1;
-      } catch (err) {
-        failed += 1;
-        console.warn('[mail-store] destroyMessages item failed', { id, err: err?.message ?? err });
+    if (selectedIds.value.size > 0) {
+      let changed = false;
+      const next = new Set(selectedIds.value);
+      for (const id of ids) {
+        if (next.delete(id)) changed = true;
       }
+      if (changed) selectedIds.value = next;
     }
-    return { succeeded, failed };
   }
 
   function clearSelection() {
@@ -991,26 +997,38 @@ export const useMailStore = defineStore('mail', () => {
     return 'Could not delete message.';
   }
 
-  function buildDeleteMutation(messageId) {
+  /**
+   * Build the pending_mutations row for deleting one or more
+   * messages. The request_json always carries `messageIds: [...]`
+   * so the outbox dispatches a single Email/set regardless of how
+   * many ids are queued; target_message_id is set only for the N=1
+   * case so the OutboxRunner's per-target lock still serialises a
+   * single-message delete behind any prior setKeywords on the same
+   * id. For bulk deletes (N>1) target_message_id stays null and
+   * the row gets a row-id lock instead.
+   */
+  function buildDeleteMutation(messageIds) {
+    const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
     const trash = folders.value.find((f) => f.role === FOLDER_ROLE.TRASH);
     const current = currentFolder.value;
+    const target = ids.length === 1 ? ids[0] : null;
     if (trash && current?.id != null && current.id !== trash.id) {
       return {
         accountId: authStore.accountId,
         mutationType: 'moveToFolders',
-        targetMessageId: messageId,
+        targetMessageId: target,
         requestJson: JSON.stringify({
+          messageIds: ids,
           addFolderIds: [trash.id],
           removeFolderIds: [current.id],
         }),
       };
     }
-
     return {
       accountId: authStore.accountId,
       mutationType: 'destroy',
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({}),
+      targetMessageId: target,
+      requestJson: JSON.stringify({ messageIds: ids }),
     };
   }
 

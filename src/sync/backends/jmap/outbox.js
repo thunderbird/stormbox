@@ -136,90 +136,156 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
 }
 
 async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {
-  const messageId = row.target_message_id ?? request.messageId;
-  const remoteId = await resolveRemoteMessageId(handlers, account, messageId);
-  if (!remoteId) {
+  const messageIds = collectMessageIds(row, request);
+  if (messageIds.length === 0) {
+    return { ok: false, error: { type: 'unknownMessage' } };
+  }
+  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
+  if (resolved.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   const addLocalIds = (request.addFolderIds ?? []).map(Number).filter(Number.isFinite);
   const removeLocalIds = (request.removeFolderIds ?? []).map(Number).filter(Number.isFinite);
   const addRemote = await resolveRemoteFolderIds(handlers, addLocalIds);
   const removeRemote = await resolveRemoteFolderIds(handlers, removeLocalIds);
-  const update = {};
-  for (const id of addRemote) {
-    update[`mailboxIds/${id}`] = true;
-  }
-  for (const id of removeRemote) {
-    update[`mailboxIds/${id}`] = null;
-  }
-  const result = await submitEmailSet({
-    transport, account, useWebSocket, update: { [remoteId]: update },
+  const patch = {};
+  for (const id of addRemote) patch[`mailboxIds/${id}`] = true;
+  for (const id of removeRemote) patch[`mailboxIds/${id}`] = null;
+  // One Email/set with N entries in `update` instead of N separate
+  // mutations; whether the user clicked Delete on one row or
+  // multi-selected fifty, the JMAP round trip count is always one.
+  const update = Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, patch]));
+  const raw = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [['Email/set', { accountId: account.remote_account_id, update }, 's1']],
+    useWebSocket,
   });
-  if (result.ok) {
+  const response = pickResponse(raw, 'Email/set');
+  if (!response) {
+    return { ok: false, error: { type: 'noResponse' } };
+  }
+  const updatedRemoteIds = new Set(
+    Object.keys(response.updated ?? {}),
+  );
+  const notUpdated = response.notUpdated ?? {};
+
+  // Apply the local cache update for the ids the server confirmed.
+  for (const { localId, remoteId } of resolved) {
+    if (!updatedRemoteIds.has(remoteId)) continue;
     await applyMoveLocally(handlers, account, {
-      messageId,
+      messageId: localId,
       addFolderIds: addLocalIds,
       removeFolderIds: removeLocalIds,
     });
-    return result;
   }
-  // Email/set update was rejected. Reconcile against the server: if
-  // the message is gone, treat the move as a successful destroy. If
-  // the message still exists but is no longer in any of the removed
-  // folders (e.g. someone else already moved it elsewhere), treat the
-  // user's intent as satisfied and report success.
-  return reconcileAndDecide({
-    transport, account, handlers, useWebSocket,
-    messageId, remoteId, removeRemote, originalResult: result,
-  });
+
+  // For each id the server refused, fall back to per-id reconcile so
+  // a stale local cache (the message is already gone or already in
+  // the destination) does not turn a no-op into a hard error.
+  let unresolved = 0;
+  for (const remoteId of Object.keys(notUpdated)) {
+    const entry = resolved.find((r) => r.remoteId === remoteId);
+    if (!entry) continue;
+    const reconciled = await reconcileMessageFromServer({
+      transport, account, handlers, useWebSocket,
+      messageId: entry.localId, remoteId,
+      removeRemoteFolderIds: removeRemote,
+    });
+    if (reconciled.gone) continue;
+    if (reconciled.email && removeRemote.length > 0) {
+      const stillInSource = removeRemote.some(
+        (rid) => reconciled.email.mailboxIds?.[rid] === true,
+      );
+      if (!stillInSource) continue;
+    }
+    unresolved += 1;
+  }
+  if (unresolved > 0) {
+    return { ok: false, error: { type: 'notUpdated', detail: notUpdated } };
+  }
+  return { ok: true, response: raw };
 }
 
 async function runDestroy({ transport, account, handlers, row, request, useWebSocket }) {
-  const messageId = row.target_message_id ?? request.messageId;
-  const remoteId = await resolveRemoteMessageId(handlers, account, messageId);
-  if (!remoteId) {
+  const messageIds = collectMessageIds(row, request);
+  if (messageIds.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  const result = await submitEmailSet({
-    transport, account, useWebSocket, destroy: [remoteId],
-  });
-  if (result.ok) {
-    await applyDestroyLocally(handlers, account, { messageId });
-    return result;
+  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
+  if (resolved.length === 0) {
+    return { ok: false, error: { type: 'unknownMessage' } };
   }
-  // Email/set destroy was rejected. If the message is already gone on
-  // the server (notFound), treat the destroy as satisfied. Otherwise
-  // refresh local cache and propagate the failure.
-  const reconciled = await reconcileMessageFromServer({
-    transport, account, handlers, useWebSocket, messageId, remoteId,
-    removeRemoteFolderIds: [],
+  // Single Email/set destroy with the full id array. Stalwart and
+  // every other RFC-8621 server accepts a batch here.
+  const raw = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [['Email/set', {
+      accountId: account.remote_account_id,
+      destroy: resolved.map((r) => r.remoteId),
+    }, 's1']],
+    useWebSocket,
   });
-  if (reconciled.gone) {
-    return { ok: true, response: result.response, reconciled: 'gone' };
+  const response = pickResponse(raw, 'Email/set');
+  if (!response) {
+    return { ok: false, error: { type: 'noResponse' } };
   }
-  return result;
+  const destroyedRemoteIds = new Set(
+    Array.isArray(response.destroyed) ? response.destroyed : [],
+  );
+  const notDestroyed = response.notDestroyed ?? {};
+
+  for (const { localId, remoteId } of resolved) {
+    if (!destroyedRemoteIds.has(remoteId)) continue;
+    await applyDestroyLocally(handlers, account, { messageId: localId });
+  }
+
+  let unresolved = 0;
+  for (const remoteId of Object.keys(notDestroyed)) {
+    const entry = resolved.find((r) => r.remoteId === remoteId);
+    if (!entry) continue;
+    const reconciled = await reconcileMessageFromServer({
+      transport, account, handlers, useWebSocket,
+      messageId: entry.localId, remoteId,
+      removeRemoteFolderIds: [],
+    });
+    if (reconciled.gone) continue;
+    unresolved += 1;
+  }
+  if (unresolved > 0) {
+    return { ok: false, error: { type: 'notDestroyed', detail: notDestroyed } };
+  }
+  return { ok: true, response: raw };
 }
 
-async function reconcileAndDecide({
-  transport, account, handlers, useWebSocket,
-  messageId, remoteId, removeRemote, originalResult,
-}) {
-  const reconciled = await reconcileMessageFromServer({
-    transport, account, handlers, useWebSocket, messageId, remoteId,
-    removeRemoteFolderIds: removeRemote,
-  });
-  if (reconciled.gone) {
-    return { ok: true, response: originalResult.response, reconciled: 'gone' };
-  }
-  if (reconciled.email && removeRemote.length > 0) {
-    const stillInSource = removeRemote.some(
-      (rid) => reconciled.email.mailboxIds?.[rid] === true,
-    );
-    if (!stillInSource) {
-      return { ok: true, response: originalResult.response, reconciled: 'matched' };
+/**
+ * Pull the list of local message ids out of a pending_mutations row.
+ *
+ *   request.messageIds: number[]   - preferred shape, set by the store
+ *                                    for both single and bulk callers.
+ *   request.messageId:  number     - legacy single shape; kept so any
+ *                                    pre-existing pending rows still drain.
+ *   row.target_message_id          - legacy single FK pointer, also kept
+ *                                    for back-compat with older rows.
+ *
+ * Returns a deduped array of finite numbers. May be empty.
+ */
+function collectMessageIds(row, request) {
+  const out = new Set();
+  if (Array.isArray(request?.messageIds)) {
+    for (const id of request.messageIds) {
+      const n = Number(id);
+      if (Number.isFinite(n)) out.add(n);
     }
   }
-  return originalResult;
+  if (out.size === 0 && request?.messageId != null) {
+    const n = Number(request.messageId);
+    if (Number.isFinite(n)) out.add(n);
+  }
+  if (out.size === 0 && row?.target_message_id != null) {
+    const n = Number(row.target_message_id);
+    if (Number.isFinite(n)) out.add(n);
+  }
+  return [...out];
 }
 
 /**
@@ -342,6 +408,26 @@ async function resolveRemoteMessageId(handlers, account, messageId) {
     params: [account.id, messageId],
   });
   return rows[0]?.remote_id ?? null;
+}
+
+/**
+ * Batch counterpart to resolveRemoteMessageId. Looks up remote ids for
+ * an array of local message ids in one query, dropping any that no
+ * longer exist locally (e.g. a peer already destroyed the row before
+ * the outbox got to it). Returns [{ localId, remoteId }, ...] in no
+ * guaranteed order.
+ */
+async function resolveRemoteMessageIds(handlers, account, messageIds) {
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return [];
+  const placeholders = messageIds.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id, remote_id FROM messages
+            WHERE account_id = ? AND id IN (${placeholders})`,
+    params: [account.id, ...messageIds],
+  });
+  return rows
+    .filter((r) => r.remote_id != null)
+    .map((r) => ({ localId: Number(r.id), remoteId: r.remote_id }));
 }
 
 async function resolveRemoteFolderIds(handlers, localIds) {

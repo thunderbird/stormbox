@@ -157,6 +157,99 @@ describe('drainOutbox', () => {
     expect(setParams.destroy).toEqual(['e-1']);
   });
 
+  it('batches destroy across multiple messageIds into a single Email/set', async () => {
+    // Seed a second message so the batch has more than one id to
+    // operate on.
+    const m2 = new MockTransport();
+    m2.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'], total: 2, queryState: 'qs2',
+      canCalculateChanges: true, position: 0,
+    }));
+    m2.handle('Email/get', (params) => ({
+      list: params.ids.map(emailFixture),
+      state: 'es',
+    }));
+    await syncFolderWindow({ transport: m2, account, folder: inbox, handlers });
+    const secondRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'e-2'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY,
+      targetMessageId: null,
+      requestJson: JSON.stringify({ messageIds: [messageId, secondRow.id] }),
+    });
+
+    const transport = new MockTransport();
+    const setCalls = [];
+    transport.handle('Email/set', (params) => {
+      setCalls.push(params);
+      return { destroyed: params.destroy };
+    });
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    // Single round trip, both ids in the destroy array.
+    expect(setCalls).toHaveLength(1);
+    expect([...(setCalls[0].destroy ?? [])].sort()).toEqual(['e-1', 'e-2']);
+    // Both messages are gone locally.
+    expect(await engine.get('SELECT id FROM messages WHERE id = ?', [messageId])).toBeNull();
+    expect(await engine.get('SELECT id FROM messages WHERE id = ?', [secondRow.id])).toBeNull();
+  });
+
+  it('batches moveToFolders across multiple messageIds into a single Email/set', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-archive', name: 'Archive', role: 'archive' }],
+    });
+    const archive = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-archive'],
+    );
+    const m2 = new MockTransport();
+    m2.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'], total: 2, queryState: 'qs2',
+      canCalculateChanges: true, position: 0,
+    }));
+    m2.handle('Email/get', (params) => ({
+      list: params.ids.map(emailFixture),
+      state: 'es',
+    }));
+    await syncFolderWindow({ transport: m2, account, folder: inbox, handlers });
+    const secondRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'e-2'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.MOVE_TO_FOLDERS,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        messageIds: [messageId, secondRow.id],
+        addFolderIds: [archive.id],
+        removeFolderIds: [inbox.id],
+      }),
+    });
+
+    const transport = new MockTransport();
+    const setCalls = [];
+    transport.handle('Email/set', (params) => {
+      setCalls.push(params);
+      return { updated: Object.fromEntries(Object.keys(params.update).map((id) => [id, null])) };
+    });
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setCalls).toHaveLength(1);
+    // Both ids carried the same patch, sent in a single update map.
+    expect(Object.keys(setCalls[0].update).sort()).toEqual(['e-1', 'e-2']);
+    expect(setCalls[0].update['e-1']['mailboxIds/mb-archive']).toBe(true);
+    expect(setCalls[0].update['e-1']['mailboxIds/mb-inbox']).toBeNull();
+    expect(setCalls[0].update['e-2']['mailboxIds/mb-archive']).toBe(true);
+    expect(setCalls[0].update['e-2']['mailboxIds/mb-inbox']).toBeNull();
+  });
+
   it('can run one specific pending mutation without draining older rows first', async () => {
     await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,

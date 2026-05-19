@@ -291,6 +291,54 @@ describe('mail-store.destroyMessage end-to-end through OutboxRunner', () => {
       .not.toContain('e-1');
   });
 
+  it('multi-select bulk delete fires a single Email/set for all ids', async () => {
+    // Seed a second Inbox message so the bulk path has something to
+    // batch. The second sync replaces the cached query_view_items
+    // with the new two-id list at positions 0..1.
+    transport.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'], total: 2, queryState: 'qs2',
+      canCalculateChanges: true, position: 0,
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture(id)),
+      state: 'es',
+    }));
+    await syncFolderWindow({ transport, account, folder: inbox, handlers });
+    // Reset the Email/set handler and count its invocations - the
+    // whole point of this test is "one request, not two".
+    let setCallCount = 0;
+    transport.handle('Email/set', (params) => {
+      setCallCount += 1;
+      if (params.update) {
+        return { updated: Object.fromEntries(Object.keys(params.update).map((id) => [id, null])) };
+      }
+      if (params.destroy) return { destroyed: params.destroy };
+      return {};
+    });
+
+    const mailStore = useMailStore();
+    mailStore.selectFolder(inbox.id);
+    await flush(20);
+    expect([...mailStore.messages.filter((m) => m != null).map((m) => m.remote_id)].sort())
+      .toEqual(['e-1', 'e-2']);
+
+    const e2 = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'e-2'],
+    );
+
+    await mailStore.destroyMessages([messageId, e2.id]);
+    await flush(30);
+
+    // Exactly one Email/set round trip for the whole batch.
+    expect(setCallCount).toBe(1);
+    // And both ids are gone from the rendered list.
+    expect(mailStore.messages.filter((m) => m != null).map((m) => m.remote_id))
+      .not.toContain('e-1');
+    expect(mailStore.messages.filter((m) => m != null).map((m) => m.remote_id))
+      .not.toContain('e-2');
+  });
+
   it('removes the deleted message when permanently destroying from Trash', async () => {
     const mailStore = useMailStore();
 
