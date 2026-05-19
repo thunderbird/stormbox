@@ -24,7 +24,7 @@ import { computed, ref, watch } from 'vue';
 import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store.js';
 import { TABLE_FAMILIES } from '../db/protocol.js';
-import { KEYWORD } from '../constants/states.js';
+import { FOLDER_ROLE, KEYWORD } from '../constants/states.js';
 
 // Page size for both Email/query/get round trips and the SQLite
 // positional reads. ~100 metadata records per Email/get is well below
@@ -46,6 +46,13 @@ export const useMailStore = defineStore('mail', () => {
   const totalForFolder = ref(0);
   const folderProgress = ref(new Map());
   const selectedMessageId = ref(null);
+  // Multi-select set, distinct from `selectedMessageId` (which is the
+  // "focused / previewed" row). Ports Overture's split between
+  // SelectionController (set) and SingleSelectionController (current).
+  // The Set instance is replaced (not mutated in place) by helpers so
+  // Vue's reactivity picks up changes — same pattern useListSelection
+  // uses.
+  const selectedIds = ref(new Set());
   const messageBody = ref(null);
   const isLoading = ref(false);
   const error = ref(null);
@@ -56,6 +63,13 @@ export const useMailStore = defineStore('mail', () => {
    * -> Inbox restores the original Inbox state with no network IO and
    * no UI flicker.
    *
+   * Each entry owns its own pageInflight: a single shared inflight
+   * promise across folders is what caused mid-switch deadlocks where
+   * folder B's ensureLoaded returned folder A's still-pending load
+   * and never started B's own _loadPage. With per-folder inflight
+   * the user can flip between folders as fast as they want and each
+   * folder's loading state is independent.
+   *
    * @typedef {object} FolderCache
    * @property {number} folderId
    * @property {number} total          authoritative once Email/query lands
@@ -63,12 +77,13 @@ export const useMailStore = defineStore('mail', () => {
    * @property {Array<{start:number,end:number}>} paintedRanges
    * @property {'received'|'sent'} sortProp
    * @property {number} scrollTop
+   * @property {Promise|null} pageInflight
+   * @property {{start:number,end:number}|null} requestedRange
    *
    * @type {Map<number, FolderCache>}
    */
   const folderStates = new Map();
   let folderState = null;
-  let pageInflight = null;
 
   let repo = null;
   let unsubscribe = null;
@@ -103,6 +118,7 @@ export const useMailStore = defineStore('mail', () => {
           messages.value = [];
           currentFolderId.value = null;
           selectedMessageId.value = null;
+          selectedIds.value = new Set();
           messageBody.value = null;
           folderProgress.value = new Map();
           folderStates.clear();
@@ -115,13 +131,23 @@ export const useMailStore = defineStore('mail', () => {
     );
 
     // Auto-pick inbox when folders first arrive. Reactive on the
-    // computed; this fires once and won't override an explicit user
-    // choice on later refreshes.
+    // computed; this fires once and won't override an explicit
+    // user choice on later refreshes.
     watch(inbox, (newInbox) => {
       if (newInbox && currentFolderId.value == null) {
         selectFolder(newInbox.id);
       }
     });
+
+    // Authoritative totals come from query_views.total, which the
+    // sync layer keeps current via syncFolderWindow /
+    // syncFolderWindowChanges. The MESSAGES broadcast that those
+    // writes emit drives refreshLoadedPages, which calls
+    // queryViewProgress and updates state.total / totalForFolder
+    // there. We deliberately do NOT mirror folder.total_emails
+    // onto state.total via a watch: a switch-away-and-back resets
+    // the computed currentFolder which would fire the watch with
+    // the stale Mailbox value, clobbering a JMAP-corrected total.
   }
 
   function detach() {
@@ -206,15 +232,16 @@ export const useMailStore = defineStore('mail', () => {
    * "navigation complete" can. Subsequent visits resolve immediately
    * because the cache is already populated.
    */
-  async function selectFolder(folderId) {
-    // Save outgoing folder's scroll position before we swap the bound
-    // ref out from under MessageList.
-    if (folderState && folderState.folderId !== folderId) {
-      // (scroll position is written by MessageList via setScrollTop)
-    }
-
+  function selectFolder(folderId) {
+    // Switch synchronously so the FolderTree highlight and the
+    // MessageList rebind in the same tick. Any awaited work below
+    // could race against another selectFolder call from a rapid
+    // click, leaving currentFolderId on one folder and folderState
+    // on another — keeping this function sync avoids that class of
+    // bug entirely.
     currentFolderId.value = folderId;
     selectedMessageId.value = null;
+    selectedIds.value = new Set();
     messageBody.value = null;
     if (folderId == null) {
       folderState = null;
@@ -234,77 +261,118 @@ export const useMailStore = defineStore('mail', () => {
         paintedRanges: [],
         sortProp: _sortPropFor(folderRow),
         scrollTop: 0,
+        pageInflight: null,
+        requestedRange: null,
       };
       folderStates.set(folderId, state);
     } else {
-      // Pick up any total drift since the last visit.
-      const folderRow = folders.value.find((f) => f.id === folderId);
-      const fresh = Number(folderRow?.total_emails ?? state.total) || state.total;
-      state.total = fresh;
+      // Revisit: keep the cached state.total. Don't reset it from
+      // folder.total_emails — that's an older Mailbox/get value
+      // and can clobber a JMAP-authoritative count from the last
+      // _loadPage. The currentFolder.total_emails watch picks up
+      // any actual growth (new mail since we were last here), and
+      // _loadPage's partial-cache fallthrough will reconcile a
+      // shrink the next time we read.
     }
     folderState = state;
     totalForFolder.value = state.total;
     messages.value = state.rows;
     isLoading.value = state.paintedRanges.length === 0;
 
-    // Prime page 0 once. Errors are surfaced via the spinner timing
-    // out; we don't throw out of selectFolder so click handlers stay
-    // simple.
+    // Prime page 0 once for first-time visits. Fire and forget:
+    // the MessageList's virtualItems watch will re-pump
+    // ensureLoaded for whatever range is visible, and selectFolder
+    // returning synchronously means a rapid switch doesn't sit on
+    // an old folder's pending load.
     if (state.paintedRanges.length === 0 && authStore.accountId != null && repo) {
-      await ensureLoaded(0, PAGE_SIZE);
+      ensureLoaded(0, PAGE_SIZE);
     }
   }
 
   /**
-   * Make sure rows in [start, end) are backed by metadata. Called by
-   * the MessageList virtualiser on every visible-window change. Reads
-   * SQLite first; only goes to the network when the matching page
-   * isn't cached.
+   * Make sure rows in [start, end) are backed by metadata. Called
+   * by the MessageList virtualizer on every visible-window change.
+   * Reads SQLite first; only goes to the network when the matching
+   * page isn't cached (or is only partially cached — see _loadPage).
    *
-   * Re-pumping after each page completes against the *current*
-   * visible range (not the captured one) is what lets a fast scroll
-   * across several pages hydrate the right window.
+   * pageInflight lives on the folder state so loads in one folder
+   * never block ensureLoaded for another folder. The re-pump in the
+   * .finally re-evaluates against the *latest* visible range so a
+   * fast scroll across several pages hydrates the right window.
    */
   async function ensureLoaded(start, end) {
     const state = folderState;
     if (!state || state.folderId !== currentFolderId.value) return;
     if (authStore.accountId == null || !repo) return;
-    if (pageInflight) return pageInflight;
+    if (state.pageInflight) return state.pageInflight;
 
     const offset = Math.max(0, Number(start ?? 0));
-    const limit = Math.max(1, Math.min(PAGE_SIZE, Number(end ?? offset + 1) - offset));
-    if (rangeCovered(state.paintedRanges, offset, offset + limit)) return;
+    let requestedEnd = Math.max(offset + 1, Number(end ?? offset + 1));
+    // Clip against the folder's known total so we don't keep firing
+    // ensureLoaded for positions that don't exist. Without this,
+    // virtualizer rowCount > state.total would loop the .finally
+    // re-pump against an uncoverable range forever.
+    if (state.total > 0) {
+      requestedEnd = Math.min(requestedEnd, state.total);
+    }
+    if (requestedEnd <= offset) return;
+    if (rangeCovered(state.paintedRanges, offset, requestedEnd)) return;
+    const limit = Math.max(1, Math.min(PAGE_SIZE, requestedEnd - offset));
 
-    pageInflight = _loadPage(state, offset, limit)
+    let loadFailed = false;
+    state.pageInflight = _loadPage(state, offset, limit)
+      .then(() => {
+        state.lastFailedRange = null;
+      })
       .catch((err) => {
+        loadFailed = true;
         error.value = err?.message ?? String(err);
-        console.error('[mail-store] ensureLoaded failed', { offset, err });
+        // Record the failed range so the .finally re-pump does not
+        // spin on it forever. Without this guard a single broken
+        // _loadPage call would re-fire ensureLoaded(0, 100) on every
+        // microtask (because the .finally re-pump sees requestedRange
+        // still set and paintedRanges still uncovered), flooding the
+        // console with "[mail-store] ensureLoaded failed" lines.
+        state.lastFailedRange = { start: offset, end: offset + limit };
+        console.error('[mail-store] ensureLoaded failed', {
+          folderId: state.folderId,
+          offset,
+          limit,
+          total: state.total,
+          message: err?.message ?? String(err),
+          stack: err?.stack,
+        });
       })
       .finally(() => {
-        pageInflight = null;
-        // Drop the spinner once anything has painted.
+        state.pageInflight = null;
         if (folderState === state) isLoading.value = false;
-        // Re-evaluate against the latest virtualiser-requested range,
-        // which the watch in MessageList keeps fresh on state via
-        // setRequestedRange.
-        if (folderState === state && state.requestedRange) {
-          const { start: s, end: e } = state.requestedRange;
-          const nextOffset = Math.max(0, Number(s ?? 0));
-          const nextEnd = Math.max(nextOffset + 1, Number(e ?? nextOffset + 1));
-          if (!rangeCovered(state.paintedRanges, nextOffset, nextEnd)) {
-            // Don't await; let the chain unwind and fire on a fresh
-            // microtask so re-entrancy stays simple.
-            ensureLoaded(s, e);
-          }
+        if (folderState !== state || !state.requestedRange) return;
+        const { start: s, end: e } = state.requestedRange;
+        const nextOffset = Math.max(0, Number(s ?? 0));
+        const nextEnd = Math.max(nextOffset + 1, Number(e ?? nextOffset + 1));
+        if (rangeCovered(state.paintedRanges, nextOffset, nextEnd)) return;
+        if (loadFailed
+          && state.lastFailedRange
+          && state.lastFailedRange.start === nextOffset
+          && state.lastFailedRange.end === nextEnd) {
+          // Same range just failed; let the user-driven path (scroll
+          // or the refresh button) trigger another attempt instead
+          // of looping in place.
+          return;
         }
+        ensureLoaded(s, e);
       });
-    return pageInflight;
+    return state.pageInflight;
   }
 
   async function _loadPage(state, offset, limit) {
-    // Try SQLite first. If a previous JMAP fetch already populated
-    // query_view_items for this page (likely after refresh-the-current-
-    // folder broadcasts) we can avoid the network entirely.
+    // Try SQLite first. listMessagesForView is positional and only
+    // returns rows whose query_view_items position falls inside
+    // [offset, offset+limit). A "complete" cache hit for this
+    // window has min(limit, total - offset) rows; anything less
+    // means query_view_items is sparse here (interrupted indexer,
+    // partial sync, never-visited page) and we still need to go
+    // to the network even though the cache wasn't empty.
     const cached = await repo.listMessagesForView({
       accountId: authStore.accountId,
       folderId: state.folderId,
@@ -313,15 +381,25 @@ export const useMailStore = defineStore('mail', () => {
       limit,
     });
     if (state !== folderState) return;
-    if (cached.length > 0) {
-      _splice(state, offset, cached);
-      addRange(state.paintedRanges, offset, offset + cached.length);
+    const expectedFromTotal = state.total > 0
+      ? Math.max(0, Math.min(limit, state.total - offset))
+      : null;
+    const cacheIsComplete = expectedFromTotal === null
+      ? cached.length === limit
+      : cached.length >= expectedFromTotal;
+    if (cacheIsComplete) {
+      if (cached.length > 0) _splice(state, offset, cached);
+      const covered = expectedFromTotal === null
+        ? cached.length
+        : Math.max(cached.length, expectedFromTotal);
+      addRange(state.paintedRanges, offset, offset + covered);
       return;
     }
 
-    // Cache miss: fetch from JMAP, then re-read the page positionally.
-    // ensureFolderWindow is what writes both query_view_items and
-    // messages, so the second read is the one that produces UI rows.
+    // Cache miss or partial: fetch from JMAP, then re-read the page
+    // positionally. ensureFolderWindow writes both query_view_items
+    // and messages, so the second read is the one that produces UI
+    // rows.
     const result = await repo.ensureFolderWindow(authStore.accountId, state.folderId, {
       offset,
       limit,
@@ -339,8 +417,17 @@ export const useMailStore = defineStore('mail', () => {
       limit,
     });
     if (state !== folderState) return;
-    _splice(state, offset, rows);
-    addRange(state.paintedRanges, offset, offset + rows.length);
+    if (rows.length > 0) _splice(state, offset, rows);
+    // Always mark the requested range as covered up to the
+    // server's authoritative end. If the server reported fewer
+    // rows than `limit` because we're near the tail of a small
+    // folder, marking [offset, offset+expected) as covered keeps
+    // ensureLoaded from spinning on positions that genuinely
+    // don't exist.
+    const newExpected = state.total > 0
+      ? Math.max(0, Math.min(limit, state.total - offset))
+      : rows.length;
+    addRange(state.paintedRanges, offset, offset + Math.max(rows.length, newExpected));
   }
 
   /**
@@ -394,12 +481,41 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Re-read every page we've already painted for the current folder
-   * from SQLite. Triggered by table-touched broadcasts after read/flag
-   * changes. Does not fetch new pages.
+   * from SQLite. Triggered by table-touched broadcasts after read/
+   * flag changes and after query_view_items has been updated by a
+   * queryChanges pass. Does not fetch new pages.
+   *
+   * The query_views.total is the authoritative count for the open
+   * view (it tracks Email/query / Email/queryChanges totals). We
+   * read it via queryViewProgress here so a remote delete that
+   * shrank the view propagates into state.total / totalForFolder
+   * even when folder.total_emails (the Mailbox total) hasn't caught
+   * up yet. Trailing entries inside painted ranges are cleared and
+   * state.rows is trimmed so the virtualizer's row count tracks the
+   * actual content, not the pre-delete cache shape.
    */
   async function refreshLoadedPages() {
     const state = folderState;
     if (!repo || !state || state.folderId !== currentFolderId.value) return;
+
+    try {
+      const progress = await repo.queryViewProgress({
+        accountId: authStore.accountId,
+        folderId: state.folderId,
+        sort: state.sortProp,
+      });
+      if (state !== folderState) return;
+      if (Number.isFinite(progress?.total)) {
+        const newTotal = Number(progress.total);
+        if (newTotal !== state.total) {
+          state.total = newTotal;
+          totalForFolder.value = newTotal;
+        }
+      }
+    } catch (err) {
+      console.warn('[mail-store] queryViewProgress in refresh failed', err);
+    }
+
     for (const range of state.paintedRanges) {
       const offset = range.start;
       const limit = range.end - range.start;
@@ -411,7 +527,69 @@ export const useMailStore = defineStore('mail', () => {
         limit,
       });
       if (state !== folderState) return;
+      for (let i = rows.length; i < limit; i += 1) {
+        state.rows[offset + i] = undefined;
+      }
       if (rows.length > 0) _splice(state, offset, rows);
+    }
+
+    // Trim painted ranges that extend past the (possibly shrunken)
+    // total so future ensureLoaded calls don't keep marking dead
+    // positions as covered.
+    if (state.total > 0) {
+      for (let i = state.paintedRanges.length - 1; i >= 0; i -= 1) {
+        const r = state.paintedRanges[i];
+        if (r.start >= state.total) {
+          state.paintedRanges.splice(i, 1);
+        } else if (r.end > state.total) {
+          r.end = state.total;
+        }
+      }
+    }
+
+    // Drop trailing undefined slots from state.rows so messages
+    // length (and the virtualizer row count) reflects what's
+    // actually paint-ready. Without this trim a shrunk view keeps
+    // rendering placeholder rows at the old tail forever.
+    let len = state.rows.length;
+    while (len > 0 && state.rows[len - 1] === undefined) len -= 1;
+    if (len !== state.rows.length) {
+      state.rows.length = len;
+    }
+    messages.value = state.rows.slice();
+
+    // Prune the multi-select set: a delete (local or peer) may have
+    // dropped one of the selected ids out of the query view. Mirrors
+    // Overture's SelectionController.contentWasUpdated.
+    if (selectedIds.value.size > 0) {
+      const live = new Set();
+      for (const row of state.rows) {
+        if (row?.id != null) live.add(row.id);
+      }
+      let removed = 0;
+      const next = new Set(selectedIds.value);
+      for (const id of next) {
+        if (!live.has(id)) {
+          next.delete(id);
+          removed += 1;
+        }
+      }
+      if (removed) selectedIds.value = next;
+    }
+
+    // If the view grew (new mail extended state.total beyond the
+    // last painted position) load the new tail through the same
+    // ensureLoaded path so the message at the head is visible
+    // without waiting for the MessageList virtualizer to notice
+    // the rowCount change and re-pump.
+    if (state.total > 0 && state === folderState) {
+      const lastPainted = state.paintedRanges.reduce(
+        (acc, r) => Math.max(acc, r.end),
+        0,
+      );
+      if (lastPainted < state.total) {
+        await ensureLoaded(0, Math.min(state.total, PAGE_SIZE));
+      }
     }
   }
 
@@ -555,67 +733,288 @@ export const useMailStore = defineStore('mail', () => {
     return { text, html, attachments };
   }
 
+  /**
+   * Optimistically mark a message $seen locally and push the change
+   * to the server in the background. The optimistic write to SQLite
+   * makes the row un-bold in the message list immediately; the
+   * outbox round trip (Email/set with keywords/$seen=true) is
+   * fire-and-forget so the click doesn't sit on the network.
+   *
+   * If the push fails (transport error, server rejection), the
+   * pending_mutations row is left in 'conflicted' status. Stalwart
+   * fires an Email StateChange whenever keywords actually change on
+   * the server — that path lives in JmapBackend._onStateChange ->
+   * syncEmailChanges and writes is_seen from the authoritative
+   * server keywords set, so a conflicted local optimistic patch will
+   * naturally get reconciled the next time anything touches the
+   * email server-side. Same mechanism handles peer-device read
+   * actions: another client marks a message read, Stalwart pushes
+   * Email state, syncEmailChanges fetches the updated keywords, and
+   * the MESSAGES broadcast triggers refreshLoadedPages here.
+   */
   async function markRead(messageId) {
+    return _setSeen(messageId, true);
+  }
+
+  /**
+   * Mirror of markRead. The bulk action uses _setSeen directly with
+   * `seen=false` for each id; this wrapper exists so single-row
+   * callers (toolbar in MessageView) match the markRead shape.
+   */
+  async function markUnread(messageId) {
+    return _setSeen(messageId, false);
+  }
+
+  async function _setSeen(messageId, seen) {
     if (!repo || authStore.accountId == null) return;
     const local = messages.value.find((m) => m?.id === messageId);
+    const currentSeen = Number(local?.is_seen ?? 0) === 1;
+    if (currentSeen === seen) return;
     const keywordsJson = JSON.parse(local?.keywords_json ?? '{}');
-    keywordsJson[KEYWORD.SEEN] = true;
+    if (seen) {
+      keywordsJson[KEYWORD.SEEN] = true;
+    } else {
+      delete keywordsJson[KEYWORD.SEEN];
+    }
     await repo.replaceMessageKeywords(messageId, Object.keys(keywordsJson), JSON.stringify(keywordsJson));
+    // Queue the server-side write. The worker-side OutboxRunner picks
+    // this row up via the onMutationInserted hook fired by
+    // PENDING_MUTATION_INSERT, so we do NOT have to call runMutation
+    // / drainOutbox here. Fire-and-forget by design: the optimistic
+    // patch above already un-bolded the row in the list and the
+    // runner handles retry + backoff on the server side.
     await repo.insertPendingMutation({
       accountId: authStore.accountId,
       mutationType: 'setKeywords',
       targetMessageId: messageId,
-      requestJson: JSON.stringify({ add: [KEYWORD.SEEN], remove: [] }),
-      optimisticPatchJson: JSON.stringify({ is_seen: 1 }),
+      requestJson: JSON.stringify(
+        seen ? { add: [KEYWORD.SEEN], remove: [] } : { add: [], remove: [KEYWORD.SEEN] },
+      ),
+      optimisticPatchJson: JSON.stringify({ is_seen: seen ? 1 : 0 }),
     });
   }
 
+  /**
+   * Bulk mark-seen. Fires the per-id mutations sequentially through
+   * the same outbox path single-row markRead uses, so each row gets
+   * its own pending_mutations entry and Stalwart sees a clean
+   * setKeywords per Email — no special-case batched Email/set
+   * required.
+   *
+   * Returns the number of rows whose state actually changed (so the
+   * toolbar can show "marked N as read").
+   */
+  async function markManySeen(ids, seen) {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    let changed = 0;
+    for (const id of ids) {
+      const before = messages.value.find((m) => m?.id === id);
+      const wasSeen = Number(before?.is_seen ?? 0) === 1;
+      if (wasSeen === seen) continue;
+      try {
+        await _setSeen(id, seen);
+        changed += 1;
+      } catch (err) {
+        console.warn('[mail-store] markManySeen item failed', { id, err: err?.message ?? err });
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Delete a message. The mutation runs end-to-end inside the sync
+   * backend: the outbox issues Email/set and, on success, applies the
+   * resulting state to local SQLite (folder_messages, query_view_items,
+   * query_views.total) before returning. Once we await that round
+   * trip, a MESSAGES broadcast has already fired and refreshLoadedPages
+   * has reconciled the visible list against the new cache state.
+   *
+   * The store deliberately does NOT optimistically mutate state.rows,
+   * paintedRanges, or totalForFolder. Doing so would race against the
+   * broadcast-driven refresh and re-introduce the desync bug where the
+   * UI splice gets overwritten by a stale SQLite read.
+   */
   async function destroyMessage(messageId) {
     if (!repo || authStore.accountId == null) return;
-    await repo.insertPendingMutation({
-      accountId: authStore.accountId,
-      mutationType: 'destroy',
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({}),
-      optimisticPatchJson: JSON.stringify({ is_deleted: 1 }),
+    // Defensive: if the message no longer exists locally (e.g. a
+    // previous delete attempt already wiped it but the UI still
+    // shows it because the user clicked before the row re-rendered),
+    // treat the delete as already-satisfied. Otherwise we would
+    // INSERT a pending_mutations row with a dangling target_message_id
+    // and trigger "FOREIGN KEY constraint failed".
+    const exists = await repo.call('db.query', {
+      sql: 'SELECT id FROM messages WHERE id = ? AND account_id = ? LIMIT 1',
+      params: [messageId, authStore.accountId],
     });
-    if (folderState) {
-      const idx = folderState.rows.findIndex((m) => m?.id === messageId);
-      if (idx >= 0) folderState.rows[idx] = undefined;
-      messages.value = folderState.rows.slice();
+    if (!exists?.length) {
+      if (selectedMessageId.value === messageId) {
+        selectedMessageId.value = null;
+        messageBody.value = null;
+      }
+      return;
+    }
+    const mutation = await repo.insertPendingMutation(buildDeleteMutation(messageId));
+    const result = typeof repo.runMutation === 'function'
+      ? await repo.runMutation(authStore.accountId, mutation.id)
+      : await repo.drainOutbox(authStore.accountId);
+    if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
+      const detail = await loadMutationError(mutation.id);
+      const message = describeMutationFailure(result, detail);
+      const err = new Error(message);
+      err.result = result;
+      err.detail = detail;
+      error.value = message;
+      console.warn('[mail-store] destroyMessage failed', { messageId, result, detail });
+      throw err;
     }
     if (selectedMessageId.value === messageId) {
       selectedMessageId.value = null;
       messageBody.value = null;
     }
+    if (selectedIds.value.has(messageId)) {
+      const next = new Set(selectedIds.value);
+      next.delete(messageId);
+      selectedIds.value = next;
+    }
   }
 
   /**
-   * Force a refetch of the current folder's first page and its
-   * already-painted pages. Bound to the toolbar refresh button.
+   * Bulk delete. Same one-row-per-mutation policy as markManySeen,
+   * for the same reason: each Email/set is small, the outbox is
+   * already happy to drain a queue of them, and we get per-id
+   * failure reporting for free. Returns { succeeded, failed }.
+   */
+  async function destroyMessages(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { succeeded: 0, failed: 0 };
+    }
+    let succeeded = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await destroyMessage(id);
+        succeeded += 1;
+      } catch (err) {
+        failed += 1;
+        console.warn('[mail-store] destroyMessages item failed', { id, err: err?.message ?? err });
+      }
+    }
+    return { succeeded, failed };
+  }
+
+  function clearSelection() {
+    if (selectedIds.value.size === 0) return;
+    selectedIds.value = new Set();
+  }
+
+  async function loadMutationError(mutationId) {
+    if (!repo || mutationId == null) return null;
+    try {
+      const rows = await repo.call('db.query', {
+        sql: `SELECT mutation_type, local_status, error_json
+                FROM pending_mutations WHERE id = ?`,
+        params: [mutationId],
+      });
+      return rows?.[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function describeMutationFailure(result, detail) {
+    if (detail?.error_json) {
+      try {
+        const parsed = JSON.parse(detail.error_json);
+        const errType = parsed?.type ?? 'error';
+        return `Could not delete message (${errType}).`;
+      } catch {
+        // fall through
+      }
+    }
+    if ((result?.attempted ?? 0) === 0) {
+      return 'Could not delete message (no sync backend available).';
+    }
+    return 'Could not delete message.';
+  }
+
+  function buildDeleteMutation(messageId) {
+    const trash = folders.value.find((f) => f.role === FOLDER_ROLE.TRASH);
+    const current = currentFolder.value;
+    if (trash && current?.id != null && current.id !== trash.id) {
+      return {
+        accountId: authStore.accountId,
+        mutationType: 'moveToFolders',
+        targetMessageId: messageId,
+        requestJson: JSON.stringify({
+          addFolderIds: [trash.id],
+          removeFolderIds: [current.id],
+        }),
+      };
+    }
+
+    return {
+      accountId: authStore.accountId,
+      mutationType: 'destroy',
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({}),
+    };
+  }
+
+  /**
+   * Nuke the current folder's local view cache and rebuild from the
+   * server. Bound to the toolbar refresh button.
+   *
+   * The point of this is to be the user's recovery path when local
+   * SQLite state has drifted from the server: ghost messages, stale
+   * positions, broken painted ranges, anything. We drop the entire
+   * mailbox-window query_views row (FK cascade removes its
+   * query_view_items and query_view_ranges), reset the in-memory
+   * folder state, and re-run syncFolderWindow from position 0. The
+   * spinner stays up the whole time so the user can see it working.
+   *
+   * Re-fetching every page that was previously painted (the previous
+   * behaviour) was not enough: a JOIN-with-messages that returned
+   * ghosts would just re-paint the same ghosts because nothing had
+   * cleared query_view_items. The nuke is the only way to guarantee
+   * the next paint matches the server.
    */
   async function refresh() {
     if (!repo || authStore.accountId == null || !folderState) return;
     const state = folderState;
+    state.lastFailedRange = null;
+    isLoading.value = true;
     try {
       await repo.ensureFolderTree(authStore.accountId);
-      // Re-fetch every page we've already painted so the user sees
-      // any server-side changes without losing scroll position.
-      const paintedSorted = [...state.paintedRanges].sort((a, b) => a.start - b.start);
-      for (const range of paintedSorted) {
-        if (state !== folderState) return;
-        const result = await repo.ensureFolderWindow(authStore.accountId, state.folderId, {
-          offset: range.start,
-          limit: range.end - range.start,
-        });
-        if (Number.isFinite(result?.total)) {
-          state.total = Number(result.total);
-          totalForFolder.value = state.total;
-        }
+
+      await repo.resetViewForFolder(authStore.accountId, state.folderId);
+      state.rows = [];
+      state.paintedRanges = [];
+      state.total = 0;
+      state.requestedRange = null;
+      state.pageInflight = null;
+      if (state === folderState) {
+        totalForFolder.value = 0;
+        messages.value = [];
       }
-      await refreshLoadedPages();
+
+      const result = await repo.ensureFolderWindow(
+        authStore.accountId,
+        state.folderId,
+        { offset: 0, limit: PAGE_SIZE },
+      );
+      if (state !== folderState) return;
+      if (Number.isFinite(result?.total)) {
+        state.total = Number(result.total);
+        totalForFolder.value = state.total;
+      }
+      await ensureLoaded(0, PAGE_SIZE);
     } catch (err) {
       console.warn('[mail-store] refresh failed', err);
+      error.value = err?.message ?? String(err);
+    } finally {
+      if (folderState === state) {
+        isLoading.value = false;
+      }
     }
   }
 
@@ -627,6 +1026,7 @@ export const useMailStore = defineStore('mail', () => {
     messages,
     totalForFolder,
     selectedMessageId,
+    selectedIds,
     messageBody,
     isLoading,
     error,
@@ -640,7 +1040,11 @@ export const useMailStore = defineStore('mail', () => {
     getScrollTop,
     setRequestedRange,
     markRead,
+    markUnread,
+    markManySeen,
     destroyMessage,
+    destroyMessages,
+    clearSelection,
     refresh,
   };
 });

@@ -1,0 +1,599 @@
+/**
+ * Unit tests for the mail-store. The store talks to a Repository via a
+ * MessagePort in production; we inject a fake Repository through the
+ * use-repository test seam so these tests run without a SharedWorker
+ * or wa-sqlite engine.
+ *
+ * The fake repo is deliberately scripted (per-call responses) so each
+ * test can express exactly the cache shape the bug under test
+ * required:
+ *   - sparse query_view_items (partial cache)
+ *   - shrunk query_views.total after a peer-side delete
+ *   - rapid folder switches that race their initial loads
+ */
+
+import {
+  describe, it, expect, beforeEach, afterEach, vi,
+} from 'vitest';
+import { createPinia, setActivePinia } from 'pinia';
+import { nextTick } from 'vue';
+
+import { useMailStore } from '../../../src/stores/mail-store.js';
+import { useAuthStore } from '../../../src/stores/auth-store.js';
+import {
+  __setRepositoryForTests,
+  __resetRepositoryForTests,
+} from '../../../src/composables/use-repository.js';
+
+function makeFolder(id, overrides = {}) {
+  return {
+    id,
+    account_id: 1,
+    remote_id: `mb-${id}`,
+    name: `Folder ${id}`,
+    role: id === 1 ? 'inbox' : null,
+    sort_order: 0,
+    parent_id: null,
+    is_deleted: 0,
+    total_emails: 0,
+    unread_emails: 0,
+    total_threads: 0,
+    unread_threads: 0,
+    index_total: undefined,
+    index_covered: undefined,
+    index_percent: undefined,
+    ...overrides,
+  };
+}
+
+function makeRow(id, overrides = {}) {
+  return {
+    id,
+    remote_id: `e-${id}`,
+    subject: `Subject ${id}`,
+    preview: `preview ${id}`,
+    from_text: `Sender ${id} <s${id}@example.com>`,
+    to_text: 'me@example.com',
+    received_at: 1_700_000_000_000 + id,
+    keywords_json: '{}',
+    is_seen: 1,
+    is_flagged: 0,
+    is_answered: 0,
+    is_draft: 0,
+    has_attachment: 0,
+    body_fetched_at: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Build a programmable fake Repository. Tests script the per-folder
+ * view via setView(folderId, { rows, total }) and can override any
+ * individual method with stubs to assert call ordering / side
+ * effects.
+ *
+ * Notably, listMessagesForView returns rows whose "position" falls in
+ * [offset, offset+limit). To simulate a sparse query_view_items (the
+ * bug 1 case) the test sets rows.length < total — listMessagesForView
+ * then returns fewer rows than `limit`, mimicking the real
+ * positional read.
+ */
+function makeRepo() {
+  const listeners = new Set();
+  const views = new Map();
+  const calls = {
+    listMessagesForView: 0,
+    ensureFolderWindow: 0,
+    queryViewProgress: 0,
+    ensureMessageBodies: 0,
+    ensureFolderTree: 0,
+  };
+  let folders = [];
+
+  const repo = {
+    _calls: calls,
+    _views: views,
+    setFolders(list) { folders = list; },
+    setView(folderId, view) {
+      // view: { rows: [{ id, ... }, ...], total }
+      views.set(folderId, view);
+    },
+    triggerBroadcast(tables) {
+      for (const listener of listeners) listener(tables);
+    },
+
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+
+    async listFolders() {
+      return folders;
+    },
+
+    async listMessagesForView({ folderId, offset, limit }) {
+      calls.listMessagesForView += 1;
+      const view = views.get(folderId);
+      if (!view) return [];
+      const slice = (view.rows ?? [])
+        .slice(offset, offset + limit)
+        .filter((r) => r !== undefined && r !== null);
+      return slice;
+    },
+
+    async queryViewProgress({ folderId }) {
+      calls.queryViewProgress += 1;
+      const view = views.get(folderId);
+      if (!view) return { total: 0, covered: 0, percent: 0 };
+      return {
+        total: Number(view.total ?? (view.rows?.length ?? 0)),
+        covered: view.rows?.length ?? 0,
+        percent: 100,
+      };
+    },
+
+    async ensureFolderWindow(_accountId, folderId, { offset = 0, limit = 100 } = {}) {
+      calls.ensureFolderWindow += 1;
+      const view = views.get(folderId);
+      if (!view) return { total: 0, fetched: 0 };
+      // Simulate the server populating any missing positions inside
+      // the requested window. Tests can override what
+      // ensureFolderWindow "delivers" by calling setView after
+      // observing the call count.
+      if (typeof view.onEnsureWindow === 'function') {
+        view.onEnsureWindow({ offset, limit });
+      }
+      return { total: view.total ?? view.rows?.length ?? 0, fetched: 0 };
+    },
+
+    async ensureMessageBodies() {
+      calls.ensureMessageBodies += 1;
+      return { fetched: 0 };
+    },
+
+    async ensureFolderTree() {
+      calls.ensureFolderTree += 1;
+      return { count: folders.length };
+    },
+
+    // Note: insertPendingMutation / runMutation / drainOutbox are not
+    // mocked here. Cache-mutation flows (delete, move, setKeywords) are
+    // covered end-to-end in tests/unit/sync/*.test.js using a real
+    // bootTestEngine + the JMAP MockTransport, where the assertions
+    // can read folder_messages and query_view_items directly. The
+    // store tests only exercise the cache-consuming side.
+    async insertPendingMutation() { return { id: 1 }; },
+    async drainOutbox() { return { attempted: 0, succeeded: 0, failed: 0 }; },
+    async runMutation() { return { attempted: 1, succeeded: 1, failed: 0 }; },
+    async replaceMessageKeywords() { return undefined; },
+    async resetViewForFolder(_accountId, folderId) {
+      calls.resetViewForFolder = (calls.resetViewForFolder ?? 0) + 1;
+      const view = views.get(folderId);
+      if (view) {
+        view.rows = [];
+        view.total = 0;
+      }
+      return { deleted: 1 };
+    },
+    async call(method, params) {
+      // Minimal stub so the destroyMessage existence pre-check works
+      // in store-only tests. It only asks SELECT id FROM messages
+      // WHERE id = ?; we treat every id as present so the flow is
+      // not short-circuited.
+      if (method === 'db.query'
+        && /SELECT\s+id\s+FROM\s+messages/i.test(String(params?.sql ?? ''))) {
+        return [{ id: params.params?.[0] ?? 0 }];
+      }
+      return [];
+    },
+  };
+  return repo;
+}
+
+async function setupStore({ folders, views } = {}) {
+  setActivePinia(createPinia());
+  const authStore = useAuthStore();
+  authStore.accountId = 1;
+  const repo = makeRepo();
+  if (folders) repo.setFolders(folders);
+  if (views) {
+    for (const [folderId, view] of Object.entries(views)) {
+      repo.setView(Number(folderId), view);
+    }
+  }
+  __setRepositoryForTests(repo);
+  const mailStore = useMailStore();
+  await mailStore.attach();
+  // attach() kicks off refreshFolders + the immediate accountId
+  // watcher; wait a tick for the async chain to settle so tests
+  // can read folders.length etc.
+  await flush();
+  return { mailStore, authStore, repo };
+}
+
+/**
+ * Drain Vue's microtask + watcher queue. Several mail-store actions
+ * fire reactive chains (watch on currentFolder.total_emails, the
+ * post-broadcast refresh, etc.) that need multiple awaits to settle.
+ */
+async function flush(count = 6) {
+  for (let i = 0; i < count; i += 1) {
+    await nextTick();
+    await Promise.resolve();
+  }
+}
+
+afterEach(() => {
+  __resetRepositoryForTests();
+});
+
+describe('selectFolder', () => {
+  it('updates currentFolderId synchronously so the FolderTree highlight tracks the click', async () => {
+    const { mailStore } = await setupStore({
+      folders: [makeFolder(1), makeFolder(2)],
+      views: {
+        1: { rows: [makeRow(1)], total: 1 },
+        2: { rows: [makeRow(2)], total: 1 },
+      },
+    });
+    expect(mailStore.currentFolderId).toBe(1); // auto-picked inbox
+
+    mailStore.selectFolder(2);
+    // No await: the assignment must be visible in the same tick so
+    // FolderTree's highlight and MessageList's binding stay in sync
+    // with the user's click.
+    expect(mailStore.currentFolderId).toBe(2);
+    expect(mailStore.currentFolder?.id).toBe(2);
+  });
+
+  it('does not block one folder load on another (per-folder pageInflight)', async () => {
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1), makeFolder(2, { total_emails: 1 })],
+      views: {
+        1: { rows: [makeRow(10)], total: 1 },
+        2: { rows: [makeRow(20)], total: 1 },
+      },
+    });
+    // Inbox (id=1) is auto-picked on attach. Flip to folder 2
+    // immediately and then back to 1; both should end up with
+    // their own loaded rows, with no shared inflight returning the
+    // wrong folder's promise.
+    mailStore.selectFolder(2);
+    mailStore.selectFolder(1);
+    await flush();
+    expect(mailStore.currentFolderId).toBe(1);
+    expect(mailStore.messages.map((m) => m.id)).toEqual([10]);
+
+    mailStore.selectFolder(2);
+    await flush();
+    expect(mailStore.currentFolderId).toBe(2);
+    expect(mailStore.messages.map((m) => m.id)).toEqual([20]);
+    expect(mailStore.isLoading).toBe(false);
+    // Sanity: each folder triggered at least one cache read.
+    expect(repo._calls.listMessagesForView).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not clobber state.total downward when revisiting a folder', async () => {
+    // Folder claims total_emails = 4 (stale Mailbox count) but the
+    // JMAP query view authoritatively has 1 row. After the first
+    // visit corrects state.total to 1, leaving the folder and
+    // returning must not reset it to the stale 4.
+    const folder = makeFolder(1, { total_emails: 4 });
+    let serverTotal = 1;
+    const view = {
+      rows: [makeRow(1)],
+      get total() { return serverTotal; },
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    // Initial load corrects the total. The cached read returns 1
+    // row vs an expected 4 (state.total seeded from total_emails),
+    // so _loadPage falls through to ensureFolderWindow and the
+    // mock returns total = 1.
+    await flush();
+    expect(mailStore.totalForFolder).toBe(1);
+    expect(repo._calls.ensureFolderWindow).toBeGreaterThanOrEqual(1);
+
+    // Navigate away and back. Revisit must preserve the corrected
+    // total instead of reading the still-stale folder.total_emails.
+    mailStore.selectFolder(null);
+    await flush();
+    mailStore.selectFolder(1);
+    await flush();
+    expect(mailStore.totalForFolder).toBe(1);
+  });
+});
+
+describe('_loadPage sparse-cache fallthrough', () => {
+  it('falls through to ensureFolderWindow when query_view_items has fewer rows than state.total', async () => {
+    // Folder reports 4 messages but the cache only has 1 entry
+    // (e.g. an interrupted indexer). The previous bug short-circuited
+    // on `cached.length > 0` and never went to the network, leaving
+    // 3 placeholder rows stuck forever. The fix is to compare cache
+    // size against the expected count derived from state.total.
+    const folder = makeFolder(1, { total_emails: 4 });
+    const view = { rows: [makeRow(1)], total: 4 };
+    let networkFilledTo = 1;
+    view.onEnsureWindow = () => {
+      // Server-side population: bring the view up to its full set
+      // of 4 rows so the second positional read returns everything.
+      if (networkFilledTo < 4) {
+        view.rows = [
+          makeRow(1), makeRow(2), makeRow(3), makeRow(4),
+        ];
+        networkFilledTo = 4;
+      }
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(repo._calls.ensureFolderWindow).toBeGreaterThanOrEqual(1);
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1, 2, 3, 4]);
+    expect(mailStore.totalForFolder).toBe(4);
+  });
+
+  it('does not loop on a persistently failing _loadPage (the ensureLoaded spam guard)', async () => {
+    // Previously, ensureLoaded's .finally re-pump kept firing
+    // ensureLoaded(0, 100) every microtask when _loadPage threw,
+    // because state.requestedRange was still set and state.paintedRanges
+    // was still uncovered. The console flooded with
+    //   [mail-store] ensureLoaded failed { offset: 0, err: Error }
+    // Guard: once a range fails, do not auto-retry it from the
+    // .finally re-pump. The user can recover via scroll or refresh.
+    const folder = makeFolder(1, { total_emails: 5 });
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: { rows: [], total: 5 } },
+    });
+    let calls = 0;
+    repo.ensureFolderWindow = async () => {
+      calls += 1;
+      throw new Error('simulated sync failure');
+    };
+    mailStore.setRequestedRange(1, 0, 100);
+    await mailStore.ensureLoaded(0, 100);
+    await flush();
+    const after = calls;
+    await flush();
+    await flush();
+    expect(calls).toBe(after); // no further auto-retries
+    expect(calls).toBeLessThanOrEqual(2); // at most the original call + maybe a single re-pump
+  });
+
+  it('does not refetch from the server when the cache is fully covered', async () => {
+    const folder = makeFolder(1, { total_emails: 3 });
+    const view = { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(mailStore.messages).toHaveLength(3);
+    // First-time visit needs no network call because the cache
+    // already satisfies the visible window.
+    expect(repo._calls.ensureFolderWindow).toBe(0);
+  });
+});
+
+// Delete / move-to-Trash coverage lives in
+// tests/unit/sync/jmap-outbox-delete.test.js. That suite drives the
+// outbox + handlers + in-memory engine end-to-end so it can assert
+// the cache invariants the store relies on (folder_memberships,
+// query_view_items positions, query_views.total). Mocked-store
+// assertions previously made here could only prove "the store called
+// the outbox", which was the exact illusion behind the original bug.
+
+describe('selectMessage marks unread as seen via the auto-drained outbox', () => {
+  it('writes the optimistic $seen patch and enqueues a setKeywords mutation; the worker drains it on its own', async () => {
+    // Contract under test: the store's only job is to write the
+    // optimistic patch and enqueue the pending_mutations row. The
+    // worker-side OutboxRunner picks the row up via the
+    // onMutationInserted hook fired from PENDING_MUTATION_INSERT
+    // (wired in db/handlers.js + sync/sync-host.js + db/shared-worker.js),
+    // so the store deliberately does NOT call runMutation or
+    // drainOutbox itself. Earlier "store forgot to kick the outbox"
+    // bug is impossible to re-introduce as long as the worker
+    // auto-drain hook is wired.
+    const folder = makeFolder(1, { total_emails: 1 });
+    const unread = makeRow(7, { is_seen: 0, keywords_json: '{}' });
+    const view = { rows: [unread], total: 1 };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+
+    const replaceCalls = [];
+    repo.replaceMessageKeywords = async (messageId, keywords, keywordsJson) => {
+      replaceCalls.push({ messageId, keywords, keywordsJson });
+    };
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 99 };
+    };
+    const runMutationCalls = [];
+    repo.runMutation = async (accountId, mutationId) => {
+      runMutationCalls.push({ accountId, mutationId });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+    const drainCalls = [];
+    repo.drainOutbox = async (accountId) => {
+      drainCalls.push(accountId);
+      return { attempted: 0, succeeded: 0, failed: 0 };
+    };
+
+    mailStore.selectMessage(7);
+    await flush();
+
+    expect(replaceCalls).toHaveLength(1);
+    expect(replaceCalls[0].messageId).toBe(7);
+    expect(replaceCalls[0].keywords).toContain('$seen');
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].mutationType).toBe('setKeywords');
+    expect(insertCalls[0].targetMessageId).toBe(7);
+    expect(JSON.parse(insertCalls[0].requestJson)).toEqual({ add: ['$seen'], remove: [] });
+
+    // The store must NOT pump the queue itself; that's the worker's
+    // job now. If these arrays grow, someone re-added an explicit
+    // kick in the caller and the new auto-drain hook is being
+    // bypassed (likely re-introducing the cross-caller "did I
+    // remember to drain?" footgun).
+    expect(runMutationCalls).toHaveLength(0);
+    expect(drainCalls).toHaveLength(0);
+  });
+
+  it('does not enqueue a mutation when clicking an already-seen message', async () => {
+    // _setSeen short-circuits when local is_seen already matches the
+    // requested state, so no insertPendingMutation happens. This
+    // keeps the queue from filling with no-op rows when the user
+    // clicks a read message or scrolls past read mail.
+    const folder = makeFolder(1, { total_emails: 1 });
+    const seen = makeRow(8, { is_seen: 1, keywords_json: '{"$seen":true}' });
+    const view = { rows: [seen], total: 1 };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+
+    let replaceCalls = 0;
+    repo.replaceMessageKeywords = async () => { replaceCalls += 1; };
+    let insertCalls = 0;
+    repo.insertPendingMutation = async () => {
+      insertCalls += 1;
+      return { id: 1 };
+    };
+
+    mailStore.selectMessage(8);
+    await flush();
+
+    expect(replaceCalls).toBe(0);
+    expect(insertCalls).toBe(0);
+  });
+});
+
+describe('refresh button (nuke and rebuild)', () => {
+  it('wipes the local view, re-syncs from the server, and shows the spinner while running', async () => {
+    // Simulate a desynced cache: locally we believe there are 3 rows
+    // but the server actually has 1. After refresh, the local view
+    // should match the server (1 row) and isLoading must have flipped
+    // true during the run so the toolbar spinner renders.
+    const folder = makeFolder(1, { total_emails: 3 });
+    const view = {
+      rows: [makeRow(1), makeRow(2), makeRow(3)],
+      total: 3,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1, 2, 3]);
+
+    // Server now reports only one row at position 0. resetViewForFolder
+    // (mocked to clear view.rows and view.total) simulates the FK
+    // cascade dropping query_view_items; then ensureFolderWindow
+    // populates the new authoritative state. We also use the
+    // ensureFolderWindow stub as a sampling point to snapshot
+    // isLoading mid-flight, so the test can prove the spinner state
+    // gets set during the operation and not just before / after.
+    let ensureCallCount = 0;
+    let isLoadingDuringEnsure = null;
+    repo.ensureFolderWindow = async (_accountId, folderId) => {
+      ensureCallCount += 1;
+      isLoadingDuringEnsure = mailStore.isLoading;
+      const v = repo._views.get(folderId);
+      if (v) {
+        v.rows = [makeRow(99)];
+        v.total = 1;
+      }
+      return { total: 1, fetched: 1 };
+    };
+
+    // isLoading starts false on a cached folder; refresh must flip it
+    // before awaiting any RPC so the toolbar spinner appears.
+    expect(mailStore.isLoading).toBe(false);
+    await mailStore.refresh();
+    await flush();
+
+    expect(repo._calls.resetViewForFolder).toBe(1);
+    expect(ensureCallCount).toBeGreaterThanOrEqual(1);
+    expect(isLoadingDuringEnsure).toBe(true);
+    expect(mailStore.messages.map((m) => m?.id)).toEqual([99]);
+    expect(mailStore.totalForFolder).toBe(1);
+    expect(mailStore.isLoading).toBe(false);
+  });
+});
+
+describe('refreshLoadedPages after a remote shrink', () => {
+  it('drops trailing placeholder rows when query_views.total shrinks', async () => {
+    // Start with a folder that the cache says has 3 rows and the
+    // server agrees on. After the initial paint the user is on the
+    // folder; a peer device then destroys two messages. The
+    // backend's queryChanges pass updates query_view_items and
+    // query_views.total, then fires MESSAGES. The store must read
+    // the new authoritative total via queryViewProgress and trim
+    // its row buffer so the virtualizer stops rendering the dead
+    // tail.
+    const folder = makeFolder(1, { total_emails: 3 });
+    const view = {
+      rows: [makeRow(1), makeRow(2), makeRow(3)],
+      total: 3,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1, 2, 3]);
+    expect(mailStore.totalForFolder).toBe(3);
+
+    // Peer destroys e-2 and e-3. queryChanges in the worker removed
+    // them from query_view_items, leaving the view at 1 row.
+    view.rows = [makeRow(1)];
+    view.total = 1;
+    repo.triggerBroadcast(['messages']);
+    await flush();
+
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1]);
+    expect(mailStore.messages).toHaveLength(1);
+    expect(mailStore.totalForFolder).toBe(1);
+  });
+
+  it('keeps the new top row visible when a push delivers new mail', async () => {
+    // Mailbox/changes raises folder.total_emails first (the
+    // currentFolder watcher mirrors that onto state.total); then
+    // the queryChanges pass updates the view and broadcasts
+    // MESSAGES. After the broadcast the new row at position 0
+    // must be the freshly-arrived message and the row count must
+    // include it.
+    const folder = makeFolder(1, { total_emails: 1 });
+    const view = { rows: [makeRow(1)], total: 1 };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1]);
+
+    // New mail arrives: total_emails goes 1 -> 2 (Mailbox/changes
+    // would update folders; we simulate by reseeding the listFolders
+    // response and firing a FOLDERS broadcast), and the query view
+    // gets a new row at the head (Email/queryChanges -> apply).
+    repo.setFolders([makeFolder(1, { total_emails: 2 })]);
+    view.rows = [makeRow(99), makeRow(1)];
+    view.total = 2;
+    repo.triggerBroadcast(['folders']);
+    repo.triggerBroadcast(['messages']);
+    await flush();
+
+    expect(mailStore.totalForFolder).toBe(2);
+    expect(mailStore.messages.map((m) => m.id)).toEqual([99, 1]);
+  });
+});
