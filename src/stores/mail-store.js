@@ -100,6 +100,13 @@ export const useMailStore = defineStore('mail', () => {
   const bodyQueued = new Set();
   let bodyPrefetchRunning = false;
 
+  // Single-flight + re-run flag for refreshLoadedPages so a burst of
+  // MESSAGES broadcasts coalesces into one cache re-read at the end
+  // of the storm, not N partial reads that the user sees as the row
+  // count ticking down one at a time. See refreshLoadedPages().
+  let refreshLoadedPagesInflight = null;
+  let refreshLoadedPagesDirty = false;
+
   const currentFolder = computed(
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
   );
@@ -488,6 +495,38 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Public coalescing wrapper around _refreshLoadedPages. A burst of
+   * MESSAGES broadcasts (e.g. the per-id apply* helpers called inside
+   * the outbox for a bulk delete) all need to result in the cache
+   * being re-read, but the USER does not want to see N partial
+   * intermediate states. We single-flight the underlying refresh and
+   * re-run it once at the end if more broadcasts arrived while we
+   * were busy. Net effect: one re-read after the storm settles, so
+   * the message list shrinks in one step instead of one row per
+   * broadcast.
+   *
+   * Returns a promise that resolves once the cache state visible to
+   * the UI has caught up to every broadcast received up to the call.
+   */
+  function refreshLoadedPages() {
+    if (refreshLoadedPagesInflight) {
+      refreshLoadedPagesDirty = true;
+      return refreshLoadedPagesInflight;
+    }
+    refreshLoadedPagesInflight = (async () => {
+      try {
+        do {
+          refreshLoadedPagesDirty = false;
+          await _refreshLoadedPages();
+        } while (refreshLoadedPagesDirty);
+      } finally {
+        refreshLoadedPagesInflight = null;
+      }
+    })();
+    return refreshLoadedPagesInflight;
+  }
+
+  /**
    * Re-read every page we've already painted for the current folder
    * from SQLite. Triggered by table-touched broadcasts after read/
    * flag changes and after query_view_items has been updated by a
@@ -501,8 +540,11 @@ export const useMailStore = defineStore('mail', () => {
    * up yet. Trailing entries inside painted ranges are cleared and
    * state.rows is trimmed so the virtualizer's row count tracks the
    * actual content, not the pre-delete cache shape.
+   *
+   * Always call through refreshLoadedPages (above) so concurrent
+   * broadcast bursts coalesce into one re-read pass.
    */
-  async function refreshLoadedPages() {
+  async function _refreshLoadedPages() {
     const state = folderState;
     if (!repo || !state || state.folderId !== currentFolderId.value) return;
 

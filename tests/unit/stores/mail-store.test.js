@@ -777,6 +777,44 @@ describe('refreshLoadedPages after a remote shrink', () => {
     expect(mailStore.totalForFolder).toBe(1);
   });
 
+  it('coalesces a burst of MESSAGES broadcasts into one cache re-read', async () => {
+    // Reproduces what bulk delete (and any rapid-fire broadcast
+    // storm, e.g. a queryChanges pass with many removed ids) does to
+    // the store. Without coalescing, each broadcast fires its own
+    // refreshLoadedPages, and the user sees the row count tick down
+    // one step per broadcast.
+    const folder = makeFolder(1, { total_emails: 5 });
+    const view = {
+      rows: [makeRow(1), makeRow(2), makeRow(3), makeRow(4), makeRow(5)],
+      total: 5,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    const callsBefore = repo._calls.listMessagesForView;
+
+    // Simulate the outbox's per-id apply loop: each apply broadcasts
+    // MESSAGES, each broadcast lands as a separate triggerBroadcast.
+    // The cache is only mutated AFTER all of them (server returned
+    // batched-success in real life); here we just want to see how
+    // many refreshLoadedPages cycles actually run.
+    for (let i = 0; i < 10; i += 1) {
+      repo.triggerBroadcast(['messages']);
+    }
+    await flush();
+
+    const callsAfter = repo._calls.listMessagesForView;
+    // refreshLoadedPages does one listMessagesForView per painted
+    // range. We started with one painted range, so each re-read pass
+    // makes exactly one listMessagesForView call. With the
+    // single-flight + dirty-flag coalescing, ten broadcasts result
+    // in at most two passes (the initial one plus one re-run because
+    // the dirty flag was set during it).
+    expect(callsAfter - callsBefore).toBeLessThanOrEqual(2);
+  });
+
   it('keeps the new top row visible when a push delivers new mail', async () => {
     // Mailbox/changes raises folder.total_emails first (the
     // currentFolder watcher mirrors that onto state.total); then
