@@ -1,0 +1,52 @@
+---
+description: Require an E2E test for every operation that mutates both server and local SQLite cache.
+alwaysApply: true
+---
+
+# E2E coverage for cache + server mutations
+
+Any change that issues a JMAP / sync mutation AND updates the local
+SQLite cache (`messages`, `folder_messages`, `query_view_items`,
+`query_views`, etc.) MUST come with a Playwright E2E test in
+`stormbox/tests/e2e/`.
+
+Unit + integration tests are necessary but not sufficient. We have
+been bitten repeatedly by gaps that Node-side fakes hide:
+
+- `Node`'s `BroadcastChannel` polyfill is more forgiving than the
+  Firefox SharedWorker → tab hop.
+- `wa-sqlite` OPFS timing in Firefox differs from Chromium.
+- Vue reactivity and the TanStack virtualizer only fail at the DOM
+  level, not in mocked stores.
+
+## Required structure
+
+Every such E2E must:
+
+1. Assert the user-visible UI outcome (rows appear / disappear in
+   the rendered list, toolbar counts update, etc.).
+2. Assert the local cache outcome via `window.__repo`
+   (`listMessagesForView`, `queryViewProgress`, raw `db.query` reads).
+3. Assert the server outcome via direct JMAP (`Email/get`,
+   `Email/query`, etc.) — DO NOT rely on the worker's read-through.
+4. Run on BOTH `--project=chromium` AND `--project=firefox`.
+5. Clean up any test-created server-side mail in `finally` AND scrub
+   orphans from prior interrupted runs in `beforeEach`. The
+   `delete-message.spec.js` / `bulk-delete.spec.js` helpers
+   (`sweepOrphanTestMessages`, `cleanupEmail`) are the template.
+6. Use a unique subject prefix (`Delete e2e ...`,
+   `Ghost refresh e2e ...`, etc.) so the sweep can find them.
+
+## Operations this rule covers
+
+- Any new `mutation_type` in `pending_mutations`.
+- Any new `apply*Locally` helper in
+  `src/sync/backends/jmap/outbox-apply.js`.
+- Any change to `destroyMessage(s)`, `markManySeen`, `refresh`,
+  compose `send`, or `resetViewForFolder` semantics.
+- Any new field surfaced through `MESSAGE_LIST_FOR_VIEW` /
+  `QUERY_VIEW_APPLY_CHANGES` that the mail store re-reads.
+
+If you cannot add the E2E (e.g. the user explicitly defers it),
+call that out in the PR description and link the existing test
+that comes closest, so coverage gaps are visible.
