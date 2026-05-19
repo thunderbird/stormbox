@@ -921,6 +921,15 @@ export const useMailStore = defineStore('mail', () => {
       next.delete(messageId);
       selectedIds.value = next;
     }
+    // Belt-and-braces: don't trust the post-write MESSAGES broadcast
+    // alone. The outbox already updated SQLite (folder_messages and
+    // query_view_items) before runMutation resolved, so reading the
+    // painted ranges back NOW gives an authoritative refresh even if
+    // the BroadcastChannel hop from the SharedWorker to this tab is
+    // late or, in some Firefox builds, never arrives at all. Without
+    // this the user sees "delete worked on the server but my Inbox
+    // still shows the row".
+    await refreshLoadedPages();
   }
 
   /**
