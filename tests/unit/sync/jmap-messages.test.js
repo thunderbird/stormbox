@@ -299,15 +299,89 @@ describe('syncFolderWindowChanges', () => {
       'SELECT remote_id, position FROM query_view_items WHERE view_id = ? ORDER BY position',
       [view.id],
     );
-    const remoteIds = items.map((i) => i.remote_id);
-    expect(remoteIds).toContain('e-new');
-    expect(remoteIds).not.toContain('e-c');
+    // e-c was at position 2 and got removed (no compaction needed
+    // since nothing sat above it). e-new was inserted at index 0,
+    // pushing e-a/e-b down to positions 1 and 2. Verifying the exact
+    // ordering catches the prior bug where the addition would
+    // overwrite the row at position 0.
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([
+      [0, 'e-new'],
+      [1, 'e-a'],
+      [2, 'e-b'],
+    ]);
 
     const fresh = await engine.get(
       'SELECT subject FROM messages WHERE account_id = ? AND remote_id = ?',
       [account.id, 'e-new'],
     );
     expect(fresh.subject).toBe('fresh');
+  });
+
+  it('compacts positions when items are removed from the middle of the view', async () => {
+    await bootstrap();
+    const transport = new MockTransport();
+    transport.handle('Email/queryChanges', () => ({
+      oldQueryState: 'qs-1',
+      newQueryState: 'qs-2',
+      total: 2,
+      removed: ['e-b'],
+      added: [],
+    }));
+    transport.handle('Email/get', () => ({ list: [], state: 'es-2' }));
+    await syncFolderWindowChanges({
+      transport, account, folder: inbox, handlers,
+      sinceQueryState: 'qs-1',
+    });
+    const view = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inbox.id],
+    );
+    const items = await engine.all(
+      'SELECT remote_id, position FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [view.id],
+    );
+    // e-c was at position 2; removing e-b in the middle must shift
+    // e-c down to position 1 so the positional read for offset=0
+    // limit=2 returns both surviving rows.
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([
+      [0, 'e-a'],
+      [1, 'e-c'],
+    ]);
+  });
+
+  it('handles a message moving within the view (delete + reinsert)', async () => {
+    await bootstrap();
+    const transport = new MockTransport();
+    transport.handle('Email/queryChanges', () => ({
+      oldQueryState: 'qs-1',
+      newQueryState: 'qs-2',
+      total: 3,
+      removed: [],
+      // e-c moves from position 2 to position 0 (e.g. flagged and
+      // re-sorted to the top).
+      added: [{ id: 'e-c', index: 0 }],
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es-2',
+    }));
+    await syncFolderWindowChanges({
+      transport, account, folder: inbox, handlers,
+      sinceQueryState: 'qs-1',
+    });
+    const view = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inbox.id],
+    );
+    const items = await engine.all(
+      'SELECT remote_id, position FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [view.id],
+    );
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([
+      [0, 'e-c'],
+      [1, 'e-a'],
+      [2, 'e-b'],
+    ]);
   });
 
   it('reports needsFullSync when the server cannot calculate changes', async () => {
@@ -383,5 +457,157 @@ describe('syncEmailChanges', () => {
       objectType: 'Email',
     });
     expect(stateRow.state).toBe('es-1');
+  });
+
+  it('removes query_view_items + decrements query_views.total for destroyed messages so no ghost skeletons remain', async () => {
+    // Bootstrap an Inbox view with two messages. Both are present in
+    // query_view_items at positions 0 and 1, and query_views.total
+    // is 2. This mirrors the state the user's browser is in right
+    // after the E2E test creates a disposable inbox message and
+    // syncs it.
+    const bootstrap = new MockTransport();
+    bootstrap.handle('Email/query', () => ({
+      ids: ['e-keep', 'e-doomed'],
+      total: 2,
+      queryState: 'qs',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    bootstrap.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id, keywords: {} })),
+      state: 'es-0',
+    }));
+    await syncFolderWindow({ transport: bootstrap, account, folder: inbox, handlers });
+
+    const viewBefore = await engine.get(
+      `SELECT id, total FROM query_views WHERE folder_id = ?`,
+      [inbox.id],
+    );
+    expect(Number(viewBefore.total)).toBe(2);
+    expect(await engine.all(
+      `SELECT position, remote_id FROM query_view_items
+        WHERE view_id = ? ORDER BY position`,
+      [viewBefore.id],
+    )).toEqual([
+      { position: 0, remote_id: 'e-keep' },
+      { position: 1, remote_id: 'e-doomed' },
+    ]);
+
+    // Now the server tells us e-doomed was destroyed (cleanup by an
+    // E2E test or another client). syncEmailChanges should drop it
+    // from messages AND from the Inbox view, with position
+    // compaction, so no skeleton placeholder remains.
+    const transport = new MockTransport();
+    transport.handle('Email/changes', () => ({
+      oldState: 'es-0',
+      newState: 'es-1',
+      hasMoreChanges: false,
+      created: [],
+      updated: [],
+      destroyed: ['e-doomed'],
+    }));
+    // Email/get should not be called for an empty created+updated list,
+    // but if syncEmailChanges decides to call it the MockTransport must
+    // still respond - leave the handler unregistered to detect that.
+
+    await syncEmailChanges({
+      transport, account, handlers, sinceState: 'es-0',
+    });
+
+    // messages row gone.
+    expect(await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'e-doomed'],
+    )).toBeNull();
+
+    // query_view_items for Inbox compacted: e-keep moves to position 0.
+    expect(await engine.all(
+      `SELECT position, remote_id FROM query_view_items
+        WHERE view_id = ? ORDER BY position`,
+      [viewBefore.id],
+    )).toEqual([
+      { position: 0, remote_id: 'e-keep' },
+    ]);
+
+    // query_views.total decremented.
+    const viewAfter = await engine.get(
+      `SELECT total FROM query_views WHERE id = ?`,
+      [viewBefore.id],
+    );
+    expect(Number(viewAfter.total)).toBe(1);
+  });
+
+  it('cleans up ghosts in inactive views too (the multi-folder case)', async () => {
+    // Same as above but the destroyed message is in TWO folders'
+    // views: Inbox (active) and a side folder (Trash) that the user
+    // has not visited recently, so _refreshActiveQueryViews would
+    // not run queryChanges for it. syncEmailChanges must still
+    // clean both.
+    const trash = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-inbox'],
+    );
+    // Reuse the Inbox folder as our second-view target: insert a
+    // second mailbox-window query_view + items for it manually.
+    const filterJson = JSON.stringify({ inMailbox: 'mb-some-other' });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    const ts = Date.now();
+    await handlers[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'qs2', 1, 1, ?, ?, ?)`,
+      params: [account.id, trash.id, filterJson, sortJson, ts, ts, ts],
+    });
+    const sideView = await engine.get(
+      `SELECT id FROM query_views WHERE folder_id = ? AND filter_json = ?`,
+      [trash.id, filterJson],
+    );
+
+    // Seed the canonical Inbox view too.
+    const bootstrap = new MockTransport();
+    bootstrap.handle('Email/query', () => ({
+      ids: ['e-shared'], total: 1, queryState: 'qs', canCalculateChanges: true, position: 0,
+    }));
+    bootstrap.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id, keywords: {} })),
+      state: 'es-0',
+    }));
+    await syncFolderWindow({ transport: bootstrap, account, folder: inbox, handlers });
+
+    // And put e-shared in the side view too.
+    await handlers[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+            VALUES (?, 0, NULL, ?)`,
+      params: [sideView.id, 'e-shared'],
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Email/changes', () => ({
+      oldState: 'es-0',
+      newState: 'es-1',
+      hasMoreChanges: false,
+      created: [],
+      updated: [],
+      destroyed: ['e-shared'],
+    }));
+
+    await syncEmailChanges({
+      transport, account, handlers, sinceState: 'es-0',
+    });
+
+    // Both views are clean.
+    const remaining = await engine.all(
+      `SELECT view_id, remote_id FROM query_view_items WHERE remote_id = ?`,
+      ['e-shared'],
+    );
+    expect(remaining).toEqual([]);
+
+    const sideViewAfter = await engine.get(
+      `SELECT total FROM query_views WHERE id = ?`,
+      [sideView.id],
+    );
+    expect(Number(sideViewAfter.total)).toBe(0);
   });
 });

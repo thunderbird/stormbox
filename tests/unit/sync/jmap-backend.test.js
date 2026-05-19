@@ -7,7 +7,7 @@ import { SERVICE_KIND } from '../../../src/constants/states.js';
 import { JmapBackend } from '../../../src/sync/backends/jmap/backend.js';
 import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
 import { FakeWebSocket } from './_fake-ws.js';
-import { MockTransport } from './_mock-transport.js';
+import { MockTransport, resolveResultRefs } from './_mock-transport.js';
 
 const SESSION = {
   apiUrl: 'https://mail.example.com/jmap',
@@ -311,6 +311,109 @@ describe('JmapBackend.ensureMessageBodies', () => {
     expect(second.fetched).toBe(0);
     expect(seenIds).toBeNull();
   });
+
+  it('shares a single Email/get round trip across concurrent callers asking for the same body', async () => {
+    // Two callers — typically the EmailDelivery push handler's
+    // eager prefetch and a fast user click on the same brand-new
+    // message — must not both fire Email/get with body
+    // properties. The body_fetched_at SQL filter only dedups across
+    // sequential calls; the inflight Map dedups across overlapping
+    // ones.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' }],
+    });
+    await handlers[DB_RPC.THREAD_UPSERT_MANY]({
+      accountId: account.id,
+      threads: [{ remoteId: 't-1' }],
+    });
+    const [thread] = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id FROM threads WHERE account_id = ?',
+      params: [account.id],
+    });
+    await handlers[DB_RPC.MESSAGE_UPSERT_MANY]({
+      accountId: account.id,
+      messages: [{
+        remoteId: 'e-1',
+        threadId: thread.id,
+        remoteThreadId: 't-1',
+        subject: 'one',
+        preview: 'p1',
+        receivedAt: Date.now(),
+        sentAt: Date.now(),
+        hasAttachment: false,
+        keywordsJson: '{}',
+        keywords: [],
+        isSeen: false,
+        isFlagged: false,
+        isAnswered: false,
+        isDraft: false,
+        isForwarded: false,
+        isJunk: false,
+        addresses: [],
+      }],
+    });
+    const [msg] = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id FROM messages WHERE account_id = ?',
+      params: [account.id],
+    });
+
+    let inflightResolve;
+    const inflightGate = new Promise((r) => { inflightResolve = r; });
+    let bodyGetCallCount = 0;
+    const transport = new MockTransport();
+    transport.handle('Email/get', async (params) => {
+      bodyGetCallCount += 1;
+      // Hold the response open until the test releases it. While
+      // this is awaiting, the second ensureMessageBodies call
+      // must see the in-flight promise and piggy-back rather than
+      // issuing a parallel Email/get.
+      await inflightGate;
+      return {
+        state: 'es-1',
+        list: params.ids.map((id) => ({
+          id,
+          blobId: `blob-${id}`,
+          threadId: 't-1',
+          mailboxIds: { 'mb-inbox': true },
+          keywords: {},
+          bodyStructure: { partId: `body-${id}`, type: 'text/plain', size: 5 },
+          textBody: [{ partId: `body-${id}` }],
+          htmlBody: [],
+          attachments: [],
+          bodyValues: { [`body-${id}`]: { value: 'hello', isTruncated: false } },
+        })),
+      };
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = {
+      id: account.id,
+      remote_account_id: account.remote_account_id,
+    };
+
+    const first = backend.ensureMessageBodies([msg.id]);
+    const second = backend.ensureMessageBodies([msg.id]);
+    inflightResolve();
+    const [r1, r2] = await Promise.all([first, second]);
+
+    expect(bodyGetCallCount).toBe(1);
+    expect(r1.fetched).toBe(1);
+    expect(r2.fetched).toBe(1);
+    // Inflight map should be drained once both promises settle.
+    expect(backend._bodyFetchInflight.size).toBe(0);
+  });
 });
 
 /**
@@ -326,7 +429,17 @@ function autoRespondWebSocket(ws, scenario) {
     if (msg['@type'] !== 'Request') return;
     queueMicrotask(async () => {
       const responses = [];
-      for (const [methodName, params, callId] of msg.methodCalls) {
+      // RFC 8620 §3.1.3 result references: method-call params may
+      // contain "#name": { resultOf, name, path } objects that the
+      // server resolves against earlier responses in the same
+      // request. Without this, chained Email/query -> Email/get and
+      // Email/queryChanges -> Email/get end up calling the second
+      // handler with `params.ids` undefined, so persistEmails sees
+      // an empty list and the messages table never gets the new
+      // rows. MockTransport already does this for HTTP; we mirror
+      // its behaviour over the WS path here.
+      const byCallId = new Map();
+      for (const [methodName, rawParams, callId] of msg.methodCalls) {
         const handler = scenario[methodName];
         if (!handler) {
           ws._receive({
@@ -337,8 +450,11 @@ function autoRespondWebSocket(ws, scenario) {
           });
           return;
         }
+        const params = resolveResultRefs(rawParams, byCallId);
         const payload = await handler(params, callId);
-        responses.push([methodName, payload, callId]);
+        const tuple = [methodName, payload, callId];
+        responses.push(tuple);
+        byCallId.set(callId, tuple);
       }
       ws._receive({
         '@type': 'Response',
@@ -417,6 +533,376 @@ describe('JmapBackend StateChange dispatch', () => {
       [backend.account.id, SERVICE_KIND.JMAP_MAIL],
     );
     expect(svc.push_state).toBe('push-bbb');
+
+    await backend.stop();
+  });
+
+  it('catches up active query views on startup via Email/queryChanges', async () => {
+    // Pre-seed an account + inbox + query_view (with two items) so
+    // backend.start() finds an "active" view from the previous
+    // session. While we were offline a peer device destroyed e-2;
+    // the startup catch-up pass must run Email/queryChanges against
+    // each stored view and apply the delta so the stale row drops
+    // out before the first repaint.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{
+        remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox',
+        totalEmails: 2, unreadEmails: 0,
+      }],
+    });
+    const inboxRow = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-inbox'],
+    );
+    const ts = Date.now();
+    await handlers[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'eqs-1', 1, 2, ?, ?, ?)`,
+      params: [
+        account.id,
+        inboxRow.id,
+        JSON.stringify({ inMailbox: 'mb-inbox' }),
+        JSON.stringify([{ property: 'receivedAt', isAscending: false }]),
+        ts, ts, ts,
+      ],
+    });
+    const seededView = await engine.get(
+      `SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?`,
+      [account.id, inboxRow.id],
+    );
+    await handlers[DB_RPC.TRANSACTION]({
+      statements: ['e-1', 'e-2'].map((id, i) => ({
+        sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+              VALUES (?, ?, NULL, ?)`,
+        params: [seededView.id, i, id],
+      })),
+    });
+
+    let queryChangesCalls = 0;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1 }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/queryChanges': (params) => {
+        queryChangesCalls += 1;
+        expect(params.sinceQueryState).toBe('eqs-1');
+        return {
+          oldQueryState: 'eqs-1',
+          newQueryState: 'eqs-2',
+          total: 1,
+          removed: ['e-2'],
+          added: [],
+        };
+      },
+      'Email/get': () => ({ list: [], state: 'es-1' }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+
+    expect(queryChangesCalls).toBeGreaterThan(0);
+    const items = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [seededView.id],
+    );
+    expect(items.map((i) => i.remote_id)).toEqual(['e-1']);
+
+    await backend.stop();
+  });
+
+  it('refreshes active query views when EmailDelivery push arrives so new messages land in the list', async () => {
+    const emailFixture = (id, overrides = {}) => ({
+      id,
+      blobId: `blob-${id}`,
+      threadId: `thr-${id}`,
+      mailboxIds: { 'mb-inbox': true },
+      keywords: {},
+      size: 100,
+      receivedAt: '2026-05-01T12:00:00Z',
+      sentAt: '2026-05-01T11:59:00Z',
+      messageId: [`<${id}@example.com>`],
+      sender: [{ name: 'S', email: 's@example.com' }],
+      from: [{ name: 'F', email: 'f@example.com' }],
+      to: [{ name: 'T', email: 't@example.com' }],
+      subject: `Subject ${id}`,
+      preview: `preview ${id}`,
+      hasAttachment: false,
+      ...overrides,
+    });
+    let queryChangesCalls = 0;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{
+          id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1,
+        }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/query': () => ({
+        ids: ['e-1'],
+        total: 1,
+        queryState: 'eqs-1',
+        canCalculateChanges: true,
+        position: 0,
+      }),
+      'Email/get': (params) => ({
+        list: (params.ids ?? []).map((id) => emailFixture(id)),
+        state: 'es-1',
+      }),
+      'Email/queryChanges': () => {
+        queryChangesCalls += 1;
+        return {
+          oldQueryState: 'eqs-1',
+          newQueryState: 'eqs-2',
+          total: 2,
+          removed: [],
+          added: [{ id: 'e-new', index: 0 }],
+        };
+      },
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws = await FakeWebSocket._waitForInstance();
+
+    // Seed an active query view so _refreshActiveQueryViews has
+    // somewhere to run Email/queryChanges. ensureFolderWindow writes
+    // query_views + query_view_items for the inbox window.
+    const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
+    const inboxRow = folders.find((f) => f.role === 'inbox');
+    await backend.ensureFolderWindow(inboxRow.id, { offset: 0, limit: 50 });
+
+    const initialView = await engine.get(
+      `SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?`,
+      [backend.account.id, inboxRow.id],
+    );
+    expect(initialView).toBeTruthy();
+    const initialItems = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [initialView.id],
+    );
+    expect(initialItems.map((i) => i.remote_id)).toEqual(['e-1']);
+    expect(queryChangesCalls).toBe(0);
+
+    // EmailDelivery push: server is telling us new mail arrived. The
+    // backend must trigger Email/queryChanges against the inbox view
+    // so the new id is appended to query_view_items even though no
+    // Email/changes baseline state exists yet.
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { EmailDelivery: 'd-1' } },
+      pushState: 'push-d',
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(queryChangesCalls).toBeGreaterThan(0);
+    const refreshedItems = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [initialView.id],
+    );
+    expect(refreshedItems.map((i) => i.remote_id).sort()).toEqual(['e-1', 'e-new']);
+
+    await backend.stop();
+  });
+
+  it('eagerly fetches the body of a newly-delivered message so click-to-read is a local read', async () => {
+    // After my push refresh lands the new metadata row, the backend
+    // must also fetch the body and persist it into body_values.
+    // Doing it now means the user's first click on the new message
+    // renders from SQLite without a server round trip — which is
+    // exactly the latency the user noticed when push wasn't
+    // delivering at all.
+    const emailMeta = (id) => ({
+      id,
+      blobId: `blob-${id}`,
+      threadId: `thr-${id}`,
+      mailboxIds: { 'mb-inbox': true },
+      keywords: {},
+      size: 100,
+      receivedAt: '2026-05-01T12:00:00Z',
+      sentAt: '2026-05-01T11:59:00Z',
+      messageId: [`<${id}@example.com>`],
+      sender: [{ name: 'S', email: 's@example.com' }],
+      from: [{ name: 'F', email: 'f@example.com' }],
+      to: [{ name: 'T', email: 't@example.com' }],
+      subject: `Subject ${id}`,
+      preview: `preview ${id}`,
+      hasAttachment: false,
+    });
+    const emailBody = (id) => ({
+      ...emailMeta(id),
+      bodyStructure: { partId: `body-${id}`, type: 'text/plain', size: 12 },
+      textBody: [{ partId: `body-${id}` }],
+      htmlBody: [],
+      attachments: [],
+      bodyValues: { [`body-${id}`]: { value: `hello ${id}`, isTruncated: false } },
+    });
+
+    let metadataGetCalls = 0;
+    let bodyGetCalls = 0;
+    let lastBodyGetIds = null;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1 }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/query': () => ({
+        ids: ['e-1'],
+        total: 1,
+        queryState: 'eqs-1',
+        canCalculateChanges: true,
+        position: 0,
+      }),
+      'Email/get': (params) => {
+        // fetchTextBodyValues / bodyProperties is what
+        // distinguishes a "give me the body" call from a "give me
+        // the list metadata" call. Stalwart returns the same
+        // envelope shape; we only respond with body data when the
+        // body flags are present so the test would notice if the
+        // backend re-used the metadata path by mistake.
+        const isBodyFetch = params.fetchTextBodyValues === true;
+        if (isBodyFetch) {
+          bodyGetCalls += 1;
+          lastBodyGetIds = params.ids;
+          return {
+            state: 'es-1',
+            list: (params.ids ?? []).map((id) => emailBody(id)),
+          };
+        }
+        metadataGetCalls += 1;
+        return {
+          state: 'es-1',
+          list: (params.ids ?? []).map((id) => emailMeta(id)),
+        };
+      },
+      'Email/queryChanges': () => ({
+        oldQueryState: 'eqs-1',
+        newQueryState: 'eqs-2',
+        total: 2,
+        removed: [],
+        added: [{ id: 'e-new', index: 0 }],
+      }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws = await FakeWebSocket._waitForInstance();
+
+    // Seed the inbox view so _refreshActiveQueryViews has a view
+    // to apply queryChanges against.
+    const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
+    const inboxRow = folders.find((f) => f.role === 'inbox');
+    await backend.ensureFolderWindow(inboxRow.id, { offset: 0, limit: 50 });
+
+    // Baseline: only the initial metadata fetches have happened.
+    const baselineMetadataGets = metadataGetCalls;
+    expect(bodyGetCalls).toBe(0);
+
+    // Fire EmailDelivery. The backend should: (1) run
+    // Email/queryChanges, (2) Email/get the new id's metadata via
+    // the back-reference in syncFolderWindowChanges, (3) THEN call
+    // Email/get a second time with body properties for that id.
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { EmailDelivery: 'd-1' } },
+      pushState: 'push-d',
+    });
+    // Poll instead of a fixed sleep; the chain (queryChanges -> get
+    // metadata -> persistEmails -> _prefetchBodiesForNewlyDelivered
+    // -> ensureMessageBodies -> get bodies -> persistBodies) takes
+    // multiple WS round trips and is timing-sensitive in CI.
+    for (let i = 0; i < 100 && bodyGetCalls === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+
+    expect(metadataGetCalls).toBeGreaterThan(baselineMetadataGets);
+    expect(bodyGetCalls).toBe(1);
+    expect(lastBodyGetIds).toEqual(['e-new']);
+
+    // The body must have actually been persisted (this is the
+    // contract that makes click-to-read instant).
+    const newMsg = await engine.get(
+      'SELECT id, body_fetched_at FROM messages WHERE account_id = ? AND remote_id = ?',
+      [backend.account.id, 'e-new'],
+    );
+    expect(newMsg).toBeTruthy();
+    expect(newMsg.body_fetched_at).not.toBeNull();
+    const bodyValues = await engine.all(
+      'SELECT value FROM body_values WHERE message_id = ?',
+      [newMsg.id],
+    );
+    expect(bodyValues.map((r) => r.value)).toContain('hello e-new');
 
     await backend.stop();
   });

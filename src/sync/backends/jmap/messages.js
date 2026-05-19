@@ -193,20 +193,18 @@ export async function syncFolderWindowChanges({
     total: change.total ?? null,
   });
 
-  if (change.removed?.length) {
-    const placeholders = change.removed.map(() => '?').join(',');
-    await handlers[DB_RPC.QUERY]({
-      sql: `DELETE FROM query_view_items WHERE view_id = ? AND remote_id IN (${placeholders})`,
-      params: [viewId, ...change.removed],
-    });
-  }
-
   const additions = change.added ?? [];
-  if (additions.length > 0) {
-    await upsertQueryViewItems({
-      handlers,
+  const removedIds = change.removed ?? [];
+  // Single transactional pass that applies the RFC 8620 §5.5
+  // queryChanges algorithm: remove + compact, then add + shift. The
+  // handler also broadcasts MESSAGES so remove-only deltas (e.g. a
+  // peer device moved a message out of this folder) still trigger a
+  // message-list refresh in the UI.
+  if (removedIds.length > 0 || additions.length > 0) {
+    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
       viewId,
-      additions,
+      removed: removedIds,
+      added: additions,
     });
   }
 
@@ -222,7 +220,7 @@ export async function syncFolderWindowChanges({
     needsFullSync: false,
     queryState: change.newQueryState,
     added: additions,
-    removed: change.removed ?? [],
+    removed: removedIds,
     total: change.total ?? null,
     fetched,
   };
@@ -271,6 +269,16 @@ export async function syncEmailChanges({
     await persistEmails({ account, emails: list, handlers });
   }
   if (change.destroyed?.length) {
+    // Before nuking the messages row, drop any query_view_items
+    // entries that reference its remote_id. The FK on
+    // query_view_items.message_id only has ON DELETE SET NULL, so
+    // the bulk DELETE below would leave skeleton-placeholder rows
+    // showing in every folder view that knew about this message
+    // (and would also leave query_views.total over-counting the
+    // dead positions). _refreshActiveQueryViews only runs queryChanges
+    // on the top-5 LRU views, so any other folder would keep the
+    // ghost until the user manually navigated back to it.
+    await dropRemoteIdsFromAllViews(handlers, account, change.destroyed);
     const placeholders = change.destroyed.map(() => '?').join(',');
     await handlers[DB_RPC.QUERY]({
       sql: `DELETE FROM messages
@@ -294,7 +302,15 @@ export async function syncEmailChanges({
 
 // ----- helpers ---------------------------------------------------------
 
-async function persistEmails({ account, emails, handlers }) {
+/**
+ * Public helper: given a list of Email JSON objects (as returned by
+ * Email/get with EMAIL_LIST_PROPERTIES), upsert messages rows and
+ * reconcile folder_messages against the server-side mailboxIds.
+ * Exported so the outbox reconciliation path can refresh local cache
+ * for a single message after a failed Email/set, without having to
+ * re-route through the sync engine's batched paths.
+ */
+export async function persistEmails({ account, emails, handlers }) {
   if (emails.length === 0) return;
 
   // Pre-create thread rows so messages.thread_id can resolve.
@@ -454,29 +470,91 @@ async function upsertQueryView({
   return row[0]?.id;
 }
 
-async function upsertQueryViewItems({ handlers, viewId, position, ids, additions }) {
-  if (additions) {
-    const stmts = additions.map((a) => ({
+/**
+ * Bulk-write the positional ids returned by Email/query for the
+ * initial syncFolderWindow pass. Deltas (`added` / `removed` from
+ * Email/queryChanges) go through DB_RPC.QUERY_VIEW_APPLY_CHANGES so
+ * they get proper position shifting and a MESSAGES broadcast.
+ *
+ * Implementation note: query_view_items has TWO unique constraints,
+ * UNIQUE(view_id, position) and UNIQUE(view_id, remote_id). SQLite
+ * supports multiple ON CONFLICT clauses, but they cannot resolve the
+ * cross-constraint case where an INSERT both lands on an occupied
+ * position AND duplicates an existing remote_id at another position:
+ * the position-conflict UPSERT rewrites the row in place, which then
+ * collides with the other remote_id-unique row that still exists. The
+ * old multi-ON-CONFLICT version threw "UNIQUE constraint failed:
+ * query_view_items.view_id, query_view_items.remote_id" every time
+ * syncFolderWindow was re-run after applyMoveLocally had compacted
+ * positions in the view; that took the whole Inbox load down.
+ *
+ * We write the range atomically by deleting any stale rows in the
+ * target position range AND any rows that already hold one of the new
+ * remote_ids elsewhere, then inserting clean. Leaving gaps at the
+ * old positions of moved ids is fine: those positions are stale and
+ * will be re-fetched on demand.
+ */
+async function upsertQueryViewItems({ handlers, viewId, position, ids }) {
+  if (!ids || ids.length === 0) return;
+  const idPlaceholders = ids.map(() => '?').join(',');
+  const statements = [
+    {
+      sql: `DELETE FROM query_view_items
+              WHERE view_id = ? AND position >= ? AND position < ?`,
+      params: [viewId, position, position + ids.length],
+    },
+    {
+      sql: `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${idPlaceholders})`,
+      params: [viewId, ...ids],
+    },
+    ...ids.map((id, i) => ({
       sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
-            VALUES (?, ?, NULL, ?)
-            ON CONFLICT(view_id, position) DO UPDATE SET remote_id = excluded.remote_id
-            ON CONFLICT(view_id, remote_id) DO UPDATE SET position = excluded.position`,
-      params: [viewId, a.index, a.id],
-    }));
-    if (stmts.length > 0) {
-      await handlers[DB_RPC.TRANSACTION]({ statements: stmts });
-    }
-    return;
+            VALUES (?, ?, NULL, ?)`,
+      params: [viewId, position + i, id],
+    })),
+  ];
+  await handlers[DB_RPC.TRANSACTION]({ statements });
+}
+
+/**
+ * Remove the given remote ids from every query_view_items entry in
+ * the account, with position compaction inside each affected view
+ * and a matching decrement of query_views.total. Used by
+ * syncEmailChanges so destroyed-on-server messages cannot leave
+ * skeleton-placeholder rows behind in any folder.
+ */
+async function dropRemoteIdsFromAllViews(handlers, account, remoteIds) {
+  if (!remoteIds?.length) return;
+  const placeholders = remoteIds.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT qv.id AS view_id, qi.remote_id
+            FROM query_views qv
+            JOIN query_view_items qi ON qi.view_id = qv.id
+           WHERE qv.account_id = ?
+             AND qi.remote_id IN (${placeholders})`,
+    params: [account.id, ...remoteIds],
+  });
+  if (rows.length === 0) return;
+  const byView = new Map();
+  for (const row of rows) {
+    const viewId = Number(row.view_id);
+    if (!byView.has(viewId)) byView.set(viewId, []);
+    byView.get(viewId).push(row.remote_id);
   }
-  const stmts = (ids ?? []).map((id, i) => ({
-    sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
-          VALUES (?, ?, NULL, ?)
-          ON CONFLICT(view_id, position) DO UPDATE SET remote_id = excluded.remote_id
-          ON CONFLICT(view_id, remote_id) DO UPDATE SET position = excluded.position`,
-    params: [viewId, position + i, id],
-  }));
-  if (stmts.length > 0) {
-    await handlers[DB_RPC.TRANSACTION]({ statements: stmts });
+  for (const [viewId, ids] of byView) {
+    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId, removed: ids, added: [],
+    });
+    // The JOIN above guarantees each id was in the view, so we can
+    // decrement total by exactly the number of pairs we found.
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE query_views
+               SET total = MAX(0, COALESCE(total, 0) - ?),
+                   updated_at = ?
+             WHERE id = ?`,
+      params: [ids.length, Date.now(), viewId],
+    });
   }
 }
 
