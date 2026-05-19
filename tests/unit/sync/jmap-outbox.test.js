@@ -157,6 +157,44 @@ describe('drainOutbox', () => {
     expect(setParams.destroy).toEqual(['e-1']);
   });
 
+  it('can run one specific pending mutation without draining older rows first', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_KEYWORDS,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({ add: ['$seen'], remove: [] }),
+    });
+    const deleteMutation = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({}),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { destroyed: ['e-1'] };
+    });
+    const summary = await drainOutbox({
+      transport,
+      account,
+      handlers,
+      mutationId: deleteMutation.id,
+    });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.destroy).toEqual(['e-1']);
+
+    const remaining = await engine.all(
+      'SELECT mutation_type, local_status FROM pending_mutations ORDER BY created_at',
+    );
+    expect(remaining).toEqual([{
+      mutation_type: MUTATION_TYPES.SET_KEYWORDS,
+      local_status: 'pending',
+    }]);
+  });
+
   it('marks the row conflicted when the server reports notUpdated', async () => {
     await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,

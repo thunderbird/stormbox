@@ -40,7 +40,8 @@ import {
   syncContacts,
   syncContactCardChanges,
 } from './contacts.js';
-import { drainOutbox } from './outbox.js';
+import { processMutationRow } from './outbox.js';
+import { OutboxRunner } from './outbox-runner.js';
 
 const SUBSCRIBED_TYPES = [
   JMAP_TYPE.MAILBOX,
@@ -72,6 +73,56 @@ export class JmapBackend {
     this._indexerTimer = null;
     this._indexerRunning = false;
     this._foregroundFolderWindowCount = 0;
+    // Map<local message_id, Promise<{ fetched }>>. Tracks Email/get
+    // body fetches that are currently in flight. Two callers asking
+    // for the same body (e.g. the EmailDelivery push handler
+    // prefetching eagerly and the user clicking the new message
+    // before that finishes) share the single round trip via this
+    // map instead of firing it twice. The body_fetched_at column
+    // dedups across separate ensureMessageBodies calls, but it's
+    // checked at the start of each call and doesn't catch overlap
+    // before the first finishes.
+    this._bodyFetchInflight = new Map();
+    // Cap on how many bodies we eagerly prefetch per push. A long
+    // offline catch-up can land hundreds of newly-visible ids at
+    // once; we fetch only the most recent few and let the rest
+    // fall back to click-time fetch.
+    this._eagerBodyPrefetchCap = options.eagerBodyPrefetchCap ?? 10;
+    // Indexer tuning. Production defaults are sized to take ~5s end
+    // to end on a 3k-message Archives over a healthy WebSocket:
+    // five round trips back-to-back per tick, 250 ms between ticks
+    // (to leave headroom for any foreground ensureFolderWindow call
+    // the user triggers), and a per-tick chunk size that scales
+    // with the folder so big folders amortise the request overhead
+    // better. _selectIndexerChunkSize clamps against
+    // urn:ietf:params:jmap:core's maxObjectsInGet so we never ask
+    // for more records than the server is willing to return.
+    // Tuning notes (Stalwart 0.15, ~3000-message Archives, WS over localhost):
+    //   - Per-chunk wall-clock grows with position: ~4.5s at offset 0,
+    //     ~9s at offset 2500. Server-side Email/query cost dominates;
+    //     bigger chunks (500) amortise the JMAP envelope overhead but
+    //     can't beat Stalwart's per-position scan cost.
+    //   - Total wall-clock for 3000 messages is ~50s at these settings.
+    //     The floor is set by Stalwart; further speedup would need
+    //     server-side changes or a different sync primitive (e.g.
+    //     batched Email/query splits over parallel WS frames).
+    //   - 250 ms inter-tick delay is mostly there to release the event
+    //     loop between bursts; the yield-to-foreground check inside
+    //     ensureFolderIndex covers the user-clicked-mid-tick case.
+    this._indexerTickDelayMs = options.indexerTickDelayMs ?? 250;
+    this._indexerChunksPerTick = options.indexerChunksPerTick ?? 5;
+    /** @type {number | null} cached urn:ietf:params:jmap:core
+     *  maxObjectsInGet; loaded lazily on the first indexer tick so we
+     *  don't slow down start() with an extra query. */
+    this._maxObjectsInGetCap = null;
+    // Created in start() once we know our local account.id. Owns the
+    // pending_mutations drain loop: auto-draining on insert (via the
+    // makeHandlers hook), on StateChange (any push that signals the
+    // WS is live also signals it can carry our queued writes), and on
+    // backoff timer expiry. See sync/backends/jmap/outbox-runner.js.
+    /** @type {import('./outbox-runner.js').OutboxRunner | null} */
+    this.outboxRunner = null;
+    this._outboxRunnerOptions = options.outboxRunnerOptions ?? null;
   }
 
   /**
@@ -96,6 +147,23 @@ export class JmapBackend {
     this.services = ingest.services;
     wlog.info('jmap-backend', `account ingested id=${this.account.id} remote=${this.account.remote_account_id} services=${this.services.map((s) => s.serviceKind).join(',')}`);
 
+    // Build the runner once the account row exists. processRow gets
+    // the current transport / useWebSocket at call time so the
+    // runner doesn't capture a stale snapshot if the backend later
+    // flips between HTTP and WS.
+    this.outboxRunner = new OutboxRunner({
+      accountId: this.account.id,
+      handlers: this.handlers,
+      processRow: (row) => processMutationRow({
+        transport: this.transport,
+        account: this.account,
+        handlers: this.handlers,
+        row,
+        useWebSocket: this._wsReady(),
+      }),
+      options: this._outboxRunnerOptions ?? undefined,
+    });
+
     const mbResult = await syncMailboxes({
       transport: this.transport,
       account: this.account,
@@ -104,6 +172,11 @@ export class JmapBackend {
     wlog.info('jmap-backend', `syncMailboxes -> ${mbResult.count} folders, state=${mbResult.state}`);
 
     this._started = true;
+
+    // Drain anything left over from a previous session. The migration
+    // already reset in_flight -> pending; this just kicks the loop so
+    // those rows go out without waiting for the next user action.
+    this.outboxRunner.notify();
 
     // Fire-and-forget background bootstrap: identities, contacts, then
     // open the WebSocket. The UI is already painting from the folder
@@ -151,6 +224,10 @@ export class JmapBackend {
       try {
         await this.transport.openWebSocket(SUBSCRIBED_TYPES, pushState);
         wlog.info('jmap-backend', 'WebSocket open, push enabled');
+        // Now that the WS is up, any pending mutations that failed
+        // mid-restart (or that landed on disk while we were on HTTP)
+        // can finally go out. Cheap if the queue is empty.
+        this.outboxRunner?.notify();
       } catch (err) {
         wlog.warn('jmap-backend', 'WebSocket unavailable; staying on HTTP', err);
       }
@@ -160,6 +237,17 @@ export class JmapBackend {
         wlog.error('jmap-backend', 'StateChange dispatch failed', err);
       }),
     );
+    // Catch up on whatever changed while we were disconnected. The
+    // WebSocketPushEnable+pushState handshake is supposed to deliver
+    // a StateChange for any types that moved, but servers may decline
+    // to push when the stored pushState is unrecognised (e.g. after a
+    // restart) and EmailDelivery only fires for new mail, not for
+    // destroys or moves done elsewhere. Running queryChanges per
+    // active view here makes the first repaint authoritative without
+    // waiting for the user to refresh.
+    await this._refreshActiveQueryViews().catch((err) => {
+      wlog.warn('jmap-backend', 'startup view catch-up failed', err);
+    });
     this._scheduleMetadataIndexer(1_000);
   }
 
@@ -170,6 +258,10 @@ export class JmapBackend {
     if (this._indexerTimer) {
       clearTimeout(this._indexerTimer);
       this._indexerTimer = null;
+    }
+    if (this.outboxRunner) {
+      await this.outboxRunner.stop();
+      this.outboxRunner = null;
     }
     this.transport.closeWebSocket();
     this._started = false;
@@ -215,9 +307,59 @@ export class JmapBackend {
     return this.ensureMessageBodies([messageId]);
   }
 
+  /**
+   * Fetch and persist bodies for the given local message ids.
+   *
+   * Concurrent callers asking for any of the same ids share one
+   * JMAP round trip: the first call registers a Promise in
+   * `_bodyFetchInflight` keyed by local id, and any later call
+   * arriving before that resolves piggy-backs on the same
+   * promise rather than firing a duplicate Email/get. The
+   * `body_fetched_at IS NULL` filter inside `_fetchBodiesForLocalIds`
+   * handles the orthogonal "already in the DB" case.
+   */
   async ensureMessageBodies(messageIds = []) {
     const ids = [...new Set((messageIds ?? []).filter((id) => id != null))];
     if (ids.length === 0) return { fetched: 0 };
+
+    const fresh = [];
+    const piggyback = [];
+    for (const id of ids) {
+      const existing = this._bodyFetchInflight.get(id);
+      if (existing) piggyback.push(existing);
+      else fresh.push(id);
+    }
+
+    let freshPromise = null;
+    if (fresh.length > 0) {
+      freshPromise = this._fetchBodiesForLocalIds(fresh);
+      for (const id of fresh) this._bodyFetchInflight.set(id, freshPromise);
+      freshPromise
+        .catch(() => {
+          // Errors propagate to the caller via the awaited promise
+          // below; the catch here is only to prevent an unhandled
+          // rejection warning from the bookkeeping branch.
+        })
+        .finally(() => {
+          for (const id of fresh) {
+            if (this._bodyFetchInflight.get(id) === freshPromise) {
+              this._bodyFetchInflight.delete(id);
+            }
+          }
+        });
+    }
+
+    const settled = await Promise.all(
+      [freshPromise, ...piggyback].filter(Boolean),
+    );
+    let fetched = 0;
+    for (const result of settled) {
+      fetched += Number(result?.fetched ?? 0);
+    }
+    return { fetched };
+  }
+
+  async _fetchBodiesForLocalIds(ids) {
     const placeholders = ids.map(() => '?').join(',');
     const rows = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT remote_id
@@ -242,10 +384,24 @@ export class JmapBackend {
     const sortProp = options.sortProp ?? this._defaultSortPropFor(folder);
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500));
     const maxChunks = Math.max(1, Number(options.maxChunks ?? 1));
+    // Caller can opt out of mid-tick yielding (foreground callers
+    // and unit tests don't want their chunks aborted by a parallel
+    // ensureFolderWindow). The indexer tick sets this to true so
+    // it can give the WS back to a user-driven page load between
+    // chunks; foreground callers leave it false so a single
+    // ensureFolderWindow with limit > PAGE_SIZE doesn't tear itself
+    // up by raising _foregroundFolderWindowCount on its own entry.
+    const yieldToForeground = options.yieldToForeground === true;
     let offset = Number(options.offset ?? 0);
     let total = Number(options.total ?? folder.total_emails ?? 0);
     let fetched = 0;
     for (let i = 0; i < maxChunks; i += 1) {
+      if (yieldToForeground && this._foregroundFolderWindowCount > 0) {
+        // Foreground request arrived (user scrolled, clicked, etc.);
+        // give the WS back. The next indexer tick will resume from
+        // the same gap with the latest progress.
+        break;
+      }
       const gap = await this._nextQueryViewGap({ folder, sortProp, startAt: offset, total, limit });
       if (!gap) break;
       const result = await syncFolderWindow({
@@ -266,23 +422,41 @@ export class JmapBackend {
     return { fetched, total };
   }
 
-  _scheduleMetadataIndexer(delayMs = 2_500) {
+  _scheduleMetadataIndexer(delayMs) {
     if (!this._started || this._indexerTimer) return;
+    const effectiveDelay = Number.isFinite(delayMs)
+      ? delayMs
+      : this._indexerTickDelayMs;
     this._indexerTimer = setTimeout(() => {
       this._indexerTimer = null;
       this._runMetadataIndexerChunk()
         .catch((err) => wlog.warn('jmap-backend', 'metadata indexer failed', err))
         .finally(() => {
-          if (this._started) this._scheduleMetadataIndexer(2_500);
+          if (this._started) this._scheduleMetadataIndexer(this._indexerTickDelayMs);
         });
-    }, delayMs);
+    }, effectiveDelay);
   }
 
+  /**
+   * One indexer tick. Picks the highest-priority folder that still
+   * has uncovered positions and runs up to `_indexerChunksPerTick`
+   * back-to-back Email/query+Email/get round trips against it. The
+   * per-chunk size scales with folder size (see
+   * `_selectIndexerChunkSize`) and is clamped against the server's
+   * advertised maxObjectsInGet.
+   *
+   * `break` after one folder per tick is intentional: it keeps the
+   * WS connection serving a predictable single-folder stream and
+   * yields to any foreground ensureFolderWindow the user kicks off
+   * mid-flight (which would bump _foregroundFolderWindowCount and
+   * stall the *next* tick at the gate above).
+   */
   async _runMetadataIndexerChunk() {
     if (this._indexerRunning || !this.account) return;
     if (this._foregroundFolderWindowCount > 0) return;
     this._indexerRunning = true;
     try {
+      const serverCap = await this._loadMaxObjectsInGetCap();
       const folders = await this.handlers[DB_RPC.QUERY]({
         sql: `SELECT *
                 FROM folders
@@ -303,15 +477,18 @@ export class JmapBackend {
         if (progress.total > 0 && progress.covered >= progress.total) {
           continue;
         }
+        const effectiveTotal = progress.total || Number(folder.total_emails ?? 0);
+        const chunkLimit = this._selectIndexerChunkSize(effectiveTotal, serverCap);
         const result = await this.ensureFolderIndex(folder.id, {
-          limit: 100,
-          maxChunks: 1,
-          total: progress.total || folder.total_emails,
+          limit: chunkLimit,
+          maxChunks: this._indexerChunksPerTick,
+          total: effectiveTotal,
+          yieldToForeground: true,
         });
         if ((result?.fetched ?? 0) > 0) {
           wlog.info(
             'jmap-backend',
-            `metadata indexer folder=${folder.name} fetched=${result.fetched} total=${result.total}`,
+            `metadata indexer folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
           );
         }
         break;
@@ -319,6 +496,61 @@ export class JmapBackend {
     } finally {
       this._indexerRunning = false;
     }
+  }
+
+  /**
+   * Tiered chunk-size selection. Small folders fit in one or two
+   * chunks anyway, so the default 100 is fine and avoids over-asking
+   * for short folders. Medium folders pay the per-request overhead
+   * a bunch of times if we stay at 100, so we bump them. Large
+   * folders are where the latency really matters; 500 records of
+   * the EMAIL_LIST_PROPERTIES set is ~500 KB per response, well
+   * within the JMAP envelope and the WS frame size.
+   *
+   * Clamped against the server-advertised maxObjectsInGet so we
+   * never trip a 'tooManyObjectsInGet' SetError (RFC 8620 §3.5).
+   */
+  _selectIndexerChunkSize(folderTotal, serverCap) {
+    const total = Number(folderTotal ?? 0);
+    // Tiered by folder size. Measurement on Stalwart 0.15: per-record
+    // wall-clock for an Email/query+Email/get round trip drops from
+    // ~14 ms/record at limit=100 to ~9 ms/record at limit=500 (and
+    // amortises the round-trip overhead), so bigger chunks are
+    // strictly faster end-to-end. We only stay at 100 for tiny
+    // folders where a single chunk would already over-fetch.
+    let target;
+    if (total < 500) target = 100;
+    else target = 500;
+    const cap = Number.isFinite(serverCap) && serverCap > 0 ? serverCap : target;
+    return Math.max(1, Math.min(target, cap));
+  }
+
+  /**
+   * Read maxObjectsInGet out of the cached jmap-core capability.
+   * Cached on first call; never refreshed because the value only
+   * changes when the server pushes a session-state update, which is
+   * a re-login event for our purposes.
+   */
+  async _loadMaxObjectsInGetCap() {
+    if (this._maxObjectsInGetCap != null) return this._maxObjectsInGetCap;
+    if (!this.account) return null;
+    try {
+      const rows = await this.handlers[DB_RPC.QUERY]({
+        sql: `SELECT payload_json FROM account_capabilities
+                WHERE account_id = ? AND capability = ?
+                LIMIT 1`,
+        params: [this.account.id, 'urn:ietf:params:jmap:core'],
+      });
+      const payload = rows?.[0]?.payload_json
+        ? JSON.parse(rows[0].payload_json)
+        : null;
+      const raw = Number(payload?.maxObjectsInGet);
+      this._maxObjectsInGetCap = Number.isFinite(raw) && raw > 0 ? raw : null;
+    } catch (err) {
+      wlog.warn('jmap-backend', 'failed to read maxObjectsInGet capability', err);
+      this._maxObjectsInGetCap = null;
+    }
+    return this._maxObjectsInGetCap;
   }
 
   async _queryViewProgress(folder) {
@@ -406,21 +638,18 @@ export class JmapBackend {
     });
   }
 
-  async drainOutbox(limit = 25) {
-    return drainOutbox({
-      transport: this.transport,
-      account: this.account,
-      handlers: this.handlers,
-      limit,
-      useWebSocket: this._wsReady(),
-    });
+  async drainOutbox() {
+    if (!this.outboxRunner) {
+      return { attempted: 0, succeeded: 0, failed: 0 };
+    }
+    return this.outboxRunner.drain();
   }
 
-  async runMutation(_mutationId) {
-    // Per-row mutation runs are not wired today; the SharedWorker
-    // calls drainOutbox(limit) which iterates the queue. Keep this
-    // for future per-mutation retry hooks.
-    return this.drainOutbox(1);
+  async runMutation(mutationId) {
+    if (!this.outboxRunner) {
+      return { attempted: 0, succeeded: 0, failed: 0 };
+    }
+    return this.outboxRunner.runMutation(mutationId);
   }
 
   // ----- StateChange dispatch -----------------------------------------
@@ -430,8 +659,27 @@ export class JmapBackend {
     if (pushState) {
       await this._persistPushState(pushState);
     }
+    // Any push frame, regardless of which JMAP type it carries, is
+    // also a strong signal that the WebSocket is alive end-to-end.
+    // Wake the outbox runner so anything queued during a transient
+    // disconnect goes out now — this is how we get reconnect-retry
+    // without having to add an explicit reconnect callback to the
+    // transport layer.
+    this.outboxRunner?.notify();
     const types = changed?.[this.account.remote_account_id];
     if (!types) return;
+
+    // Any Email or EmailDelivery state change can reorder, add, or
+    // remove rows from active mailbox windows (created, destroyed,
+    // moved between folders, or a flag flip that the server re-sorts
+    // on). Email/changes only refreshes message rows the client
+    // already knows about; it never updates query_view_items, which
+    // is what the UI's message list reads from. We collect a flag
+    // here and run a single _refreshActiveQueryViews pass after the
+    // type loop so multiple types arriving together (Email +
+    // EmailDelivery is the common case for a new delivery) only
+    // trigger one queryChanges round per active view.
+    let needViewRefresh = false;
 
     for (const [type, _state] of Object.entries(types)) {
       switch (type) {
@@ -453,26 +701,35 @@ export class JmapBackend {
           }
           break;
         }
-        case JMAP_TYPE.EMAIL:
-        case JMAP_TYPE.EMAIL_DELIVERY: {
+        case JMAP_TYPE.EMAIL: {
           const sync = await this._loadSyncState('Email');
-          if (!sync?.state) {
-            // Without a baseline state we cannot run /changes; the next
-            // visible window sync will populate one.
-            break;
+          if (sync?.state) {
+            // Refresh metadata for message rows the client already
+            // knows about (e.g. $seen/$flagged flips, subject edits).
+            // Per-view membership is reconciled below via
+            // queryChanges; this is just the row-data side.
+            await syncEmailChanges({
+              transport: this.transport,
+              account: this.account,
+              handlers: this.handlers,
+              sinceState: sync.state,
+              useWebSocket: this._wsReady(),
+            }).catch((err) => {
+              wlog.warn('jmap-backend', 'syncEmailChanges failed', err);
+            });
           }
-          const result = await syncEmailChanges({
-            transport: this.transport,
-            account: this.account,
-            handlers: this.handlers,
-            sinceState: sync.state,
-            useWebSocket: this._wsReady(),
-          });
-          if (result.needsFullSync) {
-            // Fall back to refreshing the visible folder windows; their
-            // queryChanges will reseed the per-account Email state.
-            await this._refreshActiveQueryViews();
-          }
+          // Always refresh active views: created/destroyed/moved
+          // emails only show up in the UI once query_view_items is
+          // reconciled. Unchanged views still emit a cheap empty
+          // queryChanges response, which is bounded to 5 views.
+          needViewRefresh = true;
+          break;
+        }
+        case JMAP_TYPE.EMAIL_DELIVERY: {
+          // EmailDelivery is push-only and fires only when new mail
+          // has arrived. The view always needs to be refreshed so
+          // the new rows show up in the open folder.
+          needViewRefresh = true;
           break;
         }
         case JMAP_TYPE.IDENTITY: {
@@ -507,6 +764,10 @@ export class JmapBackend {
           break;
       }
     }
+
+    if (needViewRefresh) {
+      await this._refreshActiveQueryViews();
+    }
   }
 
   async _refreshActiveQueryViews() {
@@ -516,6 +777,14 @@ export class JmapBackend {
              ORDER BY last_accessed_at DESC LIMIT 5`,
       params: [this.account.id],
     });
+    // Track ids that newly entered an active view as a result of
+    // this refresh so we can eagerly fetch their bodies into the
+    // DB. The expected case is a single EmailDelivery push adding
+    // one row to the inbox; doing the body fetch now means the
+    // click-to-render path is a local SQL read instead of a
+    // server round trip.
+    /** @type {{ id: string, index: number }[]} */
+    const newlyAdded = [];
     for (const view of views) {
       const folder = await this._loadFolder(view.folder_id);
       if (!folder) continue;
@@ -541,7 +810,54 @@ export class JmapBackend {
           collapseThreads: !!view.collapse_threads,
           useWebSocket: this._wsReady(),
         });
+        continue;
       }
+      for (const add of (result.added ?? [])) {
+        if (add?.id) newlyAdded.push({ id: add.id, index: Number(add.index ?? 0) });
+      }
+    }
+    if (newlyAdded.length > 0) {
+      await this._prefetchBodiesForNewlyDelivered(newlyAdded);
+    }
+  }
+
+  /**
+   * Resolve newly-added remote ids to local message ids and eagerly
+   * fetch their bodies. Bounded to `_eagerBodyPrefetchCap` so a
+   * post-disconnect catch-up that surfaces dozens of new rows
+   * doesn't dump every one of them onto the WebSocket. We pick the
+   * lowest-index entries (most recent) since those are the ones
+   * the user is most likely to click.
+   */
+  async _prefetchBodiesForNewlyDelivered(additions) {
+    if (!Array.isArray(additions) || additions.length === 0) return;
+    const ordered = [...additions]
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      .slice(0, this._eagerBodyPrefetchCap)
+      .map((a) => a.id)
+      .filter(Boolean);
+    if (ordered.length === 0) return;
+    const placeholders = ordered.map(() => '?').join(',');
+    const rows = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT id FROM messages
+             WHERE account_id = ?
+               AND remote_id IN (${placeholders})`,
+      params: [this.account.id, ...ordered],
+    });
+    const localIds = rows
+      .map((r) => Number(r.id))
+      .filter((n) => Number.isFinite(n));
+    if (localIds.length === 0) return;
+    try {
+      const result = await this.ensureMessageBodies(localIds);
+      if ((result?.fetched ?? 0) > 0) {
+        wlog.info(
+          'jmap-backend',
+          `eager body prefetch: ${result.fetched} bodies for newly-delivered ids`,
+        );
+      }
+    } catch (err) {
+      wlog.warn('jmap-backend', 'eager body prefetch failed', err);
     }
   }
 

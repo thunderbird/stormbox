@@ -17,8 +17,19 @@ import { DB_RPC, TABLE_FAMILIES } from './protocol.js';
 /**
  * Build the handler map for a given engine. Broadcaster is optional in
  * tests; pass a no-op when you don't care about cross-tab invalidation.
+ *
+ * `hooks.onMutationInserted({ accountId, mutationId })` is an optional
+ * callback fired (best effort, never blocking) right after a
+ * pending_mutations row is committed. The sync host registers it once
+ * a backend has started so the OutboxRunner gets woken without
+ * main-thread callers having to remember to kick drainOutbox. Tests
+ * that don't wire a backend just leave the hook unset; the no-op
+ * default keeps the handler self-contained.
  */
-export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
+export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}) {
+  const onMutationInserted = typeof hooks.onMutationInserted === 'function'
+    ? hooks.onMutationInserted
+    : () => {};
   const now = () => Date.now();
 
   /** @type {Record<string, (params: any) => Promise<any>>} */
@@ -509,6 +520,135 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
       };
     },
 
+    /**
+     * Apply an Email/queryChanges delta to a stored query view per the
+     * RFC 8620 §5.5 algorithm: first delete all `removed` ids and
+     * compact the positions above them, then insert each `added`
+     * entry at its specified index, shifting positions at or after
+     * the insertion point up by one.
+     *
+     * Why this exists as its own RPC: the previous implementation did
+     * raw UPSERT-on-position writes which lost any row already sitting
+     * at the addition's target index. New deliveries at position 0 in
+     * a fully-cached inbox would silently overwrite the previous top
+     * row. The shift-and-insert sequence below uses negative-position
+     * parking to avoid UNIQUE(view_id, position) conflicts during the
+     * shift step, and broadcasts MESSAGES so the message-list store
+     * picks up the change even on remove-only deltas (which used to
+     * fire no broadcast at all).
+     */
+    [DB_RPC.QUERY_VIEW_APPLY_CHANGES]: async ({
+      viewId, removed = [], added = [],
+    }) => {
+      const safeViewId = Number(viewId);
+      if (!Number.isFinite(safeViewId)) {
+        throw new Error('queryView.applyChanges requires a numeric viewId');
+      }
+      const removedList = Array.isArray(removed) ? removed.filter((id) => id != null) : [];
+      const addedList = Array.isArray(added)
+        ? added.filter((a) => a && a.id != null && Number.isFinite(Number(a.index)))
+        : [];
+      if (removedList.length === 0 && addedList.length === 0) {
+        return { removed: 0, added: 0 };
+      }
+      await engine.transaction(async (tx) => {
+        if (removedList.length > 0) {
+          const placeholders = removedList.map(() => '?').join(',');
+          const removedRows = await tx.all(
+            `SELECT position FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${placeholders})
+              ORDER BY position DESC`,
+            [safeViewId, ...removedList],
+          );
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${placeholders})`,
+            [safeViewId, ...removedList],
+          );
+          // Compact: each removed position shifts items at higher
+          // positions down by one. Highest-first so the cumulative
+          // offset stays consistent as we iterate.
+          for (const row of removedRows) {
+            await tx.run(
+              `UPDATE query_view_items
+                  SET position = position - 1
+                WHERE view_id = ? AND position > ?`,
+              [safeViewId, Number(row.position)],
+            );
+          }
+        }
+        for (const entry of addedList) {
+          const idx = Number(entry.index);
+          const remoteId = entry.id;
+          // Move within view: drop the old slot and compact above
+          // before re-inserting at the new index.
+          const existing = await tx.get(
+            `SELECT position FROM query_view_items
+              WHERE view_id = ? AND remote_id = ?`,
+            [safeViewId, remoteId],
+          );
+          if (existing) {
+            const oldPos = Number(existing.position);
+            await tx.run(
+              `DELETE FROM query_view_items
+                WHERE view_id = ? AND remote_id = ?`,
+              [safeViewId, remoteId],
+            );
+            await tx.run(
+              `UPDATE query_view_items
+                  SET position = position - 1
+                WHERE view_id = ? AND position > ?`,
+              [safeViewId, oldPos],
+            );
+          }
+          // Park positions >= idx in the negative range so the
+          // UNIQUE(view_id, position) index stays satisfied during
+          // the shift. The mapping `p -> -p - 1` keeps the original
+          // order and is reversed by `p -> -p` after the insert.
+          await tx.run(
+            `UPDATE query_view_items
+                SET position = -position - 1
+              WHERE view_id = ? AND position >= ?`,
+            [safeViewId, idx],
+          );
+          await tx.run(
+            `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+             VALUES (?, ?, NULL, ?)`,
+            [safeViewId, idx, remoteId],
+          );
+          await tx.run(
+            `UPDATE query_view_items
+                SET position = -position
+              WHERE view_id = ? AND position < 0`,
+            [safeViewId],
+          );
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { removed: removedList.length, added: addedList.length };
+    },
+
+    /**
+     * Nuke the mailbox-window query_view for a folder so it can be
+     * rebuilt from scratch. Deleting query_views.id cascades to the
+     * matching query_view_items + query_view_ranges rows, leaving the
+     * messages and folder_messages tables alone (rows that only exist
+     * locally remain as orphans but are no longer reachable through
+     * any view, so the UI won't render them).
+     *
+     * Broadcasts MESSAGES so subscribers re-read after the nuke.
+     */
+    [DB_RPC.QUERY_VIEW_RESET_FOR_FOLDER]: async ({ accountId, folderId }) => {
+      const result = await engine.run(
+        `DELETE FROM query_views
+          WHERE account_id = ? AND folder_id = ?
+            AND view_type = 'mailbox-window'`,
+        [accountId, folderId],
+      );
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { deleted: result.changes ?? 0 };
+    },
+
     [DB_RPC.MESSAGE_GET_BY_REMOTE]: async ({ accountId, remoteId }) =>
       engine.get(
         `SELECT * FROM messages WHERE account_id = ? AND remote_id = ?`,
@@ -806,6 +946,22 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
 
     [DB_RPC.PENDING_MUTATION_INSERT]: async (input) => {
       const ts = now();
+      // target_message_id has a FK to messages(id). If the caller
+      // passes an id that no longer exists (e.g. a ghost row the
+      // user double-clicked Delete on after the first click already
+      // removed it from messages), the INSERT throws "FOREIGN KEY
+      // constraint failed" and the UI sees an unhandled rejection.
+      // Verify the FK target first and null it out so the mutation
+      // can still be enqueued; the outbox will resolve via
+      // request_json.messageId or report 'unknownMessage' cleanly.
+      let targetMessageId = input.targetMessageId ?? null;
+      if (targetMessageId != null) {
+        const row = await engine.get(
+          'SELECT id FROM messages WHERE id = ? AND account_id = ?',
+          [targetMessageId, input.accountId],
+        );
+        if (!row) targetMessageId = null;
+      }
       const result = await engine.run(
         `INSERT INTO pending_mutations(
             account_id, mutation_type, local_status, target_message_id,
@@ -816,7 +972,7 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
           input.accountId,
           input.mutationType,
           input.localStatus ?? 'pending',
-          input.targetMessageId ?? null,
+          targetMessageId,
           input.requestJson,
           input.optimisticPatchJson ?? null,
           null,
@@ -826,6 +982,22 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster()) {
         ],
       );
       broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      // Wake the outbox runner once the row is durably committed. The
+      // hook is fire-and-forget: a thrown error or rejected promise
+      // here must never fail the original insert (the row is already
+      // in the DB and another notify path — startup sweep, state
+      // change, periodic — will eventually pick it up).
+      try {
+        const maybePromise = onMutationInserted({
+          accountId: input.accountId,
+          mutationId: result.lastInsertRowid,
+        });
+        if (maybePromise && typeof maybePromise.then === 'function') {
+          maybePromise.catch(() => {});
+        }
+      } catch {
+        // Swallow synchronous throws from the hook for the same reason.
+      }
       return { id: result.lastInsertRowid };
     },
 

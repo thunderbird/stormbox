@@ -33,8 +33,19 @@ import { JmapBackend } from './backends/jmap/backend.js';
 /**
  * Build the RPC handler map. Caller (SharedWorker) merges this into the
  * full handler map keyed by DB_RPC method names.
+ *
+ * `outboxNotifier`, if supplied, is a mutable dispatch carrier shared
+ * with `makeHandlers`. We install a real `dispatch(accountId, mutationId)`
+ * on it once we know which backends exist; the handlers-side
+ * `onMutationInserted` hook calls back through it after every
+ * PENDING_MUTATION_INSERT, so the OutboxRunner gets woken without
+ * callers having to remember to kick `drainOutbox`. Pre-start inserts
+ * land on the no-op default and are picked up by the runner's startup
+ * sweep instead.
  */
-export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
+export function makeSyncRpcHandlers({
+  handlers, fetch, WebSocketImpl, outboxNotifier,
+} = {}) {
   if (!handlers) {
     throw new Error('makeSyncRpcHandlers requires the repository handler map');
   }
@@ -49,6 +60,13 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
   const syncClient = new SyncClient();
   /** @type {Map<number, JmapBackend>} */
   const backends = new Map();
+
+  if (outboxNotifier) {
+    outboxNotifier.dispatch = (accountId, _mutationId) => {
+      const backend = backends.get(accountId);
+      backend?.outboxRunner?.notify();
+    };
+  }
 
   return {
     [DB_RPC.SYNC_START_ACCOUNT]: async (input) => {
@@ -120,6 +138,14 @@ export function makeSyncRpcHandlers({ handlers, fetch, WebSocketImpl } = {}) {
         return { attempted: 0, succeeded: 0, failed: 0 };
       }
       return backend.drainOutbox(limit);
+    },
+
+    [DB_RPC.SYNC_RUN_MUTATION]: async ({ accountId, mutationId }) => {
+      const backend = backends.get(accountId);
+      if (!backend) {
+        return { attempted: 0, succeeded: 0, failed: 0 };
+      }
+      return backend.runMutation(mutationId);
     },
   };
 }

@@ -108,7 +108,7 @@ export const useComposeStore = defineStore('compose', () => {
     status.value = COMPOSE_STATE.SENDING;
     error.value = null;
     try {
-      await repo.insertPendingMutation({
+      const mutation = await repo.insertPendingMutation({
         accountId: authStore.accountId,
         mutationType: 'send',
         targetMessageId: null,
@@ -127,7 +127,17 @@ export const useComposeStore = defineStore('compose', () => {
         }),
         optimisticPatchJson: null,
       });
-      const result = await repo.drainOutbox(authStore.accountId);
+      // Wait on THIS row specifically rather than draining the whole
+      // account queue. drainOutbox would also block on any unrelated
+      // pending setKeywords / move rows that happen to be in flight,
+      // turning a "send" click into a wait for arbitrary background
+      // work. runMutation also avoids the inverse case: a parallel
+      // markRead enqueued just before us would have been counted in
+      // drainOutbox's failed/succeeded tally and our success branch
+      // could have falsely reported a send failure.
+      const result = typeof repo.runMutation === 'function' && mutation?.id != null
+        ? await repo.runMutation(authStore.accountId, mutation.id)
+        : await repo.drainOutbox(authStore.accountId);
       if (result.failed > 0) {
         status.value = COMPOSE_STATE.FAILED;
         error.value = 'Send failed; the message stays in your outbox.';

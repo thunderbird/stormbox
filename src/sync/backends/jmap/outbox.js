@@ -1,25 +1,44 @@
 /**
- * Outbox runner for JMAP mutations. Reads pending_mutations rows,
- * translates each into an Email/set or EmailSubmission/set request,
- * and applies the response.
+ * JMAP mutation dispatch. Translates a single pending_mutations row
+ * into the appropriate Email/set or EmailSubmission/set request and
+ * applies the local-cache reconciliation that follows a successful
+ * response.
  *
- * Supported mutation_type values for MVP:
+ * Supported mutation_type values:
  *
  *   'setKeywords'      Email/set update with a keywords/$X patch
  *   'moveToFolders'    Email/set update with a mailboxIds/<id> patch
  *   'destroy'          Email/set destroy
+ *   'send'             Email/set create + EmailSubmission/set with
+ *                      onSuccessUpdateEmail moving the email out of
+ *                      drafts/outbox into sent
  *
- * Send (compose) is intentionally not handled here yet; it lives in a
- * separate path that goes via Email/set create + EmailSubmission/set.
+ * Two entry points:
  *
- * Failure handling: on a method-level error from the server we mark the
- * row 'conflicted' and surface error_json. The UI / sync engine is
- * responsible for either rolling back the optimistic_patch_json or
- * reconciling against the next /changes pass.
+ *   processMutationRow({ transport, account, handlers, row, useWebSocket })
+ *     -> { ok, error? }
+ *
+ *     The per-row dispatch used by the worker-side OutboxRunner
+ *     (sync/backends/jmap/outbox-runner.js). The runner owns
+ *     status/attempts/not_before bookkeeping; this helper just runs
+ *     the JMAP call and reports success or a typed error.
+ *
+ *   drainOutbox({ transport, account, handlers, limit, mutationId, useWebSocket })
+ *     -> { attempted, succeeded, failed }
+ *
+ *     Kept for direct unit tests in jmap-outbox.test.js (they assert
+ *     the in-DB status transitions for each mutation type without
+ *     spinning up the runner). Production code goes through the
+ *     OutboxRunner instead.
  */
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
+import {
+  applyMoveLocally,
+  applyDestroyLocally,
+  reconcileMessageFromServer,
+} from './outbox-apply.js';
 
 export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
@@ -29,14 +48,26 @@ export const MUTATION_TYPES = Object.freeze({
 });
 
 /**
- * Drain a batch of pending mutations for the given account. Returns a
- * summary of what was attempted and how each one ended.
+ * Drain pending mutations for the given account. When mutationId is
+ * provided, run only that row so a user action is not blocked behind
+ * unrelated older queued mutations.
  */
-export async function drainOutbox({ transport, account, handlers, limit = 25, useWebSocket = false }) {
-  const rows = await handlers[DB_RPC.PENDING_MUTATION_LIST_PENDING]({
-    accountId: account.id,
-    limit,
-  });
+export async function drainOutbox({
+  transport, account, handlers, limit = 25, mutationId = null, useWebSocket = false,
+}) {
+  const rows = mutationId == null
+    ? await handlers[DB_RPC.PENDING_MUTATION_LIST_PENDING]({
+      accountId: account.id,
+      limit,
+    })
+    : await handlers[DB_RPC.QUERY]({
+      sql: `SELECT * FROM pending_mutations
+              WHERE account_id = ?
+                AND id = ?
+                AND local_status IN ('pending','retry')
+              LIMIT 1`,
+      params: [account.id, mutationId],
+    });
   const summary = { attempted: rows.length, succeeded: 0, failed: 0 };
   for (const row of rows) {
     try {
@@ -57,7 +88,19 @@ export async function drainOutbox({ transport, account, handlers, limit = 25, us
   return summary;
 }
 
-async function runOne({ transport, account, handlers, row, useWebSocket }) {
+/**
+ * Per-row dispatch. Translates one pending_mutations row into the
+ * matching JMAP call and returns a result discriminator the caller
+ * (drainOutbox or OutboxRunner) uses for status bookkeeping.
+ *
+ * Throws are intentionally NOT caught here; both callers wrap this in
+ * their own try/catch and translate a thrown error into a
+ * `{ ok: false, error: { type: 'transport' } }` result, which matters
+ * for the runner's retryable-vs-terminal classification.
+ */
+export async function processMutationRow({
+  transport, account, handlers, row, useWebSocket = false,
+}) {
   const request = JSON.parse(row.request_json);
   switch (row.mutation_type) {
     case MUTATION_TYPES.SET_KEYWORDS:
@@ -71,6 +114,10 @@ async function runOne({ transport, account, handlers, row, useWebSocket }) {
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
+}
+
+async function runOne(args) {
+  return processMutationRow(args);
 }
 
 async function runSetKeywords({ transport, account, handlers, row, request, useWebSocket }) {
@@ -89,12 +136,15 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
 }
 
 async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {
-  const remoteId = await resolveRemoteMessageId(handlers, account, row.target_message_id ?? request.messageId);
+  const messageId = row.target_message_id ?? request.messageId;
+  const remoteId = await resolveRemoteMessageId(handlers, account, messageId);
   if (!remoteId) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  const addRemote = await resolveRemoteFolderIds(handlers, request.addFolderIds ?? []);
-  const removeRemote = await resolveRemoteFolderIds(handlers, request.removeFolderIds ?? []);
+  const addLocalIds = (request.addFolderIds ?? []).map(Number).filter(Number.isFinite);
+  const removeLocalIds = (request.removeFolderIds ?? []).map(Number).filter(Number.isFinite);
+  const addRemote = await resolveRemoteFolderIds(handlers, addLocalIds);
+  const removeRemote = await resolveRemoteFolderIds(handlers, removeLocalIds);
   const update = {};
   for (const id of addRemote) {
     update[`mailboxIds/${id}`] = true;
@@ -102,15 +152,74 @@ async function runMoveToFolders({ transport, account, handlers, row, request, us
   for (const id of removeRemote) {
     update[`mailboxIds/${id}`] = null;
   }
-  return submitEmailSet({ transport, account, useWebSocket, update: { [remoteId]: update } });
+  const result = await submitEmailSet({
+    transport, account, useWebSocket, update: { [remoteId]: update },
+  });
+  if (result.ok) {
+    await applyMoveLocally(handlers, account, {
+      messageId,
+      addFolderIds: addLocalIds,
+      removeFolderIds: removeLocalIds,
+    });
+    return result;
+  }
+  // Email/set update was rejected. Reconcile against the server: if
+  // the message is gone, treat the move as a successful destroy. If
+  // the message still exists but is no longer in any of the removed
+  // folders (e.g. someone else already moved it elsewhere), treat the
+  // user's intent as satisfied and report success.
+  return reconcileAndDecide({
+    transport, account, handlers, useWebSocket,
+    messageId, remoteId, removeRemote, originalResult: result,
+  });
 }
 
 async function runDestroy({ transport, account, handlers, row, request, useWebSocket }) {
-  const remoteId = await resolveRemoteMessageId(handlers, account, row.target_message_id ?? request.messageId);
+  const messageId = row.target_message_id ?? request.messageId;
+  const remoteId = await resolveRemoteMessageId(handlers, account, messageId);
   if (!remoteId) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  return submitEmailSet({ transport, account, useWebSocket, destroy: [remoteId] });
+  const result = await submitEmailSet({
+    transport, account, useWebSocket, destroy: [remoteId],
+  });
+  if (result.ok) {
+    await applyDestroyLocally(handlers, account, { messageId });
+    return result;
+  }
+  // Email/set destroy was rejected. If the message is already gone on
+  // the server (notFound), treat the destroy as satisfied. Otherwise
+  // refresh local cache and propagate the failure.
+  const reconciled = await reconcileMessageFromServer({
+    transport, account, handlers, useWebSocket, messageId, remoteId,
+    removeRemoteFolderIds: [],
+  });
+  if (reconciled.gone) {
+    return { ok: true, response: result.response, reconciled: 'gone' };
+  }
+  return result;
+}
+
+async function reconcileAndDecide({
+  transport, account, handlers, useWebSocket,
+  messageId, remoteId, removeRemote, originalResult,
+}) {
+  const reconciled = await reconcileMessageFromServer({
+    transport, account, handlers, useWebSocket, messageId, remoteId,
+    removeRemoteFolderIds: removeRemote,
+  });
+  if (reconciled.gone) {
+    return { ok: true, response: originalResult.response, reconciled: 'gone' };
+  }
+  if (reconciled.email && removeRemote.length > 0) {
+    const stillInSource = removeRemote.some(
+      (rid) => reconciled.email.mailboxIds?.[rid] === true,
+    );
+    if (!stillInSource) {
+      return { ok: true, response: originalResult.response, reconciled: 'matched' };
+    }
+  }
+  return originalResult;
 }
 
 /**

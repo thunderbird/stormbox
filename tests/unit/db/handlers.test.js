@@ -609,6 +609,132 @@ describe('thread + message + membership handlers', () => {
   });
 });
 
+describe('queryView.applyChanges', () => {
+  async function seedView(account, folder, ids) {
+    const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    const ts = Date.now();
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'qs', 1, ?, ?, ?, ?)`,
+      params: [account.id, folder.id, filterJson, sortJson, ids.length, ts, ts, ts],
+    });
+    const view = await engine.get(
+      `SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?`,
+      [account.id, folder.id],
+    );
+    await h[DB_RPC.TRANSACTION]({
+      statements: ids.map((id, i) => ({
+        sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+              VALUES (?, ?, NULL, ?)`,
+        params: [view.id, i, id],
+      })),
+    });
+    return view.id;
+  }
+
+  async function readItems(viewId) {
+    const rows = await engine.all(
+      `SELECT position, remote_id FROM query_view_items
+        WHERE view_id = ? ORDER BY position`,
+      [viewId],
+    );
+    return rows.map((r) => [Number(r.position), r.remote_id]);
+  }
+
+  it('shifts existing positions up when inserting at the head', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 3 });
+    const viewId = await seedView(account, folder, ['a', 'b', 'c']);
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: [],
+      added: [{ id: 'new-top', index: 0 }],
+    });
+    expect(await readItems(viewId)).toEqual([
+      [0, 'new-top'],
+      [1, 'a'],
+      [2, 'b'],
+      [3, 'c'],
+    ]);
+    expect(broadcaster.flush()).toContain(TABLE_FAMILIES.MESSAGES);
+  });
+
+  it('compacts positions of higher items when an item is removed', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 4 });
+    const viewId = await seedView(account, folder, ['a', 'b', 'c', 'd']);
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: ['b'],
+      added: [],
+    });
+    expect(await readItems(viewId)).toEqual([
+      [0, 'a'],
+      [1, 'c'],
+      [2, 'd'],
+    ]);
+    // Remove-only deltas must still broadcast MESSAGES so the mail
+    // store re-reads the painted ranges and drops the deleted row.
+    expect(broadcaster.flush()).toContain(TABLE_FAMILIES.MESSAGES);
+  });
+
+  it('handles a message moving within the view as delete-then-reinsert', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 3 });
+    const viewId = await seedView(account, folder, ['a', 'b', 'c']);
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: [],
+      added: [{ id: 'c', index: 0 }],
+    });
+    expect(await readItems(viewId)).toEqual([
+      [0, 'c'],
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+  });
+
+  it('applies multiple removals and additions in one transaction', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 5 });
+    const viewId = await seedView(account, folder, ['a', 'b', 'c', 'd', 'e']);
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: ['b', 'd'],
+      added: [
+        { id: 'x', index: 0 },
+        { id: 'y', index: 2 },
+      ],
+    });
+    // After removes (b at 1 and d at 3 deleted, surviving items
+    // compacted to [a, c, e] at positions 0..2), adding x at 0 then
+    // y at 2 yields [x, a, y, c, e].
+    expect(await readItems(viewId)).toEqual([
+      [0, 'x'],
+      [1, 'a'],
+      [2, 'y'],
+      [3, 'c'],
+      [4, 'e'],
+    ]);
+  });
+
+  it('is a no-op when both arrays are empty', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 1 });
+    const viewId = await seedView(account, folder, ['a']);
+    broadcaster.flush();
+    const result = await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId, removed: [], added: [],
+    });
+    expect(result).toEqual({ removed: 0, added: 0 });
+    expect(broadcaster.flush()).not.toContain(TABLE_FAMILIES.MESSAGES);
+  });
+});
+
 describe('contacts and autocomplete', () => {
   it('upserts addressbooks with service_kind discriminator', async () => {
     const account = await seedAccount();
@@ -823,6 +949,69 @@ describe('sync state, sync jobs, pending mutations', () => {
     });
     const rows = await h[DB_RPC.PENDING_MUTATION_LIST_PENDING]({ accountId: account.id });
     expect(rows.map((r) => r.mutation_type).sort()).toEqual(['send', 'setSeen']);
+  });
+
+  it('does not throw FOREIGN KEY constraint when target_message_id references a deleted row', async () => {
+    // Reproduces the bug a user can hit by double-clicking Delete on
+    // a ghost message: the first click destroyed the local messages
+    // row (via reconcile-then-applyDestroyLocally), so the second
+    // click feeds a stale id into pending_mutations.target_message_id
+    // and SQLite's FK enforcement aborts the INSERT. The handler now
+    // verifies the id exists and nulls it out instead.
+    const account = await seedAccount();
+    const stale = await h[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: 'destroy',
+      targetMessageId: 99999, // does not exist
+      requestJson: JSON.stringify({}),
+    });
+    expect(stale.id).toBeGreaterThan(0);
+    const row = await engine.get(
+      'SELECT target_message_id, mutation_type FROM pending_mutations WHERE id = ?',
+      [stale.id],
+    );
+    expect(row.target_message_id).toBeNull();
+    expect(row.mutation_type).toBe('destroy');
+  });
+});
+
+describe('queryView.resetForFolder', () => {
+  it('deletes the mailbox-window view and cascades to items / ranges', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id, { remoteId: 'mb-inbox', role: 'inbox' });
+    const filterJson = JSON.stringify({ inMailbox: 'mb-inbox' });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    const ts = Date.now();
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'qs', 1, 3, ?, ?, ?)`,
+      params: [account.id, inbox.id, filterJson, sortJson, ts, ts, ts],
+    });
+    const view = await engine.get(
+      `SELECT id FROM query_views WHERE folder_id = ?`,
+      [inbox.id],
+    );
+    await h[DB_RPC.TRANSACTION]({
+      statements: [
+        { sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id) VALUES (?, 0, NULL, 'e-1')`, params: [view.id] },
+        { sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id) VALUES (?, 1, NULL, 'e-2')`, params: [view.id] },
+        { sql: `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at) VALUES (?, 0, 2, ?)`, params: [view.id, ts] },
+      ],
+    });
+
+    const result = await h[DB_RPC.QUERY_VIEW_RESET_FOR_FOLDER]({
+      accountId: account.id,
+      folderId: inbox.id,
+    });
+    expect(result.deleted).toBe(1);
+
+    expect(await engine.all(`SELECT id FROM query_views WHERE folder_id = ?`, [inbox.id])).toEqual([]);
+    expect(await engine.all(`SELECT view_id FROM query_view_items WHERE view_id = ?`, [view.id])).toEqual([]);
+    expect(await engine.all(`SELECT view_id FROM query_view_ranges WHERE view_id = ?`, [view.id])).toEqual([]);
+    expect(broadcaster.flush()).toContain(TABLE_FAMILIES.MESSAGES);
   });
 });
 
