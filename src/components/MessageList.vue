@@ -1,13 +1,48 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
-import { Paperclip, Star, RefreshCw } from 'lucide-vue-next';
+import {
+  Paperclip, Star, RefreshCw,
+} from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
+import { useListSelection } from '../composables/use-list-selection.js';
 
 const mailStore = useMailStore();
 
 const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
+
+// storeToRefs preserves reactivity on raw refs in the setup store —
+// useListSelection needs the actual ref<Set> so it can replace the
+// Set instance when it mutates (the `_bump()` pattern), and a plain
+// `mailStore.selectedIds` access returns the unwrapped value.
+const { messages, totalForFolder, selectedIds } = storeToRefs(mailStore);
+
+const {
+  selectionCount,
+  hasSelection,
+  isSelected,
+  handleCheckboxClick,
+  handleKeyDown: rawHandleKeyDown,
+  selectAllLoaded,
+  selectNone,
+  setFocused,
+} = useListSelection({
+  rows: messages,
+  total: totalForFolder,
+  selectedIds,
+});
+
+function handleKeyDown(event) {
+  const result = rawHandleKeyDown(event);
+  // Plain Arrow nav also drives the preview pane (caller decides;
+  // composable only knows about focus/selection, not body loads).
+  if (result.consumed && result.focusChanged && result.focusedId != null
+      && !event.shiftKey) {
+    mailStore.selectMessage(result.focusedId);
+  }
+}
 
 // Virtualiser count is the FOLDER TOTAL, not loaded count. That way
 // the scrollbar reflects reality from the very first round trip and
@@ -87,7 +122,42 @@ onMounted(() => {
   virtualizer.value.measure();
 });
 
-async function open(id) { await mailStore.selectMessage(id); }
+/**
+ * Fastmail interaction model: a click anywhere on the row body just
+ * opens the message. Selection lives entirely on the checkbox column
+ * — never on the row body. The right pane decides on its own whether
+ * to render the message body or the "N selected" summary based on
+ * `selectedIds.size`.
+ */
+function onRowClick(index) {
+  const id = setFocused(index);
+  if (id != null) mailStore.selectMessage(id);
+}
+
+function onCheckboxClick(index, event) {
+  event.stopPropagation();
+  handleCheckboxClick(index, event);
+}
+
+const allLoadedSelected = computed(() => {
+  const loadedIds = [];
+  for (const row of mailStore.messages) {
+    if (row?.id != null) loadedIds.push(row.id);
+  }
+  if (loadedIds.length === 0) return false;
+  for (const id of loadedIds) {
+    if (!selectedIds.value.has(id)) return false;
+  }
+  return true;
+});
+
+function toggleSelectAll() {
+  if (allLoadedSelected.value) {
+    selectNone();
+  } else {
+    selectAllLoaded();
+  }
+}
 
 function fmtDate(ms) {
   if (!ms) return '';
@@ -114,9 +184,24 @@ function shortFrom(text) {
 <template>
   <section class="msg-list" aria-label="Messages">
     <header class="msg-list__header">
+      <label
+        v-if="rowCount > 0"
+        class="msg-list__select-all"
+        :title="allLoadedSelected ? 'Deselect all' : 'Select all loaded'"
+      >
+        <input
+          type="checkbox"
+          :checked="allLoadedSelected"
+          :indeterminate.prop="hasSelection && !allLoadedSelected"
+          @change="toggleSelectAll"
+        />
+      </label>
       <div class="msg-list__title">
         <h2>{{ folderName }}</h2>
-        <span v-if="rowCount > 0" class="msg-list__count">
+        <span v-if="hasSelection" class="msg-list__count">
+          {{ selectionCount }} selected
+        </span>
+        <span v-else-if="rowCount > 0" class="msg-list__count">
           {{ rowCount }} {{ rowCount === 1 ? 'message' : 'messages' }}
         </span>
       </div>
@@ -134,7 +219,9 @@ function shortFrom(text) {
       v-if="rowCount > 0"
       ref="scrollEl"
       class="msg-list__scroller"
+      tabindex="0"
       @scroll="onScroll"
+      @keydown="handleKeyDown"
     >
       <div
         v-if="mailStore.isLoading && mailStore.messages.length === 0"
@@ -149,7 +236,8 @@ function shortFrom(text) {
             v-if="mailStore.messages[v.index]"
             :data-index="v.index"
             :class="{
-              'is-selected': mailStore.selectedMessageId === mailStore.messages[v.index].id,
+              'is-focused': mailStore.selectedMessageId === mailStore.messages[v.index].id,
+              'is-selected': isSelected(mailStore.messages[v.index].id),
               'is-unread': Number(mailStore.messages[v.index].is_seen) === 0,
             }"
             :style="{
@@ -161,31 +249,41 @@ function shortFrom(text) {
               height: v.size + 'px',
             }"
           >
-            <button
+            <div
               class="msg-list__item"
-              type="button"
-              @click="open(mailStore.messages[v.index].id)"
+              role="button"
+              tabindex="-1"
+              @click="onRowClick(v.index)"
             >
+              <label class="msg-list__check" @click.stop>
+                <input
+                  type="checkbox"
+                  :checked="isSelected(mailStore.messages[v.index].id)"
+                  @click="onCheckboxClick(v.index, $event)"
+                />
+              </label>
               <span
                 v-if="Number(mailStore.messages[v.index].is_seen) === 0"
                 class="msg-list__unread-dot"
                 aria-label="Unread"
               />
-              <div class="msg-list__row1">
-                <span class="msg-list__from">{{ shortFrom(mailStore.messages[v.index].from_text) }}</span>
-                <span class="msg-list__date">{{ fmtDate(mailStore.messages[v.index].received_at) }}</span>
+              <div class="msg-list__rows">
+                <div class="msg-list__row1">
+                  <span class="msg-list__from">{{ shortFrom(mailStore.messages[v.index].from_text) }}</span>
+                  <span class="msg-list__date">{{ fmtDate(mailStore.messages[v.index].received_at) }}</span>
+                </div>
+                <div class="msg-list__row2">
+                  <span class="msg-list__subject">{{ mailStore.messages[v.index].subject || '(no subject)' }}</span>
+                  <span class="msg-list__icons">
+                    <Star v-if="Number(mailStore.messages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
+                    <Paperclip v-if="Number(mailStore.messages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
+                  </span>
+                </div>
+                <p v-if="mailStore.messages[v.index].preview" class="msg-list__preview">
+                  {{ mailStore.messages[v.index].preview }}
+                </p>
               </div>
-              <div class="msg-list__row2">
-                <span class="msg-list__subject">{{ mailStore.messages[v.index].subject || '(no subject)' }}</span>
-                <span class="msg-list__icons">
-                  <Star v-if="Number(mailStore.messages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
-                  <Paperclip v-if="Number(mailStore.messages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
-                </span>
-              </div>
-              <p v-if="mailStore.messages[v.index].preview" class="msg-list__preview">
-                {{ mailStore.messages[v.index].preview }}
-              </p>
-            </button>
+            </div>
           </li>
           <li
             v-else
@@ -237,9 +335,23 @@ function shortFrom(text) {
 .msg-list__header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 12px 14px 12px 12px;
   border-bottom: 1px solid var(--border);
+}
+.msg-list__select-all {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+}
+.msg-list__select-all input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 .msg-list__title {
   flex: 1;
@@ -286,6 +398,7 @@ function shortFrom(text) {
   min-height: 0;
   contain: strict;
   will-change: scroll-position;
+  outline: none;
 }
 .msg-list__loader {
   position: absolute;
@@ -308,7 +421,18 @@ function shortFrom(text) {
   position: relative;
   width: 100%;
 }
-.msg-list__items li.is-selected .msg-list__item { background: var(--rowActive); }
+/* Fastmail model: the focused row (currently being viewed) gets the
+ * solid accent background. Selection state is communicated by the
+ * checkbox itself; we tint the row very softly so the user can scan
+ * a column of selected rows without it competing with the "what
+ * am I reading" highlight. */
+.msg-list__items li.is-focused .msg-list__item { background: var(--rowActive); }
+.msg-list__items li.is-selected .msg-list__item {
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
+.msg-list__items li.is-selected.is-focused .msg-list__item {
+  background: var(--rowActive);
+}
 .msg-list__items li.is-unread .msg-list__from,
 .msg-list__items li.is-unread .msg-list__subject {
   font-weight: 600;
@@ -317,11 +441,13 @@ function shortFrom(text) {
 
 .msg-list__item {
   position: relative;
-  display: block;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   width: 100%;
   height: 100%;
   text-align: left;
-  padding: 10px 14px 10px 22px;
+  padding: 10px 14px 10px 12px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -329,13 +455,42 @@ function shortFrom(text) {
   font: inherit;
   color: inherit;
   transition: background 0.06s ease;
+  /* Stops Shift-click from accidentally selecting subject text as
+   * the user extends a range — the native text-selection range
+   * appears on top of the row highlight and is very ugly. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .msg-list__item:hover { background: var(--rowHover); }
+.msg-list__rows {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  padding-left: 10px;
+}
+
+.msg-list__check {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.msg-list__check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
 
 .msg-list__unread-dot {
   position: absolute;
-  left: 9px;
-  top: 16px;
+  left: -1px;
+  top: 6px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
