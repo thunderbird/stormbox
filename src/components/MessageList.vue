@@ -70,7 +70,9 @@ const totalSize = computed(() => virtualizer.value.getTotalSize());
 const virtualItems = computed(() => virtualizer.value.getVirtualItems());
 
 // Throttle the scroll-driven fetch. Old stormbox used a 100ms guard so
-// a fast scroll doesn't fire 50 round trips.
+// a fast scroll doesn't fire 50 round trips. The same throttle covers
+// the body prefetch — both consult the latest virtualizer window, so
+// they're naturally aligned.
 let lastPrefetch = 0;
 watch(virtualItems, (items) => {
   if (!items.length) return;
@@ -85,6 +87,12 @@ watch(virtualItems, (items) => {
   if (now - lastPrefetch < 100) return;
   lastPrefetch = now;
   mailStore.ensureLoaded(first, last + 1);
+  // Window-driven body prefetch. Safe to call before metadata has
+  // landed: it skips undefined slots and the next throttled tick
+  // after ensureLoaded fills them will pick them up. Click-time
+  // fetches that collide with this background work are deduped in
+  // the JMAP backend's in-flight body map.
+  mailStore.enqueueVisibleBodyPrefetch(first, last + 1);
 });
 
 // Persist scroll position per folder. rAF-throttled so we don't write

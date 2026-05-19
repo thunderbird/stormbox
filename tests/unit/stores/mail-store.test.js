@@ -223,6 +223,20 @@ async function flush(count = 6) {
   }
 }
 
+/**
+ * Macrotask-aware variant. drainBodyPrefetchQueue yields between
+ * batches via `setTimeout(resolve, 0)` so the worker can interleave
+ * metadata reads with body fetches; that's a macrotask, not a
+ * microtask, so a plain flush() only sees up to the first batch.
+ * Use this in tests that observe sequences of body fetch batches
+ * or that hang state on bodyPrefetchRunning settling.
+ */
+async function flushWithTimers(count = 6) {
+  for (let i = 0; i < count; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 afterEach(() => {
   __resetRepositoryForTests();
 });
@@ -386,6 +400,203 @@ describe('_loadPage sparse-cache fallthrough', () => {
 // query_view_items positions, query_views.total). Mocked-store
 // assertions previously made here could only prove "the store called
 // the outbox", which was the exact illusion behind the original bug.
+
+describe('enqueueVisibleBodyPrefetch (scroll-driven body prefetch)', () => {
+  it('enqueues only rows that have metadata loaded AND no body yet', async () => {
+    // The MessageList virtualizer calls this with the start/end of
+    // the visible window every 100ms during a scroll. The prefetch
+    // must skip rows that are still placeholders (no metadata yet
+    // — the next ensureLoaded round trip will fill them) and rows
+    // that already have a body in body_values (body_fetched_at is
+    // non-null), so we never re-issue an Email/get for a body
+    // the user already has.
+    const folder = makeFolder(2, { role: 'archive', total_emails: 10 });
+    const view = {
+      rows: [
+        makeRow(1, { body_fetched_at: null }),
+        makeRow(2, { body_fetched_at: null }),
+        makeRow(3, { body_fetched_at: 1_700_000_000_000 }), // already fetched
+        makeRow(4, { body_fetched_at: null }),
+        makeRow(5, { body_fetched_at: null }),
+      ],
+      total: 5,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 2: view },
+    });
+    mailStore.selectFolder(2);
+    await flushWithTimers();
+
+    const batches = [];
+    repo.ensureMessageBodies = async (_accountId, ids) => {
+      batches.push([...ids]);
+      return { fetched: ids.length };
+    };
+
+    mailStore.enqueueVisibleBodyPrefetch(0, 5);
+    await flushWithTimers();
+
+    // One batch containing the 4 un-fetched rows; the already-
+    // fetched row 3 is skipped.
+    expect(batches).toHaveLength(1);
+    expect(batches[0].sort((a, b) => a - b)).toEqual([1, 2, 4, 5]);
+  });
+
+  it('drains distinct visible-window enqueues in FIFO batches', async () => {
+    // A fast scroll can fire the watcher multiple times in quick
+    // succession. We deliberately do not cancel in-flight or pending
+    // batches in the store: cancellation has tricky interactions
+    // with click-time piggybacking. The important contract here is
+    // simpler: distinct windows drain in FIFO order in
+    // BODY_PREFETCH_BATCH-sized batches. Duplicate ids across a
+    // completed batch are the backend's job to ignore via
+    // body_fetched_at; the store only avoids duplicates that are
+    // currently pending in bodyQueued.
+    const folder = makeFolder(2, { role: 'archive', total_emails: 200 });
+    const rows = [];
+    for (let i = 1; i <= 200; i += 1) {
+      rows.push(makeRow(i, { body_fetched_at: null }));
+    }
+    const view = { rows, total: 200 };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 2: view },
+    });
+    mailStore.selectFolder(2);
+    await flushWithTimers();
+
+    const batches = [];
+    repo.ensureMessageBodies = async (_accountId, ids) => {
+      batches.push([...ids]);
+      return { fetched: ids.length };
+    };
+
+    mailStore.enqueueVisibleBodyPrefetch(0, 25);
+    mailStore.enqueueVisibleBodyPrefetch(25, 50);
+    await flushWithTimers();
+
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+    expect(batches[1]).toEqual(Array.from({ length: 25 }, (_, i) => i + 26));
+  });
+
+  it('does NOT cancel the in-flight batch (callers waiting on its ids must still resolve)', async () => {
+    // The store must leave an already-running ensureMessageBodies
+    // alone. The worker-side _bodyFetchInflight map (see
+    // jmap-backend.test.js > 'shares a single Email/get round trip
+    // across concurrent callers') gives a user click during prefetch
+    // a chance to piggyback on the in-flight batch; if we cancelled
+    // or rewrote that in-flight batch, that piggyback could hang or
+    // duplicate the request.
+    const folder = makeFolder(2, { role: 'archive', total_emails: 50 });
+    const rows = [];
+    for (let i = 1; i <= 50; i += 1) {
+      rows.push(makeRow(i, { body_fetched_at: null }));
+    }
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 2: { rows, total: 50 } },
+    });
+    mailStore.selectFolder(2);
+    await flushWithTimers();
+
+    let releaseInflight;
+    const inflight = new Promise((resolve) => { releaseInflight = resolve; });
+    const resolvedBatches = [];
+    repo.ensureMessageBodies = async (_accountId, ids) => {
+      await inflight;
+      resolvedBatches.push([...ids]);
+      return { fetched: ids.length };
+    };
+
+    mailStore.enqueueVisibleBodyPrefetch(0, 25);
+    await flushWithTimers();
+
+    // Re-issue with a different window mid-flight. This should add
+    // pending work but must not mutate the already-spliced in-flight
+    // batch.
+    mailStore.enqueueVisibleBodyPrefetch(25, 50);
+    await flushWithTimers();
+
+    // Release the in-flight; it must resolve with the ORIGINAL ids
+    // (rows 1-25), not the discarded ones.
+    releaseInflight();
+    await flushWithTimers();
+
+    expect(resolvedBatches[0]).toBeTruthy();
+    expect(resolvedBatches[0]).toContain(1);
+    expect(resolvedBatches[0]).toContain(25);
+    expect(resolvedBatches[0]).not.toContain(50);
+  });
+
+  it('is a no-op when no row needs a body fetch (everything is already cached)', async () => {
+    const folder = makeFolder(2, { role: 'archive', total_emails: 3 });
+    const view = {
+      rows: [
+        makeRow(1, { body_fetched_at: 1 }),
+        makeRow(2, { body_fetched_at: 1 }),
+        makeRow(3, { body_fetched_at: 1 }),
+      ],
+      total: 3,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 2: view },
+    });
+    mailStore.selectFolder(2);
+    await flushWithTimers();
+
+    let calls = 0;
+    repo.ensureMessageBodies = async () => {
+      calls += 1;
+      return { fetched: 0 };
+    };
+
+    mailStore.enqueueVisibleBodyPrefetch(0, 3);
+    await flushWithTimers();
+
+    expect(calls).toBe(0);
+  });
+
+  it('skips undefined slots so the prefetch survives a partially-loaded window', async () => {
+    // selectFolder paints rows from cache before ensureFolderWindow
+    // completes; in that window state.rows can have undefined
+    // slots. The prefetch must not throw or enqueue garbage; it
+    // should just enqueue what's actually there and wait for the
+    // next throttled tick (after metadata lands) to pick up the
+    // rest.
+    const folder = makeFolder(2, { role: 'archive', total_emails: 5 });
+    const view = {
+      rows: [
+        makeRow(1, { body_fetched_at: null }),
+        undefined,
+        makeRow(3, { body_fetched_at: null }),
+        undefined,
+        makeRow(5, { body_fetched_at: null }),
+      ],
+      total: 5,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 2: view },
+    });
+    mailStore.selectFolder(2);
+    await flushWithTimers();
+
+    const batches = [];
+    repo.ensureMessageBodies = async (_accountId, ids) => {
+      batches.push([...ids]);
+      return { fetched: ids.length };
+    };
+
+    mailStore.enqueueVisibleBodyPrefetch(0, 5);
+    await flushWithTimers();
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].sort((a, b) => a - b)).toEqual([1, 3, 5]);
+  });
+});
 
 describe('selectMessage marks unread as seen via the auto-drained outbox', () => {
   it('writes the optimistic $seen patch and enqueues a setKeywords mutation; the worker drains it on its own', async () => {

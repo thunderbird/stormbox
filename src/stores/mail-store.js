@@ -30,7 +30,15 @@ import { FOLDER_ROLE, KEYWORD } from '../constants/states.js';
 // positional reads. ~100 metadata records per Email/get is well below
 // the ~50KB-per-record envelope and fits in one WS frame.
 const PAGE_SIZE = 100;
-const BODY_PREFETCH_BATCH = 4;
+// Body prefetch batch size. Sized to the typical virtualizer visible
+// window (~10-15 rows on a 1080p screen plus 8-row overscan, ≈25)
+// so one Email/get round trip covers everything the user can see
+// after a scroll-pause. Per-message wall-clock for an Email/get with
+// bodies is ~50 ms; 25 = ~1.5 s per batch, which is bounded by the
+// single-concurrency drain so we never pile up parallel batches.
+// The worker's `_bodyFetchInflight` map keeps a user click during
+// the batch from issuing a duplicate Email/get for the same id.
+const BODY_PREFETCH_BATCH = 25;
 const INITIAL_BODY_PREFETCH = 5;
 
 export const useMailStore = defineStore('mail', () => {
@@ -648,6 +656,43 @@ export const useMailStore = defineStore('mail', () => {
     drainBodyPrefetchQueue();
   }
 
+  /**
+   * Prefetch bodies for the virtualizer's visible window. Called from
+   * MessageList every time the user pauses scrolling (the watcher is
+   * throttled to 100 ms there).
+   *
+   * Keep this intentionally simple: enqueue any visible row whose
+   * metadata is loaded and whose body is not already cached. The
+   * existing bodyQueued Set dedupes pending ids, and the backend's
+   * _bodyFetchInflight map dedupes click-time fetches that collide
+   * with an in-flight prefetch. We do not cancel or reshuffle the
+   * queue here; body batches are small enough that cancellation adds
+   * more edge cases than value.
+   *
+   * Sparse rows (undefined slots where the metadata hasn't loaded
+   * yet) are skipped silently; the next ensureLoaded round trip
+   * will fill them and the next scroll-pause will pick them up.
+   */
+  function enqueueVisibleBodyPrefetch(start, end) {
+    if (!repo || authStore.accountId == null) return;
+    const lo = Math.max(0, Number(start ?? 0));
+    const hi = Math.max(lo, Number(end ?? lo));
+    const rows = messages.value;
+    if (rows.length === 0 || hi <= lo) return;
+
+    const ids = [];
+    const upper = Math.min(hi, rows.length);
+    for (let i = lo; i < upper; i += 1) {
+      const row = rows[i];
+      if (!row || row.id == null) continue;
+      if (row.body_fetched_at != null) continue;
+      ids.push(row.id);
+    }
+    if (ids.length === 0) return;
+
+    enqueueBodyPrefetch(ids);
+  }
+
   async function drainBodyPrefetchQueue() {
     if (bodyPrefetchRunning || !repo || authStore.accountId == null) return;
     bodyPrefetchRunning = true;
@@ -1036,6 +1081,7 @@ export const useMailStore = defineStore('mail', () => {
     selectFolder,
     selectMessage,
     ensureLoaded,
+    enqueueVisibleBodyPrefetch,
     setScrollTop,
     getScrollTop,
     setRequestedRange,
