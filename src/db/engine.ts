@@ -22,18 +22,26 @@ const MIGRATIONS = [
  * @param {object} args
  * @param {object} args.sqlite3 wa-sqlite Factory output
  * @param {number} args.db opaque sqlite3 db pointer (already opened by caller)
- * @param {boolean} [args.useWal=true] apply PRAGMA journal_mode=WAL on open
- *   (no-op for ':memory:' databases; SQLite quietly keeps memory journals)
+ * @param {boolean} [args.relaxedDurability=true] apply
+ *   PRAGMA synchronous=NORMAL. Safe in our setup because the only
+ *   process touching the database is the SharedWorker; ignored by
+ *   `:memory:` databases.
  * @returns {Promise<Engine>}
+ *
+ * Note: we used to also try `PRAGMA journal_mode=WAL` here. With
+ * IDBBatchAtomicVFS that pragma is meaningless (the VFS substitutes
+ * IndexedDB transactions for SQLite's external journal file); with
+ * the other VFSes we can run in a SharedWorker WAL is not actually
+ * supported either. Setting it was silently failing for the entire
+ * life of the project, so we removed the call rather than leave a
+ * misleading no-op in place. If we ever migrate to AccessHandlePool
+ * + DedicatedWorker, the bootstrap there will own the
+ * locking_mode=EXCLUSIVE + journal_mode=WAL handshake.
  */
-export async function openEngine({ sqlite3, db, useWal = true }) {
+export async function openEngine({ sqlite3, db, relaxedDurability = true }) {
   const engine = new Engine(sqlite3, db);
   await engine.exec('PRAGMA foreign_keys = ON');
-  if (useWal) {
-    await engine.exec('PRAGMA journal_mode = WAL').catch(() => {
-      // ':memory:' databases ignore journal_mode changes silently in some
-      // builds, raise in others; either is fine for our purposes.
-    });
+  if (relaxedDurability) {
     await engine.exec('PRAGMA synchronous = NORMAL').catch(() => {});
   }
   await engine.runMigrations();

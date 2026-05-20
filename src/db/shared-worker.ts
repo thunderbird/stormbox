@@ -8,7 +8,7 @@
  * keeps the ES module imports intact.
  */
 
-import { bootProductionEngine } from './bootstrap-opfs.js';
+import { bootProductionEngine } from './bootstrap-idb.js';
 import { makeHandlers } from './handlers.js';
 import {
   dispatchRpc,

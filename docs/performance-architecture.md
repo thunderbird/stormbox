@@ -42,9 +42,10 @@ Key principles:
 
 ## Code Layout
 
-- `src/db/engine.js` and `src/db/bootstrap-opfs.js`: wa-sqlite engine and
-  OPFS VFS bootstrap. The Engine serializes all SQL on a per-engine
-  promise tail to avoid wa-sqlite handle interleaving.
+- `src/db/engine.ts` and `src/db/bootstrap-idb.ts`: wa-sqlite engine
+  and IndexedDB VFS bootstrap (IDBBatchAtomicVFS). The Engine
+  serializes all SQL on a per-engine promise tail to avoid wa-sqlite
+  handle interleaving.
 - `src/db/handlers.js`: RPC handlers that own SQL writes. Bulk
   primitives like `MESSAGE_UPSERT_MANY`, `FOLDER_MEMBERSHIP_REPLACE_MANY`,
   `MESSAGE_LIST_FOR_VIEW`, `QUERY_VIEW_PROGRESS` live here.
@@ -230,15 +231,31 @@ random jumps, not a full 100-row page.
 
 ## Browser Differences
 
-Firefox's `SharedWorker` does not have synchronous OPFS access handles,
-so we use `OPFSAnyContextVFS` from `@journeyapps/wa-sqlite`. That VFS
-is async-only on Firefox and sync on Chromium. For workloads with many
-small writes Firefox is materially slower per operation.
+The database is backed by IndexedDB via wa-sqlite's
+`IDBBatchAtomicVFS`. This works in any worker context (including the
+SharedWorker we use for multi-tab safety) on every browser that
+supports OPFS or IndexedDB at all. Firefox and Chromium are within a
+factor of two of each other on this VFS for our workload; see
+`research/vfs-bench/` for the matrix.
 
-Mitigations:
+We previously used `OPFSAnyContextVFS` (OPFS-backed). That VFS is
+documented by its author as "very bad" for writes and "increasingly
+worse as the file grows" because it cannot use OPFS sync access
+handles in a SharedWorker. We measured it at ~5-8x slower than
+`IDBBatchAtomicVFS` for representative delete-under-indexer-churn
+workloads.
 
-- Persistence is now batch-shaped, so the cost amplification matters
-  much less than it did with the old per-message path.
+The faster OPFS VFSes (`AccessHandlePoolVFS` + WAL,
+`OPFSCoopSyncVFS`) require `createSyncAccessHandle`, which Firefox
+restricts to dedicated workers. Moving there would require a leader-
+elected DedicatedWorker architecture; see the conversation log for
+the design sketch if that becomes worth doing (e.g. for Android
+Chrome support, which has no SharedWorker at all).
+
+Other mitigations layered on top:
+
+- Persistence is batch-shaped via `MESSAGE_UPSERT_MANY` /
+  `FOLDER_MEMBERSHIP_REPLACE_MANY`, so amortised cost dominates.
 - The background metadata indexer skips when foreground work is in
   flight, so foreground latency does not absorb indexer cost.
 - Body fetches are throttled to one in flight at a time and are

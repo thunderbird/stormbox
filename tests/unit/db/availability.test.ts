@@ -41,16 +41,16 @@ describe('checkBrowserSupport', () => {
     shimGlobal('SharedWorker', class {});
     shimGlobal('BroadcastChannel', class {});
     shimGlobal('MessageChannel', class {});
-    shimGlobal('navigator', { storage: { getDirectory: async () => ({}) } });
+    shimGlobal('indexedDB', {});
     expect(checkBrowserSupport()).toBeNull();
   });
 
-  it('flags missing OPFS support when navigator.storage.getDirectory is absent', () => {
+  it('flags missing IndexedDB support when indexedDB is absent', () => {
     shimGlobal('SharedWorker', class {});
     shimGlobal('BroadcastChannel', class {});
     shimGlobal('MessageChannel', class {});
-    shimGlobal('navigator', { storage: {} });
-    expect(checkBrowserSupport()).toContain('Origin Private File System');
+    shimGlobal('indexedDB', undefined);
+    expect(checkBrowserSupport()).toContain('IndexedDB');
   });
 });
 

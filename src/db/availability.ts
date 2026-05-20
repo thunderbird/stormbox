@@ -1,10 +1,12 @@
 /**
  * Boot-time browser feature check. Stormbox hard-requires SharedWorker,
- * BroadcastChannel, and the OPFS access-handle API to function. We fail
- * loudly with a clear message rather than degrading silently.
+ * BroadcastChannel, and IndexedDB to function. We fail loudly with a
+ * clear message rather than degrading silently.
  *
- * See WEBMAIL_SQLITE_STORAGE_SPEC.md > Architecture Plan > Worker
- * topology and VFS for the rationale.
+ * IndexedDB backs the SQLite database via wa-sqlite's
+ * IDBBatchAtomicVFS (see src/db/bootstrap-idb.ts). OPFS used to be
+ * required when we used an OPFS-backed VFS; the switch to
+ * IDBBatchAtomicVFS dropped that dependency.
  */
 
 const SUPPORTED_BROWSERS = 'Use Chrome 109+, Edge 109+, Firefox 116+, or Safari 16+.';
@@ -35,11 +37,8 @@ export function checkBrowserSupport() {
   if (typeof globalThis.MessageChannel === 'undefined') {
     missing.push('MessageChannel');
   }
-  // OPFS root is optional at boot - the SharedWorker is the only consumer
-  // and the failure mode there is a clearer message - but we can detect
-  // cases where the caller is running in a context with no storage at all.
-  if (typeof navigator !== 'undefined' && !navigator.storage?.getDirectory) {
-    missing.push('Origin Private File System');
+  if (typeof globalThis.indexedDB === 'undefined') {
+    missing.push('IndexedDB');
   }
   return missing.length > 0 ? missing : null;
 }
