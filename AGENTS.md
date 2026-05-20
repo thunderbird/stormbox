@@ -92,6 +92,37 @@ and Firefox, asserting UI + `window.__repo` + direct JMAP (not worker
 read-through), with orphan sweep and cleanup. Run Playwright and perf
 scripts via `docker compose … exec app`, not on the host (see above).
 
+### Local e2e stack (thunderbird-accounts submodule)
+
+Live Playwright specs run against the **thunderbird-accounts** dev stack
+vendored at `thunderbird-accounts/` (git submodule). Clone with
+`git clone --recurse-submodules` or `git submodule update --init`.
+
+Stormbox stays on **HTTPS with a self-signed cert** (`@vitejs/plugin-basic-ssl`)
+so OPFS / SharedWorker / SubtleCrypto work. Keycloak (:8999) and Stalwart JMAP
+(:8081) are plain HTTP on the host; when `VITE_LOCAL_STACK=1`, Vite reverse-
+proxies them through `https://localhost:3000` (`/realms/*`, `/stalwart-jmap/*`,
+`/jmap/ws` → local WS proxy).
+
+```bash
+# 1. Start Keycloak + Stalwart + Accounts (host or dev container with Docker)
+cd thunderbird-accounts && docker compose up --build -d
+
+# 2. One-time per fresh volume: open http://localhost:8087, sign in as
+#    admin@example.org / admin, provision a Thundermail address.
+
+# 3. Seed mail + start the local WS proxy (background)
+npm run stack:seed
+npm run stack:ws-proxy &
+
+# 4. Run live e2e inside the dev container
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:e2e:local -- --project=chromium --project=firefox'
+```
+
+Without `LOCAL_STACK=1`, only `smoke.spec.js` runs (no stack required).
+See `tests/e2e/.env.local.example` for optional overrides.
+
 ## Vue and project layout (summary)
 
 - `<script setup>` only; section order: script, template, style.

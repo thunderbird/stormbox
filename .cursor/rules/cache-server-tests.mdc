@@ -37,6 +37,11 @@ Every such E2E must:
 6. Use a unique subject prefix (`Delete e2e ...`,
    `Ghost refresh e2e ...`, etc.) so the sweep can find them.
 
+Live specs require `LOCAL_STACK=1` (`npm run test:e2e:local`) and the
+**thunderbird-accounts** submodule stack (Keycloak + Stalwart). Helpers
+live in `tests/e2e/helpers/`; JMAP setup uses OIDC password grant via
+`jmap-client.js`. See `AGENTS.md` for bring-up and `tests/e2e/.env.local.example`.
+
 ## Operations this rule covers
 
 - Any new `mutation_type` in `pending_mutations`.
