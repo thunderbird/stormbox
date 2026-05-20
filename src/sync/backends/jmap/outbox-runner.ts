@@ -75,6 +75,8 @@ export class OutboxRunner {
   _awaiters: Map<number, Array<{ resolve: (v: any) => void }>>;
   _tallyListeners: Set<(id: number, outcome: any) => void>;
 
+  _onForegroundChange: ((delta: number) => void) | null;
+
   constructor({
     accountId,
     handlers,
@@ -104,6 +106,13 @@ export class OutboxRunner {
     this._clearTimeout = options.clearTimeoutFn
       ?? ((id: any) => clearTimeout(id));
     this._now = options.now ?? (() => Date.now());
+    // Optional hook the backend uses to track in-flight outbox work so
+    // the metadata indexer can yield. Called with +1 right before a
+    // row goes in_flight and -1 once it reaches a terminal state. Not
+    // required - tests and standalone use of the runner skip it.
+    this._onForegroundChange = typeof options.onForegroundChange === 'function'
+      ? options.onForegroundChange
+      : null;
 
     this._targetLocks = new Map();
     this._awaiters = new Map();
@@ -113,6 +122,16 @@ export class OutboxRunner {
     this._drainInflight = null;
     this._kickPending = false;
     this._stopped = false;
+  }
+
+  _signalForeground(delta: number) {
+    if (!this._onForegroundChange) return;
+    try {
+      this._onForegroundChange(delta);
+    } catch {
+      // Hook is best-effort scheduling glue - never let it surface
+      // through the runner.
+    }
   }
 
   /**
@@ -346,15 +365,24 @@ export class OutboxRunner {
   async _runWithRetry(row) {
     if (this._stopped) return;
     const attemptNumber = Number(row.attempts ?? 0) + 1;
-    await this._markInFlight(row.id, attemptNumber);
+    // Tell the backend the outbox is busy so it can pause anything
+    // (the metadata indexer in particular) that might starve this
+    // mutation on the engine lock. Released in the finally below
+    // regardless of success or failure.
+    this._signalForeground(1);
     let result;
     try {
-      result = await this._processRow(row);
-    } catch (err) {
-      result = {
-        ok: false,
-        error: { type: 'transport', message: err?.message ?? String(err) },
-      };
+      await this._markInFlight(row.id, attemptNumber);
+      try {
+        result = await this._processRow(row);
+      } catch (err) {
+        result = {
+          ok: false,
+          error: { type: 'transport', message: err?.message ?? String(err) },
+        };
+      }
+    } finally {
+      this._signalForeground(-1);
     }
     if (result?.ok) {
       await this._deleteRow(row.id);

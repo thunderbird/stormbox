@@ -46,6 +46,14 @@ export const DB_RPC = Object.freeze({
   QUERY_VIEW_APPLY_CHANGES: 'queryView.applyChanges',
   QUERY_VIEW_RESET_FOR_FOLDER: 'queryView.resetForFolder',
 
+  // Combined outbox reconciliation handlers: each runs all the
+  // per-move / per-destroy SQL inside a single engine transaction so
+  // the worker pays one lock-acquisition + one fsync per mutation
+  // instead of one per intermediate step. Cuts ~150-700 ms off a
+  // single-message delete depending on engine contention.
+  OUTBOX_APPLY_MOVE: 'outbox.applyMove',
+  OUTBOX_APPLY_DESTROY: 'outbox.applyDestroy',
+
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',
   CONTACT_LIST: 'contact.list',

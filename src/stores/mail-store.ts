@@ -959,13 +959,62 @@ export const useMailStore = defineStore('mail', () => {
       throw err;
     }
     clearSelectionFor(liveIds);
-    // Belt-and-braces: don't trust the post-write MESSAGES broadcast
-    // alone. The outbox already updated SQLite (folder_messages and
-    // query_view_items) before runMutation resolved, so reading the
-    // painted ranges back NOW gives an authoritative refresh even if
-    // the BroadcastChannel hop from the SharedWorker to this tab is
-    // late or never arrives.
-    await refreshLoadedPages();
+    // The outbox already updated the cache (folder_messages,
+    // query_view_items, query_views.total) before runMutation
+    // resolved. Doing one more refreshLoadedPages here used to add
+    // 200-400 ms of round-trip latency to every delete on top of
+    // the JMAP call (which against a local Stalwart is ~2 ms).
+    // Instead, trust the success result: splice the rows out of
+    // messages.value synchronously, and let the eventual MESSAGES
+    // broadcast confirm in the background through the coalescing
+    // refreshLoadedPages path.
+    spliceMessagesOut(liveIds);
+  }
+
+  /**
+   * Synchronous, RPC-free removal of the given message ids from
+   * the current folder's in-memory state. Called right after a
+   * successful destroy/move mutation so the UI updates instantly
+   * without waiting for the broadcast-triggered refreshLoadedPages
+   * (which would do a full SQLite re-read just to land back at
+   * the same state we already know).
+   *
+   * Mirrors the row compaction that QUERY_VIEW_APPLY_CHANGES did
+   * server-side: rows are spliced out, total decrements, and
+   * painted ranges shrink to match. Other tabs / other sources of
+   * change still come through the broadcast + refreshLoadedPages
+   * path; this only short-circuits the self-induced case.
+   */
+  function spliceMessagesOut(ids: number[]) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const state = folderState;
+    if (!state) return;
+    const toRemove = new Set<number>();
+    for (const id of ids) {
+      if (Number.isFinite(id)) toRemove.add(Number(id));
+    }
+    if (toRemove.size === 0) return;
+    let removed = 0;
+    for (let i = state.rows.length - 1; i >= 0; i -= 1) {
+      const row = state.rows[i];
+      if (row?.id != null && toRemove.has(Number(row.id))) {
+        state.rows.splice(i, 1);
+        removed += 1;
+      }
+    }
+    if (removed === 0) return;
+    state.total = Math.max(0, Number(state.total ?? 0) - removed);
+    // Painted ranges shrink from the right; if a range ends past
+    // the new total clamp it, and drop any range that is now empty.
+    for (let i = state.paintedRanges.length - 1; i >= 0; i -= 1) {
+      const range = state.paintedRanges[i];
+      if (range.end > state.total) range.end = Math.max(range.start, state.total);
+      if (range.end <= range.start) state.paintedRanges.splice(i, 1);
+    }
+    if (folderState === state) {
+      totalForFolder.value = state.total;
+      messages.value = state.rows.slice();
+    }
   }
 
   /**

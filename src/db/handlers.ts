@@ -773,6 +773,228 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
     },
 
+    /**
+     * Apply the local-cache half of a successful Email/set update
+     * {mailboxIds/*} for a single message inside ONE engine
+     * transaction. Replaces the previous orchestration in
+     * outbox-apply.ts which used 6-9 separate handler RPCs and paid a
+     * per-call lock-acquisition + fsync each time. With the indexer or
+     * any other background work holding the engine lock, that pattern
+     * stretched a 200 ms applyMove to 800-1500 ms (measured against
+     * local Stalwart). Doing everything in one transaction means
+     * exactly one lock wait and one fsync per delete / move.
+     *
+     * Behaviour:
+     *   - Replace folder_messages rows for this messageId (delete +
+     *     insert the new set, preserving sort timestamps from the
+     *     existing membership for added folders so the row keeps its
+     *     position in any other folder view it appears in).
+     *   - For each removeFolderId: drop the remote_id from every
+     *     active mailbox-window query_view for that folder, compact
+     *     positions, and decrement query_views.total.
+     *   - For each addFolderId: mark every active mailbox-window
+     *     query_view for that folder stale and drop its painted
+     *     ranges (the next visit re-fetches a fresh page).
+     */
+    [DB_RPC.OUTBOX_APPLY_MOVE]: async ({
+      accountId, messageId, addFolderIds = [], removeFolderIds = [],
+    }) => {
+      const msgId = Number(messageId);
+      if (!Number.isFinite(msgId)) return { ok: false };
+      const ts = now();
+      await engine.transaction(async (tx) => {
+        const remoteRow = await tx.get(
+          `SELECT remote_id FROM messages WHERE account_id = ? AND id = ?`,
+          [accountId, msgId],
+        );
+        const remoteId = remoteRow?.remote_id ?? null;
+        if (!remoteId) return;
+
+        const existing = await tx.all(
+          `SELECT folder_id, remote_membership_id, added_at,
+                  sort_received_at, sort_sent_at, instance_state_json
+             FROM folder_messages WHERE message_id = ?`,
+          [msgId],
+        );
+        const removeSet = new Set((removeFolderIds ?? []).map(Number));
+        const addList = (addFolderIds ?? []).map(Number);
+        const carriedSortReceived = existing[0]?.sort_received_at ?? null;
+        const carriedSortSent = existing[0]?.sort_sent_at ?? null;
+        const keep = existing.filter((row) => !removeSet.has(Number(row.folder_id)));
+        const keepIds = new Set(keep.map((row) => Number(row.folder_id)));
+        const additions = addList
+          .filter((folderId) => !keepIds.has(folderId))
+          .map((folderId) => ({
+            folderId,
+            sortReceivedAt: carriedSortReceived,
+            sortSentAt: carriedSortSent,
+          }));
+
+        await tx.run(`DELETE FROM folder_messages WHERE message_id = ?`, [msgId]);
+        for (const row of keep) {
+          await tx.run(
+            `INSERT INTO folder_messages(
+                folder_id, message_id, account_id,
+                remote_membership_id, added_at,
+                sort_received_at, sort_sent_at, instance_state_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              Number(row.folder_id),
+              msgId,
+              accountId,
+              row.remote_membership_id ?? null,
+              row.added_at ?? null,
+              row.sort_received_at ?? null,
+              row.sort_sent_at ?? null,
+              row.instance_state_json ?? null,
+            ],
+          );
+        }
+        for (const add of additions) {
+          await tx.run(
+            `INSERT INTO folder_messages(
+                folder_id, message_id, account_id,
+                remote_membership_id, added_at,
+                sort_received_at, sort_sent_at, instance_state_json
+             ) VALUES (?, ?, ?, NULL, ?, ?, ?, NULL)`,
+            [add.folderId, msgId, accountId, ts, add.sortReceivedAt, add.sortSentAt],
+          );
+        }
+
+        for (const folderId of removeSet) {
+          const viewRows = await tx.all(
+            `SELECT id FROM query_views
+              WHERE account_id = ? AND folder_id = ?
+                AND view_type = 'mailbox-window'`,
+            [accountId, folderId],
+          );
+          for (const view of viewRows) {
+            const viewId = Number(view.id);
+            const removedRows = await tx.all(
+              `SELECT position FROM query_view_items
+                WHERE view_id = ? AND remote_id = ?
+                ORDER BY position DESC`,
+              [viewId, remoteId],
+            );
+            if (removedRows.length === 0) continue;
+            await tx.run(
+              `DELETE FROM query_view_items
+                WHERE view_id = ? AND remote_id = ?`,
+              [viewId, remoteId],
+            );
+            for (const r of removedRows) {
+              await tx.run(
+                `UPDATE query_view_items
+                    SET position = position - 1
+                  WHERE view_id = ? AND position > ?`,
+                [viewId, Number(r.position)],
+              );
+            }
+            await tx.run(
+              `UPDATE query_views
+                  SET total = MAX(0, COALESCE(total, 0) - ?),
+                      updated_at = ?
+                WHERE id = ?`,
+              [removedRows.length, ts, viewId],
+            );
+          }
+        }
+
+        for (const folderId of addList) {
+          const viewRows = await tx.all(
+            `SELECT id FROM query_views
+              WHERE account_id = ? AND folder_id = ?
+                AND view_type = 'mailbox-window'`,
+            [accountId, folderId],
+          );
+          if (viewRows.length === 0) continue;
+          const placeholders = viewRows.map(() => '?').join(',');
+          const viewIds = viewRows.map((r) => Number(r.id));
+          await tx.run(
+            `UPDATE query_views
+                SET stale = 1, updated_at = ?
+              WHERE id IN (${placeholders})`,
+            [ts, ...viewIds],
+          );
+          await tx.run(
+            `DELETE FROM query_view_ranges WHERE view_id IN (${placeholders})`,
+            viewIds,
+          );
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { ok: true };
+    },
+
+    /**
+     * Apply the local-cache half of a successful Email/set destroy
+     * for a single message inside ONE engine transaction. Same
+     * motivation as OUTBOX_APPLY_MOVE: cuts the count of fsyncs and
+     * lock acquisitions to one.
+     */
+    [DB_RPC.OUTBOX_APPLY_DESTROY]: async ({ accountId, messageId }) => {
+      const msgId = Number(messageId);
+      if (!Number.isFinite(msgId)) return { ok: false };
+      const ts = now();
+      await engine.transaction(async (tx) => {
+        const row = await tx.get(
+          `SELECT remote_id FROM messages WHERE account_id = ? AND id = ?`,
+          [accountId, msgId],
+        );
+        const remoteId = row?.remote_id ?? null;
+        // The DELETE cascades via FK to folder_messages,
+        // message_addresses, message_keywords, body_parts, body_values.
+        await tx.run(
+          `DELETE FROM messages WHERE id = ? AND account_id = ?`,
+          [msgId, accountId],
+        );
+        if (!remoteId) return;
+
+        const viewRows = await tx.all(
+          `SELECT DISTINCT qv.id
+             FROM query_views qv
+             JOIN query_view_items qi ON qi.view_id = qv.id
+            WHERE qv.account_id = ?
+              AND qi.remote_id = ?`,
+          [accountId, remoteId],
+        );
+        for (const view of viewRows) {
+          const viewId = Number(view.id);
+          const removedRows = await tx.all(
+            `SELECT position FROM query_view_items
+              WHERE view_id = ? AND remote_id = ?
+              ORDER BY position DESC`,
+            [viewId, remoteId],
+          );
+          if (removedRows.length === 0) continue;
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id = ?`,
+            [viewId, remoteId],
+          );
+          for (const r of removedRows) {
+            await tx.run(
+              `UPDATE query_view_items
+                  SET position = position - 1
+                WHERE view_id = ? AND position > ?`,
+              [viewId, Number(r.position)],
+            );
+          }
+          await tx.run(
+            `UPDATE query_views
+                SET total = MAX(0, COALESCE(total, 0) - ?),
+                    updated_at = ?
+              WHERE id = ?`,
+            [removedRows.length, ts, viewId],
+          );
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { ok: true };
+    },
+
     [DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]: async ({ accountId, replacements }) => {
       const items = (replacements ?? []).filter((r) => r?.messageId != null);
       if (items.length === 0) return { replaced: 0, inserted: 0 };

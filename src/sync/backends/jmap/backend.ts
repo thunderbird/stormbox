@@ -170,6 +170,25 @@ export class JmapBackend {
     // the current transport / useWebSocket at call time so the
     // runner doesn't capture a stale snapshot if the backend later
     // flips between HTTP and WS.
+    //
+    // onForegroundChange wires the same counter the user-driven
+    // ensureFolderWindow path uses, so the metadata indexer's
+    // between-chunks yield gate (`_foregroundFolderWindowCount > 0`
+    // in _runMetadataIndexerChunk and ensureFolderIndex) also yields
+    // for in-flight outbox mutations. Without this, a delete that
+    // arrived mid-indexer-tick had to wait for the remaining 5x100
+    // row chunks (~500 ms of held engine lock) before its own SQL
+    // could run, and the user saw ~1.2 s per click against a local
+    // Stalwart.
+    const runnerOptions = {
+      ...(this._outboxRunnerOptions ?? {}),
+      onForegroundChange: (delta) => {
+        this._foregroundFolderWindowCount = Math.max(
+          0,
+          this._foregroundFolderWindowCount + delta,
+        );
+      },
+    };
     this.outboxRunner = new OutboxRunner({
       accountId: this.account.id,
       handlers: this.handlers,
@@ -180,7 +199,7 @@ export class JmapBackend {
         row,
         useWebSocket: this._wsReady(),
       }),
-      options: this._outboxRunnerOptions ?? undefined,
+      options: runnerOptions,
     });
 
     const mbResult = await syncMailboxes({
