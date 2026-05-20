@@ -1,15 +1,15 @@
 import { test, expect } from '@playwright/test';
 
-import { loginViaOidc } from './helpers/oidc-login.js';
+import { loginViaOidc } from '../tests/e2e/helpers/oidc-login.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
-} from './helpers/stack-env.js';
+} from '../tests/e2e/helpers/stack-env.js';
 import {
   attachConsoleTail,
   trackConsole,
   waitForShellReady,
-} from './helpers/ui.js';
+} from '../tests/e2e/helpers/ui.js';
 
 /**
  * End-to-end regression for the background metadata indexer.

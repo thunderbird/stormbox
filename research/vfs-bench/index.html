@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>VFS benchmark</title>
+</head>
+<body>
+  <h1>VFS benchmark</h1>
+  <p id="status">starting...</p>
+  <pre id="out"></pre>
+  <script type="module">
+    // Each ?vfs=... selects a different SQLite VFS so the harness can
+    // drive the same workload against three different storage stacks
+    // back to back: the production OPFSAnyContextVFS (async build,
+    // SharedWorker-safe but no WAL), AccessHandlePoolVFS in WAL mode
+    // (sync build, single-connection only - the DedicatedWorker
+    // candidate), and OPFSCoopSyncVFS (sync build, multi-handle,
+    // no WAL).
+    const params = new URLSearchParams(location.search);
+    const vfsName = params.get('vfs') ?? 'opfsAnyContext';
+    const durationMs = Number(params.get('duration') ?? 5000);
+    const fgIntervalMs = Number(params.get('fgInterval') ?? 50);
+    const bgChunk = Number(params.get('bgChunk') ?? 100);
+    const bgPauseMs = Number(params.get('bgPause') ?? 0);
+
+    const out = document.getElementById('out');
+    const status = document.getElementById('status');
+    status.textContent = `running vfs=${vfsName} duration=${durationMs}ms ...`;
+
+    const worker = new Worker(new URL('./bench-worker.ts', import.meta.url), {
+      type: 'module',
+    });
+
+    worker.addEventListener('message', (e) => {
+      const data = e.data;
+      if (data?.type === 'log') {
+        out.textContent += data.message + '\n';
+      } else if (data?.type === 'result') {
+        window.__benchResult = data.result;
+        status.textContent = `done: vfs=${vfsName}`;
+        out.textContent += '\nRESULT:\n' + JSON.stringify(data.result, null, 2) + '\n';
+      } else if (data?.type === 'error') {
+        window.__benchError = data.message;
+        status.textContent = `error: ${data.message}`;
+        out.textContent += '\nERROR:\n' + data.message + '\n' + (data.stack ?? '');
+      }
+    });
+
+    worker.postMessage({
+      type: 'run',
+      vfs: vfsName,
+      durationMs,
+      fgIntervalMs,
+      bgChunk,
+      bgPauseMs,
+    });
+  </script>
+</body>
+</html>
