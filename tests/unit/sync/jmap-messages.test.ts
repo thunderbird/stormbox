@@ -18,7 +18,7 @@ let inbox;
 
 const NOW = Date.parse('2026-05-01T12:00:00Z');
 
-function emailFixture(overrides = {}) {
+function emailFixture(overrides: any = {}) {
   return {
     id: overrides.id,
     blobId: overrides.blobId ?? `blob-${overrides.id}`,

@@ -78,10 +78,10 @@ function makeRow(id, overrides = {}) {
  * then returns fewer rows than `limit`, mimicking the real
  * positional read.
  */
-function makeRepo() {
-  const listeners = new Set();
-  const views = new Map();
-  const calls = {
+function makeRepo(): any {
+  const listeners = new Set<(tables: string[]) => void>();
+  const views = new Map<number, any>();
+  const calls: Record<string, number> = {
     listMessagesForView: 0,
     ensureFolderWindow: 0,
     queryViewProgress: 0,
@@ -196,7 +196,7 @@ function makeRepo() {
   return repo;
 }
 
-async function setupStore({ folders, views } = {}) {
+async function setupStore({ folders, views }: { folders?: any[]; views?: Record<number | string, any> } = {}) {
   setActivePinia(createPinia());
   const authStore = useAuthStore();
   authStore.accountId = 1;
@@ -334,7 +334,7 @@ describe('_loadPage sparse-cache fallthrough', () => {
     // 3 placeholder rows stuck forever. The fix is to compare cache
     // size against the expected count derived from state.total.
     const folder = makeFolder(1, { total_emails: 4 });
-    const view = { rows: [makeRow(1)], total: 4 };
+    const view: any = { rows: [makeRow(1)], total: 4 };
     let networkFilledTo = 1;
     view.onEnsureWindow = () => {
       // Server-side population: bring the view up to its full set
@@ -825,7 +825,7 @@ describe('refresh button (nuke and rebuild)', () => {
     await mailStore.refresh();
     await flush();
 
-    expect(repo._calls.resetViewForFolder).toBe(1);
+    expect((repo._calls as any).resetViewForFolder).toBe(1);
     expect(ensureCallCount).toBeGreaterThanOrEqual(1);
     expect(isLoadingDuringEnsure).toBe(true);
     expect(mailStore.messages.map((m) => m?.id)).toEqual([99]);

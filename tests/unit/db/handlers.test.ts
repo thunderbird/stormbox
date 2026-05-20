@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
 import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers.js';
 import { DB_RPC, TABLE_FAMILIES } from '../../../src/db/protocol.js';
-import { SERVICE_KIND, FOLDER_ROLE, KEYWORD } from '../../../src/constants/states.js';
+import { SERVICE_KIND } from '../../../src/constants/states';
 
 let engine;
 let broadcaster;
@@ -19,7 +19,7 @@ afterEach(async () => {
   await engine.close();
 });
 
-async function seedAccount(overrides = {}) {
+async function seedAccount(overrides: any = {}) {
   const result = await h[DB_RPC.ACCOUNT_UPSERT]({
     displayName: 'Test User',
     primaryEmail: 'test@example.com',
@@ -31,14 +31,14 @@ async function seedAccount(overrides = {}) {
   return result.row;
 }
 
-async function seedFolder(accountId, overrides = {}) {
+async function seedFolder(accountId: number, overrides: any = {}) {
   const remoteId = overrides.remoteId ?? `mb-${Math.random().toString(36).slice(2)}`;
   await h[DB_RPC.FOLDER_UPSERT_MANY]({
     accountId,
     folders: [{
       remoteId,
       name: overrides.name ?? 'Inbox',
-      role: overrides.role ?? FOLDER_ROLE.INBOX,
+      role: overrides.role ?? 'inbox',
       sortOrder: overrides.sortOrder ?? 0,
       totalEmails: overrides.totalEmails ?? 0,
       unreadEmails: overrides.unreadEmails ?? 0,
@@ -210,7 +210,7 @@ describe('identity handlers', () => {
 });
 
 describe('thread + message + membership handlers', () => {
-  async function seedMessage(accountId, folderId, overrides = {}) {
+  async function seedMessage(accountId: number, folderId: number, overrides: any = {}) {
     const remoteId = overrides.remoteId ?? `m-${Math.random().toString(36).slice(2)}`;
     await h[DB_RPC.THREAD_UPSERT_MANY]({
       accountId,
@@ -411,8 +411,8 @@ describe('thread + message + membership handlers', () => {
 
     await h[DB_RPC.MESSAGE_REPLACE_KEYWORDS]({
       messageId,
-      keywords: [KEYWORD.SEEN, KEYWORD.FLAGGED, 'work'],
-      keywordsJson: JSON.stringify({ [KEYWORD.SEEN]: true, [KEYWORD.FLAGGED]: true, work: true }),
+      keywords: ['$seen', '$flagged', 'work'],
+      keywordsJson: JSON.stringify({ $seen: true, $flagged: true, work: true }),
     });
 
     const row = await engine.get('SELECT is_seen, is_flagged, is_answered, keywords_json FROM messages WHERE id = ?', [messageId]);
@@ -425,8 +425,8 @@ describe('thread + message + membership handlers', () => {
 
     await h[DB_RPC.MESSAGE_REPLACE_KEYWORDS]({
       messageId,
-      keywords: [KEYWORD.SEEN],
-      keywordsJson: JSON.stringify({ [KEYWORD.SEEN]: true }),
+      keywords: ['$seen'],
+      keywordsJson: JSON.stringify({ $seen: true }),
     });
     const remaining = await engine.all('SELECT keyword FROM message_keywords WHERE message_id = ?', [messageId]);
     expect(remaining.map((k) => k.keyword)).toEqual(['$seen']);
@@ -437,7 +437,7 @@ describe('thread + message + membership handlers', () => {
     const inbox = await seedFolder(account.id);
     await seedMessage(account.id, inbox.id, {
       remoteId: 'batch-a',
-      keywords: [KEYWORD.SEEN, 'old'],
+      keywords: ['$seen', 'old'],
       addresses: [{ kind: 'from', position: 0, name: 'Old', email: 'old@example.com' }],
     });
     const before = await engine.get(
@@ -456,8 +456,8 @@ describe('thread + message + membership handlers', () => {
         receivedAt: Date.now(),
         sentAt: Date.now(),
         hasAttachment: false,
-        keywordsJson: JSON.stringify({ [KEYWORD.FLAGGED]: true }),
-        keywords: [KEYWORD.FLAGGED],
+        keywordsJson: JSON.stringify({ $flagged: true }),
+        keywords: ['$flagged'],
         isSeen: false,
         isFlagged: true,
         isAnswered: false,
@@ -485,7 +485,7 @@ describe('thread + message + membership handlers', () => {
       'SELECT keyword FROM message_keywords WHERE message_id = ? ORDER BY keyword',
       [before.id],
     );
-    expect(keywords.map((k) => k.keyword)).toEqual([KEYWORD.FLAGGED]);
+    expect(keywords.map((k) => k.keyword)).toEqual(['$flagged']);
     const row = await engine.get('SELECT subject, is_seen, is_flagged FROM messages WHERE id = ?', [before.id]);
     expect(row.subject).toBe('updated');
     expect(Number(row.is_seen)).toBe(0);

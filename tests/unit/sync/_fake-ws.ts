@@ -4,9 +4,11 @@
  * via addEventListener) plus _open/_receive/_close test helpers.
  */
 
+type Waiter = { resolve: (ws: FakeWebSocket) => void; reject: (err: any) => void };
+
 export class FakeWebSocket {
-  static instances = [];
-  static _waiters = [];
+  static instances: FakeWebSocket[] = [];
+  static _waiters: Waiter[] = [];
 
   static _reset() {
     FakeWebSocket.instances = [];
@@ -16,7 +18,7 @@ export class FakeWebSocket {
     FakeWebSocket._waiters = [];
   }
 
-  static _waitForInstance() {
+  static _waitForInstance(): Promise<FakeWebSocket> {
     const existing = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
     if (existing) {
       return Promise.resolve(existing);
@@ -37,7 +39,13 @@ export class FakeWebSocket {
   CLOSING = 2;
   CLOSED = 3;
 
-  constructor(url, protocols) {
+  url: string;
+  protocols: string[];
+  readyState: number;
+  sent: string[];
+  _listeners: Map<string, Set<(event: any) => void>>;
+
+  constructor(url: string, protocols: string | string[]) {
     this.url = url;
     this.protocols = Array.isArray(protocols) ? protocols : [protocols];
     this.readyState = FakeWebSocket.CONNECTING;
@@ -50,18 +58,18 @@ export class FakeWebSocket {
     }
   }
 
-  addEventListener(type, fn) {
+  addEventListener(type: string, fn: (event: any) => void) {
     if (!this._listeners.has(type)) {
       this._listeners.set(type, new Set());
     }
-    this._listeners.get(type).add(fn);
+    this._listeners.get(type)!.add(fn);
   }
 
-  removeEventListener(type, fn) {
+  removeEventListener(type: string, fn: (event: any) => void) {
     this._listeners.get(type)?.delete(fn);
   }
 
-  _emit(type, event) {
+  _emit(type: string, event: any) {
     const fns = this._listeners.get(type);
     if (!fns) return;
     for (const fn of fns) {
@@ -69,7 +77,7 @@ export class FakeWebSocket {
     }
   }
 
-  send(payload) {
+  send(payload: string) {
     this.sent.push(payload);
   }
 
@@ -86,7 +94,7 @@ export class FakeWebSocket {
     this._emit('open', {});
   }
 
-  _receive(payload) {
+  _receive(payload: any) {
     const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
     this._emit('message', { data });
   }
@@ -95,7 +103,7 @@ export class FakeWebSocket {
     this.close(code, reason);
   }
 
-  _error(event = {}) {
+  _error(event: any = {}) {
     this._emit('error', event);
   }
 }

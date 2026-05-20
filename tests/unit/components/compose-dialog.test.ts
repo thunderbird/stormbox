@@ -126,7 +126,7 @@ describe('ComposeDialog rich text toolbar', () => {
 
     selectEditorText(editor);
     await colorInput.trigger('pointerdown');
-    colorInput.element.value = '#ff0000';
+    (colorInput.element as HTMLInputElement).value = '#ff0000';
     await colorInput.trigger('input');
     await nextTick();
 
@@ -165,12 +165,12 @@ describe('ComposeDialog rich text toolbar', () => {
     };
 
     Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 500 });
-    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group) => {
+    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
       group.getBoundingClientRect = () => ({
-        width: groupWidths[group.dataset.toolbarGroup],
-      });
+        width: groupWidths[group.dataset.toolbarGroup as keyof typeof groupWidths],
+      } as DOMRect);
     });
-    wrapper.get('.toolbar-more').element.getBoundingClientRect = () => ({ width: 70 });
+    (wrapper.get('.toolbar-more').element as any).getBoundingClientRect = () => ({ width: 70 } as DOMRect);
 
     window.dispatchEvent(new Event('resize'));
     await nextTick();

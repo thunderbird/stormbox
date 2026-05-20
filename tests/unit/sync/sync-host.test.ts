@@ -128,7 +128,7 @@ function makeFetch(trackBodyGets = null) {
   });
 }
 
-function jsonResponse(body, init = {}) {
+function jsonResponse(body: any, init: { status?: number; statusText?: string } = {}) {
   return {
     ok: init.status == null || (init.status >= 200 && init.status < 300),
     status: init.status ?? 200,
@@ -148,8 +148,8 @@ beforeEach(async () => {
   handlers = makeHandlers(engine);
   const syncHandlers = makeSyncRpcHandlers({
     handlers,
-    fetch: makeFetch(),
-    WebSocketImpl: FakeWebSocket,
+    fetch: makeFetch() as any,
+    WebSocketImpl: FakeWebSocket as any,
   });
   allHandlers = { ...handlers, ...syncHandlers };
 });
@@ -212,8 +212,8 @@ describe('SYNC_MESSAGE_BODY_FOR_DISPLAY', () => {
     handlers = makeHandlers(engine);
     const syncHandlers = makeSyncRpcHandlers({
       handlers,
-      fetch: makeFetch(bodyGets),
-      WebSocketImpl: FakeWebSocket,
+      fetch: makeFetch(bodyGets) as any,
+      WebSocketImpl: FakeWebSocket as any,
     });
     allHandlers = { ...handlers, ...syncHandlers };
 
@@ -261,8 +261,8 @@ describe('SYNC_MESSAGE_BODY_FOR_DISPLAY', () => {
     handlers = makeHandlers(engine);
     const syncHandlers = makeSyncRpcHandlers({
       handlers,
-      fetch: makeFetch(bodyGets),
-      WebSocketImpl: FakeWebSocket,
+      fetch: makeFetch(bodyGets) as any,
+      WebSocketImpl: FakeWebSocket as any,
     });
     allHandlers = { ...handlers, ...syncHandlers };
 

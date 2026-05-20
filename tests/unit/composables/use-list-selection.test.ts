@@ -15,23 +15,23 @@ import { ref } from 'vue';
 
 import { useListSelection } from '../../../src/composables/use-list-selection.js';
 
-function makeRows(count, { holes = [] } = {}) {
-  const out = [];
+function makeRows(count: number, { holes = [] as number[] } = {}) {
+  const out: Array<{ id: string } | undefined> = [];
   for (let i = 0; i < count; i += 1) {
     out.push(holes.includes(i) ? undefined : { id: `m${i}` });
   }
   return out;
 }
 
-function makeHarness(count, opts) {
+function makeHarness(count: number, opts?: { holes?: number[] }) {
   const rows = ref(makeRows(count, opts));
   const total = ref(count);
-  const selectedIds = ref(new Set());
+  const selectedIds = ref(new Set<string>());
   const sel = useListSelection({ rows, total, selectedIds });
   return { rows, total, selectedIds, sel };
 }
 
-function ids(set) {
+function ids(set: Set<unknown>) {
   return [...set].sort();
 }
 

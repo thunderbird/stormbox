@@ -43,7 +43,7 @@ if (typeof globalThis.BroadcastChannel === 'undefined') {
 
 const NOW = Date.parse('2026-05-01T12:00:00Z');
 
-function emailFixture(id, { mailboxIds = { 'mb-inbox': true } } = {}) {
+function emailFixture(id: string, { mailboxIds = { 'mb-inbox': true } as Record<string, boolean> } = {}) {
   return {
     id,
     blobId: `b-${id}`,
@@ -215,7 +215,7 @@ function makeRepo() {
   // skips is the MessagePort hop; broadcasts go through a real
   // BroadcastChannel so onTablesTouched is exercised on the same code
   // path as production.
-  const listeners = new Set();
+  const listeners = new Set<(tables: string[]) => void>();
   mainThreadChannel.addEventListener('message', (event) => {
     const data = event.data;
     if (!data || data.type !== TABLES_TOUCHED) return;

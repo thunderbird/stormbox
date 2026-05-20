@@ -9,7 +9,11 @@
  */
 
 export class MockTransport {
-  constructor(session = null) {
+  _session: any;
+  _handlers: Map<string, (params: any, callId?: string) => any>;
+  requests: Array<{ using: any; methodCalls: any }>;
+
+  constructor(session: any = null) {
     this._session = session;
     this._handlers = new Map();
     this.requests = [];
@@ -28,22 +32,22 @@ export class MockTransport {
    * from the method call and returns the response payload (the second
    * tuple element). Throw to surface an error to the caller.
    */
-  handle(methodName, fn) {
+  handle(methodName: string, fn: (params: any, callId?: string) => any) {
     this._handlers.set(methodName, fn);
   }
 
-  async request(using, methodCalls) {
+  async request(using: any, methodCalls: any) {
     return this._dispatch(using, methodCalls);
   }
 
-  async wsRequest(using, methodCalls) {
+  async wsRequest(using: any, methodCalls: any) {
     return this._dispatch(using, methodCalls);
   }
 
-  async _dispatch(using, methodCalls) {
+  async _dispatch(using: any, methodCalls: any[]): Promise<{ methodResponses: any[] }> {
     this.requests.push({ using, methodCalls });
-    const responses = [];
-    const byCallId = new Map();
+    const responses: any[] = [];
+    const byCallId = new Map<string, any[]>();
     for (const [methodName, rawParams, callId] of methodCalls) {
       const handler = this._handlers.get(methodName);
       if (!handler) {
@@ -66,10 +70,10 @@ export class MockTransport {
  * exercise chained Email/query -> Email/get sequences without needing a
  * real Stalwart.
  */
-export function resolveResultRefs(value, byCallId) {
+export function resolveResultRefs(value: any, byCallId: Map<string, any[]>): any {
   if (value === null || typeof value !== 'object') return value;
   if (Array.isArray(value)) return value.map((v) => resolveResultRefs(v, byCallId));
-  const out = {};
+  const out: Record<string, any> = {};
   for (const key of Object.keys(value)) {
     if (key.startsWith('#') && isResultRef(value[key])) {
       const resolvedKey = key.slice(1);
@@ -89,7 +93,7 @@ export function resolveResultRefs(value, byCallId) {
   return out;
 }
 
-function isResultRef(v) {
+function isResultRef(v: any): v is { resultOf: string; name: string; path: string } {
   return !!v
     && typeof v === 'object'
     && typeof v.resultOf === 'string'
@@ -97,7 +101,7 @@ function isResultRef(v) {
     && typeof v.path === 'string';
 }
 
-function resolveJsonPointer(root, pointer) {
+function resolveJsonPointer(root: any, pointer: string): any {
   if (pointer === '' || pointer === '/') return root;
   if (!pointer.startsWith('/')) {
     throw new Error(`Invalid JSON pointer: ${pointer}`);
@@ -106,7 +110,7 @@ function resolveJsonPointer(root, pointer) {
     s.replace(/~1/g, '/').replace(/~0/g, '~'),
   );
   return walk(root, parts);
-  function walk(value, remaining) {
+  function walk(value: any, remaining: string[]): any {
     if (remaining.length === 0) return value;
     if (value == null) return [];
     const [head, ...rest] = remaining;

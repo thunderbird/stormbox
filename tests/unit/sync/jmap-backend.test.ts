@@ -62,7 +62,7 @@ function makeJmapHandlers(scenario) {
   };
 }
 
-function jsonResponse(body, init = {}) {
+function jsonResponse(body: any, init: { status?: number; statusText?: string } = {}) {
   return {
     ok: init.status == null || (init.status >= 200 && init.status < 300),
     status: init.status ?? 200,

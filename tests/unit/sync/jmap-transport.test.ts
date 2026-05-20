@@ -34,7 +34,7 @@ function makeFetch(handlers) {
   });
 }
 
-function jsonResponse(body, init = {}) {
+function jsonResponse(body: any, init: { status?: number; statusText?: string } = {}) {
   return {
     ok: init.status == null || (init.status >= 200 && init.status < 300),
     status: init.status ?? 200,
@@ -191,7 +191,7 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
       requestId: request.id,
       methodResponses: [['Core/echo', { hi: true }, 'c1']],
     });
-    const result = await pending;
+    const result = await pending as any;
     expect(result.methodResponses[0][0]).toBe('Core/echo');
   });
 

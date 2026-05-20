@@ -244,7 +244,7 @@ describe('MessageView HTML body rendering', () => {
       if (originalClientHeight) {
         Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
       } else {
-        delete HTMLElement.prototype.clientHeight;
+        delete (HTMLElement.prototype as any).clientHeight;
       }
     }
   });
