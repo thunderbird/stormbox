@@ -76,11 +76,35 @@ const virtualizer = useVirtualizer(
 const totalSize = computed(() => virtualizer.value.getTotalSize());
 const virtualItems = computed(() => virtualizer.value.getVirtualItems());
 
-// Throttle the scroll-driven fetch. Old stormbox used a 100ms guard so
-// a fast scroll doesn't fire 50 round trips. The same throttle covers
-// the body prefetch — both consult the latest virtualizer window, so
-// they're naturally aligned.
+// Throttle the scroll-driven fetch. 100ms leading-edge guard so a
+// fast scroll doesn't fire 50 round trips, PLUS a trailing-edge
+// fire so the final visible range after the user releases the
+// scrollbar always gets a load.
+//
+// The trailing edge is what makes the throttle correct rather than
+// just leaky. Without it, when the user drags a long distance and
+// releases inside the 100ms window after the last fired load, the
+// final visible range never gets requested - the watcher only fires
+// when virtualItems changes, and a stationary scrollbar produces no
+// further changes. mail-store's .finally re-pump cannot save us
+// either: it requires a load to actually be inflight when the
+// release happens, and with a fast cache that load may complete
+// before the user has moved at all.
+const THROTTLE_MS = 100;
 let lastPrefetch = 0;
+let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+
+function fireLoad(first: number, last: number) {
+  lastPrefetch = performance.now();
+  mailStore.ensureLoaded(first, last + 1);
+  // Window-driven body prefetch. Safe to call before metadata has
+  // landed: it skips undefined slots and the next throttled tick
+  // after ensureLoaded fills them will pick them up. Click-time
+  // fetches that collide with this background work are deduped in
+  // the JMAP backend's in-flight body map.
+  mailStore.enqueueVisibleBodyPrefetch(first, last + 1);
+}
+
 watch(virtualItems, (items) => {
   if (!items.length) return;
   const folderId = mailStore.currentFolderId;
@@ -90,16 +114,30 @@ watch(virtualItems, (items) => {
   // Always update the requested range so the inflight-page chain in
   // mail-store can re-pump against the latest visible window.
   mailStore.setRequestedRange(folderId, first, last + 1);
+
   const now = performance.now();
-  if (now - lastPrefetch < 100) return;
-  lastPrefetch = now;
-  mailStore.ensureLoaded(first, last + 1);
-  // Window-driven body prefetch. Safe to call before metadata has
-  // landed: it skips undefined slots and the next throttled tick
-  // after ensureLoaded fills them will pick them up. Click-time
-  // fetches that collide with this background work are deduped in
-  // the JMAP backend's in-flight body map.
-  mailStore.enqueueVisibleBodyPrefetch(first, last + 1);
+  const sinceLast = now - lastPrefetch;
+
+  if (sinceLast >= THROTTLE_MS) {
+    if (trailingTimer != null) {
+      clearTimeout(trailingTimer);
+      trailingTimer = null;
+    }
+    fireLoad(first, last);
+    return;
+  }
+
+  // Throttled. Schedule (or refresh) a trailing-edge fire so the
+  // final visible range always gets a load even if the user stops
+  // scrolling mid-window.
+  if (trailingTimer != null) clearTimeout(trailingTimer);
+  trailingTimer = setTimeout(() => {
+    trailingTimer = null;
+    if (mailStore.currentFolderId == null) return;
+    const latestItems = virtualizer.value.getVirtualItems();
+    if (!latestItems.length) return;
+    fireLoad(latestItems[0].index, latestItems[latestItems.length - 1].index);
+  }, THROTTLE_MS - sinceLast + 10);
 });
 
 // Persist scroll position per folder. rAF-throttled so we don't write
