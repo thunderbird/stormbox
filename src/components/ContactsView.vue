@@ -1,34 +1,18 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
+import { storeToRefs } from 'pinia';
 
-import { useAuthStore } from '../stores/auth-store.js';
 import { useContactsStore } from '../stores/contacts-store.js';
-import { getRepositoryAsync } from '../composables/use-repository.js';
 
-const authStore = useAuthStore();
 const contactsStore = useContactsStore();
+const { contacts } = storeToRefs(contactsStore);
 
-const contacts = ref([]);
 const filter = ref('');
 
 onMounted(async () => {
   await contactsStore.attach();
-  await refresh();
+  await contactsStore.listContacts();
 });
-
-async function refresh() {
-  if (!authStore.accountId) return;
-  const repo = await getRepositoryAsync();
-  contacts.value = await repo.call('db.query', {
-    sql: `SELECT c.id, c.display_name, c.organization,
-                 (SELECT email FROM contact_emails ce WHERE ce.contact_id = c.id ORDER BY is_preferred DESC, position LIMIT 1) AS email
-          FROM contacts c
-          WHERE c.account_id = ? AND c.is_deleted = 0
-          ORDER BY c.display_name COLLATE NOCASE
-          LIMIT 500`,
-    params: [authStore.accountId],
-  });
-}
 
 const filtered = computed(() => {
   const term = filter.value.trim().toLowerCase();

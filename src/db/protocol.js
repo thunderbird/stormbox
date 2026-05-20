@@ -36,6 +36,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_GET_BY_REMOTE: 'message.getByRemote',
   MESSAGE_LIST_FOR_THREAD: 'message.listForThread',
   MESSAGE_FIND_BY_RFC822_MESSAGE_ID: 'message.findByRfc822MessageId',
+  MESSAGE_FILTER_EXISTING_IDS: 'message.filterExistingIds',
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
   MESSAGE_BODY_READ: 'message.bodyRead',
 
@@ -47,6 +48,7 @@ export const DB_RPC = Object.freeze({
 
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',
+  CONTACT_LIST: 'contact.list',
   CONTACT_UPSERT_MANY: 'contact.upsertMany',
   CONTACT_AUTOCOMPLETE: 'contact.autocomplete',
 
@@ -54,6 +56,7 @@ export const DB_RPC = Object.freeze({
   SYNC_STATE_SET: 'syncState.set',
   PENDING_MUTATION_INSERT: 'pendingMutation.insert',
   PENDING_MUTATION_LIST_PENDING: 'pendingMutation.listPending',
+  PENDING_MUTATION_GET_ERROR: 'pendingMutation.getError',
   SYNC_JOB_INSERT: 'syncJob.insert',
   SYNC_JOB_NEXT_BATCH: 'syncJob.nextBatch',
 

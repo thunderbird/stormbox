@@ -1033,13 +1033,7 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
     const numeric = normalizeMessageIds(ids);
     if (numeric.length === 0) return [];
-    const placeholders = numeric.map(() => '?').join(',');
-    const rows = await repo.call('db.query', {
-      sql: `SELECT id FROM messages
-              WHERE account_id = ? AND id IN (${placeholders})`,
-      params: [authStore.accountId, ...numeric],
-    });
-    return (rows ?? []).map((r) => Number(r.id));
+    return repo.filterExistingMessageIds(authStore.accountId, numeric);
   }
 
   function clearSelectionFor(ids) {
@@ -1068,12 +1062,7 @@ export const useMailStore = defineStore('mail', () => {
   async function loadMutationError(mutationId) {
     if (!repo || mutationId == null) return null;
     try {
-      const rows = await repo.call('db.query', {
-        sql: `SELECT mutation_type, local_status, error_json
-                FROM pending_mutations WHERE id = ?`,
-        params: [mutationId],
-      });
-      return rows?.[0] ?? null;
+      return await repo.getPendingMutationError(mutationId);
     } catch {
       return null;
     }

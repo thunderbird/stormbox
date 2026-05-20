@@ -48,10 +48,10 @@ function makeRepo() {
     async ensureFolderTree() { return { count: 0 }; },
     async insertPendingMutation() { return undefined; },
     async replaceMessageKeywords() { return undefined; },
-    async call(method) {
-      if (method === 'db.query') return [];
-      return null;
+    async filterExistingMessageIds(_accountId, ids) {
+      return (ids ?? []).map(Number).filter((id) => Number.isFinite(id));
     },
+    async getPendingMutationError() { return null; },
   };
 }
 

@@ -257,6 +257,12 @@ function makeRepo() {
     async resetViewForFolder(accountId, folderId) {
       return handlers[DB_RPC.QUERY_VIEW_RESET_FOR_FOLDER]({ accountId, folderId });
     },
+    async filterExistingMessageIds(accountId, ids) {
+      return handlers[DB_RPC.MESSAGE_FILTER_EXISTING_IDS]({ accountId, ids });
+    },
+    async getPendingMutationError(mutationId) {
+      return handlers[DB_RPC.PENDING_MUTATION_GET_ERROR]({ mutationId });
+    },
     async call(method, params) {
       return handlers[method](params);
     },

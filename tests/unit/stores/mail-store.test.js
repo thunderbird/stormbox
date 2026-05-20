@@ -185,19 +185,13 @@ function makeRepo() {
       }
       return { deleted: 1 };
     },
-    async call(method, params) {
-      // Minimal stub so the destroyMessage existence pre-check works
-      // in store-only tests. It only asks SELECT id FROM messages
-      // WHERE id = ?; we treat every id as present so the flow is
-      // not short-circuited.
-      if (method === 'db.query'
-        && /SELECT\s+id\s+FROM\s+messages/i.test(String(params?.sql ?? ''))) {
-        const queryParams = params.params ?? [];
-        const ids = queryParams.length > 1 ? queryParams.slice(1) : queryParams;
-        return ids.map((id) => ({ id }));
-      }
-      return [];
+    // Repository helpers the mail-store hits for mutation flows.
+    // The store-only tests treat every id as present so the
+    // destroyMessages / moveMessages flow is not short-circuited.
+    async filterExistingMessageIds(_accountId, ids) {
+      return (ids ?? []).map(Number).filter((id) => Number.isFinite(id));
     },
+    async getPendingMutationError() { return null; },
   };
   return repo;
 }

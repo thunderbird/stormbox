@@ -689,6 +689,26 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}
         [accountId, rfc822MessageId],
       ),
 
+    /**
+     * Return the subset of `ids` that still resolve to a row in
+     * `messages` for `accountId`. Stores call this before enqueuing
+     * a mutation so a stale UI id (e.g. a row the user double-clicked
+     * Delete on) is dropped instead of failing the mutation FK check.
+     */
+    [DB_RPC.MESSAGE_FILTER_EXISTING_IDS]: async ({ accountId, ids }) => {
+      const numeric = (Array.isArray(ids) ? ids : [])
+        .map(Number)
+        .filter((id) => Number.isFinite(id));
+      if (numeric.length === 0) return [];
+      const placeholders = numeric.map(() => '?').join(',');
+      const rows = await engine.all(
+        `SELECT id FROM messages
+          WHERE account_id = ? AND id IN (${placeholders})`,
+        [accountId, ...numeric],
+      );
+      return rows.map((r) => Number(r.id));
+    },
+
     [DB_RPC.MESSAGE_REPLACE_KEYWORDS]: async ({ messageId, keywords, keywordsJson }) => {
       const ts = now();
       await engine.transaction(async (tx) => {
@@ -838,6 +858,27 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}
       broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { upserted: addressbooks.length };
     },
+
+    /**
+     * List contacts joined with their preferred (or first) email,
+     * suitable for the contact-book view. Returns a flat row shape so
+     * the caller does not have to JOIN `contact_emails` itself.
+     */
+    [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = 500 }) =>
+      engine.all(
+        `SELECT c.id,
+                c.display_name,
+                c.organization,
+                (SELECT email FROM contact_emails ce
+                  WHERE ce.contact_id = c.id
+                  ORDER BY is_preferred DESC, position
+                  LIMIT 1) AS email
+           FROM contacts c
+          WHERE c.account_id = ? AND c.is_deleted = 0
+          ORDER BY c.display_name COLLATE NOCASE
+          LIMIT ?`,
+        [accountId, limit],
+      ),
 
     [DB_RPC.CONTACT_UPSERT_MANY]: async ({ accountId, contacts }) => {
       if (!contacts?.length) {
@@ -1030,6 +1071,21 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}
           ORDER BY created_at LIMIT ?`,
         [accountId, limit],
       ),
+
+    /**
+     * Read the error fields a failed mutation row left behind. The
+     * mail-store uses this to format a user-facing failure message
+     * after runMutation reports `failed > 0`.
+     */
+    [DB_RPC.PENDING_MUTATION_GET_ERROR]: async ({ mutationId }) => {
+      if (mutationId == null) return null;
+      const row = await engine.get(
+        `SELECT mutation_type, local_status, error_json
+           FROM pending_mutations WHERE id = ?`,
+        [mutationId],
+      );
+      return row ?? null;
+    },
 
     [DB_RPC.SYNC_JOB_INSERT]: async (input) => {
       const ts = now();

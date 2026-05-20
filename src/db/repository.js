@@ -189,6 +189,15 @@ export class Repository {
     });
   }
 
+  /**
+   * Return the subset of `ids` that still resolve to a live row in
+   * `messages` for `accountId`. Used by the mail-store to drop stale
+   * UI ids before enqueuing a mutation.
+   */
+  filterExistingMessageIds(accountId, ids) {
+    return this.call(DB_RPC.MESSAGE_FILTER_EXISTING_IDS, { accountId, ids });
+  }
+
   replaceMessageKeywords(messageId, keywords, keywordsJson) {
     return this.call(DB_RPC.MESSAGE_REPLACE_KEYWORDS, {
       messageId,
@@ -230,6 +239,15 @@ export class Repository {
     return this.call(DB_RPC.CONTACT_UPSERT_MANY, { accountId, contacts });
   }
 
+  /**
+   * List contacts (with their preferred email) for the contact-book
+   * view. Components must go through this rather than speaking SQL
+   * to the worker.
+   */
+  listContacts(accountId, options = {}) {
+    return this.call(DB_RPC.CONTACT_LIST, { accountId, ...options });
+  }
+
   autocompleteContacts(accountId, prefix, limit = 20) {
     return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit });
   }
@@ -250,6 +268,15 @@ export class Repository {
 
   listPendingMutations(accountId, limit = 50) {
     return this.call(DB_RPC.PENDING_MUTATION_LIST_PENDING, { accountId, limit });
+  }
+
+  /**
+   * Read the error fields a failed mutation row left behind, so the
+   * mail-store can format a user-facing message after a failed
+   * runMutation / drainOutbox.
+   */
+  getPendingMutationError(mutationId) {
+    return this.call(DB_RPC.PENDING_MUTATION_GET_ERROR, { mutationId });
   }
 
   insertSyncJob(input) {
