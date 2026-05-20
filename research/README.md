@@ -69,11 +69,15 @@ cold ~380 ms, warm ~900–1300 ms.
 
 Head-to-head SQLite VFS comparison run in a DedicatedWorker:
 
-- `opfsAnyContext` — current production VFS (async build, no WAL,
-  works in SharedWorker)
+- `opfsAnyContext` — current production VFS (async build, OPFS, no
+  WAL, works in SharedWorker)
 - `accessHandlePool` — sync build + `locking_mode=exclusive` +
-  `journal_mode=WAL` (DedicatedWorker only, single connection)
-- `opfsCoopSync` — sync build, multi-handle, no WAL
+  `journal_mode=WAL`, OPFS (DedicatedWorker only, single connection)
+- `opfsCoopSync` — sync build, multi-handle, OPFS, no WAL
+  (DedicatedWorker only)
+- `idbBatchAtomic` — async build, IndexedDB-backed (no OPFS), works
+  in SharedWorker, no `-journal`/`-wal` file (atomic batch writes
+  via IndexedDB transactions instead)
 
 Three scenarios per VFS:
 
@@ -84,10 +88,20 @@ Three scenarios per VFS:
 
 Each scenario runs for `VFS_BENCH_DURATION` ms (default 8000) and
 reports foreground p50/p95/p99 latency plus background rows/sec.
-Authored to decide whether to migrate off SharedWorker+
-OPFSAnyContextVFS — see the conversation log for the headline result
-(AccessHandlePool+WAL gave 4–14× faster foreground latency on both
-browsers, biggest win on Firefox).
+
+Headline result at time of authoring (foreground p50, ms):
+
+| VFS | Chromium solo | Firefox solo | Chromium indexer | Firefox indexer |
+|---|--:|--:|--:|--:|
+| opfsAnyContext (current) | 43 | 129 | 74 | 220 |
+| accessHandlePool + WAL | 12 | 9 | 24 | 28 |
+| opfsCoopSync | 26 | 19 | 47 | 35 |
+| idbBatchAtomic | 8 | 16 | 15 | 36 |
+
+Two paths off `OPFSAnyContextVFS`: `idbBatchAtomic` (drop-in,
+SharedWorker-safe, 5-8× improvement on every realistic scenario)
+or `accessHandlePool` + WAL (DedicatedWorker migration, 3-14×
+improvement, biggest win on Firefox).
 
 ### `indexer-speed.spec.js`
 

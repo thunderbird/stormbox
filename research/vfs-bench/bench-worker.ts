@@ -24,6 +24,7 @@ import SQLiteSyncESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite.mjs';
 import { OPFSAnyContextVFS } from '@journeyapps/wa-sqlite/src/examples/OPFSAnyContextVFS.js';
 import { AccessHandlePoolVFS } from '@journeyapps/wa-sqlite/src/examples/AccessHandlePoolVFS.js';
 import { OPFSCoopSyncVFS } from '@journeyapps/wa-sqlite/src/examples/OPFSCoopSyncVFS.js';
+import { IDBBatchAtomicVFS } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS.js';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -47,7 +48,7 @@ self.addEventListener('message', async (e) => {
 });
 
 type RunArgs = {
-  vfs: 'opfsAnyContext' | 'accessHandlePool' | 'opfsCoopSync';
+  vfs: 'opfsAnyContext' | 'accessHandlePool' | 'opfsCoopSync' | 'idbBatchAtomic';
   durationMs: number;
   fgIntervalMs: number;
   bgChunk: number;
@@ -61,13 +62,27 @@ async function run(args: RunArgs) {
   const { vfs: vfsName, durationMs, fgIntervalMs, bgChunk, bgPauseMs } = args;
   log(`vfs=${vfsName} dur=${durationMs}ms fgInterval=${fgIntervalMs}ms bgChunk=${bgChunk} bgPause=${bgPauseMs}ms`);
 
-  // Wipe any previous benchmark DB so the test always starts from
-  // an empty file. OPFSAnyContextVFS in particular degrades with
+  // Wipe any previous benchmark state so each run starts on an
+  // empty database. OPFSAnyContextVFS in particular degrades with
   // file size by design and we want to control that variable.
   const root = await navigator.storage.getDirectory();
   for await (const name of (root as any).keys()) {
     if (typeof name === 'string' && name.includes('vfs-bench')) {
       await root.removeEntry(name, { recursive: true }).catch(() => {});
+    }
+  }
+  // IDBBatchAtomicVFS stores its pages in IndexedDB databases named
+  // after the VFS instance, not in OPFS. Drop any leftover IDB
+  // databases from previous runs so each iteration starts cold.
+  if ('databases' in indexedDB) {
+    const dbs = await (indexedDB as any).databases().catch(() => []);
+    for (const info of dbs ?? []) {
+      if (typeof info?.name === 'string' && info.name.includes('vfs-bench')) {
+        await new Promise<void>((resolve) => {
+          const req = indexedDB.deleteDatabase(info.name);
+          req.onsuccess = req.onerror = req.onblocked = () => resolve();
+        });
+      }
     }
   }
 
@@ -277,6 +292,21 @@ async function openDb(vfsName: RunArgs['vfs']) {
     const vfs = await OPFSCoopSyncVFS.create(`bench-${stamp}-coop`, mod);
     sqlite3.vfs_register(vfs, true);
     const db = await sqlite3.open_v2(`vfs-bench-coop-${stamp}.sqlite`, undefined, `bench-${stamp}-coop`);
+    return { sqlite3, db };
+  }
+  if (vfsName === 'idbBatchAtomic') {
+    // Async build only; IDBBatchAtomicVFS uses async IDB APIs and
+    // requires the asyncified wa-sqlite. lockPolicy:'exclusive'
+    // mirrors PowerSync's default (avoids per-call lock churn) and
+    // matches how a real single-connection-per-worker setup would
+    // configure it.
+    const mod = await SQLiteAsyncESMFactory();
+    const sqlite3 = SQLite.Factory(mod);
+    const vfs = await IDBBatchAtomicVFS.create(`bench-${stamp}-idb`, mod, {
+      lockPolicy: 'exclusive',
+    });
+    sqlite3.vfs_register(vfs, true);
+    const db = await sqlite3.open_v2(`vfs-bench-idb-${stamp}.sqlite`, undefined, `bench-${stamp}-idb`);
     return { sqlite3, db };
   }
   throw new Error(`unknown vfs: ${vfsName}`);

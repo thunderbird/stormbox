@@ -22,7 +22,7 @@ import { test, expect } from '@playwright/test';
  *     --reporter=list
  */
 
-const VFSES = ['opfsAnyContext', 'accessHandlePool', 'opfsCoopSync'];
+const VFSES = ['opfsAnyContext', 'accessHandlePool', 'opfsCoopSync', 'idbBatchAtomic'];
 const DURATION_MS = Number(process.env.VFS_BENCH_DURATION ?? 8000);
 const FG_INTERVAL_MS = Number(process.env.VFS_BENCH_FG_INTERVAL ?? 50);
 
