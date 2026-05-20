@@ -146,7 +146,12 @@ onMounted(() => {
  */
 function onRowClick(index) {
   const id = setFocused(index);
-  if (id != null) mailStore.selectMessage(id);
+  if (id == null) return;
+  if (id === mailStore.selectedMessageId) {
+    mailStore.selectMessage(null);
+    return;
+  }
+  mailStore.selectMessage(id);
 }
 
 function onCheckboxClick(index, event) {
