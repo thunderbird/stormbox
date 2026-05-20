@@ -1,0 +1,3 @@
+[submodule "thunderbird-accounts"]
+	path = thunderbird-accounts
+	url = https://github.com/thunderbird/thunderbird-accounts.git

@@ -45,6 +45,10 @@ services:
       - "5173:5173" # Vite HMR port (alternative)
       - "9229:9229" # Node.js debugging port
 
+    # Keycloak advertises http://keycloak:8999 in OIDC discovery; map it to the host.
+    extra_hosts:
+      - "keycloak:host-gateway"
+
     # Resource limits (optional - adjust as needed)
     # deploy:
     #   resources:

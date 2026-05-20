@@ -12,7 +12,12 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:e2e": "playwright test",
-    "test:e2e:install": "playwright install --with-deps"
+    "test:e2e:local": "LOCAL_STACK=1 playwright test",
+    "test:e2e:install": "playwright install --with-deps",
+    "stack:up": "docker compose -f thunderbird-accounts/docker-compose.yml up --build -d",
+    "stack:configure": "node tests/fixtures/configure-keycloak.mjs && node tests/fixtures/configure-stalwart.mjs",
+    "stack:seed": "npm run stack:configure && node tests/fixtures/seed-mail.mjs",
+    "stack:ws-proxy": "node tests/fixtures/ws-proxy/server.mjs"
   },
   "dependencies": {
     "@journeyapps/wa-sqlite": "^1.7.0",
@@ -40,6 +45,7 @@
     "typescript": "^6.0.3",
     "vite": "^5.0.0",
     "vite-plugin-cross-origin-isolation": "^0.1.6",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.6",
+    "ws": "^8.20.1"
   }
 }
