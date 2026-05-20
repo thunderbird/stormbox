@@ -5,7 +5,7 @@ import {
   localStackEnabled,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
-import { attachConsoleTail, trackConsole } from './helpers/ui.js';
+import { attachConsoleTail, trackConsole, waitForInboxReady } from './helpers/ui.js';
 
 /**
  * End-to-end against the local thunderbird-accounts stack (Keycloak +
@@ -31,15 +31,16 @@ test.describe('Local stack mail flow e2e', () => {
 
     await loginViaOidc(page);
 
-    await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
     const afterLogin = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-after-login.png`, { body: afterLogin, contentType: 'image/png' });
     await page.screenshot({ path: `screenshots/${browserName}-01-after-login.png`, fullPage: true });
 
-    await expect.poll(
-      async () => page.locator('.folder-node').count(),
-      { timeout: 30_000, message: 'expected at least one folder to appear in the tree' },
-    ).toBeGreaterThan(0);
+    // Cold-boot in CI can take >30s for the worker to bring up the
+    // OPFS DB, finish the OIDC handshake, and land the first
+    // ensureFolderWindow round trip. waitForInboxReady carries the
+    // project-wide 60s budget; mail-flow used to duplicate the same
+    // assertion with a 30s budget which produced the flake.
+    await waitForInboxReady(page);
 
     const folderRows = page.locator('.folder-node');
     const folderCount = await folderRows.count();
@@ -48,20 +49,6 @@ test.describe('Local stack mail flow e2e', () => {
       folderNames.push(((await folderRows.nth(i).textContent()) ?? '').trim());
     }
     console.log(`[test] folders rendered: ${JSON.stringify(folderNames)}`);
-
-    await expect.poll(
-      async () => {
-        const current = page.locator('.folder-node.is-current');
-        if ((await current.count()) === 0) return null;
-        return ((await current.first().textContent()) ?? '').toLowerCase();
-      },
-      { timeout: 30_000, message: 'expected a folder to be auto-selected' },
-    ).toMatch(/inbox/);
-
-    await expect.poll(
-      async () => page.locator('.msg-list__item').count(),
-      { timeout: 30_000, message: 'expected at least one message in the list' },
-    ).toBeGreaterThan(0);
 
     const folderShot = await page.screenshot({ fullPage: true });
     await testInfo.attach(`${browserName}-folder-opened.png`, { body: folderShot, contentType: 'image/png' });
@@ -166,7 +153,39 @@ test.describe('Local stack mail flow e2e', () => {
     }
 
     if (await page.locator('.msg-list__item').count() > 1) {
-      await page.waitForTimeout(750);
+      // Wait for the body prefetch to actually populate the cache for
+      // the second-position message before we click it. The previous
+      // version of this test slept 750ms and hoped — on a cold
+      // WebSocket connection that was a coin flip and produced the
+      // "expected second message body to render quickly after
+      // prefetch" flake. Polling body_fetched_at via the test seam is
+      // deterministic: we move on the moment the prefetch lands, and
+      // the click→render budget below stays tight enough to catch a
+      // real regression.
+      await expect.poll(
+        async () => page.evaluate(async () => {
+          if (!globalThis.__repo) return 0;
+          const accounts = await globalThis.__repo.listAccounts();
+          const account = accounts?.[0];
+          if (!account) return 0;
+          const folders = await globalThis.__repo.listFolders(account.id);
+          const inbox = folders.find((f) => f.role === 'inbox');
+          if (!inbox) return 0;
+          const rows = await globalThis.__repo.listMessagesForView({
+            accountId: account.id,
+            folderId: inbox.id,
+            sort: 'received',
+            offset: 1,
+            limit: 1,
+          });
+          return Number(rows?.[0]?.body_fetched_at ?? 0);
+        }),
+        {
+          timeout: 30_000,
+          message: 'second-position body never landed in the cache via prefetch',
+        },
+      ).toBeGreaterThan(0);
+
       const secondStart = Date.now();
       await page.locator('.msg-list__item').nth(1).click();
       await expect.poll(
@@ -176,14 +195,14 @@ test.describe('Local stack mail flow e2e', () => {
           return frame + text;
         },
         {
-          timeout: 5_000,
-          message: 'expected second message body to render quickly after prefetch',
+          timeout: 1_000,
+          message: 'second-message body should render fast once prefetched',
         },
       ).toBeGreaterThan(0);
       const secondBodyMs = Date.now() - secondStart;
       console.log(`[test] second message body after prefetch: ${secondBodyMs}ms`);
-      if (secondBodyMs > 5_000) {
-        throw new Error(`second message body took ${secondBodyMs}ms after prefetch`);
+      if (secondBodyMs > 1_000) {
+        throw new Error(`second message body took ${secondBodyMs}ms after prefetch was confirmed cached`);
       }
     }
 
