@@ -41,7 +41,12 @@ export async function openEngine({ sqlite3, db, useWal = true }) {
 }
 
 export class Engine {
-  constructor(sqlite3, db) {
+  sqlite3: any;
+  db: any;
+  _closed: boolean;
+  _tail: Promise<any>;
+
+  constructor(sqlite3: any, db: any) {
     this.sqlite3 = sqlite3;
     this.db = db;
     this._closed = false;
@@ -297,25 +302,27 @@ export class Engine {
  * lock the transaction is already holding.
  */
 class TxContext {
-  constructor(engine) {
+  _engine: Engine;
+
+  constructor(engine: Engine) {
     this._engine = engine;
   }
 
-  exec(sql) {
-    return this._engine._execRaw(sql);
+  exec(sql: string) {
+    return (this._engine as any)._execRaw(sql);
   }
 
-  async all(sql, params = []) {
-    return this._engine._allRaw(sql, params);
+  async all(sql: string, params: any[] = []) {
+    return (this._engine as any)._allRaw(sql, params);
   }
 
-  async get(sql, params = []) {
-    const rows = await this._engine._allRaw(sql, params);
+  async get(sql: string, params: any[] = []) {
+    const rows = await (this._engine as any)._allRaw(sql, params);
     return rows.length > 0 ? rows[0] : null;
   }
 
-  run(sql, params = []) {
-    return this._engine._runRaw(sql, params);
+  run(sql: string, params: any[] = []) {
+    return (this._engine as any)._runRaw(sql, params);
   }
 }
 

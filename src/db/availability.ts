@@ -10,7 +10,9 @@
 const SUPPORTED_BROWSERS = 'Use Chrome 109+, Edge 109+, Firefox 116+, or Safari 16+.';
 
 export class UnsupportedBrowserError extends Error {
-  constructor(missing) {
+  missing: string[];
+
+  constructor(missing: string[]) {
     super(`Stormbox cannot run in this browser. Missing: ${missing.join(', ')}. ${SUPPORTED_BROWSERS}`);
     this.name = 'UnsupportedBrowserError';
     this.missing = missing;

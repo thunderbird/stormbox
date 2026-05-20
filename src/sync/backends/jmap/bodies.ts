@@ -155,7 +155,7 @@ async function persistBodies({ account, emails, handlers }) {
     });
 
     const bodyValues = email.bodyValues ?? {};
-    for (const [partId, payload] of Object.entries(bodyValues)) {
+    for (const [partId, payload] of Object.entries(bodyValues) as Array<[string, any]>) {
       const isHtml = htmlPartIds.has(partId);
       const kind = isHtml ? 'html' : 'text';
       const value = payload?.value ?? '';

@@ -45,6 +45,11 @@ import { JmapBackend } from './backends/jmap/backend.js';
  */
 export function makeSyncRpcHandlers({
   handlers, fetch, WebSocketImpl, outboxNotifier,
+}: {
+  handlers?: any;
+  fetch?: typeof globalThis.fetch;
+  WebSocketImpl?: typeof globalThis.WebSocket;
+  outboxNotifier?: any;
 } = {}) {
   if (!handlers) {
     throw new Error('makeSyncRpcHandlers requires the repository handler map');

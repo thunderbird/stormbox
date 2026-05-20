@@ -22,9 +22,40 @@ import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/use-repository.js';
-import { useAuthStore } from './auth-store.js';
+import { useAuthStore } from './auth-store';
 import { TABLE_FAMILIES } from '../db/protocol.js';
-import { FOLDER_ROLE, KEYWORD } from '../constants/states.js';
+import { MUTATION_TYPE, VIEW_TYPE } from '../constants/states';
+import type { JmapViewSort, MutationType } from '../constants/states';
+import type { FolderRow, MessageBody, MessageRow, PendingMutationRow, QueryViewProgress } from '../types';
+
+interface FolderCache {
+  folderId: number;
+  total: number;
+  rows: Array<any | undefined>;
+  paintedRanges: Array<{ start: number; end: number }>;
+  sortProp: JmapViewSort;
+  scrollTop: number;
+  pageInflight: Promise<void> | null;
+  requestedRange: { start: number; end: number } | null;
+  didInitialBodyPrefetch?: boolean;
+  lastFailedRange?: { start: number; end: number } | null;
+}
+
+interface MutationOutcome {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+}
+
+interface MoveResult { succeeded: number; failed: number; skipped: number }
+
+interface PendingMutationInsert {
+  accountId: number;
+  mutationType: MutationType;
+  targetMessageId: number | null;
+  requestJson: string;
+  optimisticPatchJson?: string | null;
+}
 
 // Page size for both Email/query/get round trips and the SQLite
 // positional reads. ~100 metadata records per Email/get is well below
@@ -44,26 +75,26 @@ const INITIAL_BODY_PREFETCH = 5;
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
 
-  const folders = ref([]);
-  const currentFolderId = ref(null);
+  const folders = ref<any[]>([]);
+  const currentFolderId = ref<number | null>(null);
   // Bound to the current folder's positional `rows` array. Indices
   // we haven't fetched are `undefined`, so the virtualiser renders
   // skeleton placeholders for them and the scrollbar reflects the
   // true total.
-  const messages = ref([]);
+  const messages = ref<Array<any | undefined>>([]);
   const totalForFolder = ref(0);
-  const folderProgress = ref(new Map());
-  const selectedMessageId = ref(null);
+  const folderProgress = ref<Map<number, QueryViewProgress>>(new Map());
+  const selectedMessageId = ref<number | null>(null);
   // Multi-select set, distinct from `selectedMessageId` (which is the
   // "focused / previewed" row). Ports Overture's split between
   // SelectionController (set) and SingleSelectionController (current).
   // The Set instance is replaced (not mutated in place) by helpers so
   // Vue's reactivity picks up changes — same pattern useListSelection
   // uses.
-  const selectedIds = ref(new Set());
-  const messageBody = ref(null);
+  const selectedIds = ref<Set<number>>(new Set());
+  const messageBody = ref<MessageBody | null>(null);
   const isLoading = ref(false);
-  const error = ref(null);
+  const error = ref<string | null>(null);
 
   /**
    * Per-folder cache. Keys live as long as the store does (i.e. as
@@ -78,33 +109,23 @@ export const useMailStore = defineStore('mail', () => {
    * the user can flip between folders as fast as they want and each
    * folder's loading state is independent.
    *
-   * @typedef {object} FolderCache
-   * @property {number} folderId
-   * @property {number} total          authoritative once Email/query lands
-   * @property {Array<object|undefined>} rows  positional, sparse OK
-   * @property {Array<{start:number,end:number}>} paintedRanges
-   * @property {'received'|'sent'} sortProp
-   * @property {number} scrollTop
-   * @property {Promise|null} pageInflight
-   * @property {{start:number,end:number}|null} requestedRange
-   *
-   * @type {Map<number, FolderCache>}
+   * See {@link FolderCache} for shape details.
    */
-  const folderStates = new Map();
-  let folderState = null;
+  const folderStates: Map<number, FolderCache> = new Map();
+  let folderState: FolderCache | null = null;
 
-  let repo = null;
-  let unsubscribe = null;
+  let repo: any = null;
+  let unsubscribe: (() => void) | null = null;
   let bodyFetchToken = 0;
-  const bodyQueue = [];
-  const bodyQueued = new Set();
+  const bodyQueue: number[] = [];
+  const bodyQueued: Set<number> = new Set();
   let bodyPrefetchRunning = false;
 
   // Single-flight + re-run flag for refreshLoadedPages so a burst of
   // MESSAGES broadcasts coalesces into one cache re-read at the end
   // of the storm, not N partial reads that the user sees as the row
   // count ticking down one at a time. See refreshLoadedPages().
-  let refreshLoadedPagesInflight = null;
+  let refreshLoadedPagesInflight: Promise<void> | null = null;
   let refreshLoadedPagesDirty = false;
 
   const currentFolder = computed(
@@ -843,9 +864,9 @@ export const useMailStore = defineStore('mail', () => {
     if (currentSeen === seen) return;
     const keywordsJson = JSON.parse(local?.keywords_json ?? '{}');
     if (seen) {
-      keywordsJson[KEYWORD.SEEN] = true;
+      keywordsJson.$seen = true;
     } else {
-      delete keywordsJson[KEYWORD.SEEN];
+      delete keywordsJson.$seen;
     }
     await repo.replaceMessageKeywords(messageId, Object.keys(keywordsJson), JSON.stringify(keywordsJson));
     // Queue the server-side write. The worker-side OutboxRunner picks
@@ -856,10 +877,10 @@ export const useMailStore = defineStore('mail', () => {
     // runner handles retry + backoff on the server side.
     await repo.insertPendingMutation({
       accountId: authStore.accountId,
-      mutationType: 'setKeywords',
+      mutationType: MUTATION_TYPE.SET_KEYWORDS,
       targetMessageId: messageId,
       requestJson: JSON.stringify(
-        seen ? { add: [KEYWORD.SEEN], remove: [] } : { add: [], remove: [KEYWORD.SEEN] },
+        seen ? { add: ['$seen'], remove: [] } : { add: [], remove: ['$seen'] },
       ),
       optimisticPatchJson: JSON.stringify({ is_seen: seen ? 1 : 0 }),
     });
@@ -930,7 +951,7 @@ export const useMailStore = defineStore('mail', () => {
     if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
       const detail = await loadMutationError(mutation.id);
       const message = describeMutationFailure(result, detail);
-      const err = new Error(message);
+      const err = new Error(message) as Error & { result?: any; detail?: any };
       err.result = result;
       err.detail = detail;
       error.value = message;
@@ -991,7 +1012,7 @@ export const useMailStore = defineStore('mail', () => {
     if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
       const detail = await loadMutationError(mutation.id);
       const message = describeMutationFailure(result, detail, 'move');
-      const err = new Error(message);
+      const err = new Error(message) as Error & { result?: any; detail?: any };
       err.result = result;
       err.detail = detail;
       error.value = message;
@@ -1096,13 +1117,13 @@ export const useMailStore = defineStore('mail', () => {
    */
   function buildDeleteMutation(messageIds) {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
-    const trash = folders.value.find((f) => f.role === FOLDER_ROLE.TRASH);
+    const trash = folders.value.find((f) => f.role === 'trash');
     const current = currentFolder.value;
     const target = ids.length === 1 ? ids[0] : null;
     if (trash && current?.id != null && current.id !== trash.id) {
       return {
         accountId: authStore.accountId,
-        mutationType: 'moveToFolders',
+        mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
         targetMessageId: target,
         requestJson: JSON.stringify({
           messageIds: ids,
@@ -1113,17 +1134,17 @@ export const useMailStore = defineStore('mail', () => {
     }
     return {
       accountId: authStore.accountId,
-      mutationType: 'destroy',
+      mutationType: MUTATION_TYPE.DESTROY,
       targetMessageId: target,
       requestJson: JSON.stringify({ messageIds: ids }),
     };
   }
 
-  function buildMoveMutation(messageIds, targetFolderId, sourceFolderId) {
+  function buildMoveMutation(messageIds: number[], targetFolderId: number, sourceFolderId: number): PendingMutationInsert {
     const ids = normalizeMessageIds(messageIds);
     return {
-      accountId: authStore.accountId,
-      mutationType: 'moveToFolders',
+      accountId: authStore.accountId!,
+      mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
       targetMessageId: ids.length === 1 ? ids[0] : null,
       requestJson: JSON.stringify({
         messageIds: ids,

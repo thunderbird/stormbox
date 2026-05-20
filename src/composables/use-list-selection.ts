@@ -45,14 +45,16 @@ import { computed, ref } from 'vue';
  *   reads back via the returned `focusedIndex`.
  */
 
-/**
- * @param {UseListSelectionOptions} opts
- */
 export function useListSelection({
   rows,
   total,
   selectedIds: externalSelectedIds,
   focusedIndex: externalFocusedIndex,
+}: {
+  rows: any;
+  total: any;
+  selectedIds?: any;
+  focusedIndex?: any;
 }) {
   const selectedIds = externalSelectedIds ?? ref(new Set());
   const focusedIndex = externalFocusedIndex ?? ref(-1);

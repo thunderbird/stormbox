@@ -25,7 +25,7 @@
  */
 
 import { DB_RPC } from '../../../db/protocol.js';
-import { JMAP_TYPE, SERVICE_KIND, KEYWORD } from '../../../constants/states.js';
+import { SERVICE_KIND } from '../../../constants/states';
 import { wlog } from '../../../db/worker-log.js';
 import { ingestSession } from './session.js';
 import { syncMailboxes, syncMailboxChanges } from './mailboxes.js';
@@ -45,24 +45,43 @@ import { processMutationRow } from './outbox.js';
 import { OutboxRunner } from './outbox-runner.js';
 
 const SUBSCRIBED_TYPES = [
-  JMAP_TYPE.MAILBOX,
-  JMAP_TYPE.EMAIL,
-  JMAP_TYPE.THREAD,
-  JMAP_TYPE.IDENTITY,
-  JMAP_TYPE.EMAIL_DELIVERY,
-  JMAP_TYPE.ADDRESSBOOK,
-  JMAP_TYPE.CONTACT_CARD,
+  'Mailbox',
+  'Email',
+  'Thread',
+  'Identity',
+  'EmailDelivery',
+  'AddressBook',
+  'ContactCard',
 ];
 
 export class JmapBackend {
-  /**
-   * @param {object} args
-   * @param {import('./transport.js').JmapTransport} args.transport
-   * @param {string} args.serverOrigin
-   * @param {Record<string, (params: any) => Promise<any>>} args.handlers
-   * @param {{ useWebSocket?: boolean }} [args.options]
-   */
-  constructor({ transport, serverOrigin, handlers, options = {} }) {
+  transport: any;
+  serverOrigin: string;
+  handlers: Record<string, (params: any) => Promise<any>>;
+  useWebSocket: boolean;
+  account: any;
+  services: any[];
+  _unsubStateChange: (() => void) | null;
+  _started: boolean;
+  _indexerTimer: any;
+  _indexerRunning: boolean;
+  _foregroundFolderWindowCount: number;
+  _bodyFetchInflight: Map<number, Promise<any>>;
+  _bodyPriorityInflight: Map<number, Promise<any>>;
+  _eagerBodyPrefetchCap: number;
+  _indexerTickDelayMs: number;
+  _indexerChunksPerTick: number;
+  _maxObjectsInGetCap: number | null;
+  outboxRunner: any;
+  _outboxRunnerOptions: any;
+  _bootstrappedPromise: Promise<void> | null;
+
+  constructor({ transport, serverOrigin, handlers, options = {} }: {
+    transport: any;
+    serverOrigin: string;
+    handlers: Record<string, (params: any) => Promise<any>>;
+    options?: any;
+  }) {
     this.transport = transport;
     this.serverOrigin = serverOrigin;
     this.handlers = handlers;
@@ -122,6 +141,7 @@ export class JmapBackend {
     /** @type {import('./outbox-runner.js').OutboxRunner | null} */
     this.outboxRunner = null;
     this._outboxRunnerOptions = options.outboxRunnerOptions ?? null;
+    this._bootstrappedPromise = null;
   }
 
   /**
@@ -277,7 +297,7 @@ export class JmapBackend {
     });
   }
 
-  async ensureFolderWindow(folderId, range = {}) {
+  async ensureFolderWindow(folderId: number, range: any = {}) {
     this._foregroundFolderWindowCount += 1;
     try {
       const folder = await this._loadFolder(folderId);
@@ -413,7 +433,7 @@ export class JmapBackend {
     });
   }
 
-  async ensureFolderIndex(folderId, options = {}) {
+  async ensureFolderIndex(folderId: number, options: any = {}) {
     const folder = await this._loadFolder(folderId);
     const sortProp = options.sortProp ?? this._defaultSortPropFor(folder);
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500));
@@ -648,7 +668,7 @@ export class JmapBackend {
     });
   }
 
-  async ensureContacts(_addressbookId) {
+  async ensureContacts(_addressbookId?: any) {
     if (!this._hasContactsService()) {
       return { fetched: 0 };
     }
@@ -708,7 +728,7 @@ export class JmapBackend {
 
     for (const [type, _state] of Object.entries(types)) {
       switch (type) {
-        case JMAP_TYPE.MAILBOX: {
+        case 'Mailbox': {
           const sync = await this._loadSyncState('Mailbox');
           if (!sync?.state) {
             await this.ensureFolderTree();
@@ -726,7 +746,7 @@ export class JmapBackend {
           }
           break;
         }
-        case JMAP_TYPE.EMAIL: {
+        case 'Email': {
           const sync = await this._loadSyncState('Email');
           if (sync?.state) {
             // Refresh metadata for message rows the client already
@@ -750,22 +770,22 @@ export class JmapBackend {
           needViewRefresh = true;
           break;
         }
-        case JMAP_TYPE.EMAIL_DELIVERY: {
+        case 'EmailDelivery': {
           // EmailDelivery is push-only and fires only when new mail
           // has arrived. The view always needs to be refreshed so
           // the new rows show up in the open folder.
           needViewRefresh = true;
           break;
         }
-        case JMAP_TYPE.IDENTITY: {
+        case 'Identity': {
           await this.ensureIdentities();
           break;
         }
-        case JMAP_TYPE.ADDRESSBOOK: {
+        case 'AddressBook': {
           await this.ensureAddressbooks();
           break;
         }
-        case JMAP_TYPE.CONTACT_CARD: {
+        case 'ContactCard': {
           const sync = await this._loadSyncState('ContactCard');
           if (!sync?.state) {
             await this.ensureContacts();

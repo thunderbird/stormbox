@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue';
 import {
   Inbox, Send, FileEdit, Archive, Trash2, ShieldAlert, Folder, FolderOpen,

@@ -9,11 +9,28 @@ import { defineStore } from 'pinia';
 import { computed, reactive, ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/use-repository.js';
-import { useAuthStore } from './auth-store.js';
+import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store.js';
-import { COMPOSE_STATE } from '../constants/states.js';
+import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
+import type { ComposeState } from '../constants/states';
+import type { IdentityRow } from '../types';
 
-const EMPTY_DRAFT = Object.freeze({
+interface Draft {
+  fromIdx: number;
+  to: string;
+  cc: string;
+  bcc: string;
+  subject: string;
+  textBody: string;
+  htmlBody: string;
+}
+
+interface ParsedAddress {
+  name?: string;
+  email: string;
+}
+
+const EMPTY_DRAFT: Readonly<Draft> = Object.freeze({
   fromIdx: 0,
   to: '',
   cc: '',
@@ -27,18 +44,18 @@ export const useComposeStore = defineStore('compose', () => {
   const authStore = useAuthStore();
   const mailStore = useMailStore();
 
-  const status = ref(COMPOSE_STATE.IDLE);
-  const error = ref(null);
+  const status = ref<ComposeState>(COMPOSE_STATE.IDLE);
+  const error = ref<string | null>(null);
   const isOpen = ref(false);
-  const identities = ref([]);
-  const draft = reactive({ ...EMPTY_DRAFT });
-  let repo = null;
+  const identities = ref<any[]>([]);
+  const draft = reactive<Draft>({ ...EMPTY_DRAFT });
+  let repo: any = null;
 
-  const fromIdentity = computed(() =>
+  const fromIdentity = computed<any | null>(() =>
     identities.value[draft.fromIdx] ?? identities.value[0] ?? null,
   );
 
-  async function attach() {
+  async function attach(): Promise<void> {
     if (repo) return;
     repo = await getRepositoryAsync();
     watch(
@@ -54,26 +71,28 @@ export const useComposeStore = defineStore('compose', () => {
     );
   }
 
-  async function refreshIdentities() {
+  async function refreshIdentities(): Promise<void> {
     if (!repo || authStore.accountId == null) return;
     identities.value = await repo.listIdentities(authStore.accountId);
   }
 
-  function open(prefill = {}) {
+  function open(prefill: Partial<Draft> = {}): void {
     Object.assign(draft, EMPTY_DRAFT, prefill);
     isOpen.value = true;
     status.value = COMPOSE_STATE.EDITING;
     error.value = null;
   }
 
-  function close() {
+  function close(): void {
     isOpen.value = false;
     status.value = COMPOSE_STATE.IDLE;
     Object.assign(draft, EMPTY_DRAFT);
     error.value = null;
   }
 
-  function prepareReply({ to, subject, html, text }) {
+  function prepareReply(
+    { to, subject, html, text }: { to?: string; subject?: string; html?: string; text?: string },
+  ): void {
     open({
       to: to ?? '',
       subject: subject ?? '',
@@ -82,35 +101,32 @@ export const useComposeStore = defineStore('compose', () => {
     });
   }
 
-  async function send() {
-    if (!repo || authStore.accountId == null) {
-      status.value = COMPOSE_STATE.FAILED;
-      error.value = 'Not connected.';
-      return false;
-    }
-    const identity = fromIdentity.value;
-    if (!identity) {
-      status.value = COMPOSE_STATE.FAILED;
-      error.value = 'No identities are configured.';
-      return false;
-    }
-    const toList = parseAddressList(draft.to);
-    if (toList.length === 0) {
-      status.value = COMPOSE_STATE.FAILED;
-      error.value = 'Add at least one recipient.';
-      return false;
-    }
+  function failSend(message: string): false {
+    status.value = COMPOSE_STATE.FAILED;
+    error.value = message;
+    return false;
+  }
 
-    const drafts = mailStore.folders.find((f) => f.role === 'drafts');
-    const sent = mailStore.folders.find((f) => f.role === 'sent');
-    const outbox = mailStore.folders.find((f) => f.role === 'outbox');
+  async function send(): Promise<boolean> {
+    if (!repo || authStore.accountId == null) return failSend('Not connected.');
+    const identity = fromIdentity.value;
+    if (!identity) return failSend('No identities are configured.');
+    const toList = parseAddressList(draft.to);
+    if (toList.length === 0) return failSend('Add at least one recipient.');
+
+    const drafts = mailStore.folders.find((f: any) => f.role === 'drafts');
+    const sent = mailStore.folders.find((f: any) => f.role === 'sent');
+    // 'outbox' is not a JMAP role per RFC 8621 §2 — this find() is
+    // effectively a no-op against a real Stalwart server. Kept for
+    // back-compat with any backend that surfaces a custom role.
+    const outbox = mailStore.folders.find((f: any) => f.role === 'outbox');
 
     status.value = COMPOSE_STATE.SENDING;
     error.value = null;
     try {
       const mutation = await repo.insertPendingMutation({
         accountId: authStore.accountId,
-        mutationType: 'send',
+        mutationType: MUTATION_TYPE.SEND,
         targetMessageId: null,
         requestJson: JSON.stringify({
           identityId: identity.remote_id,
@@ -139,17 +155,13 @@ export const useComposeStore = defineStore('compose', () => {
         ? await repo.runMutation(authStore.accountId, mutation.id)
         : await repo.drainOutbox(authStore.accountId);
       if (result.failed > 0) {
-        status.value = COMPOSE_STATE.FAILED;
-        error.value = 'Send failed; the message stays in your outbox.';
-        return false;
+        return failSend('Send failed; the message stays in your outbox.');
       }
       status.value = COMPOSE_STATE.SENT;
       close();
       return true;
-    } catch (err) {
-      status.value = COMPOSE_STATE.FAILED;
-      error.value = err?.message ?? String(err);
-      return false;
+    } catch (err: any) {
+      return failSend(err?.message ?? String(err));
     }
   }
 
@@ -169,7 +181,7 @@ export const useComposeStore = defineStore('compose', () => {
   };
 });
 
-function parseAddressList(input) {
+function parseAddressList(input: string): ParsedAddress[] {
   if (!input) return [];
   return input
     .split(',')

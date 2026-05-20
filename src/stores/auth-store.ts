@@ -1,7 +1,7 @@
 /**
  * Auth + connection lifecycle. Holds the OIDC handle, the active local
  * account id, and an enum-typed status that the UI maps to its
- * presentation states. No DOM manipulation here - components are
+ * presentation states. No DOM manipulation here — components are
  * responsible for any class toggles or focus management; this store
  * only exposes state and actions.
  */
@@ -11,30 +11,31 @@ import { computed, ref } from 'vue';
 
 import { initOidc, getOidc } from '../services/auth.js';
 import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL } from '../defines.js';
-import { AUTH_STATE } from '../constants/states.js';
+import { AUTH_STATE } from '../constants/states';
+import type { AuthState } from '../constants/states';
 import { getRepositoryAsync } from '../composables/use-repository.js';
 
+interface BasicAuth { kind: 'basic'; username: string; password: string }
+interface BearerAuth { kind: 'bearer'; token: string }
+type ConnectAuth = BasicAuth | BearerAuth;
+
+function parseServerUrl(): { origin: string; hostname: string } {
+  try {
+    const url = new URL(JMAP_SERVER_URL);
+    return { origin: url.origin, hostname: url.hostname };
+  } catch {
+    return { origin: JMAP_SERVER_URL ?? '', hostname: JMAP_SERVER_URL ?? '' };
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const status = ref(AUTH_STATE.IDLE);
-  const accountId = ref(null);
-  const username = ref(null);
-  const error = ref(null);
+  const status = ref<AuthState>(AUTH_STATE.IDLE);
+  const accountId = ref<number | null>(null);
+  const username = ref<string | null>(null);
+  const error = ref<string | null>(null);
 
-  const serverOrigin = computed(() => {
-    try {
-      return new URL(JMAP_SERVER_URL).origin;
-    } catch {
-      return JMAP_SERVER_URL ?? '';
-    }
-  });
-
-  const serverHostname = computed(() => {
-    try {
-      return new URL(JMAP_SERVER_URL).hostname;
-    } catch {
-      return JMAP_SERVER_URL ?? '';
-    }
-  });
+  const serverOrigin = computed(() => parseServerUrl().origin);
+  const serverHostname = computed(() => parseServerUrl().hostname);
 
   const isOidcReady = computed(() =>
     status.value === AUTH_STATE.OIDC_READY
@@ -47,7 +48,7 @@ export const useAuthStore = defineStore('auth', () => {
    * Run the OIDC bootstrap and, if the user already has a session, kick
    * off a connect right away. Safe to call once on app boot.
    */
-  async function initialize() {
+  async function initialize(): Promise<void> {
     if (status.value !== AUTH_STATE.IDLE) {
       return;
     }
@@ -58,7 +59,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (oidc?.isUserLoggedIn) {
         await connectViaOidc();
       }
-    } catch (err) {
+    } catch (err: any) {
       status.value = AUTH_STATE.FAILED;
       error.value = err?.message ?? String(err);
     }
@@ -67,7 +68,9 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * Connect with username + password (self-host basic auth).
    */
-  async function connectWithPassword({ username: u, password }) {
+  async function connectWithPassword(
+    { username: u, password }: { username: string; password: string },
+  ): Promise<boolean> {
     if (!u || !password) {
       error.value = 'Username and password are required.';
       status.value = AUTH_STATE.FAILED;
@@ -80,7 +83,7 @@ export const useAuthStore = defineStore('auth', () => {
    * Connect via OIDC. If the user is not yet logged in this redirects
    * them to the IdP; on return, initialize() will pick the session up.
    */
-  async function connectViaOidc() {
+  async function connectViaOidc(): Promise<boolean> {
     const oidc = getOidc();
     if (!oidc) {
       error.value = 'OIDC is not available on this server.';
@@ -92,10 +95,13 @@ export const useAuthStore = defineStore('auth', () => {
       return false;
     }
     const tokens = await oidc.getTokens();
-    return _connect({ kind: 'bearer', token: tokens.accessToken }, tokens?.decodedIdToken?.email ?? null);
+    return _connect(
+      { kind: 'bearer', token: tokens.accessToken },
+      tokens?.decodedIdToken?.email ?? null,
+    );
   }
 
-  async function _connect(auth, displayName) {
+  async function _connect(auth: ConnectAuth, displayName: string | null): Promise<boolean> {
     status.value = AUTH_STATE.CONNECTING;
     error.value = null;
     try {
@@ -110,14 +116,14 @@ export const useAuthStore = defineStore('auth', () => {
       username.value = displayName;
       status.value = AUTH_STATE.CONNECTED;
       return true;
-    } catch (err) {
+    } catch (err: any) {
       status.value = AUTH_STATE.FAILED;
       error.value = err?.message ?? String(err);
       return false;
     }
   }
 
-  async function logout() {
+  async function logout(): Promise<void> {
     if (accountId.value != null) {
       try {
         const repo = await getRepositoryAsync();

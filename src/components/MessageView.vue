@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import {
   computed,
   nextTick,
@@ -241,7 +241,7 @@ function onIframeLoad() {
   scheduleMeasure(300);
   scheduleMeasure(600);
 
-  for (const img of Array.from(doc.images ?? [])) {
+  for (const img of Array.from(doc.images ?? []) as HTMLImageElement[]) {
     if (img.complete) continue;
     img.addEventListener('load', measure, { once: true });
     img.addEventListener('error', measure, { once: true });

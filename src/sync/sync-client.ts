@@ -36,8 +36,9 @@ import { SERVICE_KIND } from '../constants/states.js';
  */
 
 export class SyncClient {
+  _backends: Map<number, Map<string, any>>;
+
   constructor() {
-    /** @type {Map<number, Map<string, Backend>>} */
     this._backends = new Map();
   }
 

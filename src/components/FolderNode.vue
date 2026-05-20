@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue';
 
 const props = defineProps({
@@ -65,7 +65,7 @@ const dropStateValue = computed(() => props.dropState?.(props.folder) ?? null);
   />
 </template>
 
-<script>
+<script lang="ts">
 export default { name: 'FolderNode' };
 </script>
 

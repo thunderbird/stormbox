@@ -26,7 +26,7 @@ import { DB_RPC, TABLE_FAMILIES } from './protocol.js';
  * that don't wire a backend just leave the hook unset; the no-op
  * default keeps the handler self-contained.
  */
-export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}) {
+export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), hooks: any = {}) {
   const onMutationInserted = typeof hooks.onMutationInserted === 'function'
     ? hooks.onMutationInserted
     : () => {};
@@ -1127,13 +1127,13 @@ export function makeHandlers(engine, broadcaster = noopBroadcaster(), hooks = {}
  * for 'foo\uffff' returns the next code point. Returns null when there is
  * no representable next code point - callers should fall back to LIKE then.
  */
-function nextPrefix(prefix) {
+function nextPrefix(prefix: string): string | null {
   if (!prefix) {
     return prefix;
   }
   const codePoints = Array.from(prefix);
   for (let i = codePoints.length - 1; i >= 0; i -= 1) {
-    const cp = codePoints[i].codePointAt(0);
+    const cp = codePoints[i].codePointAt(0)!;
     if (cp < 0x10ffff) {
       codePoints[i] = String.fromCodePoint(cp + 1);
       return codePoints.slice(0, i + 1).join('');

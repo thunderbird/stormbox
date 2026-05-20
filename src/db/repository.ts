@@ -34,17 +34,17 @@ export function createRepository({ workerUrl }) {
 }
 
 export class Repository {
-  /**
-   * @param {MessagePort} port
-   * @param {BroadcastChannel} channel
-   */
-  constructor(port, channel) {
+  _port: MessagePort;
+  _channel: BroadcastChannel;
+  _nextId: number;
+  _pending: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  _listeners: Set<(tables: string[]) => void>;
+
+  constructor(port: MessagePort, channel: BroadcastChannel) {
     this._port = port;
     this._channel = channel;
     this._nextId = 1;
-    /** @type {Map<number, { resolve: (v: any) => void, reject: (e: any) => void }>} */
     this._pending = new Map();
-    /** @type {Set<(tables: string[]) => void>} */
     this._listeners = new Set();
 
     port.addEventListener('message', (msg) => this._onMessage(msg));

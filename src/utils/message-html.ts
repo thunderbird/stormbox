@@ -125,7 +125,7 @@ export function buildBodyCss(colorScheme = 'light') {
  * @returns {string} Self-contained HTML document suitable for use as
  *   the `srcdoc` attribute of an iframe.
  */
-export function buildMessageSrcDoc(sanitizedHtml, opts = {}) {
+export function buildMessageSrcDoc(sanitizedHtml: string, opts: { colorScheme?: string } = {}) {
   const colorScheme = opts.colorScheme === 'dark' ? 'dark' : 'light';
   const body = sanitizedHtml || '';
   const bodyCss = buildBodyCss(colorScheme);

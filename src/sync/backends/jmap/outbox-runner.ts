@@ -56,31 +56,35 @@ const DEFAULT_BACKOFF_CAP_MS = 60_000;
 const DRAIN_BATCH_SIZE = 50;
 
 export class OutboxRunner {
-  /**
-   * @param {object} args
-   * @param {number} args.accountId
-   * @param {Record<string,(p:any)=>Promise<any>>} args.handlers
-   *   the DB_RPC handler map (uses DB_RPC.QUERY for everything).
-   * @param {(row: object) => Promise<{ok: boolean, error?: object}>} args.processRow
-   *   per-row JMAP dispatch; failures should resolve with ok=false rather
-   *   than throwing, but a throw is also caught and treated as transport.
-   * @param {object} [args.options]
-   * @param {number} [args.options.maxAttempts=8]
-   * @param {number} [args.options.notifyDelayMs=10]
-   *   debounce window for notify(); coalesces a burst of inserts from a
-   *   rapid scroll-through-unread into a single drain pass.
-   * @param {number} [args.options.backoffBaseMs=1000]
-   * @param {number} [args.options.backoffCapMs=60000]
-   * @param {(cb:()=>void,ms:number)=>any} [args.options.setTimeoutFn]
-   *   injected so tests can drive the clock without real timers.
-   * @param {(id:any)=>void} [args.options.clearTimeoutFn]
-   * @param {()=>number} [args.options.now] epoch-ms source.
-   */
+  _accountId: number;
+  _handlers: Record<string, (p: any) => Promise<any>>;
+  _processRow: (row: any) => Promise<{ ok: boolean; error?: any }>;
+  _maxAttempts: number;
+  _notifyDelayMs: number;
+  _backoffBaseMs: number;
+  _backoffCapMs: number;
+  _setTimeout: any;
+  _clearTimeout: any;
+  _now: () => number;
+  _stopped: boolean;
+  _drainInflight: Promise<void> | null;
+  _kickPending: boolean;
+  _notifyTimer: any;
+  _wakeTimer: any;
+  _targetLocks: Map<string, Promise<void>>;
+  _awaiters: Map<number, Array<{ resolve: (v: any) => void }>>;
+  _tallyListeners: Set<(id: number, outcome: any) => void>;
+
   constructor({
     accountId,
     handlers,
     processRow,
     options = {},
+  }: {
+    accountId: number;
+    handlers: Record<string, (p: any) => Promise<any>>;
+    processRow: (row: any) => Promise<{ ok: boolean; error?: any }>;
+    options?: any;
   }) {
     if (accountId == null) throw new Error('OutboxRunner requires accountId');
     if (!handlers) throw new Error('OutboxRunner requires handlers');
@@ -96,16 +100,13 @@ export class OutboxRunner {
     this._backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this._backoffCapMs = options.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
     this._setTimeout = options.setTimeoutFn
-      ?? ((cb, ms) => setTimeout(cb, ms));
+      ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
     this._clearTimeout = options.clearTimeoutFn
-      ?? ((id) => clearTimeout(id));
+      ?? ((id: any) => clearTimeout(id));
     this._now = options.now ?? (() => Date.now());
 
-    /** target-lock map: key -> Promise tail */
     this._targetLocks = new Map();
-    /** mutationId -> [{ resolve }, ...] (for runMutation awaits) */
     this._awaiters = new Map();
-    /** Set of listeners notified on every settled row; used by drain() */
     this._tallyListeners = new Set();
     this._notifyTimer = null;
     this._wakeTimer = null;
@@ -181,7 +182,7 @@ export class OutboxRunner {
       params: [this._now(), this._accountId, mutationId],
     });
 
-    const outcomePromise = new Promise((resolve) => {
+    const outcomePromise = new Promise<{ ok: boolean }>((resolve) => {
       const list = this._awaiters.get(mutationId) ?? [];
       list.push({ resolve });
       this._awaiters.set(mutationId, list);

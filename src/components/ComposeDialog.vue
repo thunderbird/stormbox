@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Bold,
@@ -240,7 +240,7 @@ function handleUndoStateChange(event) {
   };
 }
 
-function runEditorCommand(command, { restore = true } = {}) {
+function runEditorCommand(command: (editor: any) => void, { restore = true } = {}) {
   if (!squire) return;
   if (restore) {
     squire.focus();
@@ -256,14 +256,14 @@ function runEditorCommand(command, { restore = true } = {}) {
   }
 }
 
-function toggleFormat(tag, remove = null, options) {
-  runEditorCommand((editor) => {
+function toggleFormat(tag: string, remove: any = null, options?: any) {
+  runEditorCommand((editor: any) => {
     const range = editor.getSelection();
     toggleFormatInRange(editor, tag, remove, range);
   }, options);
 }
 
-function toggleFormatInRange(editor, tag, remove = null, range = editor.getSelection()) {
+function toggleFormatInRange(editor: any, tag: string, remove: any = null, range: any = editor.getSelection()) {
   ensureEditorBlocks();
   if (editor.hasFormat(tag, null, range)) {
     editor.changeFormat(null, { tag }, range);
@@ -301,8 +301,8 @@ function ensureEditorBlocks() {
   });
 }
 
-function toggleList(type) {
-  runEditorCommand((editor) => {
+function toggleList(type: 'UL' | 'OL') {
+  runEditorCommand((editor: any) => {
     const path = editor.getPath();
     if (type === 'UL') {
       /(?:^|>)UL/.test(path) ? editor.removeList() : editor.makeUnorderedList();
@@ -312,8 +312,8 @@ function toggleList(type) {
   });
 }
 
-function adjustIndent(delta) {
-  runEditorCommand((editor) => {
+function adjustIndent(delta: number) {
+  runEditorCommand((editor: any) => {
     const path = editor.getPath();
     const inList = /(?:^|>)[OU]L/.test(path);
     const inQuote = /(?:^|>)BLOCKQUOTE/.test(path);
@@ -326,20 +326,20 @@ function adjustIndent(delta) {
   });
 }
 
-function applyFontFace(value) {
-  runEditorCommand((editor) => editor.setFontFace(value || null));
+function applyFontFace(value: string) {
+  runEditorCommand((editor: any) => editor.setFontFace(value || null));
 }
 
-function applyFontSize(value) {
-  runEditorCommand((editor) => editor.setFontSize(value || null));
+function applyFontSize(value: string) {
+  runEditorCommand((editor: any) => editor.setFontSize(value || null));
 }
 
-function applyTextColor(value) {
-  runEditorCommand((editor) => editor.setTextColor(value || null));
+function applyTextColor(value: string) {
+  runEditorCommand((editor: any) => editor.setTextColor(value || null));
 }
 
-function applyHighlightColor(value) {
-  runEditorCommand((editor) => editor.setHighlightColor(value || null));
+function applyHighlightColor(value: string) {
+  runEditorCommand((editor: any) => editor.setHighlightColor(value || null));
 }
 
 function promptForLink() {
@@ -379,8 +379,8 @@ function syncAfterKeyboardCommand(editor, range = null) {
   updateToolbarState();
 }
 
-function registerKeyboardShortcut(key, command) {
-  squire.setKeyHandler(key, (editor, event, range) => {
+function registerKeyboardShortcut(key: string, command: (editor: any, range?: any) => void) {
+  squire.setKeyHandler(key, (editor: any, event: KeyboardEvent, range: any) => {
     event.preventDefault();
     command(editor, range);
     syncAfterKeyboardCommand(editor, range);
@@ -453,8 +453,8 @@ function scheduleToolbarOverflowUpdate() {
 }
 
 function ensureSquireSanitizer() {
-  window.DOMPurify ??= DOMPurify;
-  globalThis.DOMPurify ??= DOMPurify;
+  (window as any).DOMPurify ??= DOMPurify;
+  (globalThis as any).DOMPurify ??= DOMPurify;
 }
 
 function observeToolbarSize() {
@@ -527,7 +527,7 @@ async function onRecipientInput(field) {
   autocompleteSuggestions.value = await contactsStore.autocomplete(prefix, 8);
 }
 
-function applySuggestion(field, candidate) {
+function applySuggestion(field: 'to' | 'cc' | 'bcc', candidate: any) {
   const value = composeStore.draft[field];
   const lastTokenIdx = value.lastIndexOf(',');
   const prefix = lastTokenIdx >= 0 ? value.slice(0, lastTokenIdx + 1) + ' ' : '';
@@ -639,7 +639,7 @@ async function send() {
             aria-label="Font family"
             title="Font family"
             @mousedown="rememberSelection"
-            @change="applyFontFace($event.target.value)"
+            @change="applyFontFace(($event.target as HTMLInputElement | HTMLSelectElement).value)"
           >
             <option value="">Font</option>
             <option v-for="font in fontOptions" :key="font.value" :value="font.value">
@@ -652,7 +652,7 @@ async function send() {
             aria-label="Font size"
             title="Font size"
             @mousedown="rememberSelection"
-            @change="applyFontSize($event.target.value)"
+            @change="applyFontSize(($event.target as HTMLInputElement | HTMLSelectElement).value)"
           >
             <option value="">Size</option>
             <option v-for="size in fontSizeOptions" :key="size.value" :value="size.value">
@@ -666,7 +666,7 @@ async function send() {
               :value="toolbarState.textColor"
               aria-label="Text color"
               @mousedown="rememberSelection"
-              @input="applyTextColor($event.target.value)"
+              @input="applyTextColor(($event.target as HTMLInputElement | HTMLSelectElement).value)"
             />
           </label>
           <label class="toolbar-color" title="Highlight color">
@@ -676,7 +676,7 @@ async function send() {
               :value="toolbarState.highlightColor"
               aria-label="Highlight color"
               @mousedown="rememberSelection"
-              @input="applyHighlightColor($event.target.value)"
+              @input="applyHighlightColor(($event.target as HTMLInputElement | HTMLSelectElement).value)"
             />
           </label>
         </div>
@@ -778,7 +778,7 @@ async function send() {
                   :value="toolbarState.fontFamily"
                   aria-label="Font family"
                   @mousedown="rememberSelection"
-                  @change="applyFontFace($event.target.value)"
+                  @change="applyFontFace(($event.target as HTMLInputElement | HTMLSelectElement).value)"
                 >
                   <option value="">Default</option>
                   <option v-for="font in fontOptions" :key="font.value" :value="font.value">
@@ -792,7 +792,7 @@ async function send() {
                   :value="toolbarState.fontSize"
                   aria-label="Font size"
                   @mousedown="rememberSelection"
-                  @change="applyFontSize($event.target.value)"
+                  @change="applyFontSize(($event.target as HTMLInputElement | HTMLSelectElement).value)"
                 >
                   <option value="">Default</option>
                   <option v-for="size in fontSizeOptions" :key="size.value" :value="size.value">
@@ -807,7 +807,7 @@ async function send() {
                   :value="toolbarState.textColor"
                   aria-label="Text color"
                   @mousedown="rememberSelection"
-                  @input="applyTextColor($event.target.value)"
+                  @input="applyTextColor(($event.target as HTMLInputElement | HTMLSelectElement).value)"
                 />
               </label>
               <label class="toolbar-menu-field">
@@ -817,7 +817,7 @@ async function send() {
                   :value="toolbarState.highlightColor"
                   aria-label="Highlight color"
                   @mousedown="rememberSelection"
-                  @input="applyHighlightColor($event.target.value)"
+                  @input="applyHighlightColor(($event.target as HTMLInputElement | HTMLSelectElement).value)"
                 />
               </label>
             </div>

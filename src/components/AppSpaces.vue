@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { Mail, Users } from 'lucide-vue-next';
 
 const props = defineProps({

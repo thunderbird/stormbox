@@ -379,8 +379,14 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   return { ok: true, response: result };
 }
 
-async function submitEmailSet({ transport, account, useWebSocket, update, destroy }) {
-  const params = { accountId: account.remote_account_id };
+async function submitEmailSet({ transport, account, useWebSocket, update, destroy }: {
+  transport: any;
+  account: any;
+  useWebSocket?: boolean;
+  update?: any;
+  destroy?: any;
+}) {
+  const params: any = { accountId: account.remote_account_id };
   if (update) params.update = update;
   if (destroy) params.destroy = destroy;
   const result = await callJmap(transport, {

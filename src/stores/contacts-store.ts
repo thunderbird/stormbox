@@ -13,18 +13,26 @@ import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/use-repository.js';
-import { useAuthStore } from './auth-store.js';
+import { useAuthStore } from './auth-store';
 import { TABLE_FAMILIES } from '../db/protocol.js';
+import type { AddressbookRow, ContactListRow } from '../types';
+
+export interface AutocompleteCandidate {
+  name?: string | null;
+  email: string;
+  source: 'contact' | 'history';
+  is_preferred?: 0 | 1;
+}
 
 export const useContactsStore = defineStore('contacts', () => {
   const authStore = useAuthStore();
-  const addressbooks = ref([]);
-  const contacts = ref([]);
-  const error = ref(null);
-  let repo = null;
-  let unsubscribe = null;
+  const addressbooks = ref<any[]>([]);
+  const contacts = ref<any[]>([]);
+  const error = ref<string | null>(null);
+  let repo: any = null;
+  let unsubscribe: (() => void) | null = null;
 
-  async function attach() {
+  async function attach(): Promise<void> {
     if (repo) return;
     repo = await getRepositoryAsync();
     unsubscribe = repo.subscribe(onTablesTouched);
@@ -42,13 +50,13 @@ export const useContactsStore = defineStore('contacts', () => {
     );
   }
 
-  function detach() {
+  function detach(): void {
     unsubscribe?.();
     unsubscribe = null;
     repo = null;
   }
 
-  function onTablesTouched(tables) {
+  function onTablesTouched(tables: string[]): void {
     if (!tables.includes(TABLE_FAMILIES.CONTACTS)) return;
     if (authStore.accountId == null) return;
     refresh().catch((err) => {
@@ -56,30 +64,30 @@ export const useContactsStore = defineStore('contacts', () => {
     });
   }
 
-  async function refresh() {
+  async function refresh(): Promise<void> {
     await Promise.all([refreshAddressbooks(), refreshContacts()]);
   }
 
-  async function refreshAddressbooks() {
+  async function refreshAddressbooks(): Promise<void> {
     if (!repo || authStore.accountId == null) {
       addressbooks.value = [];
       return;
     }
     try {
       addressbooks.value = await repo.listAddressbooks(authStore.accountId);
-    } catch (err) {
+    } catch (err: any) {
       error.value = err?.message ?? String(err);
     }
   }
 
-  async function refreshContacts(options = {}) {
+  async function refreshContacts(options: { limit?: number } = {}): Promise<void> {
     if (!repo || authStore.accountId == null) {
       contacts.value = [];
       return;
     }
     try {
       contacts.value = await repo.listContacts(authStore.accountId, options);
-    } catch (err) {
+    } catch (err: any) {
       error.value = err?.message ?? String(err);
     }
   }
@@ -89,7 +97,7 @@ export const useContactsStore = defineStore('contacts', () => {
    * can `await store.listContacts()` without depending on the watch
    * having already fired. Returns the same array bound to `contacts`.
    */
-  async function listContacts(options = {}) {
+  async function listContacts(options: { limit?: number } = {}): Promise<any[]> {
     await refreshContacts(options);
     return contacts.value;
   }
@@ -98,7 +106,7 @@ export const useContactsStore = defineStore('contacts', () => {
    * Resolve a typeahead prefix into a list of {name, email, source}
    * candidates. `source` is 'contact' or 'history'.
    */
-  async function autocomplete(prefix, limit = 20) {
+  async function autocomplete(prefix: string, limit = 20): Promise<AutocompleteCandidate[]> {
     if (!repo || authStore.accountId == null || !prefix) {
       return [];
     }

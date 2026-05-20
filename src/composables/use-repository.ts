@@ -13,7 +13,7 @@ let repoPromise = null;
 export function getRepositoryAsync() {
   if (!repoPromise) {
     repoPromise = (async () => {
-      const workerUrl = new URL('../db/shared-worker.js', import.meta.url);
+      const workerUrl = new URL('../db/shared-worker.ts', import.meta.url);
       const repo = await createRepository({ workerUrl });
       // Expose on window in dev/test builds so Playwright (and you in
       // devtools) can poke at the repository directly. No-op in

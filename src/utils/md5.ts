@@ -1,5 +1,6 @@
-/* md5 (libravatar) */
-export function md5(s) {
+/* md5 (libravatar) — third-party implementation, kept verbatim. */
+// @ts-nocheck
+export function md5(s: string): string {
   function L(k, d) {
     return (k << d) | (k >>> (32 - d));
   }

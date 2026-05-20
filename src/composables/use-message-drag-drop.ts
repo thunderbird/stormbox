@@ -24,11 +24,11 @@ function idsForDrag(messageId, selectedIds) {
   return selected.has(rowId) ? normalizeIds([...selected]) : [rowId];
 }
 
-function startMessageDrag(event, {
+function startMessageDrag(event: any, {
   messageId,
   selectedIds,
   sourceFolderId: sourceId,
-} = {}) {
+}: { messageId?: any; selectedIds?: any; sourceFolderId?: any } = {}) {
   const ids = idsForDrag(messageId, selectedIds);
   if (ids.length === 0) {
     event?.preventDefault?.();

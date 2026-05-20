@@ -48,7 +48,7 @@ function getHandlers() {
     // startup sweep + state-change notify path catches those rows
     // on the next backend.start, so dropping a pre-start notify is
     // safe.
-    const outboxNotifier = { dispatch: () => {} };
+    const outboxNotifier: { dispatch: (accountId?: number, mutationId?: number) => void } = { dispatch: () => {} };
     const repoHandlers = makeHandlers(engine, broadcaster, {
       onMutationInserted: ({ accountId, mutationId }) =>
         outboxNotifier.dispatch(accountId, mutationId),

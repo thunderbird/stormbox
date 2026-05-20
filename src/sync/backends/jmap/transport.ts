@@ -60,8 +60,21 @@ export const JMAP_CAPS = Object.freeze({
  */
 
 export class JmapTransport {
-  /** @param {TransportOptions} options */
-  constructor(options) {
+  _sessionUrl: string;
+  _getAuthHeader: () => Promise<string>;
+  _getWsCredential: any;
+  _wsProxyUrl: string | null;
+  _fetch: typeof fetch;
+  _WebSocket: typeof WebSocket;
+  _session: any;
+  _ws: WebSocket | null;
+  _wsReadyPromise: Promise<void> | null;
+  _wsPending: Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  _stateListeners: Set<(state: any) => void>;
+  _nextWsId: number;
+  _lastPushState: any;
+
+  constructor(options: any) {
     this._sessionUrl = options.sessionUrl;
     this._getAuthHeader = options.getAuthHeader;
     this._getWsCredential = options.getWsCredential ?? null;
@@ -118,7 +131,7 @@ export class JmapTransport {
    * @param {Array<[string, object, string]>} methodCalls
    * @param {{ signal?: AbortSignal }} [opts]
    */
-  async request(using, methodCalls, opts = {}) {
+  async request(using: string[], methodCalls: any[], opts: { signal?: AbortSignal } = {}) {
     if (!this._session?.apiUrl) {
       await this.fetchSession();
     }
@@ -326,7 +339,7 @@ export class JmapTransport {
     }
   }
 
-  _onWsClose() {
+  _onWsClose(_event?: any) {
     for (const pending of this._wsPending.values()) {
       pending.reject(new Error('WebSocket closed mid-request'));
     }
@@ -335,23 +348,23 @@ export class JmapTransport {
     this._wsReadyPromise = null;
   }
 
-  _onWsError() {
+  _onWsError(_event?: any) {
     // Browser WebSocket events surface as opaque error events. The
     // subsequent 'close' event will tear pending requests down.
   }
 }
 
-function waitForOpen(ws) {
+function waitForOpen(ws: WebSocket): Promise<void> {
   if (ws.readyState === ws.OPEN) {
     return Promise.resolve();
   }
-  return new Promise((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const onOpen = () => {
       ws.removeEventListener('open', onOpen);
       ws.removeEventListener('error', onError);
       resolve();
     };
-    const onError = (event) => {
+    const onError = (event: any) => {
       ws.removeEventListener('open', onOpen);
       ws.removeEventListener('error', onError);
       reject(new Error(event?.message ?? 'WebSocket open failed'));
