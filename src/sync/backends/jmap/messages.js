@@ -157,6 +157,7 @@ export async function syncFolderWindowChanges({
           sort,
           sinceQueryState,
           maxChanges,
+          calculateTotal: true,
           collapseThreads,
         },
         'qc1',
