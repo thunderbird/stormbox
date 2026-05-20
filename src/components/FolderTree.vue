@@ -1,14 +1,23 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import {
   Inbox, Send, FileEdit, Archive, Trash2, ShieldAlert, Folder, FolderOpen,
   Newspaper, Rss,
 } from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
+import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
 import FolderNode from './FolderNode.vue';
 
 const mailStore = useMailStore();
+const dragOverFolderId = ref(null);
+const {
+  isDragging,
+  hasMessageDrag,
+  readMessageDrop,
+  setDropEffect,
+  endMessageDrag,
+} = useMessageDragDrop();
 
 const ROLE_ICON = {
   inbox: Inbox,
@@ -87,6 +96,47 @@ function sortKey(folder) {
 }
 
 function pickFolder(id) { mailStore.selectFolder(id); }
+
+function dropStateFor(folder) {
+  if (!isDragging.value || dragOverFolderId.value !== folder.id) return null;
+  return mailStore.canMoveToFolder(folder.id) ? 'valid' : 'invalid';
+}
+
+function onFolderDragEnter(folder, event) {
+  if (!hasMessageDrag(event)) return;
+  dragOverFolderId.value = folder.id;
+  setDropEffect(event, mailStore.canMoveToFolder(folder.id));
+}
+
+function onFolderDragOver(folder, event) {
+  if (!hasMessageDrag(event)) return;
+  dragOverFolderId.value = folder.id;
+  setDropEffect(event, mailStore.canMoveToFolder(folder.id));
+}
+
+function onFolderDragLeave(folder, event) {
+  if (event.currentTarget?.contains?.(event.relatedTarget)) return;
+  if (dragOverFolderId.value === folder.id) {
+    dragOverFolderId.value = null;
+  }
+}
+
+async function onFolderDrop(folder, event) {
+  if (!hasMessageDrag(event)) return;
+  event.preventDefault();
+  const payload = readMessageDrop(event);
+  const canMove = mailStore.canMoveToFolder(folder.id);
+  dragOverFolderId.value = null;
+  try {
+    if (payload?.ids?.length && canMove) {
+      await mailStore.moveMessages(payload.ids, folder.id);
+    }
+  } catch (err) {
+    console.warn('[folder-tree] moveMessages failed', err);
+  } finally {
+    endMessageDrag();
+  }
+}
 </script>
 
 <template>
@@ -97,6 +147,11 @@ function pickFolder(id) { mailStore.selectFolder(id); }
       :folder="folder"
       :current-folder-id="mailStore.currentFolderId"
       :on-pick="pickFolder"
+      :drop-state="dropStateFor"
+      :on-folder-drag-enter="onFolderDragEnter"
+      :on-folder-drag-over="onFolderDragOver"
+      :on-folder-drag-leave="onFolderDragLeave"
+      :on-folder-drop="onFolderDrop"
     />
   </nav>
 </template>

@@ -86,6 +86,7 @@ let outboxRunner;
 let account;
 let inbox;
 let trash;
+let archive;
 let messageId;
 let transport;
 let serverState;
@@ -113,6 +114,7 @@ beforeEach(async () => {
   mailboxTransport.handle('Mailbox/get', () => ({
     list: [
       { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+      { id: 'mb-archive', name: 'Archive', role: 'archive' },
       { id: 'mb-trash', name: 'Trash', role: 'trash' },
     ],
     state: 's0',
@@ -125,6 +127,10 @@ beforeEach(async () => {
   trash = await engine.get(
     'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
     [account.id, 'mb-trash'],
+  );
+  archive = await engine.get(
+    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+    [account.id, 'mb-archive'],
   );
 
   // Seed one message at Inbox position 0 via the real syncFolderWindow.
@@ -258,6 +264,48 @@ function makeRepo() {
 }
 
 describe('mail-store.destroyMessage end-to-end through OutboxRunner', () => {
+  it('moves a message from Inbox to Archive through moveToFolders and updates the rendered Inbox', async () => {
+    let setCallCount = 0;
+    transport.handle('Email/set', (params) => {
+      setCallCount += 1;
+      return { updated: Object.fromEntries(Object.keys(params.update ?? {}).map((id) => [id, null])) };
+    });
+
+    const mailStore = useMailStore();
+    expect(mailStore.currentFolderId).toBe(inbox.id);
+    expect(mailStore.messages.map((m) => m?.remote_id)).toEqual(['e-1']);
+    mailStore.selectedIds = new Set([messageId]);
+    mailStore.selectedMessageId = messageId;
+
+    const result = await mailStore.moveMessages([messageId], archive.id);
+    await flush(30);
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(setCallCount).toBe(1);
+
+    const memberships = await engine.all(
+      'SELECT folder_id FROM folder_messages WHERE message_id = ? ORDER BY folder_id',
+      [messageId],
+    );
+    expect(memberships.map((row) => Number(row.folder_id))).toEqual([archive.id]);
+
+    const inboxView = await engine.get(
+      `SELECT id, total FROM query_views
+        WHERE account_id = ? AND folder_id = ? AND view_type = 'mailbox-window'`,
+      [account.id, inbox.id],
+    );
+    const inboxItems = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ?',
+      [inboxView.id],
+    );
+    expect(inboxItems).toEqual([]);
+    expect(Number(inboxView.total)).toBe(0);
+    expect(mailStore.messages.filter((m) => m != null).map((m) => m.remote_id))
+      .not.toContain('e-1');
+    expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
   it('removes the deleted message from messages.value when moving from Inbox to Trash', async () => {
     const mailStore = useMailStore();
     expect(mailStore.currentFolderId).toBe(inbox.id);

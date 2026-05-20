@@ -8,6 +8,7 @@ import {
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useListSelection } from '../composables/use-list-selection.js';
+import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
 
 const mailStore = useMailStore();
 
@@ -33,6 +34,12 @@ const {
   total: totalForFolder,
   selectedIds,
 });
+
+const {
+  draggedIds,
+  startMessageDrag,
+  endMessageDrag,
+} = useMessageDragDrop();
 
 function handleKeyDown(event) {
   const result = rawHandleKeyDown(event);
@@ -147,6 +154,19 @@ function onCheckboxClick(index, event) {
   handleCheckboxClick(index, event);
 }
 
+function onRowDragStart(message, event) {
+  startMessageDrag(event, {
+    messageId: message?.id,
+    selectedIds: selectedIds.value,
+    sourceFolderId: mailStore.currentFolderId,
+  });
+}
+
+function isDraggingMessage(messageId) {
+  const id = Number(messageId);
+  return Number.isFinite(id) && draggedIds.value.includes(id);
+}
+
 const allLoadedSelected = computed(() => {
   const loadedIds = [];
   for (const row of mailStore.messages) {
@@ -246,6 +266,7 @@ function shortFrom(text) {
             :class="{
               'is-focused': mailStore.selectedMessageId === mailStore.messages[v.index].id,
               'is-selected': isSelected(mailStore.messages[v.index].id),
+              'is-dragging': isDraggingMessage(mailStore.messages[v.index].id),
               'is-unread': Number(mailStore.messages[v.index].is_seen) === 0,
             }"
             :style="{
@@ -261,9 +282,12 @@ function shortFrom(text) {
               class="msg-list__item"
               role="button"
               tabindex="-1"
+              draggable="true"
               @click="onRowClick(v.index)"
+              @dragstart="onRowDragStart(mailStore.messages[v.index], $event)"
+              @dragend="endMessageDrag"
             >
-              <label class="msg-list__check" @click.stop>
+              <label class="msg-list__check" draggable="false" @click.stop>
                 <input
                   type="checkbox"
                   :checked="isSelected(mailStore.messages[v.index].id)"
@@ -440,6 +464,9 @@ function shortFrom(text) {
 }
 .msg-list__items li.is-selected.is-focused .msg-list__item {
   background: var(--rowActive);
+}
+.msg-list__items li.is-dragging .msg-list__item {
+  opacity: 0.55;
 }
 .msg-list__items li.is-unread .msg-list__from,
 .msg-list__items li.is-unread .msg-list__subject {

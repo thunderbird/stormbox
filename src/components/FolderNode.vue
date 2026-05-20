@@ -5,6 +5,11 @@ const props = defineProps({
   folder: { type: Object, required: true },
   currentFolderId: { type: [Number, String, null], default: null },
   onPick: { type: Function, required: true },
+  dropState: { type: Function, default: null },
+  onFolderDragEnter: { type: Function, default: null },
+  onFolderDragOver: { type: Function, default: null },
+  onFolderDragLeave: { type: Function, default: null },
+  onFolderDrop: { type: Function, default: null },
 });
 
 const current = computed(() => props.currentFolderId === props.folder.id);
@@ -21,15 +26,25 @@ const showIndexProgress = computed(() =>
   && indexPercent.value > 0
   && indexPercent.value < 100,
 );
+const dropStateValue = computed(() => props.dropState?.(props.folder) ?? null);
 </script>
 
 <template>
   <button
     type="button"
     class="folder-node"
-    :class="{ 'is-current': current, 'has-tone': folder.tone }"
+    :class="{
+      'is-current': current,
+      'has-tone': folder.tone,
+      'is-drop-valid': dropStateValue === 'valid',
+      'is-drop-invalid': dropStateValue === 'invalid',
+    }"
     :style="style"
     @click="onPick(folder.id)"
+    @dragenter="onFolderDragEnter?.(folder, $event)"
+    @dragover="onFolderDragOver?.(folder, $event)"
+    @dragleave="onFolderDragLeave?.(folder, $event)"
+    @drop="onFolderDrop?.(folder, $event)"
   >
     <component :is="Icon" :size="18" :stroke-width="1.75" class="folder-node__icon" />
     <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
@@ -42,6 +57,11 @@ const showIndexProgress = computed(() =>
     :folder="child"
     :current-folder-id="currentFolderId"
     :on-pick="onPick"
+    :drop-state="dropState"
+    :on-folder-drag-enter="onFolderDragEnter"
+    :on-folder-drag-over="onFolderDragOver"
+    :on-folder-drag-leave="onFolderDragLeave"
+    :on-folder-drop="onFolderDrop"
   />
 </template>
 
@@ -75,6 +95,15 @@ export default { name: 'FolderNode' };
   background: var(--rowActive);
   color: var(--text);
   font-weight: 500;
+}
+.folder-node.is-drop-valid {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.folder-node.is-drop-invalid {
+  background: color-mix(in srgb, #d93025 12%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #d93025 55%, transparent);
+  cursor: not-allowed;
 }
 .folder-node__icon {
   flex-shrink: 0;
