@@ -98,6 +98,11 @@ Live Playwright specs run against the **thunderbird-accounts** dev stack
 vendored at `thunderbird-accounts/` (git submodule). Clone with
 `git clone --recurse-submodules` or `git submodule update --init`.
 
+Do **not** modify or commit inside the `thunderbird-accounts/` submodule
+unless the user directly asks for a submodule change. Stormbox-local setup
+should be handled from this repo (for example via `tests/fixtures/configure-*`)
+so the parent repo can remain pinned to an upstream submodule commit.
+
 Stormbox stays on **HTTPS with a self-signed cert** (`@vitejs/plugin-basic-ssl`)
 so OPFS / SharedWorker / SubtleCrypto work. Keycloak (:8999) and Stalwart JMAP
 (:8081) are plain HTTP on the host; when `VITE_LOCAL_STACK=1`, Vite reverse-
