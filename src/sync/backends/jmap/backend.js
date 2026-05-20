@@ -94,27 +94,20 @@ export class JmapBackend {
     // once; we fetch only the most recent few and let the rest
     // fall back to click-time fetch.
     this._eagerBodyPrefetchCap = options.eagerBodyPrefetchCap ?? 10;
-    // Indexer tuning. Production defaults are sized to take ~5s end
-    // to end on a 3k-message Archives over a healthy WebSocket:
-    // five round trips back-to-back per tick, 250 ms between ticks
-    // (to leave headroom for any foreground ensureFolderWindow call
-    // the user triggers), and a per-tick chunk size that scales
-    // with the folder so big folders amortise the request overhead
-    // better. _selectIndexerChunkSize clamps against
-    // urn:ietf:params:jmap:core's maxObjectsInGet so we never ask
-    // for more records than the server is willing to return.
-    // Tuning notes (Stalwart 0.15, ~3000-message Archives, WS over localhost):
-    //   - Per-chunk wall-clock grows with position: ~4.5s at offset 0,
-    //     ~9s at offset 2500. Server-side Email/query cost dominates;
-    //     bigger chunks (500) amortise the JMAP envelope overhead but
-    //     can't beat Stalwart's per-position scan cost.
-    //   - Total wall-clock for 3000 messages is ~50s at these settings.
-    //     The floor is set by Stalwart; further speedup would need
-    //     server-side changes or a different sync primitive (e.g.
-    //     batched Email/query splits over parallel WS frames).
-    //   - 250 ms inter-tick delay is mostly there to release the event
-    //     loop between bursts; the yield-to-foreground check inside
-    //     ensureFolderIndex covers the user-clicked-mid-tick case.
+    // Indexer tuning. The indexer can run for large folders while the
+    // user is actively reading mail, so its work must be split into
+    // foreground-sized chunks. Each chunk writes query_view_items,
+    // messages, addresses, keywords, and folder membership through the
+    // single OPFS SQLite connection; large background chunks make a
+    // user-driven scroll/body read wait behind that write lock even
+    // when the JMAP response itself is already back.
+    //
+    // Five 100-row chunks per tick still covers 500 positions every
+    // ~250 ms tick when idle, but gives foreground ensureFolderWindow
+    // calls a chance to interrupt between bounded SQLite transactions.
+    // _selectIndexerChunkSize still clamps against
+    // urn:ietf:params:jmap:core's maxObjectsInGet so we never ask for
+    // more records than the server is willing to return.
     this._indexerTickDelayMs = options.indexerTickDelayMs ?? 250;
     this._indexerChunksPerTick = options.indexerChunksPerTick ?? 5;
     /** @type {number | null} cached urn:ietf:params:jmap:core
@@ -540,28 +533,19 @@ export class JmapBackend {
   }
 
   /**
-   * Tiered chunk-size selection. Small folders fit in one or two
-   * chunks anyway, so the default 100 is fine and avoids over-asking
-   * for short folders. Medium folders pay the per-request overhead
-   * a bunch of times if we stay at 100, so we bump them. Large
-   * folders are where the latency really matters; 500 records of
-   * the EMAIL_LIST_PROPERTIES set is ~500 KB per response, well
-   * within the JMAP envelope and the WS frame size.
+   * Background indexer chunk-size selection.
+   *
+   * Keep chunks aligned with the foreground page size. Bigger chunks
+   * improve idle throughput slightly, but they also hold the OPFS
+   * SQLite lock across several hundred message/address/keyword writes.
+   * That makes a user-driven folder window or body display wait behind
+   * background indexing even when Stalwart answered quickly.
    *
    * Clamped against the server-advertised maxObjectsInGet so we
    * never trip a 'tooManyObjectsInGet' SetError (RFC 8620 §3.5).
    */
-  _selectIndexerChunkSize(folderTotal, serverCap) {
-    const total = Number(folderTotal ?? 0);
-    // Tiered by folder size. Measurement on Stalwart 0.15: per-record
-    // wall-clock for an Email/query+Email/get round trip drops from
-    // ~14 ms/record at limit=100 to ~9 ms/record at limit=500 (and
-    // amortises the round-trip overhead), so bigger chunks are
-    // strictly faster end-to-end. We only stay at 100 for tiny
-    // folders where a single chunk would already over-fetch.
-    let target;
-    if (total < 500) target = 100;
-    else target = 500;
+  _selectIndexerChunkSize(_folderTotal, serverCap) {
+    const target = 100;
     const cap = Number.isFinite(serverCap) && serverCap > 0 ? serverCap : target;
     return Math.max(1, Math.min(target, cap));
   }

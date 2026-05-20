@@ -308,18 +308,17 @@ describe('metadata indexer: production batching defaults', () => {
 });
 
 describe('metadata indexer: chunk-size selection', () => {
-  it('uses 100 for small folders and 500 for everything ≥500', async () => {
-    // Pure unit-level pin on the tiering function — keeps the
-    // contract visible to anyone tweaking the boundaries.
-    // Stalwart measurement: 500-per-chunk has the best per-record
-    // throughput (~9ms/record) vs 100 (~14ms/record), so big
-    // folders amortise the round trip and small ones stay at 100
-    // to avoid over-fetching.
+  it('uses foreground-sized chunks for all folder sizes', async () => {
+    // Pure unit-level pin on the background chunking contract. The
+    // indexer may run while the user is scrolling/clicking, so it
+    // intentionally uses the same 100-row unit as foreground window
+    // loads instead of holding the SQLite lock for several hundred
+    // message/address/keyword writes at a time.
     expect(backend._selectIndexerChunkSize(0, null)).toBe(100);
     expect(backend._selectIndexerChunkSize(499, null)).toBe(100);
-    expect(backend._selectIndexerChunkSize(500, null)).toBe(500);
-    expect(backend._selectIndexerChunkSize(5_000, null)).toBe(500);
-    expect(backend._selectIndexerChunkSize(50_000, null)).toBe(500);
+    expect(backend._selectIndexerChunkSize(500, null)).toBe(100);
+    expect(backend._selectIndexerChunkSize(5_000, null)).toBe(100);
+    expect(backend._selectIndexerChunkSize(50_000, null)).toBe(100);
   });
 
   it('clamps to the server-advertised maxObjectsInGet cap', async () => {
@@ -328,8 +327,8 @@ describe('metadata indexer: chunk-size selection', () => {
     // ever asking for more than the server is willing to serve.
     expect(backend._selectIndexerChunkSize(10_000, 100)).toBe(100);
     expect(backend._selectIndexerChunkSize(10_000, 50)).toBe(50);
-    // If the server cap is generous, the tier still wins.
-    expect(backend._selectIndexerChunkSize(800, 999_999)).toBe(500);
+    // If the server cap is generous, the foreground-sized target still wins.
+    expect(backend._selectIndexerChunkSize(800, 999_999)).toBe(100);
   });
 
   it('reads maxObjectsInGet out of account_capabilities', async () => {
@@ -362,7 +361,7 @@ describe('metadata indexer: chunk-size selection', () => {
     // No core capability registered for this account. The indexer
     // falls back to the tier's target without clamping.
     expect(await backend._loadMaxObjectsInGetCap()).toBeNull();
-    expect(backend._selectIndexerChunkSize(10_000, null)).toBe(500);
+    expect(backend._selectIndexerChunkSize(10_000, null)).toBe(100);
   });
 });
 
