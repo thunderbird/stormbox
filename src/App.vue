@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue';
 import { Plus, LogOut } from 'lucide-vue-next';
 
+import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
+
 import { useAuthStore } from './stores/auth-store.js';
 import { useMailStore } from './stores/mail-store.js';
 import { useContactsStore } from './stores/contacts-store.js';
@@ -37,6 +39,10 @@ const accountLabel = computed(() =>
 const showMessageView = computed(() =>
   mailStore.selectedMessageId != null || mailStore.selectedIds.size > 0,
 );
+
+const shortcutsEnabled = computed(() => authStore.status === AUTH_STATE.CONNECTED);
+
+useThunderbirdShortcuts({ space, enabled: shortcutsEnabled });
 
 onMounted(async () => {
   await authStore.initialize();

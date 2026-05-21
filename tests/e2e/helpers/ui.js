@@ -99,3 +99,20 @@ export function trackConsole(page, consoleLines, { ensureLoaded = false } = {}) 
     });
   }
 }
+
+export async function focusMessageList(page) {
+  const scroller = page.locator('.msg-list__scroller');
+  await expect(scroller).toBeVisible({ timeout: 30_000 });
+  await scroller.focus();
+}
+
+export async function openMessageBySubject(page, subject) {
+  const row = page.locator('.msg-list__item').filter({ hasText: subject }).first();
+  await expect(row).toBeVisible({ timeout: 60_000 });
+  await row.locator('.msg-list__rows').click();
+  await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
+}
+
+export async function readOpenMessageSubject(page) {
+  return ((await page.locator('.message-view__title h2').textContent()) ?? '').trim();
+}

@@ -15,6 +15,7 @@ import {
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useComposeStore } from '../stores/compose-store.js';
+import { invokeThunderbirdShortcut } from '../composables/use-thunderbird-shortcuts.js';
 import {
   ALLOWED_URI_REGEXP,
   IFRAME_SANDBOX,
@@ -187,6 +188,11 @@ function onIframeLoad() {
     a.setAttribute('rel', 'noopener noreferrer');
   });
 
+  const onIframeKeyDown = (event: KeyboardEvent) => {
+    invokeThunderbirdShortcut(event);
+  };
+  doc.addEventListener('keydown', onIframeKeyDown, true);
+
   let active = true;
   const measure = () => {
     if (!active) return;
@@ -256,6 +262,7 @@ function onIframeLoad() {
   }
   iframeMeasurementCleanup = () => {
     active = false;
+    doc.removeEventListener('keydown', onIframeKeyDown, true);
     for (const cleanup of cleanups) cleanup();
   };
 
@@ -298,18 +305,7 @@ function backToList() {
 
 async function reply() {
   if (!message.value) return;
-  composeStore.prepareReply({
-    to: message.value.from_text ?? '',
-    subject: makeReplySubject(message.value.subject),
-    text: body.value?.text ?? '',
-    html: body.value?.html ?? '',
-  });
-}
-
-function makeReplySubject(subject) {
-  const s = (subject ?? '').trim();
-  if (/^re:/i.test(s)) return s;
-  return s ? `Re: ${s}` : 'Re: (no subject)';
+  composeStore.prepareReplyFromMessage(message.value, body.value ?? {});
 }
 
 async function destroy() {

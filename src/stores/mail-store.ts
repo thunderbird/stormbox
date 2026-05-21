@@ -913,6 +913,22 @@ export const useMailStore = defineStore('mail', () => {
     return changed;
   }
 
+  async function toggleManySeen(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    const first = messages.value.find((m) => m?.id === ids[0]);
+    const seen = Number(first?.is_seen ?? 0) === 1;
+    return markManySeen(ids, !seen);
+  }
+
+  async function archiveMessages(ids) {
+    const archive = folders.value.find((f) => f.role === 'archive');
+    if (!archive?.id) {
+      error.value = 'No archive folder is configured.';
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    return moveMessages(ids, archive.id);
+  }
+
   /**
    * Delete one or more messages. Issues exactly one Email/set round
    * trip regardless of how many ids are passed in: single-row delete
@@ -930,7 +946,7 @@ export const useMailStore = defineStore('mail', () => {
    * Returns once the round trip is complete; the caller can re-read
    * mailStore.messages right after for the post-delete state.
    */
-  async function destroyMessages(ids) {
+  async function destroyMessages(ids, { permanent = false } = {}) {
     if (!repo || authStore.accountId == null) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
     // Drop ids that no longer exist in messages (e.g. a previous
@@ -944,7 +960,9 @@ export const useMailStore = defineStore('mail', () => {
       clearSelectionFor(ids);
       return;
     }
-    const mutation = await repo.insertPendingMutation(buildDeleteMutation(liveIds));
+    const mutation = await repo.insertPendingMutation(
+      permanent ? buildPermanentDeleteMutation(liveIds) : buildDeleteMutation(liveIds),
+    );
     const result = typeof repo.runMutation === 'function'
       ? await repo.runMutation(authStore.accountId, mutation.id)
       : await repo.drainOutbox(authStore.accountId);
@@ -1022,8 +1040,12 @@ export const useMailStore = defineStore('mail', () => {
    * named export so the open-message Delete button and any other
    * single-target caller stay readable.
    */
-  async function destroyMessage(messageId) {
-    return destroyMessages([messageId]);
+  async function destroyMessage(messageId, options = {}) {
+    return destroyMessages([messageId], options);
+  }
+
+  async function permanentlyDestroyMessages(ids) {
+    return destroyMessages(ids, { permanent: true });
   }
 
   /**
@@ -1189,6 +1211,17 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
+  function buildPermanentDeleteMutation(messageIds) {
+    const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
+    const target = ids.length === 1 ? ids[0] : null;
+    return {
+      accountId: authStore.accountId,
+      mutationType: MUTATION_TYPE.DESTROY,
+      targetMessageId: target,
+      requestJson: JSON.stringify({ messageIds: ids }),
+    };
+  }
+
   function buildMoveMutation(messageIds: number[], targetFolderId: number, sourceFolderId: number): PendingMutationInsert {
     const ids = normalizeMessageIds(messageIds);
     return {
@@ -1323,10 +1356,13 @@ export const useMailStore = defineStore('mail', () => {
     markRead,
     markUnread,
     markManySeen,
+    toggleManySeen,
     destroyMessage,
     destroyMessages,
+    permanentlyDestroyMessages,
     moveMessage,
     moveMessages,
+    archiveMessages,
     canMoveToFolder,
     clearSelection,
     refresh,

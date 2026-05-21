@@ -13,7 +13,14 @@ import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store.js';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
 import type { ComposeState } from '../constants/states';
-import type { IdentityRow } from '../types';
+import type { IdentityRow, MessageRow } from '../types';
+import {
+  buildQuotedHtml,
+  buildQuotedText,
+  buildReplyAllRecipients,
+  makeForwardSubject,
+  makeReplySubject,
+} from '../utils/compose-quote.js';
 
 interface Draft {
   fromIdx: number;
@@ -101,6 +108,80 @@ export const useComposeStore = defineStore('compose', () => {
     });
   }
 
+  function prepareReplyFromMessage(
+    message: Pick<MessageRow, 'from_text' | 'subject' | 'received_at'>,
+    body: { html?: string | null; text?: string | null } = {},
+  ): void {
+    prepareReply({
+      to: message.from_text ?? '',
+      subject: makeReplySubject(message.subject),
+      html: buildQuotedHtml({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        html: body.html,
+        text: body.text,
+      }),
+      text: buildQuotedText({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        text: body.text,
+      }),
+    });
+  }
+
+  function prepareReplyAll(
+    message: Pick<MessageRow, 'from_text' | 'to_text' | 'subject' | 'received_at'>,
+    body: { html?: string | null; text?: string | null } = {},
+  ): void {
+    const { to, cc } = buildReplyAllRecipients({
+      fromText: message.from_text,
+      toText: message.to_text,
+      selfEmail: fromIdentity.value?.email ?? null,
+    });
+    open({
+      to,
+      cc,
+      subject: makeReplySubject(message.subject),
+      htmlBody: buildQuotedHtml({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        html: body.html,
+        text: body.text,
+      }),
+      textBody: buildQuotedText({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        text: body.text,
+      }),
+    });
+  }
+
+  function prepareForward(
+    message: Pick<MessageRow, 'from_text' | 'subject' | 'received_at'>,
+    body: { html?: string | null; text?: string | null } = {},
+  ): void {
+    open({
+      subject: makeForwardSubject(message.subject),
+      htmlBody: buildQuotedHtml({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        html: body.html,
+        text: body.text,
+      }),
+      textBody: buildQuotedText({
+        from: message.from_text,
+        date: message.received_at,
+        subject: message.subject,
+        text: body.text,
+      }),
+    });
+  }
+
   function failSend(message: string): false {
     status.value = COMPOSE_STATE.FAILED;
     error.value = message;
@@ -177,6 +258,9 @@ export const useComposeStore = defineStore('compose', () => {
     open,
     close,
     prepareReply,
+    prepareReplyFromMessage,
+    prepareReplyAll,
+    prepareForward,
     send,
   };
 });
