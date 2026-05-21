@@ -4,16 +4,20 @@ compatibility_date = "2025-01-01"
 account_id = "407a3cd7b36b3ec71bf765856c90ae8c"
 workers_dev = false
 
-# wsmail.stage-thundermail.com is bound as a Workers Custom Domain
+# wsmail.stage-thundermail.com and wsmail.thundermail.com are bound as
+# Workers Custom Domains
 # (Cloudflare manages the DNS record automatically once `wrangler deploy`
 # is run with this config). The custom-domain mode terminates TLS on
 # Cloudflare's edge, which is what we want for browsers.
 routes = [
   { pattern = "wsmail.stage-thundermail.com", custom_domain = true },
+  { pattern = "wsmail.thundermail.com", custom_domain = true },
 ]
 
 [vars]
-UPSTREAM_BASE = "https://mail.stage-thundermail.com"
+UPSTREAM_BASE_STAGE = "https://mail.stage-thundermail.com"
+UPSTREAM_BASE_PROD = "https://mail.thundermail.com"
+ALLOWED_ORIGINS = "https://webmail.stage-thundermail.com,https://webmail.thundermail.com"
 
 [observability]
 enabled = true

@@ -16,7 +16,10 @@ docker compose -f .devcontainer/docker-compose.yml up -d
 docker compose -f .devcontainer/docker-compose.yml exec app npm run dev
 ```
 
-Access the app at `http://localhost:3000`
+Access the app at **https://localhost:3000** (self-signed cert). Dev defaults to the
+local Keycloak + Stalwart stack via `.env.development`; start it with
+`cd thunderbird-accounts && docker compose up -d` then `npm run stack:seed` and
+`npm run stack:ws-proxy &`.
 
 ### Local Setup (Alternative)
 
@@ -28,8 +31,8 @@ git clone <repository-url>
 cd thundermail-vue
 npm install
 
-# Configure JMAP server (required)
-export VITE_JMAP_SERVER_URL="https://your-jmap-server.com"
+# Optional: override the built-in stage/prod JMAP Worker proxy
+export VITE_JMAP_SERVER_URL="https://your-jmap-proxy-or-server.com"
 
 # Start development server
 npm run dev
@@ -37,14 +40,20 @@ npm run dev
 
 ## Configuration
 
-Set your JMAP server endpoint before running:
+Stormbox defaults to the Cloudflare JMAP Worker proxy for the hosted
+stage/prod domains:
+
+- `webmail.stage-thundermail.com` → `https://wsmail.stage-thundermail.com`
+- `webmail.thundermail.com` → `https://wsmail.thundermail.com`
+
+Override the endpoint when running against another server or proxy:
 
 ```bash
 # Environment variable
-export VITE_JMAP_SERVER_URL="https://your-jmap-server.com"
+export VITE_JMAP_SERVER_URL="https://your-jmap-proxy-or-server.com"
 
 # Or create .env.local file
-echo "VITE_JMAP_SERVER_URL=https://your-jmap-server.com" > .env.local
+echo "VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com" > .env.local
 ```
 
 ## Usage

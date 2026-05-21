@@ -57,12 +57,12 @@ Key principles:
   body prefetch queue, scroll-position persistence, broadcast handling.
 - `src/components/MessageList.vue`: virtualized list using
   `@tanstack/vue-virtual`.
-- `infra/ws-proxy/`: Cloudflare Worker that converts
-  `?access_token=...` query param on `/jmap/ws` upgrades into an
-  upstream `Authorization: Bearer ...` header. Required because
-  browsers cannot set custom headers on `new WebSocket(...)` and
-  Stalwart's `/jmap/ws` only authenticates via the `Authorization`
-  header.
+- `infra/ws-proxy/`: Cloudflare Worker that proxies scoped JMAP HTTP
+  paths for stage/prod CORS and converts `?access_token=...` query
+  param on `/jmap/ws` upgrades into an upstream
+  `Authorization: Bearer ...` header. Required because browsers cannot
+  set custom headers on `new WebSocket(...)` and Stalwart's `/jmap/ws`
+  only authenticates via the `Authorization` header.
 
 ## Storage Schema Highlights
 
@@ -136,17 +136,23 @@ Implication: every SQL operation contends on the same lock. Persistence
 shape matters more than usual because lots of small operations queue
 behind one another.
 
-## WebSocket Authentication
+## JMAP Edge Proxy
 
 Browsers cannot set `Authorization` on `new WebSocket(url, protocols)`,
 and Stalwart's `/jmap/ws` only authenticates via the `Authorization`
-header. The Cloudflare Worker at `wsmail.stage-thundermail.com` accepts
-either `?access_token=<bearer>` (RFC 6750 §2.3 style) or
-`?basic=<base64>` on `/jmap/*`, strips the credential from the
-forwarded URL, sets `Authorization: Bearer ...` (or
-`Basic ...`) on the upstream upgrade, and proxies the WebSocket. This
-removes the need for any client-side header manipulation and lets
+header. The Cloudflare Worker at `wsmail.stage-thundermail.com` and
+`wsmail.thundermail.com` accepts either `?access_token=<bearer>` (RFC
+6750 §2.3 style) or `?basic=<base64>` on `/jmap/ws`, strips the
+credential from the forwarded URL, sets `Authorization: Bearer ...`
+(or `Basic ...`) on the upstream upgrade, and proxies the WebSocket.
+This removes the need for any client-side header manipulation and lets
 Stalwart authenticate normally.
+
+The same Worker proxies `/.well-known/jmap`, `/jmap`, and `/jmap/*`
+over HTTP for the hosted webmail origins. It owns browser-facing CORS
+headers and rewrites the session document's advertised `mail.*` URLs
+back to `wsmail.*`, so the app can use stage/prod Stalwart without
+changing Stalwart CORS settings.
 
 When Stalwart eventually accepts a query-param patch upstream, the
 client just points back at the session-document URL and the proxy

@@ -2,7 +2,7 @@
   "name": "stormbox-ws-proxy",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker that converts ?access_token=<jwt> into Authorization: Bearer on JMAP WebSocket upgrades.",
+  "description": "Cloudflare Worker that proxies JMAP HTTP with CORS and bridges browser WebSocket auth.",
   "scripts": {
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",

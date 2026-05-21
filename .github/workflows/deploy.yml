@@ -39,7 +39,7 @@ jobs:
         run: npm run build
 
       - name: Create CNAME file
-        run: echo "mail-dev.tb.pro" > ./dist/CNAME
+        run: echo "webmail.stage-thundermail.com" > ./dist/CNAME
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

@@ -1,5 +1,13 @@
+function defaultJmapProxyUrl(): string {
+  const hostname = globalThis.location?.hostname;
+  if (hostname === "webmail.thundermail.com") {
+    return "https://wsmail.thundermail.com";
+  }
+  return "https://wsmail.stage-thundermail.com";
+}
+
 export const JMAP_SERVER_URL =
-  import.meta.env.VITE_JMAP_SERVER_URL || "https://mail.stage-thundermail.com";
+  import.meta.env.VITE_JMAP_SERVER_URL || defaultJmapProxyUrl();
 
 export const OIDC_ISSUER =
   import.meta.env.VITE_OIDC_ISSUER || "https://auth-stage.tb.pro/realms/tbpro";
@@ -19,4 +27,4 @@ export const OIDC_CLIENT_ID =
  * browser).
  */
 export const JMAP_WS_PROXY_URL =
-  import.meta.env.VITE_JMAP_WS_PROXY ?? "https://wsmail.stage-thundermail.com/jmap/ws";
+  import.meta.env.VITE_JMAP_WS_PROXY ?? `${defaultJmapProxyUrl()}/jmap/ws`;
