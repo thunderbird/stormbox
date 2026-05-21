@@ -12,12 +12,16 @@ This directory contains the development container configuration for the Stormbox
 
 ### Getting Started
 
-1. **Configure JMAP Server** (required):
+1. **Start the local mail stack** (Keycloak + Stalwart on the Docker host):
 
    ```bash
-   # Create .env.local file in project root
-   echo "JMAP_SERVER_URL=https://your-jmap-server.com" > .env.local
+   cd thunderbird-accounts && docker compose up --build -d
+   # One-time: http://localhost:8087 — admin@example.org / admin, provision Thundermail
+   cd ../stormbox && npm run stack:seed
+   npm run stack:ws-proxy &
    ```
+
+   Dev defaults live in `.env.development` (local stack via Vite proxies, not stage).
 
 2. **Open in VS Code or Cursor:**
 
@@ -32,8 +36,11 @@ This directory contains the development container configuration for the Stormbox
    - Dev server starts automatically on port 3000
 
 4. **Access the Application:**
-   - Open browser to http://localhost:3000
+   - Open browser to **https://localhost:3000** (self-signed cert; accept once)
    - Hot module replacement (HMR) enabled
+
+   To hit **stage** instead, unset local stack in `.env.local`:
+   `VITE_LOCAL_STACK=0` and set `VITE_JMAP_SERVER_URL=https://wsmail.stage-thundermail.com`.
 
 ## Configuration Files
 
