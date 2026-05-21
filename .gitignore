@@ -51,3 +51,7 @@ screenshots/
 
 # Cloudflare Workers (infra/ws-proxy) local state
 .wrangler/
+
+# Client-specific agent rule directories. Generic guidance lives in
+# AGENTS.md; client-specific local files (Cursor, etc.) stay untracked.
+.cursor/

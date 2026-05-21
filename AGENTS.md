@@ -5,9 +5,12 @@ Stormbox is a Vue 3 + Pinia webmail client backed by OPFS SQLite in a
 
 ## Development environment (container only)
 
-Do **not** install dependencies, browsers, or CLI tools on the host
-(`npm install`, `npx playwright install`, system packages, etc.). Run all
-commands inside the dev container (`thundermail-dev`).
+All `npm`, `npx`, `node`, `pnpm`, `yarn`, and `playwright` commands for
+this repo MUST run inside the `thundermail-dev` container. Do **not**
+run them on the host. Do **not** install packages, browsers, or system
+tools on the host. This applies to unit tests, e2e tests, the dev
+server, build, dependency installs, Playwright browser installs, and
+ad-hoc Node scripts that import repo code.
 
 ```bash
 # From the stormbox/ directory — start if needed:
@@ -15,12 +18,36 @@ docker compose -f .devcontainer/docker-compose.yml up -d
 
 # Run any npm/node/playwright command via exec:
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c 'cd /workspace && npm test'
+
+# Long-running processes (stack:ws-proxy, dev) should detach and log
+# inside the container:
+docker compose -f .devcontainer/docker-compose.yml exec -d app bash -c \
+  'cd /workspace && npm run stack:ws-proxy >/tmp/ws-proxy.log 2>&1'
 ```
 
 The project is mounted at `/workspace` in the container. Playwright
 browsers and `node_modules` belong there, not on the host. If the
 container is missing tooling, extend `.devcontainer/Dockerfile` or run
 `npm ci` / `npx playwright install` **inside** the container only.
+
+### Container lifecycle
+
+- Do **not** `docker stop` / `kill` / `pkill` `thundermail-dev` or
+  anything it owns (vite on port 3000, ws-proxy inside it, etc.).
+- If the container looks broken, ask first. Don't recreate it
+  unilaterally.
+- Port 3000 belongs to the container's vite. If something else is on
+  port 3000 on the host, that's a configuration question for the user,
+  not a license to kill the container.
+
+### Why this matters
+
+Host vs. container have different network namespaces, different
+`node_modules`, different Playwright browser caches, and different
+proxy targets (`STORMBOX_IN_DOCKER=1` switches vite proxy hosts).
+Running on the host silently produces a broken environment that does
+not reflect how tests actually run, leading to spurious "fixes" that
+mask the real problem.
 
 ## JMAP and local cache
 
@@ -87,10 +114,49 @@ mutations. Deeper background: `docs/performance-architecture.md` and
 
 Any change that issues a JMAP/sync mutation **and** updates local SQLite
 (`messages`, `folder_messages`, `query_view_items`, `query_views`, …) must
-follow `.cursor/rules/cache-server-tests.mdc`: Playwright E2E on Chromium
-and Firefox, asserting UI + `window.__repo` + direct JMAP (not worker
-read-through), with orphan sweep and cleanup. Run Playwright and perf
-scripts via `docker compose … exec app`, not on the host (see above).
+come with a Playwright E2E test in `stormbox/tests/e2e/`. Unit and
+integration tests are necessary but not sufficient — Node-side fakes
+hide failures we have been bitten by repeatedly:
+
+- Node's `BroadcastChannel` polyfill is more forgiving than the Firefox
+  SharedWorker → tab hop.
+- `wa-sqlite` OPFS timing in Firefox differs from Chromium.
+- Vue reactivity and the TanStack virtualizer only fail at the DOM
+  level, not in mocked stores.
+
+Every such E2E must:
+
+1. Assert the user-visible UI outcome (rows appear / disappear in the
+   rendered list, toolbar counts update, etc.).
+2. Assert the local cache outcome via `window.__repo`
+   (`listMessagesForView`, `queryViewProgress`, raw `db.query` reads).
+3. Assert the server outcome via direct JMAP (`Email/get`, `Email/query`,
+   etc.) — DO NOT rely on the worker's read-through.
+4. Run on BOTH `--project=chromium` AND `--project=firefox`.
+5. Clean up any test-created server-side mail in `finally` AND scrub
+   orphans from prior interrupted runs in `beforeEach`. The
+   `delete-message.spec.js` / `bulk-delete.spec.js` helpers
+   (`sweepOrphanTestMessages`, `cleanupEmail`) are the template.
+6. Use a unique subject prefix (`Delete e2e ...`,
+   `Ghost refresh e2e ...`, etc.) so the sweep can find them.
+
+Operations this rule covers:
+
+- Any new `mutation_type` in `pending_mutations`.
+- Any new `apply*Locally` helper in `src/sync/backends/jmap/outbox-apply.ts`.
+- Any change to `destroyMessage(s)`, `markManySeen`, `refresh`, compose
+  `send`, or `resetViewForFolder` semantics.
+- Any new field surfaced through `MESSAGE_LIST_FOR_VIEW` /
+  `QUERY_VIEW_APPLY_CHANGES` that the mail store re-reads.
+
+If you cannot add the E2E (e.g. the user explicitly defers it), call
+that out in the PR description and link the existing test that comes
+closest, so coverage gaps are visible.
+
+Run Playwright and perf scripts via `docker compose … exec app`, not on
+the host (see above). Live specs require `LOCAL_STACK=1`
+(`npm run test:e2e:local`) and the **thunderbird-accounts** submodule
+stack.
 
 ### Local e2e stack (thunderbird-accounts submodule)
 
