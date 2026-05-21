@@ -44,6 +44,41 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isConnected = computed(() => status.value === AUTH_STATE.CONNECTED);
 
+  const quotaUsedBytes = ref<number | null>(null);
+  const quotaHardLimitBytes = ref<number | null>(null);
+
+  const hasStorageQuota = computed(() =>
+    quotaHardLimitBytes.value != null && quotaHardLimitBytes.value > 0,
+  );
+
+  const storagePercentUsed = computed(() => {
+    if (!hasStorageQuota.value || quotaUsedBytes.value == null) {
+      return 0;
+    }
+    const limit = quotaHardLimitBytes.value!;
+    return limit > 0
+      ? Math.min(100, Math.round((quotaUsedBytes.value / limit) * 100))
+      : 0;
+  });
+
+  const storageProgressWidth = computed(() => `${storagePercentUsed.value}%`);
+
+  function clearStorageQuota() {
+    quotaUsedBytes.value = null;
+    quotaHardLimitBytes.value = null;
+  }
+
+  async function refreshStorageQuota() {
+    if (accountId.value == null) {
+      clearStorageQuota();
+      return;
+    }
+    const repo = await getRepositoryAsync();
+    const snapshot = await repo.getStorageQuota(accountId.value);
+    quotaUsedBytes.value = snapshot?.usedBytes ?? null;
+    quotaHardLimitBytes.value = snapshot?.hardLimitBytes ?? null;
+  }
+
   /**
    * Run the OIDC bootstrap and, if the user already has a session, kick
    * off a connect right away. Safe to call once on app boot.
@@ -115,6 +150,7 @@ export const useAuthStore = defineStore('auth', () => {
       accountId.value = result.accountId;
       username.value = displayName;
       status.value = AUTH_STATE.CONNECTED;
+      refreshStorageQuota().catch(() => {});
       return true;
     } catch (err: any) {
       status.value = AUTH_STATE.FAILED;
@@ -135,6 +171,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     accountId.value = null;
     username.value = null;
+    clearStorageQuota();
     error.value = null;
     status.value = AUTH_STATE.IDLE;
     const oidc = getOidc();
@@ -152,6 +189,12 @@ export const useAuthStore = defineStore('auth', () => {
     serverHostname,
     isOidcReady,
     isConnected,
+    quotaUsedBytes,
+    quotaHardLimitBytes,
+    hasStorageQuota,
+    storagePercentUsed,
+    storageProgressWidth,
+    refreshStorageQuota,
     initialize,
     connectWithPassword,
     connectViaOidc,

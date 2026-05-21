@@ -15,6 +15,7 @@ import MessageList from './components/MessageList.vue';
 import MessageView from './components/MessageView.vue';
 import ComposeDialog from './components/ComposeDialog.vue';
 import ContactsView from './components/ContactsView.vue';
+import StorageUsageBar from './components/StorageUsageBar.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -74,6 +75,7 @@ function startCompose() {
       <p v-else class="sidebar__hint">Switch to Mail to navigate folders.</p>
 
       <footer class="sidebar__footer">
+        <StorageUsageBar />
         <button class="sidebar__signout" type="button" @click="authStore.logout()" :title="`Sign out of ${accountLabel}`">
           <LogOut :size="14" :stroke-width="1.75" />
           <span>Sign out</span>
@@ -201,6 +203,9 @@ function startCompose() {
   margin-top: auto;
   padding: 8px;
   border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .sidebar__signout {
   width: 100%;

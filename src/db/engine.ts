@@ -12,10 +12,12 @@ import * as SQLite from '@journeyapps/wa-sqlite';
 
 import migration001 from './migrations/001_init.sql?raw';
 import migration002 from './migrations/002_outbox_runner.sql?raw';
+import migration003 from './migrations/003_account_quota.sql?raw';
 
 const MIGRATIONS = [
   { version: 1, name: '001_init', sql: migration001 },
   { version: 2, name: '002_outbox_runner', sql: migration002 },
+  { version: 3, name: '003_account_quota', sql: migration003 },
 ];
 
 /**

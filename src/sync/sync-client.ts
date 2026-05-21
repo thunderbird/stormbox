@@ -100,6 +100,10 @@ export class SyncClient {
     return this.getBackend(accountId, SERVICE_KIND.JMAP_MAIL).ensureIdentities();
   }
 
+  ensureQuota(accountId) {
+    return this.getBackend(accountId, SERVICE_KIND.JMAP_MAIL).ensureQuota();
+  }
+
   ensureAddressbooks(accountId) {
     return this.getBackend(accountId, SERVICE_KIND.JMAP_CONTACTS).ensureAddressbooks();
   }

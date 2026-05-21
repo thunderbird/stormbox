@@ -9,7 +9,7 @@ describe('Engine migrations', () => {
       'SELECT value FROM schema_meta WHERE key = ?',
       ['schema_version'],
     );
-    expect(row).toEqual({ value: '2' });
+    expect(row).toEqual({ value: '3' });
     await engine.close();
   });
 
@@ -89,7 +89,7 @@ describe('Engine migrations', () => {
       'SELECT value FROM schema_meta WHERE key = ?',
       ['schema_version'],
     );
-    expect(row.value).toBe('2');
+    expect(row.value).toBe('3');
     await engine.close();
   });
 });

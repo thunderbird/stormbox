@@ -20,6 +20,9 @@ export interface AccountRow {
   created_at: number;
   updated_at: number;
   last_opened_at: number | null;
+  quota_used_bytes: number | null;
+  quota_hard_limit_bytes: number | null;
+  quota_updated_at: number | null;
 }
 
 export interface FolderRow {

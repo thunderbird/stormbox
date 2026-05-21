@@ -138,6 +138,18 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_IDENTITIES]: async ({ accountId }) =>
       syncClient.ensureIdentities(accountId),
 
+    [DB_RPC.SYNC_GET_STORAGE_QUOTA]: async ({ accountId }) => {
+      await syncClient.ensureQuota(accountId);
+      const row = await handlers[DB_RPC.ACCOUNT_GET]({ accountId });
+      if (row?.quota_hard_limit_bytes == null || row.quota_hard_limit_bytes <= 0) {
+        return { usedBytes: null, hardLimitBytes: null };
+      }
+      return {
+        usedBytes: row.quota_used_bytes ?? 0,
+        hardLimitBytes: row.quota_hard_limit_bytes,
+      };
+    },
+
     [DB_RPC.SYNC_ENSURE_ADDRESSBOOKS]: async ({ accountId }) =>
       syncClient.ensureAddressbooks(accountId),
 

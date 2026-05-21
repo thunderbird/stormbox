@@ -36,6 +36,7 @@ import {
 } from './messages.js';
 import { fetchEmailBodies } from './bodies.js';
 import { syncIdentities } from './identities.js';
+import { syncQuota } from './quota.js';
 import {
   syncAddressBooks,
   syncContacts,
@@ -668,6 +669,15 @@ export class JmapBackend {
 
   async ensureIdentities() {
     return syncIdentities({
+      transport: this.transport,
+      account: this.account,
+      handlers: this.handlers,
+      useWebSocket: this._wsReady(),
+    });
+  }
+
+  async ensureQuota() {
+    return syncQuota({
       transport: this.transport,
       account: this.account,
       handlers: this.handlers,

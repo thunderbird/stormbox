@@ -328,6 +328,14 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_IDENTITIES, { accountId });
   }
 
+  /**
+   * Fetch storage quota from JMAP (if supported), persist locally, and
+   * return the snapshot. Null limits mean unlimited / not configured.
+   */
+  getStorageQuota(accountId) {
+    return this.call(DB_RPC.SYNC_GET_STORAGE_QUOTA, { accountId });
+  }
+
   ensureAddressbooks(accountId) {
     return this.call(DB_RPC.SYNC_ENSURE_ADDRESSBOOKS, { accountId });
   }

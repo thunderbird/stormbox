@@ -18,6 +18,10 @@ export const DB_RPC = Object.freeze({
   ACCOUNT_LIST: 'account.list',
   ACCOUNT_UPSERT: 'account.upsert',
   ACCOUNT_GET_BY_REMOTE: 'account.getByRemote',
+  /** Worker-internal: persist quota snapshot after Quota/get. */
+  ACCOUNT_QUOTA_UPSERT: 'account.quotaUpsert',
+  /** Worker-internal: read accounts row by id. */
+  ACCOUNT_GET: 'account.get',
   ACCOUNT_SERVICE_UPSERT: 'accountService.upsert',
   ACCOUNT_CAPABILITIES_REPLACE: 'accountCapabilities.replace',
 
@@ -76,6 +80,7 @@ export const DB_RPC = Object.freeze({
   SYNC_ENSURE_MESSAGE_BODIES: 'sync.ensureMessageBodies',
   SYNC_MESSAGE_BODY_FOR_DISPLAY: 'sync.messageBodyForDisplay',
   SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
+  SYNC_GET_STORAGE_QUOTA: 'sync.getStorageQuota',
   SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
   SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',
   SYNC_ENSURE_FOLDER_INDEX: 'sync.ensureFolderIndex',

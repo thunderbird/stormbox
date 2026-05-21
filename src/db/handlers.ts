@@ -62,6 +62,24 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [serverOrigin, remoteAccountId],
       ),
 
+    [DB_RPC.ACCOUNT_GET]: async ({ accountId }) =>
+      engine.get(`SELECT * FROM accounts WHERE id = ?`, [accountId]),
+
+    [DB_RPC.ACCOUNT_QUOTA_UPSERT]: async ({ accountId, usedBytes, hardLimitBytes }) => {
+      const ts = now();
+      await engine.run(
+        `UPDATE accounts
+         SET quota_used_bytes = ?,
+             quota_hard_limit_bytes = ?,
+             quota_updated_at = ?,
+             updated_at = ?
+         WHERE id = ?`,
+        [usedBytes, hardLimitBytes, ts, ts, accountId],
+      );
+      broadcaster.touch(TABLE_FAMILIES.ACCOUNTS);
+      return { ok: true };
+    },
+
     [DB_RPC.ACCOUNT_UPSERT]: async (input) => {
       const ts = now();
       const result = await engine.run(
