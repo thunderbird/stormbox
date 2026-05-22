@@ -12,6 +12,10 @@ import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
 
 const mailStore = useMailStore();
 
+const props = defineProps({
+  quickFilterQuery: { type: String, default: '' },
+});
+
 const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
 
 // storeToRefs preserves reactivity on raw refs in the setup store —
@@ -21,18 +25,16 @@ const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
 const { messages, selectedIds } = storeToRefs(mailStore);
 
 const unreadOnly = ref(false);
+const quickFilterNeedle = computed(() => normalizeFilterText(props.quickFilterQuery));
+const quickFilterActive = computed(() => quickFilterNeedle.value.length > 0);
+const denseLocalFilterActive = computed(() => unreadOnly.value || quickFilterActive.value);
 const visibleMessages = computed(() => {
-  if (!unreadOnly.value) return messages.value;
-  return messages.value.filter((row) => {
-    if (row?.id == null) return false;
-    return Number(row.is_seen) === 0
-      || row.id === mailStore.selectedMessageId
-      || selectedIds.value.has(row.id);
-  });
+  if (!denseLocalFilterActive.value) return messages.value;
+  return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: true }));
 });
 const selectAllTargetMessages = computed(() => {
-  if (!unreadOnly.value) return messages.value;
-  return messages.value.filter((row) => row?.id != null && Number(row.is_seen) === 0);
+  if (!denseLocalFilterActive.value) return messages.value;
+  return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: false }));
 });
 
 // Virtualiser count is the FOLDER TOTAL, not loaded count. That way
@@ -45,7 +47,7 @@ const folderRowCount = computed(() => Math.max(
   mailStore.totalForFolder ?? 0,
   mailStore.messages.length,
 ));
-const rowCount = computed(() => (unreadOnly.value ? visibleMessages.value.length : folderRowCount.value));
+const rowCount = computed(() => (denseLocalFilterActive.value ? visibleMessages.value.length : folderRowCount.value));
 
 const {
   selectionCount,
@@ -128,7 +130,7 @@ function fireLoad(first: number, last: number) {
 }
 
 watch(virtualItems, (items) => {
-  if (unreadOnly.value) return;
+  if (denseLocalFilterActive.value) return;
   if (!items.length) return;
   const folderId = mailStore.currentFolderId;
   if (folderId == null) return;
@@ -162,6 +164,15 @@ watch(virtualItems, (items) => {
     fireLoad(latestItems[0].index, latestItems[latestItems.length - 1].index);
   }, THROTTLE_MS - sinceLast + 10);
 });
+
+watch(
+  () => props.quickFilterQuery,
+  (next, prev) => {
+    if (next !== prev && mailStore.selectedMessageId != null) {
+      mailStore.selectMessage(null);
+    }
+  },
+);
 
 // Persist scroll position per folder. rAF-throttled so we don't write
 // on every pixel.
@@ -246,6 +257,15 @@ const allLoadedSelected = computed(() => {
 });
 
 function selectAllForCurrentFilter() {
+  if (quickFilterActive.value) {
+    const next = new Set<number>();
+    for (const row of selectAllTargetMessages.value) {
+      const id = Number(row?.id);
+      if (Number.isFinite(id)) next.add(id);
+    }
+    selectedIds.value = next;
+    return;
+  }
   void mailStore.selectAllLoadedMessages({ unreadOnly: unreadOnly.value });
 }
 
@@ -281,6 +301,30 @@ function shortFrom(text) {
   if (!text) return '(no sender)';
   const m = text.match(/^(.+?)\s*<.+>$/);
   return m ? m[1].replace(/^"|"$/g, '') : text;
+}
+
+function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
+  if (row?.id == null) return false;
+  if (
+    includeSticky
+    && (row.id === mailStore.selectedMessageId || selectedIds.value.has(row.id))
+  ) {
+    return true;
+  }
+  if (unreadOnly.value && Number(row.is_seen) !== 0) return false;
+  if (quickFilterActive.value && !messageMatchesQuickFilter(row)) return false;
+  return true;
+}
+
+function messageMatchesQuickFilter(row) {
+  const needle = quickFilterNeedle.value;
+  if (!needle) return true;
+  return [row?.from_text, row?.to_text, row?.subject]
+    .some((value) => normalizeFilterText(value).includes(needle));
+}
+
+function normalizeFilterText(value) {
+  return String(value ?? '').trim().toLowerCase();
 }
 </script>
 
@@ -428,6 +472,9 @@ function shortFrom(text) {
     <div v-else-if="mailStore.isLoading" class="msg-list__placeholder">
       <RefreshCw :size="18" class="is-spinning" />
       <p>Loading {{ folderName }}…</p>
+    </div>
+    <div v-else-if="quickFilterActive" class="msg-list__placeholder">
+      <p>No messages matching "{{ props.quickFilterQuery.trim() }}" in {{ folderName }}.</p>
     </div>
     <div v-else-if="unreadOnly" class="msg-list__placeholder">
       <p>No unread messages in {{ folderName }}.</p>

@@ -53,13 +53,18 @@ account, JMAP against Stalwart.
 - **R-2.8** The message list shall provide text filters for the open
   folder. Filters shall be toggles with text labels rather than
   icons; when no filter is selected, the message list is in the All
-  Mail state. The MVP shall include an Unread filter. When the user
-  toggles a filter, the current previewed message shall be cleared
-  before the filter applies. A filtered-out state change shall not
-  remove a message previewed or checkbox-selected after the filter is
-  active until the user clears that preview or selection. The
-  select-all checkbox shall remain visible but disabled when a filter
-  leaves the message list empty, so toolbar alignment stays stable.
+  Mail state. The MVP shall include an Unread filter and a top-level
+  Quick Filter text box. Quick Filter shall search only local cached
+  message metadata in the current folder, matching From, To, and
+  Subject; it shall not issue JMAP search requests. When the user
+  toggles a filter or changes Quick Filter text, the current
+  previewed message shall be cleared before the filter applies. A
+  filtered-out state change shall not remove a message previewed or
+  checkbox-selected after the filter is active until the user clears
+  that preview or selection. The select-all checkbox shall remain
+  visible but disabled when a filter leaves the message list empty,
+  so toolbar alignment stays stable. Full JMAP-backed mail search is
+  *Planned* for the MVP.
 - **R-2.9** The system shall let the user collapse and restore the
   folder list from the spaces toolbar. When the viewport is 1024 px or
   narrower and the message detail or bulk pane is visible, the folder

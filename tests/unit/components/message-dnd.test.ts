@@ -59,6 +59,7 @@ function makeRow(id, overrides = {}) {
     id,
     remote_id: `e-${id}`,
     from_text: `Sender ${id} <sender${id}@example.com>`,
+    to_text: 'me@example.com',
     subject: `Subject ${id}`,
     preview: 'preview',
     received_at: 1_700_000_000_000 + id,
@@ -219,6 +220,57 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).not.toContain('Already read preview');
     expect(wrapper.text()).toContain('Still unread');
     expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+  });
+
+  it('quick filters locally by From, To, and Subject without matching preview text', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, {
+        from_text: 'Alice Example <alice@example.com>',
+        subject: 'Project update',
+        preview: 'ordinary preview',
+      }),
+      makeRow(2, {
+        from_text: 'Bob Example <bob@example.com>',
+        to_text: 'Team Recipient <team@example.com>',
+        subject: 'Schedule',
+        preview: 'ordinary preview',
+      }),
+      makeRow(3, {
+        from_text: 'Carol Example <carol@example.com>',
+        subject: 'Quarterly invoice',
+        preview: 'ordinary preview',
+      }),
+      makeRow(4, {
+        from_text: 'Dave Example <dave@example.com>',
+        subject: 'Preview should not match',
+        preview: 'Alice appears only here',
+      }),
+    ];
+    mailStore.totalForFolder = 4;
+
+    const wrapper = mount(MessageList, {
+      props: { quickFilterQuery: 'alice' },
+    });
+    await nextTick();
+
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+    expect(wrapper.text()).toContain('Project update');
+    expect(wrapper.text()).not.toContain('Preview should not match');
+
+    await wrapper.setProps({ quickFilterQuery: 'team recipient' });
+    await nextTick();
+
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+    expect(wrapper.text()).toContain('Schedule');
+
+    await wrapper.setProps({ quickFilterQuery: 'quarterly' });
+    await nextTick();
+
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+    expect(wrapper.text()).toContain('Quarterly invoice');
   });
 
   it('keeps the select-all checkbox disabled when a filter leaves no visible messages', async () => {

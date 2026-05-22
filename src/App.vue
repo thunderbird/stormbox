@@ -27,6 +27,7 @@ const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
 
 const space = ref('mail');
+const quickFilterQuery = ref('');
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
@@ -136,6 +137,15 @@ watch(folderListHidden, () => {
 
 function startCompose() {
   composeStore.open();
+}
+
+function setQuickFilterQuery(event: Event) {
+  const next = (event.target as HTMLInputElement | null)?.value ?? '';
+  if (next === quickFilterQuery.value) return;
+  if (mailStore.selectedMessageId != null) {
+    mailStore.selectMessage(null);
+  }
+  quickFilterQuery.value = next;
 }
 
 function toggleFolderList() {
@@ -398,6 +408,19 @@ function clamp(value: number, min: number, max: number) {
           </a>
         </div>
       </details>
+
+      <div class="quick-filter__search" role="search">
+        <input
+          class="quick-filter__input"
+          type="search"
+          :value="quickFilterQuery"
+          aria-label="Quick Filter messages by from, to, or subject"
+          placeholder="Quick Filter"
+          autocomplete="off"
+          spellcheck="false"
+          @input="setQuickFilterQuery"
+        />
+      </div>
     </div>
 
     <AppSpaces
@@ -460,7 +483,7 @@ function clamp(value: number, min: number, max: number) {
     />
 
     <template v-if="space === 'mail'">
-      <MessageList />
+      <MessageList :quick-filter-query="quickFilterQuery" />
       <div
         v-if="displayedMessageView"
         class="column-resizer column-resizer--message-list"
@@ -537,14 +560,18 @@ function clamp(value: number, min: number, max: number) {
   position: relative;
   display: flex;
   align-items: center;
+  justify-content: center;
   min-height: 56px;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 .app-menu {
-  position: relative;
+  position: absolute;
   z-index: 20;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
 }
 .app-menu__button {
   min-height: 36px;
@@ -613,10 +640,49 @@ function clamp(value: number, min: number, max: number) {
   background: var(--rowHover);
   outline: none;
 }
+.quick-filter__search {
+  width: min(520px, max(160px, calc(100% - 220px)));
+}
+.quick-filter__input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  padding: 0 16px;
+  outline: none;
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
+}
+.quick-filter__input::placeholder {
+  color: var(--muted);
+}
+.quick-filter__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
 
 @media (max-width: 640px) {
+  .quick-filter {
+    justify-content: flex-start;
+    gap: 10px;
+    padding-left: 8px;
+  }
+  .app-menu {
+    position: relative;
+    top: auto;
+    left: auto;
+    transform: none;
+    flex-shrink: 0;
+  }
   .app-menu__button span {
     display: none;
+  }
+  .quick-filter__search {
+    flex: 1;
+    width: auto;
   }
 }
 

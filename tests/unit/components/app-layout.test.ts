@@ -45,7 +45,10 @@ function mountApp() {
       stubs: {
         LoginGate: { template: '<div />' },
         FolderTree: { template: '<aside />' },
-        MessageList: { template: '<section class="msg-list">list</section>' },
+        MessageList: {
+          props: ['quickFilterQuery'],
+          template: '<section class="msg-list" :data-filter="quickFilterQuery">list</section>',
+        },
         MessageView: { template: '<section class="message-view">view</section>' },
         ComposeDialog: { template: '<div />' },
         ContactsView: { template: '<section />' },
@@ -92,6 +95,23 @@ afterEach(() => {
 });
 
 describe('App mail layout', () => {
+  it('renders a centered quick filter above the mail columns and passes it to the message list', async () => {
+    const mailStore = useMailStore();
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.find('.quick-filter').exists()).toBe(true);
+    expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell').element.firstElementChild);
+
+    await wrapper.get('.quick-filter__input').setValue('alice');
+    await nextTick();
+
+    expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('alice');
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
   it('renders a Thundermail menu linking to Thunderbird Accounts', async () => {
     const wrapper = mountApp();
     await nextTick();
