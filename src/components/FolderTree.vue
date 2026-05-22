@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import {
-  Inbox, Send, FileEdit, Archive, Trash2, ShieldAlert, Folder, FolderOpen,
-  Newspaper, Rss,
-} from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
 import FolderNode from './FolderNode.vue';
+import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
+import draftIcon from '../assets/icons/tb-folder-draft.svg?raw';
+import folderIcon from '../assets/icons/tb-folder.svg?raw';
+import inboxIcon from '../assets/icons/tb-folder-inbox.svg?raw';
+import newsletterIcon from '../assets/icons/tb-folder-newsletter.svg?raw';
+import rssFolderIcon from '../assets/icons/tb-folder-rss.svg?raw';
+import sentIcon from '../assets/icons/tb-folder-sent.svg?raw';
+import spamIcon from '../assets/icons/tb-folder-spam.svg?raw';
+import trashIcon from '../assets/icons/tb-folder-trash.svg?raw';
 
 const mailStore = useMailStore();
 const dragOverFolderId = ref(null);
@@ -20,12 +25,12 @@ const {
 } = useMessageDragDrop();
 
 const ROLE_ICON = {
-  inbox: Inbox,
-  sent: Send,
-  drafts: FileEdit,
-  archive: Archive,
-  trash: Trash2,
-  junk: ShieldAlert,
+  inbox: inboxIcon,
+  sent: sentIcon,
+  drafts: draftIcon,
+  archive: archiveIcon,
+  trash: trashIcon,
+  junk: spamIcon,
 };
 
 const ROLE_COLOR = {
@@ -41,8 +46,8 @@ const ROLE_COLOR = {
 };
 
 const DEFAULT_FOLDER_BY_NAME = {
-  newsletters: { icon: Newspaper, color: '#7378a6' },
-  feeds: { icon: Rss, color: '#f97316' },
+  newsletters: { icon: newsletterIcon, color: '#7378a6' },
+  feeds: { icon: rssFolderIcon, color: '#f97316' },
 };
 
 const tree = computed(() => {
@@ -59,7 +64,7 @@ const tree = computed(() => {
   function children(id) { return byParent.get(id) ?? []; }
   function build(folder, depth) {
     const childrenForFolder = children(folder.id);
-    const presentation = folderPresentation(folder, childrenForFolder.length > 0);
+    const presentation = folderPresentation(folder);
     return {
       ...folder,
       depth,
@@ -71,10 +76,10 @@ const tree = computed(() => {
   return (byParent.get('ROOT') ?? []).map((f) => build(f, 0));
 });
 
-function folderPresentation(folder, hasChildren) {
+function folderPresentation(folder) {
   const namedDefault = DEFAULT_FOLDER_BY_NAME[defaultFolderKey(folder.name)];
   return {
-    icon: ROLE_ICON[folder.role] ?? namedDefault?.icon ?? (hasChildren ? FolderOpen : Folder),
+    icon: ROLE_ICON[folder.role] ?? namedDefault?.icon ?? folderIcon,
     color: ROLE_COLOR[folder.role] ?? namedDefault?.color ?? null,
   };
 }

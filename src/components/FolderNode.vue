@@ -14,7 +14,7 @@ const props = defineProps({
 
 const current = computed(() => props.currentFolderId === props.folder.id);
 const unread = computed(() => Number(props.folder.unread_emails) || 0);
-const Icon = computed(() => props.folder.icon);
+const iconSvg = computed(() => props.folder.icon);
 const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
 const style = computed(() => ({
   paddingLeft: indent.value,
@@ -46,7 +46,7 @@ const dropStateValue = computed(() => props.dropState?.(props.folder) ?? null);
     @dragleave="onFolderDragLeave?.(folder, $event)"
     @drop="onFolderDrop?.(folder, $event)"
   >
-    <component :is="Icon" :size="18" :stroke-width="1.75" class="folder-node__icon" />
+    <span class="folder-node__icon" aria-hidden="true" v-html="iconSvg" />
     <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
     <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
     <span v-if="unread > 0" class="folder-node__count">{{ unread > 99 ? '99+' : unread }}</span>
@@ -106,8 +106,22 @@ export default { name: 'FolderNode' };
   cursor: not-allowed;
 }
 .folder-node__icon {
+  display: block;
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
   color: var(--muted);
+}
+.folder-node__icon :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.folder-node__icon :deep([fill="context-fill"]) {
+  fill: color-mix(in srgb, currentColor 20%, transparent);
+}
+.folder-node__icon :deep([fill="context-stroke"]) {
+  fill: currentColor;
 }
 .folder-node.has-tone .folder-node__icon,
 .folder-node.has-tone.is-current .folder-node__icon {
