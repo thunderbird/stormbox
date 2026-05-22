@@ -1,50 +1,33 @@
 # Build Instructions
 
-## Recommended: Build with Dev Container
+Build Stormbox from the dev container. Do not run `npm`, `node`, `npx`, Vite, or
+Playwright commands on the host for this repo.
 
 ```bash
-# Start dev container
 docker compose -f .devcontainer/docker-compose.yml up -d
 
-# Build for production
-docker compose -f .devcontainer/docker-compose.yml exec app npm run build
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run build'
 ```
 
-## Local Build
-
-```bash
-npm install
-npm run build
-```
+The production bundle is written to `dist/`.
 
 ## Configuration
 
-Before building, configure your JMAP server endpoint:
+Hosted stage/prod domains default to the Cloudflare JMAP Worker proxy configured
+in `src/defines.ts`:
+
+- `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
+- `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
+
+To build against a different JMAP server or proxy, set
+`VITE_JMAP_SERVER_URL` in `.env.local` or the build environment.
 
 ```bash
-# Set environment variable (required)
-export JMAP_SERVER_URL="https://your-jmap-server.com"
-
-# Then build
-npm run build
+VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com
 ```
 
-Or create a `.env.local` file:
+## Serving
 
-```
-JMAP_SERVER_URL=https://your-jmap-server.com
-```
-
-## Output
-
-Static files are generated in `dist/` directory and can be served from any web server.
-
-## Deployment
-
-Deploy the `dist/` directory to any static hosting service:
-
-- AWS S3 + CloudFront
-- Netlify
-- Vercel
-- GitHub Pages
-- Any web server (Nginx, Apache, etc.)
+`dist/` is static output and can be served by any static web host that supports
+the deployment's HTTPS and routing requirements.

@@ -1,127 +1,124 @@
 # Stormbox Webmail
 
-A Vue 3 email client using JMAP (JSON Meta Application Protocol) for email.
+Stormbox is a Vue 3 + Pinia webmail client backed by browser-local SQLite in a
+`SharedWorker`. JMAP is the mail source of truth; the UI reads through the local
+repository/cache layer and the sync backend keeps that cache current.
 
-## Quick Start
+## Development
 
-### Recommended: Dev Container
-
-The easiest way to get started is using the dev container which provides a consistent environment:
+Use the dev container for all `npm`, `node`, `npx`, Playwright, and Vite
+commands.
 
 ```bash
-# Start the dev container
 docker compose -f .devcontainer/docker-compose.yml up -d
 
-# Open in VS Code with Dev Containers extension, or run commands directly:
-docker compose -f .devcontainer/docker-compose.yml exec app npm run dev
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run dev'
 ```
 
-Access the app at **https://localhost:3000** (self-signed cert). Dev defaults to the
-local Keycloak + Stalwart stack via `.env.development`; start it with
-`cd thunderbird-accounts && docker compose up -d` then `npm run stack:seed` and
-`npm run stack:ws-proxy &`.
+Open **https://localhost:3000**. The dev server uses a self-signed certificate
+so browser APIs required by Stormbox, including `SharedWorker` and local storage
+APIs, are available.
 
-### Local Setup (Alternative)
+## Local Mail Stack
 
-If you prefer local development:
+Live development and full E2E tests use the `thunderbird-accounts/` submodule
+for Keycloak, Stalwart, and Accounts services.
 
 ```bash
-# Clone and install
-git clone <repository-url>
-cd thundermail-vue
-npm install
+git submodule update --init
 
-# Optional: override the built-in stage/prod JMAP Worker proxy
-export VITE_JMAP_SERVER_URL="https://your-jmap-proxy-or-server.com"
+cd thunderbird-accounts
+docker compose up --build -d
+cd ..
 
-# Start development server
-npm run dev
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run stack:seed'
+
+docker compose -f .devcontainer/docker-compose.yml exec -d app bash -c \
+  'cd /workspace && npm run stack:ws-proxy >/tmp/ws-proxy.log 2>&1'
 ```
+
+On a fresh stack, first open **http://localhost:8087**, sign in as
+`admin@example.org` / `admin`, and provision a Thundermail address. Optional
+test account overrides live in `tests/e2e/.env.local.example`.
 
 ## Configuration
 
-Stormbox defaults to the Cloudflare JMAP Worker proxy for the hosted
-stage/prod domains:
+The app defaults to the local stack during development through
+`.env.development`. Hosted stage/prod builds use the Cloudflare JMAP Worker
+proxy by default:
 
-- `webmail.stage-thundermail.com` → `https://wsmail.stage-thundermail.com`
-- `webmail.thundermail.com` → `https://wsmail.thundermail.com`
+- `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
+- `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
 
-Override the endpoint when running against another server or proxy:
-
-```bash
-# Environment variable
-export VITE_JMAP_SERVER_URL="https://your-jmap-proxy-or-server.com"
-
-# Or create .env.local file
-echo "VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com" > .env.local
-```
-
-## Usage
-
-1. **Login**: Enter your username and app password for the JMAP server
-2. **Browse Mailboxes**: Use the sidebar to navigate between different mailboxes
-3. **View Emails**: Click on emails in the message list to view their content
-4. **Compose**: Click the "Compose" button to write new emails
-5. **Reply/Delete**: Use the action buttons in the email detail view
-
-## End-to-end tests
-
-Clone with submodules so the local stack is available:
+To point a local build at another JMAP server or proxy, set
+`VITE_JMAP_SERVER_URL` in `.env.local`.
 
 ```bash
-git clone --recurse-submodules <repository-url>
-# or after clone:
-git submodule update --init
+VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com
 ```
 
-**Smoke only** (no mail stack):
+## Common Commands
 
 ```bash
-docker compose -f .devcontainer/docker-compose.yml exec app npm run test:e2e
+# Unit tests
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm test'
+
+# Type checking
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run typecheck'
+
+# Smoke E2E tests
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:e2e'
+
+# Full local-stack E2E tests
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:e2e:local -- --project=chromium --project=firefox'
+
+# Production build
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run build'
 ```
 
-**Full live suite** (Keycloak + Stalwart via `thunderbird-accounts/`). Stormbox
-uses **HTTPS with a self-signed cert** so OPFS works; Vite proxies Keycloak and
-Stalwart when `LOCAL_STACK=1`:
+See [BUILD.md](BUILD.md) for production build notes.
 
-```bash
-# Start stack (from repo root)
-cd thunderbird-accounts && docker compose up --build -d
+## Documentation
 
-# One-time per fresh volume: http://localhost:8087 — sign in admin@example.org / admin,
-# provision Thundermail. Then seed mail and WS proxy:
-npm run stack:seed
-npm run stack:ws-proxy &
+- [Project docs](docs/README.md): architecture notes, storage design, research,
+  and Spec Kit workflow links.
+- [MVP scope spec](specs/001-mvp-scope/spec.md): current product-level MVP
+  scope.
+- [Agent guide](AGENTS.md): development rules for agents and contributors,
+  including layer boundaries and test expectations.
+- [Research benchmarks](research/README.md): opt-in performance and benchmark
+  scripts.
 
-# Run e2e inside dev container
-docker compose -f .devcontainer/docker-compose.yml exec app \
-  npm run test:e2e:local -- --project=chromium --project=firefox
-```
+## Project Layout
 
-Optional env overrides: copy `tests/e2e/.env.local.example` to `tests/e2e/.env.local`.
-
-## Building for Production
-
-See [BUILD.md](BUILD.md) for production build instructions.
-
-## Project Structure
-
-```
+```text
 src/
-├── components/         # Vue components
-├── composables/        # Vue composables (main business logic)
-├── services/          # JMAP client service
-├── assets/           # Global styles and CSS variables
-├── App.vue          # Main application component
-└── main.js         # Application entry point
+├── components/   # Vue components
+├── composables/  # Vue composables
+├── constants/    # Shared constants
+├── db/           # SQLite engine, migrations, RPC handlers, repository client
+├── services/     # Browser/service helpers
+├── stores/       # Pinia stores
+├── sync/         # Sync client and JMAP backend
+├── types/        # TypeScript declarations
+├── utils/        # Shared utilities
+├── App.vue
+└── main.ts
 ```
 
 ## Key Dependencies
 
-- **Vue 3**: Modern reactive framework with Composition API
-- **Vite**: Fast build tool and dev server
-- **JMAP**: JSON Meta Application Protocol for email
-- **Quill.js**: Rich text editor for email composition
-- **@tanstack/vue-query**: Syncing client/server data state
-- **@tanstack/vue-virtual**: High-performance virtual scrolling
+- **Vue 3 + Pinia**: application UI and state.
+- **Vite + TypeScript**: build and type-checking toolchain.
+- **JMAP**: mail protocol for the MVP.
+- **wa-sqlite**: browser-local SQLite storage.
+- **Squire**: rich-text compose editor.
+- **@tanstack/vue-virtual**: virtualized message lists.
 

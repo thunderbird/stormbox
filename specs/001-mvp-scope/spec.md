@@ -1,147 +1,162 @@
-# Feature Specification: Stormbox MVP Scope
+# Stormbox MVP — Capability Reference
 
-**Feature Branch**: `001-mvp-scope`  
-**Created**: 2026-05-21  
-**Status**: Draft  
-**Input**: Existing Webmail MVP Planning Scope document
+This document captures the product surface for the Stormbox MVP. It
+describes what Stormbox is and what each capability shall do, in EARS
+form. Architectural and runtime invariants live in
+`.specify/memory/constitution.md`. Operational rules live in
+`AGENTS.md`. Implementation notes live in `docs/architecture/`.
 
-## User Scenarios & Testing *(mandatory)*
+**Scope**: Webmail MVP for an Earlybird audience alpha. Single
+account, JMAP against Stalwart.
 
-### User Story 1 - Read Mail Reliably (Priority: P1)
+## Status legend
 
-As an Earlybird alpha user, I can sign in, browse folders, see message
-lists, and read individual messages so that Stormbox is useful as a daily
-mail reader.
+- **Done** — implemented and covered by tests.
+- **Partial** — implemented with known gaps, listed inline.
+- **Planned** — accepted scope, not yet implemented.
+- **Deferred** — accepted but explicitly out of MVP.
+- **Non-goal** — out of scope; will not be built for the MVP.
 
-**Why this priority**: Reading mail is the minimum viable webmail
-experience. Sending, contacts, and attachments depend on users trusting
-the read surface.
+## Capabilities
 
-**Independent Test**: Can be tested by signing in to an account with
-seeded mail, opening folders, selecting messages, and verifying rendered
-message content.
+### 1. Sign in and session lifecycle [Done; session-expired UX Planned]
 
-**Acceptance Scenarios**:
+- **R-1.1** The system shall let the user sign in with Keycloak OIDC.
+- **R-1.2** The system shall let self-hosters sign in with username
+  and password.
+- **R-1.3** When an OIDC session is already valid on app load, the
+  system shall reconnect without prompting the user.
+- **R-1.4** When the user signs out, the system shall stop sync and
+  clear in-memory account state.
+- **R-1.5** When a session expires, the system shall surface a
+  recoverable session-expired state and not silently use stale
+  credentials. *(Planned)*
 
-1. **Given** a user with a valid account, **When** the user signs in, **Then** the system displays the user's folders and message list.
-2. **Given** a folder containing messages, **When** the user selects a message, **Then** the system displays the message content safely.
-3. **Given** a message that belongs to a thread, **When** the user opens the message, **Then** the system presents the conversation using available JMAP thread data.
+### 2. Read mail [Done; conversation UI Planned]
 
----
+- **R-2.1** The system shall display the signed-in account's folder
+  hierarchy with role icons and per-folder unread counts.
+- **R-2.2** The system shall render a virtualized message list whose
+  scrollbar reflects the full folder size, with placeholder rows for
+  positions not yet fetched.
+- **R-2.3** When the user opens a message, the system shall display
+  its sanitized HTML body in a sandboxed iframe with no script
+  execution, or its plain-text body when HTML is unavailable.
+- **R-2.4** While the user reads a message, the system shall mark
+  the message as read.
+- **R-2.5** The system shall display attachment metadata (name, type,
+  size) on the open message.
+- **R-2.6** The system shall persist scroll position per folder so
+  re-entering a folder restores the previous view.
+- **R-2.7** Thread metadata shall be synced to local storage. A
+  conversation/thread reading UI is *Planned*.
 
-### User Story 2 - Manage Basic Mail State (Priority: P1)
+### 3. Triage [Done]
 
-As an Earlybird alpha user, I can mark messages read or unread, delete,
-archive, and refresh so that basic mailbox triage works.
+- **R-3.1** The system shall let the user mark messages read or
+  unread, both individually and in bulk.
+- **R-3.2** When the user deletes messages, the system shall move
+  them to Trash if a Trash folder exists, otherwise destroy them
+  permanently.
+- **R-3.3** The system shall let the user permanently destroy
+  messages already in Trash, including via Shift+Delete.
+- **R-3.4** The system shall let the user archive messages to the
+  account's archive folder.
+- **R-3.5** The system shall let the user move selected messages to
+  another folder by drag-and-drop.
+- **R-3.6** The system shall provide multi-select where a checkbox
+  toggles a row's selection independently of the focused/preview
+  row, shift-click extends a range from an anchor, and the bulk
+  pane replaces the message detail when at least one row is
+  selected.
+- **R-3.7** The system shall implement Thunderbird-compatible
+  keyboard shortcuts for compose, reply, reply-all, forward, delete,
+  permanent delete, archive, mark read/unread, list navigation
+  (next/prev, next/prev unread, home/end), select all, and clear
+  selection.
+- **R-3.8** When the user refreshes the open folder, the system shall
+  rebuild the local view from the server to recover from drift.
+- **R-3.9** When new mail arrives on the server while the user is
+  online, the open mailbox view shall update without a manual
+  refresh.
 
-**Why this priority**: Basic state changes are expected in any usable
-mail client and exercise the most important server/local-cache mutation
-paths.
+### 4. Compose and send [Partial — UI gaps]
 
-**Independent Test**: Can be tested by performing each action against a
-seeded account and verifying the UI, local cache, and JMAP server state.
+- **R-4.1** The system shall let the user compose a new message and
+  reply, reply-all, or forward an open message.
+- **R-4.2** The system shall offer rich-text editing via Squire and
+  send a plain-text alternative alongside the HTML body.
+- **R-4.3** The system shall let the user pick a sending identity
+  when more than one is available.
+- **R-4.4** When the user sends, the system shall create the message
+  and submit it through `EmailSubmission/set` in a chained JMAP call,
+  and the sent message shall appear in the Sent folder.
+- **R-4.5** When send fails, the system shall surface the failure and
+  keep the compose draft visible so the user can retry.
+- **R-4.6** Visible Reply-all and Forward toolbar buttons. *(Planned;
+  keyboard shortcuts already drive these flows.)*
+- **R-4.7** Cc/Bcc input fields with autocomplete. *(Planned; the
+  outbound payload already includes Cc/Bcc when populated.)*
 
-**Acceptance Scenarios**:
+### 5. Contacts [Done; editing Non-goal]
 
-1. **Given** a visible unread message, **When** the user marks it read, **Then** the message is shown as read after the operation completes.
-2. **Given** a visible message, **When** the user deletes or archives it, **Then** the message leaves the active folder view.
-3. **Given** mailbox content may have changed on the server, **When** the user refreshes, **Then** the local view reflects current server state.
+- **R-5.1** When the JMAP Contacts capability is advertised, the
+  system shall sync contacts read-only.
+- **R-5.2** The system shall let the user browse and filter synced
+  contacts in a dedicated contacts view.
+- **R-5.3** The system shall offer recipient autocomplete in compose
+  drawn from synced contacts and prior send history.
+- **R-5.4** When contact sync is unavailable, compose shall remain
+  usable.
 
----
+### 6. Attachments [Partial — download Planned]
 
-### User Story 3 - Send and Reply to Mail (Priority: P2)
+- **R-6.1** The system shall display attachment metadata on the open
+  message.
+- **R-6.2** Attachment download. *(Planned)*
 
-As an Earlybird alpha user, I can compose, send, reply, reply-all, and
-forward messages with a reliable editing experience.
+### 7. Account storage usage [Done]
 
-**Why this priority**: Sending mail completes the core two-way webmail
-workflow, but it depends on a stable read surface and mutation pipeline.
+- **R-7.1** When the JMAP Quota capability is available, the system
+  shall display the account's storage usage as a percentage of the
+  hard limit.
+- **R-7.2** When the server does not report a hard limit, the system
+  shall hide the storage indicator.
 
-**Independent Test**: Can be tested by composing new mail and replies,
-then verifying delivery/submission state and sent-mail handling.
+## Non-goals
 
-**Acceptance Scenarios**:
-
-1. **Given** the user is signed in, **When** the user composes and sends a message, **Then** the system submits the message and records it in sent mail.
-2. **Given** the user is reading a message, **When** the user replies, replies all, or forwards, **Then** the compose view is populated with the expected recipient and quoted context.
-3. **Given** rich text editing is available, **When** the user writes HTML mail, **Then** the system preserves the composed content for sending and offers a plain-text alternative path.
-
----
-
-### User Story 4 - Use Contacts and Attachments (Priority: P3)
-
-As an Earlybird alpha user, I can autocomplete recipients from read-only
-contacts and download attachments from received mail.
-
-**Why this priority**: Contacts and attachments are important usability
-features, but the MVP remains useful if they follow the core reading and
-sending flows.
-
-**Independent Test**: Can be tested by typing recipient names in compose
-fields and downloading an attachment from a seeded message.
-
-**Acceptance Scenarios**:
-
-1. **Given** read-only CardDAV contacts are configured, **When** the user types in To, Cc, or Bcc, **Then** matching contacts are offered for autocomplete.
-2. **Given** a message has an attachment, **When** the user chooses to download it, **Then** the attachment is retrieved for the user.
-
-### Edge Cases
-
-- Session expiration must not leave the user in a stale authenticated UI.
-- Unsafe HTML email content must not execute scripts or privileged page behavior.
-- Self-hosted deployments may use basic username/password authentication instead of Keycloak OIDC.
-- CardDAV contact lookup may be unavailable; compose must remain usable without autocomplete.
-
-## Requirements *(mandatory)*
-
-### Functional Requirements
-
-- **FR-001**: The system shall allow users to sign in and sign out.
-- **FR-002**: When a user session expires, the system shall present a recoverable session-expired state rather than silently continuing with stale credentials.
-- **FR-003**: The system shall display a folder list and a message list for the signed-in account.
-- **FR-004**: The system shall support labels or equivalent folder-affordances only where they fit the MVP mail model.
-- **FR-005**: The system shall render threaded conversation reading using JMAP thread data.
-- **FR-006**: The system shall safely display HTML and plain-text email.
-- **FR-007**: The system shall support basic read/unread, delete, archive, and refresh actions.
-- **FR-008**: The system shall support compose, send, reply, reply-all, and forward.
-- **FR-009**: The system shall provide HTML compose with Squire where practical and a plain-text alternative.
-- **FR-010**: The system shall handle sent mail for outgoing messages.
-- **FR-011**: The system shall provide read-only CardDAV autocomplete for To, Cc, and Bcc.
-- **FR-012**: The system shall support attachment download.
-
-### Non-Goals
+The MVP excludes:
 
 - Calendar.
-- Automatic email categorization such as social or promotions tabs.
-- Agent-based search, complex search, or mail handling rules.
-- Editing contacts.
+- Automatic email categorization (e.g. social/promotions tabs).
+- Agent-based or advanced search and rules.
+- Editing contacts or sending attachments.
 - Offline mode.
-- Rules or filters.
-- Advanced search.
+- Mail rules and filters.
 - Multi-account unified inbox.
 - End-to-end encryption.
-- Mobile packaging.
-- Electron-style desktop or mobile app packaging.
+- Mobile or Electron-style desktop packaging.
 
-### Key Entities
+## Success Criteria
 
-- **Account**: The signed-in mail account for the MVP; currently single-account, with data structures that should not prevent future multi-account support.
-- **Folder/Mailbox**: A server-backed grouping of messages shown in the sidebar and used for list navigation.
-- **Message**: Mail metadata, thread membership, body cache data, and mutable state needed for list/detail views and basic actions.
-- **Contact**: Read-only CardDAV recipient data used for compose autocomplete.
-- **Attachment**: Downloadable metadata and content associated with a message.
+- **SC-1** A user with valid credentials can sign in, open a folder,
+  and read a seeded message without manual setup beyond account
+  configuration.
+- **SC-2** A user can send a new message and find it in Sent.
+- **SC-3** Triage actions (read/unread, delete, archive, refresh)
+  remain consistent across the rendered UI, the local cache (via
+  `window.__repo`), and direct JMAP queries on Chromium and Firefox.
+- **SC-4** New mail arriving on the server while the user is online
+  appears in the open Inbox without a manual refresh.
+- **SC-5** Compose remains usable when contact autocomplete is
+  unavailable.
 
-## Success Criteria *(mandatory)*
+## Assumptions and pointers
 
-### Measurable Outcomes
-
-- **SC-001**: A user with valid credentials can sign in, open a folder, and read a seeded message without manual setup beyond account configuration.
-- **SC-002**: A user can send a new message and find the submitted message through sent-mail handling.
-- **SC-003**: Read/unread, delete, archive, and refresh actions update the UI after completion and remain consistent with local cache and server state.
-- **SC-004**: Compose remains usable when CardDAV autocomplete is unavailable.
-
-## Assumptions
-
-- Project-wide architectural assumptions live in `.specify/memory/constitution.md`.
-- The MVP targets an Earlybird audience alpha rather than full Thunderbird feature parity.
+- Project-wide invariants (cache-first reads, mutation pipeline,
+  layer boundaries, browser baseline, safe rendering) live in
+  `.specify/memory/constitution.md`.
+- Operational rules (dev container, local stack, E2E test
+  conventions, project layout) live in `AGENTS.md`.
+- Performance and storage rationale live in `docs/architecture/`.
 - The first implementation target is JMAP against Stalwart.

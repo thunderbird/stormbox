@@ -1,40 +1,70 @@
-# Webmail SQLite Storage Spec
+# Stormbox SQLite Storage
+
+This document describes the local SQLite storage layout used by
+Stormbox and the sync strategy that fills it. It pairs with
+`performance.md` (runtime architecture and patterns) and the spec at
+`../../specs/001-mvp-scope/spec.md` (capabilities and requirements).
 
 ## Scope
 
-This is an initial storage and sync design for the Vue webmail MVP described in `../../specs/001-mvp-scope/spec.md`.
+The first implementation target is JMAP against Stalwart over
+WebSocket, with wa-sqlite backed by IndexedDB
+(`IDBBatchAtomicVFS`). The UI reads mail data from SQLite through
+the `Repository` RPC; sync code is the only layer that talks to the
+server and mutates the local mail cache.
 
-The first implementation target is JMAP against Stalwart over WebSocket, with wa-sqlite backed by OPFS. The UI should read mail data from SQLite through query APIs; JMAP sync code should be the only layer that talks to the server and mutates the local mail cache.
-
-The schema is intentionally multi-account and protocol-neutral. We are not implementing IMAP now, but every table that stores remote identity scopes by local `account_id` and keeps server-assigned IDs separate from local database IDs. This follows Thunderbird Panorama's important lesson: a global SQLite database should use DB-owned IDs and store protocol/server IDs as data, because server IDs are not globally unique and some protocols have folder-scoped IDs.
+The schema is intentionally multi-account and protocol-neutral.
+Every table that stores remote identifiers scopes them by local
+`account_id` and keeps server-assigned identifiers separate from
+local database identifiers. This follows Thunderbird Panorama's
+lesson that a global SQLite database should use DB-owned ids and
+store protocol/server ids as data, because server ids are not
+globally unique across accounts or protocols and some protocols
+have folder-scoped ids.
 
 ## Design Principles
 
-- Use local integer primary keys for all internal joins. Never make a JMAP id, future IMAP UID, Message-ID header, mailbox path, or account name the primary key.
-- Scope all remote IDs by `account_id`; JMAP IDs are only unique within an account.
+- Use local integer primary keys for all internal joins. Never make a JMAP id, future IMAP UID, Message-Id header, mailbox path, or account name the primary key.
+- Scope all remote ids by `account_id`; JMAP ids are only unique within an account.
 - Model folder/message membership as a join table. JMAP messages can be in multiple mailboxes, and future protocols may have folder-local state.
 - Keep list data cheap and queryable. Message list rows should be satisfied from indexed metadata, not from parsing JSON blobs.
 - Store raw JSON as compatibility padding where useful, but keep hot UI fields in columns.
-- Store attachment metadata only. Attachment bytes and raw RFC5322 blobs remain server-side.
+- Store attachment metadata only. Attachment bytes and raw RFC 5322 blobs remain server-side.
 - Treat body content as an on-demand cache, not durable source-of-truth data.
 - Store sync state and query state explicitly so the sync worker can use `/changes` and `/queryChanges` without relying on in-memory state.
+- Folder/message list views are live database views derived from server state. The database does not know how to sync; protocol backends maintain it as a reflection of the authoritative source.
 
 ## Message-Folder Model
 
-JMAP allows a single `Email` to belong to multiple `Mailbox`es (`mailboxIds` is a set). The schema models that with `messages` (a logical message row) and a many-to-many `folder_messages` junction (one row per (folder, message) pair). Read/flag state lives on `messages`, because JMAP keywords are message-scoped; conversation state lives on `threads`.
+JMAP allows a single `Email` to belong to multiple `Mailbox`es
+(`mailboxIds` is a set). The schema models that with `messages` (a
+logical message row) and a many-to-many `folder_messages` junction
+(one row per (folder, message) pair).
 
-There are two viable representations for "the same RFC 5322 message in multiple folders":
+The current implementation stores **one `messages` row per
+`(account_id, JMAP Email id)`**, enforced by the
+`UNIQUE(account_id, remote_id)` index on `messages`. When a message
+appears in multiple JMAP mailboxes, that single row is joined to
+multiple `folder_messages` rows. Read and flag state live on
+`messages` because JMAP keywords are message-scoped; conversation
+state lives on `threads`.
 
-- **Model A — folder-copy-per-row (the default for the first implementation).** Each placement of a message into a folder is its own `messages` row. The `folder_messages` junction relates each message row to exactly one folder. Two physical copies of the same message in two folders are two `messages` rows, each with their own keywords and body cache. This matches IMAP's wire reality directly and keeps every list query a clean `folder_messages → messages` join with no per-folder state lookup. For JMAP, where the same `Email` id is reported in multiple mailboxes, the sync engine materialises one `messages` row per (Email, mailbox) pair and applies state changes to all rows that share the same `remote_id`. Storage cost is small because we keep only metadata locally; bodies are cached LRU and shared across rows by message-id where useful.
-- **Model B — one row, per-folder state in the junction (deferred).** Each unique `(account, RFC 5322 Message-Id)` has a single `messages` row, related to N folders via N `folder_messages` rows. Per-folder mutable state—per-folder flags, per-folder UID—lives in `folder_messages.instance_state_json` and `folder_messages.remote_membership_id`. Better for IMAP without RFC 8474 `OBJECTID`, where the same physical message COPY'd to multiple folders can have independent flag state and folder-scoped UIDs. Read paths must consult the junction for state, not the message.
-
-The current schema accommodates either: `folder_messages.instance_state_json` and `folder_messages.remote_membership_id` are reserved for Model B even though Model A doesn't populate them. We default to Model A because it is simpler, mirrors the wire reality of IMAP COPYs, costs only modest redundancy in JMAP (per-folder rows for shared state), and keeps every list query a single index lookup. Migrating from Model A to Model B is a deduplication migration—not a rewrite—so we postpone the choice until IMAP support is built.
+For future IMAP support without RFC 8474 `OBJECTID`, the same physical
+message COPY'd to several folders can carry independent flag state
+and folder-scoped UIDs. The schema reserves
+`folder_messages.instance_state_json` and
+`folder_messages.remote_membership_id` for that case; today's JMAP
+sync leaves them null. Adding IMAP would mean populating those
+columns rather than rewriting the model.
 
 ## Initial Schema
 
 ```sql
-PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;
+-- PRAGMA foreign_keys = ON is applied by the engine.
+-- PRAGMA journal_mode is left at the engine default for IDBBatchAtomicVFS;
+-- WAL has no effect on this VFS because IndexedDB transactions stand in
+-- for SQLite's external journal. PRAGMA synchronous = NORMAL is set by
+-- the engine as a documented performance win for this VFS.
 
 CREATE TABLE schema_meta (
   key TEXT PRIMARY KEY,
@@ -47,7 +77,7 @@ CREATE TABLE accounts (
   primary_email TEXT,
   server_origin TEXT NOT NULL,          -- e.g. https://mail.example.com
   remote_account_id TEXT NOT NULL,      -- JMAP accountId for now; CardDAV principal id, etc., later
-  server_kind TEXT,                     -- optional vendor tag: 'stalwart' | 'fastmail' | ...
+  server_kind TEXT,                     -- optional vendor tag, e.g. 'stalwart'
   is_primary INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -373,9 +403,10 @@ CREATE INDEX query_views_lru
 -- ---------------------------------------------------------------------------
 -- Contacts (read-only in MVP, for recipient autocomplete).
 --
--- The MVP scope calls for CardDAV; Stalwart also serves JMAP-Contacts, and
--- both populate the same tables. service_kind on addressbooks selects the
--- source so the sync layer knows which transport to use.
+-- The implemented sync path is JMAP-Contacts when the session document
+-- advertises urn:ietf:params:jmap:contacts. CardDAV is supported in the
+-- schema (service_kind on addressbooks selects the source) but is not
+-- implemented yet; both populate the same tables.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE addressbooks (
@@ -635,7 +666,7 @@ Memory:
 - WebSocket connection state and in-flight request bookkeeping.
 - Short-lived sanitized HTML render output and object URLs for inline blobs.
 
-SQLite/OPFS:
+SQLite (IndexedDB-backed):
 
 - Account/session metadata, endpoints, capabilities, push state.
 - Folder tree, identities, message list metadata, thread metadata, keywords, address rows.
@@ -702,52 +733,6 @@ The UI should be responsive from local data first and increasingly correct as sy
 - Background prefetch should be cancellable on folder switch and should respect Stalwart limits such as `getMaxResults`, `queryMaxResults`, `changesMaxResults`, and `maxConcurrentRequests`.
 - Body cache eviction should be based on total byte cap and `last_accessed_at`, not message age alone.
 
-## Architecture Plan
-
-### Worker topology and VFS
-
-The SQLite database, the JMAP WebSocket, and the sync engine all live in a single `SharedWorker` per origin. A `DedicatedWorker` is owned by exactly one tab, so two open tabs would mean two SQLite connections fighting for `FileSystemSyncAccessHandle`s on the same OPFS file. Using a `SharedWorker` reduces this to one connection across all tabs of the browser profile and—as a bonus—one JMAP/CardDAV transport, one set of push subscriptions, and one sync scheduler regardless of how many tabs are open.
-
-Tabs talk to the SharedWorker through a per-tab `MessagePort` for RPC and a shared `BroadcastChannel` for "tables touched" invalidations after each transaction. Pinia stores subscribe to the channel and re-run their queries when relevant tables fire.
-
-Because the SharedWorker holds exactly one SQLite connection, the simplest and fastest VFS is appropriate: wa-sqlite's `AccessHandlePoolVFS`. Multi-tab safety is provided by the topology, not by the VFS.
-
-`SharedWorker` is a hard requirement. The MVP scope excludes mobile and desktop packaging, and every supported desktop and mobile browser has shipped `SharedWorker` since Safari 16 (September 2022). If `typeof SharedWorker === 'undefined'` at boot, the app fails fast with a clear "your browser is not supported" message that names the supported baseline; we do not ship a `DedicatedWorker` fallback path.
-
-### Module layout
-
-- `src/db/shared-worker`: SharedWorker entry point. Boots wa-sqlite + `AccessHandlePoolVFS`, runs migrations, hosts the sync engine and the JMAP/CardDAV transports, accepts `MessagePort` connections from tabs.
-- `src/db/repository`: typed query and command API exposed over the MessagePort. Returns folders, view rows, message details, contacts, mutation status. Speaks SQL only; never speaks JMAP/CardDAV.
-- `src/sync/sync-client`: protocol-neutral interface the repository calls into when it needs fresh data. Methods like `ensureFolderTree(accountId)`, `ensureMailWindow(accountId, folderId, range)`, `ensureMessageBody(messageId)`, `ensureContacts(addressbookId)`, `enqueueMutation(...)`. Implementations are registered per `account_services.service_kind`.
-- `src/sync/backends/jmap`: JMAP transport (HTTP + WebSocket per RFC 8887) plus the JMAP sync engine. Translates `Mailbox/changes`, `Email/changes`, `Email/queryChanges`, `Thread/changes`, `Identity/changes`, and `EmailDelivery` `StateChange` notifications into repository transactions. Same backend serves `jmap-mail`, `jmap-contacts`, and `jmap-calendars` services because they share transport.
-- `src/sync/backends/carddav`: CardDAV transport (HTTP/`PROPFIND`/`REPORT`/`sync-collection`) plus the CardDAV sync engine. Owns `addressbooks` and `contacts` rows whose `service_kind = 'carddav'`.
-- `src/sync/scheduler`: priority queue and dispatcher for visible sync, background sync, retry/backoff, cancellation. Persists work in `sync_jobs` so a tab close doesn't lose anything.
-- `src/sync/outbox`: drains `pending_mutations` by handing each row to the right backend; reconciles the response and removes or annotates the row.
-- `src/stores/auth-store`: authentication/session state, active local account id.
-- `src/stores/mail-store`: Pinia view model over repository queries, not JMAP calls.
-- `src/stores/contacts-store`: Pinia view model for recipient autocomplete; reads from `contacts` and `contact_emails`.
-- `src/stores/compose-store`: compose state plus the enqueue path for send mutations.
-
-The important boundary remains: Vue components and Pinia stores never call JMAP, CardDAV, or `fetch` directly. They ask the repository for local data and ask the sync client to ensure a local range or object is fresh. Adding a new protocol is adding a backend behind the same `SyncClient` interface plus an `account_services` row that selects it.
-
-### JMAP transport (RFC 8887)
-
-The JMAP backend uses WebSocket as primary transport when the session document advertises `urn:ietf:params:jmap:websocket`, falling back to HTTP `POST /jmap` for one-shot requests when the WebSocket is unavailable.
-
-- Each request carries `@type: "Request"` and a `requestId` so out-of-order responses on the WebSocket can be matched back to call sites.
-- On connect, the engine sends `WebSocketPushEnable` for the data types we care about (`Mailbox`, `Email`, `Thread`, `Identity`, `EmailDelivery`) along with the last `push_state` from `account_services` if any. The server immediately ships any state changes that occurred while we were disconnected.
-- `EmailDelivery` is push-only and changes only when new mail arrives—it's the source of "n new" indicators without false positives from `$seen` flips made on other devices.
-- On disconnect, the engine reconnects with the most recently received `pushState`. If `pushState` is unsupported or rejected, it walks per-type `Foo/changes` until `hasMoreChanges = false`.
-
-### CardDAV transport (read-only in MVP)
-
-The CardDAV backend follows RFC 6352 plus the WebDAV-Sync extension (RFC 6578):
-
-- Discovery: `.well-known/carddav` → principal collection → addressbook home set → individual addressbooks. Stored in `account_services` and `addressbooks`.
-- Initial sync: `REPORT addressbook-multiget` to populate `contacts` and `contact_emails`. Saves the `getctag` and `sync-token`.
-- Delta sync: `REPORT sync-collection` with the saved `sync-token`, applying `added`/`removed`/`changed` to the local rows. Falls back to a CTag-driven full re-fetch on `cannotCalculateChanges`-equivalent responses.
-- For MVP, no CardDAV `PUT`/`DELETE` paths exist; the backend is read-only.
-
 ## Thunderbird Panorama Takeaways
 
 Thunderbird's Panorama project stores all folders and messages in one SQLite database rather than one database per folder. The design uses DB-assigned IDs, folder and message tables, property side tables, indexes for folder/date/flags/thread, and LiveView adapters that keep front-end message lists current.
@@ -760,10 +745,3 @@ The most relevant lessons for this webmail app are:
 - Sparse/lazy list loading is a first-class design concern.
 - The database should not know how to sync. Protocol adapters maintain it as a reflection of authoritative sources.
 
-## Open Decisions
-
-- Whether to store body text/html indefinitely up to a cap, or treat body values as a short-lived cache cleared aggressively.
-- Whether to add local FTS5 later for subject/sender/body snippets, and—relatedly—for contact display names. Not needed for MVP list filtering or basic recipient autocomplete.
-- Whether query views should store every fetched remote id or only materialized local message ids. The current schema stores both, which helps render sparse lists and fetch missing metadata later; revisit if disk usage becomes a concern.
-- Whether to keep Vue Query. It may still be useful for repository-query lifecycle inside Pinia stores, but it should no longer represent server state directly.
-- For MVP recipient autocomplete: whether the contacts backend defaults to CardDAV (the literal MVP scope), JMAP-Contacts (reuses the JMAP transport), or runs both with a per-account preference. The schema accommodates all three; the implementation choice can be deferred to first usage.

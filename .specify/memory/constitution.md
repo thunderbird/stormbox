@@ -1,75 +1,137 @@
 # Stormbox Constitution
 
+This document holds Stormbox's product and architectural invariants.
+Capability and behavior detail lives in `specs/001-mvp-scope/spec.md`.
+Operational rules for agents and contributors live in `AGENTS.md`.
+Implementation notes live in `docs/architecture/`.
+
 ## Core Principles
 
 ### I. Browser-Owned Mail Client
 
 The system shall remain a fully in-browser webmail client with no
-server-side mail application component. Self-hosters must be able to run
-Stormbox against their own supported mail services without adding a
-Stormbox-specific backend for mail storage or mail mutation handling.
+server-side mail application component. Self-hosters must be able to
+run Stormbox against any supported mail server without adding a
+Stormbox-specific backend.
 
-### II. Local Cache as the Rendered Source
+### II. Cache-First, Server-Authoritative
 
-The system shall render mail UI from the local browser cache first, with
-network sync filling or refreshing the cache in the background. The local
-cache shall use browser storage backed by SQLite through the repository
-and worker layers. Message bodies are cache data, not the durable source
-of truth.
+- The UI shall paint navigation and message detail from local
+  storage before any network round trip.
+- The server shall be treated as the source of truth; the local cache
+  is rebuildable on demand.
+- Folder lists shall be read by JMAP `Email/query` position from
+  `query_view_items`, not by SQL `OFFSET` over membership tables.
+  `query_views.total` is the authoritative row count for an open
+  mailbox window.
+- Message bodies shall be treated as an LRU cache, not durable mail
+  storage.
+- When local data and server state disagree, the system shall
+  reconcile from the server.
 
-### III. Protocol and Layer Boundaries
+### III. Layer Boundaries
 
-The system shall target JMAP for the MVP mail protocol while preserving
-room for future protocols. UI components and stores shall not call JMAP,
-`fetch`, or protocol transports directly; protocol-specific behavior
-belongs behind sync backends.
+- Vue components and Pinia stores shall not call JMAP, `fetch`, or any
+  protocol transport. UI reads go through `Repository` RPC; UI
+  mutations go through `pending_mutations`.
+- Protocol-specific code shall live behind a sync backend at
+  `src/sync/backends/<protocol>/`.
+- The browser-local SQLite engine, JMAP transport, sync engine, and
+  mutation outbox shall run in a single shared writer worker per
+  origin. SharedWorker is the current implementation; a leader-elected
+  DedicatedWorker fallback is acceptable in browsers that lack
+  SharedWorker (e.g. Android Chrome).
+- Tabs shall communicate with the worker via `MessagePort` and
+  observe writes via a `BroadcastChannel` that names the affected
+  table families.
 
-### IV. Single-Account MVP, Extensible Model
+### IV. Mutation Pipeline
 
-The MVP shall support a single active account. Data models and service
-boundaries shall not assume that only one account or one account provider
-will ever exist; future Thundermail and external accounts must remain
-possible without rewriting core storage concepts.
+- User actions shall enqueue rows in `pending_mutations` and drain
+  through the outbox runner. UI code shall not issue ad-hoc protocol
+  writes.
+- After a successful protocol write, the local cache shall already
+  match the server before the mutation RPC resolves; waiting only for
+  an asynchronous push is not sufficient.
+- Ordinary delete moves a message to Trash. Permanent destroy is
+  reserved for messages already in Trash or explicit destroy flows.
+- Bulk applies shall batch SQL and coalesce per-row UI refreshes into
+  one paint.
 
-### V. Earlybird-Ready User Value
+### V. Incremental Sync
 
-The system shall prioritize the smallest webmail surface suitable for an
-Earlybird audience alpha: reliable sign-in, reading mail, sending mail,
-safe message display, basic message actions, and recipient autocomplete.
-Features outside that scope should not displace core reading and sending
-reliability.
+- Incremental sync shall use JMAP state tokens (`Email/changes`,
+  `Email/queryChanges`, `Mailbox/changes`, etc.) stored in
+  `sync_states`. On `cannotCalculateChanges`, the affected slice shall
+  be rebuilt from the server rather than treated as current.
+- The system shall prefer chained JMAP calls (e.g. `Email/query` +
+  `Email/get` via back-references) so network and SQLite batch shapes
+  match.
+
+### VI. Safe Email Rendering
+
+HTML email shall be sanitized and rendered in a sandboxed iframe with
+a Content-Security-Policy that forbids scripts and active content.
+Links shall not navigate the host page.
+
+### VII. Single-Account MVP, Extensible Model
+
+The MVP supports a single active account. Storage and service
+boundaries shall not assume only one account or one provider will
+ever exist.
+
+### VIII. Earlybird-Ready Scope Discipline
+
+The system shall prioritize the smallest webmail surface suitable for
+an Earlybird audience alpha: reliable sign-in, reading, sending, safe
+display, basic message actions, and recipient autocomplete. Features
+outside that scope must not displace core read/send reliability.
 
 ## Technology Commitments
 
-- The system shall use Vue 3 and Pinia for the frontend application.
-- The system shall prefer services-ui components where they fit the
-  interaction and accessibility requirements.
-- The compose experience shall use Fastmail's Squire editor where
-  practical, with a plain-text alternative available.
-- Authentication shall support Keycloak OIDC for hosted/development
-  flows and basic username/password authentication for self-hosters.
-- The mail protocol for MVP delivery shall be JMAP, initially against
-  Stalwart.
+- Frontend: Vue 3 + Pinia, Vite, TypeScript.
+- Editor: Squire for HTML compose; a plain-text body sent alongside.
+- Mail protocol: JMAP for the MVP, initially against Stalwart.
+- Authentication: Keycloak OIDC for hosted/development flows; basic
+  username/password for self-hosters.
+- Local storage: wa-sqlite over IndexedDB (`IDBBatchAtomicVFS`)
+  inside the shared writer worker.
+- WebSocket auth bridge: when the browser cannot attach an
+  `Authorization` header to `WebSocket`, JMAP traffic shall route
+  through a proxy that converts a query-string credential into the
+  upstream `Authorization` header.
+- Hard runtime requirements: secure context (HTTPS), IndexedDB,
+  BroadcastChannel, MessageChannel, and a worker context (SharedWorker
+  or DedicatedWorker fallback). The system shall fail fast with a
+  clear error when these are unavailable.
 
-## Development Workflow
+## Verified Consistency
 
-Specs live under `specs/NNN-feature/` and are governed by this
-constitution. Agents should follow the Spec Kit flow:
-`/speckit.constitution`, `/speckit.specify`, `/speckit.plan`,
-`/speckit.tasks`, and `/speckit.implement`.
+Any change that mutates server state and the local cache must ship
+with a Playwright E2E test that asserts:
 
-Implementation work must also follow `AGENTS.md`, especially the
-container-only command rules and the E2E coverage requirements for
-changes that mutate both the server and the local SQLite cache.
+1. The user-visible UI outcome.
+2. The local cache outcome via `window.__repo`.
+3. The server outcome via direct JMAP, not the worker read-through.
+
+The test must run on both `--project=chromium` and
+`--project=firefox`. Helpers, scope, and cleanup conventions live in
+`AGENTS.md`.
+
+## Workflow
+
+Specs live under `specs/NNN-feature/` and follow this constitution.
+Agents use the Spec Kit flow: `/speckit.constitution`,
+`/speckit.specify`, `/speckit.plan`, `/speckit.tasks`,
+`/speckit.implement`. Operational rules in `AGENTS.md` (dev container,
+local stack, E2E conventions, project layout) take precedence over
+this document for day-to-day contribution rules.
 
 ## Governance
 
-This constitution is the source of project-wide product and architecture
-constraints for Spec Kit work. Feature specs, plans, and tasks must call
-out any conflict with this document before implementation begins.
+This constitution is the source of project-wide product and
+architectural constraints. Feature specs, plans, and tasks must call
+out any conflict before implementation begins. Amendments require an
+update to this file with a brief reason.
 
-Amendments require an explicit update to this file and should include the
-reason the principle changed. Existing specs that depend on an amended
-principle should be reviewed before work continues.
-
-**Version**: 1.0.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-05-21
+**Version**: 1.1.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-05-22

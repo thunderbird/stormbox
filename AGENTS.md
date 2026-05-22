@@ -1,7 +1,19 @@
 # Stormbox — agent guide
 
-Stormbox is a Vue 3 + Pinia webmail client backed by OPFS SQLite in a
-`SharedWorker`, with a Stalwart JMAP server as the mail source of truth.
+Stormbox is a Vue 3 + Pinia webmail client backed by browser-local
+SQLite in a shared writer worker, with JMAP as the mail source of
+truth.
+
+This document is the operational guide for agents and contributors.
+
+- Product surface and capability requirements:
+  `specs/001-mvp-scope/spec.md`.
+- Project-wide product and architectural invariants (layer
+  boundaries, cache-first reads, mutation pipeline, sync rules,
+  browser baseline, safe rendering): `.specify/memory/constitution.md`.
+  Read it before changing sync, stores, list/detail UI, or mutations.
+- Implementation notes (storage schema, performance, sync flow):
+  `docs/architecture/`.
 
 # Commit messages
 
@@ -11,15 +23,13 @@ Use a commit style similar to the other commits in the repository, don't randoml
 
 ## Spec-driven development
 
-Spec Kit is the shared spec workflow. Project-wide spec principles live in
-`.specify/memory/constitution.md`; feature specs live under
-`specs/NNN-feature/`. The usual flow is `/speckit.constitution`,
-`/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, then
-`/speckit.implement`.
+Spec Kit is the shared spec workflow. Slash commands:
+`/speckit.constitution`, `/speckit.specify`, `/speckit.plan`,
+`/speckit.tasks`, `/speckit.implement`.
 
 Shared Spec Kit artifacts (`.specify/` and `specs/`) are committed.
-Per-agent bindings are local developer setup and stay ignored, including
-`.cursor/skills/`.
+Per-agent bindings, including `.cursor/skills/`, are local developer
+setup and stay ignored.
 
 ```bash
 uvx --from git+https://github.com/github/spec-kit.git@v0.4.4 \
@@ -72,131 +82,65 @@ Running on the host silently produces a broken environment that does
 not reflect how tests actually run, leading to spurious "fixes" that
 mask the real problem.
 
-## JMAP and local cache
+## E2E coverage for cache + server mutations
 
-These rules apply to any change touching sync, stores, list/detail UI, or
-mutations. Deeper background: `docs/architecture/performance.md` and
-`docs/architecture/sqlite-storage.md`.
+The constitution's "Verified Consistency" rule requires every
+server+cache mutation to ship with a Playwright E2E that asserts the
+UI, local cache, and direct JMAP outcomes on Chromium and Firefox.
+Operational details:
 
-### Layer boundaries
-
-- **Vue components and Pinia stores never call JMAP, `fetch`, or the JMAP
-  transport.** They read via `Repository` (SQLite RPC) and ask the sync
-  layer to ensure data is fresh (`ensureFolderWindow`, `getMessageBodyForDisplay`,
-  `runMutation`, etc.).
-- **All JMAP-specific code lives under `src/sync/backends/jmap/`** (transport,
-  `JmapBackend`, mailbox/email/contact sync, bodies, outbox, `outbox-apply`).
-- **The SharedWorker** owns wa-sqlite, the JMAP session/WebSocket, sync, and
-  SQL writes. One worker per origin; tabs share it via `MessagePort` + a
-  `BroadcastChannel` for `tables-touched` invalidation.
-
-### Reads
-
-- **SQLite is what the UI renders.** Navigation should paint from the local
-  cache immediately; network is for cache misses and background fill.
-- **Folder lists are positional, not SQL `OFFSET` on `folder_messages`.**
-  Use `MESSAGE_LIST_FOR_VIEW` / `listMessagesForView`, which reads
-  `query_view_items.position` (the JMAP `Email/query` position). Sparse
-  folder caches break `OFFSET`-based reads at deep scroll offsets.
-- **`query_views.total` is the authoritative row count** for the open
-  mailbox window (from `Email/query` / `Email/queryChanges`), not
-  `folders.total_emails` alone when the two disagree after a delete/move.
-- **Bodies are an LRU cache** (`body_parts` / `body_values`), not durable
-  mail storage. List metadata is durable; bodies are fetched on demand.
-
-### Writes (mutations)
-
-- **User actions enqueue `pending_mutations`**, then drain through the outbox
-  (`OutboxRunner` → `processMutationRow` → JMAP `Email/set` / submission).
-  Do not fire ad-hoc JMAP `Email/set` from the UI or stores.
-- **After a successful `Email/set`, update SQLite in `outbox-apply.js`
-  before returning** (`applyMoveLocally`, `applyDestroyLocally`, keyword
-  helpers). Do not rely on waiting for a later `StateChange` push alone;
-  by the time `runMutation` resolves, local tables and broadcasts should
-  already match the server outcome.
-- **Ordinary Delete moves to Trash** (`moveToFolders`); **permanent destroy**
-  is for messages already in Trash (or explicit destroy flows).
-- **Bulk local applies should not spam partial UI refreshes.** Batch SQL and
-  coalesce `refreshLoadedPages` when many `MESSAGES` broadcasts arrive in
-  one mutation (see `mail-store.js`).
-
-### Sync
-
-- **Incremental sync uses JMAP state tokens** (`Email/changes`,
-  `Email/queryChanges`, `Mailbox/changes`, etc.) stored in `sync_states`.
-  On `cannotCalculateChanges`, rebuild that slice (full refetch), do not
-  pretend the cache is current.
-- **Prefer chained JMAP calls** (e.g. `Email/query` + `Email/get` via
-  back-references) to match network batch shape with SQLite batch writes
-  (`MESSAGE_UPSERT_MANY`, `FOLDER_MEMBERSHIP_REPLACE_MANY`, etc.).
-- **WebSocket transport** may require the Cloudflare proxy documented in
-  `infra/ws-proxy/README.md` when the browser cannot send `Authorization`
-  on `new WebSocket()`.
-
-### Testing changes that touch server + cache
-
-Any change that issues a JMAP/sync mutation **and** updates local SQLite
-(`messages`, `folder_messages`, `query_view_items`, `query_views`, …) must
-come with a Playwright E2E test in `stormbox/tests/e2e/`. Unit and
-integration tests are necessary but not sufficient — Node-side fakes
-hide failures we have been bitten by repeatedly:
-
-- Node's `BroadcastChannel` polyfill is more forgiving than the Firefox
-  SharedWorker → tab hop.
-- `wa-sqlite` OPFS timing in Firefox differs from Chromium.
-- Vue reactivity and the TanStack virtualizer only fail at the DOM
-  level, not in mocked stores.
-
-Every such E2E must:
-
-1. Assert the user-visible UI outcome (rows appear / disappear in the
-   rendered list, toolbar counts update, etc.).
-2. Assert the local cache outcome via `window.__repo`
-   (`listMessagesForView`, `queryViewProgress`, raw `db.query` reads).
-3. Assert the server outcome via direct JMAP (`Email/get`, `Email/query`,
-   etc.) — DO NOT rely on the worker's read-through.
-4. Run on BOTH `--project=chromium` AND `--project=firefox`.
-5. Clean up any test-created server-side mail in `finally` AND scrub
-   orphans from prior interrupted runs in `beforeEach`. The
-   `delete-message.spec.js` / `bulk-delete.spec.js` helpers
-   (`sweepOrphanTestMessages`, `cleanupEmail`) are the template.
-6. Use a unique subject prefix (`Delete e2e ...`,
-   `Ghost refresh e2e ...`, etc.) so the sweep can find them.
-
-Operations this rule covers:
-
-- Any new `mutation_type` in `pending_mutations`.
-- Any new `apply*Locally` helper in `src/sync/backends/jmap/outbox-apply.ts`.
-- Any change to `destroyMessage(s)`, `markManySeen`, `refresh`, compose
-  `send`, or `resetViewForFolder` semantics.
-- Any new field surfaced through `MESSAGE_LIST_FOR_VIEW` /
-  `QUERY_VIEW_APPLY_CHANGES` that the mail store re-reads.
+- Add coverage when introducing any new `mutation_type` in
+  `pending_mutations`, any new `apply*Locally` helper in
+  `src/sync/backends/jmap/outbox-apply.ts`, any change to
+  `destroyMessage(s)`, `markManySeen`, `refresh`, compose `send`, or
+  `resetViewForFolder` semantics, or any new field surfaced through
+  `MESSAGE_LIST_FOR_VIEW` / `QUERY_VIEW_APPLY_CHANGES` that the mail
+  store re-reads.
+- Use the `delete-message.spec.js` / `bulk-delete.spec.js` files as
+  templates. They show the UI assertions, the
+  `window.__repo` reads (`listMessagesForView`, `queryViewProgress`),
+  and the direct JMAP assertions (`Email/get`, `Email/query`).
+- Use a unique subject prefix (e.g. `Delete e2e ...`,
+  `Ghost refresh e2e ...`) so the sweep helpers can find leftover
+  test mail.
+- Clean up created server-side mail in `finally`, and scrub orphans
+  from earlier interrupted runs in `beforeEach` via
+  `sweepOrphanTestMessages` / `cleanupEmail` from
+  `tests/e2e/helpers/`.
+- Run via `npm run test:e2e:local -- --project=chromium --project=firefox`
+  inside the dev container.
 
 If you cannot add the E2E (e.g. the user explicitly defers it), call
 that out in the PR description and link the existing test that comes
 closest, so coverage gaps are visible.
 
-Run Playwright and perf scripts via `docker compose … exec app`, not on
-the host (see above). Live specs require `LOCAL_STACK=1`
-(`npm run test:e2e:local`) and the **thunderbird-accounts** submodule
-stack.
+Why Node-side fakes are not enough:
 
-### Local e2e stack (thunderbird-accounts submodule)
+- Node's `BroadcastChannel` polyfill is more forgiving than a real
+  worker → tab hop.
+- `wa-sqlite` IndexedDB timing in Firefox differs from Chromium.
+- Vue reactivity and the TanStack virtualizer fail at the DOM level,
+  not in mocked stores.
 
-Live Playwright specs run against the **thunderbird-accounts** dev stack
-vendored at `thunderbird-accounts/` (git submodule). Clone with
+## Local e2e stack (thunderbird-accounts submodule)
+
+Live Playwright specs run against the **thunderbird-accounts** dev
+stack vendored at `thunderbird-accounts/` (git submodule). Clone with
 `git clone --recurse-submodules` or `git submodule update --init`.
 
-Do **not** modify or commit inside the `thunderbird-accounts/` submodule
-unless the user directly asks for a submodule change. Stormbox-local setup
-should be handled from this repo (for example via `tests/fixtures/configure-*`)
-so the parent repo can remain pinned to an upstream submodule commit.
+Do **not** modify or commit inside the `thunderbird-accounts/`
+submodule unless the user directly asks for a submodule change.
+Stormbox-local setup should be handled from this repo (for example
+via `tests/fixtures/configure-*`) so the parent repo can remain
+pinned to an upstream submodule commit.
 
-Stormbox stays on **HTTPS with a self-signed cert** (`@vitejs/plugin-basic-ssl`)
-so OPFS / SharedWorker / SubtleCrypto work. Keycloak (:8999) and Stalwart JMAP
-(:8081) are plain HTTP on the host; when `VITE_LOCAL_STACK=1`, Vite reverse-
-proxies them through `https://localhost:3000` (`/realms/*`, `/stalwart-jmap/*`,
-`/jmap/ws` → local WS proxy).
+Stormbox stays on **HTTPS with a self-signed cert**
+(`@vitejs/plugin-basic-ssl`) so the secure-context APIs Stormbox
+relies on (SharedWorker, IndexedDB, SubtleCrypto) work. Keycloak
+(:8999) and Stalwart JMAP (:8081) are plain HTTP on the host; when
+`VITE_LOCAL_STACK=1`, Vite reverse-proxies them through
+`https://localhost:3000` (`/realms/*`, `/stalwart-jmap/*`, `/jmap/ws`
+→ local WS proxy).
 
 ```bash
 # 1. Start Keycloak + Stalwart + Accounts (host or dev container with Docker)

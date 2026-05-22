@@ -1,96 +1,83 @@
 # Stormbox Performance and Architecture Notes
 
-These notes summarize the architecture of the Stormbox webmail MVP and the
-performance work done so far. They are an internal field guide, not user
-documentation. They are intended to capture the design choices, the
-known-good state of the code, and the open performance work for future
-contributors.
+Field guide for developers working on Stormbox's sync, storage, or
+list/detail UI. Project-wide invariants live in
+`.specify/memory/constitution.md`. Schema and query rationale live in
+`sqlite-storage.md`.
 
-## High-level Architecture
+## High-level architecture
 
-Stormbox is a Vue 3 + Pinia single-page app that talks to a Stalwart JMAP
-server. Local data lives in OPFS-backed SQLite (`@journeyapps/wa-sqlite`),
-hosted in a `SharedWorker` so multiple tabs share one connection and one
-database. The UI never calls JMAP directly: the SharedWorker owns the JMAP
-transport, drives sync, and exposes a small RPC surface to Pinia stores.
+Stormbox is a Vue 3 + Pinia single-page app talking to a JMAP server.
+Local data lives in browser-local SQLite (`@journeyapps/wa-sqlite`)
+hosted in a single shared writer worker per origin. The UI never
+calls JMAP directly: the worker owns the JMAP transport, drives sync,
+and exposes a small RPC surface to Pinia stores.
 
 ```mermaid
 flowchart TD
     UI[Vue + Pinia UI] -->|RPC| Repository[Main-thread Repository]
-    Repository -->|MessagePort| Worker[SharedWorker]
-    Worker --> Engine[wa-sqlite OPFS]
+    Repository -->|MessagePort| Worker[Shared writer worker]
+    Worker --> Engine[wa-sqlite + IDBBatchAtomicVFS]
     Worker --> JMAP[JMAP transport]
-    JMAP -->|HTTPS POST or WS| Server[Stalwart]
+    JMAP -->|HTTPS POST or WS| Server[JMAP server]
     Worker -.->|tables-touched| Repository
     Repository -.->|broadcasts| UI
 ```
 
-Key principles:
+Today the worker is a `SharedWorker`. A leader-elected
+`DedicatedWorker` fallback is acceptable on browsers that do not ship
+SharedWorker (e.g. Android Chrome).
 
-- Pinia stores read from SQLite via `Repository` RPC; they do not call
-  JMAP. Reads return whatever is local immediately so navigation feels
-  instant.
-- The SharedWorker is the only writer. After every write batch it
-  publishes a `tables-touched` broadcast naming the affected table
-  families. Stores subscribe and re-run the queries they care about.
-- The schema is multi-account and protocol-neutral. Local primary keys
-  are integers; remote ids are stored as data and scoped per
-  `account_id`. JMAP-specific behavior lives only in
-  `src/sync/backends/jmap`.
-- Bodies are an LRU cache, not durable source-of-truth data. List
-  metadata is durable.
+## Storage backend
 
-## Code Layout
+The SQLite database is backed by IndexedDB through wa-sqlite's
+`IDBBatchAtomicVFS`. IndexedDB's batch atomic transactions stand in
+for SQLite's external journal file, so the VFS performs well without
+WAL.
 
-- `src/db/engine.ts` and `src/db/bootstrap-idb.ts`: wa-sqlite engine
-  and IndexedDB VFS bootstrap (IDBBatchAtomicVFS). The Engine
-  serializes all SQL on a per-engine promise tail to avoid wa-sqlite
-  handle interleaving.
-- `src/db/handlers.js`: RPC handlers that own SQL writes. Bulk
-  primitives like `MESSAGE_UPSERT_MANY`, `FOLDER_MEMBERSHIP_REPLACE_MANY`,
-  `MESSAGE_LIST_FOR_VIEW`, `QUERY_VIEW_PROGRESS` live here.
-- `src/db/protocol.js`: RPC method names and `TABLE_FAMILIES` constants.
-- `src/db/repository.js`: Main-thread RPC client used by stores.
-- `src/sync/backends/jmap`: JMAP transport, mailbox/email/contact/
-  identity sync, body fetch, outbox, and the `JmapBackend` orchestrator.
-- `src/stores/mail-store.js`: per-folder cache, virtualized list state,
-  body prefetch queue, scroll-position persistence, broadcast handling.
-- `src/components/MessageList.vue`: virtualized list using
-  `@tanstack/vue-virtual`.
-- `infra/ws-proxy/`: Cloudflare Worker that proxies scoped JMAP HTTP
-  paths for stage/prod CORS and converts `?access_token=...` query
-  param on `/jmap/ws` upgrades into an upstream
-  `Authorization: Bearer ...` header. Required because browsers cannot
-  set custom headers on `new WebSocket(...)` and Stalwart's `/jmap/ws`
-  only authenticates via the `Authorization` header.
+Why IndexedDB rather than OPFS:
 
-## Storage Schema Highlights
+- The OPFS VFSes that work in a SharedWorker (`OPFSAnyContextVFS`,
+  `OPFSAdaptiveVFS`) cannot use SQLite WAL because OPFS's async API
+  does not support the shared-memory primitives WAL needs.
+  `OPFSAnyContextVFS` was measured 5-8x slower than
+  `IDBBatchAtomicVFS` on representative delete-under-indexer-churn
+  workloads (see `research/vfs-bench/`).
+- Faster OPFS VFSes (`AccessHandlePoolVFS` + WAL,
+  `OPFSCoopSyncVFS`) use `createSyncAccessHandle`, which Firefox
+  restricts to dedicated workers. They are incompatible with the
+  current SharedWorker topology but stay viable for a future
+  DedicatedWorker leader setup.
+- `IDBBatchAtomicVFS` works in any worker context and stays within
+  a factor of two between Chromium and Firefox on typical workloads.
 
-Tables defined in `src/db/migrations/001_init.sql`:
+`PRAGMA journal_mode=WAL` is not set: with `IDBBatchAtomicVFS` it has
+no effect. `PRAGMA synchronous=NORMAL` is kept as a documented
+performance win for this VFS.
 
-- `accounts`, `account_services`, `account_capabilities`: multi-account
-  and multi-service-per-account scaffolding (JMAP Mail, JMAP Contacts,
-  CardDAV, future IMAP, etc.).
-- `folders`: mailbox tree per account.
-- `threads`, `messages`: thread and message metadata. Hot list/header
-  fields are real columns. `raw_json` is kept for compatibility, but
-  list queries do not parse it.
-- `message_addresses`, `message_keywords`: normalized side tables for
-  search/filter and future keyword UI.
-- `folder_messages`: folder membership junction. Today we use
-  Model A (folder-copy-per-row) by default; the schema preserves room
-  for Model B (one row, per-folder state in junction) for future IMAP
-  support.
-- `body_parts`, `body_values`: body MIME tree and decoded values, both
-  treated as LRU cache.
-- `query_views`, `query_view_items`, `query_view_ranges`: persisted
-  shape of JMAP `Email/query` results. `query_view_items.position`
-  preserves JMAP positions; `query_view_ranges` records which slices
-  of the result are locally indexed. These are the substrate that
-  powers virtualized scrolling and folder index progress.
-- `sync_states`, `sync_jobs`, `pending_mutations`: control plane.
+## Worker topology and the engine lock
 
-## Sync Flow
+Tabs talk to the worker through a per-tab `MessagePort` for RPC and a
+shared `BroadcastChannel` that names the table families touched by
+each write. Stores subscribe and re-run their queries when relevant
+families fire.
+
+wa-sqlite holds a single connection. Concurrent step calls on that
+connection interleave at row boundaries and deadlock. The Engine
+serializes every public exec/all/get/run on a per-engine promise
+tail. `transaction()` acquires the lock once and passes the callback
+a `TxContext` whose helpers run SQL on the held connection without
+re-acquiring it.
+
+This shape is required because background sync runs SQL outside any
+inbound RPC, so a queue at the RPC dispatcher only is not enough; the
+serialization lives one layer down, in the engine itself.
+
+Implication: every SQL operation contends on the same lock. The
+*shape* of writes matters more than usual — many small operations
+queue behind one another, while batched operations dominate cost.
+
+## Sync flow
 
 ```mermaid
 flowchart TD
@@ -106,236 +93,243 @@ flowchart TD
     Push --> IdentityChanges[Identity changes]
 ```
 
-Visible folder windows are loaded by `JmapBackend.ensureFolderWindow()`
-which runs a chained `Email/query + Email/get` (one round trip via JMAP
-back references) and persists the result through the batch primitives.
-A low-priority background indexer fills `query_view_ranges` gaps
-chunk by chunk and yields when foreground fetches are active.
+`JmapBackend.start()` returns as soon as the local account row and
+folder tree are populated. Identities, contacts, and the WebSocket
+are kicked off in the background so the UI can paint a folder list
+within one round trip of "login complete".
 
-Body fetches are deduped through a single-concurrency prefetch queue in
-`mail-store.js`. Selecting a message enqueues its own body plus nearby
-visible rows; opening a folder for the first time prefetches the first
-few visible message bodies for inbox or small folders. The batched body
-RPC `SYNC_ENSURE_MESSAGE_BODIES` resolves local ids to remote ids,
-skips messages that already have `body_fetched_at`, and calls
-`fetchEmailBodies()` once per batch.
+Visible folder windows load through `JmapBackend.ensureFolderWindow()`,
+which runs a chained `Email/query + Email/get` in a single envelope
+using JMAP back-references (RFC 8620 §3.1.3). The `Email/get` call
+references the previous query's result via
+`"#ids": { resultOf: 'q1', name: 'Email/query', path: '/ids' }`. The
+change path uses `path: '/added/*/id'` to pull just newly-added ids
+out of an `Email/queryChanges` response. One envelope replaces two
+HTTP round trips and is the precondition that makes WebSocket
+transport an actual win over HTTP.
 
-## Engine Locking
+A low-priority background metadata indexer fills `query_view_ranges`
+gaps chunk by chunk and yields whenever foreground fetches or outbox
+mutations are active. Cooperation is via a single counter
+(`_foregroundFolderWindowCount`) the user-driven and outbox paths
+both increment.
 
-`src/db/engine.js` serializes every public SQL call on a per-engine
-promise tail. `transaction()` holds the lock once and passes the
-callback a `TxContext` that uses raw helpers to run SQL on the held
-connection without re-acquiring the lock. This is the workaround for
-two facts about wa-sqlite:
+## Mutation pipeline
 
-- A single connection handle cannot be used concurrently. Two parallel
-  `step()` calls interleave at row boundaries and deadlock.
-- Closing or unwinding inside a transaction must use the same context.
+User actions enqueue rows in `pending_mutations` and drain through
+`OutboxRunner`. The runner wakes on three triggers: a row inserted
+via the DB layer hook, a JMAP `StateChange` push, and a backoff
+timer.
 
-Implication: every SQL operation contends on the same lock. Persistence
-shape matters more than usual because lots of small operations queue
-behind one another.
+After a successful `Email/set`, the local cache is reconciled
+in-process via `outbox-apply`. `applyMoveLocally` and
+`applyDestroyLocally` go through the `OUTBOX_APPLY_MOVE` /
+`OUTBOX_APPLY_DESTROY` worker handlers, which do every step inside a
+single engine transaction: replace `folder_messages` rows, drop
+affected query view items, decrement `query_views.total`, and mark
+added-folder views stale. Combining the steps reduces a delete from
+six to nine round-trip-plus-fsync RPCs to one transaction, which is
+the difference between a roughly 200-800 ms apply and a 40-95 ms
+apply under indexer load.
 
-## JMAP Edge Proxy
+Trash semantics: ordinary delete moves to Trash via `moveToFolders`.
+Permanent destroy is reserved for messages already in Trash or
+explicit destroy flows.
+
+`destroyMessage` and `destroyMessages` share a single code path: one
+`pending_mutations` row whose `request_json` carries
+`messageIds: [...]`, dispatched as one `Email/set` per outbox row
+regardless of array size.
+
+## JMAP edge proxy
 
 Browsers cannot set `Authorization` on `new WebSocket(url, protocols)`,
-and Stalwart's `/jmap/ws` only authenticates via the `Authorization`
-header. The Cloudflare Worker at `wsmail.stage-thundermail.com` and
-`wsmail.thundermail.com` accepts either `?access_token=<bearer>` (RFC
-6750 §2.3 style) or `?basic=<base64>` on `/jmap/ws`, strips the
-credential from the forwarded URL, sets `Authorization: Bearer ...`
-(or `Basic ...`) on the upstream upgrade, and proxies the WebSocket.
-This removes the need for any client-side header manipulation and lets
-Stalwart authenticate normally.
+and JMAP `/jmap/ws` (RFC 8887) authenticates only via that header.
+The Cloudflare Worker at `infra/ws-proxy/` accepts
+`?access_token=<bearer>` (RFC 6750 §2.3) or `?basic=<base64>` on
+`/jmap/ws`, strips the credential from the forwarded URL, sets the
+upstream `Authorization` header, and proxies the WebSocket.
 
 The same Worker proxies `/.well-known/jmap`, `/jmap`, and `/jmap/*`
-over HTTP for the hosted webmail origins. It owns browser-facing CORS
-headers and rewrites the session document's advertised `mail.*` URLs
-back to `wsmail.*`, so the app can use stage/prod Stalwart without
-changing Stalwart CORS settings.
+over HTTP, owns browser-facing CORS for the webmail origins, and
+rewrites session-document URLs from `mail.*` back to `wsmail.*` so
+follow-up calls stay on the proxy. When the upstream JMAP server
+accepts a query-param credential natively, the proxy becomes
+optional.
 
-When Stalwart eventually accepts a query-param patch upstream, the
-client just points back at the session-document URL and the proxy
-becomes optional.
+The worker captures `fetch` and `WebSocket` once at startup and
+binds them to `globalThis`. Firefox's SharedWorker enforces the
+WorkerGlobalScope receiver on `fetch`, so a captured-and-called
+function without binding throws "called on an object that does not
+implement interface WorkerGlobalScope".
 
-## Performance Findings to Date
+## Performance patterns
 
-The original list and body navigation were slow for several reasons.
-These have been addressed in dedicated commits.
+Each pattern below is paired with the issue that motivated it. The
+goal is to capture *why* the code looks the way it does so the
+constraint is not lost when the implementation evolves.
 
-### Folder navigation was network-bound
+### Cache-first folder navigation
 
-Symptom: every Inbox click showed a multi-second spinner even after a
-prior visit.
+**Issue.** Naive `selectFolder` blanked the message list, allocated
+fresh paint state, and waited for a JMAP round trip on every click —
+even for folders whose rows already lived in SQLite. Re-entering
+Inbox after viewing Archives showed a multi-second spinner against
+a small folder.
 
-Root cause: `selectFolder()` blanked `messages.value` and rebuilt
-folder cache state from scratch on every click.
+**Pattern.** The mail store keeps a per-folder cache map
+(`Map<folderId, FolderCache>`) that survives across `selectFolder`
+calls and lives for the user's session. `selectFolder` restores the
+matching entry, binds `messages.value` to its rows, and shows a
+spinner only when the folder has no painted offsets yet. Each folder
+owns its own `pageInflight` so rapid folder switches do not stack up
+behind a previous folder's pending load.
 
-Fix: `mail-store.js` keeps a per-folder `folderStates` map across
-selectFolder calls. Re-entering a folder paints from the map
-synchronously.
+### Positional list reads
 
-Measured: Inbox re-entry is ~70 ms in Chromium and ~90 ms in Firefox,
-no spinner.
+**Issue.** A SQL `OFFSET` over `folder_messages` returned zero rows
+at high offsets when the cache was sparse. A deep scroll into row
+1500 of a 3000-message folder asked SQLite for `OFFSET 1500 LIMIT 100`
+of essentially nothing, and the virtualizer sat on placeholder rows
+forever even after the matching JMAP page had been persisted.
 
-### Deep-scroll was reading the wrong rows
+**Pattern.** Folder list reads use `MESSAGE_LIST_FOR_VIEW`, which
+joins JMAP-position-keyed `query_view_items` to `messages` on
+`(account_id, remote_id)` rather than reading `folder_messages` by
+position. The matching `query_views` row is found via the
+`(account_id, view_type, folder_id, filter_json, sort_json, collapse_threads)`
+unique index, so the lookup is an index probe.
 
-Symptom: scrolling to row 1500 in Archives left placeholder rows
-forever.
+`query_views.total` is the authoritative row count for the open
+window. `folders.total_emails` is treated as a hint when the two
+disagree after a delete or move.
 
-Root cause: `MESSAGE_LIST_FOR_FOLDER` used SQL `OFFSET` over
-`folder_messages`. That returned zero rows at high offsets when the
-cache was sparse.
+### Batched persistence
 
-Fix: added `MESSAGE_LIST_FOR_VIEW`, which reads
-`query_view_items.position` directly.
+**Issue.** Persisting a 500-message chunk took roughly 68 s end to
+end, while the network half (`Email/query` + `Email/get`) for the
+same chunk took roughly 2.4 s. The persist path fanned one network
+response out into hundreds of small SQLite workflows: each
+`FOLDER_MEMBERSHIP_REPLACE` opened its own transaction, and
+`MESSAGE_UPSERT_MANY` ran a per-message `SELECT id` and per-message
+side-table rebuild inside a single outer transaction.
 
-### Message bodies were always cold
+**Pattern.** Match the SQL batch shape to the network batch shape:
 
-Symptom: clicking the first few messages in a folder always waited on
-a body fetch.
+- Resolve all folder ids and all remote message ids once per batch.
+- Use `FOLDER_MEMBERSHIP_REPLACE_MANY` to delete and re-insert every
+  touched membership row in one transaction.
+- Rebuild `message_addresses` and `message_keywords` with batched
+  `DELETE ... WHERE message_id IN (?)` followed by a single bulk
+  insert, all inside one transaction.
 
-Fix: dedup body prefetch queue in `mail-store.js`, batched
-`SYNC_ENSURE_MESSAGE_BODIES` RPC, prefetch nearby selection and
-initial folder rows.
+After the rewrite, persisting a 500-message chunk dropped from ~68 s
+to ~8-9 s, and full ~3000-message persisted folder metadata moved
+from a multi-minute timeout to about 48 s end to end. Persistence is
+still about three times slower than network-only for full folder
+indexing, but the pathological per-message transaction shape is gone.
 
-Measured: opening the second message after the first was already in
-flight is roughly 100 ms in either browser.
+`query_view_items` upserts handle both the `(view_id, position)` and
+`(view_id, remote_id)` unique constraints so foreground/background
+overlap does not raise uniqueness errors.
 
-### Persistence was the dominant cost on bulk metadata loads
+### Body prefetch and priority display
 
-Symptom: persisted 500-message Archives chunk took ~68 s, while a
-network-only chunk took ~2.4 s and full Archives metadata took ~15.6 s
-network-only.
+**Issue.** Clicking the first messages in a folder always waited on
+a body fetch. A naive batch path also forced a click during an
+in-flight prefetch to wait for the entire batch to finish.
 
-Root cause: `persistEmails()` did per-message folder lookups,
-per-message message lookups, and per-message
-`FOLDER_MEMBERSHIP_REPLACE` transactions. `MESSAGE_UPSERT_MANY` did
-a per-message `SELECT id` and per-message side-table rebuilds inside
-its single transaction. The shape of the database write path did not
-match the shape of the network batch.
+**Pattern.** The mail store owns a deduped, single-concurrency body
+prefetch queue. Selecting a message enqueues the selected id plus
+nearby visible rows; opening a small folder enqueues a short prefix
+of bodies. Bodies are fetched via `SYNC_ENSURE_MESSAGE_BODIES`, which
+resolves local ids to remote ids, skips messages with
+`body_fetched_at` already set, and issues one `Email/get` per batch.
 
-Fix: rewrite to bulk shape:
+The reading-pane path is separate: `getMessageBodyForDisplay` reads
+SQLite first and, on cache miss, runs a priority single-id
+`Email/get` that does not block on the prefetch batch in flight. The
+backend tracks both `_bodyFetchInflight` (batch) and
+`_bodyPriorityInflight` (display) to dedupe overlapping requests
+across paths.
 
-- Resolve all folder ids once per batch
-- Resolve all message ids once per batch
-- Use `FOLDER_MEMBERSHIP_REPLACE_MANY` to delete and re-insert all
-  folder memberships in one transaction
-- Rebuild `message_addresses` and `message_keywords` in batched
-  delete-then-insert blocks inside one transaction
-- Coordinate background metadata indexer with foreground fetches via a
-  simple counter so they do not contend
-- Fix `query_view_items` upserts to handle both
-  `(view_id, position)` and `(view_id, remote_id)` conflicts
+### Optimistic UI splice on mutations
 
-Measured: persisted 500-message chunk dropped from ~68 s to ~8-9 s.
-Full persisted Archives metadata dropped to ~48 s end-to-end.
+**Issue.** Even after `outbox-apply` updated SQLite atomically, the
+mail store waited for a follow-up `MESSAGES` broadcast and then
+re-read the folder window before painting. Each delete carried
+roughly 200-400 ms of round-trip latency on top of the JMAP call,
+even when the JMAP call itself completed in a few milliseconds.
 
-User-visible deep scroll to row 1500 is now around 0.8 s in Chromium
-and 1.4 s in Firefox because we only persist the visible window for
-random jumps, not a full 100-row page.
+**Pattern.** Once the outbox returns success, the mail store splices
+the deleted ids out of `messages.value` synchronously. The eventual
+broadcast still fires `refreshLoadedPages`, which confirms in the
+background through the coalescing path below. Other tabs and other
+sources of change still come through broadcast + refresh; the splice
+short-circuits only the self-induced case.
 
-## Browser Differences
+### Coalesced refresh after bulk apply
 
-The database is backed by IndexedDB via wa-sqlite's
-`IDBBatchAtomicVFS`. This works in any worker context (including the
-SharedWorker we use for multi-tab safety) on every browser that
-supports OPFS or IndexedDB at all. Firefox and Chromium are within a
-factor of two of each other on this VFS for our workload; see
-`research/vfs-bench/` for the matrix.
+**Issue.** Bulk mutations emit one `FOLDER_MEMBERSHIP_REPLACE` plus
+`QUERY_VIEW_APPLY_CHANGES` per id, which fires N `MESSAGES`
+broadcasts. With per-id SQLite reads in between, deleted rows
+disappeared from the list one at a time even though the JMAP round
+trip was a single batched call.
 
-We previously used `OPFSAnyContextVFS` (OPFS-backed). That VFS is
-documented by its author as "very bad" for writes and "increasingly
-worse as the file grows" because it cannot use OPFS sync access
-handles in a SharedWorker. We measured it at ~5-8x slower than
-`IDBBatchAtomicVFS` for representative delete-under-indexer-churn
-workloads.
+**Pattern.** `refreshLoadedPages` runs single-flight with a dirty
+flag: any concurrent call during an in-flight refresh sets the flag,
+and the inflight pass re-runs once at the end if the flag is set. A
+burst of N broadcasts collapses into at most two cache re-reads, so
+the list shrinks in one visible step.
 
-The faster OPFS VFSes (`AccessHandlePoolVFS` + WAL,
-`OPFSCoopSyncVFS`) require `createSyncAccessHandle`, which Firefox
-restricts to dedicated workers. Moving there would require a leader-
-elected DedicatedWorker architecture; see the conversation log for
-the design sketch if that becomes worth doing (e.g. for Android
-Chrome support, which has no SharedWorker at all).
+### Scroll prefetch with leading + trailing throttle
 
-Other mitigations layered on top:
+**Issue.** A leading-edge-only throttle on the virtualizer scroll
+watcher dropped every fire after the first within the throttle
+window. With a fast VFS, the initial `_loadPage` finished before the
+user released the scrollbar, so the final visible range never got a
+load and rows stayed as placeholders forever. The previous, slower
+VFS masked the bug because the inflight `.finally` re-pump covered
+the gap.
 
-- Persistence is batch-shaped via `MESSAGE_UPSERT_MANY` /
-  `FOLDER_MEMBERSHIP_REPLACE_MANY`, so amortised cost dominates.
-- The background metadata indexer skips when foreground work is in
-  flight, so foreground latency does not absorb indexer cost.
-- Body fetches are throttled to one in flight at a time and are
-  deferred until the first list paint.
+**Pattern.** The watcher schedules a trailing-edge timer when its
+call is throttled, so the final visible range always gets a load.
+The trailing timer is rescheduled on every subsequent throttled fire
+(so it always targets the most recent range) and cleared once a
+non-throttled call goes through.
 
-## Benchmark Harness
+## Authentication and secure context
 
-`tests/perf/archive-metadata-benchmark.mjs` runs two modes against the
-stage server:
+The dev server runs on HTTPS with a self-signed cert
+(`@vitejs/plugin-basic-ssl`). Browsers gate SharedWorker, IndexedDB
+transactions, and SubtleCrypto on a secure context (HTTPS or
+`http://localhost`); a plain HTTP origin silently disables them.
 
-- `network-only`: opens one WebSocket via the proxy, sequential chunks
-  of 500, no SQLite. Confirms server-side speed and proxy plumbing.
-- `persist`: launches Playwright, signs in, calls
-  `window.__repo.ensureFolderWindow(...)` for each chunk, and reads
-  back the matching window via `listMessagesForView(...)`.
+Authentication has two paths: Keycloak OIDC on hosted/development
+flows, and basic username/password for self-hosters. Both feed
+`Authorization` to the JMAP transport. Bearer tokens ride on the
+WebSocket via the proxy described above.
 
-Reference numbers from the stage Archives folder (`3016` messages):
+## Code layout
 
-| Mode | Total messages | Total wall time | Avg per 500 chunk |
-| ---- | -------------: | --------------: | ----------------: |
-| network-only | 3016 | ~15.3 s | ~2.2 s |
-| persist (chromium) | 3016 | ~48.2 s | ~6.9 s |
-| persist (chromium, before batching) | 500+ | timed out (~68 s for first chunk) | n/a |
-
-`tests/e2e/stage-mail.spec.js` adds the user-visible measurements:
-inbox re-entry, second-message body after prefetch, deep scroll to
-row 1500, virtualized DOM size at depth.
-
-## Open Issues and Next Steps
-
-Documenting these so they are not lost.
-
-1. The user has separately reported that the message list does not
-   visibly insert new messages when push notifications arrive, even
-   though folder badge counts update. The reactive path on
-   `TABLE_FAMILIES.MESSAGES` only re-reads already-painted ranges.
-   For a newly-arrived message at the top of the Inbox, the active
-   `query_view_items` row needs to grow and the painted range needs
-   to extend. Likely fix: when `Email/queryChanges` reports `added`
-   that lands inside or adjacent to a painted range, expand the
-   painted range and re-read it; otherwise rebroadcast the
-   `MESSAGES` family with sufficient information for the store to
-   widen its window.
-2. Persistence is still about three times slower than network-only
-   for full folder indexing. The batch path removed the pathological
-   shape, but each chunk still does many side-table writes inside one
-   transaction. Open ideas:
-   - Split a hot list metadata path from a full canonical metadata
-     path. Paint list rows after the message and folder-membership
-     writes; defer addresses, keywords, raw_json to a background
-     pass.
-   - Pre-prepare statements so wa-sqlite reuses them across the batch.
-   - Increase background indexer chunk size after batching.
-3. WebSocket auth still relies on the Cloudflare Worker proxy. When
-   Stalwart accepts the upstream `?access_token=...` patch, the
-   client can talk directly to `/jmap/ws` and the proxy becomes
-   optional. Until then, both dev and prod must route through the
-   proxy.
-4. Body persistence has not yet been rewritten with the batched
-   shape. It is currently fine because body fetches are deduped and
-   single-concurrency, but if we ever do bulk body warming we will
-   need to apply the same techniques.
-
-## Verification Snapshot
-
-At the time of writing these notes:
-
-- Unit tests: 96/96 passing.
-- Stage E2E: passing on Chromium and Firefox.
-- Smoke E2E: passing on Chromium and Firefox.
-- Most recent commits affecting performance:
-  - `Batch mail metadata persistence to match JMAP network chunks`
-  - `Prefetch nearby bodies and index message metadata in the background`
-  - `Cache per-folder mail state so navigation is instant`
-  - `Add MESSAGE_LIST_FOR_VIEW: positional read out of query_view_items`
-  - `Authenticate JMAP WebSocket through a Cloudflare Worker proxy`
-  - `Chain Email/query + Email/get with JMAP back-references`
+- `src/db/engine.ts`, `src/db/bootstrap-idb.ts`: wa-sqlite engine and
+  IndexedDB VFS bootstrap. The Engine serializes all SQL on a
+  per-engine promise tail.
+- `src/db/handlers.ts`: RPC handlers that own SQL writes. Bulk
+  primitives (`MESSAGE_UPSERT_MANY`,
+  `FOLDER_MEMBERSHIP_REPLACE_MANY`, `MESSAGE_LIST_FOR_VIEW`,
+  `QUERY_VIEW_PROGRESS`, `OUTBOX_APPLY_MOVE`,
+  `OUTBOX_APPLY_DESTROY`) live here.
+- `src/db/protocol.ts`: RPC method names and `TABLE_FAMILIES`
+  constants.
+- `src/db/repository.ts`: main-thread RPC client used by stores.
+- `src/sync/backends/jmap/`: JMAP transport, mailbox/email/contact/
+  identity sync, body fetch, outbox, and the `JmapBackend`
+  orchestrator.
+- `src/stores/mail-store.ts`: per-folder cache, virtualized list
+  state, body prefetch queue, scroll-position persistence, broadcast
+  handling.
+- `src/components/MessageList.vue`: virtualized list using
+  `@tanstack/vue-virtual`.
+- `infra/ws-proxy/`: Cloudflare Worker proxying scoped JMAP HTTP
+  paths and bridging WebSocket auth.
