@@ -251,6 +251,38 @@ describe('useThunderbirdShortcuts', () => {
     );
   });
 
+  it('Ctrl+Shift+R prepares reply-all for the viewed message', () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    const composeStore = useComposeStore();
+    mailStore.messages = [makeRow(7, { from_text: 'Alice <alice@example.com>', subject: 'Hi' })];
+    mailStore.selectedMessageId = 7;
+    const replyAllSpy = vi.spyOn(composeStore, 'prepareReplyAll');
+
+    fireKey('r', { ctrlKey: true, shiftKey: true });
+
+    expect(replyAllSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      expect.anything(),
+    );
+  });
+
+  it('Ctrl+L prepares a forward for the viewed message', () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    const composeStore = useComposeStore();
+    mailStore.messages = [makeRow(7, { from_text: 'Alice <alice@example.com>', subject: 'Hi' })];
+    mailStore.selectedMessageId = 7;
+    const forwardSpy = vi.spyOn(composeStore, 'prepareForward');
+
+    fireKey('l', { ctrlKey: true });
+
+    expect(forwardSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7 }),
+      expect.anything(),
+    );
+  });
+
   it('forwards key events from nested documents via invokeThunderbirdShortcut', async () => {
     mountHarness();
     const mailStore = useMailStore();

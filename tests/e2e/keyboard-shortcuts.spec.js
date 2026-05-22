@@ -34,6 +34,12 @@ import {
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
+function composeInput(page, label) {
+  return page.locator('.compose-dialog .row')
+    .filter({ hasText: new RegExp(`^${label}$`) })
+    .locator('input');
+}
+
 test.describe('Keyboard shortcuts e2e', () => {
   test.setTimeout(180_000);
 
@@ -304,6 +310,61 @@ test.describe('Keyboard shortcuts e2e', () => {
     } finally {
       for (const id of createdIds) {
         await cleanupEmail(jmap, id, trash.id);
+      }
+    }
+  });
+
+  test('reply, reply-all, and forward shortcuts open compose with quoted context', async ({ page }, testInfo) => {
+    const consoleLines = [];
+    trackConsole(page, consoleLines);
+
+    const jmap = await connectJmap();
+    const mailboxes = await listMailboxes(jmap);
+    const inbox = mailboxByRole(mailboxes, 'inbox');
+    const trash = mailboxByRole(mailboxes, 'trash');
+    if (!inbox || !trash) throw new Error('Test requires Inbox and Trash mailboxes');
+
+    const fromEmail = 'reply-source@example.net';
+    const subject = `Keyboard reply e2e ${Date.now()}`;
+    let createdId = null;
+    try {
+      createdId = await createEmailInMailbox(jmap, {
+        mailboxId: inbox.id,
+        fromEmail,
+        subject,
+        bodyText: 'Quoted keyboard reply body',
+        htmlBody: '<p>Quoted keyboard reply body</p>',
+      });
+
+      await loginViaOidc(page);
+      await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
+      await clickFolder(page, inbox.name);
+      await expect.poll(
+        async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
+        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+      ).toBeGreaterThan(0);
+      await openMessageBySubject(page, subject);
+
+      const cases = [
+        { shortcut: 'Control+R', expectedSubject: `Re: ${subject}`, expectedTo: fromEmail },
+        { shortcut: 'Control+Shift+R', expectedSubject: `Re: ${subject}`, expectedTo: fromEmail },
+        { shortcut: 'Control+L', expectedSubject: `Fwd: ${subject}`, expectedTo: '' },
+      ];
+
+      for (const c of cases) {
+        await focusMessageList(page);
+        await page.keyboard.press(c.shortcut);
+        await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 5_000 });
+        await expect(composeInput(page, 'Subject')).toHaveValue(c.expectedSubject);
+        await expect(composeInput(page, 'To')).toHaveValue(c.expectedTo);
+        await expect(page.locator('.compose-dialog .editor')).toContainText('Quoted keyboard reply body');
+        await page.getByRole('button', { name: /^discard$/i }).click();
+        await expect(page.locator('.compose-dialog')).toBeHidden();
+      }
+    } finally {
+      await attachConsoleTail(testInfo, consoleLines);
+      if (createdId) {
+        await cleanupEmail(jmap, createdId, trash.id);
       }
     }
   });

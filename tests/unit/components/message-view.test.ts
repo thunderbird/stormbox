@@ -188,6 +188,68 @@ describe('MessageView with a sparse messages array', () => {
     expect(mailStore.messageBody).toBeNull();
   });
 
+  it('replies to the selected message from the toolbar', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    const composeStore = useComposeStore();
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Reply me',
+      from_text: 'sender@example.com',
+      to_text: 'me@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.messageBody = { text: 'body text', html: '', attachments: [] };
+    const replySpy = vi.spyOn(composeStore, 'prepareReplyFromMessage');
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    await wrapper.find('.message-view__header [aria-label="Reply"]').trigger('click');
+
+    expect(replySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      expect.objectContaining({ text: 'body text' }),
+    );
+  });
+
+  it('replies-all to the selected message from the toolbar', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    const composeStore = useComposeStore();
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Reply all me',
+      from_text: 'sender@example.com',
+      to_text: 'me@example.com, other@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.messageBody = { text: 'body text', html: '', attachments: [] };
+    const replyAllSpy = vi.spyOn(composeStore, 'prepareReplyAll');
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    await wrapper.find('.message-view__header [aria-label="Reply All"]').trigger('click');
+
+    expect(replyAllSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      expect.objectContaining({ text: 'body text' }),
+    );
+  });
+
   it('forwards the selected message from the toolbar', async () => {
     const authStore = useAuthStore();
     authStore.accountId = 1;
