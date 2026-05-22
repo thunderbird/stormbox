@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Plus, LogOut } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
@@ -42,17 +42,286 @@ const showMessageView = computed(() =>
 
 const shortcutsEnabled = computed(() => authStore.status === AUTH_STATE.CONNECTED);
 
+type ResizePane = 'folderList' | 'messageList';
+
+const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
+const SPACE_RAIL_WIDTH = 56;
+const RESIZER_WIDTH = 6;
+const COMPACT_READING_WIDTH = 1024;
+const FOLDER_LIST_TRANSITION_MS = 360;
+const MESSAGE_VIEW_PRELOAD_MS = 50;
+const DEFAULT_COLUMN_WIDTHS = {
+  folderList: 240,
+  messageList: 360,
+};
+const MIN_COLUMN_WIDTHS = {
+  folderList: 180,
+  messageList: 280,
+  messageView: 320,
+};
+const MAX_COLUMN_WIDTHS = {
+  folderList: 420,
+  messageList: 720,
+};
+
+const shellEl = ref<HTMLElement | null>(null);
+const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
+const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
+const folderListHidden = ref(false);
+const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
+const displayedMessageView = ref(
+  showMessageView.value && !(space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH),
+);
+const activeResizePane = ref<ResizePane | null>(null);
+let messageViewTimer: number | null = null;
+let responsiveFolderListHidden = false;
+
+let resizeState: {
+  pane: ResizePane;
+  startX: number;
+  startFolderListWidth: number;
+  startMessageListWidth: number;
+} | null = null;
+
+const shellStyle = computed(() => ({
+  '--folder-list-width': `${folderListWidth.value}px`,
+  '--message-list-width': `${messageListWidth.value}px`,
+  '--message-list-min-width': `${MIN_COLUMN_WIDTHS.messageList}px`,
+  '--message-view-min-width': `${MIN_COLUMN_WIDTHS.messageView}px`,
+  '--column-resizer-width': `${RESIZER_WIDTH}px`,
+  '--folder-list-transition-ms': `${FOLDER_LIST_TRANSITION_MS}ms`,
+}));
+
 useThunderbirdShortcuts({ space, enabled: shortcutsEnabled });
 
 onMounted(async () => {
+  loadColumnWidths();
+  applyResponsiveLayout();
+  clampColumnWidths();
+  window.addEventListener('resize', onWindowResize);
+
   await authStore.initialize();
   await mailStore.attach();
   await contactsStore.attach();
   await composeStore.attach();
 });
 
+onBeforeUnmount(() => {
+  stopColumnResize();
+  clearMessageViewTimer();
+  window.removeEventListener('resize', onWindowResize);
+});
+
+watch(showMessageView, () => {
+  applyResponsiveLayout();
+  clampColumnWidths();
+});
+
+watch(space, () => {
+  applyResponsiveLayout();
+  clampColumnWidths();
+});
+
+watch(folderListHidden, () => {
+  clampColumnWidths();
+});
+
 function startCompose() {
   composeStore.open();
+}
+
+function toggleFolderList() {
+  folderListHidden.value = !folderListHidden.value;
+  responsiveFolderListHidden = false;
+}
+
+function startColumnResize(pane: ResizePane, event: PointerEvent) {
+  if (event.button !== 0) return;
+
+  event.preventDefault();
+  resizeState = {
+    pane,
+    startX: event.clientX,
+    startFolderListWidth: folderListWidth.value,
+    startMessageListWidth: messageListWidth.value,
+  };
+  activeResizePane.value = pane;
+  document.body.classList.add('is-column-resizing');
+  window.addEventListener('pointermove', onColumnResizeMove);
+  window.addEventListener('pointerup', stopColumnResize, { once: true });
+  window.addEventListener('pointercancel', stopColumnResize, { once: true });
+}
+
+function onColumnResizeMove(event: PointerEvent) {
+  if (!resizeState) return;
+
+  const delta = event.clientX - resizeState.startX;
+  if (resizeState.pane === 'folderList') {
+    const nextWidth = resizeState.startFolderListWidth + delta;
+    folderListWidth.value = clamp(
+      nextWidth,
+      MIN_COLUMN_WIDTHS.folderList,
+      maxFolderListWidth(resizeState.startMessageListWidth),
+    );
+  } else {
+    const nextWidth = resizeState.startMessageListWidth + delta;
+    messageListWidth.value = clamp(
+      nextWidth,
+      MIN_COLUMN_WIDTHS.messageList,
+      maxMessageListWidth(folderListWidth.value),
+    );
+  }
+}
+
+function stopColumnResize() {
+  if (!resizeState && activeResizePane.value == null) return;
+
+  resizeState = null;
+  activeResizePane.value = null;
+  document.body.classList.remove('is-column-resizing');
+  window.removeEventListener('pointermove', onColumnResizeMove);
+  window.removeEventListener('pointerup', stopColumnResize);
+  window.removeEventListener('pointercancel', stopColumnResize);
+  saveColumnWidths();
+}
+
+function onWindowResize() {
+  windowWidth.value = window.innerWidth;
+  applyResponsiveLayout();
+  clampColumnWidths();
+}
+
+function applyResponsiveLayout() {
+  const compactMailLayout = space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH;
+  const shouldHideFolderList = compactMailLayout && showMessageView.value;
+  const willHideFolderList = shouldHideFolderList && !folderListHidden.value;
+
+  if (shouldHideFolderList) {
+    if (!folderListHidden.value) {
+      responsiveFolderListHidden = true;
+    }
+    folderListHidden.value = true;
+  } else if (responsiveFolderListHidden) {
+    folderListHidden.value = false;
+    responsiveFolderListHidden = false;
+  }
+
+  syncDisplayedMessageView({ delayForFolderSlide: willHideFolderList });
+}
+
+function syncDisplayedMessageView({ delayForFolderSlide = false } = {}) {
+  clearMessageViewTimer();
+  if (!showMessageView.value) {
+    displayedMessageView.value = false;
+    return;
+  }
+
+  if (!delayForFolderSlide) {
+    displayedMessageView.value = true;
+    return;
+  }
+
+  displayedMessageView.value = false;
+  messageViewTimer = window.setTimeout(() => {
+    messageViewTimer = null;
+    if (showMessageView.value) {
+      displayedMessageView.value = true;
+    }
+  }, Math.max(0, FOLDER_LIST_TRANSITION_MS - MESSAGE_VIEW_PRELOAD_MS));
+}
+
+function clearMessageViewTimer() {
+  if (messageViewTimer == null) return;
+  window.clearTimeout(messageViewTimer);
+  messageViewTimer = null;
+}
+
+function onResizeHandleKeydown(pane: ResizePane, event: KeyboardEvent) {
+  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+
+  event.preventDefault();
+  const direction = event.key === 'ArrowRight' ? 1 : -1;
+  const step = event.shiftKey ? 40 : 10;
+  if (pane === 'folderList') {
+    folderListWidth.value = clamp(
+      folderListWidth.value + direction * step,
+      MIN_COLUMN_WIDTHS.folderList,
+      maxFolderListWidth(messageListWidth.value),
+    );
+  } else {
+    messageListWidth.value = clamp(
+      messageListWidth.value + direction * step,
+      MIN_COLUMN_WIDTHS.messageList,
+      maxMessageListWidth(folderListWidth.value),
+    );
+  }
+  saveColumnWidths();
+}
+
+function availablePaneWidth() {
+  const shellWidth = shellEl.value?.clientWidth || window.innerWidth || 0;
+  const resizerCount = (folderListHidden.value ? 0 : 1) + (displayedMessageView.value ? 1 : 0);
+  return Math.max(0, shellWidth - SPACE_RAIL_WIDTH - resizerCount * RESIZER_WIDTH);
+}
+
+function maxFolderListWidth(messageList: number) {
+  const reserve = displayedMessageView.value
+    ? messageList + MIN_COLUMN_WIDTHS.messageView
+    : MIN_COLUMN_WIDTHS.messageList;
+  return Math.min(MAX_COLUMN_WIDTHS.folderList, availablePaneWidth() - reserve);
+}
+
+function maxMessageListWidth(folderList: number) {
+  const reserve = displayedMessageView.value ? MIN_COLUMN_WIDTHS.messageView : 0;
+  const folderReserve = folderListHidden.value ? 0 : folderList;
+  return Math.min(MAX_COLUMN_WIDTHS.messageList, availablePaneWidth() - folderReserve - reserve);
+}
+
+function clampColumnWidths() {
+  if (!folderListHidden.value) {
+    folderListWidth.value = clamp(
+      folderListWidth.value,
+      MIN_COLUMN_WIDTHS.folderList,
+      maxFolderListWidth(messageListWidth.value),
+    );
+  }
+  messageListWidth.value = clamp(
+    messageListWidth.value,
+    MIN_COLUMN_WIDTHS.messageList,
+    maxMessageListWidth(folderListWidth.value),
+  );
+}
+
+function loadColumnWidths() {
+  try {
+    const raw = window.localStorage?.getItem(RESIZE_STORAGE_KEY);
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    if (Number.isFinite(parsed?.folderList)) {
+      folderListWidth.value = parsed.folderList;
+    }
+    if (Number.isFinite(parsed?.messageList)) {
+      messageListWidth.value = parsed.messageList;
+    }
+  } catch {
+    // Layout preferences are best-effort; blocked storage should not affect mail.
+  }
+}
+
+function saveColumnWidths() {
+  try {
+    window.localStorage?.setItem(RESIZE_STORAGE_KEY, JSON.stringify({
+      folderList: folderListWidth.value,
+      messageList: messageListWidth.value,
+    }));
+  } catch {
+    // Ignore storage failures; the current drag still applies for this session.
+  }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(value, Math.max(min, max)));
 }
 </script>
 
@@ -60,38 +329,88 @@ function startCompose() {
   <LoginGate v-if="showLogin" />
   <div
     v-else
+    ref="shellEl"
     class="shell"
-    :class="{ 'shell--message-view-hidden': space === 'mail' && !showMessageView }"
+    :class="{
+      'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
+      'shell--folder-list-hidden': folderListHidden,
+    }"
+    :style="shellStyle"
   >
-    <AppSpaces :active="space" :unread-count="totalUnread" @change="space = $event" />
+    <AppSpaces
+      :active="space"
+      :unread-count="totalUnread"
+      :folder-list-hidden="folderListHidden"
+      @change="space = $event"
+      @toggle-folder-list="toggleFolderList"
+    />
 
-    <aside class="sidebar">
-      <header class="sidebar__header">
-        <button class="sidebar__compose" type="button" @click="startCompose">
-          <Plus :size="16" :stroke-width="2" />
-          <span>New Message</span>
-        </button>
-      </header>
+    <div
+      class="sidebar-slot"
+      :class="{ 'sidebar-slot--hidden': folderListHidden }"
+      :aria-hidden="folderListHidden"
+      :inert="folderListHidden"
+    >
+      <aside class="sidebar">
+        <header class="sidebar__header">
+          <button class="sidebar__compose" type="button" @click="startCompose">
+            <Plus :size="16" :stroke-width="2" />
+            <span>New Message</span>
+          </button>
+        </header>
 
-      <div class="sidebar__account">
-        <span class="sidebar__account-name">{{ accountLabel }}</span>
-      </div>
+        <div class="sidebar__account">
+          <span class="sidebar__account-name">{{ accountLabel }}</span>
+        </div>
 
-      <FolderTree v-if="space === 'mail'" />
-      <p v-else class="sidebar__hint">Switch to Mail to navigate folders.</p>
+        <FolderTree v-if="space === 'mail'" />
+        <p v-else class="sidebar__hint">Switch to Mail to navigate folders.</p>
 
-      <footer class="sidebar__footer">
-        <StorageUsageBar />
-        <button class="sidebar__signout" type="button" @click="authStore.logout()" :title="`Sign out of ${accountLabel}`">
-          <LogOut :size="14" :stroke-width="1.75" />
-          <span>Sign out</span>
-        </button>
-      </footer>
-    </aside>
+        <footer class="sidebar__footer">
+          <StorageUsageBar />
+          <button class="sidebar__signout" type="button" @click="authStore.logout()" :title="`Sign out of ${accountLabel}`">
+            <LogOut :size="14" :stroke-width="1.75" />
+            <span>Sign out</span>
+          </button>
+        </footer>
+      </aside>
+    </div>
+
+    <div
+      class="column-resizer column-resizer--folder-list"
+      :class="{
+        'is-active': activeResizePane === 'folderList',
+        'column-resizer--hidden': folderListHidden,
+      }"
+      role="separator"
+      aria-label="Resize folder list"
+      aria-orientation="vertical"
+      :aria-valuemin="MIN_COLUMN_WIDTHS.folderList"
+      :aria-valuemax="maxFolderListWidth(messageListWidth)"
+      :aria-valuenow="folderListWidth"
+      :aria-hidden="folderListHidden"
+      :tabindex="folderListHidden ? -1 : 0"
+      @pointerdown="startColumnResize('folderList', $event)"
+      @keydown="onResizeHandleKeydown('folderList', $event)"
+    />
 
     <template v-if="space === 'mail'">
       <MessageList />
-      <MessageView v-if="showMessageView" />
+      <div
+        v-if="displayedMessageView"
+        class="column-resizer column-resizer--message-list"
+        :class="{ 'is-active': activeResizePane === 'messageList' }"
+        role="separator"
+        aria-label="Resize message list"
+        aria-orientation="vertical"
+        :aria-valuemin="MIN_COLUMN_WIDTHS.messageList"
+        :aria-valuemax="maxMessageListWidth(folderListWidth)"
+        :aria-valuenow="messageListWidth"
+        tabindex="0"
+        @pointerdown="startColumnResize('messageList', $event)"
+        @keydown="onResizeHandleKeydown('messageList', $event)"
+      />
+      <MessageView v-if="displayedMessageView" />
     </template>
     <ContactsView v-else-if="space === 'contacts'" />
 
@@ -111,39 +430,76 @@ function startCompose() {
 }
 
 .shell {
+  position: relative;
+  --folder-resizer-width: var(--column-resizer-width, 6px);
   display: grid;
-  grid-template-columns: 56px 240px minmax(320px, 1.2fr) minmax(420px, 2fr);
+  grid-template-columns:
+    56px
+    auto
+    var(--folder-resizer-width)
+    minmax(var(--message-list-min-width, 280px), var(--message-list-width, 360px))
+    var(--column-resizer-width, 6px)
+    minmax(var(--message-view-min-width, 320px), 1fr);
   height: 100vh;
   background: var(--bg);
   color: var(--text);
   overflow: hidden;
 }
 .shell--message-view-hidden {
-  grid-template-columns: 56px 240px minmax(320px, 1fr);
+  grid-template-columns:
+    56px
+    auto
+    var(--folder-resizer-width)
+    minmax(var(--message-list-min-width, 280px), 1fr)
+    0px
+    0px;
+}
+.shell--folder-list-hidden {
+  --folder-resizer-width: 0px;
 }
 /* Grid items default to min-height: auto, which makes inner
  * overflow:auto containers grow to their content instead of scrolling.
  * Force every shell column to be allowed to shrink so its children can
  * own the vertical scroll. */
 .shell > * { min-height: 0; min-width: 0; }
-.shell > .contacts { grid-column: 3 / span 2; }
+.shell > .msg-list { border-right: 0; }
+.shell > .contacts { grid-column: 4 / -1; }
+.shell--folder-list-hidden > .contacts { grid-column: 2 / -1; }
 
+.sidebar-slot {
+  width: var(--folder-list-width, 240px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  transition: width var(--folder-list-transition-ms, 360ms) ease;
+}
+.sidebar-slot--hidden {
+  width: 0;
+}
 .sidebar {
   display: grid;
   grid-template-rows: auto auto 1fr auto;
   background: var(--panel);
-  border-right: 1px solid var(--border);
+  width: var(--folder-list-width, 240px);
   min-width: 0;
   min-height: 0;
   height: 100%;
+  overflow: hidden;
+  transform: translateX(0);
+  transition: transform var(--folder-list-transition-ms, 360ms) ease;
+}
+.sidebar-slot--hidden .sidebar {
+  transform: translateX(-100%);
 }
 .sidebar > :nth-child(3) { min-height: 0; overflow-y: auto; }
 .sidebar__header {
-  padding: 12px 24px 10px;
+  padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft);
 }
 .sidebar__compose {
-  width: calc(100% - 48px);
+  width: 100%;
+  min-width: 0;
   margin: 0 auto;
   min-height: 34px;
   display: flex;
@@ -154,7 +510,7 @@ function startCompose() {
   color: #fff;
   border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
   border-radius: 6px;
-  padding: 0 12px;
+  padding: 0 10px;
   cursor: pointer;
   font: inherit;
   font-size: 14px;
@@ -170,6 +526,10 @@ function startCompose() {
 }
 .sidebar__compose span {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sidebar__compose:hover {
   filter: brightness(1.04);
@@ -230,5 +590,46 @@ function startCompose() {
 .sidebar__signout:hover {
   background: var(--rowHover);
   color: var(--text);
+}
+
+.column-resizer {
+  position: relative;
+  background: var(--panel);
+  cursor: col-resize;
+  outline: none;
+  touch-action: none;
+}
+.column-resizer--hidden {
+  cursor: default;
+  pointer-events: none;
+}
+.column-resizer::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  background: var(--border);
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
+}
+.column-resizer:hover::before,
+.column-resizer:focus-visible::before,
+.column-resizer.is-active::before {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+body.is-column-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+body.is-column-resizing iframe {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-slot,
+  .sidebar {
+    transition: none;
+  }
 }
 </style>

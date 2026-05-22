@@ -1,11 +1,17 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { Mail, Users } from 'lucide-vue-next';
 
 const props = defineProps({
   active: { type: String, default: 'mail' },
   unreadCount: { type: Number, default: 0 },
+  folderListHidden: { type: Boolean, default: false },
 });
-const emit = defineEmits(['change']);
+const emit = defineEmits(['change', 'toggle-folder-list']);
+const folderListToggleLabel = computed(() =>
+  props.folderListHidden ? 'Show folder list' : 'Hide folder list',
+);
+
 function pick(name) { emit('change', name); }
 </script>
 
@@ -31,6 +37,23 @@ function pick(name) { emit('change', name); }
       title="Contacts"
     >
       <Users :size="20" :stroke-width="1.75" />
+    </button>
+    <button
+      class="app-spaces__item app-spaces__item--bottom"
+      :class="{ 'is-active': !props.folderListHidden }"
+      type="button"
+      :aria-label="folderListToggleLabel"
+      :title="folderListToggleLabel"
+      :aria-pressed="!props.folderListHidden"
+      @click="emit('toggle-folder-list')"
+    >
+      <span
+        class="app-spaces__folder-toggle-icon"
+        :class="{ 'is-hidden': props.folderListHidden }"
+        aria-hidden="true"
+      >
+        <span />
+      </span>
     </button>
   </nav>
 </template>
@@ -66,6 +89,42 @@ function pick(name) { emit('change', name); }
 .app-spaces__item.is-active {
   background: var(--accent);
   color: #fff;
+}
+.app-spaces__item--bottom {
+  margin-top: auto;
+}
+.app-spaces__folder-toggle-icon {
+  position: relative;
+  width: 20px;
+  height: 16px;
+  display: block;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+}
+.app-spaces__folder-toggle-icon::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 6px;
+  width: 1.5px;
+  background: currentColor;
+}
+.app-spaces__folder-toggle-icon::after,
+.app-spaces__folder-toggle-icon span {
+  content: "";
+  position: absolute;
+  left: 9px;
+  right: 3px;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 999px;
+}
+.app-spaces__folder-toggle-icon::after { top: 5px; }
+.app-spaces__folder-toggle-icon span { top: 9px; }
+.app-spaces__folder-toggle-icon.is-hidden::before,
+.app-spaces__folder-toggle-icon.is-hidden::after,
+.app-spaces__folder-toggle-icon.is-hidden span {
+  opacity: 0.38;
 }
 .app-spaces__badge {
   position: absolute;

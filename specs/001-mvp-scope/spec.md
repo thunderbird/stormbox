@@ -60,6 +60,21 @@ account, JMAP against Stalwart.
   active until the user clears that preview or selection. The
   select-all checkbox shall remain visible but disabled when a filter
   leaves the message list empty, so toolbar alignment stays stable.
+- **R-2.9** The system shall let the user collapse and restore the
+  folder list from the spaces toolbar. When the viewport is 1024 px or
+  narrower and the message detail or bulk pane is visible, the folder
+  list shall collapse automatically to preserve reading space. In this
+  compact reading layout, automatic folder-list visibility
+  shall mirror message-view visibility: the folder list collapses when
+  the message detail or bulk pane appears, and restores when that pane
+  is hidden. The toolbar button shall only toggle the current
+  folder-list visibility state, not enable or disable the responsive
+  behavior. Folder-list visibility changes shall use a short sliding
+  transition unless the user requests reduced motion; when opening a
+  message triggers the compact folder-list collapse, the message detail
+  shall appear near the end of that transition. The compose affordance
+  in the folder list shall remain usable at the minimum supported
+  folder-list width.
 
 ### 3. Triage [Done]
 
