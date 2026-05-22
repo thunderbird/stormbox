@@ -6,8 +6,18 @@ function defaultJmapProxyUrl(): string {
   return "https://wsmail.stage-thundermail.com";
 }
 
+export function accountsUrlForHostname(hostname = globalThis.location?.hostname): string {
+  if (hostname === "webmail.thundermail.com") {
+    return "https://accounts.tb.pro";
+  }
+  return "https://accounts-stage.tb.pro";
+}
+
 export const JMAP_SERVER_URL =
   import.meta.env.VITE_JMAP_SERVER_URL || defaultJmapProxyUrl();
+
+export const ACCOUNTS_URL =
+  import.meta.env.VITE_ACCOUNTS_URL || accountsUrlForHostname();
 
 export const OIDC_ISSUER =
   import.meta.env.VITE_OIDC_ISSUER || "https://auth-stage.tb.pro/realms/tbpro";

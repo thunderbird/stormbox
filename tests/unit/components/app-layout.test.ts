@@ -14,6 +14,7 @@ vi.mock('../../../src/services/auth.js', () => ({
 
 import App from '../../../src/App.vue';
 import { AUTH_STATE } from '../../../src/constants/states.js';
+import { ACCOUNTS_URL } from '../../../src/defines.js';
 import { useAuthStore } from '../../../src/stores/auth-store.js';
 import { useMailStore } from '../../../src/stores/mail-store.js';
 import {
@@ -91,6 +92,16 @@ afterEach(() => {
 });
 
 describe('App mail layout', () => {
+  it('renders a Thundermail menu linking to Thunderbird Accounts', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.get('.app-menu__button').text()).toContain('Thundermail');
+    expect(wrapper.get('.app-menu__logo').attributes('src')).toBe('/logo.png');
+    expect(wrapper.get('.app-menu__item').text()).toContain('Thunderbird Accounts');
+    expect(wrapper.get('.app-menu__item').attributes('href')).toBe(ACCOUNTS_URL);
+  });
+
   it('hides the message view and expands the message list when nothing is selected', async () => {
     const wrapper = mountApp();
     await nextTick();

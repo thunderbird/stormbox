@@ -47,13 +47,18 @@ test account overrides live in `tests/e2e/.env.local.example`.
 
 The app defaults to the local stack during development through
 `.env.development`. Hosted stage/prod builds use the Cloudflare JMAP Worker
-proxy by default:
+proxy by default, and the app menu points at the matching Thunderbird
+Accounts environment:
 
 - `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
 - `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
+- dev/local -> `https://accounts-stage.tb.pro`
+- hosted stage -> `https://accounts-stage.tb.pro`
+- hosted prod -> `https://accounts.tb.pro`
 
 To point a local build at another JMAP server or proxy, set
-`VITE_JMAP_SERVER_URL` in `.env.local`.
+`VITE_JMAP_SERVER_URL` in `.env.local`. To override the Accounts menu link,
+set `VITE_ACCOUNTS_URL`.
 
 ```bash
 VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com

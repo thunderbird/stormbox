@@ -15,13 +15,17 @@ The production bundle is written to `dist/`.
 ## Configuration
 
 Hosted stage/prod domains default to the Cloudflare JMAP Worker proxy configured
-in `src/defines.ts`:
+in `src/defines.ts`. The Accounts menu link is selected there too:
 
 - `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
 - `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
+- dev/local -> `https://accounts-stage.tb.pro`
+- hosted stage -> `https://accounts-stage.tb.pro`
+- hosted prod -> `https://accounts.tb.pro`
 
 To build against a different JMAP server or proxy, set
-`VITE_JMAP_SERVER_URL` in `.env.local` or the build environment.
+`VITE_JMAP_SERVER_URL` in `.env.local` or the build environment. To override
+the Accounts menu link, set `VITE_ACCOUNTS_URL`.
 
 ```bash
 VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com

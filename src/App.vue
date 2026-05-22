@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { Plus, LogOut } from 'lucide-vue-next';
+import { ChevronDown, LogOut, Plus } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
+import { ACCOUNTS_URL } from './defines.js';
 
 import { useAuthStore } from './stores/auth-store.js';
 import { useMailStore } from './stores/mail-store.js';
@@ -18,6 +19,7 @@ import MessageView from './components/MessageView.vue';
 import ComposeDialog from './components/ComposeDialog.vue';
 import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
+import ThunderbirdLogo from './components/ThunderbirdLogo.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -382,6 +384,22 @@ function clamp(value: number, min: number, max: number) {
     }"
     :style="shellStyle"
   >
+    <div class="quick-filter">
+      <details class="app-menu">
+        <summary class="app-menu__button" aria-label="Open Thundermail menu">
+          <ThunderbirdLogo :size="26" class="app-menu__logo" aria-hidden="true" />
+          <span>Thundermail</span>
+          <ChevronDown class="app-menu__chevron" :size="14" :stroke-width="2" aria-hidden="true" />
+        </summary>
+        <div class="app-menu__popover" role="menu">
+          <a class="app-menu__item" :href="ACCOUNTS_URL" role="menuitem">
+            <ThunderbirdLogo :size="26" class="app-menu__item-icon" aria-hidden="true" />
+            <span>Thunderbird Accounts</span>
+          </a>
+        </div>
+      </details>
+    </div>
+
     <AppSpaces
       :active="space"
       :unread-count="totalUnread"
@@ -487,6 +505,7 @@ function clamp(value: number, min: number, max: number) {
     minmax(var(--message-list-min-width, 280px), var(--message-list-width, 360px))
     var(--column-resizer-width, 6px)
     minmax(var(--message-view-min-width, 320px), 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
   background: var(--bg);
   color: var(--text);
@@ -512,6 +531,94 @@ function clamp(value: number, min: number, max: number) {
 .shell > .msg-list { border-right: 0; }
 .shell > .contacts { grid-column: 4 / -1; }
 .shell--folder-list-hidden > .contacts { grid-column: 2 / -1; }
+
+.quick-filter {
+  grid-column: 1 / -1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.app-menu {
+  position: relative;
+  z-index: 20;
+}
+.app-menu__button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+.app-menu__button::-webkit-details-marker {
+  display: none;
+}
+.app-menu__button:hover,
+.app-menu__button:focus-visible,
+.app-menu[open] .app-menu__button {
+  background: var(--rowHover);
+  border-color: var(--border-soft);
+  outline: none;
+}
+.app-menu__logo,
+.app-menu__item-icon {
+  display: block;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.app-menu__chevron {
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.app-menu[open] .app-menu__chevron {
+  transform: rotate(180deg);
+}
+.app-menu__popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 240px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
+}
+.app-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.app-menu__item:hover,
+.app-menu__item:focus-visible {
+  background: var(--rowHover);
+  outline: none;
+}
+
+@media (max-width: 640px) {
+  .app-menu__button span {
+    display: none;
+  }
+}
 
 .sidebar-slot {
   width: var(--folder-list-width, 240px);
