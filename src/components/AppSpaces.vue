@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Mail, Users } from 'lucide-vue-next';
+import { Mail, Moon, Sun, Users } from 'lucide-vue-next';
 
 const props = defineProps({
   active: { type: String, default: 'mail' },
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
+  theme: { type: String, default: 'dark' },
 });
-const emit = defineEmits(['change', 'toggle-folder-list']);
+const emit = defineEmits(['change', 'toggle-folder-list', 'toggle-theme']);
 const folderListToggleLabel = computed(() =>
   props.folderListHidden ? 'Show folder list' : 'Hide folder list',
+);
+const themeToggleLabel = computed(() =>
+  props.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
 );
 
 function pick(name) { emit('change', name); }
@@ -38,23 +42,35 @@ function pick(name) { emit('change', name); }
     >
       <Users :size="20" :stroke-width="1.75" />
     </button>
-    <button
-      class="app-spaces__item app-spaces__item--bottom"
-      :class="{ 'is-active': !props.folderListHidden }"
-      type="button"
-      :aria-label="folderListToggleLabel"
-      :title="folderListToggleLabel"
-      :aria-pressed="!props.folderListHidden"
-      @click="emit('toggle-folder-list')"
-    >
-      <span
-        class="app-spaces__folder-toggle-icon"
-        :class="{ 'is-hidden': props.folderListHidden }"
-        aria-hidden="true"
+    <div class="app-spaces__bottom-actions">
+      <button
+        class="app-spaces__item"
+        type="button"
+        :aria-label="themeToggleLabel"
+        :title="themeToggleLabel"
+        @click="emit('toggle-theme')"
       >
-        <span />
-      </span>
-    </button>
+        <Sun v-if="props.theme === 'dark'" :size="19" :stroke-width="1.75" />
+        <Moon v-else :size="19" :stroke-width="1.75" />
+      </button>
+      <button
+        class="app-spaces__item"
+        :class="{ 'is-active': !props.folderListHidden }"
+        type="button"
+        :aria-label="folderListToggleLabel"
+        :title="folderListToggleLabel"
+        :aria-pressed="!props.folderListHidden"
+        @click="emit('toggle-folder-list')"
+      >
+        <span
+          class="app-spaces__folder-toggle-icon"
+          :class="{ 'is-hidden': props.folderListHidden }"
+          aria-hidden="true"
+        >
+          <span />
+        </span>
+      </button>
+    </div>
   </nav>
 </template>
 
@@ -90,8 +106,12 @@ function pick(name) { emit('change', name); }
   background: var(--accent);
   color: #fff;
 }
-.app-spaces__item--bottom {
+.app-spaces__bottom-actions {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
 .app-spaces__folder-toggle-icon {
   position: relative;

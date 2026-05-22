@@ -45,11 +45,14 @@ const shortcutsEnabled = computed(() => authStore.status === AUTH_STATE.CONNECTE
 type ResizePane = 'folderList' | 'messageList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
+const THEME_STORAGE_KEY = 'stormbox.theme.v1';
 const SPACE_RAIL_WIDTH = 56;
 const RESIZER_WIDTH = 6;
 const COMPACT_READING_WIDTH = 1024;
 const FOLDER_LIST_TRANSITION_MS = 360;
 const MESSAGE_VIEW_PRELOAD_MS = 50;
+const THEMES = ['dark', 'light'] as const;
+type Theme = typeof THEMES[number];
 const DEFAULT_COLUMN_WIDTHS = {
   folderList: 240,
   messageList: 360,
@@ -65,6 +68,8 @@ const MAX_COLUMN_WIDTHS = {
 };
 
 const shellEl = ref<HTMLElement | null>(null);
+const theme = ref<Theme>(getInitialTheme());
+applyTheme(theme.value);
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
@@ -95,6 +100,7 @@ const shellStyle = computed(() => ({
 useThunderbirdShortcuts({ space, enabled: shortcutsEnabled });
 
 onMounted(async () => {
+  applyTheme(theme.value);
   loadColumnWidths();
   applyResponsiveLayout();
   clampColumnWidths();
@@ -133,6 +139,12 @@ function startCompose() {
 function toggleFolderList() {
   folderListHidden.value = !folderListHidden.value;
   responsiveFolderListHidden = false;
+}
+
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'light' : 'dark';
+  applyTheme(theme.value);
+  saveTheme(theme.value);
 }
 
 function startColumnResize(pane: ResizePane, event: PointerEvent) {
@@ -320,6 +332,39 @@ function saveColumnWidths() {
   }
 }
 
+function getInitialTheme(): Theme {
+  try {
+    const stored = window.localStorage?.getItem(THEME_STORAGE_KEY);
+    if (isTheme(stored)) return stored;
+  } catch {
+    // Theme falls back to the system preference when storage is unavailable.
+  }
+
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+
+  return 'dark';
+}
+
+function applyTheme(nextTheme: Theme) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+}
+
+function saveTheme(nextTheme: Theme) {
+  try {
+    window.localStorage?.setItem(THEME_STORAGE_KEY, nextTheme);
+  } catch {
+    // Ignore storage failures; the selected theme still applies this session.
+  }
+}
+
+function isTheme(value: string | null): value is Theme {
+  return value === 'dark' || value === 'light';
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(value, Math.max(min, max)));
 }
@@ -341,8 +386,10 @@ function clamp(value: number, min: number, max: number) {
       :active="space"
       :unread-count="totalUnread"
       :folder-list-hidden="folderListHidden"
+      :theme="theme"
       @change="space = $event"
       @toggle-folder-list="toggleFolderList"
+      @toggle-theme="toggleTheme"
     />
 
     <div
