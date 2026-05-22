@@ -231,6 +231,7 @@ describe('metadata indexer: fills folder views past the first page', () => {
     expect(progress).toEqual({
       total: INBOX_TOTAL,
       covered: 100,
+      stale: false,
       percent: 29, // 100 / 350 ≈ 28.57 -> 29
     });
 

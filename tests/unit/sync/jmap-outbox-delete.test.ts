@@ -209,7 +209,7 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
     expect(await loadTrashView()).toBeNull();
   });
 
-  it('marks an existing destination view stale and clears its painted ranges', async () => {
+  it('marks an existing destination view stale without clearing painted ranges', async () => {
     // Pre-seed a Trash query_view (simulating the user having visited
     // Trash earlier in the session).
     const trashTransport = new MockTransport();
@@ -230,7 +230,8 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
 
     // The empty initial sync writes a query_view_ranges row covering
     // the requested [0, 0) (or [0, fetched]) window; make sure there
-    // is at least one to assert the wipe.
+    // is at least one to assert that a move does not wipe existing
+    // large-folder coverage.
     await handlers[DB_RPC.QUERY]({
       sql: `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at)
             VALUES (?, ?, ?, ?)
@@ -270,7 +271,7 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
       'SELECT view_id FROM query_view_ranges WHERE view_id = ?',
       [trashViewAfter.id],
     );
-    expect(rangesAfter).toEqual([]);
+    expect(rangesAfter).toHaveLength(rangesBefore.length);
   });
 });
 

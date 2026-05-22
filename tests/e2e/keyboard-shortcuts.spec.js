@@ -68,6 +68,10 @@ test.describe('Keyboard shortcuts e2e', () => {
       await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
 
       await clickFolder(page, inbox.name);
+      await expect.poll(
+        async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
+        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+      ).toBeGreaterThan(0);
       await openMessageBySubject(page, subject);
       await focusMessageList(page);
       await page.keyboard.press('Delete');
@@ -132,6 +136,10 @@ test.describe('Keyboard shortcuts e2e', () => {
       await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
 
       await clickFolder(page, inbox.name);
+      await expect.poll(
+        async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
+        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+      ).toBeGreaterThan(0);
       await openMessageBySubject(page, subject);
 
       const frame = page.frameLocator('.message-view__html-frame');
@@ -254,7 +262,8 @@ test.describe('Keyboard shortcuts e2e', () => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
-    if (!inbox) throw new Error('Test requires Inbox mailbox');
+    const trash = mailboxByRole(mailboxes, 'trash');
+    if (!inbox || !trash) throw new Error('Test requires Inbox and Trash mailboxes');
 
     const fromEmail = selfEmail();
     const stamp = Date.now();
@@ -275,6 +284,12 @@ test.describe('Keyboard shortcuts e2e', () => {
       await loginViaOidc(page);
       await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
       await clickFolder(page, inbox.name);
+      for (const subject of subjects) {
+        await expect.poll(
+          async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
+          { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        ).toBeGreaterThan(0);
+      }
 
       await openMessageBySubject(page, subjects[0]);
       await focusMessageList(page);
@@ -288,7 +303,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 5_000 });
     } finally {
       for (const id of createdIds) {
-        await cleanupEmail(jmap, id);
+        await cleanupEmail(jmap, id, trash.id);
       }
     }
   });

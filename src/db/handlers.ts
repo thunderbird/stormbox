@@ -534,6 +534,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return {
         total,
         covered,
+        stale: Number(view.stale ?? 0) === 1,
         percent: total > 0 ? Math.min(100, Math.round((covered / total) * 100)) : 0,
       };
     },
@@ -811,8 +812,10 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      *     active mailbox-window query_view for that folder, compact
      *     positions, and decrement query_views.total.
      *   - For each addFolderId: mark every active mailbox-window
-     *     query_view for that folder stale and drop its painted
-     *     ranges (the next visit re-fetches a fresh page).
+     *     query_view for that folder stale. Keep existing painted
+     *     ranges so large destination folders do not get re-indexed
+     *     from scratch; the next foreground visit reconciles the
+     *     visible window against the new query state.
      */
     [DB_RPC.OUTBOX_APPLY_MOVE]: async ({
       accountId, messageId, addFolderIds = [], removeFolderIds = [],
@@ -933,10 +936,6 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 SET stale = 1, updated_at = ?
               WHERE id IN (${placeholders})`,
             [ts, ...viewIds],
-          );
-          await tx.run(
-            `DELETE FROM query_view_ranges WHERE view_id IN (${placeholders})`,
-            viewIds,
           );
         }
       });

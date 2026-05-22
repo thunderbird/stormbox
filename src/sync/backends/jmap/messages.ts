@@ -443,6 +443,7 @@ async function upsertQueryView({
     queryState,
     canCalculateChanges == null ? null : (canCalculateChanges ? 1 : 0),
     total,
+    0,
     ts,
     ts,
     ts,
@@ -450,14 +451,15 @@ async function upsertQueryView({
   await handlers[DB_RPC.QUERY]({
     sql: `INSERT INTO query_views(
             account_id, view_type, folder_id, filter_json, sort_json,
-            collapse_threads, query_state, can_calculate_changes, total,
+            collapse_threads, query_state, can_calculate_changes, total, stale,
             created_at, updated_at, last_accessed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(account_id, view_type, folder_id, filter_json, sort_json, collapse_threads)
           DO UPDATE SET
             query_state = excluded.query_state,
             can_calculate_changes = excluded.can_calculate_changes,
             total = excluded.total,
+            stale = excluded.stale,
             updated_at = excluded.updated_at,
             last_accessed_at = excluded.last_accessed_at`,
     params,

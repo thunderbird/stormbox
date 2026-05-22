@@ -50,6 +50,16 @@ account, JMAP against Stalwart.
   re-entering a folder restores the previous view.
 - **R-2.7** Thread metadata shall be synced to local storage. A
   conversation/thread reading UI is *Planned*.
+- **R-2.8** The message list shall provide text filters for the open
+  folder. Filters shall be toggles with text labels rather than
+  icons; when no filter is selected, the message list is in the All
+  Mail state. The MVP shall include an Unread filter. When the user
+  toggles a filter, the current previewed message shall be cleared
+  before the filter applies. A filtered-out state change shall not
+  remove a message previewed or checkbox-selected after the filter is
+  active until the user clears that preview or selection. The
+  select-all checkbox shall remain visible but disabled when a filter
+  leaves the message list empty, so toolbar alignment stays stable.
 
 ### 3. Triage [Done]
 
@@ -79,6 +89,23 @@ account, JMAP against Stalwart.
 - **R-3.9** When new mail arrives on the server while the user is
   online, the open mailbox view shall update without a manual
   refresh.
+- **R-3.10** Toolbar action buttons shall use icons only, with
+  action text provided through accessible labels and tooltips. Message
+  action toolbars shall stay consistent with Thunderbird-compatible
+  shortcuts where the action is visible in the MVP.
+- **R-3.11** When the currently previewed or checkbox-selected
+  message or messages are removed from the open message list by a
+  user action such as delete, archive, or move, the system shall move
+  the preview to the next available message rather than leaving the UI
+  with no message selected. If no later message is available, the
+  system shall fall back to the previous available message.
+- **R-3.12** When a user action or server push makes a previously
+  cached destination folder stale, the system shall invalidate the
+  in-memory message-list cache for that folder and fetch the next
+  visible window from JMAP using query state or query changes, rather
+  than showing stale rows or requiring a full folder metadata reload.
+  Existing covered ranges for large folders shall be preserved so a
+  single move does not trigger whole-folder re-indexing.
 
 ### 4. Compose and send [Partial — UI gaps]
 
@@ -93,8 +120,7 @@ account, JMAP against Stalwart.
   and the sent message shall appear in the Sent folder.
 - **R-4.5** When send fails, the system shall surface the failure and
   keep the compose draft visible so the user can retry.
-- **R-4.6** Visible Reply-all and Forward toolbar buttons. *(Planned;
-  keyboard shortcuts already drive these flows.)*
+- **R-4.6** Visible Reply-all and Forward toolbar buttons. *(Done)*
 - **R-4.7** Cc/Bcc input fields with autocomplete. *(Planned; the
   outbound payload already includes Cc/Bcc when populated.)*
 

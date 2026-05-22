@@ -651,7 +651,12 @@ describe('thread + message + membership handlers', () => {
       folderId: archive.id,
       sort: 'received',
     });
-    expect(progress).toEqual({ total: 500, covered: 250, percent: 50 });
+    expect(progress).toEqual({
+      total: 500,
+      covered: 250,
+      percent: 50,
+      stale: false,
+    });
   });
 });
 

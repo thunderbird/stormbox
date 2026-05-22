@@ -30,6 +30,12 @@ export async function loginViaOidc(page) {
   await expect(page.locator('.shell')).toBeVisible({ timeout: 90_000 }).catch(async (err) => {
     const message = (await loginError.textContent().catch(() => null))?.trim();
     if (message) {
+      if (/429|too many requests/i.test(message)) {
+        await page.waitForTimeout(5_000);
+        await page.reload();
+        await expect(page.locator('.shell')).toBeVisible({ timeout: 90_000 });
+        return;
+      }
       throw new Error(`OIDC login returned to app but connect failed: ${message}`);
     }
     throw err;

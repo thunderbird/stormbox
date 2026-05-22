@@ -31,6 +31,7 @@ import { nextTick } from 'vue';
 import MessageView from '../../../src/components/MessageView.vue';
 import { useMailStore } from '../../../src/stores/mail-store.js';
 import { useAuthStore } from '../../../src/stores/auth-store.js';
+import { useComposeStore } from '../../../src/stores/compose-store.js';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -116,6 +117,105 @@ describe('MessageView with a sparse messages array', () => {
 
     expect(wrapper.text()).toContain('Select a message to read it.');
     expect(wrapper.find('h2').exists()).toBe(false);
+  });
+
+  it('renders the single-message toolbar as icon-only actions in shortcut order', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Toolbar order',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    const actions = wrapper.findAll('.message-view__header .message-view__action');
+    expect(actions.map((button) => button.attributes('title'))).toEqual([
+      'Back',
+      'Archive (A)',
+      'Delete (Del)',
+      'Reply (Ctrl+R)',
+      'Reply All (Ctrl+Shift+R)',
+      'Forward (Ctrl+L)',
+    ]);
+    expect(actions.every((button) => button.text() === '')).toBe(true);
+    const lucideIcons = actions.slice(0, 3).map((button) => button.find('svg.message-view__toolbar-icon'));
+    expect(lucideIcons.every((icon) => icon.exists())).toBe(true);
+    expect(lucideIcons.map((icon) => icon.attributes('width'))).toEqual(['18', '18', '18']);
+    expect(lucideIcons.map((icon) => icon.attributes('height'))).toEqual(['18', '18', '18']);
+    expect(lucideIcons.map((icon) => icon.attributes('fill'))).toEqual(['none', 'none', 'none']);
+    expect(lucideIcons.map((icon) => icon.attributes('stroke'))).toEqual(['currentColor', 'currentColor', 'currentColor']);
+    expect(lucideIcons.map((icon) => icon.attributes('stroke-width'))).toEqual(['1.65', '1.65', '1.65']);
+
+    const arrowIcons = actions.slice(3).map((button) => button.find('.message-view__toolbar-icon--shape'));
+    expect(arrowIcons.every((icon) => icon.exists())).toBe(true);
+    expect(arrowIcons.map((icon) => icon.find('[fill="context-stroke"]').exists())).toEqual([true, true, true]);
+    expect(arrowIcons.map((icon) => icon.find('[fill="context-fill"]').exists())).toEqual([true, true, true]);
+  });
+
+  it('closes the message view from the back toolbar action', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Go back',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.messageBody = { text: 'body text', html: '', attachments: [] };
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    await wrapper.find('.message-view__header [aria-label="Back"]').trigger('click');
+
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect(mailStore.messageBody).toBeNull();
+  });
+
+  it('forwards the selected message from the toolbar', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore();
+    const composeStore = useComposeStore();
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Forward me',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.messageBody = { text: 'body text', html: '', attachments: [] };
+    const forwardSpy = vi.spyOn(composeStore, 'prepareForward');
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    await wrapper.find('.message-view__header [aria-label="Forward"]').trigger('click');
+
+    expect(forwardSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 42 }),
+      expect.objectContaining({ text: 'body text' }),
+    );
   });
 
   it('lists every checked row in the bulk summary, not the viewed message only', async () => {
@@ -340,6 +440,49 @@ describe('MessageView HTML body rendering', () => {
     const pre = wrapper.find('.message-view__text');
     expect(pre.exists()).toBe(true);
     expect(pre.text()).toContain('plain text body');
+
+    wrapper.unmount();
+  });
+
+  it('aligns plaintext body content with the message header labels', async () => {
+    await makeSelectedMessage({
+      text: 'plain text body',
+      html: '',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const details = wrapper.find('.message-view__details');
+    const pre = wrapper.find('.message-view__text');
+
+    expect(window.getComputedStyle(pre.element).paddingLeft)
+      .toBe(window.getComputedStyle(details.element).paddingLeft);
+
+    wrapper.unmount();
+  });
+
+  it('aligns simple text-like HTML message content with the message header labels', async () => {
+    await makeSelectedMessage({
+      text: 'plain alternative',
+      html: 'simple html body',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const details = wrapper.find('.message-view__details');
+    const iframe = wrapper.find('iframe.message-view__html-frame');
+
+    expect(iframe.exists()).toBe(true);
+    expect(window.getComputedStyle(iframe.element).marginLeft)
+      .toBe(window.getComputedStyle(details.element).paddingLeft);
 
     wrapper.unmount();
   });

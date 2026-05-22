@@ -26,7 +26,9 @@ import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages.js';
  *   - For each removed folder, drop the row from any mailbox-window
  *     query_views(folder_id = removed) and decrement total.
  *   - For each added folder, mark any mailbox-window query_views(folder_id
- *     = added) stale and clear painted ranges.
+ *     = added) stale while preserving painted ranges, so large folders
+ *     keep their existing coverage and only the visible window is
+ *     reconciled on the next visit.
  *
  * Combining the steps into one transaction is what gives delete its
  * snappy feel: with the per-step orchestration we used before, each

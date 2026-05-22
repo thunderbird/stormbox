@@ -9,8 +9,8 @@ import {
 } from 'vue';
 import DOMPurify from 'dompurify';
 import {
-  ArrowLeft, CornerUpLeft, Trash2, Paperclip,
-  MailOpen, Mail, X,
+  Archive, Trash2, Paperclip,
+  MailOpen, Mail, X, ArrowLeft,
 } from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
@@ -21,6 +21,9 @@ import {
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
 } from '../utils/message-html.js';
+import forwardIcon from '../assets/icons/tb-forward.svg?raw';
+import replyIcon from '../assets/icons/tb-reply.svg?raw';
+import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
@@ -299,13 +302,28 @@ function fmtListDate(ms) {
     : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function backToList() {
-  mailStore.selectMessage(null);
-}
-
 async function reply() {
   if (!message.value) return;
   composeStore.prepareReplyFromMessage(message.value, body.value ?? {});
+}
+
+async function replyAll() {
+  if (!message.value) return;
+  composeStore.prepareReplyAll(message.value, body.value ?? {});
+}
+
+async function forward() {
+  if (!message.value) return;
+  composeStore.prepareForward(message.value, body.value ?? {});
+}
+
+async function archive() {
+  if (!message.value) return;
+  try {
+    await mailStore.archiveMessages([message.value.id]);
+  } catch (err) {
+    console.warn('[message-view] archive failed', err?.message ?? err);
+  }
 }
 
 async function destroy() {
@@ -330,6 +348,16 @@ async function bulkMarkUnread() {
   await mailStore.markManySeen([...mailStore.selectedIds], false);
 }
 
+async function bulkArchive() {
+  const ids = [...mailStore.selectedIds];
+  if (ids.length === 0) return;
+  try {
+    await mailStore.archiveMessages(ids);
+  } catch (err) {
+    console.warn('[message-view] bulk archive failed', err?.message ?? err);
+  }
+}
+
 async function bulkDelete() {
   const ids = [...mailStore.selectedIds];
   if (ids.length === 0) return;
@@ -341,6 +369,11 @@ async function bulkDelete() {
 }
 
 function clearBulkSelection() {
+  mailStore.clearSelection();
+}
+
+function closeMessageView() {
+  mailStore.selectMessage(null);
   mailStore.clearSelection();
 }
 </script>
@@ -357,16 +390,19 @@ function clearBulkSelection() {
           {{ selectionCount }} {{ selectionCount === 1 ? 'message' : 'messages' }} selected
         </h2>
         <div class="message-view__bulk-actions">
-          <button class="message-view__action" type="button" @click="bulkMarkRead" title="Mark as read">
+          <button class="message-view__action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
+            <Archive class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+          </button>
+          <button class="message-view__action" type="button" @click="bulkMarkRead" title="Mark as read" aria-label="Mark as read">
             <MailOpen :size="16" :stroke-width="1.75" />
           </button>
-          <button class="message-view__action" type="button" @click="bulkMarkUnread" title="Mark as unread">
+          <button class="message-view__action" type="button" @click="bulkMarkUnread" title="Mark as unread" aria-label="Mark as unread">
             <Mail :size="16" :stroke-width="1.75" />
           </button>
-          <button class="message-view__action message-view__action--danger" type="button" @click="bulkDelete" title="Delete">
-            <Trash2 :size="16" :stroke-width="1.75" />
+          <button class="message-view__action message-view__action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
+            <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
           </button>
-          <button class="message-view__action message-view__action--ghost" type="button" @click="clearBulkSelection" title="Clear selection">
+          <button class="message-view__action message-view__action--ghost" type="button" @click="clearBulkSelection" title="Clear selection" aria-label="Clear selection">
             <X :size="16" :stroke-width="1.75" />
           </button>
         </div>
@@ -391,26 +427,45 @@ function clearBulkSelection() {
     </div>
     <article v-else class="message-view__article">
       <header class="message-view__header">
-        <button class="message-view__icon-btn" type="button" @click="backToList" aria-label="Back to list">
-          <ArrowLeft :size="16" :stroke-width="1.75" />
+        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" @click="closeMessageView" title="Back" aria-label="Back">
+          <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <div class="message-view__title">
-          <h2>{{ message.subject || '(no subject)' }}</h2>
-          <p class="message-view__meta">
-            <span class="message-view__from">{{ message.from_text }}</span>
-            <span class="message-view__date">{{ fmtDate(message.received_at) }}</span>
-          </p>
-        </div>
-        <div class="message-view__actions">
-          <button class="message-view__action" type="button" @click="reply" title="Reply">
-            <CornerUpLeft :size="16" :stroke-width="1.75" />
-            <span>Reply</span>
-          </button>
-          <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete">
-            <Trash2 :size="16" :stroke-width="1.75" />
-          </button>
-        </div>
+        <button class="message-view__action" type="button" @click="archive" title="Archive (A)" aria-label="Archive">
+          <Archive class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+        </button>
+        <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
+          <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+        </button>
+        <button class="message-view__action" type="button" @click="reply" title="Reply (Ctrl+R)" aria-label="Reply">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
+        </button>
+        <button class="message-view__action" type="button" @click="replyAll" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
+        </button>
+        <button class="message-view__action" type="button" @click="forward" title="Forward (Ctrl+L)" aria-label="Forward">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
+        </button>
       </header>
+      <section class="message-view__details" aria-label="Message header">
+        <dl class="message-view__metadata">
+          <div class="message-view__metadata-row">
+            <dt>From</dt>
+            <dd>{{ message.from_text || '(no sender)' }}</dd>
+          </div>
+          <div v-if="message.to_text" class="message-view__metadata-row">
+            <dt>To</dt>
+            <dd>{{ message.to_text }}</dd>
+          </div>
+          <div class="message-view__metadata-row message-view__title">
+            <dt>Subject</dt>
+            <dd><h2>{{ message.subject || '(no subject)' }}</h2></dd>
+          </div>
+          <div class="message-view__metadata-row">
+            <dt>Date</dt>
+            <dd class="message-view__date">{{ fmtDate(message.received_at) }}</dd>
+          </div>
+        </dl>
+      </section>
       <div ref="bodyRef" class="message-view__body">
         <iframe
           v-if="iframeSrcDoc"
@@ -455,8 +510,10 @@ function clearBulkSelection() {
    * below has no overflow to act on — which is what made tall
    * marketing emails (e.g. PledgeBox) impossible to scroll. */
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   min-height: 0;
+  --message-content-inset: 20px;
+  --message-header-label-width: 56px;
 }
 .message-view__empty {
   display: grid;
@@ -547,92 +604,109 @@ function clearBulkSelection() {
 }
 .message-view__header {
   display: flex;
-  gap: 12px;
+  gap: 6px;
   align-items: center;
-  padding: 14px 16px;
+  justify-content: flex-start;
+  min-height: 57px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--border);
 }
-.message-view__icon-btn {
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-  cursor: pointer;
-  flex-shrink: 0;
+.message-view__details {
+  padding: 12px 16px 12px var(--message-content-inset);
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--panel) 92%, var(--panel2));
 }
-.message-view__icon-btn:hover { background: var(--rowHover); color: var(--text); }
-.message-view__title {
-  flex: 1;
+.message-view__metadata {
+  display: grid;
+  grid-template-columns: var(--message-header-label-width) minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 7px;
+  margin: 0;
+  font-size: 13px;
+}
+.message-view__metadata-row {
+  display: contents;
+}
+.message-view__metadata dt {
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+}
+.message-view__metadata dd {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  margin: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .message-view__title h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.message-view__meta {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-}
-.message-view__from {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.message-view__date { flex-shrink: 0; font-variant-numeric: tabular-nums; }
-.message-view__actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
+.message-view__date { font-variant-numeric: tabular-nums; }
 .message-view__action {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: inline-grid;
+  place-items: center;
   border: 0;
   background: transparent;
-  color: var(--text);
-  padding: 7px 11px;
+  color: var(--muted);
+  width: 34px;
+  height: 34px;
+  padding: 0;
   border-radius: 8px;
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
+  flex-shrink: 0;
 }
-.message-view__action:hover { background: var(--rowHover); }
+.message-view__action:hover { background: var(--rowHover); color: var(--text); }
 .message-view__action--danger:hover { background: rgba(255, 107, 107, 0.12); color: #ff6b6b; }
 .message-view__action--ghost { color: var(--muted); }
+.message-view__action--back { margin-right: 12px; }
+.message-view__toolbar-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  shape-rendering: geometricPrecision;
+}
+.message-view__toolbar-icon--shape {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  stroke: none;
+}
+.message-view__toolbar-icon--shape :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.message-view__toolbar-icon--shape :deep([fill="context-fill"]) {
+  fill: transparent;
+}
+.message-view__toolbar-icon--shape :deep([fill="context-stroke"]) {
+  fill: currentColor;
+}
 
 .message-view__body {
   /* The iframe is the sole rendering path for HTML message bodies.
-   * It carries its own document, so the body wrapper does not impose
-   * any padding or width on it — that would re-introduce the
-   * "every email looks the same width" feel by clipping the email's
-   * intended layout. The iframe document owns the canvas color so
-   * simple HTML can follow the app theme while styled emails keep
-   * their own design. */
+   * It carries its own document, so alignment is applied to the frame
+   * itself instead of rewriting the email's internal layout. The iframe
+   * document owns the canvas color so simple HTML can follow the app
+   * theme while styled emails keep their own design. */
   padding: 0;
   overflow-y: auto;
   min-height: 0;
 }
 .message-view__html-frame {
   display: block;
-  width: 100%;
+  width: calc(100% - var(--message-content-inset));
+  margin-left: var(--message-content-inset);
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document
    * has laid out; min-height is the floor for the first paint when
@@ -644,7 +718,7 @@ function clearBulkSelection() {
 }
 .message-view__text {
   margin: 0;
-  padding: 18px 22px;
+  padding: 18px 22px 18px var(--message-content-inset);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   line-height: 1.55;
