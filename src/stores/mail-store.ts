@@ -37,6 +37,7 @@ interface FolderCache {
   scrollTop: number;
   pageInflight: Promise<void> | null;
   requestedRange: { start: number; end: number } | null;
+  needsFreshWindow?: boolean;
   didInitialBodyPrefetch?: boolean;
   lastFailedRange?: { start: number; end: number } | null;
 }
@@ -127,6 +128,7 @@ export const useMailStore = defineStore('mail', () => {
   // count ticking down one at a time. See refreshLoadedPages().
   let refreshLoadedPagesInflight: Promise<void> | null = null;
   let refreshLoadedPagesDirty = false;
+  const staleFolderIds = new Set<number>();
 
   const currentFolder = computed(
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
@@ -310,10 +312,14 @@ export const useMailStore = defineStore('mail', () => {
       // _loadPage's partial-cache fallthrough will reconcile a
       // shrink the next time we read.
     }
+    if (staleFolderIds.has(Number(folderId))) {
+      invalidateFolderStateForFreshWindow(folderId);
+    }
     folderState = state;
     totalForFolder.value = state.total;
     messages.value = state.rows;
     isLoading.value = state.paintedRanges.length === 0;
+    void reconcileSelectedFolderViewState(state);
 
     // Prime page 0 once for first-time visits. Fire and forget:
     // the MessageList's virtualItems watch will re-pump
@@ -404,32 +410,34 @@ export const useMailStore = defineStore('mail', () => {
   async function _loadPage(state, offset, limit) {
     // Try SQLite first. listMessagesForView is positional and only
     // returns rows whose query_view_items position falls inside
-    // [offset, offset+limit). A "complete" cache hit for this
-    // window has min(limit, total - offset) rows; anything less
-    // means query_view_items is sparse here (interrupted indexer,
-    // partial sync, never-visited page) and we still need to go
-    // to the network even though the cache wasn't empty.
-    const cached = await repo.listMessagesForView({
-      accountId: authStore.accountId,
-      folderId: state.folderId,
-      sort: state.sortProp,
-      offset,
-      limit,
-    });
-    if (state !== folderState) return;
-    const expectedFromTotal = state.total > 0
-      ? Math.max(0, Math.min(limit, state.total - offset))
-      : null;
-    const cacheIsComplete = expectedFromTotal === null
-      ? cached.length === limit
-      : cached.length >= expectedFromTotal;
-    if (cacheIsComplete) {
-      if (cached.length > 0) _splice(state, offset, cached);
-      const covered = expectedFromTotal === null
-        ? cached.length
-        : Math.max(cached.length, expectedFromTotal);
-      addRange(state.paintedRanges, offset, offset + covered);
-      return;
+    // [offset, offset+limit). A stale destination view deliberately
+    // skips this cache hit: its query_view_items may still contain a
+    // complete old page, but the server-side query state is known to
+    // have changed.
+    if (!state.needsFreshWindow) {
+      const cached = await repo.listMessagesForView({
+        accountId: authStore.accountId,
+        folderId: state.folderId,
+        sort: state.sortProp,
+        offset,
+        limit,
+      });
+      if (state !== folderState) return;
+      const expectedFromTotal = state.total > 0
+        ? Math.max(0, Math.min(limit, state.total - offset))
+        : null;
+      const materializedRows = cached.filter(Boolean);
+      const cacheIsComplete = expectedFromTotal === null
+        ? materializedRows.length === limit
+        : materializedRows.length >= expectedFromTotal;
+      if (cacheIsComplete) {
+        if (cached.length > 0) _splice(state, offset, cached);
+        const covered = expectedFromTotal === null
+          ? cached.length
+          : Math.max(cached.length, expectedFromTotal);
+        addRange(state.paintedRanges, offset, offset + covered);
+        return;
+      }
     }
 
     // Cache miss or partial: fetch from JMAP, then re-read the page
@@ -441,6 +449,8 @@ export const useMailStore = defineStore('mail', () => {
       limit,
     });
     if (state !== folderState) return;
+    state.needsFreshWindow = false;
+    staleFolderIds.delete(state.folderId);
     if (Number.isFinite(result?.total)) {
       state.total = Number(result.total);
       totalForFolder.value = state.total;
@@ -568,6 +578,7 @@ export const useMailStore = defineStore('mail', () => {
   async function _refreshLoadedPages() {
     const state = folderState;
     if (!repo || !state || state.folderId !== currentFolderId.value) return;
+    const beforeRows = state.rows.slice();
 
     try {
       const progress = await repo.queryViewProgress({
@@ -582,6 +593,11 @@ export const useMailStore = defineStore('mail', () => {
           state.total = newTotal;
           totalForFolder.value = newTotal;
         }
+      }
+      if (progress?.stale) {
+        invalidateFolderStateForFreshWindow(state.folderId);
+        await ensureLoaded(0, PAGE_SIZE);
+        return;
       }
     } catch (err) {
       console.warn('[mail-store] queryViewProgress in refresh failed', err);
@@ -629,6 +645,9 @@ export const useMailStore = defineStore('mail', () => {
     }
     messages.value = state.rows.slice();
 
+    const removedIds = removedMessageIds(beforeRows, state.rows);
+    const nextPreviewId = nextPreviewIdAfterRemoval(removedIds, beforeRows);
+
     // Prune the multi-select set: a delete (local or peer) may have
     // dropped one of the selected ids out of the query view. Mirrors
     // Overture's SelectionController.contentWasUpdated.
@@ -647,6 +666,8 @@ export const useMailStore = defineStore('mail', () => {
       }
       if (removed) selectedIds.value = next;
     }
+
+    applyPreviewAfterRemoval(nextPreviewId);
 
     // If the view grew (new mail extended state.total beyond the
     // last painted position) load the new tail through the same
@@ -681,6 +702,91 @@ export const useMailStore = defineStore('mail', () => {
   function setRequestedRange(folderId, start, end) {
     const state = folderStates.get(folderId);
     if (state) state.requestedRange = { start, end };
+  }
+
+  async function selectAllLoadedMessages({ unreadOnly = false } = {}) {
+    const state = folderState;
+    let rows: Array<any | undefined> = messages.value;
+
+    if (repo && authStore.accountId != null && state && state.folderId === currentFolderId.value) {
+      const limit = Math.max(
+        Number(state.total) || 0,
+        state.rows.length,
+        messages.value.length,
+      );
+      if (limit > 0) {
+        const cachedRows = await repo.listMessagesForView({
+          accountId: authStore.accountId,
+          folderId: state.folderId,
+          sort: state.sortProp,
+          offset: 0,
+          limit,
+        });
+        if (state !== folderState || state.folderId !== currentFolderId.value) {
+          return selectedIds.value.size;
+        }
+        rows = cachedRows;
+      }
+    }
+
+    const next = new Set<number>();
+    for (const row of rows) {
+      const id = Number(row?.id);
+      if (!Number.isFinite(id)) continue;
+      if (unreadOnly && Number(row?.is_seen) !== 0) continue;
+      next.add(id);
+    }
+    if (next.size === 0) return 0;
+    selectedIds.value = next;
+    return next.size;
+  }
+
+  function invalidateFolderStateForFreshWindow(folderId) {
+    const id = Number(folderId);
+    if (!Number.isFinite(id)) return;
+    staleFolderIds.add(id);
+    const state = folderStates.get(id);
+    if (!state) return;
+    state.rows = [];
+    state.paintedRanges = [];
+    state.total = 0;
+    state.requestedRange = null;
+    state.pageInflight = null;
+    state.lastFailedRange = null;
+    state.didInitialBodyPrefetch = false;
+    state.needsFreshWindow = true;
+    if (folderState === state) {
+      totalForFolder.value = 0;
+      messages.value = [];
+      isLoading.value = true;
+    }
+  }
+
+  async function reconcileSelectedFolderViewState(state) {
+    if (!repo || authStore.accountId == null || !state) return;
+    if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    try {
+      const progress = await repo.queryViewProgress({
+        accountId: authStore.accountId,
+        folderId: state.folderId,
+        sort: state.sortProp,
+      });
+      if (state.folderId !== currentFolderId.value || folderState !== state) return;
+      if (progress?.stale) {
+        invalidateFolderStateForFreshWindow(state.folderId);
+        await ensureLoaded(0, PAGE_SIZE);
+        return;
+      }
+      if (Number.isFinite(progress?.total) && Number(progress.total) !== state.total) {
+        state.total = Number(progress.total);
+        totalForFolder.value = state.total;
+      }
+      if (state.paintedRanges.length > 0) {
+        await refreshLoadedPages();
+      }
+    } catch (err) {
+      console.warn('[mail-store] reconcileSelectedFolderViewState failed', err);
+    }
   }
 
   function maybePrefetchInitialBodies(state) {
@@ -976,7 +1082,8 @@ export const useMailStore = defineStore('mail', () => {
       console.warn('[mail-store] destroyMessages failed', { ids: liveIds, result, detail });
       throw err;
     }
-    clearSelectionFor(liveIds);
+    const nextPreviewId = nextPreviewIdAfterRemoval(liveIds);
+    const trashTarget = permanent ? null : folders.value.find((f) => f.role === 'trash') ?? null;
     // The outbox already updated the cache (folder_messages,
     // query_view_items, query_views.total) before runMutation
     // resolved. Doing one more refreshLoadedPages here used to add
@@ -987,6 +1094,11 @@ export const useMailStore = defineStore('mail', () => {
     // broadcast confirm in the background through the coalescing
     // refreshLoadedPages path.
     spliceMessagesOut(liveIds);
+    if (trashTarget?.id != null && trashTarget.id !== currentFolder.value?.id) {
+      invalidateFolderStateForFreshWindow(trashTarget.id);
+    }
+    clearSelectionFor(liveIds);
+    applyPreviewAfterRemoval(nextPreviewId);
   }
 
   /**
@@ -1035,6 +1147,63 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
+  function removedMessageIds(beforeRows, afterRows) {
+    const after = new Set<number>();
+    for (const row of afterRows ?? []) {
+      if (row?.id != null) after.add(Number(row.id));
+    }
+    const removed: number[] = [];
+    for (const row of beforeRows ?? []) {
+      if (row?.id == null) continue;
+      const id = Number(row.id);
+      if (Number.isFinite(id) && !after.has(id)) removed.push(id);
+    }
+    return [...new Set(removed)];
+  }
+
+  function nextPreviewIdAfterRemoval(ids, rows = folderState?.rows ?? messages.value): number | null | undefined {
+    const removed = new Set(normalizeMessageIds(ids));
+    if (removed.size === 0) return undefined;
+
+    const previewWasRemoved = selectedMessageId.value != null
+      && removed.has(Number(selectedMessageId.value));
+    let checkboxSelectionWasRemoved = false;
+    if (selectedMessageId.value == null && selectedIds.value.size > 0) {
+      for (const id of selectedIds.value) {
+        if (removed.has(Number(id))) {
+          checkboxSelectionWasRemoved = true;
+          break;
+        }
+      }
+    }
+    if (!previewWasRemoved && !checkboxSelectionWasRemoved) return undefined;
+
+    let firstRemovedIndex = -1;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (row?.id != null && removed.has(Number(row.id))) {
+        firstRemovedIndex = i;
+        break;
+      }
+    }
+    if (firstRemovedIndex < 0) return null;
+
+    for (let i = firstRemovedIndex + 1; i < rows.length; i += 1) {
+      const row = rows[i];
+      if (row?.id != null && !removed.has(Number(row.id))) return Number(row.id);
+    }
+    for (let i = firstRemovedIndex - 1; i >= 0; i -= 1) {
+      const row = rows[i];
+      if (row?.id != null && !removed.has(Number(row.id))) return Number(row.id);
+    }
+    return null;
+  }
+
+  function applyPreviewAfterRemoval(nextPreviewId) {
+    if (nextPreviewId === undefined) return;
+    selectMessage(nextPreviewId ?? null);
+  }
+
   /**
    * Single-row delete is the N=1 case of destroyMessages. Kept as a
    * named export so the open-message Delete button and any other
@@ -1052,8 +1221,8 @@ export const useMailStore = defineStore('mail', () => {
    * Move one or more messages from the currently-open folder into a
    * target folder. The outbox already knows how to apply moveToFolders
    * locally after Email/set succeeds; the store's job is to validate
-   * the source/target pair, enqueue the mutation, and refresh the
-   * current painted ranges once the cache has changed.
+   * the source/target pair, enqueue the mutation, and compact the
+   * current painted rows once the cache has changed.
    */
   async function moveMessages(ids, targetFolderId) {
     if (!repo || authStore.accountId == null) {
@@ -1096,8 +1265,11 @@ export const useMailStore = defineStore('mail', () => {
       throw err;
     }
 
+    const nextPreviewId = nextPreviewIdAfterRemoval(liveIds);
+    spliceMessagesOut(liveIds);
+    invalidateFolderStateForFreshWindow(target.id);
     clearSelectionFor(liveIds);
-    await refreshLoadedPages();
+    applyPreviewAfterRemoval(nextPreviewId);
     return {
       succeeded: liveIds.length,
       failed: 0,
@@ -1353,6 +1525,7 @@ export const useMailStore = defineStore('mail', () => {
     setScrollTop,
     getScrollTop,
     setRequestedRange,
+    selectAllLoadedMessages,
     markRead,
     markUnread,
     markManySeen,

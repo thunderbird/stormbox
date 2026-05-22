@@ -54,7 +54,7 @@ function makeFolder(id, overrides = {}) {
   };
 }
 
-function makeRow(id) {
+function makeRow(id, overrides = {}) {
   return {
     id,
     remote_id: `e-${id}`,
@@ -65,6 +65,7 @@ function makeRow(id) {
     is_seen: 1,
     is_flagged: 0,
     has_attachment: 0,
+    ...overrides,
   };
 }
 
@@ -128,6 +129,191 @@ describe('MessageList row click viewing', () => {
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBe(2);
+  });
+
+  it('uses Unread as a lone text toggle and selects only visible unread rows', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Read message', is_seen: 1 }),
+      makeRow(2, { subject: 'Unread message', is_seen: 0 }),
+      makeRow(3, { subject: 'Another unread', is_seen: 0 }),
+    ];
+    mailStore.totalForFolder = 3;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    const filters = wrapper.findAll('.msg-list__filter');
+    expect(filters).toHaveLength(1);
+    expect(filters[0].text()).toBe('Unread');
+
+    await filters[0].trigger('click');
+    await nextTick();
+
+    const rows = wrapper.findAll('.msg-list__item');
+    expect(rows).toHaveLength(2);
+    expect(wrapper.text()).toContain('Unread message');
+    expect(wrapper.text()).not.toContain('Read message');
+
+    await wrapper.find('.msg-list__select-all input').trigger('change');
+
+    expect([...mailStore.selectedIds].sort()).toEqual([2, 3]);
+
+    await filters[0].trigger('click');
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Read message');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(3);
+  });
+
+  it('selects only unread targets when selected read rows are sticky in the filter', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Selected read message', is_seen: 1 }),
+      makeRow(2, { subject: 'Unread message', is_seen: 0 }),
+      makeRow(3, { subject: 'Read message', is_seen: 1 }),
+    ];
+    mailStore.totalForFolder = 3;
+    mailStore.selectedIds = new Set([1]);
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Selected read message');
+    expect(wrapper.text()).toContain('Unread message');
+
+    await wrapper.find('.msg-list__select-all input').trigger('change');
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([2]);
+    expect(wrapper.text()).not.toContain('Selected read message');
+  });
+
+  it('clears the current previewed message when toggling the Unread filter', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Already read preview', is_seen: 1 }),
+      makeRow(2, { subject: 'Still unread', is_seen: 0 }),
+    ];
+    mailStore.totalForFolder = 2;
+    mailStore.selectedMessageId = 1;
+    mailStore.selectedIds = new Set([2]);
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect([...mailStore.selectedIds]).toEqual([2]);
+    expect(wrapper.text()).not.toContain('Already read preview');
+    expect(wrapper.text()).toContain('Still unread');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+  });
+
+  it('keeps the select-all checkbox disabled when a filter leaves no visible messages', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Read one', is_seen: 1 }),
+      makeRow(2, { subject: 'Read two', is_seen: 1 }),
+    ];
+    mailStore.totalForFolder = 2;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    const selectAll = wrapper.find('.msg-list__select-all');
+    const checkbox = selectAll.find('input');
+
+    expect(selectAll.exists()).toBe(true);
+    expect(selectAll.classes()).toContain('is-disabled');
+    expect(checkbox.attributes('disabled')).toBeDefined();
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(0);
+    expect(wrapper.text()).toContain('No unread messages in Inbox.');
+  });
+
+  it('keeps a newly read message in the Unread filter while it is still previewed', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Becomes read', is_seen: 0 }),
+      makeRow(2, { subject: 'Still unread', is_seen: 0 }),
+    ];
+    mailStore.totalForFolder = 2;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    await wrapper.find('.msg-list__rows').trigger('click');
+    await nextTick();
+    mailStore.messages = [
+      makeRow(1, { subject: 'Becomes read', is_seen: 1 }),
+      makeRow(2, { subject: 'Still unread', is_seen: 0 }),
+    ];
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Becomes read');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(2);
+
+    await wrapper.find('.msg-list__rows').trigger('click');
+    await nextTick();
+
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect(wrapper.text()).not.toContain('Becomes read');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
+  });
+
+  it('keeps a newly read message in the Unread filter while it is checkbox-selected', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { subject: 'Checked read', is_seen: 0 }),
+      makeRow(2, { subject: 'Other unread', is_seen: 0 }),
+    ];
+    mailStore.totalForFolder = 2;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    await wrapper.find('.msg-list__check input').trigger('click');
+    mailStore.messages = [
+      makeRow(1, { subject: 'Checked read', is_seen: 1 }),
+      makeRow(2, { subject: 'Other unread', is_seen: 0 }),
+    ];
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Checked read');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(2);
+
+    await wrapper.find('.msg-list__check input').trigger('click');
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([]);
+    expect(wrapper.text()).not.toContain('Checked read');
+    expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);
   });
 });
 

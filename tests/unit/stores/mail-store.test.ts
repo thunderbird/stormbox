@@ -117,9 +117,9 @@ function makeRepo(): any {
       const view = views.get(folderId);
       if (!view) return [];
       const slice = (view.rows ?? [])
-        .slice(offset, offset + limit)
-        .filter((r) => r !== undefined && r !== null);
-      return slice;
+        .slice(offset, offset + limit);
+      if (view.returnPlaceholders) return slice;
+      return slice.filter((r) => r !== undefined && r !== null);
     },
 
     async queryViewProgress({ folderId }) {
@@ -129,6 +129,7 @@ function makeRepo(): any {
       return {
         total: Number(view.total ?? (view.rows?.length ?? 0)),
         covered: view.rows?.length ?? 0,
+        stale: view.stale === true || Number(view.stale ?? 0) === 1,
         percent: 100,
       };
     },
@@ -144,6 +145,7 @@ function makeRepo(): any {
       if (typeof view.onEnsureWindow === 'function') {
         view.onEnsureWindow({ offset, limit });
       }
+      view.stale = false;
       return { total: view.total ?? view.rows?.length ?? 0, fetched: 0 };
     },
 
@@ -308,13 +310,11 @@ describe('selectFolder', () => {
       folders: [folder],
       views: { 1: view },
     });
-    // Initial load corrects the total. The cached read returns 1
-    // row vs an expected 4 (state.total seeded from total_emails),
-    // so _loadPage falls through to ensureFolderWindow and the
-    // mock returns total = 1.
+    // Initial load corrects the total from query_views. The cached
+    // query view is authoritative here; the store must not keep the
+    // stale Mailbox total.
     await flush();
     expect(mailStore.totalForFolder).toBe(1);
-    expect(repo._calls.ensureFolderWindow).toBeGreaterThanOrEqual(1);
 
     // Navigate away and back. Revisit must preserve the corrected
     // total instead of reading the still-stale folder.total_emails.
@@ -323,6 +323,49 @@ describe('selectFolder', () => {
     mailStore.selectFolder(1);
     await flush();
     expect(mailStore.totalForFolder).toBe(1);
+  });
+});
+
+describe('selectAllLoadedMessages', () => {
+  it('selects every cached row in the current query view, not just painted rows', async () => {
+    const rows = Array.from({ length: 1500 }, (_, index) => makeRow(index + 1));
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 1500 })],
+      views: { 1: { rows, total: 1500 } },
+    });
+    await flush();
+
+    expect(mailStore.messages.filter(Boolean)).toHaveLength(100);
+
+    await mailStore.selectAllLoadedMessages();
+
+    expect(mailStore.selectedIds.size).toBe(1500);
+    expect(mailStore.selectedIds.has(1)).toBe(true);
+    expect(mailStore.selectedIds.has(1500)).toBe(true);
+    expect(repo._calls.ensureFolderWindow).toBe(0);
+  });
+
+  it('replaces selection with cached unread rows for the unread filter', async () => {
+    const { mailStore } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 4 })],
+      views: {
+        1: {
+          rows: [
+            makeRow(1, { is_seen: 1 }),
+            makeRow(2, { is_seen: 0 }),
+            makeRow(3, { is_seen: 1 }),
+            makeRow(4, { is_seen: 0 }),
+          ],
+          total: 4,
+        },
+      },
+    });
+    await flush();
+    mailStore.selectedIds = new Set([1]);
+
+    await mailStore.selectAllLoadedMessages({ unreadOnly: true });
+
+    expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([2, 4]);
   });
 });
 
@@ -354,6 +397,29 @@ describe('_loadPage sparse-cache fallthrough', () => {
     expect(repo._calls.ensureFolderWindow).toBeGreaterThanOrEqual(1);
     expect(mailStore.messages.map((m) => m.id)).toEqual([1, 2, 3, 4]);
     expect(mailStore.totalForFolder).toBe(4);
+  });
+
+  it('falls through to ensureFolderWindow when cached positions are only placeholders', async () => {
+    // A query view can be positionally covered while the joined
+    // message metadata has been removed by external changes. Treating
+    // those placeholders as a complete cache hit leaves the Inbox with
+    // no real rows until a manual refresh.
+    const folder = makeFolder(1, { total_emails: 3 });
+    const view: any = {
+      rows: [undefined, undefined, undefined],
+      total: 3,
+      returnPlaceholders: true,
+    };
+    view.onEnsureWindow = () => {
+      view.rows = [makeRow(1), makeRow(2), makeRow(3)];
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(repo._calls.ensureFolderWindow).toBeGreaterThanOrEqual(1);
+    expect(mailStore.messages.map((m) => m.id)).toEqual([1, 2, 3]);
   });
 
   it('does not loop on a persistently failing _loadPage (the ensureLoaded spam guard)', async () => {
@@ -695,7 +761,141 @@ describe('selectMessage marks unread as seen via the auto-drained outbox', () =>
   });
 });
 
+describe('successor selection after removal', () => {
+  it('selects the next message after deleting the previewed row', async () => {
+    const inbox = makeFolder(1, { total_emails: 3 });
+    const trash = makeFolder(2, { role: 'trash' });
+    const { mailStore } = await setupStore({
+      folders: [inbox, trash],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectMessage(2);
+    await flush();
+
+    await mailStore.destroyMessage(2);
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1, 3]);
+    expect(mailStore.selectedMessageId).toBe(3);
+  });
+
+  it('falls back to the previous message when deleting the tail row', async () => {
+    const inbox = makeFolder(1, { total_emails: 3 });
+    const trash = makeFolder(2, { role: 'trash' });
+    const { mailStore } = await setupStore({
+      folders: [inbox, trash],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectMessage(3);
+    await flush();
+
+    await mailStore.destroyMessage(3);
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1, 2]);
+    expect(mailStore.selectedMessageId).toBe(2);
+  });
+
+  it('selects the row that shifts into place after moving checkbox-selected rows', async () => {
+    const inbox = makeFolder(1, { total_emails: 4, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });
+    const { mailStore } = await setupStore({
+      folders: [inbox, archive],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3), makeRow(4)], total: 4 } },
+    });
+    await flush();
+
+    mailStore.selectedIds = new Set([2, 3]);
+
+    await mailStore.moveMessages([2, 3], archive.id);
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1, 4]);
+    expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.selectedMessageId).toBe(4);
+  });
+});
+
 describe('moveMessages', () => {
+  it('refetches a previously visited destination folder after moving a message into it', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', total_emails: 1, may_add_items: 1 });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: {
+        1: { rows: [makeRow(7)], total: 1 },
+        2: { rows: [makeRow(8)], total: 1 },
+      },
+    });
+    await flush();
+
+    mailStore.selectFolder(archive.id);
+    await flush();
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([8]);
+
+    mailStore.selectFolder(inbox.id);
+    await flush();
+
+    repo.runMutation = async () => {
+      repo.setView(1, { rows: [], total: 0 });
+      repo.setView(2, {
+        rows: [makeRow(7), makeRow(8)],
+        total: 2,
+        stale: true,
+      });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+    let destinationFetches = 0;
+    const originalEnsure = repo.ensureFolderWindow;
+    repo.ensureFolderWindow = async (accountId, folderId, range) => {
+      if (Number(folderId) === archive.id) destinationFetches += 1;
+      return originalEnsure(accountId, folderId, range);
+    };
+
+    await mailStore.moveMessages([7], archive.id);
+    mailStore.selectFolder(archive.id);
+    await flush();
+
+    expect(destinationFetches).toBeGreaterThan(0);
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([7, 8]);
+  });
+
+  it('refetches a revisited folder when the persisted query view is marked stale', async () => {
+    const inbox = makeFolder(1, { total_emails: 1 });
+    const archive = makeFolder(2, { role: 'archive', total_emails: 1 });
+    const archiveView = { rows: [makeRow(8)], total: 1 };
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: {
+        1: { rows: [makeRow(1)], total: 1 },
+        2: archiveView,
+      },
+    });
+    await flush();
+
+    mailStore.selectFolder(archive.id);
+    await flush();
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([8]);
+
+    mailStore.selectFolder(inbox.id);
+    await flush();
+
+    archiveView.stale = true;
+    archiveView.onEnsureWindow = () => {
+      archiveView.rows = [makeRow(7), makeRow(8)];
+      archiveView.total = 2;
+    };
+
+    mailStore.selectFolder(archive.id);
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([7, 8]);
+  });
+
   it('queues a moveToFolders mutation for the current source folder and clears moved selection state', async () => {
     const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
     const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });

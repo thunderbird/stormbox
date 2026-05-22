@@ -18,7 +18,34 @@ const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
 // useListSelection needs the actual ref<Set> so it can replace the
 // Set instance when it mutates (the `_bump()` pattern), and a plain
 // `mailStore.selectedIds` access returns the unwrapped value.
-const { messages, totalForFolder, selectedIds } = storeToRefs(mailStore);
+const { messages, selectedIds } = storeToRefs(mailStore);
+
+const unreadOnly = ref(false);
+const visibleMessages = computed(() => {
+  if (!unreadOnly.value) return messages.value;
+  return messages.value.filter((row) => {
+    if (row?.id == null) return false;
+    return Number(row.is_seen) === 0
+      || row.id === mailStore.selectedMessageId
+      || selectedIds.value.has(row.id);
+  });
+});
+const selectAllTargetMessages = computed(() => {
+  if (!unreadOnly.value) return messages.value;
+  return messages.value.filter((row) => row?.id != null && Number(row.is_seen) === 0);
+});
+
+// Virtualiser count is the FOLDER TOTAL, not loaded count. That way
+// the scrollbar reflects reality from the very first round trip and
+// the user can scroll into "unloaded" territory; placeholders render
+// there until ensureLoaded() pulls the matching page. The Unread
+// filter is a dense view of the rows we have locally, so it uses the
+// filtered row count.
+const folderRowCount = computed(() => Math.max(
+  mailStore.totalForFolder ?? 0,
+  mailStore.messages.length,
+));
+const rowCount = computed(() => (unreadOnly.value ? visibleMessages.value.length : folderRowCount.value));
 
 const {
   selectionCount,
@@ -26,12 +53,11 @@ const {
   isSelected,
   handleCheckboxClick,
   handleKeyDown: rawHandleKeyDown,
-  selectAllLoaded,
   selectNone,
   setFocused,
 } = useListSelection({
-  rows: messages,
-  total: totalForFolder,
+  rows: visibleMessages,
+  total: computed(() => rowCount.value),
   selectedIds,
 });
 
@@ -42,6 +68,11 @@ const {
 } = useMessageDragDrop();
 
 function handleKeyDown(event) {
+  if ((event.metaKey || event.ctrlKey) && (event.key === 'a' || event.key === 'A')) {
+    event.preventDefault();
+    selectAllForCurrentFilter();
+    return;
+  }
   const result = rawHandleKeyDown(event);
   // Plain Arrow nav also drives the preview pane (caller decides;
   // composable only knows about focus/selection, not body loads).
@@ -50,15 +81,6 @@ function handleKeyDown(event) {
     mailStore.selectMessage(result.focusedId);
   }
 }
-
-// Virtualiser count is the FOLDER TOTAL, not loaded count. That way
-// the scrollbar reflects reality from the very first round trip and
-// the user can scroll into "unloaded" territory; placeholders render
-// there until ensureLoaded() pulls the matching page.
-const rowCount = computed(() => Math.max(
-  mailStore.totalForFolder ?? 0,
-  mailStore.messages.length,
-));
 
 const ROW_HEIGHT = 88;
 const scrollEl = ref(null);
@@ -69,7 +91,7 @@ const virtualizer = useVirtualizer(
     getScrollElement: () => scrollEl.value,
     estimateSize: () => ROW_HEIGHT,
     overscan: 8,
-    getItemKey: (i) => mailStore.messages[i]?.id ?? `_ph_${i}`,
+    getItemKey: (i) => visibleMessages.value[i]?.id ?? `_ph_${i}`,
   })),
 );
 
@@ -106,6 +128,7 @@ function fireLoad(first: number, last: number) {
 }
 
 watch(virtualItems, (items) => {
+  if (unreadOnly.value) return;
   if (!items.length) return;
   const folderId = mailStore.currentFolderId;
   if (folderId == null) return;
@@ -212,7 +235,7 @@ function isDraggingMessage(messageId) {
 
 const allLoadedSelected = computed(() => {
   const loadedIds = [];
-  for (const row of mailStore.messages) {
+  for (const row of selectAllTargetMessages.value) {
     if (row?.id != null) loadedIds.push(row.id);
   }
   if (loadedIds.length === 0) return false;
@@ -222,12 +245,21 @@ const allLoadedSelected = computed(() => {
   return true;
 });
 
+function selectAllForCurrentFilter() {
+  void mailStore.selectAllLoadedMessages({ unreadOnly: unreadOnly.value });
+}
+
 function toggleSelectAll() {
   if (allLoadedSelected.value) {
     selectNone();
   } else {
-    selectAllLoaded();
+    selectAllForCurrentFilter();
   }
+}
+
+function toggleUnreadFilter() {
+  mailStore.selectMessage(null);
+  unreadOnly.value = !unreadOnly.value;
 }
 
 function fmtDate(ms) {
@@ -256,26 +288,35 @@ function shortFrom(text) {
   <section class="msg-list" aria-label="Messages">
     <header class="msg-list__header">
       <label
-        v-if="rowCount > 0"
         class="msg-list__select-all"
-        :title="allLoadedSelected ? 'Deselect all' : 'Select all loaded'"
+        :class="{ 'is-disabled': rowCount === 0 }"
+        :title="rowCount === 0 ? 'No messages to select' : (allLoadedSelected ? 'Deselect all' : 'Select all loaded')"
       >
         <input
           type="checkbox"
           :checked="allLoadedSelected"
+          :disabled="rowCount === 0"
           :indeterminate.prop="hasSelection && !allLoadedSelected"
           @change="toggleSelectAll"
         />
       </label>
-      <div class="msg-list__title">
-        <h2>{{ folderName }}</h2>
-        <span v-if="hasSelection" class="msg-list__count">
-          {{ selectionCount }} selected
-        </span>
-        <span v-else-if="rowCount > 0" class="msg-list__count">
-          {{ rowCount }} {{ rowCount === 1 ? 'message' : 'messages' }}
-        </span>
+      <div class="msg-list__filters" role="group" aria-label="Message filters">
+        <button
+          class="msg-list__filter"
+          :class="{ 'is-active': unreadOnly }"
+          type="button"
+          :aria-pressed="unreadOnly"
+          @click="toggleUnreadFilter"
+        >
+          Unread
+        </button>
       </div>
+      <span v-if="hasSelection" class="msg-list__count">
+        {{ selectionCount }} selected
+      </span>
+      <span v-else-if="rowCount > 0" class="msg-list__count">
+        {{ rowCount }} {{ rowCount === 1 ? 'message' : 'messages' }}
+      </span>
       <button
         class="msg-list__refresh"
         type="button"
@@ -304,13 +345,13 @@ function shortFrom(text) {
       <ol class="msg-list__items" :style="{ height: totalSize + 'px' }">
         <template v-for="v in virtualItems" :key="v.key">
           <li
-            v-if="mailStore.messages[v.index]"
+            v-if="visibleMessages[v.index]"
             :data-index="v.index"
             :class="{
-              'is-focused': mailStore.selectedMessageId === mailStore.messages[v.index].id,
-              'is-selected': isSelected(mailStore.messages[v.index].id),
-              'is-dragging': isDraggingMessage(mailStore.messages[v.index].id),
-              'is-unread': Number(mailStore.messages[v.index].is_seen) === 0,
+              'is-focused': mailStore.selectedMessageId === visibleMessages[v.index].id,
+              'is-selected': isSelected(visibleMessages[v.index].id),
+              'is-dragging': isDraggingMessage(visibleMessages[v.index].id),
+              'is-unread': Number(visibleMessages[v.index].is_seen) === 0,
             }"
             :style="{
               position: 'absolute',
@@ -327,35 +368,35 @@ function shortFrom(text) {
               tabindex="-1"
               draggable="true"
               @click="onRowClick(v.index)"
-              @dragstart="onRowDragStart(mailStore.messages[v.index], $event)"
+              @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
               @dragend="endMessageDrag"
             >
               <label class="msg-list__check" draggable="false" @click.stop>
                 <input
                   type="checkbox"
-                  :checked="isSelected(mailStore.messages[v.index].id)"
+                  :checked="isSelected(visibleMessages[v.index].id)"
                   @click="onCheckboxClick(v.index, $event)"
                 />
               </label>
               <span
-                v-if="Number(mailStore.messages[v.index].is_seen) === 0"
+                v-if="Number(visibleMessages[v.index].is_seen) === 0"
                 class="msg-list__unread-dot"
                 aria-label="Unread"
               />
               <div class="msg-list__rows">
                 <div class="msg-list__row1">
-                  <span class="msg-list__from">{{ shortFrom(mailStore.messages[v.index].from_text) }}</span>
-                  <span class="msg-list__date">{{ fmtDate(mailStore.messages[v.index].received_at) }}</span>
+                  <span class="msg-list__from">{{ shortFrom(visibleMessages[v.index].from_text) }}</span>
+                  <span class="msg-list__date">{{ fmtDate(visibleMessages[v.index].received_at) }}</span>
                 </div>
                 <div class="msg-list__row2">
-                  <span class="msg-list__subject">{{ mailStore.messages[v.index].subject || '(no subject)' }}</span>
+                  <span class="msg-list__subject">{{ visibleMessages[v.index].subject || '(no subject)' }}</span>
                   <span class="msg-list__icons">
-                    <Star v-if="Number(mailStore.messages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
-                    <Paperclip v-if="Number(mailStore.messages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
+                    <Star v-if="Number(visibleMessages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
+                    <Paperclip v-if="Number(visibleMessages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
                   </span>
                 </div>
-                <p v-if="mailStore.messages[v.index].preview" class="msg-list__preview">
-                  {{ mailStore.messages[v.index].preview }}
+                <p v-if="visibleMessages[v.index].preview" class="msg-list__preview">
+                  {{ visibleMessages[v.index].preview }}
                 </p>
               </div>
             </div>
@@ -388,6 +429,9 @@ function shortFrom(text) {
       <RefreshCw :size="18" class="is-spinning" />
       <p>Loading {{ folderName }}…</p>
     </div>
+    <div v-else-if="unreadOnly" class="msg-list__placeholder">
+      <p>No unread messages in {{ folderName }}.</p>
+    </div>
     <div v-else-if="mailStore.currentFolderId" class="msg-list__placeholder">
       <p>{{ folderName }} is empty.</p>
     </div>
@@ -411,15 +455,20 @@ function shortFrom(text) {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px 12px 12px;
+  min-height: 57px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--border);
 }
 .msg-list__select-all {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
   cursor: pointer;
+}
+.msg-list__select-all.is-disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 .msg-list__select-all input {
   width: 14px;
@@ -428,28 +477,55 @@ function shortFrom(text) {
   cursor: pointer;
   accent-color: var(--accent);
 }
-.msg-list__title {
+.msg-list__select-all input:disabled {
+  cursor: default;
+}
+.msg-list__filters {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
-.msg-list__title h2 {
-  margin: 0;
-  font-size: 15px;
+.msg-list__filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.msg-list__filter:hover {
+  background: var(--rowHover);
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--border) 70%, var(--text));
+}
+.msg-list__filter.is-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 80%, #000);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
 }
 .msg-list__count {
+  flex-shrink: 0;
   font-size: 11px;
   color: var(--muted);
-  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .msg-list__refresh {
   background: transparent;
   border: 0;
   color: var(--muted);
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   border-radius: 8px;
