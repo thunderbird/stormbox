@@ -3,6 +3,29 @@
 Stormbox is a Vue 3 + Pinia webmail client backed by OPFS SQLite in a
 `SharedWorker`, with a Stalwart JMAP server as the mail source of truth.
 
+# Commit messages
+
+Keep commit messages concise, a single sentence when possible. 2-3 additional sentences after the first primary message is acceptable for more complex commits. Do not include opinions and detailed research, stick to the precise facts of what was implemented in the commit.
+
+Use a commit style similar to the other commits in the repository, don't randomly introduce conventional commit or any other types of tags.
+
+## Spec-driven development
+
+Spec Kit is the shared spec workflow. Project-wide spec principles live in
+`.specify/memory/constitution.md`; feature specs live under
+`specs/NNN-feature/`. The usual flow is `/speckit.constitution`,
+`/speckit.specify`, `/speckit.plan`, `/speckit.tasks`, then
+`/speckit.implement`.
+
+Shared Spec Kit artifacts (`.specify/` and `specs/`) are committed.
+Per-agent bindings are local developer setup and stay ignored, including
+`.cursor/skills/`.
+
+```bash
+uvx --from git+https://github.com/github/spec-kit.git@v0.4.4 \
+  specify init --here --force --ai cursor-agent --ai-skills --offline
+```
+
 ## Development environment (container only)
 
 All `npm`, `npx`, `node`, `pnpm`, `yarn`, and `playwright` commands for
@@ -52,8 +75,8 @@ mask the real problem.
 ## JMAP and local cache
 
 These rules apply to any change touching sync, stores, list/detail UI, or
-mutations. Deeper background: `docs/performance-architecture.md` and
-`../WEBMAIL_SQLITE_STORAGE_SPEC.md` (parent repo).
+mutations. Deeper background: `docs/architecture/performance.md` and
+`docs/architecture/sqlite-storage.md`.
 
 ### Layer boundaries
 

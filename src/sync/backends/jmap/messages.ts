@@ -22,8 +22,8 @@ import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
 
 /**
- * The "fast properties" list from WEBMAIL_SQLITE_STORAGE_SPEC.md > JMAP
- * Sync Strategy. Enough for the message list and metadata header without
+ * The "fast properties" list from docs/architecture/sqlite-storage.md >
+ * JMAP Sync Strategy. Enough for the message list and metadata header without
  * pulling body parts.
  */
 export const EMAIL_LIST_PROPERTIES = [

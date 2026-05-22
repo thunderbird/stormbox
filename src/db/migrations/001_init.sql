@@ -1,5 +1,5 @@
 -- Initial schema for the Stormbox local cache.
--- Mirrors WEBMAIL_SQLITE_STORAGE_SPEC.md. See that document for the rationale
+-- Mirrors docs/architecture/sqlite-storage.md. See that document for the rationale
 -- behind every table, every index, and the message-folder model decisions.
 -- Update both this file and the spec when changing the schema.
 --
