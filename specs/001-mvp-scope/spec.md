@@ -218,6 +218,28 @@ account, JMAP against Stalwart.
   colour-scheme preference on first run, and persist the chosen theme
   across reloads.
 
+### 9. Browser notifications [Planned — draft]
+
+> **Draft.** This section is an early sketch and has not been
+> finalised. Requirements may change before acceptance.
+
+- **R-9.1** When new mail arrives in the Inbox while the app is open
+  and the user has granted browser notification permission, the system
+  shall surface a desktop notification summarising the message (sender
+  and subject) using the standard Web Notifications API. *(Planned)*
+- **R-9.2** The system shall request browser notification permission
+  only in response to an explicit user opt-in (e.g. a setting toggle
+  or first-run prompt) rather than on app load, and shall respect a
+  denied or dismissed permission without re-prompting. *(Planned)*
+- **R-9.3** The system shall suppress notifications for mail that
+  arrives in folders other than the Inbox, for messages already marked
+  read on the server, and while the app tab is focused; activating a
+  notification shall focus the app tab and open the corresponding
+  message. *(Planned)*
+- **R-9.4** When multiple new messages arrive in quick succession, the
+  system shall coalesce them into a single summary notification rather
+  than emitting one per message. *(Planned)*
+
 ## Non-goals
 
 The MVP excludes:
