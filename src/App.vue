@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ChevronDown, LogOut, Plus } from 'lucide-vue-next';
+import { ChevronDown, Plus } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
-import { ACCOUNTS_URL } from './defines.js';
+import { APPOINTMENT_URL, SEND_URL } from './defines.js';
 
 import { useAuthStore } from './stores/auth-store.js';
 import { useMailStore } from './stores/mail-store.js';
@@ -20,6 +20,7 @@ import ComposeDialog from './components/ComposeDialog.vue';
 import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
 import ThunderbirdLogo from './components/ThunderbirdLogo.vue';
+import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -403,12 +404,18 @@ function clamp(value: number, min: number, max: number) {
           <ChevronDown class="app-menu__chevron" :size="14" :stroke-width="2" aria-hidden="true" />
         </summary>
         <div class="app-menu__popover" role="menu">
-          <a class="app-menu__item" :href="ACCOUNTS_URL" role="menuitem">
-            <ThunderbirdLogo :size="26" class="app-menu__item-icon" aria-hidden="true" />
-            <span>Thunderbird Accounts</span>
+          <a class="app-menu__item" :href="APPOINTMENT_URL" role="menuitem">
+            <img src="/icons/icon-appointment.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
+            <span>Thunderbird Appointment</span>
+          </a>
+          <a class="app-menu__item" :href="SEND_URL" role="menuitem">
+            <img src="/icons/icon-send.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
+            <span>Thunderbird Send</span>
           </a>
         </div>
       </details>
+
+      <AccountAvatarMenu class="account-menu" />
 
       <div class="quick-filter__search" role="search">
         <input
@@ -457,10 +464,6 @@ function clamp(value: number, min: number, max: number) {
 
         <footer class="sidebar__footer">
           <StorageUsageBar />
-          <button class="sidebar__signout" type="button" @click="authStore.logout()" :title="`Sign out of ${accountLabel}`">
-            <LogOut :size="14" :stroke-width="1.75" />
-            <span>Sign out</span>
-          </button>
         </footer>
       </aside>
     </div>
@@ -574,6 +577,13 @@ function clamp(value: number, min: number, max: number) {
   left: 12px;
   transform: translateY(-50%);
 }
+.account-menu {
+  position: absolute;
+  z-index: 20;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+}
 .app-menu__button {
   min-height: 36px;
   display: inline-flex;
@@ -642,7 +652,7 @@ function clamp(value: number, min: number, max: number) {
   outline: none;
 }
 .quick-filter__search {
-  width: min(520px, max(160px, calc(100% - 220px)));
+  width: min(520px, max(160px, calc(100% - 280px)));
 }
 .quick-filter__input {
   width: 100%;
@@ -680,6 +690,13 @@ function clamp(value: number, min: number, max: number) {
   }
   .app-menu__button span {
     display: none;
+  }
+  .account-menu {
+    position: relative;
+    top: auto;
+    right: auto;
+    transform: none;
+    flex-shrink: 0;
   }
   .quick-filter__search {
     flex: 1;
@@ -798,25 +815,6 @@ function clamp(value: number, min: number, max: number) {
   flex-direction: column;
   gap: 4px;
 }
-.sidebar__signout {
-  width: 100%;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-}
-.sidebar__signout:hover {
-  background: var(--rowHover);
-  color: var(--text);
-}
-
 .column-resizer {
   position: relative;
   background: var(--panel);

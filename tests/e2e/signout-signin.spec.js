@@ -35,7 +35,8 @@ test.describe('Sign out + sign in regression', () => {
     await loginViaOidc(page);
     await waitForInboxReady(page);
 
-    await page.getByRole('button', { name: /sign out/i }).click();
+    await page.getByRole('button', { name: /open account menu/i }).click();
+    await page.getByRole('menuitem', { name: /log out/i }).click();
     await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible({ timeout: 15_000 });
 
     ensureLoadedFailures.length = 0;

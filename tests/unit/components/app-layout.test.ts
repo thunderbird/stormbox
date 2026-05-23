@@ -14,7 +14,7 @@ vi.mock('../../../src/services/auth.js', () => ({
 
 import App from '../../../src/App.vue';
 import { AUTH_STATE } from '../../../src/constants/states.js';
-import { ACCOUNTS_URL } from '../../../src/defines.js';
+import { ACCOUNTS_URL, APPOINTMENT_URL, SEND_URL } from '../../../src/defines.js';
 import { useAuthStore } from '../../../src/stores/auth-store.js';
 import { useMailStore } from '../../../src/stores/mail-store.js';
 import {
@@ -112,14 +112,40 @@ describe('App mail layout', () => {
     expect(mailStore.selectedMessageId).toBeNull();
   });
 
-  it('renders a Thundermail menu linking to Thunderbird Accounts', async () => {
+  it('renders a Thundermail menu linking to Thunderbird Appointment and Send', async () => {
     const wrapper = mountApp();
     await nextTick();
 
     expect(wrapper.get('.app-menu__button').text()).toContain('Thundermail');
     expect(wrapper.get('.app-menu__logo').attributes('src')).toBe('/logo.png');
-    expect(wrapper.get('.app-menu__item').text()).toContain('Thunderbird Accounts');
-    expect(wrapper.get('.app-menu__item').attributes('href')).toBe(ACCOUNTS_URL);
+
+    const items = wrapper.findAll('.app-menu__popover .app-menu__item');
+    expect(items).toHaveLength(2);
+    expect(items[0].text()).toContain('Thunderbird Appointment');
+    expect(items[0].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(items[1].text()).toContain('Thunderbird Send');
+    expect(items[1].attributes('href')).toBe(SEND_URL);
+  });
+
+  it('shows the user identity, account settings link, and a log out button in the top-right avatar menu', async () => {
+    const authStore = useAuthStore();
+    authStore.username = 'alice@example.com';
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    const avatarMenu = wrapper.get('.account-menu');
+    expect(avatarMenu.get('.account-menu__button').attributes('aria-label')).toBe('Open account menu');
+    expect(avatarMenu.text()).toContain('alice@example.com');
+
+    const settingsLink = avatarMenu.get('.account-menu__item[href]');
+    expect(settingsLink.attributes('href')).toBe(ACCOUNTS_URL);
+    expect(settingsLink.text()).toContain('Account Settings');
+
+    const logoutButton = avatarMenu.get('button.account-menu__item');
+    expect(logoutButton.text()).toContain('Log Out');
+
+    expect(wrapper.find('.sidebar__signout').exists()).toBe(false);
   });
 
   it('hides the message view and expands the message list when nothing is selected', async () => {

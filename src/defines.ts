@@ -12,6 +12,20 @@ export function accountsUrlForHostname(hostname = globalThis.location?.hostname)
   return "https://accounts-stage.tb.pro";
 }
 
+export function appointmentUrlForHostname(hostname = globalThis.location?.hostname): string {
+  if (hostname === "webmail.thundermail.com") {
+    return "https://appointment.tb.pro";
+  }
+  return "https://appointment-stage.tb.pro";
+}
+
+export function sendUrlForHostname(hostname = globalThis.location?.hostname): string {
+  if (hostname === "webmail.thundermail.com") {
+    return "https://send.tb.pro";
+  }
+  return "https://send-stage.tb.pro";
+}
+
 export function senderAvatarProxyUrlForHostname(hostname = globalThis.location?.hostname): string {
   if (hostname === "webmail.thundermail.com" || hostname === "webmail.stage-thundermail.com") {
     return `${defaultJmapProxyUrl(hostname)}/sender-avatar`;
@@ -24,6 +38,12 @@ export const JMAP_SERVER_URL =
 
 export const ACCOUNTS_URL =
   import.meta.env.VITE_ACCOUNTS_URL || accountsUrlForHostname();
+
+export const APPOINTMENT_URL =
+  import.meta.env.VITE_APPOINTMENT_URL || appointmentUrlForHostname();
+
+export const SEND_URL =
+  import.meta.env.VITE_SEND_URL || sendUrlForHostname();
 
 export const OIDC_ISSUER =
   import.meta.env.VITE_OIDC_ISSUER || "https://auth-stage.tb.pro/realms/tbpro";
