@@ -24,6 +24,8 @@ const SESSION = {
   state: 'session-state-aaa',
 };
 
+const FAKE_BASIC_AUTH = 'Basic fake-test-auth-not-a-real-secret';
+
 function makeFetch(handlers) {
   return vi.fn(async (url, init) => {
     const handler = handlers[url];
@@ -48,7 +50,7 @@ describe('JmapTransport HTTP', () => {
   let auth;
 
   beforeEach(() => {
-    auth = vi.fn(async () => 'Basic dXNlcjpwYXNz');
+    auth = vi.fn(async () => FAKE_BASIC_AUTH);
   });
 
   it('fetches and caches the session document', async () => {
@@ -132,7 +134,7 @@ describe('JmapTransport HTTP', () => {
     await t.request([JMAP_CAPS.CORE], []);
     const calls = fetchMock.mock.calls;
     for (const [, init] of calls) {
-      expect(init.headers.Authorization).toBe('Basic dXNlcjpwYXNz');
+      expect(init.headers.Authorization).toBe(FAKE_BASIC_AUTH);
     }
   });
 });
