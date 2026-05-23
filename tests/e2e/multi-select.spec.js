@@ -64,7 +64,7 @@ test.describe('multi-select (Fastmail model)', () => {
     const realCount = await realRows.count();
     expect(realCount).toBeGreaterThan(3);
 
-    await realRows.nth(0).locator('.msg-list__rows').click();
+    await realRows.nth(0).locator('.msg-list__content').click();
     await page.waitForTimeout(200);
     const afterRowClick = await listDiagnostics(page);
     expect(afterRowClick.itemsRendered,
@@ -116,7 +116,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterClear.scrollerHeight).toBeGreaterThan(200);
     expect(afterClear.rightPaneMode).toBe('article');
 
-    await realRows.nth(0).locator('.msg-list__rows').click();
+    await realRows.nth(0).locator('.msg-list__content').click();
     await expect.poll(
       async () => (await listDiagnostics(page)).rightPaneMode,
       { timeout: 5_000, message: 're-click on the open row should close the message view' },
@@ -129,7 +129,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterClose.checkboxesChecked).toBe(0);
     expect(afterClose.shellMessageViewHidden).toBe(true);
 
-    await realRows.nth(0).locator('.msg-list__rows').click();
+    await realRows.nth(0).locator('.msg-list__content').click();
     await expect.poll(
       async () => (await listDiagnostics(page)).rightPaneMode,
       { timeout: 5_000, message: 'second click should open the message again' },

@@ -157,7 +157,7 @@ test.describe('Local stack mail flow e2e', () => {
       .filter({ hasText: subjects[0] })
       .first();
     if ((await targetClick.count()) > 0) {
-      await targetClick.locator('.msg-list__rows').click();
+      await targetClick.locator('.msg-list__content').click();
       await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
       await expect.poll(
         async () => {
@@ -241,7 +241,7 @@ test.describe('Local stack mail flow e2e', () => {
       const secondRow = page.locator('.msg-list__item')
         .filter({ hasText: subjects[1] })
         .first();
-      await secondRow.locator('.msg-list__rows').click();
+      await secondRow.locator('.msg-list__content').click();
       await expect(page.locator('.message-view__title h2')).toHaveText(subjects[1], { timeout: 5_000 });
       await expect.poll(
         async () => {

@@ -794,6 +794,9 @@ function normalizeFilterText(value) {
   border-radius: 50%;
   background: var(--accent);
   transition: opacity 0.08s ease;
+  /* Pure visual indicator: never intercept clicks meant for the
+   * underlying checkbox (which has inset: 0 within .msg-list__state). */
+  pointer-events: none;
 }
 .msg-list__item:hover .msg-list__check,
 .msg-list__items li.is-selected .msg-list__check {
