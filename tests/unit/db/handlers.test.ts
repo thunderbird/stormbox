@@ -279,6 +279,104 @@ describe('thread + message + membership handlers', () => {
     expect(rows[1].remote_id).toBe('old');
   });
 
+  it('reports no drift when there is no query view for the folder yet', async () => {
+    // A folder we have never opened has no mailbox-window query view
+    // row. Membership counts are still reported so the store can use
+    // them later if needed, but queryViewExists=false tells the store
+    // not to treat this as drift — it just means the first
+    // ensureFolderWindow hasn't fired yet.
+    const account = await seedAccount();
+    const archive = await seedFolder(account.id, { remoteId: 'archive', name: 'Archive', role: 'archive' });
+    const t = Date.now();
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-1', receivedAt: t });
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-2', receivedAt: t - 1_000, isSeen: true });
+
+    const snapshot = await h[DB_RPC.FOLDER_VIEW_CONSISTENCY]({
+      accountId: account.id,
+      folderId: archive.id,
+    });
+
+    expect(snapshot.queryViewExists).toBe(false);
+    expect(snapshot.queryViewTotal).toBe(0);
+    expect(snapshot.membershipTotal).toBe(2);
+    expect(snapshot.membershipUnread).toBe(1);
+  });
+
+  it('reports drift when folder_messages has more rows than the query view total', async () => {
+    // The Inbox-shows-14-but-membership-knows-72 scenario: a stale
+    // mailbox-window total under-counts what folder_messages already
+    // has. The mail-store uses this to rebuild the canonical view
+    // from JMAP rather than render an impossible hybrid count.
+    const account = await seedAccount();
+    const archive = await seedFolder(account.id, { remoteId: 'archive', name: 'Archive', role: 'archive' });
+    const t = Date.now();
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-1', receivedAt: t, isSeen: false });
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-2', receivedAt: t - 1_000, isSeen: false });
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-3', receivedAt: t - 2_000, isSeen: false });
+
+    // Plant a mailbox-window query view that claims only 1 message
+    // exists, matching the production writer's filter/sort JSON so
+    // FOLDER_VIEW_CONSISTENCY can find it.
+    const filterJson = JSON.stringify({ inMailbox: archive.remote_id });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, ?, 1, ?, ?, ?, ?)`,
+      params: [
+        account.id, archive.id, filterJson, sortJson,
+        'qs-stale', 1, Date.now(), Date.now(), Date.now(),
+      ],
+    });
+
+    const snapshot = await h[DB_RPC.FOLDER_VIEW_CONSISTENCY]({
+      accountId: account.id,
+      folderId: archive.id,
+    });
+
+    expect(snapshot.queryViewExists).toBe(true);
+    expect(snapshot.queryViewTotal).toBe(1);
+    expect(snapshot.membershipTotal).toBe(3);
+    expect(snapshot.membershipUnread).toBe(3);
+    // Caller can detect drift by either of these:
+    expect(snapshot.membershipTotal).toBeGreaterThan(snapshot.queryViewTotal);
+    expect(snapshot.membershipUnread).toBeGreaterThan(snapshot.queryViewTotal);
+  });
+
+  it('reports no drift when the query view total matches folder membership', async () => {
+    const account = await seedAccount();
+    const archive = await seedFolder(account.id, { remoteId: 'archive', name: 'Archive', role: 'archive' });
+    const t = Date.now();
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-1', receivedAt: t });
+    await seedMessage(account.id, archive.id, { remoteId: 'archive-2', receivedAt: t - 1_000, isSeen: true });
+
+    const filterJson = JSON.stringify({ inMailbox: archive.remote_id });
+    const sortJson = JSON.stringify([{ property: 'receivedAt', isAscending: false }]);
+    await h[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, ?, 1, ?, ?, ?, ?)`,
+      params: [
+        account.id, archive.id, filterJson, sortJson,
+        'qs-ok', 2, Date.now(), Date.now(), Date.now(),
+      ],
+    });
+
+    const snapshot = await h[DB_RPC.FOLDER_VIEW_CONSISTENCY]({
+      accountId: account.id,
+      folderId: archive.id,
+    });
+
+    expect(snapshot.queryViewExists).toBe(true);
+    expect(snapshot.queryViewTotal).toBe(2);
+    expect(snapshot.membershipTotal).toBe(2);
+    expect(snapshot.membershipUnread).toBe(1);
+  });
+
   it('looks up messages by RFC 5322 Message-Id within an account', async () => {
     const account = await seedAccount();
     const inbox = await seedFolder(account.id);

@@ -40,6 +40,24 @@ interface FolderCache {
   needsFreshWindow?: boolean;
   didInitialBodyPrefetch?: boolean;
   lastFailedRange?: { start: number; end: number } | null;
+  /**
+   * Set after a single drift-driven rebuild attempt during this folder
+   * visit so a persistent server-vs-membership disagreement cannot
+   * loop the canonical view through endless resets. Cleared by
+   * invalidateFolderStateForFreshWindow (refresh button, move to dest)
+   * so a manual recovery path can try again.
+   */
+  driftRebuildAttempted?: boolean;
+  driftCheckInflight?: Promise<void> | null;
+  /**
+   * Single-flight guard for `expandFolderViewIntoMemory`. The Unread
+   * and quick filters need every cached row in the canonical view —
+   * not just the positional window the virtualizer happens to have
+   * pulled — so the filter can match across the whole folder. Two
+   * parallel filter toggles on the same folder should coalesce into
+   * one SQLite read and one reactive assignment.
+   */
+  expandInflight?: Promise<void> | null;
 }
 
 interface MutationOutcome {
@@ -128,6 +146,17 @@ export const useMailStore = defineStore('mail', () => {
   // count ticking down one at a time. See refreshLoadedPages().
   let refreshLoadedPagesInflight: Promise<void> | null = null;
   let refreshLoadedPagesDirty = false;
+  // Mirror of the same coalescing for refreshFolderProgress. The
+  // metadata indexer fires a MESSAGES broadcast every chunk (every
+  // ~250ms while indexing a large folder). Without coalescing, every
+  // broadcast triggers a new refreshFolderProgress that reassigns
+  // folders.value to a fresh array of fresh objects, forcing the
+  // FolderTree to re-render the entire DOM on each cycle. That
+  // re-render storm made it impossible for the user (and Playwright)
+  // to interact with the folder list during indexing: clicks would
+  // hit elements that were about to be replaced.
+  let refreshFolderProgressInflight: Promise<void> | null = null;
+  let refreshFolderProgressDirty = false;
   const staleFolderIds = new Set<number>();
 
   const currentFolder = computed(
@@ -223,7 +252,45 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  async function refreshFolderProgress() {
+  /**
+   * Public coalescing wrapper around _refreshFolderProgress. The
+   * metadata indexer fires MESSAGES every ~250ms while filling a
+   * large folder; running the full progress sweep on every broadcast
+   * keeps FolderTree's DOM in a permanent re-render state and breaks
+   * folder clicks during heavy indexing.
+   *
+   * Single-flight + dirty-flag means a burst of N broadcasts produces
+   * at most two sweeps: the one that was inflight when the burst
+   * started, plus a single trailing re-run that covers everything
+   * that happened during the inflight sweep.
+   */
+  function refreshFolderProgress() {
+    if (refreshFolderProgressInflight) {
+      refreshFolderProgressDirty = true;
+      return refreshFolderProgressInflight;
+    }
+    refreshFolderProgressInflight = (async () => {
+      try {
+        do {
+          refreshFolderProgressDirty = false;
+          await _refreshFolderProgress();
+        } while (refreshFolderProgressDirty);
+      } finally {
+        refreshFolderProgressInflight = null;
+      }
+    })();
+    return refreshFolderProgressInflight;
+  }
+
+  /**
+   * Read queryViewProgress for every folder, then propagate index
+   * coverage onto the folder objects so FolderTree can render the
+   * indexing percent badge. Skips folders.value reassignment when
+   * nothing actually changed so a no-op progress sweep doesn't
+   * trigger a redundant FolderTree re-render — important for
+   * Playwright stability during indexer storms.
+   */
+  async function _refreshFolderProgress() {
     if (!repo || authStore.accountId == null || folders.value.length === 0) return;
     const next = new Map(folderProgress.value);
     await Promise.all(folders.value.map(async (folder) => {
@@ -243,16 +310,33 @@ export const useMailStore = defineStore('mail', () => {
       next.set(folder.id, progress);
     }));
     folderProgress.value = next;
-    folders.value = folders.value.map((folder) => {
+    let changed = false;
+    const remapped = folders.value.map((folder) => {
       const progress = next.get(folder.id);
       if (!progress) return folder;
+      const total = progress.total ?? folder.index_total ?? null;
+      const covered = progress.covered ?? folder.index_covered ?? null;
+      const percent = progress.percent ?? folder.index_percent ?? null;
+      if (
+        folder.index_total === total
+        && folder.index_covered === covered
+        && folder.index_percent === percent
+      ) {
+        return folder;
+      }
+      changed = true;
       return {
         ...folder,
-        index_total: progress.total,
-        index_covered: progress.covered,
-        index_percent: progress.percent,
+        index_total: total,
+        index_covered: covered,
+        index_percent: percent,
       };
     });
+    // Only reassign folders.value when at least one folder's index
+    // numbers actually changed. Reassigning unconditionally rebuilds
+    // every FolderNode in the tree on every broadcast, which is the
+    // DOM-churn pattern Playwright cannot lock onto.
+    if (changed) folders.value = remapped;
   }
 
   function _sortPropFor(folder) {
@@ -329,6 +413,88 @@ export const useMailStore = defineStore('mail', () => {
     if (state.paintedRanges.length === 0 && authStore.accountId != null && repo) {
       ensureLoaded(0, PAGE_SIZE);
     }
+    void checkAndRepairFolderViewDrift(state);
+  }
+
+  /**
+   * One-shot folder-view consistency check, fired when a folder opens.
+   *
+   * The constitution makes `query_views` + `query_view_items` the
+   * canonical UI source for the open folder; `folder_messages` is a
+   * separate membership projection used by mutation/apply paths. If
+   * the two disagree (e.g. peer-side syncEmailChanges added 1400 rows
+   * to folder_messages but the local query view still says 14 total),
+   * neither projection can be displayed honestly alongside the other.
+   *
+   * Rather than render a hybrid count, we treat the local query view
+   * as stale, invalidate it, and let the existing
+   * resetViewForFolder + ensureFolderWindow path rebuild it from the
+   * server. After the rebuild the server-confirmed query-view total
+   * is canonical for both All and Unread, even if it disagrees with
+   * folder_messages — folder_messages is then the stale projection
+   * and will catch up via subsequent syncs.
+   *
+   * Guarded by `driftRebuildAttempted` so a persistent disagreement
+   * (server actually says 14, membership still has 1400 stale rows
+   * from an earlier full index) cannot loop the canonical view
+   * through endless resets.
+   */
+  async function checkAndRepairFolderViewDrift(state: FolderCache) {
+    if (!repo || authStore.accountId == null) return;
+    if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    if (state.driftCheckInflight) return state.driftCheckInflight;
+    if (state.driftRebuildAttempted) return;
+
+    state.driftCheckInflight = (async () => {
+      try {
+        const consistency = await repo.checkFolderViewConsistency({
+          accountId: authStore.accountId,
+          folderId: state.folderId,
+          sort: state.sortProp,
+        });
+        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        const queryViewTotal = Number(consistency?.queryViewTotal ?? 0);
+        const queryViewExists = !!consistency?.queryViewExists;
+        const membershipTotal = Number(consistency?.membershipTotal ?? 0);
+        const membershipUnread = Number(consistency?.membershipUnread ?? 0);
+
+        // No query view yet (first open of a folder we haven't synced)
+        // is not drift — _loadPage will fetch it.
+        if (!queryViewExists) return;
+
+        // Drift signal: local membership knows about strictly more
+        // rows than the canonical query view does. Either the query
+        // view total is stale (server actually has those rows but our
+        // queryChanges hasn't caught up) or membership is stale (peer
+        // delete that left orphan folder_messages rows). Either way
+        // the right answer is to rebuild the canonical view from
+        // server and let one source win.
+        const driftDetected = membershipTotal > queryViewTotal
+          || membershipUnread > queryViewTotal;
+        if (!driftDetected) return;
+
+        state.driftRebuildAttempted = true;
+        console.warn('[mail-store] folder view drift detected, rebuilding from server', {
+          folderId: state.folderId,
+          queryViewTotal,
+          membershipTotal,
+          membershipUnread,
+        });
+        try {
+          await repo.resetViewForFolder(authStore.accountId, state.folderId);
+        } catch (err) {
+          console.warn('[mail-store] resetViewForFolder during drift repair failed', err);
+        }
+        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        invalidateFolderStateForFreshWindow(state.folderId);
+        await ensureLoaded(0, PAGE_SIZE);
+      } catch (err) {
+        console.warn('[mail-store] checkFolderViewConsistency failed', err);
+      } finally {
+        state.driftCheckInflight = null;
+      }
+    })();
+    return state.driftCheckInflight;
   }
 
   /**
@@ -704,6 +870,74 @@ export const useMailStore = defineStore('mail', () => {
     if (state) state.requestedRange = { start, end };
   }
 
+  /**
+   * Pull every cached row in the open folder's canonical query view
+   * into `messages.value` so a dense local filter (Unread, quick
+   * filter) can see the whole folder instead of just the positional
+   * window the virtualizer has populated.
+   *
+   * This is a SQLite read against `query_view_items` + `messages` for
+   * the open folder. It never fetches from JMAP. If the canonical
+   * view is sparse — rows beyond what the indexer has covered are not
+   * in `query_view_items` yet — the buffer expands to whatever IS
+   * cached and leaves trailing positions undefined for the
+   * placeholder skeletons; this is the same shape default scrolling
+   * already produces.
+   *
+   * Single-flight per folder so two filter toggles in quick
+   * succession coalesce into one read. The MessagePort RPC for a
+   * 50K-row folder runs in roughly 1-2 seconds on this VFS; users
+   * see the cost only when they actively engage a dense filter, and
+   * never on plain scrolling.
+   */
+  function expandFolderViewIntoMemory() {
+    const state = folderState;
+    if (!repo || authStore.accountId == null) return Promise.resolve();
+    if (!state || state.folderId !== currentFolderId.value) return Promise.resolve();
+    if (state.expandInflight) return state.expandInflight;
+    const total = Math.max(0, Number(state.total) || 0);
+    if (total === 0) return Promise.resolve();
+    // Nothing to expand: the buffer already covers every position the
+    // canonical view knows about.
+    if (rangeCovered(state.paintedRanges, 0, total)) return Promise.resolve();
+
+    state.expandInflight = (async () => {
+      try {
+        const rows = await repo.listMessagesForView({
+          accountId: authStore.accountId,
+          folderId: state.folderId,
+          sort: state.sortProp,
+          offset: 0,
+          limit: total,
+        });
+        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        if (!Array.isArray(rows) || rows.length === 0) return;
+        _splice(state, 0, rows);
+        // Mark the canonical span as painted. If the cache is sparse,
+        // mark only what we actually got; the indexer or a later
+        // scroll will fill the rest through ensureLoaded.
+        addRange(state.paintedRanges, 0, rows.length);
+      } catch (err) {
+        console.warn('[mail-store] expandFolderViewIntoMemory failed', err);
+      } finally {
+        state.expandInflight = null;
+      }
+    })();
+    return state.expandInflight;
+  }
+
+  /**
+   * Select every row in the open folder's canonical query view.
+   *
+   * Reads from `query_view_items` (via listMessagesForView) so the
+   * selection set matches what All Mail can actually render. When the
+   * Unread filter is on, we still source from the same canonical
+   * view: a row that is not in the query view is not in the folder
+   * from the user's perspective, even if it lingers in
+   * `folder_messages`. Treating Unread as a strict subset of All is
+   * required by R-2.8 and avoids the split-source bug where Unread
+   * could appear to outnumber All.
+   */
   async function selectAllLoadedMessages({ unreadOnly = false } = {}) {
     const state = folderState;
     let rows: Array<any | undefined> = messages.value;
@@ -754,6 +988,7 @@ export const useMailStore = defineStore('mail', () => {
     state.pageInflight = null;
     state.lastFailedRange = null;
     state.didInitialBodyPrefetch = false;
+    state.expandInflight = null;
     state.needsFreshWindow = true;
     if (folderState === state) {
       totalForFolder.value = 0;
@@ -777,9 +1012,12 @@ export const useMailStore = defineStore('mail', () => {
         await ensureLoaded(0, PAGE_SIZE);
         return;
       }
-      if (Number.isFinite(progress?.total) && Number(progress.total) !== state.total) {
-        state.total = Number(progress.total);
-        totalForFolder.value = state.total;
+      if (Number.isFinite(progress?.total)) {
+        const newTotal = Number(progress.total);
+        if (newTotal !== state.total) {
+          state.total = newTotal;
+          totalForFolder.value = state.total;
+        }
       }
       if (state.paintedRanges.length > 0) {
         await refreshLoadedPages();
@@ -1492,6 +1730,9 @@ export const useMailStore = defineStore('mail', () => {
         state.total = Number(result.total);
         totalForFolder.value = state.total;
       }
+      // The manual refresh is the user's explicit recovery path; let
+      // the next folder open re-check for drift with a clean slate.
+      state.driftRebuildAttempted = false;
       await ensureLoaded(0, PAGE_SIZE);
     } catch (err) {
       console.warn('[mail-store] refresh failed', err);
@@ -1525,6 +1766,7 @@ export const useMailStore = defineStore('mail', () => {
     setScrollTop,
     getScrollTop,
     setRequestedRange,
+    expandFolderViewIntoMemory,
     selectAllLoadedMessages,
     markRead,
     markUnread,

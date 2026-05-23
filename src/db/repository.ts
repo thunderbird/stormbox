@@ -162,6 +162,17 @@ export class Repository {
   }
 
   /**
+   * Diagnostic snapshot used by the mail-store to detect drift between
+   * the canonical mailbox-window query view and folder_messages
+   * membership. Returns query-view totals AND membership counts so the
+   * store can decide whether to mark the view stale and rebuild from
+   * JMAP. Not a UI list path.
+   */
+  checkFolderViewConsistency({ accountId, folderId, sort = 'received' }) {
+    return this.call(DB_RPC.FOLDER_VIEW_CONSISTENCY, { accountId, folderId, sort });
+  }
+
+  /**
    * Drop the local mailbox-window view for a folder along with every
    * query_view_items / query_view_ranges row tied to it (FK cascade).
    * The next sync of this folder will rebuild the view from scratch

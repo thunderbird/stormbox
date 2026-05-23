@@ -28,6 +28,14 @@ const unreadOnly = ref(false);
 const quickFilterNeedle = computed(() => normalizeFilterText(props.quickFilterQuery));
 const quickFilterActive = computed(() => quickFilterNeedle.value.length > 0);
 const denseLocalFilterActive = computed(() => unreadOnly.value || quickFilterActive.value);
+// Per R-2.8 (specs/001-mvp-scope/spec.md) and the project constitution,
+// the open folder's canonical message set is the mailbox-window query
+// view (query_view_items + messages) exposed through
+// mailStore.messages. Both All and Unread derive from that single
+// source; Unread is a dense local filter over it and must never read
+// from a broader projection like folder_messages — that would let the
+// Unread count exceed the All count and violate the user-facing
+// invariant.
 const visibleMessages = computed(() => {
   if (!denseLocalFilterActive.value) return messages.value;
   return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: true }));
@@ -37,12 +45,11 @@ const selectAllTargetMessages = computed(() => {
   return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: false }));
 });
 
-// Virtualiser count is the FOLDER TOTAL, not loaded count. That way
+// Virtualizer count is the FOLDER TOTAL, not loaded count. That way
 // the scrollbar reflects reality from the very first round trip and
 // the user can scroll into "unloaded" territory; placeholders render
-// there until ensureLoaded() pulls the matching page. The Unread
-// filter is a dense view of the rows we have locally, so it uses the
-// filtered row count.
+// there until ensureLoaded() pulls the matching page. Dense filters
+// use their materialized row count.
 const folderRowCount = computed(() => Math.max(
   mailStore.totalForFolder ?? 0,
   mailStore.messages.length,
@@ -171,6 +178,15 @@ watch(
     if (next !== prev && mailStore.selectedMessageId != null) {
       mailStore.selectMessage(null);
     }
+    // The quick filter is a dense local filter over the entire open
+    // folder. Pull the full cached canonical view into the buffer so
+    // the From / To / Subject match can fire across every cached row,
+    // not just the positional window the virtualizer has loaded.
+    const becameActive = normalizeFilterText(next).length > 0
+      && normalizeFilterText(prev).length === 0;
+    if (becameActive) {
+      void mailStore.expandFolderViewIntoMemory();
+    }
   },
 );
 
@@ -194,6 +210,13 @@ watch(
   async (id) => {
     virtualizer.value.measure();
     if (id == null) return;
+    // If a dense filter is already active when we switch folders,
+    // pull the new folder's full canonical view into the buffer so
+    // the filter applies across every cached row, not just the
+    // positional window the virtualizer will pull on first paint.
+    if (denseLocalFilterActive.value) {
+      void mailStore.expandFolderViewIntoMemory();
+    }
     // Wait for the new folder's rows to bind before restoring scroll;
     // the scroller's scrollHeight needs to reflect the new totalSize
     // so the assignment doesn't get clamped.
@@ -280,6 +303,13 @@ function toggleSelectAll() {
 function toggleUnreadFilter() {
   mailStore.selectMessage(null);
   unreadOnly.value = !unreadOnly.value;
+  if (unreadOnly.value) {
+    // Unread filters every cached row in the folder, not just the
+    // positional window. Pull the full canonical view into the
+    // buffer so the filter count and rendered rows reflect the
+    // whole folder. This is a local SQLite read, never a JMAP call.
+    void mailStore.expandFolderViewIntoMemory();
+  }
 }
 
 function fmtDate(ms) {

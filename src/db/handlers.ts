@@ -509,6 +509,68 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       );
     },
 
+    /**
+     * Diagnostic snapshot comparing the canonical mailbox-window query
+     * view against folder_messages membership for the same folder. The
+     * mail-store calls this on folder open to detect drift between the
+     * two projections; if membership shows more rows than the query
+     * view's claimed total, the store treats the local query view as
+     * stale and rebuilds it through resetViewForFolder + the JMAP
+     * ensureFolderWindow path. This handler must NOT be used to render
+     * messages; that always goes through MESSAGE_LIST_FOR_VIEW so the
+     * UI's All-mail count and Unread filter stay derived from one
+     * source.
+     */
+    [DB_RPC.FOLDER_VIEW_CONSISTENCY]: async ({ accountId, folderId, sort = 'received' }) => {
+      const view = await loadMailboxQueryView(engine, { accountId, folderId, sort });
+      let queryViewTotal = 0;
+      let queryViewCovered = 0;
+      let queryViewMaterialized = 0;
+      let queryViewStale = false;
+      if (view) {
+        queryViewTotal = Number(view.total ?? 0);
+        queryViewStale = Number(view.stale ?? 0) === 1;
+        const ranges = await engine.all(
+          `SELECT start_position, end_position
+             FROM query_view_ranges
+            WHERE view_id = ?
+            ORDER BY start_position, end_position`,
+          [view.id],
+        );
+        queryViewCovered = mergeRangeCoverage(ranges, queryViewTotal);
+        const materializedRow = await engine.get(
+          `SELECT COUNT(*) AS materialized
+             FROM query_view_items qi
+             JOIN messages m
+               ON m.account_id = ?
+              AND m.remote_id = qi.remote_id
+            WHERE qi.view_id = ?`,
+          [accountId, view.id],
+        );
+        queryViewMaterialized = Number(materializedRow?.materialized ?? 0);
+      }
+      const membershipRow = await engine.get(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN m.is_seen = 0 THEN 1 ELSE 0 END) AS unread
+           FROM folder_messages fm
+           JOIN messages m
+             ON m.id = fm.message_id
+            AND m.account_id = ?
+          WHERE fm.account_id = ?
+            AND fm.folder_id = ?`,
+        [accountId, accountId, folderId],
+      );
+      return {
+        queryViewExists: !!view,
+        queryViewTotal,
+        queryViewCovered,
+        queryViewMaterialized,
+        queryViewStale,
+        membershipTotal: Number(membershipRow?.total ?? 0),
+        membershipUnread: Number(membershipRow?.unread ?? 0),
+      };
+    },
+
     [DB_RPC.QUERY_VIEW_PROGRESS]: async ({ accountId, folderId, sort = 'received' }) => {
       const view = await loadMailboxQueryView(engine, { accountId, folderId, sort });
       if (!view) {

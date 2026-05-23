@@ -169,6 +169,134 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.findAll('.msg-list__item')).toHaveLength(3);
   });
 
+  it('keeps Unread count as a strict subset of the All count from the canonical view', async () => {
+    // Per R-2.8, Unread is a filter over the open folder. The Unread
+    // count in the top-right header must never exceed All. Even when
+    // a stale folder counter claims a higher unread number, the UI
+    // must show whatever the canonical query view actually contains.
+    // Drift between local projections is the store's problem to
+    // reconcile via rebuild; the component must not bridge that
+    // disagreement by showing more rows than exist in the open
+    // folder.
+    const mailStore = useMailStore();
+    const allRows = Array.from({ length: 14 }, (_, index) => (
+      makeRow(index + 1, {
+        subject: `Message ${index + 1}`,
+        is_seen: index < 8 ? 1 : 0,
+      })
+    ));
+    mailStore.folders = [makeFolder(1, { name: 'Inbox', total_emails: 14, unread_emails: 72 })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = allRows;
+    mailStore.totalForFolder = 14;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    const allCountText = wrapper.get('.msg-list__count').text();
+    expect(allCountText).toBe('14 messages');
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    const unreadCountText = wrapper.get('.msg-list__count').text();
+    // The unread count comes from filtering the canonical 14 rows,
+    // not from a separate membership query that could outrun All.
+    expect(unreadCountText).toBe('6 messages');
+
+    const allCount = parseInt(allCountText.match(/^(\d+)/)?.[1] ?? '0', 10);
+    const unreadCount = parseInt(unreadCountText.match(/^(\d+)/)?.[1] ?? '0', 10);
+    expect(unreadCount).toBeLessThanOrEqual(allCount);
+
+    // The component must not call any membership-backed unread list
+    // path on the store; the canonical query view is the only source.
+    expect((mailStore as any).listUnreadMessagesForCurrentFolder).toBeUndefined();
+  });
+
+  it('expands the canonical buffer on Unread toggle so the count reflects the whole folder', async () => {
+    // The Archives-shows-83-of-1400 bug: the canonical view holds
+    // every row in SQLite, but mailStore.messages is the positional
+    // window the virtualizer has populated (~100 rows). Toggling
+    // Unread must expand that buffer to cover the entire folder so
+    // the count badge shows the real unread total, not the count of
+    // unread rows in whatever subset the user happened to have
+    // scrolled into view. The data-scale variant of this assertion
+    // (10,000 rows) lives in the mail-store tests where there's no
+    // DOM overhead; this test scales to ~1500 because the happy-dom
+    // virtualizer mock materializes one li per row.
+    const mailStore = useMailStore();
+    const visibleWindow = Array.from({ length: 100 }, (_, index) => (
+      makeRow(index + 1, {
+        subject: `Visible ${index + 1}`,
+        is_seen: index < 17 ? 1 : 0,
+      })
+    ));
+    const fullFolderRows = [
+      ...visibleWindow,
+      ...Array.from({ length: 1_400 }, (_, index) => (
+        makeRow(index + 101, {
+          subject: `Cached tail ${index + 101}`,
+          is_seen: 0,
+        })
+      )),
+    ];
+    mailStore.folders = [makeFolder(1, { name: 'Archives', role: 'archive', total_emails: 1_500 })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = visibleWindow;
+    mailStore.totalForFolder = 1_500;
+    const expand = vi
+      .spyOn(mailStore, 'expandFolderViewIntoMemory')
+      .mockImplementation(async () => {
+        // Simulate the store reading the full canonical view from
+        // SQLite into the buffer.
+        mailStore.messages = fullFolderRows;
+      });
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    // Before clicking Unread the count reflects the canonical total
+    // (with placeholders for unloaded positions).
+    expect(wrapper.get('.msg-list__count').text()).toBe('1500 messages');
+
+    await wrapper.find('.msg-list__filter').trigger('click');
+    await Promise.resolve();
+    await nextTick();
+
+    expect(expand).toHaveBeenCalledTimes(1);
+    // The unread count is the real total of unread rows in the
+    // folder, not the 83 that happened to be in the visible window.
+    // 83 unread in the visible window + 1400 unread tail = 1483.
+    expect(wrapper.get('.msg-list__count').text()).toBe('1483 messages');
+    // The expanded buffer feeds the virtualized list with all
+    // unread rows, including ones the user had not scrolled to.
+    const renderedSubjects = wrapper.findAll('.msg-list__subject')
+      .map((node) => node.text());
+    expect(renderedSubjects).toContain('Cached tail 1500');
+  });
+
+  it('expands the buffer when a quick-filter query becomes non-empty', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1)];
+    mailStore.totalForFolder = 1;
+    const expand = vi
+      .spyOn(mailStore, 'expandFolderViewIntoMemory')
+      .mockResolvedValue();
+
+    const wrapper = mount(MessageList, {
+      props: { quickFilterQuery: '' },
+    });
+    await nextTick();
+    expect(expand).not.toHaveBeenCalled();
+
+    await wrapper.setProps({ quickFilterQuery: 'alice' });
+    await nextTick();
+
+    expect(expand).toHaveBeenCalledTimes(1);
+  });
+
   it('selects only unread targets when selected read rows are sticky in the filter', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [makeFolder(1, { name: 'Inbox' })];

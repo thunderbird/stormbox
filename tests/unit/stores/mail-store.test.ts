@@ -83,6 +83,7 @@ function makeRepo(): any {
   const views = new Map<number, any>();
   const calls: Record<string, number> = {
     listMessagesForView: 0,
+    checkFolderViewConsistency: 0,
     ensureFolderWindow: 0,
     queryViewProgress: 0,
     ensureMessageBodies: 0,
@@ -96,7 +97,9 @@ function makeRepo(): any {
     _views: views,
     setFolders(list) { folders = list; },
     setView(folderId, view) {
-      // view: { rows: [{ id, ... }, ...], total }
+      // view: { rows: [{ id, ... }, ...], total, folderRows? }
+      // folderRows simulates a folder_messages projection that may
+      // disagree with the canonical mailbox-window query view rows.
       views.set(folderId, view);
     },
     triggerBroadcast(tables) {
@@ -120,6 +123,34 @@ function makeRepo(): any {
         .slice(offset, offset + limit);
       if (view.returnPlaceholders) return slice;
       return slice.filter((r) => r !== undefined && r !== null);
+    },
+
+    async checkFolderViewConsistency({ folderId }) {
+      calls.checkFolderViewConsistency += 1;
+      const view = views.get(folderId);
+      if (!view) {
+        return {
+          queryViewExists: false,
+          queryViewTotal: 0,
+          queryViewCovered: 0,
+          queryViewMaterialized: 0,
+          queryViewStale: false,
+          membershipTotal: 0,
+          membershipUnread: 0,
+        };
+      }
+      const queryRows = (view.rows ?? []).filter((r) => r !== undefined && r !== null);
+      const folderRows = (view.folderRows ?? view.rows ?? [])
+        .filter((row) => row?.id != null);
+      return {
+        queryViewExists: true,
+        queryViewTotal: Number(view.total ?? queryRows.length),
+        queryViewCovered: queryRows.length,
+        queryViewMaterialized: queryRows.length,
+        queryViewStale: view.stale === true || Number(view.stale ?? 0) === 1,
+        membershipTotal: folderRows.length,
+        membershipUnread: folderRows.filter((row) => Number(row.is_seen) === 0).length,
+      };
     },
 
     async queryViewProgress({ folderId }) {
@@ -324,6 +355,125 @@ describe('selectFolder', () => {
     await flush();
     expect(mailStore.totalForFolder).toBe(1);
   });
+
+});
+
+describe('folder view drift detection', () => {
+  it('detects drift when folder_messages knows more rows than query_views.total and rebuilds the canonical view', async () => {
+    // The Inbox-vs-Unread bug: query_views.total = 14 but
+    // folder_messages has 72 unread rows. The store must NOT inflate
+    // totalForFolder from the membership projection (that produces a
+    // hybrid count All=14 / Unread=72 that violates R-2.8). Instead
+    // it must reset the local query view and let ensureFolderWindow
+    // rebuild it from the JMAP server, after which whatever the
+    // server says is canonical for BOTH All and Unread.
+    const folder = makeFolder(1, { total_emails: 14, unread_emails: 0 });
+    const folderRows = Array.from({ length: 72 }, (_, index) => (
+      makeRow(index + 1, { is_seen: 0 })
+    ));
+    const view: any = {
+      rows: folderRows.slice(0, 14),
+      folderRows,
+      total: 14,
+    };
+    // When the store invalidates and re-fetches via ensureFolderWindow
+    // the server returns the authoritative answer: 72 messages exist
+    // and the query view should know about all of them.
+    view.onEnsureWindow = () => {
+      view.rows = folderRows.slice(0, 100);
+      view.total = 72;
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+
+    expect(repo._calls.checkFolderViewConsistency).toBeGreaterThan(0);
+    expect((repo._calls as any).resetViewForFolder).toBeGreaterThan(0);
+    expect(repo._calls.ensureFolderWindow).toBeGreaterThan(0);
+    expect(mailStore.totalForFolder).toBe(72);
+  });
+
+  it('does not loop when the server-confirmed total still disagrees with stale folder_messages', async () => {
+    // After the first drift rebuild, the server says 14 messages
+    // exist (folder_messages is the stale projection). The store
+    // must trust that result and NOT keep resetting the canonical
+    // view on every consistency check.
+    const folder = makeFolder(1, { total_emails: 14, unread_emails: 0 });
+    const folderRows = Array.from({ length: 72 }, (_, index) => (
+      makeRow(index + 1, { is_seen: 0 })
+    ));
+    const view: any = {
+      rows: folderRows.slice(0, 14),
+      folderRows,
+      total: 14,
+    };
+    // Server-side rebuild still returns 14 — the stale 72 lives in
+    // folder_messages from an older index pass and will be reaped by
+    // a future cleanup. The store must not keep resetting.
+    view.onEnsureWindow = () => {
+      view.rows = folderRows.slice(0, 14);
+      view.total = 14;
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    const resetsAfterFirstOpen = (repo._calls as any).resetViewForFolder ?? 0;
+
+    // Repeated broadcasts during the visit must not retrigger
+    // drift-driven resets. The rebuild attempt is one-shot per
+    // folder visit; explicit refresh is the recovery path.
+    for (let i = 0; i < 5; i += 1) {
+      repo.triggerBroadcast(['messages']);
+    }
+    await flush();
+
+    expect((repo._calls as any).resetViewForFolder ?? 0).toBe(resetsAfterFirstOpen);
+    expect(mailStore.totalForFolder).toBe(14);
+  });
+
+  it('does nothing when the query view total agrees with folder_messages', async () => {
+    const folder = makeFolder(1, { total_emails: 3 });
+    const rows = [makeRow(1), makeRow(2), makeRow(3)];
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: { rows, folderRows: rows, total: 3 } },
+    });
+    await flush();
+
+    expect((repo._calls as any).resetViewForFolder ?? 0).toBe(0);
+    expect(mailStore.totalForFolder).toBe(3);
+  });
+
+  it('allows a legitimate server-confirmed shrink to lower totalForFolder', async () => {
+    // The peer-delete-shrink path must keep working: query view goes
+    // from 3 to 1 and totalForFolder follows even though folder
+    // membership in our fake repo still says 3 momentarily. This
+    // proves we removed the membership lower-bound that previously
+    // prevented shrinks.
+    const folder = makeFolder(1, { total_emails: 3, unread_emails: 0 });
+    const view: any = {
+      rows: [makeRow(1), makeRow(2), makeRow(3)],
+      folderRows: [makeRow(1), makeRow(2), makeRow(3)],
+      total: 3,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    expect(mailStore.totalForFolder).toBe(3);
+
+    view.rows = [makeRow(1)];
+    view.total = 1;
+    repo.triggerBroadcast(['messages']);
+    await flush();
+
+    expect(mailStore.totalForFolder).toBe(1);
+  });
 });
 
 describe('selectAllLoadedMessages', () => {
@@ -345,7 +495,11 @@ describe('selectAllLoadedMessages', () => {
     expect(repo._calls.ensureFolderWindow).toBe(0);
   });
 
-  it('replaces selection with cached unread rows for the unread filter', async () => {
+  it('selects only unread rows in the canonical query view when unreadOnly is set', async () => {
+    // Per R-2.8, Unread is a strict subset of All; selecting under
+    // the Unread filter must source from the same query view that
+    // All renders, not from a broader membership projection. The
+    // store filters by is_seen on the canonical rows.
     const { mailStore } = await setupStore({
       folders: [makeFolder(1, { total_emails: 4 })],
       views: {
@@ -366,6 +520,153 @@ describe('selectAllLoadedMessages', () => {
     await mailStore.selectAllLoadedMessages({ unreadOnly: true });
 
     expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([2, 4]);
+  });
+
+  it('does not select rows that only exist in folder_messages but not in the canonical query view', async () => {
+    // Selection must mirror what All can render. A row that only
+    // lives in folder_messages (because of a stale projection) is
+    // NOT in the open folder from the user's perspective and must
+    // not become selectable. This is the spec invariant that Unread
+    // cannot exceed All. We use matching query/folder rows to keep
+    // drift detection out of the picture; the assertion is about
+    // selection sourcing, not the rebuild path.
+    const rows = [
+      makeRow(1, { is_seen: 0 }),
+      makeRow(2, { is_seen: 0 }),
+    ];
+    const { mailStore } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 2 })],
+      views: { 1: { rows, folderRows: rows, total: 2 } },
+    });
+    await flush();
+
+    await mailStore.selectAllLoadedMessages({ unreadOnly: true });
+
+    expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([1, 2]);
+  });
+});
+
+describe('expandFolderViewIntoMemory', () => {
+  it('reads every cached canonical row into messages so dense filters can see the whole folder', async () => {
+    // The Unread-shows-83-of-1400 bug, scaled up: the canonical view
+    // has the full folder cached locally in query_view_items +
+    // messages, but mailStore.messages only contains the ~100 rows
+    // the virtualizer pulled for the visible window. A dense local
+    // filter would see ~83 unread out of 100 instead of 9917 of
+    // 10000. Expanding the buffer to the full canonical view fixes
+    // the filter without changing its source (still query_view_items).
+    const rows = Array.from({ length: 10_000 }, (_, index) => (
+      makeRow(index + 1, { is_seen: index < 9917 ? 0 : 1 })
+    ));
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 10_000 })],
+      views: { 1: { rows, total: 10_000 } },
+    });
+    await flush();
+
+    // After initial paint the buffer holds only the first page.
+    expect(mailStore.messages.filter(Boolean)).toHaveLength(100);
+    const readsBefore = repo._calls.listMessagesForView;
+
+    await mailStore.expandFolderViewIntoMemory();
+
+    expect(mailStore.messages.filter(Boolean)).toHaveLength(10_000);
+    expect(mailStore.messages.at(-1)?.id).toBe(10_000);
+    expect(repo._calls.listMessagesForView - readsBefore).toBe(1);
+    expect(repo._calls.ensureFolderWindow).toBe(0);
+    // Verify the buffer can support the Unread invariant: filtering
+    // by is_seen=0 against the expanded buffer recovers all 9917
+    // unread rows in the cache, not just the unread rows that
+    // happened to be in the 100-row visible window.
+    expect(mailStore.messages.filter((row) => Number(row?.is_seen) === 0))
+      .toHaveLength(9917);
+  });
+
+  it('coalesces parallel expansion calls into one SQLite read', async () => {
+    const rows = Array.from({ length: 10_000 }, (_, index) => makeRow(index + 1));
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 10_000 })],
+      views: { 1: { rows, total: 10_000 } },
+    });
+    await flush();
+    const readsBefore = repo._calls.listMessagesForView;
+
+    await Promise.all([
+      mailStore.expandFolderViewIntoMemory(),
+      mailStore.expandFolderViewIntoMemory(),
+      mailStore.expandFolderViewIntoMemory(),
+    ]);
+
+    expect(repo._calls.listMessagesForView - readsBefore).toBe(1);
+    expect(mailStore.messages.filter(Boolean)).toHaveLength(10_000);
+  });
+
+  it('is a no-op when the buffer already covers the canonical total', async () => {
+    const rows = [makeRow(1), makeRow(2), makeRow(3)];
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 3 })],
+      views: { 1: { rows, total: 3 } },
+    });
+    await flush();
+    const readsBefore = repo._calls.listMessagesForView;
+
+    await mailStore.expandFolderViewIntoMemory();
+
+    expect(repo._calls.listMessagesForView - readsBefore).toBe(0);
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1, 2, 3]);
+  });
+
+  it('does not write into a folder that has been switched away from mid-read', async () => {
+    // A real folder switch happens synchronously in selectFolder. If
+    // a long expansion is in flight against the old folder when the
+    // user clicks a different one, the result must not splice into
+    // the new folder's buffer.
+    const archiveRows = Array.from({ length: 10_000 }, (_, index) => (
+      makeRow(index + 1, { is_seen: 0 })
+    ));
+    const inboxRows = [makeRow(99_999)];
+    const { mailStore, repo } = await setupStore({
+      folders: [
+        makeFolder(1, { name: 'Inbox', total_emails: 1 }),
+        makeFolder(2, { name: 'Archive', role: 'archive', total_emails: 10_000 }),
+      ],
+      views: {
+        1: { rows: inboxRows, total: 1 },
+        2: { rows: archiveRows, total: 10_000 },
+      },
+    });
+    await flush();
+    mailStore.selectFolder(2);
+    await flush();
+    expect(mailStore.currentFolderId).toBe(2);
+
+    let releaseRead: () => void = () => {};
+    const reads: Array<Promise<any>> = [];
+    const originalRead = repo.listMessagesForView;
+    repo.listMessagesForView = async (args) => {
+      if (args.folderId === 2 && args.limit >= 10_000) {
+        const block = new Promise<void>((resolve) => { releaseRead = resolve; });
+        reads.push(block);
+        await block;
+      }
+      return originalRead.call(repo, args);
+    };
+
+    const expandPromise = mailStore.expandFolderViewIntoMemory();
+    await flush();
+
+    mailStore.selectFolder(1);
+    await flush();
+    expect(mailStore.currentFolderId).toBe(1);
+
+    releaseRead();
+    await expandPromise;
+    await flush();
+
+    // The expansion must NOT have replaced the inbox buffer with the
+    // archive rows. Inbox still shows its own one-row view.
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([99_999]);
+    expect(mailStore.totalForFolder).toBe(1);
   });
 });
 
@@ -867,7 +1168,7 @@ describe('moveMessages', () => {
   it('refetches a revisited folder when the persisted query view is marked stale', async () => {
     const inbox = makeFolder(1, { total_emails: 1 });
     const archive = makeFolder(2, { role: 'archive', total_emails: 1 });
-    const archiveView = { rows: [makeRow(8)], total: 1 };
+    const archiveView: any = { rows: [makeRow(8)], total: 1 };
     const { mailStore, repo } = await setupStore({
       folders: [inbox, archive],
       views: {

@@ -49,6 +49,14 @@ export const DB_RPC = Object.freeze({
   QUERY_VIEW_PROGRESS: 'queryView.progress',
   QUERY_VIEW_APPLY_CHANGES: 'queryView.applyChanges',
   QUERY_VIEW_RESET_FOR_FOLDER: 'queryView.resetForFolder',
+  /**
+   * Diagnostic-only consistency snapshot for the open folder. Returns
+   * the canonical query-view totals AND the folder_messages membership
+   * totals so the store can detect drift between the two projections
+   * and rebuild the canonical view when they disagree. This is NOT a
+   * UI data source; nothing should read messages from this RPC.
+   */
+  FOLDER_VIEW_CONSISTENCY: 'folder.viewConsistency',
 
   // Combined outbox reconciliation handlers: each runs all the
   // per-move / per-destroy SQL inside a single engine transaction so
