@@ -35,7 +35,15 @@ account, JMAP against Stalwart.
 ### 2. Read mail [Done; conversation UI and browser navigation Planned]
 
 - **R-2.1** The system shall display the signed-in account's folder
-  hierarchy with role icons and per-folder unread counts.
+  hierarchy with role icons and per-folder unread counts. Role-based
+  mailboxes (Inbox, Drafts, Sent, Archive, Junk, Trash) shall render
+  first using their dedicated Thunderbird Desktop icons; all remaining
+  mailboxes shall render below a "Folders" heading and shall use the
+  Thunderbird Desktop generic folder icon in its goldenrod tone rather
+  than a neutral grey. Per-folder unread counts shall display up to
+  99999 before truncating with a "+" suffix, and the spaces-toolbar
+  total-unread badge shall display up to 9999 before truncating with a
+  "+" suffix.
 - **R-2.2** The system shall render a virtualized message list whose
   scrollbar reflects the full folder size, with placeholder rows for
   positions not yet fetched.
@@ -186,6 +194,29 @@ account, JMAP against Stalwart.
   hard limit.
 - **R-7.2** When the server does not report a hard limit, the system
   shall hide the storage indicator.
+
+### 8. Application chrome and cross-product navigation [Done]
+
+- **R-8.1** The system shall present a top bar above the mail columns
+  whose left cell holds a Thundermail product menu, whose centre cell
+  holds the Quick Filter (R-2.8), and whose right cell holds a
+  dark/light theme toggle and an account avatar menu.
+- **R-8.2** The Thundermail product menu shall link the user to other
+  Thunderbird Pro web products, including Thunderbird Appointment and
+  Thunderbird Send. URLs shall resolve to production hosts when the
+  app runs on the production webmail origin and to staging hosts in
+  all other environments, and shall be overridable via Vite env vars
+  for self-hosters.
+- **R-8.3** The account avatar menu shall display an initials-based
+  avatar derived deterministically from the user's email address. On
+  activation it shall reveal the signed-in email, an Account Settings
+  link to the Thunderbird Accounts site (per R-8.2 host resolution),
+  and a Log Out action that signs the user out per R-1.4. The folder
+  list shall not duplicate a sign-out affordance.
+- **R-8.4** The system shall let the user toggle between dark and
+  light themes via a button in the top bar, default to the system
+  colour-scheme preference on first run, and persist the chosen theme
+  across reloads.
 
 ## Non-goals
 
