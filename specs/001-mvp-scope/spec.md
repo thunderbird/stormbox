@@ -32,7 +32,7 @@ account, JMAP against Stalwart.
   recoverable session-expired state and not silently use stale
   credentials. *(Planned)*
 
-### 2. Read mail [Done; conversation UI Planned]
+### 2. Read mail [Done; conversation UI and browser navigation Planned]
 
 - **R-2.1** The system shall display the signed-in account's folder
   hierarchy with role icons and per-folder unread counts.
@@ -80,6 +80,12 @@ account, JMAP against Stalwart.
   shall appear near the end of that transition. The compose affordance
   in the folder list shall remain usable at the minimum supported
   folder-list width.
+- **R-2.10** The system shall use route-backed browser navigation for
+  app spaces, folders, and opened messages so refresh, direct links,
+  and the browser back and forward buttons preserve the expected mail
+  context. Folder URLs shall use human-readable names where possible,
+  and message URLs shall use stable server identifiers rather than
+  local cache row ids. *(Planned)*
 
 ### 3. Triage [Done]
 

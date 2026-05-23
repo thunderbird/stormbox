@@ -735,7 +735,7 @@ function clamp(value: number, min: number, max: number) {
   font: inherit;
   font-size: 14px;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.25;
   box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
   transition: filter 0.12s ease, box-shadow 0.12s ease;
 }
