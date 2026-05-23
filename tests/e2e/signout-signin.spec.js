@@ -20,8 +20,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Sign out + sign in regression', () => {
-  test.setTimeout(180_000);
-
   test('Inbox loads cleanly on the second sign in (no ensureLoaded failures)', async ({ page }, testInfo) => {
     const ensureLoadedFailures = [];
     const consoleLines = [];

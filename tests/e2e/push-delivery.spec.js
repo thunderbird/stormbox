@@ -7,7 +7,8 @@ import {
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import { sendSmtpMessage } from './helpers/smtp-client.js';
-import { attachConsoleTail, trackConsole } from './helpers/ui.js';
+import { attachConsoleTail, clickFolder, trackConsole } from './helpers/ui.js';
+import { connectJmap, sweepOrphanTestMessages } from './helpers/jmap-client.js';
 
 /**
  * End-to-end push-delivery regression. Injects a real message through
@@ -22,7 +23,10 @@ import { attachConsoleTail, trackConsole } from './helpers/ui.js';
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Push delivery to the open Inbox', () => {
-  test.setTimeout(180_000);
+  test.beforeEach(async () => {
+    const jmap = await connectJmap();
+    await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Push delivery' });
+  });
 
   test('an authenticated SMTP self-send shows up in Inbox without manual refresh', async ({ page }, testInfo) => {
     const consoleLines = [];
@@ -42,8 +46,22 @@ test.describe('Push delivery to the open Inbox', () => {
 
     await expect.poll(
       async () => page.locator('.msg-list__item').count(),
-      { timeout: 60_000, message: 'expected the initial Inbox load to paint at least one row' },
+      { timeout: 30_000, message: 'expected the initial Inbox load to paint at least one row' },
     ).toBeGreaterThan(0);
+
+    // Give the SharedWorker time to finish the WebSocketPushEnable handshake
+    // after the first Inbox paint. Fall back to a short settle delay when
+    // worker logs are not forwarded to the page console under load.
+    try {
+      await expect.poll(
+        async () => consoleLines.some((line) => /WebSocket open, push enabled/i.test(line)),
+        { timeout: 15_000, message: 'expected JMAP WebSocket push to be enabled before SMTP inject' },
+      ).toBe(true);
+    } catch {
+      await page.waitForTimeout(5_000);
+    }
+
+    await clickFolder(page, 'Inbox');
 
     const initialTopSubject = (await page
       .locator('.msg-list__item .msg-list__subject')
@@ -65,7 +83,9 @@ test.describe('Push delivery to the open Inbox', () => {
     });
     const sendCompletedAt = Date.now();
 
-    const inboxRow = page.locator('.folder-node').filter({ hasText: /^inbox/i }).first();
+    // See mail-flow.spec.js for why textContent-anchored regex is
+    // brittle here. The accessible name is whitespace-clean.
+    const inboxRow = page.getByRole('button', { name: /^Inbox(\s|$)/i });
     if ((await inboxRow.locator('..').filter({ has: page.locator('.is-current') }).count()) === 0) {
       await inboxRow.click();
       await expect.poll(
@@ -85,11 +105,13 @@ test.describe('Push delivery to the open Inbox', () => {
           .locator('.msg-list__item .msg-list__subject')
           .first()
           .textContent() ?? '').trim();
-        return observedTopSubject;
+        if (observedTopSubject === subjectMarker) return subjectMarker;
+        const rowCount = await page.locator('.msg-list__item').filter({ hasText: subjectMarker }).count();
+        return rowCount > 0 ? subjectMarker : observedTopSubject;
       },
       {
-        timeout: 120_000,
-        message: `expected a new top row with subject "${subjectMarker}" to appear via push within 120s of send completing`,
+        timeout: 30_000,
+        message: `expected "${subjectMarker}" to appear via push within 30s of send completing`,
       },
     ).toBe(subjectMarker);
 

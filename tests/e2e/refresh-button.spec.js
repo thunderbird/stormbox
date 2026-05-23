@@ -27,8 +27,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Refresh button nuke-and-rebuild', () => {
-  test.setTimeout(180_000);
-
   test('clears ghost rows from Inbox and shows the spinner while running', async ({ page }, testInfo) => {
     const consoleLines = [];
     trackConsole(page, consoleLines);
@@ -57,7 +55,7 @@ test.describe('Refresh button nuke-and-rebuild', () => {
       await page.locator('.msg-list__refresh').click();
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: baselineSubject }).count(),
-        { timeout: 60_000, message: 'baseline Inbox row should be visible before injecting ghost row' },
+        { timeout: 30_000, message: 'baseline Inbox row should be visible before injecting ghost row' },
       ).toBeGreaterThan(0);
 
       const ghostSubject = `Ghost refresh e2e ${Date.now()}`;

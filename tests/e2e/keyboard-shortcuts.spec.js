@@ -41,7 +41,6 @@ function composeInput(page, label) {
 }
 
 test.describe('Keyboard shortcuts e2e', () => {
-  test.setTimeout(180_000);
 
   test.beforeEach(async () => {
     const jmap = await connectJmap();
@@ -76,7 +75,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       await clickFolder(page, inbox.name);
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
       ).toBeGreaterThan(0);
       await openMessageBySubject(page, subject);
       await focusMessageList(page);
@@ -96,7 +95,7 @@ test.describe('Keyboard shortcuts e2e', () => {
             source: inbox,
             trash,
           }),
-          { timeout: 60_000, message: 'server should move deleted message to Trash' },
+          { timeout: 30_000, message: 'server should move deleted message to Trash' },
         ).toBe('trash');
       } catch (err) {
         const mutationRows = await readRecentMutations(page);
@@ -144,7 +143,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       await clickFolder(page, inbox.name);
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
       ).toBeGreaterThan(0);
       await openMessageBySubject(page, subject);
 
@@ -165,7 +164,7 @@ test.describe('Keyboard shortcuts e2e', () => {
           source: inbox,
           trash,
         }),
-        { timeout: 60_000, message: 'server should move iframe-focused delete to Trash' },
+        { timeout: 30_000, message: 'server should move iframe-focused delete to Trash' },
       ).toBe('trash');
     } finally {
       await attachConsoleTail(testInfo, consoleLines);
@@ -210,7 +209,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       for (const subject of subjects) {
         await expect.poll(
           async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 60_000, message: `expected "${subject}" in Inbox` },
+          { timeout: 30_000, message: `expected "${subject}" in Inbox` },
         ).toBeGreaterThan(0);
       }
 
@@ -245,7 +244,7 @@ test.describe('Keyboard shortcuts e2e', () => {
               await getEmailMailboxIds(jmap, remoteId),
               { source: inbox, trash },
             ),
-            { timeout: 60_000, message: `server should move ${remoteId} to Trash` },
+            { timeout: 30_000, message: `server should move ${remoteId} to Trash` },
           ).toBe('trash');
         } catch (err) {
           const mutationRows = await readRecentMutations(page);
@@ -293,7 +292,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       for (const subject of subjects) {
         await expect.poll(
           async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+          { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
         ).toBeGreaterThan(0);
       }
 
@@ -341,7 +340,7 @@ test.describe('Keyboard shortcuts e2e', () => {
       await clickFolder(page, inbox.name);
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
       ).toBeGreaterThan(0);
       await openMessageBySubject(page, subject);
 

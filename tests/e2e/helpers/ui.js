@@ -4,9 +4,15 @@ export function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Per-test e2e budget: nothing should wait longer than 30s for a UI
+// state. The global Playwright test timeout caps each spec at 60s, so
+// 30s here gives every spec headroom for two big waits plus a tail of
+// smaller ones.
+const WAIT_MS = 30_000;
+
 export async function clickFolder(page, name) {
   const folder = page.locator('.folder-node').filter({ hasText: new RegExp(escapeRegExp(name), 'i') }).first();
-  await expect(folder).toBeVisible({ timeout: 30_000 });
+  await expect(folder).toBeVisible({ timeout: WAIT_MS });
   await folder.click();
   await expect.poll(
     async () => ((await page.locator('.folder-node.is-current').first().textContent()) ?? '').toLowerCase(),
@@ -15,7 +21,7 @@ export async function clickFolder(page, name) {
 }
 
 export async function waitForShellReady(page) {
-  await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator('.shell')).toBeVisible({ timeout: WAIT_MS });
 }
 
 export async function waitForInboxReady(page) {
@@ -26,11 +32,11 @@ export async function waitForInboxReady(page) {
       if ((await current.count()) === 0) return '';
       return ((await current.first().textContent()) ?? '').toLowerCase();
     },
-    { timeout: 30_000, message: 'expected Inbox to be auto-selected' },
+    { timeout: WAIT_MS, message: 'expected Inbox to be auto-selected' },
   ).toMatch(/inbox/);
   await expect.poll(
     async () => page.locator('.msg-list__item').count(),
-    { timeout: 60_000, message: 'expected at least one Inbox row to render' },
+    { timeout: WAIT_MS, message: 'expected at least one Inbox row to render' },
   ).toBeGreaterThan(0);
 }
 
@@ -102,17 +108,33 @@ export function trackConsole(page, consoleLines, { ensureLoaded = false } = {}) 
 
 export async function focusMessageList(page) {
   const scroller = page.locator('.msg-list__scroller');
-  await expect(scroller).toBeVisible({ timeout: 30_000 });
+  await expect(scroller).toBeVisible({ timeout: WAIT_MS });
   await scroller.focus();
 }
 
 export async function openMessageBySubject(page, subject) {
   const row = page.locator('.msg-list__item').filter({ hasText: subject }).first();
-  await expect(row).toBeVisible({ timeout: 60_000 });
+  await expect(row).toBeVisible({ timeout: WAIT_MS });
   await row.locator('.msg-list__rows').click();
-  await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
+  await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: WAIT_MS });
 }
 
 export async function readOpenMessageSubject(page) {
   return ((await page.locator('.message-view__title h2').textContent()) ?? '').trim();
+}
+
+export async function waitForPendingMutations(page, { timeout = WAIT_MS } = {}) {
+  await expect.poll(
+    async () => page.evaluate(async () => {
+      if (!globalThis.__repo) return -1;
+      const rows = await globalThis.__repo.call('db.query', {
+        sql: `SELECT COUNT(*) AS c
+                FROM pending_mutations
+               WHERE local_status IN ('pending', 'retry')`,
+        params: [],
+      });
+      return Number(rows?.[0]?.c ?? 0);
+    }),
+    { timeout, message: 'pending outbox mutations should drain' },
+  ).toBe(0);
 }

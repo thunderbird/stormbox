@@ -22,6 +22,7 @@ import {
   readRecentMutations,
   readViewCacheForFolderRole,
   trackConsole,
+  waitForPendingMutations,
 } from './helpers/ui.js';
 
 /**
@@ -34,8 +35,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Bulk delete e2e', () => {
-  test.setTimeout(180_000);
-
   test.beforeEach(async () => {
     const jmap = await connectJmap();
     await sweepOrphanTestMessages(jmap);
@@ -78,7 +77,7 @@ test.describe('Bulk delete e2e', () => {
       for (const subject of subjects) {
         await expect.poll(
           async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+          { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
         ).toBeGreaterThan(0);
       }
 
@@ -109,6 +108,8 @@ test.describe('Bulk delete e2e', () => {
         ).not.toContain(remoteId);
       }
 
+      await waitForPendingMutations(page);
+
       for (const remoteId of createdIds) {
         try {
           await expect.poll(
@@ -117,7 +118,7 @@ test.describe('Bulk delete e2e', () => {
               { source: inbox, trash },
             ),
             {
-              timeout: 60_000,
+              timeout: 30_000,
               message: `server should report ${remoteId} in Trash, not Inbox`,
             },
           ).toBe('trash');

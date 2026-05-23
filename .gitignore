@@ -42,6 +42,7 @@ coverage/
 test-results/
 playwright-report/
 playwright/.cache/
+.playwright-auth/
 screenshots/
 
 # Temporary files
@@ -52,6 +53,5 @@ screenshots/
 # Cloudflare Workers (infra/ws-proxy) local state
 .wrangler/
 
-# Client-specific agent rule directories. Generic guidance lives in
-# AGENTS.md; client-specific local files (Cursor, etc.) stay untracked.
+# Don't track client-specific rule files.
 .cursor/

@@ -28,8 +28,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Delete message e2e', () => {
-  test.setTimeout(180_000);
-
   test.beforeEach(async () => {
     const jmap = await connectJmap();
     await sweepOrphanTestMessages(jmap);
@@ -68,7 +66,7 @@ test.describe('Delete message e2e', () => {
       await clickFolder(page, drafts.name);
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test draft "${subject}" to render in Drafts` },
+        { timeout: 30_000, message: `expected test draft "${subject}" to render in Drafts` },
       ).toBeGreaterThan(0);
 
       await page.locator('.msg-list__item').filter({ hasText: subject }).first().click();
@@ -88,7 +86,7 @@ test.describe('Delete message e2e', () => {
       try {
         await expect.poll(
           async () => classifyMailboxState(await getEmailMailboxIds(jmap, createdId), { source: drafts, trash }),
-          { timeout: 60_000, message: 'server should report the deleted message in Trash, not Drafts' },
+          { timeout: 30_000, message: 'server should report the deleted message in Trash, not Drafts' },
         ).toBe('trash');
       } catch (err) {
         const mutationRows = await readRecentMutations(page);
@@ -141,7 +139,7 @@ test.describe('Delete message e2e', () => {
       await clickFolder(page, inbox.name);
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
       ).toBeGreaterThan(0);
 
       await page.locator('.msg-list__item').filter({ hasText: subject }).first().click();
@@ -164,7 +162,7 @@ test.describe('Delete message e2e', () => {
             source: inbox,
             trash,
           }),
-          { timeout: 60_000, message: 'server should report the deleted Inbox message in Trash, not Inbox' },
+          { timeout: 30_000, message: 'server should report the deleted Inbox message in Trash, not Inbox' },
         ).toBe('trash');
       } catch (err) {
         const mutationRows = await readRecentMutations(page);

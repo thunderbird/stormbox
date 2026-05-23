@@ -33,7 +33,7 @@ function buildWebServer() {
       command: `npm run dev -- --host 0.0.0.0 --port ${PORT}`,
       url: BASE_URL,
       reuseExistingServer: process.env.PLAYWRIGHT_REUSE === '1',
-      timeout: 120_000,
+      timeout: 60_000,
       ignoreHTTPSErrors: true,
       env: {
         ...process.env,
@@ -47,7 +47,7 @@ function buildWebServer() {
       command: `npm run dev -- --host 0.0.0.0 --port ${PORT}`,
       url: BASE_URL,
       reuseExistingServer: false,
-      timeout: 120_000,
+      timeout: 60_000,
       ignoreHTTPSErrors: true,
     };
   }
@@ -60,15 +60,78 @@ function buildWebServer() {
   };
 }
 
+// Per-browser OIDC storage state captured by tests/e2e/auth.setup.js.
+// We split chromium / firefox because oidc-spa's localStorage layout
+// can encode browser-specific quirks even though Keycloak's SSO
+// cookies are themselves engine-agnostic.
+const STORAGE_STATE_CHROMIUM = '.playwright-auth/chromium.json';
+const STORAGE_STATE_FIREFOX = '.playwright-auth/firefox.json';
+
+function localStackProjects() {
+  if (!LOCAL_STACK) {
+    return [
+      { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+      { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    ];
+  }
+  const chromiumSetupUse = {
+    ...devices['Desktop Chrome'],
+    launchOptions: { args: ['--ignore-certificate-errors'] },
+  };
+  const firefoxSetupUse = { ...devices['Desktop Firefox'] };
+  return [
+    // Setup projects capture a shared OIDC session per browser so the
+    // dependent test projects boot already authenticated. Each setup
+    // project writes its own storageState file (see auth.setup.js
+    // which keys off project.name); chromium and firefox sessions
+    // don't stomp on each other.
+    {
+      name: 'setup-chromium',
+      testMatch: /auth\.setup\.js/,
+      use: chromiumSetupUse,
+    },
+    {
+      name: 'setup-firefox',
+      testMatch: /auth\.setup\.js/,
+      use: firefoxSetupUse,
+    },
+    // All specs run serially within each browser project (the single
+    // Stalwart account makes parallel mutation tests race), but the
+    // two browser projects can run side-by-side under workers: 2.
+    // The big per-test speedup comes from storageState: every test
+    // boots already signed in to Keycloak (~3-5s saved per test).
+    {
+      name: 'chromium',
+      testMatch: /\.spec\.js$/,
+      dependencies: ['setup-chromium'],
+      use: { ...chromiumSetupUse, storageState: STORAGE_STATE_CHROMIUM },
+    },
+    {
+      name: 'firefox',
+      testMatch: /\.spec\.js$/,
+      dependencies: ['setup-firefox'],
+      use: { ...firefoxSetupUse, storageState: STORAGE_STATE_FIREFOX },
+    },
+  ];
+}
+
 export default defineConfig({
   testDir: './tests/e2e',
-  testMatch: /.*\.spec\.js$/,
-  timeout: 90_000,
-  expect: { timeout: 15_000 },
+  testMatch: /.*(\.spec\.js|\.setup\.js)$/,
+  timeout: 60_000,
+  expect: { timeout: 10_000 },
   fullyParallel: false,
+  // One worker so chromium and firefox specs do not parallel-mutate
+  // the single shared Stalwart account. The per-test speedup comes
+  // from storageState (Keycloak login skipped), not from worker
+  // parallelism. With one shared mailbox the only safe way to
+  // parallelize would be one Stalwart account per worker, which is a
+  // bigger fixture change.
   workers: LOCAL_STACK ? 1 : undefined,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // One retry covers the occasional Keycloak SSO blip; real
+  // regressions fail twice in a row.
+  retries: LOCAL_STACK ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   globalSetup: LOCAL_STACK ? './tests/e2e/global-setup.js' : undefined,
 
@@ -80,21 +143,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
 
-  projects: [
-    {
-      name: 'chromium',
-      use: {
-        ...devices['Desktop Chrome'],
-        launchOptions: LOCAL_STACK
-          ? { args: ['--ignore-certificate-errors'] }
-          : undefined,
-      },
-    },
-    {
-      name: 'firefox',
-      use: { ...devices['Desktop Firefox'] },
-    },
-  ],
+  projects: localStackProjects(),
 
   webServer: buildWebServer(),
 });

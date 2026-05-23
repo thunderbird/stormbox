@@ -43,8 +43,6 @@ async function listDiagnostics(page) {
 }
 
 test.describe('multi-select (Fastmail model)', () => {
-  test.setTimeout(180_000);
-
   test('row click views without selecting; checkbox selects without viewing', async ({ page }) => {
     await loginViaOidc(page);
     await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
@@ -53,7 +51,7 @@ test.describe('multi-select (Fastmail model)', () => {
       async () => page.evaluate(() => Array.from(
         document.querySelectorAll('.msg-list__items > li'),
       ).filter((li) => li.dataset.placeholder !== 'true').length),
-      { timeout: 45_000, message: 'inbox messages never rendered' },
+      { timeout: 30_000, message: 'inbox messages never rendered' },
     ).toBeGreaterThan(3);
 
     const baseline = await listDiagnostics(page);

@@ -39,8 +39,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Large folder scroll renders rows, no orphan placeholders', () => {
-  test.setTimeout(180_000);
-
   test('rapid mid-folder scroll fills the visible window', async ({ page }, testInfo) => {
     const consoleLines = [];
     trackConsole(page, consoleLines);

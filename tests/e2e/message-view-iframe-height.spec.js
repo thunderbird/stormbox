@@ -39,7 +39,6 @@ async function iframeHeight(page) {
 }
 
 test('iframe height grows past 120 on first open and survives body refresh', async ({ page }) => {
-  test.setTimeout(180_000);
   const jmap = await connectJmap();
   const mailboxes = await listMailboxes(jmap);
   const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -61,7 +60,7 @@ test('iframe height grows past 120 on first open and survives body refresh', asy
     await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
 
     const target = page.locator('.msg-list__item').filter({ hasText: subject }).first();
-    await expect(target).toBeVisible({ timeout: 60_000 });
+    await expect(target).toBeVisible({ timeout: 30_000 });
     await target.locator('.msg-list__rows').click();
     await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
     await expect(page.locator('iframe.message-view__html-frame')).toBeVisible({ timeout: 30_000 });

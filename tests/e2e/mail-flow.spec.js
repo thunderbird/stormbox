@@ -35,8 +35,6 @@ function tallHtmlBody() {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Local stack mail flow e2e', () => {
-  test.setTimeout(180_000);
-
   test.beforeEach(async () => {
     const jmap = await connectJmap();
     await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Mail flow e2e' });
@@ -90,7 +88,7 @@ test.describe('Local stack mail flow e2e', () => {
     for (const subject of subjects) {
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 60_000, message: `expected test message "${subject}" to render in Inbox` },
+        { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
       ).toBeGreaterThan(0);
     }
 
@@ -167,7 +165,7 @@ test.describe('Local stack mail flow e2e', () => {
           const text = await page.locator('.message-view__text').count();
           return frame + text;
         },
-        { timeout: 45_000, message: 'iframe height inline style never grew past 120px' },
+        { timeout: 20_000, message: 'iframe height inline style never grew past 120px' },
       ).toBeGreaterThan(0);
       await expect.poll(
         async () => page.evaluate(() => {
@@ -176,7 +174,7 @@ test.describe('Local stack mail flow e2e', () => {
           const inline = ifr.style.height || '';
           return parseInt(inline, 10) || 0;
         }),
-        { timeout: 45_000, message: 'iframe height inline style never grew past 120px' },
+        { timeout: 20_000, message: 'iframe height inline style never grew past 120px' },
       ).toBeGreaterThan(120);
 
       const scrollProbe = await page.evaluate(() => {
@@ -320,13 +318,16 @@ test.describe('Local stack mail flow e2e', () => {
             .filter((li) => li.dataset.placeholder !== 'true');
           return real.length;
         }),
-        { timeout: 45_000, message: 'page 0 never painted real rows' },
+        { timeout: 20_000, message: 'page 0 never painted real rows' },
       ).toBeGreaterThan(0);
 
+      // Cap the in-page hydrate poll at 15s (75×200ms) so a hung
+      // ensureFolderWindow fails fast against the spec's 60s budget,
+      // with headroom for the rest of the assertions below.
       const archivesScroll = await page.evaluate(async () => {
         const sc = document.querySelector('.msg-list__scroller');
         sc.scrollTop = 1500 * 88;
-        for (let i = 0; i < 300; i += 1) {
+        for (let i = 0; i < 75; i += 1) {
           await new Promise((r) => setTimeout(r, 200));
           const lis = Array.from(document.querySelectorAll('.msg-list__items > li'));
           const real = lis.filter((li) => li.dataset.placeholder !== 'true');
@@ -352,7 +353,12 @@ test.describe('Local stack mail flow e2e', () => {
       }
       await page.screenshot({ path: `screenshots/${browserName}-05-archives-scrolled.png`, fullPage: true });
 
-      const inboxRow = page.locator('.folder-node').filter({ hasText: /^inbox/i }).first();
+      // Use the accessible name so we don't accidentally match other
+      // folder rows whose name starts with "Inbox" (e.g. "Inbox Archive"
+      // or future shared folders). hasText against textContent is
+      // brittle because the icon SVG adds leading whitespace inside
+      // the button.
+      const inboxRow = page.getByRole('button', { name: /^Inbox(\s|$)/i });
       const navStart = Date.now();
       await inboxRow.click();
       await expect.poll(
