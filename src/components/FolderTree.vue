@@ -50,6 +50,10 @@ const DEFAULT_FOLDER_BY_NAME = {
   feeds: { icon: rssFolderIcon, color: '#f97316' },
 };
 
+// Goldenrod tone matches the default folder icon color in Thunderbird Desktop
+// so user-created folders read as Thunderbird folders rather than greyed-out.
+const DEFAULT_FOLDER_COLOR = '#e4b85c';
+
 const tree = computed(() => {
   const byParent = new Map();
   for (const folder of mailStore.folders) {
@@ -76,12 +80,19 @@ const tree = computed(() => {
   return (byParent.get('ROOT') ?? []).map((f) => build(f, 0));
 });
 
+const mainFolders = computed(() => tree.value.filter(isMainFolder));
+const userFolders = computed(() => tree.value.filter((f) => !isMainFolder(f)));
+
 function folderPresentation(folder) {
   const namedDefault = DEFAULT_FOLDER_BY_NAME[defaultFolderKey(folder.name)];
   return {
     icon: ROLE_ICON[folder.role] ?? namedDefault?.icon ?? folderIcon,
-    color: ROLE_COLOR[folder.role] ?? namedDefault?.color ?? null,
+    color: ROLE_COLOR[folder.role] ?? namedDefault?.color ?? DEFAULT_FOLDER_COLOR,
   };
+}
+
+function isMainFolder(folder) {
+  return folder.role != null && ROLE_ICON[folder.role] != null;
 }
 
 function defaultFolderKey(name) {
@@ -147,7 +158,20 @@ async function onFolderDrop(folder, event) {
 <template>
   <nav class="folder-tree" aria-label="Mailboxes">
     <FolderNode
-      v-for="folder in tree"
+      v-for="folder in mainFolders"
+      :key="folder.id"
+      :folder="folder"
+      :current-folder-id="mailStore.currentFolderId"
+      :on-pick="pickFolder"
+      :drop-state="dropStateFor"
+      :on-folder-drag-enter="onFolderDragEnter"
+      :on-folder-drag-over="onFolderDragOver"
+      :on-folder-drag-leave="onFolderDragLeave"
+      :on-folder-drop="onFolderDrop"
+    />
+    <h3 v-if="userFolders.length > 0" class="folder-tree__heading">Folders</h3>
+    <FolderNode
+      v-for="folder in userFolders"
       :key="folder.id"
       :folder="folder"
       :current-folder-id="mailStore.currentFolderId"
@@ -168,5 +192,13 @@ async function onFolderDrop(folder, event) {
   padding: 4px 6px;
   gap: 1px;
   min-height: 0;
+}
+.folder-tree__heading {
+  margin: 14px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 </style>

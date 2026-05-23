@@ -29,8 +29,9 @@ async function main() {
   console.log('[seed-mail] connecting via', JMAP_BASE_URL);
   const jmap = await connectJmap();
   const fromEmail = selfEmail();
-  const mailboxes = await listMailboxes(jmap);
+  let mailboxes = await listMailboxes(jmap);
   await ensureIdentity(jmap, fromEmail);
+  mailboxes = await ensureUserMailboxes(jmap, mailboxes);
 
   await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Seed e2e inbox' });
   await sweepOrphanTestMessages(jmap, { subjectPrefix: TALL_HTML_SUBJECT });
@@ -223,6 +224,124 @@ function buildSeedEmail({
     email.bodyValues = { p1: { value: bodyText } };
   }
   return email;
+}
+
+// Example arbitrary-name folders that demonstrate the "Folders" section in
+// the sidebar. Nested entries become children of the parent name. Names are
+// matched case-insensitively against existing mailboxes so re-running this
+// seed is idempotent.
+const USER_MAILBOXES = [
+  { name: 'Archives' },
+  { name: 'Bugzilla-Bugs' },
+  { name: 'business' },
+  {
+    name: 'bug-components',
+    children: [{ name: 'calendar' }],
+  },
+  { name: 'media' },
+  { name: 'My-Bugs' },
+  { name: 'orders' },
+  { name: 'tb-election' },
+  { name: 'tripthings' },
+];
+
+async function ensureUserMailboxes(jmap, mailboxes) {
+  const full = await fetchMailboxesWithParent(jmap);
+  const byKey = new Map(
+    full.map((m) => [mailboxKey(m.name, m.parentId ?? null), m]),
+  );
+
+  const create = {};
+  const pending = [];
+
+  function planCreate(name, parentId, ref) {
+    const key = mailboxKey(name, parentId);
+    if (byKey.has(key)) {
+      pending.push({ ref, mailbox: byKey.get(key) });
+      return;
+    }
+    create[ref] = parentId
+      ? { name, parentId }
+      : { name };
+    pending.push({ ref, mailbox: null, name, parentId });
+  }
+
+  USER_MAILBOXES.forEach((entry, i) => {
+    planCreate(entry.name, null, `u${i}`);
+  });
+  if (Object.keys(create).length > 0) {
+    const payload = await jmapRequest(jmap, [[
+      'Mailbox/set',
+      { accountId: jmap.accountId, create },
+      'usMb',
+    ]]);
+    const set = pickResponse(payload, 'Mailbox/set');
+    if (set?.notCreated && Object.keys(set.notCreated).length > 0) {
+      throw new Error(`User mailbox seed failed: ${JSON.stringify(set.notCreated)}`);
+    }
+    for (const entry of pending) {
+      if (entry.mailbox) continue;
+      const created = set?.created?.[entry.ref];
+      if (created?.id) {
+        const next = { id: created.id, name: entry.name, parentId: entry.parentId, role: null };
+        mailboxes = [...mailboxes, next];
+        byKey.set(mailboxKey(next.name, next.parentId), next);
+      }
+    }
+  }
+
+  // Second pass for any children of just-created parents.
+  const childCreate = {};
+  const childPending = [];
+  USER_MAILBOXES.forEach((entry, i) => {
+    if (!entry.children) return;
+    const parent = byKey.get(mailboxKey(entry.name, null));
+    if (!parent) return;
+    entry.children.forEach((child, j) => {
+      const key = mailboxKey(child.name, parent.id);
+      if (byKey.has(key)) return;
+      const ref = `u${i}c${j}`;
+      childCreate[ref] = { name: child.name, parentId: parent.id };
+      childPending.push({ ref, name: child.name, parentId: parent.id });
+    });
+  });
+  if (Object.keys(childCreate).length > 0) {
+    const payload = await jmapRequest(jmap, [[
+      'Mailbox/set',
+      { accountId: jmap.accountId, create: childCreate },
+      'usMbChildren',
+    ]]);
+    const set = pickResponse(payload, 'Mailbox/set');
+    if (set?.notCreated && Object.keys(set.notCreated).length > 0) {
+      throw new Error(`User mailbox child seed failed: ${JSON.stringify(set.notCreated)}`);
+    }
+    for (const entry of childPending) {
+      const created = set?.created?.[entry.ref];
+      if (created?.id) {
+        const next = { id: created.id, name: entry.name, parentId: entry.parentId, role: null };
+        mailboxes = [...mailboxes, next];
+        byKey.set(mailboxKey(next.name, next.parentId), next);
+      }
+    }
+  }
+
+  return mailboxes;
+}
+
+function mailboxKey(name, parentId) {
+  return `${parentId ?? ''}::${String(name ?? '').toLowerCase()}`;
+}
+
+async function fetchMailboxesWithParent(jmap) {
+  const payload = await jmapRequest(jmap, [[
+    'Mailbox/get',
+    {
+      accountId: jmap.accountId,
+      properties: ['id', 'name', 'role', 'parentId'],
+    },
+    'mbFull',
+  ]]);
+  return pickResponse(payload, 'Mailbox/get')?.list ?? [];
 }
 
 async function ensureIdentity(jmap, fromEmail) {
