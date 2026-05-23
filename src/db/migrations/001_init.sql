@@ -6,12 +6,8 @@
 -- PRAGMA settings (foreign_keys, journal_mode, synchronous) are applied by
 -- the engine when it opens the connection, not in the migration file: PRAGMAs
 -- like synchronous cannot run inside a transaction, and migrations always run
--- in one.
-
-CREATE TABLE schema_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+-- in one. The applied-migration marker is tracked via PRAGMA user_version,
+-- which the engine writes inside the migration transaction.
 
 CREATE TABLE accounts (
   id INTEGER PRIMARY KEY,
@@ -381,6 +377,3 @@ CREATE TABLE contact_emails (
 
 CREATE INDEX contact_emails_lookup
   ON contact_emails(email_lower, contact_id);
-
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1');
-INSERT INTO schema_meta(key, value) VALUES ('initialized_at', strftime('%s','now'));

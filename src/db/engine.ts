@@ -10,15 +10,54 @@
 
 import * as SQLite from '@journeyapps/wa-sqlite';
 
-import migration001 from './migrations/001_init.sql?raw';
-import migration002 from './migrations/002_outbox_runner.sql?raw';
-import migration003 from './migrations/003_account_quota.sql?raw';
+// Auto-discover migrations by globbing the migrations directory. Drop a
+// new NNN_name.sql file in and it will be picked up on next build/test;
+// no edits to this file required. Eager + ?raw so the SQL ships in the
+// bundle as a string at module load, matching the old static-import
+// behavior. Both Vite and Vitest honor import.meta.glob.
+const migrationModules = import.meta.glob('./migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
 
-const MIGRATIONS = [
-  { version: 1, name: '001_init', sql: migration001 },
-  { version: 2, name: '002_outbox_runner', sql: migration002 },
-  { version: 3, name: '003_account_quota', sql: migration003 },
-];
+const MIGRATION_FILENAME_RE = /^(\d+)_([^/]+)\.sql$/;
+
+interface Migration {
+  version: number;
+  name: string;
+  sql: string;
+}
+
+// Build the migration list synchronously at module load so any naming /
+// duplicate-version mistake fails the build (or the first test import)
+// loudly, rather than surfacing later as a confusing runtime error
+// inside runMigrations().
+const MIGRATIONS: Migration[] = (() => {
+  const list: Migration[] = [];
+  const seenVersions = new Map<number, string>();
+  for (const [path, sql] of Object.entries(migrationModules)) {
+    const basename = path.slice(path.lastIndexOf('/') + 1);
+    const match = MIGRATION_FILENAME_RE.exec(basename);
+    if (!match) {
+      throw new Error(
+        `Migration file ${path} does not match the required NNN_name.sql pattern`,
+      );
+    }
+    const version = Number.parseInt(match[1], 10);
+    const name = basename.slice(0, -'.sql'.length);
+    const prior = seenVersions.get(version);
+    if (prior !== undefined) {
+      throw new Error(
+        `Duplicate migration version ${version}: ${prior} and ${name}`,
+      );
+    }
+    seenVersions.set(version, name);
+    list.push({ version, name, sql });
+  }
+  list.sort((a, b) => a.version - b.version);
+  return list;
+})();
 
 /**
  * @param {object} args
@@ -185,15 +224,12 @@ export class Engine {
   }
 
   async runMigrations() {
-    const hasMeta = await this._tableExists('schema_meta');
-    let currentVersion = 0;
-    if (hasMeta) {
-      const row = await this.get(
-        'SELECT value FROM schema_meta WHERE key = ?',
-        ['schema_version'],
-      );
-      currentVersion = row ? Number(row.value) : 0;
-    }
+    // SQLite's built-in PRAGMA user_version is a single 32-bit integer
+    // stored in the database header. We use it as the applied-migration
+    // marker so we don't have to bootstrap a tracking table before any
+    // migration has run. A fresh database reports 0.
+    const row = await this.get('PRAGMA user_version');
+    let currentVersion = Number(row?.user_version ?? 0);
 
     for (const migration of MIGRATIONS) {
       if (migration.version <= currentVersion) {
@@ -205,13 +241,17 @@ export class Engine {
   }
 
   async _applyMigration(migration) {
+    // PRAGMA assignments cannot be parameterised, so we interpolate the
+    // version directly. Guard against any non-integer slipping in.
+    if (!Number.isInteger(migration.version)) {
+      throw new Error(
+        `Migration ${migration.name} has non-integer version: ${migration.version}`,
+      );
+    }
     try {
       await this.transaction(async (tx) => {
         await tx.exec(migration.sql);
-        await tx.run(
-          'INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)',
-          ['schema_version', String(migration.version)],
-        );
+        await tx.exec(`PRAGMA user_version = ${migration.version}`);
       });
     } catch (error) {
       const wrapped = new Error(
@@ -220,14 +260,6 @@ export class Engine {
       wrapped.cause = error;
       throw wrapped;
     }
-  }
-
-  async _tableExists(name) {
-    const row = await this.get(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
-      [name],
-    );
-    return row !== null;
   }
 
   /**

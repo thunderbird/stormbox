@@ -65,11 +65,10 @@ columns rather than rewriting the model.
 -- WAL has no effect on this VFS because IndexedDB transactions stand in
 -- for SQLite's external journal. PRAGMA synchronous = NORMAL is set by
 -- the engine as a documented performance win for this VFS.
-
-CREATE TABLE schema_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
+--
+-- The applied-migration version is tracked via PRAGMA user_version (a
+-- single 32-bit integer in the database header). The engine writes it
+-- inside each migration transaction; no schema-meta table is needed.
 
 CREATE TABLE accounts (
   id INTEGER PRIMARY KEY,

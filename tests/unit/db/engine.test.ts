@@ -3,13 +3,10 @@ import { describe, it, expect } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
 
 describe('Engine migrations', () => {
-  it('creates the schema_meta marker on a fresh database', async () => {
+  it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
-    const row = await engine.get(
-      'SELECT value FROM schema_meta WHERE key = ?',
-      ['schema_version'],
-    );
-    expect(row).toEqual({ value: '3' });
+    const row = await engine.get('PRAGMA user_version');
+    expect(Number(row?.user_version)).toBe(3);
     await engine.close();
   });
 
@@ -38,7 +35,6 @@ describe('Engine migrations', () => {
       'query_view_items',
       'query_view_ranges',
       'query_views',
-      'schema_meta',
       'sync_jobs',
       'sync_states',
       'threads',
@@ -85,11 +81,8 @@ describe('Engine migrations', () => {
     const engine = await bootTestEngine();
     await engine.runMigrations();
     await engine.runMigrations();
-    const row = await engine.get(
-      'SELECT value FROM schema_meta WHERE key = ?',
-      ['schema_version'],
-    );
-    expect(row.value).toBe('3');
+    const row = await engine.get('PRAGMA user_version');
+    expect(Number(row?.user_version)).toBe(3);
     await engine.close();
   });
 });
@@ -107,24 +100,26 @@ describe('Engine basic CRUD', () => {
 
   it('rolls back transactions on throw', async () => {
     const engine = await bootTestEngine();
-    const before = await engine.all('SELECT COUNT(*) AS n FROM schema_meta');
+    await engine.exec('CREATE TEMP TABLE tmp_tx(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    const before = await engine.all('SELECT COUNT(*) AS n FROM tmp_tx');
     await expect(
       engine.transaction(async (tx) => {
-        await tx.run('INSERT INTO schema_meta(key, value) VALUES (?, ?)', ['extra', 'x']);
+        await tx.run('INSERT INTO tmp_tx(key, value) VALUES (?, ?)', ['extra', 'x']);
         throw new Error('boom');
       }),
     ).rejects.toThrow('boom');
-    const after = await engine.all('SELECT COUNT(*) AS n FROM schema_meta');
+    const after = await engine.all('SELECT COUNT(*) AS n FROM tmp_tx');
     expect(Number(after[0].n)).toBe(Number(before[0].n));
     await engine.close();
   });
 
   it('commits transactions on resolve', async () => {
     const engine = await bootTestEngine();
+    await engine.exec('CREATE TEMP TABLE tmp_tx(key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     await engine.transaction(async (tx) => {
-      await tx.run('INSERT INTO schema_meta(key, value) VALUES (?, ?)', ['committed', 'yes']);
+      await tx.run('INSERT INTO tmp_tx(key, value) VALUES (?, ?)', ['committed', 'yes']);
     });
-    const row = await engine.get('SELECT value FROM schema_meta WHERE key = ?', ['committed']);
+    const row = await engine.get('SELECT value FROM tmp_tx WHERE key = ?', ['committed']);
     expect(row.value).toBe('yes');
     await engine.close();
   });
