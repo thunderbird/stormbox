@@ -49,7 +49,7 @@ const dropStateValue = computed(() => props.dropState?.(props.folder) ?? null);
     <span class="folder-node__icon" aria-hidden="true" v-html="iconSvg" />
     <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
     <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
-    <span v-if="unread > 0" class="folder-node__count">{{ unread > 99 ? '99+' : unread }}</span>
+    <span v-if="unread > 0" class="folder-node__count">{{ unread > 99999 ? '99999+' : unread }}</span>
   </button>
   <FolderNode
     v-for="child in folder.children"

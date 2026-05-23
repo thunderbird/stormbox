@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ChevronDown, Plus } from 'lucide-vue-next';
+import { ChevronDown, Moon, Plus, Sun } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
 import { APPOINTMENT_URL, SEND_URL } from './defines.js';
@@ -74,6 +74,9 @@ const MAX_COLUMN_WIDTHS = {
 const shellEl = ref<HTMLElement | null>(null);
 const theme = ref<Theme>(getInitialTheme());
 applyTheme(theme.value);
+const themeToggleLabel = computed(() =>
+  theme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
+);
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
@@ -415,8 +418,6 @@ function clamp(value: number, min: number, max: number) {
         </div>
       </details>
 
-      <AccountAvatarMenu class="account-menu" />
-
       <div class="quick-filter__search" role="search">
         <input
           class="quick-filter__input"
@@ -429,16 +430,28 @@ function clamp(value: number, min: number, max: number) {
           @input="setQuickFilterQuery"
         />
       </div>
+
+      <div class="quick-filter__actions">
+        <button
+          class="theme-toggle"
+          type="button"
+          :aria-label="themeToggleLabel"
+          :title="themeToggleLabel"
+          @click="toggleTheme"
+        >
+          <Sun v-if="theme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
+          <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
+        </button>
+        <AccountAvatarMenu />
+      </div>
     </div>
 
     <AppSpaces
       :active="space"
       :unread-count="totalUnread"
       :folder-list-hidden="folderListHidden"
-      :theme="theme"
       @change="space = $event"
       @toggle-folder-list="toggleFolderList"
-      @toggle-theme="toggleTheme"
     />
 
     <div
@@ -562,27 +575,45 @@ function clamp(value: number, min: number, max: number) {
 .quick-filter {
   grid-column: 1 / -1;
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: center;
+  column-gap: 12px;
   min-height: 56px;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.app-menu {
-  position: absolute;
-  z-index: 20;
-  top: 50%;
-  left: 12px;
-  transform: translateY(-50%);
+.quick-filter > .app-menu {
+  justify-self: start;
 }
-.account-menu {
-  position: absolute;
-  z-index: 20;
-  top: 50%;
-  right: 12px;
-  transform: translateY(-50%);
+.quick-filter > .quick-filter__search {
+  justify-self: center;
+}
+.quick-filter__actions {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.theme-toggle:hover,
+.theme-toggle:focus-visible {
+  background: var(--rowHover);
+  border-color: var(--border-soft);
+  outline: none;
 }
 .app-menu__button {
   min-height: 36px;
@@ -652,7 +683,7 @@ function clamp(value: number, min: number, max: number) {
   outline: none;
 }
 .quick-filter__search {
-  width: min(520px, max(160px, calc(100% - 280px)));
+  width: clamp(160px, 40vw, 520px);
 }
 .quick-filter__input {
   width: 100%;
@@ -677,30 +708,19 @@ function clamp(value: number, min: number, max: number) {
 
 @media (max-width: 640px) {
   .quick-filter {
-    justify-content: flex-start;
-    gap: 10px;
+    grid-template-columns: auto 1fr auto;
+    column-gap: 8px;
     padding-left: 8px;
-  }
-  .app-menu {
-    position: relative;
-    top: auto;
-    left: auto;
-    transform: none;
-    flex-shrink: 0;
+    padding-right: 8px;
   }
   .app-menu__button span {
     display: none;
   }
-  .account-menu {
-    position: relative;
-    top: auto;
-    right: auto;
-    transform: none;
-    flex-shrink: 0;
+  .quick-filter > .quick-filter__search {
+    justify-self: stretch;
   }
   .quick-filter__search {
-    flex: 1;
-    width: auto;
+    width: 100%;
   }
 }
 

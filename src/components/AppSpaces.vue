@@ -1,19 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Mail, Moon, Sun, Users } from 'lucide-vue-next';
+import { Mail, Users } from 'lucide-vue-next';
 
 const props = defineProps({
   active: { type: String, default: 'mail' },
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
-  theme: { type: String, default: 'dark' },
 });
-const emit = defineEmits(['change', 'toggle-folder-list', 'toggle-theme']);
+const emit = defineEmits(['change', 'toggle-folder-list']);
 const folderListToggleLabel = computed(() =>
   props.folderListHidden ? 'Show folder list' : 'Hide folder list',
-);
-const themeToggleLabel = computed(() =>
-  props.theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
 );
 
 function pick(name) { emit('change', name); }
@@ -30,7 +26,7 @@ function pick(name) { emit('change', name); }
     >
       <Mail :size="20" :stroke-width="1.75" />
       <span v-if="props.unreadCount > 0" class="app-spaces__badge" aria-hidden="true">
-        {{ props.unreadCount > 99 ? '99+' : props.unreadCount }}
+        {{ props.unreadCount > 9999 ? '9999+' : props.unreadCount }}
       </span>
     </button>
     <button
@@ -43,16 +39,6 @@ function pick(name) { emit('change', name); }
       <Users :size="20" :stroke-width="1.75" />
     </button>
     <div class="app-spaces__bottom-actions">
-      <button
-        class="app-spaces__item"
-        type="button"
-        :aria-label="themeToggleLabel"
-        :title="themeToggleLabel"
-        @click="emit('toggle-theme')"
-      >
-        <Sun v-if="props.theme === 'dark'" :size="19" :stroke-width="1.75" />
-        <Moon v-else :size="19" :stroke-width="1.75" />
-      </button>
       <button
         class="app-spaces__item"
         :class="{ 'is-active': !props.folderListHidden }"
