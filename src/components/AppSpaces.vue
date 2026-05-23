@@ -67,7 +67,7 @@ function pick(name) { emit('change', name); }
   align-items: center;
   gap: 6px;
   padding: 14px 0;
-  background: var(--panel2);
+  background: var(--space-rail-bg, var(--panel2));
   color: var(--muted);
   width: 56px;
   flex-shrink: 0;

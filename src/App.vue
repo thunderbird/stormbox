@@ -530,8 +530,17 @@ function clamp(value: number, min: number, max: number) {
   --border-soft: color-mix(in srgb, var(--border) 55%, transparent);
   --accent-bg: color-mix(in srgb, var(--accent) 22%, var(--panel2));
   --accent-fg: var(--accent);
-  --space-rail-bg: var(--panel2);
+  --space-rail-bg: color-mix(in srgb, var(--panel) 88%, #fff);
   --space-rail-fg: var(--muted);
+  --folder-list-bg: color-mix(in srgb, var(--panel) 96%, #fff);
+  --app-menu-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
+  --space-rail-bg: color-mix(in srgb, var(--panel2) 96%, #000);
+  --folder-list-bg: color-mix(in srgb, var(--panel) 97%, #000);
+  --app-menu-popover-bg: var(--panel2);
 }
 
 .shell {
@@ -581,11 +590,13 @@ function clamp(value: number, min: number, max: number) {
   column-gap: 12px;
   min-height: 56px;
   padding: 10px 16px;
-  background: var(--panel);
+  background: var(--space-rail-bg);
   border-bottom: 1px solid var(--border);
 }
 .quick-filter > .app-menu {
   justify-self: start;
+  position: relative;
+  z-index: 30;
 }
 .quick-filter > .quick-filter__search {
   justify-self: center;
@@ -657,14 +668,18 @@ function clamp(value: number, min: number, max: number) {
 }
 .app-menu__popover {
   position: absolute;
+  z-index: 30;
   top: calc(100% + 8px);
   left: 0;
   min-width: 240px;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--app-menu-popover-bg);
   box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
+}
+.app-menu__item-icon {
+  filter: drop-shadow(0 2px 3px color-mix(in srgb, #000 20%, transparent));
 }
 .app-menu__item {
   display: flex;
@@ -742,7 +757,7 @@ function clamp(value: number, min: number, max: number) {
 .sidebar {
   display: grid;
   grid-template-rows: auto auto 1fr auto;
-  background: var(--panel);
+  background: var(--folder-list-bg);
   width: var(--folder-list-width, 240px);
   min-width: 0;
   min-height: 0;
@@ -837,7 +852,7 @@ function clamp(value: number, min: number, max: number) {
 }
 .column-resizer {
   position: relative;
-  background: var(--panel);
+  background: var(--folder-list-bg);
   cursor: col-resize;
   outline: none;
   touch-action: none;
