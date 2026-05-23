@@ -87,7 +87,7 @@ account, JMAP against Stalwart.
   and message URLs shall use stable server identifiers rather than
   local cache row ids. *(Planned)*
 
-### 3. Triage [Done]
+### 3. Triage [Done; undo/redo queue Planned]
 
 - **R-3.1** The system shall let the user mark messages read or
   unread, both individually and in bulk.
@@ -132,6 +132,18 @@ account, JMAP against Stalwart.
   than showing stale rows or requiring a full folder metadata reload.
   Existing covered ranges for large folders shall be preserved so a
   single move does not trigger whole-folder re-indexing.
+- **R-3.13** The system shall provide an undo/redo queue for message
+  triage operations including archive, move, delete (to Trash), and
+  mark read/unread. The user shall be able to reverse the most recent
+  action via Ctrl/Cmd+Z and reapply it via Ctrl/Cmd+Shift+Z (or
+  Ctrl/Cmd+Y), matching Thunderbird-compatible behavior. The queue
+  shall preserve a bounded history of recent operations within the
+  active session, group bulk actions on multiple messages into a
+  single undoable entry, and surface a transient confirmation (e.g.
+  toast) after each action with an undo affordance. Permanent destroy
+  (Shift+Delete and Trash purge) shall remain non-undoable. The queue
+  shall be cleared on sign-out and is not required to survive page
+  reloads. *(Planned)*
 
 ### 4. Compose and send [Partial — UI gaps]
 
