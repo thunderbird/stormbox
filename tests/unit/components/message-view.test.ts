@@ -148,13 +148,19 @@ describe('MessageView with a sparse messages array', () => {
       'Forward (Ctrl+L)',
     ]);
     expect(actions.every((button) => button.text() === '')).toBe(true);
-    const lucideIcons = actions.slice(0, 3).map((button) => button.find('svg.message-view__toolbar-icon'));
+    const lucideButtons = [actions[0], actions[2]];
+    const lucideIcons = lucideButtons.map((button) => button.find('svg.message-view__toolbar-icon'));
     expect(lucideIcons.every((icon) => icon.exists())).toBe(true);
-    expect(lucideIcons.map((icon) => icon.attributes('width'))).toEqual(['18', '18', '18']);
-    expect(lucideIcons.map((icon) => icon.attributes('height'))).toEqual(['18', '18', '18']);
-    expect(lucideIcons.map((icon) => icon.attributes('fill'))).toEqual(['none', 'none', 'none']);
-    expect(lucideIcons.map((icon) => icon.attributes('stroke'))).toEqual(['currentColor', 'currentColor', 'currentColor']);
-    expect(lucideIcons.map((icon) => icon.attributes('stroke-width'))).toEqual(['1.65', '1.65', '1.65']);
+    expect(lucideIcons.map((icon) => icon.attributes('width'))).toEqual(['18', '18']);
+    expect(lucideIcons.map((icon) => icon.attributes('height'))).toEqual(['18', '18']);
+    expect(lucideIcons.map((icon) => icon.attributes('fill'))).toEqual(['none', 'none']);
+    expect(lucideIcons.map((icon) => icon.attributes('stroke'))).toEqual(['currentColor', 'currentColor']);
+    expect(lucideIcons.map((icon) => icon.attributes('stroke-width'))).toEqual(['1.65', '1.65']);
+
+    const archiveIcon = actions[1].find('.message-view__toolbar-icon--folder');
+    expect(archiveIcon.exists()).toBe(true);
+    expect(archiveIcon.find('[fill="context-fill"]').exists()).toBe(true);
+    expect(archiveIcon.find('[fill="context-stroke"]').exists()).toBe(true);
 
     const arrowIcons = actions.slice(3).map((button) => button.find('.message-view__toolbar-icon--shape'));
     expect(arrowIcons.every((icon) => icon.exists())).toBe(true);

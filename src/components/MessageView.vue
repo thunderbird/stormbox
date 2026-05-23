@@ -9,7 +9,7 @@ import {
 } from 'vue';
 import DOMPurify from 'dompurify';
 import {
-  Archive, Trash2, Paperclip,
+  Trash2, Paperclip,
   MailOpen, Mail, X, ArrowLeft,
 } from 'lucide-vue-next';
 
@@ -21,6 +21,7 @@ import {
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
 } from '../utils/message-html.js';
+import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
@@ -391,7 +392,7 @@ function closeMessageView() {
         </h2>
         <div class="message-view__bulk-actions">
           <button class="message-view__action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
-            <Archive class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </button>
           <button class="message-view__action" type="button" @click="bulkMarkRead" title="Mark as read" aria-label="Mark as read">
             <MailOpen :size="16" :stroke-width="1.75" />
@@ -431,7 +432,7 @@ function closeMessageView() {
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
         <button class="message-view__action" type="button" @click="archive" title="Archive (A)" aria-label="Archive">
-          <Archive class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
         </button>
         <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
@@ -690,6 +691,23 @@ function closeMessageView() {
   fill: transparent;
 }
 .message-view__toolbar-icon--shape :deep([fill="context-stroke"]) {
+  fill: currentColor;
+}
+.message-view__toolbar-icon--folder {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: none;
+}
+.message-view__toolbar-icon--folder :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.message-view__toolbar-icon--folder :deep([fill="context-fill"]) {
+  fill: color-mix(in srgb, currentColor 20%, transparent);
+}
+.message-view__toolbar-icon--folder :deep([fill="context-stroke"]) {
   fill: currentColor;
 }
 
