@@ -35,7 +35,10 @@ test.describe('Sign out + sign in regression', () => {
     await loginViaOidc(page);
     await waitForInboxReady(page);
 
-    await page.getByRole('button', { name: /open account menu/i }).click();
+    // The avatar menu is a <details><summary> pair; <summary> doesn't get
+    // exposed as a button in Playwright's accessibility tree across all
+    // engines, so target by aria-label instead.
+    await page.getByLabel('Open account menu').click();
     await page.getByRole('menuitem', { name: /log out/i }).click();
     await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible({ timeout: 15_000 });
 
