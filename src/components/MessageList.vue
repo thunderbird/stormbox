@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import {
+  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
+} from 'vue';
 import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
@@ -9,6 +11,8 @@ import {
 import { useMailStore } from '../stores/mail-store.js';
 import { useListSelection } from '../composables/use-list-selection.js';
 import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
+import { SENDER_AVATAR_PROXY_URL } from '../defines.js';
+import { senderAvatarFor, shortFrom } from '../utils/sender-avatar.js';
 
 const mailStore = useMailStore();
 
@@ -91,14 +95,21 @@ function handleKeyDown(event) {
   }
 }
 
-const ROW_HEIGHT = 88;
+const CARD_LAYOUT_WIDTH = 320;
+const ROW_HEIGHT = 64;
+const CARD_ROW_HEIGHT = 112;
+const msgListEl = ref<HTMLElement | null>(null);
 const scrollEl = ref(null);
+const listWidth = ref(0);
+const failedAvatarDomains = ref<Set<string>>(new Set());
+const cardLayout = computed(() => listWidth.value > 0 && listWidth.value <= CARD_LAYOUT_WIDTH);
+let listResizeObserver: ResizeObserver | null = null;
 
 const virtualizer = useVirtualizer(
   computed(() => ({
     count: rowCount.value,
     getScrollElement: () => scrollEl.value,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => (cardLayout.value ? CARD_ROW_HEIGHT : ROW_HEIGHT),
     overscan: 8,
     getItemKey: (i) => visibleMessages.value[i]?.id ?? `_ph_${i}`,
   })),
@@ -229,6 +240,29 @@ watch(
 );
 
 onMounted(() => {
+  if (msgListEl.value) {
+    listWidth.value = msgListEl.value.clientWidth;
+    if (typeof ResizeObserver === 'function') {
+      listResizeObserver = new ResizeObserver(([entry]) => {
+        listWidth.value = entry.contentRect.width;
+      });
+      listResizeObserver.observe(msgListEl.value);
+    }
+  }
+  virtualizer.value.measure();
+});
+
+onBeforeUnmount(() => {
+  if (trailingTimer != null) {
+    clearTimeout(trailingTimer);
+    trailingTimer = null;
+  }
+  listResizeObserver?.disconnect();
+  listResizeObserver = null;
+});
+
+watch(cardLayout, async () => {
+  await nextTick();
   virtualizer.value.measure();
 });
 
@@ -265,6 +299,20 @@ function onRowDragStart(message, event) {
 function isDraggingMessage(messageId) {
   const id = Number(messageId);
   return Number.isFinite(id) && draggedIds.value.includes(id);
+}
+
+function senderAvatar(fromText) {
+  const avatar = senderAvatarFor(fromText, SENDER_AVATAR_PROXY_URL);
+  if (avatar.domain && failedAvatarDomains.value.has(avatar.domain)) {
+    return { ...avatar, imageUrl: '' };
+  }
+  return avatar;
+}
+
+function onAvatarError(fromText) {
+  const { domain } = senderAvatarFor(fromText, SENDER_AVATAR_PROXY_URL);
+  if (!domain || failedAvatarDomains.value.has(domain)) return;
+  failedAvatarDomains.value = new Set([...failedAvatarDomains.value, domain]);
 }
 
 const allLoadedSelected = computed(() => {
@@ -327,12 +375,6 @@ function fmtDate(ms) {
     : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-function shortFrom(text) {
-  if (!text) return '(no sender)';
-  const m = text.match(/^(.+?)\s*<.+>$/);
-  return m ? m[1].replace(/^"|"$/g, '') : text;
-}
-
 function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
   if (row?.id == null) return false;
   if (
@@ -359,7 +401,12 @@ function normalizeFilterText(value) {
 </script>
 
 <template>
-  <section class="msg-list" aria-label="Messages">
+  <section
+    ref="msgListEl"
+    class="msg-list"
+    :class="{ 'msg-list--card': cardLayout }"
+    aria-label="Messages"
+  >
     <header class="msg-list__header">
       <label
         class="msg-list__select-all"
@@ -445,29 +492,46 @@ function normalizeFilterText(value) {
               @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
               @dragend="endMessageDrag"
             >
-              <label class="msg-list__check" draggable="false" @click.stop>
-                <input
-                  type="checkbox"
-                  :checked="isSelected(visibleMessages[v.index].id)"
-                  @click="onCheckboxClick(v.index, $event)"
+              <div class="msg-list__state">
+                <label class="msg-list__check" draggable="false" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="isSelected(visibleMessages[v.index].id)"
+                    @click="onCheckboxClick(v.index, $event)"
+                  />
+                </label>
+                <span
+                  v-if="Number(visibleMessages[v.index].is_seen) === 0"
+                  class="msg-list__unread-dot"
+                  aria-label="Unread"
                 />
-              </label>
-              <span
-                v-if="Number(visibleMessages[v.index].is_seen) === 0"
-                class="msg-list__unread-dot"
-                aria-label="Unread"
-              />
-              <div class="msg-list__rows">
-                <div class="msg-list__row1">
+              </div>
+              <div
+                class="msg-list__avatar"
+                :style="senderAvatar(visibleMessages[v.index].from_text).style"
+                aria-hidden="true"
+              >
+                <img
+                  v-if="senderAvatar(visibleMessages[v.index].from_text).imageUrl"
+                  class="msg-list__avatar-image"
+                  :src="senderAvatar(visibleMessages[v.index].from_text).imageUrl"
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  referrerpolicy="no-referrer"
+                  @error="onAvatarError(visibleMessages[v.index].from_text)"
+                />
+                <span>{{ senderAvatar(visibleMessages[v.index].from_text).initials }}</span>
+              </div>
+              <div class="msg-list__content">
+                <div class="msg-list__summary">
                   <span class="msg-list__from">{{ shortFrom(visibleMessages[v.index].from_text) }}</span>
-                  <span class="msg-list__date">{{ fmtDate(visibleMessages[v.index].received_at) }}</span>
-                </div>
-                <div class="msg-list__row2">
                   <span class="msg-list__subject">{{ visibleMessages[v.index].subject || '(no subject)' }}</span>
                   <span class="msg-list__icons">
                     <Star v-if="Number(visibleMessages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
                     <Paperclip v-if="Number(visibleMessages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
                   </span>
+                  <span class="msg-list__date">{{ fmtDate(visibleMessages[v.index].received_at) }}</span>
                 </div>
                 <p v-if="visibleMessages[v.index].preview" class="msg-list__preview">
                   {{ visibleMessages[v.index].preview }}
@@ -672,13 +736,14 @@ function normalizeFilterText(value) {
 
 .msg-list__item {
   position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 34px 34px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
   width: 100%;
   height: 100%;
   text-align: left;
-  padding: 10px 14px 10px 12px;
+  padding: 7px 14px 7px 12px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -693,22 +758,26 @@ function normalizeFilterText(value) {
   -webkit-user-select: none;
 }
 .msg-list__item:hover { background: var(--rowHover); }
-.msg-list__rows {
-  flex: 1;
+.msg-list__content {
   min-width: 0;
-  position: relative;
-  padding-left: 10px;
 }
 
-.msg-list__check {
-  flex-shrink: 0;
+.msg-list__state {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  margin-top: 1px;
+  width: 34px;
+  height: 34px;
+}
+.msg-list__check {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
   border-radius: 6px;
   cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.08s ease;
 }
 .msg-list__check input {
   width: 14px;
@@ -719,23 +788,52 @@ function normalizeFilterText(value) {
 }
 
 .msg-list__unread-dot {
-  position: absolute;
-  left: -1px;
-  top: 6px;
+  display: block;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
+  transition: opacity 0.08s ease;
+}
+.msg-list__item:hover .msg-list__check,
+.msg-list__items li.is-selected .msg-list__check {
+  opacity: 1;
+}
+.msg-list__item:hover .msg-list__unread-dot,
+.msg-list__items li.is-selected .msg-list__unread-dot {
+  opacity: 0;
+}
+.msg-list__avatar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  overflow: hidden;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #fff 22%, transparent);
+}
+.msg-list__avatar-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-.msg-list__row1, .msg-list__row2 {
-  display: flex;
+.msg-list__summary {
+  display: grid;
+  grid-template-columns: minmax(86px, 28%) minmax(0, 1fr) auto auto;
+  grid-template-areas: "from subject icons date";
   align-items: baseline;
-  gap: 8px;
+  column-gap: 8px;
 }
-.msg-list__row1 { margin-bottom: 2px; }
 .msg-list__from {
-  flex: 1;
+  grid-area: from;
   min-width: 0;
   font-size: 13px;
   color: var(--text);
@@ -744,13 +842,14 @@ function normalizeFilterText(value) {
   white-space: nowrap;
 }
 .msg-list__date {
-  flex-shrink: 0;
+  grid-area: date;
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .msg-list__subject {
-  flex: 1;
+  grid-area: subject;
   min-width: 0;
   font-size: 13px;
   color: var(--text);
@@ -759,10 +858,11 @@ function normalizeFilterText(value) {
   white-space: nowrap;
 }
 .msg-list__icons {
+  grid-area: icons;
   display: inline-flex;
   gap: 4px;
   color: var(--muted);
-  flex-shrink: 0;
+  min-width: 0;
 }
 .msg-list__star { color: #f5b700; }
 .msg-list__preview {
@@ -771,9 +871,35 @@ function normalizeFilterText(value) {
   color: var(--muted);
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   line-height: 1.35;
+}
+
+.msg-list--card .msg-list__item {
+  grid-template-columns: 24px 34px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 9px;
+  padding: 10px 12px;
+}
+.msg-list--card .msg-list__state {
+  width: 24px;
+}
+.msg-list--card .msg-list__summary {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "from icons date"
+    "subject subject subject";
+  row-gap: 2px;
+}
+.msg-list--card .msg-list__from,
+.msg-list--card .msg-list__subject {
+  font-size: 13px;
+  font-weight: 600;
+}
+.msg-list--card .msg-list__preview {
+  margin-top: 3px;
+  -webkit-line-clamp: 2;
 }
 
 .msg-list__item--placeholder {

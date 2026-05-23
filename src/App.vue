@@ -391,6 +391,7 @@ function clamp(value: number, min: number, max: number) {
     :class="{
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
       'shell--folder-list-hidden': folderListHidden,
+      'shell--column-resizing': activeResizePane !== null,
     }"
     :style="shellStyle"
   >
@@ -693,6 +694,10 @@ function clamp(value: number, min: number, max: number) {
   height: 100%;
   overflow: hidden;
   transition: width var(--folder-list-transition-ms, 360ms) ease;
+}
+.shell--column-resizing .sidebar-slot,
+.shell--column-resizing .sidebar {
+  transition: none;
 }
 .sidebar-slot--hidden {
   width: 0;

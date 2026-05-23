@@ -1,5 +1,4 @@
-function defaultJmapProxyUrl(): string {
-  const hostname = globalThis.location?.hostname;
+function defaultJmapProxyUrl(hostname = globalThis.location?.hostname): string {
   if (hostname === "webmail.thundermail.com") {
     return "https://wsmail.thundermail.com";
   }
@@ -11,6 +10,13 @@ export function accountsUrlForHostname(hostname = globalThis.location?.hostname)
     return "https://accounts.tb.pro";
   }
   return "https://accounts-stage.tb.pro";
+}
+
+export function senderAvatarProxyUrlForHostname(hostname = globalThis.location?.hostname): string {
+  if (hostname === "webmail.thundermail.com" || hostname === "webmail.stage-thundermail.com") {
+    return `${defaultJmapProxyUrl(hostname)}/sender-avatar`;
+  }
+  return "";
 }
 
 export const JMAP_SERVER_URL =
@@ -38,3 +44,10 @@ export const OIDC_CLIENT_ID =
  */
 export const JMAP_WS_PROXY_URL =
   import.meta.env.VITE_JMAP_WS_PROXY ?? `${defaultJmapProxyUrl()}/jmap/ws`;
+
+/**
+ * Optional same-origin/edge proxy for sender domain icons. An empty
+ * value disables remote logo lookups and keeps the initials fallback.
+ */
+export const SENDER_AVATAR_PROXY_URL =
+  import.meta.env.VITE_SENDER_AVATAR_PROXY_URL ?? senderAvatarProxyUrlForHostname();

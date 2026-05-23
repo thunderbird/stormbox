@@ -5,6 +5,7 @@ import basicSsl from "@vitejs/plugin-basic-ssl";
 import {
   keycloakDevProxy,
   localStackPublicOrigin,
+  senderAvatarDevProxy,
   stalwartJmapDevProxy,
 } from "./vite.local-stack.mjs";
 
@@ -54,6 +55,7 @@ export default defineConfig({
             "/stalwart-jmap": stalwartJmapDevProxy(
               process.env.STALWART_JMAP_PROXY ?? "http://127.0.0.1:8081",
             ),
+            "/sender-avatar": senderAvatarDevProxy(),
           },
         }
       : {}),

@@ -109,7 +109,7 @@ describe('MessageList row click viewing', () => {
     const wrapper = mount(MessageList);
     await nextTick();
 
-    await wrapper.find('.msg-list__rows').trigger('click');
+    await wrapper.find('.msg-list__content').trigger('click');
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBeNull();
@@ -126,7 +126,7 @@ describe('MessageList row click viewing', () => {
     const wrapper = mount(MessageList);
     await nextTick();
 
-    await wrapper.findAll('.msg-list__rows')[1].trigger('click');
+    await wrapper.findAll('.msg-list__content')[1].trigger('click');
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBe(2);
@@ -443,7 +443,7 @@ describe('MessageList row click viewing', () => {
     await wrapper.find('.msg-list__filter').trigger('click');
     await nextTick();
 
-    await wrapper.find('.msg-list__rows').trigger('click');
+    await wrapper.find('.msg-list__content').trigger('click');
     await nextTick();
     mailStore.messages = [
       makeRow(1, { subject: 'Becomes read', is_seen: 1 }),
@@ -454,7 +454,7 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).toContain('Becomes read');
     expect(wrapper.findAll('.msg-list__item')).toHaveLength(2);
 
-    await wrapper.find('.msg-list__rows').trigger('click');
+    await wrapper.find('.msg-list__content').trigger('click');
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBeNull();

@@ -8,6 +8,7 @@
  */
 
 const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? "https://localhost:3000";
+const EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
 
 function rewriteKeycloakBody(body) {
   return body
@@ -108,6 +109,115 @@ export function stalwartJmapDevProxy(target) {
   };
 }
 
+export function senderAvatarDevProxy(target = "https://geticon.dev") {
+  return {
+    target,
+    changeOrigin: true,
+    secure: true,
+    selfHandleResponse: true,
+    rewrite: (path) => {
+      const [pathname] = path.split("?");
+      const encoded = pathname.replace(/^\/sender-avatar\/?/, "");
+      if (!encoded || encoded.includes("/")) return "/?url=";
+      return `/?url=${encodeURIComponent(decodeURIComponent(encoded))}`;
+    },
+    configure(proxy) {
+      proxy.on("proxyRes", (proxyRes, req, res) => {
+        bufferSenderAvatarResponse(proxyRes, req, res);
+      });
+      proxy.on("error", (_err, _req, res) => {
+        writeSenderAvatarResponse(res, {
+          body: Buffer.from(EMPTY_SVG),
+          headers: {
+            "content-type": "image/svg+xml",
+            "cache-control": "no-store",
+          },
+          status: 502,
+        });
+      });
+    },
+  };
+}
+
 export function localStackPublicOrigin() {
   return PUBLIC_ORIGIN;
+}
+
+async function bufferSenderAvatarResponse(proxyRes, req, res) {
+  const chunks = [];
+  proxyRes.on("data", (chunk) => chunks.push(chunk));
+  proxyRes.on("end", async () => {
+    let body = Buffer.concat(chunks);
+    let headers = { ...proxyRes.headers };
+    let status = proxyRes.statusCode ?? 502;
+
+    if (shouldUseSenderAvatarFallback(status, headers, body)) {
+      const fallback = await fetchGoogleFavicon(senderAvatarDomainFromRequest(req.url ?? ""));
+      if (fallback) {
+        ({ body, headers, status } = fallback);
+      } else {
+        body = Buffer.from(EMPTY_SVG);
+        headers = {
+          "content-type": "image/svg+xml",
+          "cache-control": "no-store",
+        };
+        status = 404;
+      }
+    }
+
+    writeSenderAvatarResponse(res, { body, headers, status });
+  });
+}
+
+function writeSenderAvatarResponse(res, { body, headers, status }) {
+  delete headers["content-length"];
+  headers["content-length"] = String(body.length);
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function shouldUseSenderAvatarFallback(status, headers, body) {
+  if (status < 200 || status >= 300) return true;
+  const contentType = String(headers["content-type"] ?? "");
+  if (!contentType.includes("image/")) return true;
+  return isGeticonGeneratedAvatar(headers, body);
+}
+
+function isGeticonGeneratedAvatar(headers, body) {
+  const contentType = String(headers["content-type"] ?? "");
+  return contentType.includes("image/svg")
+    && body.includes("font-family=\"system-ui,sans-serif\"")
+    && body.includes("<text");
+}
+
+function senderAvatarDomainFromRequest(url) {
+  try {
+    const parsed = new URL(url, "https://local.invalid");
+    return parsed.searchParams.get("url") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+async function fetchGoogleFavicon(domain) {
+  if (!domain) return null;
+  try {
+    const url = new URL("https://www.google.com/s2/favicons");
+    url.searchParams.set("domain", domain);
+    url.searchParams.set("sz", "64");
+    const response = await fetch(url, { headers: { Accept: "image/png,image/*" } });
+    if (!response.ok) return null;
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("image/")) return null;
+    return {
+      body: Buffer.from(await response.arrayBuffer()),
+      headers: {
+        "content-type": contentType,
+        "cache-control": "public, max-age=604800",
+      },
+      status: response.status,
+    };
+  } catch {
+    return null;
+  }
 }

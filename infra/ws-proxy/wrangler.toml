@@ -18,6 +18,10 @@ routes = [
 UPSTREAM_BASE_STAGE = "https://mail.stage-thundermail.com"
 UPSTREAM_BASE_PROD = "https://mail.thundermail.com"
 ALLOWED_ORIGINS = "https://webmail.stage-thundermail.com,https://webmail.thundermail.com"
+SENDER_AVATAR_PROXY_ENABLED = "true"
+SENDER_AVATAR_UPSTREAM_BASE = "https://geticon.dev/"
+SENDER_AVATAR_FALLBACK_UPSTREAM_BASE = "https://www.google.com/"
+SENDER_AVATAR_CACHE_TTL_SECONDS = "604800"
 
 [observability]
 enabled = true

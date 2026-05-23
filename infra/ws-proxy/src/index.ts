@@ -35,7 +35,23 @@ export interface Env {
   UPSTREAM_BASE_PROD?: string;
   /** Comma-separated browser origins that may call this proxy. */
   ALLOWED_ORIGINS?: string;
+  /** Enables the sender avatar proxy route when set to "1" or "true". */
+  SENDER_AVATAR_PROXY_ENABLED?: string;
+  /** Fixed upstream base for sender avatars. Only https://geticon.dev is allowed in v1. */
+  SENDER_AVATAR_UPSTREAM_BASE?: string;
+  /** Fixed fallback upstream base. Only https://www.google.com is allowed in v1. */
+  SENDER_AVATAR_FALLBACK_UPSTREAM_BASE?: string;
+  /** Browser and edge cache TTL for successful sender avatar responses. */
+  SENDER_AVATAR_CACHE_TTL_SECONDS?: string;
 }
+
+interface WorkerExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+type CacheStorageWithDefault = CacheStorage & {
+  default: Cache;
+};
 
 const DEFAULT_STAGE_PROXY_HOST = 'wsmail.stage-thundermail.com';
 const DEFAULT_PROD_PROXY_HOST = 'wsmail.thundermail.com';
@@ -45,9 +61,26 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'https://webmail.stage-thundermail.com',
   'https://webmail.thundermail.com',
 ];
+const SENDER_AVATAR_PATH_PREFIX = '/sender-avatar/';
+const DEFAULT_SENDER_AVATAR_UPSTREAM_BASE = 'https://geticon.dev/';
+const DEFAULT_SENDER_AVATAR_FALLBACK_UPSTREAM_BASE = 'https://www.google.com/';
+const DEFAULT_SENDER_AVATAR_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
+const MAX_SENDER_AVATAR_BYTES = 256 * 1024;
+const EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
+const DOMAIN_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const IMAGE_CONTENT_TYPES = [
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/svg+xml',
+  'image/webp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+];
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: WorkerExecutionContext): Promise<Response> {
     const requestUrl = new URL(request.url);
     const upstreamBase = getUpstreamBase(requestUrl.hostname, env);
 
@@ -58,6 +91,10 @@ export default {
     const upgrade = request.headers.get('Upgrade');
     if (upgrade?.toLowerCase() === 'websocket') {
       return proxyWebSocket(request, upstreamBase);
+    }
+
+    if (isSenderAvatarPath(requestUrl.pathname)) {
+      return proxySenderAvatar(request, env, ctx);
     }
 
     if (!isHttpJmapPath(requestUrl.pathname)) {
@@ -71,6 +108,59 @@ export default {
     return proxyHttpJmap(request, upstreamBase, env);
   },
 };
+
+async function proxySenderAvatar(request: Request, env: Env, ctx: WorkerExecutionContext): Promise<Response> {
+  if (!senderAvatarProxyEnabled(env)) {
+    return withCors(request, senderAvatarEmptyResponse(404), env);
+  }
+  if (!['GET', 'HEAD'].includes(request.method)) {
+    return withCors(request, senderAvatarEmptyResponse(405), env);
+  }
+
+  const requestUrl = new URL(request.url);
+  const domain = senderAvatarDomainFromPath(requestUrl.pathname);
+  if (!domain) {
+    return withCors(request, senderAvatarEmptyResponse(400), env);
+  }
+
+  const upstreamBase = senderAvatarUpstreamBase(env);
+  if (!upstreamBase) {
+    return withCors(request, senderAvatarEmptyResponse(503), env);
+  }
+  const fallbackUpstreamBase = senderAvatarFallbackUpstreamBase(env);
+
+  const cacheKeyUrl = new URL(`${SENDER_AVATAR_PATH_PREFIX}${domain}`, requestUrl.origin);
+  const cacheVersion = requestUrl.searchParams.get('v');
+  if (cacheVersion) cacheKeyUrl.searchParams.set('v', cacheVersion);
+  const cacheKey = new Request(cacheKeyUrl.toString(), {
+    method: 'GET',
+  });
+  if (request.method === 'GET') {
+    const cached = await defaultCache().match(cacheKey);
+    if (cached) return withCors(request, cached, env);
+  }
+
+  const metadata = request.method === 'GET'
+    ? await fetchSenderAvatarMetadata(senderAvatarMetadataUrl(upstreamBase, domain))
+    : null;
+  let response = senderAvatarEmptyResponse(404);
+  if (metadata?.type !== 'avatar') {
+    response = senderAvatarResponse(
+      await fetchSenderAvatar(senderAvatarProviderUrl(upstreamBase, domain), request.method),
+      senderAvatarCacheTtl(env),
+    );
+  }
+  if ((!response.ok || metadata?.type === 'avatar') && fallbackUpstreamBase) {
+    response = senderAvatarResponse(
+      await fetchSenderAvatar(senderAvatarFallbackProviderUrl(fallbackUpstreamBase, domain), request.method),
+      senderAvatarCacheTtl(env),
+    );
+  }
+  if (request.method === 'GET' && response.ok) {
+    ctx.waitUntil(defaultCache().put(cacheKey, response.clone()));
+  }
+  return withCors(request, response, env);
+}
 
 async function proxyWebSocket(request: Request, upstreamBase: string): Promise<Response> {
     const url = new URL(request.url);
@@ -184,7 +274,11 @@ function rewriteValue(value: unknown, replacements: readonly (readonly [string, 
 
 function handlePreflight(request: Request, env: Env): Response {
   const requestUrl = new URL(request.url);
-  if (!isHttpJmapPath(requestUrl.pathname) && !requestUrl.pathname.startsWith('/jmap/')) {
+  if (
+    !isHttpJmapPath(requestUrl.pathname)
+    && !requestUrl.pathname.startsWith('/jmap/')
+    && !isSenderAvatarPath(requestUrl.pathname)
+  ) {
     return new Response(null, { status: 403 });
   }
   return withCors(request, new Response(null, { status: 204 }), env);
@@ -199,6 +293,176 @@ function isHttpJmapPath(pathname: string): boolean {
 function isJmapSessionPath(pathname: string): boolean {
   return pathname === '/.well-known/jmap'
     || pathname === '/jmap/session';
+}
+
+function isSenderAvatarPath(pathname: string): boolean {
+  return pathname.startsWith(SENDER_AVATAR_PATH_PREFIX);
+}
+
+function senderAvatarDomainFromPath(pathname: string): string {
+  const encoded = pathname.slice(SENDER_AVATAR_PATH_PREFIX.length);
+  if (!encoded || encoded.includes('/')) return '';
+  try {
+    return normalizeDomain(decodeURIComponent(encoded));
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDomain(value: string): string {
+  const raw = value.trim().toLowerCase().replace(/\.+$/, '');
+  if (!raw || raw.length > 253) return '';
+  if (/[\s/:?#@\\[\]]/.test(raw)) return '';
+
+  let hostname = '';
+  try {
+    hostname = new URL(`https://${raw}`).hostname.toLowerCase().replace(/\.+$/, '');
+  } catch {
+    return '';
+  }
+
+  if (!hostname || hostname === 'localhost' || !hostname.includes('.') || isIpv4Address(hostname)) {
+    return '';
+  }
+  const labels = hostname.split('.');
+  if (labels.some((label) => !DOMAIN_LABEL_RE.test(label))) return '';
+  return hostname;
+}
+
+function isIpv4Address(hostname: string): boolean {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return false;
+  return parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function senderAvatarProxyEnabled(env: Env): boolean {
+  const value = env.SENDER_AVATAR_PROXY_ENABLED?.trim().toLowerCase();
+  return value === '1' || value === 'true';
+}
+
+function senderAvatarUpstreamBase(env: Env): string {
+  const raw = env.SENDER_AVATAR_UPSTREAM_BASE ?? DEFAULT_SENDER_AVATAR_UPSTREAM_BASE;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return '';
+  }
+  if (url.origin !== 'https://geticon.dev') return '';
+  return 'https://geticon.dev/';
+}
+
+function senderAvatarFallbackUpstreamBase(env: Env): string {
+  const raw = env.SENDER_AVATAR_FALLBACK_UPSTREAM_BASE
+    ?? DEFAULT_SENDER_AVATAR_FALLBACK_UPSTREAM_BASE;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return '';
+  }
+  if (url.origin !== 'https://www.google.com') return '';
+  return 'https://www.google.com/';
+}
+
+function senderAvatarProviderUrl(upstreamBase: string, domain: string): string {
+  const upstreamUrl = new URL(upstreamBase);
+  upstreamUrl.searchParams.set('url', domain);
+  return upstreamUrl.toString();
+}
+
+function senderAvatarMetadataUrl(upstreamBase: string, domain: string): string {
+  const upstreamUrl = new URL(upstreamBase);
+  upstreamUrl.searchParams.set('url', domain);
+  upstreamUrl.searchParams.set('format', 'json');
+  return upstreamUrl.toString();
+}
+
+function senderAvatarFallbackProviderUrl(upstreamBase: string, domain: string): string {
+  const upstreamUrl = new URL('/s2/favicons', upstreamBase);
+  upstreamUrl.searchParams.set('domain', domain);
+  upstreamUrl.searchParams.set('sz', '64');
+  return upstreamUrl.toString();
+}
+
+async function fetchSenderAvatar(url: string, method: string): Promise<Response> {
+  try {
+    return await fetch(new Request(url, {
+      method,
+      redirect: 'follow',
+      headers: {
+        Accept: IMAGE_CONTENT_TYPES.join(', '),
+        'User-Agent': 'StormboxSenderAvatarProxy/1.0',
+      },
+    }));
+  } catch {
+    return senderAvatarEmptyResponse(502);
+  }
+}
+
+async function fetchSenderAvatarMetadata(url: string): Promise<{ type?: string } | null> {
+  try {
+    const response = await fetch(new Request(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'StormboxSenderAvatarProxy/1.0',
+      },
+    }));
+    if (!response.ok) return null;
+    const contentType = response.headers.get('Content-Type')?.toLowerCase() ?? '';
+    if (!contentType.includes('json')) return null;
+    return await response.json() as { type?: string };
+  } catch {
+    return null;
+  }
+}
+
+function senderAvatarCacheTtl(env: Env): number {
+  const parsed = Number(env.SENDER_AVATAR_CACHE_TTL_SECONDS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SENDER_AVATAR_CACHE_TTL_SECONDS;
+  return Math.min(Math.floor(parsed), 30 * 24 * 60 * 60);
+}
+
+function senderAvatarResponse(upstreamRes: Response, cacheTtl: number): Response {
+  if (!upstreamRes.ok) {
+    return senderAvatarEmptyResponse(404, 'public, max-age=3600');
+  }
+
+  const contentType = upstreamRes.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() ?? '';
+  const contentLength = Number(upstreamRes.headers.get('Content-Length') ?? '0');
+  if (!IMAGE_CONTENT_TYPES.includes(contentType)) {
+    return senderAvatarEmptyResponse(404, 'public, max-age=3600');
+  }
+  if (Number.isFinite(contentLength) && contentLength > MAX_SENDER_AVATAR_BYTES) {
+    return senderAvatarEmptyResponse(404, 'public, max-age=3600');
+  }
+
+  const headers = new Headers();
+  headers.set('Content-Type', contentType);
+  headers.set('Cache-Control', `public, max-age=${cacheTtl}, s-maxage=${cacheTtl}`);
+  const etag = upstreamRes.headers.get('ETag');
+  if (etag) headers.set('ETag', etag);
+  return new Response(upstreamRes.body, {
+    status: upstreamRes.status,
+    statusText: upstreamRes.statusText,
+    headers,
+  });
+}
+
+function senderAvatarEmptyResponse(status = 404, cacheControl = 'no-store'): Response {
+  return new Response(EMPTY_SVG, {
+    status,
+    headers: {
+      'Content-Type': 'image/svg+xml',
+      'Cache-Control': cacheControl,
+    },
+  });
+}
+
+function defaultCache(): Cache {
+  return (caches as CacheStorageWithDefault).default;
 }
 
 function getUpstreamBase(hostname: string, env: Env): string {

@@ -17,6 +17,7 @@ interface ImportMetaEnv {
   readonly VITE_OIDC_ISSUER?: string;
   readonly VITE_OIDC_CLIENT_ID?: string;
   readonly VITE_LOCAL_STACK?: string;
+  readonly VITE_SENDER_AVATAR_PROXY_URL?: string;
 }
 
 interface ImportMeta {
