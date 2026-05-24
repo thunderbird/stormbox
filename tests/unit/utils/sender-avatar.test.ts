@@ -25,6 +25,9 @@ describe('sender-avatar', () => {
 
   it('builds proxied image URLs only when configured', () => {
     expect(avatarImageUrlForDomain('Example.COM.', '')).toBe('');
+    expect(avatarImageUrlForDomain('Example.COM.', 'https://avatars.thunderbird.net')).toBe(
+      'https://avatars.thunderbird.net/example.com?v=3',
+    );
     expect(avatarImageUrlForDomain('Example.COM.', 'https://proxy.example/sender-avatar/')).toBe(
       'https://proxy.example/sender-avatar/example.com?v=3',
     );

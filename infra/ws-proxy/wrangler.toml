@@ -17,18 +17,10 @@ routes = [
 [vars]
 UPSTREAM_BASE_STAGE = "https://mail.stage-thundermail.com"
 UPSTREAM_BASE_PROD = "https://mail.thundermail.com"
-ALLOWED_ORIGINS = "https://webmail.stage-thundermail.com,https://webmail.thundermail.com"
-SENDER_AVATAR_PROXY_ENABLED = "true"
-SENDER_AVATAR_UPSTREAM_BASE = "https://geticon.dev/"
-SENDER_AVATAR_FALLBACK_UPSTREAM_BASE = "https://www.google.com/"
-SENDER_AVATAR_CACHE_TTL_SECONDS = "604800"
 
+# Disable Workers observability so the bearer-bearing upgrade URLs are
+# never written to Cloudflare Logs. This Worker exists only to bridge a
+# credential into an Authorization header; the credential is sensitive
+# and must not appear in any log destination this Worker controls.
 [observability]
-enabled = true
-
-# Strip the bearer token from request logs. Without this Cloudflare's
-# default access log would record the full URI including
-# ?access_token=<jwt>.
-[observability.logs]
-head_sampling_rate = 1.0
-invocation_logs = true
+enabled = false

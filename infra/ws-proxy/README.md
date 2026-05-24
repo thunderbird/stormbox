@@ -1,28 +1,15 @@
 # stormbox-ws-proxy
 
-A Cloudflare Worker that proxies the scoped Stalwart JMAP surface for
-Stormbox stage/prod.
+A Cloudflare Worker that bridges the WebSocket authentication contract
+for Stormbox stage/prod. It does nothing else.
 
 ## Why it exists
 
-The web app runs at `webmail.stage-thundermail.com` and
-`webmail.thundermail.com`, while Stalwart serves JMAP from
-`mail.stage-thundermail.com` and `mail.thundermail.com`. Rather than
-restarting Stalwart to change CORS settings, browsers talk to this
-Worker. The Worker forwards only:
-
-- `/.well-known/jmap`
-- `/jmap`
-- `/jmap/*`
-
-and adds CORS headers for the webmail origins.
-
-It also keeps the WebSocket auth bridge. Stalwart's `/jmap/ws`
-endpoint authenticates only via the `Authorization` HTTP header on the
-WebSocket upgrade request. The browser `WebSocket` API doesn't allow
-setting custom headers on a `new WebSocket(url, protocols)` call, so
-the Worker accepts the credential in the WebSocket URL and sets the
-upstream header:
+Stalwart's `/jmap/ws` endpoint authenticates the WebSocket upgrade via
+the HTTP `Authorization` header. The browser `WebSocket` API does not
+let callers set arbitrary headers on `new WebSocket(url, protocols)`,
+so the credential rides in on the upgrade URL and this Worker turns it
+into an `Authorization` header before forwarding upstream:
 
 ```
 Browser  ───►  wsmail.stage-thundermail.com/jmap/ws?access_token=<jwt>
@@ -35,9 +22,21 @@ Browser  ───►  wsmail.stage-thundermail.com/jmap/ws?access_token=<jwt>
                   (Stalwart, unchanged)
 ```
 
-The token only ever appears inside encrypted TLS payloads, never in
-Stalwart logs (the Worker strips it before forwarding), and is excluded
-from Cloudflare access logs.
+JMAP HTTP traffic (the session document, `/jmap/api`, etc.) is not
+proxied here. Browsers talk to Stalwart directly at
+`mail.stage-thundermail.com` / `mail.thundermail.com`, which is
+expected to send CORS headers for the webmail origins. Sender-domain
+avatars live behind `https://avatars.thunderbird.net`. Neither passes
+through this Worker.
+
+## Logging
+
+Workers observability is disabled (`[observability] enabled = false` in
+`wrangler.toml`) so the upgrade URL (which contains the bearer token
+until this Worker strips it) is never written to Cloudflare Logs. The
+Worker itself does not call `console.*`. Stalwart never sees the
+credential in the URL because both `access_token` and `basic` are
+removed before the upstream request is built.
 
 ## Bound at
 
@@ -56,42 +55,27 @@ npm install                              # one time
 CLOUDFLARE_API_TOKEN=<token> wrangler deploy
 ```
 
-If you only have a legacy global API key (`CF_KEY` + `CF_EMAIL`),
-wrangler also accepts those via env.
-
-Verify:
+## Verify
 
 ```bash
-curl -i \
-  -H "Origin: https://webmail.stage-thundermail.com" \
-  https://wsmail.stage-thundermail.com/.well-known/jmap
-
 wscat -c "wss://wsmail.stage-thundermail.com/jmap/ws?access_token=$(cat /tmp/jwt)" -s jmap
 > {"@type":"WebSocketPushEnable","dataTypes":["Mailbox","Email"]}
 ```
+
+Any non-WebSocket request gets `426 Upgrade Required`.
 
 ## Client wiring
 
 Stormbox defaults are host-aware:
 
-- `webmail.stage-thundermail.com` uses `https://wsmail.stage-thundermail.com`
-- `webmail.thundermail.com` uses `https://wsmail.thundermail.com`
+- `webmail.stage-thundermail.com` uses `https://wsmail.stage-thundermail.com/jmap/ws`
+- `webmail.thundermail.com` uses `https://wsmail.thundermail.com/jmap/ws`
 
-`VITE_JMAP_SERVER_URL` and `VITE_JMAP_WS_PROXY` still override those
-defaults. `JmapTransport.openWebSocket()` constructs the URL like:
+`VITE_JMAP_WS_PROXY` overrides the default. `JmapTransport.openWebSocket()`
+constructs the URL like:
 
 ```js
 const wsUrl = new URL(import.meta.env.VITE_JMAP_WS_PROXY ?? wsCap.url);
 wsUrl.searchParams.set('access_token', bearer);
 new WebSocket(wsUrl.toString(), ['jmap']);
-```
-
-The session document is proxied too; the Worker rewrites Stalwart's
-advertised JMAP URLs from `mail.*` back to `wsmail.*`, so follow-up
-HTTP calls stay on the proxy.
-
-## Tail logs
-
-```bash
-wrangler tail
 ```

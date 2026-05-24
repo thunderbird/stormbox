@@ -1,4 +1,11 @@
-function defaultJmapProxyUrl(hostname = globalThis.location?.hostname): string {
+export function defaultJmapServerUrl(hostname = globalThis.location?.hostname): string {
+  if (hostname === "webmail.thundermail.com") {
+    return "https://mail.thundermail.com";
+  }
+  return "https://mail.stage-thundermail.com";
+}
+
+export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname): string {
   if (hostname === "webmail.thundermail.com") {
     return "https://wsmail.thundermail.com";
   }
@@ -28,13 +35,13 @@ export function sendUrlForHostname(hostname = globalThis.location?.hostname): st
 
 export function senderAvatarProxyUrlForHostname(hostname = globalThis.location?.hostname): string {
   if (hostname === "webmail.thundermail.com" || hostname === "webmail.stage-thundermail.com") {
-    return `${defaultJmapProxyUrl(hostname)}/sender-avatar`;
+    return "https://avatars.thunderbird.net";
   }
   return "";
 }
 
 export const JMAP_SERVER_URL =
-  import.meta.env.VITE_JMAP_SERVER_URL || defaultJmapProxyUrl();
+  import.meta.env.VITE_JMAP_SERVER_URL || defaultJmapServerUrl();
 
 export const ACCOUNTS_URL =
   import.meta.env.VITE_ACCOUNTS_URL || accountsUrlForHostname();
@@ -52,18 +59,19 @@ export const OIDC_CLIENT_ID =
   import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox-test";
 
 /**
- * URL of the JMAP-over-WebSocket proxy. Stalwart's /jmap/ws only
- * authenticates via the HTTP Authorization header, which browsers
- * cannot set on a WebSocket upgrade. The proxy at wsmail.stage-...
- * reads the credential off the URL query string and synthesises the
- * header upstream. See stormbox/infra/ws-proxy.
+ * URL of the JMAP-over-WebSocket auth bridge. Stalwart's /jmap/ws
+ * only authenticates via the HTTP Authorization header, which
+ * browsers cannot set on a WebSocket upgrade. The Worker at
+ * wsmail.stage-thundermail.com / wsmail.thundermail.com reads the
+ * credential off the URL query string and synthesises the header
+ * upstream. See stormbox/infra/ws-proxy.
  *
  * Set to an empty string to fall back to the URL Stalwart advertises
  * in the session document (and accept that the open will fail in any
  * browser).
  */
 export const JMAP_WS_PROXY_URL =
-  import.meta.env.VITE_JMAP_WS_PROXY ?? `${defaultJmapProxyUrl()}/jmap/ws`;
+  import.meta.env.VITE_JMAP_WS_PROXY ?? `${defaultJmapWsProxyUrl()}/jmap/ws`;
 
 /**
  * Optional same-origin/edge proxy for sender domain icons. An empty

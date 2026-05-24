@@ -2,7 +2,7 @@
   "name": "stormbox-ws-proxy",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker that proxies JMAP HTTP with CORS and bridges browser WebSocket auth.",
+  "description": "Cloudflare Worker that bridges browser WebSocket auth for Stalwart's JMAP /jmap/ws.",
   "scripts": {
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",

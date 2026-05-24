@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   accountsUrlForHostname,
   appointmentUrlForHostname,
+  defaultJmapServerUrl,
+  defaultJmapWsProxyUrl,
   sendUrlForHostname,
   senderAvatarProxyUrlForHostname,
 } from '../../src/defines.js';
@@ -57,12 +59,34 @@ describe('sendUrlForHostname', () => {
 
 describe('senderAvatarProxyUrlForHostname', () => {
   it('uses the hosted proxy for Thunderbird webmail hosts', () => {
-    expect(senderAvatarProxyUrlForHostname('webmail.stage-thundermail.com')).toBe('https://wsmail.stage-thundermail.com/sender-avatar');
-    expect(senderAvatarProxyUrlForHostname('webmail.thundermail.com')).toBe('https://wsmail.thundermail.com/sender-avatar');
+    expect(senderAvatarProxyUrlForHostname('webmail.stage-thundermail.com')).toBe('https://avatars.thunderbird.net');
+    expect(senderAvatarProxyUrlForHostname('webmail.thundermail.com')).toBe('https://avatars.thunderbird.net');
   });
 
   it('defaults to disabled for local and self-hosted origins', () => {
     expect(senderAvatarProxyUrlForHostname('localhost')).toBe('');
     expect(senderAvatarProxyUrlForHostname('mail.example.com')).toBe('');
+  });
+});
+
+describe('defaultJmapServerUrl', () => {
+  it('points the production webmail host directly at the production Stalwart host', () => {
+    expect(defaultJmapServerUrl('webmail.thundermail.com')).toBe('https://mail.thundermail.com');
+  });
+
+  it('points every non-production host at the stage Stalwart host', () => {
+    expect(defaultJmapServerUrl('webmail.stage-thundermail.com')).toBe('https://mail.stage-thundermail.com');
+    expect(defaultJmapServerUrl('localhost')).toBe('https://mail.stage-thundermail.com');
+  });
+});
+
+describe('defaultJmapWsProxyUrl', () => {
+  it('points the production webmail host at the production WebSocket auth bridge', () => {
+    expect(defaultJmapWsProxyUrl('webmail.thundermail.com')).toBe('https://wsmail.thundermail.com');
+  });
+
+  it('points every non-production host at the stage WebSocket auth bridge', () => {
+    expect(defaultJmapWsProxyUrl('webmail.stage-thundermail.com')).toBe('https://wsmail.stage-thundermail.com');
+    expect(defaultJmapWsProxyUrl('localhost')).toBe('https://wsmail.stage-thundermail.com');
   });
 });
