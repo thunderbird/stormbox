@@ -303,7 +303,7 @@ function collectMessageIds(row, request) {
  *     draftsFolderId?, sentFolderId?, outboxFolderId?,
  *   }
  */
-async function runSend({ transport, account, handlers, row, request, useWebSocket }) {
+async function runSend({ transport, account, handlers, row: _row, request, useWebSocket }) {
   const identity = await resolveIdentity(handlers, account, request.identityId);
   if (!identity) {
     return { ok: false, error: { type: 'unknownIdentity' } };

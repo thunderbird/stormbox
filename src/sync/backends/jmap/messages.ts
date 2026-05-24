@@ -571,16 +571,6 @@ async function recordQueryViewRange({ handlers, viewId, start, end }) {
   });
 }
 
-async function engineSelectRemoteIds(handlers, accountId, remoteIds) {
-  if (remoteIds.length === 0) return [];
-  const placeholders = remoteIds.map(() => '?').join(',');
-  return handlers[DB_RPC.QUERY]({
-    sql: `SELECT remote_id FROM messages
-           WHERE account_id = ? AND remote_id IN (${placeholders})`,
-    params: [accountId, ...remoteIds],
-  });
-}
-
 function addressesFromEmail(email) {
   const out = [];
   for (const kind of ADDRESS_KINDS) {

@@ -38,7 +38,7 @@ export function normalizeDomain(value: string | null | undefined): string {
   if (!raw || raw.length > 253) return '';
   if (/[\s/:?#@\\[\]]/.test(raw)) return '';
 
-  let hostname = '';
+  let hostname: string;
   try {
     hostname = new URL(`https://${raw}`).hostname.toLowerCase().replace(/\.+$/, '');
   } catch {

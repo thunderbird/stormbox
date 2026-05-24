@@ -35,7 +35,6 @@ declare module '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS.js' {
     idbName?: string;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-namespace
   export namespace IDBBatchAtomicVFS {
     /**
      * Async factory matching the runtime API in the JS source. The

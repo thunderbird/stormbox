@@ -332,7 +332,7 @@ describe('selectFolder', () => {
     // visit corrects state.total to 1, leaving the folder and
     // returning must not reset it to the stale 4.
     const folder = makeFolder(1, { total_emails: 4 });
-    let serverTotal = 1;
+    const serverTotal = 1;
     const view = {
       rows: [makeRow(1)],
       get total() { return serverTotal; },

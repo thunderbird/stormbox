@@ -205,7 +205,6 @@ afterEach(async () => {
   await engine.close();
   // Suppress the "node:worker_threads BroadcastChannel reference"
   // warning that vitest's environment cleanup otherwise prints.
-  // eslint-disable-next-line no-param-reassign
   serverState = null;
 });
 

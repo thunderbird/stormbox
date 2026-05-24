@@ -25,9 +25,9 @@ import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/use-body-prefetch.js';
 import { TABLE_FAMILIES } from '../db/protocol.js';
-import { MUTATION_TYPE, VIEW_TYPE } from '../constants/states';
+import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
-import type { FolderRow, MessageBody, MessageRow, PendingMutationRow, QueryViewProgress } from '../types';
+import type { FolderRow, MessageRow, QueryViewProgress } from '../types';
 import type { Repository } from '../db/repository.js';
 import type { CachedRow, FolderCache } from './mail-store-types';
 

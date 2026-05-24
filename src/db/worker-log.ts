@@ -35,7 +35,6 @@ export function workerLog(level, source, ...args) {
     .join(' ');
   // Always also log inside the worker, so anyone with worker devtools
   // open sees it. The broadcast hop is for tabs.
-  // eslint-disable-next-line no-console
   (console[level] ?? console.log)(`[${source}]`, message);
   if (channel) {
     try {

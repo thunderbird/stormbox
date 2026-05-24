@@ -186,7 +186,7 @@ function updateToolbarState(pathOverride = null) {
   try {
     range = squire.getSelection();
   } catch {
-    range = null;
+    // Selection may be unavailable mid-update; fall through with range=null.
   }
 
   const path = pathOverride ?? squire.getPath();
@@ -304,10 +304,14 @@ function ensureEditorBlocks() {
 function toggleList(type: 'UL' | 'OL') {
   runEditorCommand((editor: any) => {
     const path = editor.getPath();
-    if (type === 'UL') {
-      /(?:^|>)UL/.test(path) ? editor.removeList() : editor.makeUnorderedList();
+    const tag = type === 'UL' ? 'UL' : 'OL';
+    const inList = new RegExp(`(?:^|>)${tag}`).test(path);
+    if (inList) {
+      editor.removeList();
+    } else if (type === 'UL') {
+      editor.makeUnorderedList();
     } else {
-      /(?:^|>)OL/.test(path) ? editor.removeList() : editor.makeOrderedList();
+      editor.makeOrderedList();
     }
   });
 }
@@ -317,11 +321,15 @@ function adjustIndent(delta: number) {
     const path = editor.getPath();
     const inList = /(?:^|>)[OU]L/.test(path);
     const inQuote = /(?:^|>)BLOCKQUOTE/.test(path);
+    const useListLevel = inList && !inQuote;
 
     if (delta > 0) {
-      inList && !inQuote ? editor.increaseListLevel() : editor.increaseQuoteLevel();
+      if (useListLevel) editor.increaseListLevel();
+      else editor.increaseQuoteLevel();
+    } else if (useListLevel) {
+      editor.decreaseListLevel();
     } else {
-      inList && !inQuote ? editor.decreaseListLevel() : editor.decreaseQuoteLevel();
+      editor.decreaseQuoteLevel();
     }
   });
 }
