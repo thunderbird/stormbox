@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ChevronDown, Moon, Plus, Sun } from 'lucide-vue-next';
+import { ChevronDown, Moon, Plus, Sun, X } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
 import { APPOINTMENT_URL, SEND_URL } from './defines.js';
@@ -146,6 +146,14 @@ function startCompose() {
 
 function setQuickFilterQuery(event: Event) {
   const next = (event.target as HTMLInputElement | null)?.value ?? '';
+  updateQuickFilterQuery(next);
+}
+
+function clearQuickFilterQuery() {
+  updateQuickFilterQuery('');
+}
+
+function updateQuickFilterQuery(next: string) {
   if (next === quickFilterQuery.value) return;
   if (mailStore.selectedMessageId != null) {
     mailStore.selectMessage(null);
@@ -430,6 +438,16 @@ function clamp(value: number, min: number, max: number) {
           spellcheck="false"
           @input="setQuickFilterQuery"
         />
+        <button
+          v-if="quickFilterQuery.length > 0"
+          class="quick-filter__clear"
+          type="button"
+          aria-label="Clear Quick Filter"
+          title="Clear Quick Filter"
+          @click="clearQuickFilterQuery"
+        >
+          <X :size="17" :stroke-width="2.25" aria-hidden="true" />
+        </button>
       </div>
 
       <div class="quick-filter__actions">
@@ -700,6 +718,7 @@ function clamp(value: number, min: number, max: number) {
   outline: none;
 }
 .quick-filter__search {
+  position: relative;
   width: clamp(160px, 40vw, 520px);
 }
 .quick-filter__input {
@@ -711,7 +730,7 @@ function clamp(value: number, min: number, max: number) {
   color: var(--text);
   font: inherit;
   font-size: 14px;
-  padding: 0 16px;
+  padding: 0 40px 0 16px;
   outline: none;
   box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
 }
@@ -721,6 +740,34 @@ function clamp(value: number, min: number, max: number) {
 .quick-filter__input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.quick-filter__clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+.quick-filter__clear svg {
+  display: block;
+}
+.quick-filter__clear:hover,
+.quick-filter__clear:focus-visible {
+  background: var(--rowHover);
+  border-color: var(--border-soft);
+  color: var(--text);
+  outline: none;
 }
 
 @media (max-width: 640px) {
