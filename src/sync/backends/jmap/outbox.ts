@@ -294,20 +294,30 @@ function collectMessageIds(row, request) {
  * one round trip, with onSuccessUpdateEmail moving the message out of
  * the Outbox/Drafts folder and into Sent on success.
  *
- * request shape:
+ * request shape (all ids are local row ids, resolved here):
  *   {
- *     identityId: 'i1',
- *     from: { name?, email },
+ *     identityId: <local identity row id>,
  *     to: [{ name?, email }, ...],
  *     cc, bcc, replyTo, subject,
  *     textBody?, htmlBody?,
- *     draftsRemoteId?, sentRemoteId?, outboxRemoteId?,
+ *     draftsFolderId?, sentFolderId?, outboxFolderId?,
  *   }
  */
 async function runSend({ transport, account, handlers, row, request, useWebSocket }) {
-  const targetBox = request.outboxRemoteId
-    ?? request.draftsRemoteId
-    ?? null;
+  const identity = await resolveIdentity(handlers, account, request.identityId);
+  if (!identity) {
+    return { ok: false, error: { type: 'unknownIdentity' } };
+  }
+  const folderRemoteIds = await resolveFolderRemoteIds(handlers, [
+    request.draftsFolderId,
+    request.sentFolderId,
+    request.outboxFolderId,
+  ]);
+  const draftsRemoteId = folderRemoteIds[0];
+  const sentRemoteId = folderRemoteIds[1];
+  const outboxRemoteId = folderRemoteIds[2];
+
+  const targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
   const hasHtml = !!(request.htmlBody && /\S/.test(request.htmlBody));
   const [bodyStructure, bodyValues] = hasHtml
     ? [
@@ -327,10 +337,10 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
 
   const emailCreate = {
     ...(targetBox ? { mailboxIds: { [targetBox]: true } } : {}),
-    ...(targetBox === request.draftsRemoteId ? { keywords: { $draft: true } } : {}),
+    ...(targetBox === draftsRemoteId ? { keywords: { $draft: true } } : {}),
     from: [{
-      ...(request.from?.name ? { name: request.from.name } : {}),
-      email: request.from.email,
+      ...(identity.name ? { name: identity.name } : {}),
+      email: identity.email,
     }],
     to: request.to ?? [],
     ...(request.cc?.length ? { cc: request.cc } : {}),
@@ -342,7 +352,7 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   };
 
   const onSuccessUpdate = {
-    ...(request.sentRemoteId ? { [`mailboxIds/${request.sentRemoteId}`]: true } : {}),
+    ...(sentRemoteId ? { [`mailboxIds/${sentRemoteId}`]: true } : {}),
     ...(targetBox ? { [`mailboxIds/${targetBox}`]: null } : {}),
     'keywords/$draft': null,
   };
@@ -357,10 +367,10 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
           accountId: account.remote_account_id,
           create: {
             s1: {
-              identityId: request.identityId,
+              identityId: identity.remote_id,
               emailId: '#c1',
               envelope: {
-                mailFrom: { email: request.from.email },
+                mailFrom: { email: identity.email },
                 rcptTo: (request.to ?? []).map((a) => ({ email: a.email })),
               },
             },
@@ -391,7 +401,7 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
     handlers,
     useWebSocket,
     createdRemoteId,
-    sentRemoteId: request.sentRemoteId ?? null,
+    sentRemoteId,
   });
 
   return { ok: true, response: result };
@@ -462,6 +472,49 @@ async function resolveRemoteFolderIds(handlers, localIds) {
     params: localIds,
   });
   return rows.map((r) => r.remote_id);
+}
+
+/**
+ * Position-preserving variant of resolveRemoteFolderIds. Returns the
+ * remote_id at the same array index as the input local id, or null if
+ * the id is missing or no folders row matches. Used by send to
+ * translate (draftsFolderId, sentFolderId, outboxFolderId) into the
+ * matching JMAP mailbox ids without losing the slot ordering.
+ */
+async function resolveFolderRemoteIds(handlers, localIds) {
+  const result = new Array(localIds.length).fill(null);
+  const numericById = new Map();
+  for (let i = 0; i < localIds.length; i += 1) {
+    const id = Number(localIds[i]);
+    if (!Number.isFinite(id)) continue;
+    if (!numericById.has(id)) numericById.set(id, []);
+    numericById.get(id).push(i);
+  }
+  if (numericById.size === 0) return result;
+  const ids = [...numericById.keys()];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id, remote_id FROM folders WHERE id IN (${placeholders})`,
+    params: ids,
+  });
+  for (const row of rows) {
+    const slots = numericById.get(Number(row.id));
+    if (!slots) continue;
+    for (const slot of slots) result[slot] = row.remote_id ?? null;
+  }
+  return result;
+}
+
+async function resolveIdentity(handlers, account, localIdentityId) {
+  const id = Number(localIdentityId);
+  if (!Number.isFinite(id)) return null;
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id, remote_id, name, email
+            FROM identities
+           WHERE account_id = ? AND id = ?`,
+    params: [account.id, id],
+  });
+  return rows[0] ?? null;
 }
 
 async function markRow(handlers, id, status) {

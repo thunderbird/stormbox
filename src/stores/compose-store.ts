@@ -227,22 +227,27 @@ export const useComposeStore = defineStore('compose', () => {
     status.value = COMPOSE_STATE.SENDING;
     error.value = null;
     try {
+      // Mutation payload carries local row ids only; the JMAP outbox
+      // resolves identity and folder remote ids at dispatch time, the
+      // same way moveToFolders / setKeywords / destroy already do.
+      // Keeping protocol values out of the store keeps the layer
+      // boundary clean and lets a non-JMAP backend reuse the row
+      // shape unchanged.
       const mutation = await repo.insertPendingMutation({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SEND,
         targetMessageId: null,
         requestJson: JSON.stringify({
-          identityId: identity.remote_id,
-          from: { name: identity.name, email: identity.email },
+          identityId: identity.id,
           to: toList,
           cc: parseAddressList(draft.cc),
           bcc: parseAddressList(draft.bcc),
           subject: draft.subject,
           textBody: draft.textBody,
           htmlBody: draft.htmlBody,
-          draftsRemoteId: drafts?.remote_id ?? null,
-          sentRemoteId: sent?.remote_id ?? null,
-          outboxRemoteId: outbox?.remote_id ?? null,
+          draftsFolderId: drafts?.id ?? null,
+          sentFolderId: sent?.id ?? null,
+          outboxFolderId: outbox?.id ?? null,
         }),
         optimisticPatchJson: null,
       });

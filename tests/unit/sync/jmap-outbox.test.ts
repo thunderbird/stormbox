@@ -289,19 +289,50 @@ describe('drainOutbox', () => {
   });
 
   it('runs send via Email/set + EmailSubmission/set with onSuccessUpdateEmail', async () => {
+    // Seed Drafts and Sent folders plus an identity so the local-id
+    // payload can be resolved at dispatch.
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
+        { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
+      ],
+    });
+    const drafts = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-drafts'],
+    );
+    const sent = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-sent'],
+    );
+    await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
+      accountId: account.id,
+      identities: [{
+        remoteId: 'id-1',
+        name: 'Tester',
+        email: 'tester@example.com',
+        replyToJson: null,
+        rawJson: null,
+      }],
+    });
+    const identity = await engine.get(
+      'SELECT id FROM identities WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'id-1'],
+    );
+
     await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,
       mutationType: MUTATION_TYPES.SEND,
       requestJson: JSON.stringify({
-        identityId: 'id-1',
-        from: { name: 'Tester', email: 'tester@example.com' },
+        identityId: identity.id,
         to: [{ email: 'rcpt@example.com' }],
         subject: 'Hello',
         textBody: 'Hi.',
         htmlBody: '<p>Hi.</p>',
-        draftsRemoteId: 'mb-drafts',
-        sentRemoteId: 'mb-sent',
-        outboxRemoteId: null,
+        draftsFolderId: drafts.id,
+        sentFolderId: sent.id,
+        outboxFolderId: null,
       }),
     });
 
@@ -355,5 +386,38 @@ describe('drainOutbox', () => {
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
+  });
+
+  it('fails cleanly when identityId does not resolve to a local row', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      requestJson: JSON.stringify({
+        identityId: 9999,
+        to: [{ email: 'rcpt@example.com' }],
+        subject: 'Hello',
+        textBody: 'Hi.',
+        htmlBody: '',
+        draftsFolderId: null,
+        sentFolderId: null,
+        outboxFolderId: null,
+      }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => {
+      throw new Error('Email/set must not be called when identity is missing');
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations
+        WHERE mutation_type = ?`,
+      [MUTATION_TYPES.SEND],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('unknownIdentity');
   });
 });
