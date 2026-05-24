@@ -23,6 +23,7 @@ import {
   makeForwardSubject,
   makeReplySubject,
 } from '../utils/compose-quote.js';
+import { parseAddressList } from '../utils/address-list.js';
 
 interface Draft {
   fromIdx: number;
@@ -32,11 +33,6 @@ interface Draft {
   subject: string;
   textBody: string;
   htmlBody: string;
-}
-
-interface ParsedAddress {
-  name?: string;
-  email: string;
 }
 
 const EMPTY_DRAFT: Readonly<Draft> = Object.freeze({
@@ -298,18 +294,3 @@ export const useComposeStore = defineStore('compose', () => {
     send,
   };
 });
-
-function parseAddressList(input: string): ParsedAddress[] {
-  if (!input) return [];
-  return input
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const m = part.match(/^(.+?)\s*<(.+?)>$/);
-      if (m) {
-        return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
-      }
-      return { email: part };
-    });
-}

@@ -4,15 +4,11 @@ import { computed, ref } from 'vue';
 import { useMailStore } from '../stores/mail-store.js';
 import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
 import FolderNode from './FolderNode.vue';
-import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
-import draftIcon from '../assets/icons/tb-folder-draft.svg?raw';
-import folderIcon from '../assets/icons/tb-folder.svg?raw';
-import inboxIcon from '../assets/icons/tb-folder-inbox.svg?raw';
-import newsletterIcon from '../assets/icons/tb-folder-newsletter.svg?raw';
-import rssFolderIcon from '../assets/icons/tb-folder-rss.svg?raw';
-import sentIcon from '../assets/icons/tb-folder-sent.svg?raw';
-import spamIcon from '../assets/icons/tb-folder-spam.svg?raw';
-import trashIcon from '../assets/icons/tb-folder-trash.svg?raw';
+import {
+  folderPresentation,
+  folderSortKey,
+  isMainFolder,
+} from '../utils/folder-presentation.js';
 
 const mailStore = useMailStore();
 const dragOverFolderId = ref(null);
@@ -24,36 +20,6 @@ const {
   endMessageDrag,
 } = useMessageDragDrop();
 
-const ROLE_ICON = {
-  inbox: inboxIcon,
-  sent: sentIcon,
-  drafts: draftIcon,
-  archive: archiveIcon,
-  trash: trashIcon,
-  junk: spamIcon,
-};
-
-const ROLE_COLOR = {
-  inbox: '#1a73e8',
-  sent: '#188038',
-  drafts: '#7e22ce',
-  archive: '#8b5a2b',
-  trash: '#5f6368',
-  junk: '#d93025',
-  important: '#f9ab00',
-  flagged: '#c5221f',
-  all: '#5f6368',
-};
-
-const DEFAULT_FOLDER_BY_NAME = {
-  newsletters: { icon: newsletterIcon, color: '#7378a6' },
-  feeds: { icon: rssFolderIcon, color: '#f97316' },
-};
-
-// Goldenrod tone matches the default folder icon color in Thunderbird Desktop
-// so user-created folders read as Thunderbird folders rather than greyed-out.
-const DEFAULT_FOLDER_COLOR = '#e4b85c';
-
 const tree = computed(() => {
   const byParent = new Map();
   for (const folder of mailStore.folders) {
@@ -63,7 +29,7 @@ const tree = computed(() => {
     byParent.get(key).push(folder);
   }
   for (const list of byParent.values()) {
-    list.sort((a, b) => sortKey(a) - sortKey(b) || a.name.localeCompare(b.name));
+    list.sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
   }
   function children(id) { return byParent.get(id) ?? []; }
   function build(folder, depth) {
@@ -82,34 +48,6 @@ const tree = computed(() => {
 
 const mainFolders = computed(() => tree.value.filter(isMainFolder));
 const userFolders = computed(() => tree.value.filter((f) => !isMainFolder(f)));
-
-function folderPresentation(folder) {
-  const namedDefault = DEFAULT_FOLDER_BY_NAME[defaultFolderKey(folder.name)];
-  return {
-    icon: ROLE_ICON[folder.role] ?? namedDefault?.icon ?? folderIcon,
-    color: ROLE_COLOR[folder.role] ?? namedDefault?.color ?? DEFAULT_FOLDER_COLOR,
-  };
-}
-
-function isMainFolder(folder) {
-  return folder.role != null && ROLE_ICON[folder.role] != null;
-}
-
-function defaultFolderKey(name) {
-  return String(name ?? '').trim().toLowerCase();
-}
-
-function sortKey(folder) {
-  switch (folder.role) {
-    case 'inbox': return 0;
-    case 'drafts': return 1;
-    case 'sent': return 2;
-    case 'archive': return 3;
-    case 'junk': return 4;
-    case 'trash': return 5;
-    default: return 100;
-  }
-}
 
 function pickFolder(id) { mailStore.selectFolder(id); }
 

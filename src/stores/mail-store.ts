@@ -23,45 +23,13 @@ import { computed, ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store';
+import { useBodyPrefetch } from '../composables/use-body-prefetch.js';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import { MUTATION_TYPE, VIEW_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
 import type { FolderRow, MessageBody, MessageRow, PendingMutationRow, QueryViewProgress } from '../types';
 import type { Repository } from '../db/repository.js';
-
-type CachedRow = MessageRow | undefined;
-
-interface FolderCache {
-  folderId: number;
-  total: number;
-  rows: CachedRow[];
-  paintedRanges: Array<{ start: number; end: number }>;
-  sortProp: JmapViewSort;
-  scrollTop: number;
-  pageInflight: Promise<void> | null;
-  requestedRange: { start: number; end: number } | null;
-  needsFreshWindow?: boolean;
-  didInitialBodyPrefetch?: boolean;
-  lastFailedRange?: { start: number; end: number } | null;
-  /**
-   * Set after a single drift-driven rebuild attempt during this folder
-   * visit so a persistent server-vs-membership disagreement cannot
-   * loop the canonical view through endless resets. Cleared by
-   * invalidateFolderStateForFreshWindow (refresh button, move to dest)
-   * so a manual recovery path can try again.
-   */
-  driftRebuildAttempted?: boolean;
-  driftCheckInflight?: Promise<void> | null;
-  /**
-   * Single-flight guard for `expandFolderViewIntoMemory`. The Unread
-   * and quick filters need every cached row in the canonical view —
-   * not just the positional window the virtualizer happens to have
-   * pulled — so the filter can match across the whole folder. Two
-   * parallel filter toggles on the same folder should coalesce into
-   * one SQLite read and one reactive assignment.
-   */
-  expandInflight?: Promise<void> | null;
-}
+import type { CachedRow, FolderCache } from './mail-store-types';
 
 interface MutationOutcome {
   attempted: number;
@@ -83,16 +51,6 @@ interface PendingMutationInsert {
 // positional reads. ~100 metadata records per Email/get is well below
 // the ~50KB-per-record envelope and fits in one WS frame.
 const PAGE_SIZE = 100;
-// Body prefetch batch size. Sized to the typical virtualizer visible
-// window (~10-15 rows on a 1080p screen plus 8-row overscan, ≈25)
-// so one Email/get round trip covers everything the user can see
-// after a scroll-pause. Per-message wall-clock for an Email/get with
-// bodies is ~50 ms; 25 = ~1.5 s per batch, which is bounded by the
-// single-concurrency drain so we never pile up parallel batches.
-// The worker's `_bodyFetchInflight` map keeps a user click during
-// the batch from issuing a duplicate Email/get for the same id.
-const BODY_PREFETCH_BATCH = 25;
-const INITIAL_BODY_PREFETCH = 5;
 
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
@@ -114,9 +72,19 @@ export const useMailStore = defineStore('mail', () => {
   // Vue's reactivity picks up changes — same pattern useListSelection
   // uses.
   const selectedIds = ref<Set<number>>(new Set());
-  const messageBody = ref<MessageBody | null>(null);
   const isLoading = ref(false);
   const error = ref<string | null>(null);
+
+  // Body prefetch + display-fetch queue. Owns its own ids/token
+  // state and the messageBody ref; the store reaches into it
+  // through nextDisplayToken() / loadBodyForDisplay() during
+  // selectMessage and broadcasts.
+  const bodyPrefetch = useBodyPrefetch({
+    getRepo: () => repo,
+    getAccountId: () => authStore.accountId ?? null,
+    isSelected: (messageId) => selectedMessageId.value === messageId,
+  });
+  const messageBody = bodyPrefetch.messageBody;
 
   /**
    * Per-folder cache. Keys live as long as the store does (i.e. as
@@ -138,10 +106,6 @@ export const useMailStore = defineStore('mail', () => {
 
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
-  let bodyFetchToken = 0;
-  const bodyQueue: number[] = [];
-  const bodyQueued: Set<number> = new Set();
-  let bodyPrefetchRunning = false;
 
   // Single-flight + re-run flag for refreshLoadedPages so a burst of
   // MESSAGES broadcasts coalesces into one cache re-read at the end
@@ -193,8 +157,7 @@ export const useMailStore = defineStore('mail', () => {
           folderProgress.value = new Map();
           folderStates.clear();
           folderState = null;
-          bodyQueue.length = 0;
-          bodyQueued.clear();
+          bodyPrefetch.clear();
         }
       },
       { immediate: true },
@@ -236,7 +199,10 @@ export const useMailStore = defineStore('mail', () => {
       }
       refreshFolderProgress();
       if (selectedMessageId.value != null) {
-        void loadMessageBodyForDisplay(selectedMessageId.value, bodyFetchToken);
+        // Re-issue a display load using a fresh token so a stale
+        // in-flight Email/get for the same id cannot land after
+        // this broadcast did and clobber the new body.
+        void bodyPrefetch.loadBodyForDisplay(selectedMessageId.value, bodyPrefetch.nextDisplayToken());
       }
     }
   }
@@ -1036,11 +1002,7 @@ export const useMailStore = defineStore('mail', () => {
     const shouldPrefetch = folder?.role === 'inbox' || isSmallFolder;
     if (!shouldPrefetch || state.didInitialBodyPrefetch) return;
     state.didInitialBodyPrefetch = true;
-    const ids = state.rows
-      .slice(0, INITIAL_BODY_PREFETCH)
-      .map((row) => row?.id)
-      .filter(Boolean);
-    enqueueBodyPrefetch(ids);
+    bodyPrefetch.enqueueInitialPrefetch(state.rows);
   }
 
   function nearbyMessageIds(messageId: number): number[] {
@@ -1049,111 +1011,36 @@ export const useMailStore = defineStore('mail', () => {
     const order = [idx, idx + 1, idx + 2, idx - 1];
     return order
       .map((i) => messages.value[i]?.id)
-      .filter(Boolean);
-  }
-
-  function enqueueBodyPrefetch(messageIds: Array<number | undefined | null>, { priority = false }: { priority?: boolean } = {}) {
-    if (!Array.isArray(messageIds) || messageIds.length === 0) return;
-    const deduped = [];
-    for (const id of messageIds) {
-      if (id == null || bodyQueued.has(id)) continue;
-      bodyQueued.add(id);
-      deduped.push(id);
-    }
-    if (deduped.length === 0) return;
-    if (priority) bodyQueue.unshift(...deduped);
-    else bodyQueue.push(...deduped);
-    drainBodyPrefetchQueue();
+      .filter((id): id is number => id != null);
   }
 
   /**
-   * Prefetch bodies for the virtualizer's visible window. Called from
-   * MessageList every time the user pauses scrolling (the watcher is
-   * throttled to 100 ms there).
-   *
-   * Keep this intentionally simple: enqueue any visible row whose
-   * metadata is loaded and whose body is not already cached. The
-   * existing bodyQueued Set dedupes pending ids. Display uses
-   * getMessageBodyForDisplay (priority fetch); prefetch is best-effort
-   * for scroll-ahead only.
-   *
-   * Sparse rows (undefined slots where the metadata hasn't loaded
-   * yet) are skipped silently; the next ensureLoaded round trip
-   * will fill them and the next scroll-pause will pick them up.
+   * Prefetch bodies for the virtualizer's visible window. Called
+   * from MessageList every time the user pauses scrolling (the
+   * watcher is throttled to 100 ms there). Delegates to the
+   * body-prefetch composable, which dedupes against its in-flight
+   * queue and skips rows whose body is already cached.
    */
   function enqueueVisibleBodyPrefetch(start: number, end: number) {
-    if (!repo || authStore.accountId == null) return;
-    const lo = Math.max(0, Number(start ?? 0));
-    const hi = Math.max(lo, Number(end ?? lo));
-    const rows = messages.value;
-    if (rows.length === 0 || hi <= lo) return;
-
-    const ids = [];
-    const upper = Math.min(hi, rows.length);
-    for (let i = lo; i < upper; i += 1) {
-      const row = rows[i];
-      if (!row || row.id == null) continue;
-      if (row.body_fetched_at != null) continue;
-      ids.push(row.id);
-    }
-    if (ids.length === 0) return;
-
-    enqueueBodyPrefetch(ids);
-  }
-
-  async function drainBodyPrefetchQueue() {
-    if (bodyPrefetchRunning || !repo || authStore.accountId == null) return;
-    bodyPrefetchRunning = true;
-    try {
-      while (bodyQueue.length > 0 && repo && authStore.accountId != null) {
-        const batch = bodyQueue.splice(0, BODY_PREFETCH_BATCH);
-        for (const id of batch) bodyQueued.delete(id);
-        await repo.ensureMessageBodies(authStore.accountId, batch);
-        // Yield so display-path RPCs can interleave between prefetch batches.
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    } catch (err) {
-      console.warn('[mail-store] body prefetch failed', err);
-    } finally {
-      bodyPrefetchRunning = false;
-      if (bodyQueue.length > 0) {
-        setTimeout(() => drainBodyPrefetchQueue(), 0);
-      }
-    }
+    bodyPrefetch.enqueueVisibleBodyPrefetch(start, end, messages.value);
   }
 
   /**
-   * Load body for the reading pane via the repository (cache read, then
-   * priority fetch on miss). Ignores stale responses after fast selection
-   * changes via bodyFetchToken.
-   */
-  async function loadMessageBodyForDisplay(messageId: number, token: number) {
-    if (!repo || authStore.accountId == null) return;
-    try {
-      const body = await repo.getMessageBodyForDisplay(authStore.accountId, messageId);
-      if (token === bodyFetchToken && selectedMessageId.value === messageId) {
-        messageBody.value = body;
-      }
-    } catch (err) {
-      console.warn('[mail-store] getMessageBodyForDisplay failed', err);
-    }
-  }
-
-  /**
-   * Open a message. The store only declares which message to show; the
-   * worker/sync layer handles cache vs network (including priority fetch
-   * during an in-flight prefetch batch).
+   * Open a message. The store only declares which message to show;
+   * the body-prefetch composable owns the actual Email/get path
+   * (including the token guard against fast selection churn) and
+   * the cache vs network decision.
    */
   function selectMessage(messageId: number | null) {
     selectedMessageId.value = messageId;
     if (messageId == null || authStore.accountId == null) {
-      messageBody.value = null;
+      bodyPrefetch.messageBody.value = null;
       return;
     }
 
-    const token = ++bodyFetchToken;
-    messageBody.value = null;
-    void loadMessageBodyForDisplay(messageId, token);
+    const token = bodyPrefetch.nextDisplayToken();
+    bodyPrefetch.messageBody.value = null;
+    void bodyPrefetch.loadBodyForDisplay(messageId, token);
 
     if (!_isSeenInList(messageId)) {
       markRead(messageId).catch((err) => {
@@ -1163,7 +1050,7 @@ export const useMailStore = defineStore('mail', () => {
 
     const neighbors = nearbyMessageIds(messageId).filter((id) => id !== messageId);
     if (neighbors.length > 0) {
-      enqueueBodyPrefetch(neighbors);
+      bodyPrefetch.enqueueBodyPrefetch(neighbors);
     }
   }
 
