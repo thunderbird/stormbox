@@ -941,9 +941,9 @@ export const useMailStore = defineStore('mail', () => {
    * required by R-2.8 and avoids the split-source bug where Unread
    * could appear to outnumber All.
    */
-  async function selectAllLoadedMessages({ unreadOnly = false } = {}) {
+  async function selectAllLoadedMessages({ unreadOnly = false }: { unreadOnly?: boolean } = {}): Promise<number> {
     const state = folderState;
-    let rows: Array<any | undefined> = messages.value;
+    let rows: CachedRow[] = messages.value;
 
     if (repo && authStore.accountId != null && state && state.folderId === currentFolderId.value) {
       const limit = Math.max(
