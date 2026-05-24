@@ -441,10 +441,11 @@ function normalizeFilterText(value) {
       <button
         class="msg-list__refresh"
         type="button"
+        :aria-label="mailStore.isLoading ? 'Refreshing' : 'Refresh'"
         :title="mailStore.isLoading ? 'Refreshing…' : 'Refresh'"
         @click="mailStore.refresh()"
       >
-        <RefreshCw :size="16" :stroke-width="1.75" :class="{ 'is-spinning': mailStore.isLoading }" />
+        <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': mailStore.isLoading }" />
       </button>
     </header>
 

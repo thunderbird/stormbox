@@ -548,7 +548,7 @@ async function send() {
     <div class="compose-dialog__card">
       <header>
         <h2>{{ composeStore.draft.subject || 'New Message' }}</h2>
-        <button type="button" class="icon" @click="composeStore.close()" aria-label="Close">×</button>
+        <button type="button" class="icon" @click="composeStore.close()" aria-label="Close" title="Close">×</button>
       </header>
 
       <div class="row">
