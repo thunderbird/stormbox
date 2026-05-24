@@ -37,6 +37,7 @@ import { JMAP_CAPS } from './transport.js';
 import {
   applyMoveLocally,
   applyDestroyLocally,
+  applySendLocally,
   reconcileMessageFromServer,
 } from './outbox-apply.js';
 
@@ -376,6 +377,23 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   if (submission?.notCreated && Object.values(submission.notCreated).length > 0) {
     return { ok: false, error: { type: 'notSubmitted', detail: submission.notCreated } };
   }
+
+  // Mirror the server-side onSuccessUpdateEmail in the local cache
+  // before resolving so listMessagesForView reads of Sent see the new
+  // row immediately. Skipping this would leave the row visible only
+  // after the JMAP push channel delivers the StateChange and
+  // syncEmailChanges runs, which the constitution forbids.
+  const emailSet = pickResponse(result, 'Email/set');
+  const createdRemoteId = emailSet?.created?.c1?.id ?? null;
+  await applySendLocally({
+    transport,
+    account,
+    handlers,
+    useWebSocket,
+    createdRemoteId,
+    sentRemoteId: request.sentRemoteId ?? null,
+  });
+
   return { ok: true, response: result };
 }
 

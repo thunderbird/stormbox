@@ -316,6 +316,28 @@ describe('drainOutbox', () => {
       submitParams = params;
       return { created: { s1: { id: 'sub-1', sendAt: '2026-05-01T12:00:00Z' } } };
     });
+    // Email/get follow-up is issued by applySendLocally so the local
+    // cache mirrors the server before drainOutbox resolves.
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        blobId: `b-${id}`,
+        threadId: 'thr-new',
+        mailboxIds: { 'mb-sent': true },
+        keywords: {},
+        size: 100,
+        receivedAt: '2026-05-01T12:00:00Z',
+        sentAt: '2026-05-01T12:00:00Z',
+        messageId: [`<${id}@example.com>`],
+        from: [{ email: 'tester@example.com' }],
+        to: [{ email: 'rcpt@example.com' }],
+        sender: [{ email: 'tester@example.com' }],
+        subject: 'Hello',
+        preview: 'Hi.',
+        hasAttachment: false,
+      })),
+      state: 'es',
+    }));
 
     const summary = await drainOutbox({ transport, account, handlers });
     expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });

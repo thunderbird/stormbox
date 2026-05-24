@@ -62,6 +62,85 @@ export async function applyDestroyLocally(handlers, account, { messageId }) {
   });
 }
 
+/**
+ * Apply a successful Email/set create + EmailSubmission/set send
+ * locally. The constitution requires the local cache to match the
+ * server before the mutation RPC resolves; without this step the new
+ * email would only land via a later StateChange push.
+ *
+ * Pulls the freshly-created email back from the server (its
+ * mailboxIds reflect the post-onSuccessUpdateEmail state, i.e. the
+ * Sent folder and not the transient Drafts/Outbox box used during
+ * create), persists it via persistEmails so messages and
+ * folder_messages match, and prepends the new remote_id at position 0
+ * in any open Sent mailbox-window query_view so a subsequent
+ * listMessagesForView read returns the row immediately.
+ *
+ * sentRemoteId is the JMAP mailbox id of Sent. With no sentRemoteId
+ * we still persist the message but skip the query_view update; the
+ * next folder visit will rebuild the window from the server.
+ */
+export async function applySendLocally({
+  transport, account, handlers, useWebSocket = false,
+  createdRemoteId, sentRemoteId,
+}) {
+  if (!createdRemoteId) return;
+  const payload = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [[
+      'Email/get',
+      {
+        accountId: account.remote_account_id,
+        ids: [createdRemoteId],
+        properties: EMAIL_LIST_PROPERTIES,
+      },
+      'r1',
+    ]],
+    useWebSocket,
+  });
+  const got = payload?.methodResponses?.find((r) => r[0] === 'Email/get')?.[1];
+  const email = got?.list?.[0];
+  if (!email) return;
+
+  await persistEmails({ account, emails: [email], handlers });
+
+  if (!sentRemoteId) return;
+  const folderRows = await handlers[DB_RPC.QUERY]({
+    sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+    params: [account.id, sentRemoteId],
+  });
+  const sentFolderId = folderRows[0]?.id;
+  if (sentFolderId == null) return;
+
+  // Prepend the new remote_id at position 0 of every open Sent
+  // mailbox-window query_view and bump total. Sent is sorted newest
+  // first, so position 0 is correct for any sort variant the open
+  // view holds.
+  const viewRows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id FROM query_views
+           WHERE account_id = ? AND folder_id = ?
+             AND view_type = 'mailbox-window'`,
+    params: [account.id, Number(sentFolderId)],
+  });
+  for (const view of viewRows) {
+    const viewId = Number(view.id);
+    const result = await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: [],
+      added: [{ id: createdRemoteId, index: 0 }],
+    });
+    if (Number(result?.added ?? 0) > 0) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `UPDATE query_views
+                 SET total = COALESCE(total, 0) + ?,
+                     updated_at = ?
+               WHERE id = ?`,
+        params: [Number(result.added), Date.now(), viewId],
+      });
+    }
+  }
+}
+
 async function dropFromActiveViews(handlers, account, { folderId, remoteId }) {
   // Still used by reconcileMessageFromServer when an Email/get
   // confirms the message moved out of a folder we expected it to

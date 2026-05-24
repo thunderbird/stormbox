@@ -31,9 +31,19 @@ import {
  * Stormbox enqueues a SEND mutation that chains Email/set +
  * EmailSubmission/set with onSuccessUpdateEmail to move the freshly
  * created draft into Sent. This spec drives the compose dialog through
- * Send and asserts the resulting message is present in Sent in the UI,
- * the local cache, and on the server (via direct Email/query against
- * the Sent mailbox).
+ * Send and asserts the resulting message is present in Sent in:
+ *   (1) the local cache, immediately after the SEND mutation drains
+ *       and before the user navigates to Sent — guards Constitution
+ *       IV.2 (cache matches server before runMutation resolves, no
+ *       reliance on the StateChange push to fill Sent),
+ *   (2) the UI, after navigating to Sent,
+ *   (3) the server, via direct Email/query against the Sent mailbox.
+ *
+ * The Sent folder is warmed up before send so a mailbox-window
+ * query_view exists for the SEND apply step to prepend into; without a
+ * pre-existing view the apply path can only persist the message and
+ * the row would still appear in listMessagesForView only after the
+ * next folder visit.
  */
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
@@ -101,6 +111,16 @@ test.describe('Compose + send e2e', () => {
       // has had a chance to populate the From dropdown.
       await waitForInboxReady(page);
 
+      // Warm up the Sent folder so a mailbox-window query_view exists
+      // before send runs. The post-send apply step prepends the new
+      // remote_id into existing Sent views; if no view exists it can
+      // only persist the message and the synchronous cache assertion
+      // below would have nothing positional to find. Realistic user
+      // behaviour: most users have visited Sent at least once before
+      // their next compose.
+      await clickFolder(page, sent.name);
+      await clickFolder(page, 'Inbox');
+
       // Open compose. Ctrl+N is the documented compose shortcut and is
       // already exercised in keyboard-shortcuts.spec.js; we use the UI
       // path here so this spec stands alone.
@@ -135,6 +155,37 @@ test.describe('Compose + send e2e', () => {
 
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
       await waitForPendingMutations(page);
+
+      // Synchronous cache check (Constitution IV.2): once the SEND
+      // mutation has drained, listMessagesForView for Sent must
+      // already contain the new email. The 2s polling budget catches
+      // the rAF/microtask hop between the worker write and the
+      // BroadcastChannel notification but is well under the
+      // StateChange push round trip; a regression to push-driven
+      // reconciliation will time out here on Chromium and Firefox.
+      const sentLocalId = await page.evaluate(async (sentRemoteId) => {
+        const accounts = await globalThis.__repo.listAccounts();
+        const folders = await globalThis.__repo.listFolders(accounts[0].id);
+        return folders.find((f) => f.remote_id === sentRemoteId)?.id ?? null;
+      }, sent.id);
+      expect(sentLocalId, 'Sent folder should be known locally after the warm-up').not.toBeNull();
+      await expect.poll(
+        async () => page.evaluate(async (folderId) => {
+          if (!globalThis.__repo) return [];
+          const accounts = await globalThis.__repo.listAccounts();
+          const accountId = accounts?.[0]?.id;
+          if (accountId == null) return [];
+          const rows = await globalThis.__repo.listMessagesForView({
+            accountId,
+            folderId,
+            sort: 'sent',
+            offset: 0,
+            limit: 5,
+          });
+          return rows.map((r) => r?.subject ?? null);
+        }, sentLocalId),
+        { timeout: 2_000, message: 'Sent cache should contain the sent message immediately after the SEND mutation drains' },
+      ).toContain(subject);
 
       // UI: the new message lands in Sent.
       await clickFolder(page, sent.name);

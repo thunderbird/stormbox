@@ -14,6 +14,7 @@ import { DB_RPC } from '../../../src/db/protocol.js';
 import {
   applyMoveLocally,
   applyDestroyLocally,
+  applySendLocally,
 } from '../../../src/sync/backends/jmap/outbox-apply.js';
 import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes.js';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages.js';
@@ -198,5 +199,166 @@ describe('applyDestroyLocally', () => {
     await applyDestroyLocally(handlers, account, { messageId: null });
 
     expect(await engine.get('SELECT id FROM messages WHERE id = ?', [messageId])).not.toBeNull();
+  });
+});
+
+describe('applySendLocally', () => {
+  let sent: any;
+
+  beforeEach(async () => {
+    // Replace the inbox+trash-only mailbox set with one that includes
+    // Sent so we can exercise the query_view prepend path.
+    const mailboxTransport = new MockTransport();
+    mailboxTransport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+        { id: 'mb-trash', name: 'Trash', role: 'trash' },
+        { id: 'mb-sent', name: 'Sent', role: 'sent' },
+      ],
+      state: 's1',
+    }));
+    await syncMailboxes({ transport: mailboxTransport, account, handlers });
+    sent = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-sent'],
+    );
+
+    // Seed an empty Sent mailbox-window query_view so the prepend
+    // path has something to operate on. Without a query_view the
+    // helper persists the message but skips the prepend, which is
+    // covered separately below.
+    const sentTransport = new MockTransport();
+    sentTransport.handle('Email/query', () => ({
+      ids: [], total: 0, queryState: 'sent-qs', canCalculateChanges: true, position: 0,
+    }));
+    sentTransport.handle('Email/get', () => ({ list: [], state: 'es' }));
+    await syncFolderWindow({
+      transport: sentTransport, account, folder: sent, handlers,
+    });
+  });
+
+  function sentEmailFixture(id: string) {
+    return {
+      ...emailFixture(id),
+      mailboxIds: { 'mb-sent': true },
+      keywords: {},
+      subject: 'Hello world',
+    };
+  }
+
+  async function loadSentView() {
+    return engine.get(
+      `SELECT id, total, stale FROM query_views
+        WHERE account_id = ? AND folder_id = ? AND view_type = 'mailbox-window'`,
+      [account.id, sent.id],
+    );
+  }
+
+  it('persists the new email and prepends it at position 0 of the open Sent view', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/get', (params: any) => ({
+      list: params.ids.map((id: string) => sentEmailFixture(id)),
+      state: 'es',
+    }));
+
+    await applySendLocally({
+      transport, account, handlers,
+      createdRemoteId: 'em-new',
+      sentRemoteId: 'mb-sent',
+    });
+
+    const newRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'em-new'],
+    );
+    expect(newRow).not.toBeNull();
+    expect(await loadFolderMemberships(Number(newRow.id))).toEqual([
+      { folder_id: sent.id },
+    ]);
+
+    const sentView = await loadSentView();
+    expect(Number(sentView.total)).toBe(1);
+    expect(await loadViewItems(sentView.id)).toEqual([
+      { position: 0, remote_id: 'em-new' },
+    ]);
+  });
+
+  it('shifts existing rows down when a Sent view already has entries', async () => {
+    // Seed an existing Sent message at position 0 so the prepend has
+    // to compact-up before insert.
+    const refillTransport = new MockTransport();
+    refillTransport.handle('Email/query', () => ({
+      ids: ['em-old'], total: 1, queryState: 'sent-qs2',
+      canCalculateChanges: true, position: 0,
+    }));
+    refillTransport.handle('Email/get', (params: any) => ({
+      list: params.ids.map((id: string) => sentEmailFixture(id)),
+      state: 'es',
+    }));
+    await syncFolderWindow({
+      transport: refillTransport, account, folder: sent, handlers,
+    });
+
+    const sendTransport = new MockTransport();
+    sendTransport.handle('Email/get', (params: any) => ({
+      list: params.ids.map((id: string) => sentEmailFixture(id)),
+      state: 'es',
+    }));
+
+    await applySendLocally({
+      transport: sendTransport, account, handlers,
+      createdRemoteId: 'em-new',
+      sentRemoteId: 'mb-sent',
+    });
+
+    const sentView = await loadSentView();
+    expect(Number(sentView.total)).toBe(2);
+    expect(await loadViewItems(sentView.id)).toEqual([
+      { position: 0, remote_id: 'em-new' },
+      { position: 1, remote_id: 'em-old' },
+    ]);
+  });
+
+  it('persists without touching query_views when the Sent folder is unknown locally', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/get', (params: any) => ({
+      list: params.ids.map((id: string) => sentEmailFixture(id)),
+      state: 'es',
+    }));
+
+    await applySendLocally({
+      transport, account, handlers,
+      createdRemoteId: 'em-new',
+      sentRemoteId: 'mb-unknown',
+    });
+
+    const newRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'em-new'],
+    );
+    expect(newRow).not.toBeNull();
+
+    const sentView = await loadSentView();
+    expect(Number(sentView.total)).toBe(0);
+    expect(await loadViewItems(sentView.id)).toEqual([]);
+  });
+
+  it('is a no-op when createdRemoteId is missing', async () => {
+    const transport = new MockTransport();
+    let getCalls = 0;
+    transport.handle('Email/get', () => {
+      getCalls += 1;
+      return { list: [], state: 'es' };
+    });
+
+    await applySendLocally({
+      transport, account, handlers,
+      createdRemoteId: null,
+      sentRemoteId: 'mb-sent',
+    });
+
+    expect(getCalls).toBe(0);
+    const sentView = await loadSentView();
+    expect(Number(sentView.total)).toBe(0);
   });
 });
