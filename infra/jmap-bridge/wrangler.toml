@@ -1,0 +1,44 @@
+name = "stormbox-jmap-bridge"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+account_id = "407a3cd7b36b3ec71bf765856c90ae8c"
+
+# Default `wrangler deploy` publishes to a *.workers.dev URL only.
+# That is the safe shape for developer machines: it gives a working
+# Worker URL for curl/Node smoke tests against either Stalwart
+# environment (via the X-Jmap-Bridge-Test-Upstream header) without
+# binding any production hostname. The actual auth-fronting deploy
+# only happens under `[env.production]`, which has to be opted into
+# explicitly with `wrangler deploy --env production`.
+workers_dev = true
+
+# Disable Workers observability. Every request through this Worker
+# carries Authorization material — either as an `Authorization`
+# header (HTTP path) or as a credential on the WebSocket upgrade URL
+# (WS path). Disabling observability keeps that material out of any
+# Cloudflare log destination this Worker controls. The Worker itself
+# does not call any logging API.
+[observability]
+enabled = false
+
+# ---------------------------------------------------------------------------
+# Production environment: gated, never auto-bound from default deploy.
+# Operator must run `wrangler deploy --env production`.
+# ---------------------------------------------------------------------------
+[env.production]
+workers_dev = false
+
+# All four bindings are Workers Custom Domains. Each one is a
+# dedicated hostname where the Worker owns the entire surface; there
+# are no path-scoped routes. Cloudflare manages the DNS record and
+# terminates TLS on its edge. The SPA at `webmail.*.thundermail.com`
+# is untouched — it stays on GitHub Pages with grey-cloud DNS.
+routes = [
+  { pattern = "wsmail.stage-thundermail.com", custom_domain = true },
+  { pattern = "wsmail.thundermail.com",       custom_domain = true },
+  { pattern = "jmap.stage-thundermail.com",   custom_domain = true },
+  { pattern = "jmap.thundermail.com",         custom_domain = true },
+]
+
+[env.production.observability]
+enabled = false

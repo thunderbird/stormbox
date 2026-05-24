@@ -14,11 +14,14 @@ The production bundle is written to `dist/`.
 
 ## Configuration
 
-Hosted stage/prod domains default to the Cloudflare JMAP Worker proxy configured
-in `src/defines.ts`. The Accounts menu link is selected there too:
+Hosted stage/prod domains default to the Cloudflare edge bridge at
+`infra/jmap-bridge/` configured in `src/defines.ts`. The Accounts menu link
+is selected there too:
 
-- `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
-- `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
+- `webmail.stage-thundermail.com` JMAP HTTP -> `https://jmap.stage-thundermail.com`
+- `webmail.stage-thundermail.com` JMAP WS  -> `https://wsmail.stage-thundermail.com`
+- `webmail.thundermail.com` JMAP HTTP -> `https://jmap.thundermail.com`
+- `webmail.thundermail.com` JMAP WS  -> `https://wsmail.thundermail.com`
 - dev/local -> `https://accounts-stage.tb.pro`
 - hosted stage -> `https://accounts-stage.tb.pro`
 - hosted prod -> `https://accounts.tb.pro`

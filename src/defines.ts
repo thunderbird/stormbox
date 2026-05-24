@@ -1,8 +1,8 @@
 export function defaultJmapServerUrl(hostname = globalThis.location?.hostname): string {
   if (hostname === "webmail.thundermail.com") {
-    return "https://mail.thundermail.com";
+    return "https://jmap.thundermail.com";
   }
-  return "https://mail.stage-thundermail.com";
+  return "https://jmap.stage-thundermail.com";
 }
 
 export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname): string {
@@ -64,7 +64,7 @@ export const OIDC_CLIENT_ID =
  * browsers cannot set on a WebSocket upgrade. The Worker at
  * wsmail.stage-thundermail.com / wsmail.thundermail.com reads the
  * credential off the URL query string and synthesises the header
- * upstream. See stormbox/infra/ws-proxy.
+ * upstream. See stormbox/infra/jmap-bridge.
  *
  * Set to an empty string to fall back to the URL Stalwart advertises
  * in the session document (and accept that the open will fail in any

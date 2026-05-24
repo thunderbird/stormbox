@@ -141,21 +141,26 @@ explicit destroy flows.
 `messageIds: [...]`, dispatched as one `Email/set` per outbox row
 regardless of array size.
 
-## JMAP edge proxy
+## JMAP edge bridge
 
 Browsers cannot set `Authorization` on `new WebSocket(url, protocols)`,
 and JMAP `/jmap/ws` (RFC 8887) authenticates only via that header.
-The Cloudflare Worker at `infra/ws-proxy/` accepts
-`?access_token=<bearer>` (RFC 6750 §2.3) or `?basic=<base64>` on
-`/jmap/ws`, strips the credential from the forwarded URL, sets the
-upstream `Authorization` header, and proxies the WebSocket.
+The Cloudflare Worker at `infra/jmap-bridge/` accepts
+`?access_token=<bearer>` (RFC 6750 §2.3) or `?basic=<base64>` on the
+`wsmail.*.thundermail.com` hostname's `/jmap/ws` upgrades, strips
+the credential from the forwarded URL, sets the upstream
+`Authorization` header, and proxies the WebSocket.
 
-The same Worker proxies `/.well-known/jmap`, `/jmap`, and `/jmap/*`
-over HTTP, owns browser-facing CORS for the webmail origins, and
-rewrites session-document URLs from `mail.*` back to `wsmail.*` so
-follow-up calls stay on the proxy. When the upstream JMAP server
-accepts a query-param credential natively, the proxy becomes
-optional.
+The same Worker fronts `/.well-known/jmap` and `/jmap/*` over HTTP
+on the `jmap.*.thundermail.com` hostnames. The bridge owns CORS
+itself: it allowlists the webmail origins (plus localhost on stage
+for vite dev), short-circuits preflights, and echoes back
+`Access-Control-Allow-Origin` only when the request `Origin` is in
+the allowlist — so the SPA's JMAP calls work cross-origin without
+needing Stalwart's CORS to be touched. It rewrites session-document
+URLs from `mail.*` to `jmap.*` for HTTP fields and to `wsmail.*`
+for the WebSocket capability so every URL the client subsequently
+dereferences stays inside the bridge.
 
 The worker captures `fetch` and `WebSocket` once at startup and
 binds them to `globalThis`. Firefox's SharedWorker enforces the
@@ -331,5 +336,6 @@ WebSocket via the proxy described above.
   handling.
 - `src/components/MessageList.vue`: virtualized list using
   `@tanstack/vue-virtual`.
-- `infra/ws-proxy/`: Cloudflare Worker proxying scoped JMAP HTTP
-  paths and bridging WebSocket auth.
+- `infra/jmap-bridge/`: Cloudflare Worker fronting both halves of
+  the JMAP transport — the WebSocket auth bridge on `wsmail.*` and
+  the HTTP proxy with first-party CORS on `jmap.*`.

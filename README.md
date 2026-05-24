@@ -46,12 +46,17 @@ test account overrides live in `tests/e2e/.env.local.example`.
 ## Configuration
 
 The app defaults to the local stack during development through
-`.env.development`. Hosted stage/prod builds use the Cloudflare JMAP Worker
-proxy by default, and the app menu points at the matching Thunderbird
-Accounts environment:
+`.env.development`. Hosted stage/prod builds use the Cloudflare edge bridge
+at `infra/jmap-bridge/` by default. The bridge fronts the WebSocket auth
+contract on `wsmail.*.thundermail.com` and the HTTP JMAP surface on
+`jmap.*.thundermail.com` (with first-party CORS so the SPA at
+`webmail.*.thundermail.com` can call it cross-origin). The app menu
+points at the matching Thunderbird Accounts environment:
 
-- `webmail.stage-thundermail.com` -> `https://wsmail.stage-thundermail.com`
-- `webmail.thundermail.com` -> `https://wsmail.thundermail.com`
+- `webmail.stage-thundermail.com` JMAP HTTP -> `https://jmap.stage-thundermail.com`
+- `webmail.stage-thundermail.com` JMAP WS  -> `https://wsmail.stage-thundermail.com`
+- `webmail.thundermail.com` JMAP HTTP -> `https://jmap.thundermail.com`
+- `webmail.thundermail.com` JMAP WS  -> `https://wsmail.thundermail.com`
 - dev/local -> `https://accounts-stage.tb.pro`
 - hosted stage -> `https://accounts-stage.tb.pro`
 - hosted prod -> `https://accounts.tb.pro`

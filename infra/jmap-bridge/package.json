@@ -1,10 +1,11 @@
 {
-  "name": "stormbox-ws-proxy",
+  "name": "stormbox-jmap-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker that bridges browser WebSocket auth for Stalwart's JMAP /jmap/ws.",
+  "description": "Cloudflare Worker that fronts both Stormbox JMAP transport halves: WebSocket auth bridge on wsmail.* and same-origin HTTP proxy on webmail.*.",
   "scripts": {
     "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
     "tail": "wrangler tail",
     "types": "wrangler types"
   },

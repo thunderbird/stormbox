@@ -189,9 +189,9 @@ function makeAuthHeader(auth) {
 }
 
 /**
- * Producer for the credential placed on the WebSocket URL when a
- * ws-proxy is in front of Stalwart. The proxy turns this into a
- * proper Authorization header on the upstream upgrade request.
+ * Producer for the credential placed on the WebSocket URL when
+ * jmap-bridge is in front of Stalwart. The bridge turns this into
+ * a proper Authorization header on the upstream upgrade request.
  */
 function makeWsCredential(auth) {
   if (auth?.kind === 'bearer') {

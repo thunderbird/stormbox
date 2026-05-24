@@ -50,7 +50,7 @@ screenshots/
 *.temp
 .cache/
 
-# Cloudflare Workers (infra/ws-proxy) local state
+# Cloudflare Workers (infra/jmap-bridge) local state
 .wrangler/
 
 # Don't track client-specific rule files.

@@ -70,13 +70,13 @@ describe('senderAvatarProxyUrlForHostname', () => {
 });
 
 describe('defaultJmapServerUrl', () => {
-  it('points the production webmail host directly at the production Stalwart host', () => {
-    expect(defaultJmapServerUrl('webmail.thundermail.com')).toBe('https://mail.thundermail.com');
+  it('points the production webmail host at the production JMAP HTTP bridge', () => {
+    expect(defaultJmapServerUrl('webmail.thundermail.com')).toBe('https://jmap.thundermail.com');
   });
 
-  it('points every non-production host at the stage Stalwart host', () => {
-    expect(defaultJmapServerUrl('webmail.stage-thundermail.com')).toBe('https://mail.stage-thundermail.com');
-    expect(defaultJmapServerUrl('localhost')).toBe('https://mail.stage-thundermail.com');
+  it('points every non-production host at the stage JMAP HTTP bridge', () => {
+    expect(defaultJmapServerUrl('webmail.stage-thundermail.com')).toBe('https://jmap.stage-thundermail.com');
+    expect(defaultJmapServerUrl('localhost')).toBe('https://jmap.stage-thundermail.com');
   });
 });
 
