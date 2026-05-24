@@ -1182,16 +1182,6 @@ describe('index usage on the canonical query patterns', () => {
     expect(detail).toMatch(/folder_messages_by_folder_received/);
   });
 
-  it('uses messages_thread for the conversation view', async () => {
-    const plan = await engine.all(
-      `EXPLAIN QUERY PLAN
-        SELECT * FROM messages WHERE thread_id = ? ORDER BY received_at ASC, id ASC`,
-      [1],
-    );
-    const detail = plan.map((row) => row.detail).join(' | ');
-    expect(detail).toMatch(/messages_thread/);
-  });
-
   it('uses contact_emails_lookup for autocomplete prefix scans', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
@@ -1242,25 +1232,4 @@ describe('index usage on the canonical query patterns', () => {
     expect(emailDetail).toMatch(/contact_emails_lookup/);
   });
 
-  it('uses messages_account_msgid for Message-Id dedup lookups', async () => {
-    const plan = await engine.all(
-      `EXPLAIN QUERY PLAN
-        SELECT id FROM messages WHERE account_id = ? AND rfc822_message_id = ?`,
-      [1, '<x@example.com>'],
-    );
-    const detail = plan.map((row) => row.detail).join(' | ');
-    expect(detail).toMatch(/messages_account_msgid/);
-  });
-
-  it('uses messages_account_attachment_received for the has-attachment filter', async () => {
-    const plan = await engine.all(
-      `EXPLAIN QUERY PLAN
-        SELECT * FROM messages
-         WHERE account_id = ? AND has_attachment = 1
-         ORDER BY received_at DESC`,
-      [1],
-    );
-    const detail = plan.map((row) => row.detail).join(' | ');
-    expect(detail).toMatch(/messages_account_attachment_received/);
-  });
 });

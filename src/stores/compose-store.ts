@@ -14,6 +14,7 @@ import { useMailStore } from './mail-store.js';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
 import type { ComposeState } from '../constants/states';
 import type { IdentityRow, MessageRow } from '../types';
+import { TABLE_FAMILIES } from '../db/protocol.js';
 import {
   buildQuotedHtml,
   buildQuotedText,
@@ -57,6 +58,7 @@ export const useComposeStore = defineStore('compose', () => {
   const identities = ref<any[]>([]);
   const draft = reactive<Draft>({ ...EMPTY_DRAFT });
   let repo: any = null;
+  let unsubscribe: (() => void) | null = null;
 
   const fromIdentity = computed<any | null>(() =>
     identities.value[draft.fromIdx] ?? identities.value[0] ?? null,
@@ -65,6 +67,13 @@ export const useComposeStore = defineStore('compose', () => {
   async function attach(): Promise<void> {
     if (repo) return;
     repo = await getRepositoryAsync();
+    // Identity sync runs in the JMAP backend's _continueBootstrap, which
+    // is fire-and-forget from start(). That means accountId can be set
+    // and our watch can fire before the identities row has been written
+    // to SQLite. Subscribe to the IDENTITIES family so we pick it up
+    // whenever syncIdentities lands, matching how contacts-store reacts
+    // to the CONTACTS family.
+    unsubscribe = repo.subscribe(onTablesTouched);
     watch(
       () => authStore.accountId,
       async (newId) => {
@@ -76,6 +85,19 @@ export const useComposeStore = defineStore('compose', () => {
       },
       { immediate: true },
     );
+  }
+
+  function detach(): void {
+    unsubscribe?.();
+    unsubscribe = null;
+  }
+
+  function onTablesTouched(tables: string[]): void {
+    if (!tables.includes(TABLE_FAMILIES.IDENTITIES)) return;
+    if (authStore.accountId == null) return;
+    refreshIdentities().catch((err) => {
+      console.warn('[compose-store] refresh after broadcast failed', err);
+    });
   }
 
   async function refreshIdentities(): Promise<void> {
@@ -254,6 +276,7 @@ export const useComposeStore = defineStore('compose', () => {
     draft,
     fromIdentity,
     attach,
+    detach,
     refreshIdentities,
     open,
     close,

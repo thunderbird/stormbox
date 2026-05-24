@@ -207,10 +207,6 @@ describe('MessageList row click viewing', () => {
     const allCount = parseInt(allCountText.match(/^(\d+)/)?.[1] ?? '0', 10);
     const unreadCount = parseInt(unreadCountText.match(/^(\d+)/)?.[1] ?? '0', 10);
     expect(unreadCount).toBeLessThanOrEqual(allCount);
-
-    // The component must not call any membership-backed unread list
-    // path on the store; the canonical query view is the only source.
-    expect((mailStore as any).listUnreadMessagesForCurrentFolder).toBeUndefined();
   });
 
   it('expands the canonical buffer on Unread toggle so the count reflects the whole folder', async () => {

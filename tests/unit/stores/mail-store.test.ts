@@ -356,6 +356,36 @@ describe('selectFolder', () => {
     expect(mailStore.totalForFolder).toBe(1);
   });
 
+  it('persists per-folder scroll position so revisiting restores the previous offset (R-2.6)', async () => {
+    const { mailStore } = await setupStore({
+      folders: [makeFolder(1), makeFolder(2)],
+      views: {
+        1: { rows: [makeRow(1)], total: 1 },
+        2: { rows: [makeRow(2)], total: 1 },
+      },
+    });
+
+    // Default scroll for an untouched folder is 0.
+    expect(mailStore.getScrollTop(1)).toBe(0);
+
+    // Scroll the auto-picked Inbox, then navigate to folder 2 and
+    // record a different offset there.
+    mailStore.setScrollTop(1, 480);
+    mailStore.selectFolder(2);
+    await flush();
+    mailStore.setScrollTop(2, 120);
+
+    // Each folder remembers its own offset independently.
+    expect(mailStore.getScrollTop(1)).toBe(480);
+    expect(mailStore.getScrollTop(2)).toBe(120);
+
+    // Returning to the first folder must surface the stored offset
+    // (MessageList re-applies it after the new folder's rows mount).
+    mailStore.selectFolder(1);
+    await flush();
+    expect(mailStore.getScrollTop(1)).toBe(480);
+  });
+
 });
 
 describe('folder view drift detection', () => {

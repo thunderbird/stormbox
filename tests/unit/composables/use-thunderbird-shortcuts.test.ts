@@ -283,6 +283,64 @@ describe('useThunderbirdShortcuts', () => {
     );
   });
 
+  it('M toggles read/unread on the targeted message', async () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    mailStore.messages = [makeRow(1, { is_seen: 1 }), makeRow(2, { is_seen: 1 })];
+    mailStore.selectedMessageId = 1;
+    const toggleSpy = vi.spyOn(mailStore, 'toggleManySeen').mockResolvedValue(undefined);
+
+    fireKey('m');
+    await Promise.resolve();
+
+    expect(toggleSpy).toHaveBeenCalledWith([1]);
+  });
+
+  it('P moves to the previous unread message', () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    mailStore.messages = [
+      makeRow(1, { is_seen: 0 }),
+      makeRow(2, { is_seen: 1 }),
+      makeRow(3, { is_seen: 1 }),
+    ];
+    mailStore.selectedMessageId = 3;
+
+    fireKey('p');
+
+    expect(mailStore.selectedMessageId).toBe(1);
+  });
+
+  it('Home jumps to the first loaded row, End jumps to the last', () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3), makeRow(4)];
+    mailStore.selectedMessageId = 2;
+
+    fireKey('End');
+    expect(mailStore.selectedMessageId).toBe(4);
+
+    fireKey('Home');
+    expect(mailStore.selectedMessageId).toBe(1);
+  });
+
+  it('Shift+Delete permanently destroys the targeted message', async () => {
+    mountHarness();
+    const mailStore = useMailStore();
+    mailStore.messages = [makeRow(1), makeRow(2)];
+    mailStore.selectedMessageId = 1;
+    const purgeSpy = vi.spyOn(mailStore, 'permanentlyDestroyMessages')
+      .mockResolvedValue(undefined);
+    const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+
+    fireKey('Delete', { shiftKey: true });
+    await Promise.resolve();
+
+    expect(purgeSpy).toHaveBeenCalledWith([1]);
+    // Shift+Delete must not also dispatch the ordinary delete path.
+    expect(destroySpy).not.toHaveBeenCalled();
+  });
+
   it('forwards key events from nested documents via invokeThunderbirdShortcut', async () => {
     mountHarness();
     const mailStore = useMailStore();

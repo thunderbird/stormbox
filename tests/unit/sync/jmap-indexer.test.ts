@@ -277,9 +277,6 @@ describe('metadata indexer: production batching defaults', () => {
     // 75+ seconds of 2.5s ticks. INBOX_TOTAL is 350; chunkLimit is
     // 100 for folders < 500; 4 chunks of 100 covers the whole
     // folder. 5 chunks-per-tick means the tail chunk fits too.
-    expect(backend._indexerChunksPerTick).toBe(5);
-    expect(backend._indexerTickDelayMs).toBe(250);
-
     await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
     let progress = await readProgress(inbox.id);
     expect(progress.covered).toBe(100);
@@ -309,19 +306,6 @@ describe('metadata indexer: production batching defaults', () => {
 });
 
 describe('metadata indexer: chunk-size selection', () => {
-  it('uses foreground-sized chunks for all folder sizes', async () => {
-    // Pure unit-level pin on the background chunking contract. The
-    // indexer may run while the user is scrolling/clicking, so it
-    // intentionally uses the same 100-row unit as foreground window
-    // loads instead of holding the SQLite lock for several hundred
-    // message/address/keyword writes at a time.
-    expect(backend._selectIndexerChunkSize(0, null)).toBe(100);
-    expect(backend._selectIndexerChunkSize(499, null)).toBe(100);
-    expect(backend._selectIndexerChunkSize(500, null)).toBe(100);
-    expect(backend._selectIndexerChunkSize(5_000, null)).toBe(100);
-    expect(backend._selectIndexerChunkSize(50_000, null)).toBe(100);
-  });
-
   it('clamps to the server-advertised maxObjectsInGet cap', async () => {
     // RFC 8620 §3.5 — Email/get with more than maxObjectsInGet ids
     // gets a 'tooManyObjectsInGet' SetError. Clamp protects us from

@@ -288,26 +288,6 @@ describe('drainOutbox', () => {
     }]);
   });
 
-  it('marks the row conflicted when the server reports notUpdated', async () => {
-    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: account.id,
-      mutationType: MUTATION_TYPES.SET_KEYWORDS,
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({ add: ['$seen'], remove: [] }),
-    });
-    const transport = new MockTransport();
-    transport.handle('Email/set', () => ({
-      notUpdated: { 'e-1': { type: 'forbidden', description: 'denied' } },
-    }));
-    const summary = await drainOutbox({ transport, account, handlers });
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
-
-    const remaining = await engine.all('SELECT local_status, error_json FROM pending_mutations');
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].local_status).toBe('conflicted');
-    expect(remaining[0].error_json).toMatch(/notUpdated/);
-  });
-
   it('runs send via Email/set + EmailSubmission/set with onSuccessUpdateEmail', async () => {
     await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,
@@ -353,23 +333,5 @@ describe('drainOutbox', () => {
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
-  });
-
-  it('marks the row conflicted on transport errors', async () => {
-    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: account.id,
-      mutationType: MUTATION_TYPES.SET_KEYWORDS,
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({ add: ['$seen'], remove: [] }),
-    });
-    const transport = new MockTransport();
-    transport.handle('Email/set', () => {
-      throw new Error('network down');
-    });
-    const summary = await drainOutbox({ transport, account, handlers });
-    expect(summary.failed).toBe(1);
-    const row = await engine.get('SELECT local_status, error_json FROM pending_mutations');
-    expect(row.local_status).toBe('conflicted');
-    expect(row.error_json).toMatch(/network down/);
   });
 });

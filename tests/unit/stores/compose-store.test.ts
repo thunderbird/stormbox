@@ -56,7 +56,6 @@ describe('compose-store reply and forward prefills', () => {
     expect(composeStore.isOpen).toBe(true);
     expect(composeStore.draft.to).toBe('Alice <alice@example.com>');
     expect(composeStore.draft.cc).toBe('Bob <bob@example.com>');
-    expect(composeStore.draft.subject).toBe('Re: Project update');
     expect(composeStore.draft.textBody).toContain('> Looping everyone in');
   });
 

@@ -13,33 +13,19 @@ function makeCtx() {
 function makeEnv(overrides = {}) {
   return {
     ALLOWED_ORIGINS: 'https://webmail.stage-thundermail.com',
-    SENDER_AVATAR_PROXY_ENABLED: 'true',
-    SENDER_AVATAR_UPSTREAM_BASE: 'https://geticon.dev/',
-    SENDER_AVATAR_FALLBACK_UPSTREAM_BASE: 'https://www.google.com/',
     ...overrides,
   };
 }
 
-describe('ws-proxy sender avatars', () => {
-  let cacheMatch;
-  let cachePut;
+describe('ws-proxy WebSocket upgrade auth bridge', () => {
   let fetchMock;
 
   beforeEach(() => {
-    cacheMatch = vi.fn().mockResolvedValue(undefined);
-    cachePut = vi.fn().mockResolvedValue(undefined);
-    fetchMock = vi.fn().mockResolvedValue(new Response('icon', {
-      headers: {
-        'Content-Type': 'image/png',
-        'Content-Length': '4',
-      },
-    }));
-    vi.stubGlobal('caches', {
-      default: {
-        match: cacheMatch,
-        put: cachePut,
-      },
-    });
+    // Real Cloudflare runtime returns a 101 Switching Protocols, but
+    // the standard Response constructor in vitest disallows that. The
+    // proxy just passes the upstream response through, so a 200 here
+    // is enough to assert the bridge's request shape (headers + URL).
+    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
   });
 
@@ -47,115 +33,187 @@ describe('ws-proxy sender avatars', () => {
     vi.unstubAllGlobals();
   });
 
-  it('proxies sender-avatar requests only to geticon.dev with a domain token', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'png' }), {
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response('icon', {
-        headers: {
-          'Content-Type': 'image/png',
-          'Content-Length': '4',
-        },
-      }));
-
-    const ctx = makeCtx();
+  it('rewrites ?access_token=... into an upstream Bearer Authorization header and strips it from the URL', async () => {
     const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/Example.COM.'),
-      makeEnv(),
-      ctx,
-    );
-
-    expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const metadataRequest = fetchMock.mock.calls[0][0] as Request;
-    const upstreamRequest = fetchMock.mock.calls[1][0] as Request;
-    expect(metadataRequest.url).toBe('https://geticon.dev/?url=example.com&format=json');
-    expect(upstreamRequest.url).toBe('https://geticon.dev/?url=example.com');
-    expect(metadataRequest.headers.get('Cookie')).toBeNull();
-    expect(upstreamRequest.headers.get('Cookie')).toBeNull();
-    expect(cachePut).toHaveBeenCalledOnce();
-    expect(ctx.waitUntil).toHaveBeenCalledOnce();
-    expect((cachePut.mock.calls[0][0] as Request).url).toBe('https://wsmail.stage-thundermail.com/sender-avatar/example.com');
-  });
-
-  it('falls back to Google favicons when geticon has no image response', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify({ type: 'avatar' }), {
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response('png', {
+      new Request('https://wsmail.stage-thundermail.com/jmap/ws?access_token=jwt-abc', {
         headers: {
-          'Content-Type': 'image/png',
-          'Content-Length': '3',
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          Cookie: 'session=should-not-leak',
         },
-      }));
-
-    const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/ups.com'),
-      makeEnv(),
+      }),
+      makeEnv({ UPSTREAM_BASE_STAGE: 'https://mail.stage-thundermail.com' }),
       makeCtx(),
     );
 
     expect(response.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect((fetchMock.mock.calls[0][0] as Request).url).toBe('https://geticon.dev/?url=ups.com&format=json');
-    expect((fetchMock.mock.calls[1][0] as Request).url).toBe('https://www.google.com/s2/favicons?domain=ups.com&sz=64');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const upstream = fetchMock.mock.calls[0][0] as Request;
+    expect(upstream.url).toBe('https://mail.stage-thundermail.com/jmap/ws');
+    expect(upstream.headers.get('Authorization')).toBe('Bearer jwt-abc');
+    expect(upstream.headers.get('Cookie')).toBeNull();
   });
 
-  it('rejects clever URL-shaped input before fetching', async () => {
-    const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/https%3A%2F%2Fevil.example%2Ffavicon.ico'),
+  it('rewrites ?basic=... into a Basic auth header', async () => {
+    await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/jmap/ws?basic=dXNlcjpwYXNz', {
+        headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
+      }),
       makeEnv(),
       makeCtx(),
     );
-
-    expect(response.status).toBe(400);
-    expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect((fetchMock.mock.calls[0][0] as Request).headers.get('Authorization')).toBe('Basic dXNlcjpwYXNz');
   });
 
-  it('fails closed when the route is disabled or the primary upstream is not geticon.dev', async () => {
-    const disabled = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/example.com'),
-      makeEnv({ SENDER_AVATAR_PROXY_ENABLED: 'false' }),
-      makeCtx(),
-    );
-    const badUpstream = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/example.com'),
-      makeEnv({ SENDER_AVATAR_UPSTREAM_BASE: 'https://example.com/' }),
-      makeCtx(),
-    );
-
-    expect(disabled.status).toBe(404);
-    expect(disabled.headers.get('Content-Type')).toBe('image/svg+xml');
-    expect(badUpstream.status).toBe(503);
-    expect(badUpstream.headers.get('Content-Type')).toBe('image/svg+xml');
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('returns only image content when providers return html or fail', async () => {
-    fetchMock
-      .mockResolvedValueOnce(new Response('<html>challenge</html>', {
-        headers: { 'Content-Type': 'text/html' },
-      }))
-      .mockResolvedValueOnce(new Response('<html>challenge</html>', {
-        headers: { 'Content-Type': 'text/html' },
-      }))
-      .mockResolvedValueOnce(new Response('<html>challenge</html>', {
-        headers: { 'Content-Type': 'text/html' },
-      }));
-
-    const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/sender-avatar/ups.com?v=5'),
+  it('rejects an upgrade missing both credentials carriers (401) and conflicting credentials (400)', async () => {
+    const missing = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/jmap/ws', {
+        headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
+      }),
       makeEnv(),
       makeCtx(),
     );
+    expect(missing.status).toBe(401);
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
-    expect(await response.text()).toContain('<svg');
-    expect((cacheMatch.mock.calls[0][0] as Request).url).toBe('https://wsmail.stage-thundermail.com/sender-avatar/ups.com?v=5');
-    expect(cachePut).not.toHaveBeenCalled();
+    const both = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/jmap/ws?access_token=x&basic=y', {
+        headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
+      }),
+      makeEnv(),
+      makeCtx(),
+    );
+    expect(both.status).toBe(400);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses to bridge upgrades that target paths outside /jmap/*', async () => {
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/anything-else?access_token=x', {
+        headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
+      }),
+      makeEnv(),
+      makeCtx(),
+    );
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('ws-proxy JMAP HTTP routing and session rewrite', () => {
+  let fetchMock;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('proxies whitelisted JMAP HTTP paths to the configured upstream and strips Origin/Cookie', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{"ok":true}', {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/jmap/api', {
+        method: 'POST',
+        headers: {
+          Origin: 'https://webmail.stage-thundermail.com',
+          Authorization: 'Bearer token',
+          Cookie: 'session=do-not-leak',
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      }),
+      makeEnv({ UPSTREAM_BASE_STAGE: 'https://mail.stage-thundermail.com' }),
+      makeCtx(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Access-Control-Allow-Origin'))
+      .toBe('https://webmail.stage-thundermail.com');
+
+    const upstream = fetchMock.mock.calls[0][0] as Request;
+    expect(upstream.url).toBe('https://mail.stage-thundermail.com/jmap/api');
+    expect(upstream.headers.get('Origin')).toBeNull();
+    expect(upstream.headers.get('Cookie')).toBeNull();
+    expect(upstream.headers.get('Authorization')).toBe('Bearer token');
+  });
+
+  it('rejects HTTP requests to paths outside the JMAP allowlist with 403', async () => {
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/internal/admin'),
+      makeEnv(),
+      makeCtx(),
+    );
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rewrites every upstream origin reference in the JMAP session document to the proxy origin', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      apiUrl: 'https://mail.stage-thundermail.com/jmap/api',
+      eventSourceUrl: 'https://mail.stage-thundermail.com/jmap/event-source',
+      webSocketUrl: 'wss://mail.stage-thundermail.com/jmap/ws',
+      uploadUrl: 'https://mail.stage-thundermail.com/jmap/upload',
+    }), { headers: { 'Content-Type': 'application/json' } }));
+
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/.well-known/jmap', {
+        headers: {
+          Origin: 'https://webmail.stage-thundermail.com',
+          Authorization: 'Bearer token',
+        },
+      }),
+      makeEnv({ UPSTREAM_BASE_STAGE: 'https://mail.stage-thundermail.com' }),
+      makeCtx(),
+    );
+
+    const body = await response.json();
+    // Every upstream URL in the session document must point at the
+    // proxy, otherwise the browser tries to talk to Stalwart directly
+    // and hits the CORS wall that this whole proxy exists to bypass.
+    expect(body.apiUrl).toBe('https://wsmail.stage-thundermail.com/jmap/api');
+    expect(body.uploadUrl).toBe('https://wsmail.stage-thundermail.com/jmap/upload');
+    expect(body.eventSourceUrl).toBe('https://wsmail.stage-thundermail.com/jmap/event-source');
+    expect(body.webSocketUrl).toBe('wss://wsmail.stage-thundermail.com/jmap/ws');
+  });
+});
+
+describe('ws-proxy CORS preflight', () => {
+  it('returns a 204 with permissive headers for OPTIONS on a JMAP path and an allowed Origin', async () => {
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/jmap/api', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://webmail.stage-thundermail.com',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'Authorization, Content-Type',
+        },
+      }),
+      makeEnv(),
+      makeCtx(),
+    );
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin'))
+      .toBe('https://webmail.stage-thundermail.com');
+    expect(response.headers.get('Access-Control-Allow-Methods'))
+      .toMatch(/POST/);
+  });
+
+  it('refuses preflight for non-JMAP paths with 403', async () => {
+    const response = await worker.fetch(
+      new Request('https://wsmail.stage-thundermail.com/internal/admin', {
+        method: 'OPTIONS',
+        headers: { Origin: 'https://webmail.stage-thundermail.com' },
+      }),
+      makeEnv(),
+      makeCtx(),
+    );
+    expect(response.status).toBe(403);
   });
 });

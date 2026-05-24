@@ -171,17 +171,18 @@ describe('buildMessageSrcDoc', () => {
 });
 
 describe('IFRAME_SANDBOX', () => {
-  it('grants same-origin so the parent can measure & rewrite links', () => {
-    expect(IFRAME_SANDBOX).toMatch(/allow-same-origin/);
-  });
-
-  it('does NOT grant allow-scripts (script execution stays disabled)', () => {
-    expect(IFRAME_SANDBOX).not.toMatch(/allow-scripts/);
-  });
-
-  it('grants popup permissions so external links open in a new tab', () => {
-    expect(IFRAME_SANDBOX).toMatch(/allow-popups/);
-    expect(IFRAME_SANDBOX).toMatch(/allow-popups-to-escape-sandbox/);
+  it('pins the sandbox contract: same-origin + popups, no allow-scripts', () => {
+    // Same-origin lets the parent measure the iframe height and rewrite
+    // links. Popup permissions let target=_blank links open in a new
+    // tab. No allow-scripts means any <script> that survives the
+    // sanitizer is still inert at runtime (defence in depth on top of
+    // the CSP).
+    const tokens = IFRAME_SANDBOX.split(/\s+/).filter(Boolean).sort();
+    expect(tokens).toEqual([
+      'allow-popups',
+      'allow-popups-to-escape-sandbox',
+      'allow-same-origin',
+    ]);
   });
 });
 

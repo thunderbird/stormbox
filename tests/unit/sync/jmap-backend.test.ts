@@ -411,8 +411,6 @@ describe('JmapBackend.ensureMessageBodies', () => {
     expect(bodyGetCallCount).toBe(1);
     expect(r1.fetched).toBe(1);
     expect(r2.fetched).toBe(1);
-    // Inflight map should be drained once both promises settle.
-    expect(backend._bodyFetchInflight.size).toBe(0);
   });
 });
 
@@ -571,12 +569,20 @@ describe('JmapBackend.ensureMessageBodyForDisplay', () => {
     backend.account = { id: account.id, remote_account_id: account.remote_account_id };
 
     const batchPromise = backend.ensureMessageBodies(messages.map((m) => m.id));
+    // Track when the batch settles so we can assert the display call
+    // resolves while the batch is still in flight (without reaching
+    // into the backend's private _bodyFetchInflight map).
+    let batchSettled = false;
+    batchPromise.finally(() => { batchSettled = true; });
+
     const displayPromise = backend.ensureMessageBodyForDisplay(msgA.id);
     const displayResult = await displayPromise;
 
     expect(displayResult.fetched).toBe(1);
     expect(seenGets.some((ids) => ids.length === 1 && ids[0] === 'e-1')).toBe(true);
-    expect(backend._bodyFetchInflight.has(msgA.id)).toBe(true);
+    // The whole point: the priority single-id fetch resolved BEFORE
+    // the batch was allowed to complete.
+    expect(batchSettled).toBe(false);
 
     batchGateResolve();
     await batchPromise;
@@ -687,9 +693,13 @@ describe('JmapBackend StateChange dispatch', () => {
       changed: { 'acct-1': { Mailbox: 'mb-2' } },
       pushState: 'push-bbb',
     });
-    // Wait long enough for the chained Request/Response microtasks +
-    // the fake fetches to settle.
-    await new Promise((r) => setTimeout(r, 50));
+    // Predicate-poll for the Mailbox/changes -> Mailbox/get pipeline
+    // to land mb-archive instead of a fixed 50ms sleep that could rot
+    // under CI load.
+    await vi.waitFor(async () => {
+      const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
+      expect(folders.map((f) => f.remote_id)).toContain('mb-archive');
+    });
 
     const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
     expect(folders.map((f) => f.remote_id)).toContain('mb-archive');
@@ -911,9 +921,9 @@ describe('JmapBackend StateChange dispatch', () => {
       changed: { 'acct-1': { EmailDelivery: 'd-1' } },
       pushState: 'push-d',
     });
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(queryChangesCalls).toBeGreaterThan(0);
+    // Predicate-poll for the push-driven Email/queryChanges to fire
+    // instead of relying on a fixed 50ms sleep.
+    await vi.waitFor(() => expect(queryChangesCalls).toBeGreaterThan(0));
     const refreshedItems = await engine.all(
       'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
       [initialView.id],

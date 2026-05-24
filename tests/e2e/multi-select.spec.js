@@ -42,6 +42,22 @@ async function listDiagnostics(page) {
   });
 }
 
+// expect.poll on a derived projection of listDiagnostics(). Returns the
+// last observed diagnostics object so each step can run additional
+// assertions against the settled state without taking another
+// snapshot.
+async function pollDiagnostics(page, predicate, { timeout = 5_000, message } = {}) {
+  let last = null;
+  await expect.poll(
+    async () => {
+      last = await listDiagnostics(page);
+      return predicate(last);
+    },
+    { timeout, message: message ?? 'list diagnostics never matched predicate' },
+  ).toBe(true);
+  return last;
+}
+
 test.describe('multi-select (Fastmail model)', () => {
   test('row click views without selecting; checkbox selects without viewing', async ({ page }) => {
     await loginViaOidc(page);
@@ -65,76 +81,77 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(realCount).toBeGreaterThan(3);
 
     await realRows.nth(0).locator('.msg-list__content').click();
-    await page.waitForTimeout(200);
-    const afterRowClick = await listDiagnostics(page);
-    expect(afterRowClick.itemsRendered,
-      'plain row click must not collapse the list')
-      .toBeGreaterThan(0);
+    const afterRowClick = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'article' && d.focusedIndexes.length === 1 && d.focusedIndexes[0] === 0,
+      { message: 'row click should focus row 0 and open the article view' },
+    );
+    expect(afterRowClick.itemsRendered).toBeGreaterThan(0);
     expect(afterRowClick.scrollerHeight).toBeGreaterThan(200);
-    expect(afterRowClick.focusedIndexes,
-      'row click should set the focused row')
-      .toEqual([0]);
     expect(afterRowClick.selectedIndexes,
-      'row click must not toggle the selection set')
-      .toEqual([]);
+      'row click must not toggle the selection set').toEqual([]);
     expect(afterRowClick.checkboxesChecked).toBe(0);
-    expect(afterRowClick.rightPaneMode,
-      'right pane should show the article view when nothing is selected')
-      .toBe('article');
 
+    // We poll on the "N selected" header text and the right-pane mode
+    // because those are bound directly to the Pinia selection model.
+    // Polling on the checkbox `:checked` attribute is unreliable: the
+    // native input element can briefly report a stale state during the
+    // click + reactive-update cycle, especially under firefox.
     await realRows.nth(2).locator('.msg-list__check input').click();
-    await page.waitForTimeout(200);
-    const afterCheckbox = await listDiagnostics(page);
+    const afterCheckbox = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'bulk-summary' && /\b1 selected\b/.test(d.headerCount),
+      { message: 'checkbox click should select exactly row 2 and switch to bulk pane' },
+    );
     expect(afterCheckbox.focusedIndexes,
-      'checkbox click must not move the focused row')
-      .toEqual([0]);
+      'checkbox click must not move the focused row').toEqual([0]);
     expect(afterCheckbox.selectedIndexes).toEqual([2]);
-    expect(afterCheckbox.checkboxesChecked).toBe(1);
-    expect(afterCheckbox.headerCount).toMatch(/^1 selected/);
-    expect(afterCheckbox.rightPaneMode,
-      'right pane should switch to bulk summary at >= 1 selected')
-      .toBe('bulk-summary');
 
     await realRows.nth(4).locator('.msg-list__check input').click({ modifiers: ['Shift'] });
-    await page.waitForTimeout(200);
-    const afterShift = await listDiagnostics(page);
+    const afterShift = await pollDiagnostics(
+      page,
+      (d) => /\b3 selected\b/.test(d.headerCount),
+      { message: 'shift-click should extend the selection to 3 rows' },
+    );
     expect(afterShift.selectedIndexes).toEqual([2, 3, 4]);
-    expect(afterShift.checkboxesChecked).toBe(3);
-    expect(afterShift.headerCount).toMatch(/^3 selected/);
 
     await realRows.nth(3).locator('.msg-list__check input').click({ modifiers: ['Shift'] });
-    await page.waitForTimeout(200);
-    const afterShrink = await listDiagnostics(page);
+    const afterShrink = await pollDiagnostics(
+      page,
+      (d) => /\b2 selected\b/.test(d.headerCount),
+      { message: 'shift-click on row 3 should shrink the selection to 2 rows' },
+    );
     expect(afterShrink.selectedIndexes).toEqual([2, 3]);
 
     await page.locator('.message-view__bulk-actions .message-view__action--ghost').click();
-    await page.waitForTimeout(200);
-    const afterClear = await listDiagnostics(page);
+    const afterClear = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'article' && !/\bselected\b/.test(d.headerCount),
+      { message: 'clearing the bulk selection should return to article view' },
+    );
     expect(afterClear.selectedIndexes).toEqual([]);
     expect(afterClear.focusedIndexes).toEqual([0]);
     expect(afterClear.itemsRendered).toBeGreaterThan(0);
     expect(afterClear.scrollerHeight).toBeGreaterThan(200);
-    expect(afterClear.rightPaneMode).toBe('article');
 
     await realRows.nth(0).locator('.msg-list__content').click();
-    await expect.poll(
-      async () => (await listDiagnostics(page)).rightPaneMode,
-      { timeout: 5_000, message: 're-click on the open row should close the message view' },
-    ).toBe('unknown');
-    const afterClose = await listDiagnostics(page);
+    const afterClose = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'unknown',
+      { message: 're-click on the open row should close the message view' },
+    );
     expect(afterClose.focusedIndexes,
-      'focused highlight tracks the viewer pointer, not checkbox selection')
-      .toEqual([]);
+      'focused highlight tracks the viewer pointer, not checkbox selection').toEqual([]);
     expect(afterClose.selectedIndexes).toEqual([]);
     expect(afterClose.checkboxesChecked).toBe(0);
     expect(afterClose.shellMessageViewHidden).toBe(true);
 
     await realRows.nth(0).locator('.msg-list__content').click();
-    await expect.poll(
-      async () => (await listDiagnostics(page)).rightPaneMode,
-      { timeout: 5_000, message: 'second click should open the message again' },
-    ).toBe('article');
-    const afterReopen = await listDiagnostics(page);
+    const afterReopen = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'article',
+      { message: 'second click should open the message again' },
+    );
     expect(afterReopen.selectedIndexes).toEqual([]);
     expect(afterReopen.checkboxesChecked).toBe(0);
     expect(afterReopen.focusedIndexes).toEqual([0]);

@@ -139,6 +139,11 @@ describe('MessageView with a sparse messages array', () => {
     await nextTick();
 
     const actions = wrapper.findAll('.message-view__header .message-view__action');
+
+    // R-3.10: icon-only buttons whose action text lives in title and
+    // aria-label. We pin the action *identity* and ordering through
+    // those a11y attributes — not through SVG width / stroke-width
+    // which are presentational knobs.
     expect(actions.map((button) => button.attributes('title'))).toEqual([
       'Back',
       'Archive (A)',
@@ -147,25 +152,15 @@ describe('MessageView with a sparse messages array', () => {
       'Reply All (Ctrl+Shift+R)',
       'Forward (Ctrl+L)',
     ]);
+    expect(
+      actions.map((button) => button.attributes('aria-label')),
+    ).toEqual(['Back', 'Archive', 'Delete', 'Reply', 'Reply All', 'Forward']);
     expect(actions.every((button) => button.text() === '')).toBe(true);
-    const lucideButtons = [actions[0], actions[2]];
-    const lucideIcons = lucideButtons.map((button) => button.find('svg.message-view__toolbar-icon'));
-    expect(lucideIcons.every((icon) => icon.exists())).toBe(true);
-    expect(lucideIcons.map((icon) => icon.attributes('width'))).toEqual(['18', '18']);
-    expect(lucideIcons.map((icon) => icon.attributes('height'))).toEqual(['18', '18']);
-    expect(lucideIcons.map((icon) => icon.attributes('fill'))).toEqual(['none', 'none']);
-    expect(lucideIcons.map((icon) => icon.attributes('stroke'))).toEqual(['currentColor', 'currentColor']);
-    expect(lucideIcons.map((icon) => icon.attributes('stroke-width'))).toEqual(['1.65', '1.65']);
-
-    const archiveIcon = actions[1].find('.message-view__toolbar-icon--folder');
-    expect(archiveIcon.exists()).toBe(true);
-    expect(archiveIcon.find('[fill="context-fill"]').exists()).toBe(true);
-    expect(archiveIcon.find('[fill="context-stroke"]').exists()).toBe(true);
-
-    const arrowIcons = actions.slice(3).map((button) => button.find('.message-view__toolbar-icon--shape'));
-    expect(arrowIcons.every((icon) => icon.exists())).toBe(true);
-    expect(arrowIcons.map((icon) => icon.find('[fill="context-stroke"]').exists())).toEqual([true, true, true]);
-    expect(arrowIcons.map((icon) => icon.find('[fill="context-fill"]').exists())).toEqual([true, true, true]);
+    // Every action must render exactly one inline icon (Lucide svg or
+    // tb-themed svg). We do not pin its dimensions.
+    expect(
+      actions.every((button) => button.find('.message-view__toolbar-icon').exists()),
+    ).toBe(true);
   });
 
   it('closes the message view from the back toolbar action', async () => {
@@ -597,6 +592,44 @@ describe('MessageView HTML body rendering', () => {
     const section = wrapper.find('.message-view');
     const directArticle = section.find(':scope > article.message-view__article');
     expect(directArticle.exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it('renders attachment metadata (name, type, size) for each attachment on the open message', async () => {
+    // R-2.5 / R-6.1: the message detail must surface the attachment
+    // list (name, MIME type, size) even though MVP attachment
+    // *download* is Planned. The component receives attachments via
+    // mailStore.messageBody.attachments; they render under
+    // .message-view__attachments.
+    await makeSelectedMessage({
+      text: 'see attachments',
+      html: '',
+      attachments: [
+        { part_id: 'p1', name: 'report.pdf', mime_type: 'application/pdf', size: 2048 },
+        { part_id: 'p2', name: 'photo.png', mime_type: 'image/png', size: null },
+      ],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const items = wrapper.findAll('.message-view__attachments li');
+    expect(items).toHaveLength(2);
+
+    const first = items[0].text();
+    expect(first).toContain('report.pdf');
+    expect(first).toContain('application/pdf');
+    // 2048 bytes -> 2 KB (Math.ceil(2048/1024)).
+    expect(first).toContain('2 KB');
+
+    const second = items[1].text();
+    expect(second).toContain('photo.png');
+    expect(second).toContain('image/png');
+    // No size segment when size is null.
+    expect(second).not.toContain('KB');
 
     wrapper.unmount();
   });
