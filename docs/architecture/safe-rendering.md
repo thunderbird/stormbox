@@ -4,99 +4,114 @@ The constitution (`.specify/memory/constitution.md` Principle VI)
 mandates that HTML email is sanitized and rendered in a sandboxed
 iframe with a Content-Security-Policy that forbids scripts and active
 content, and that links never navigate the host page. This document
-states the project-wide rules that follow from that principle and
-records the audit results for the existing render paths.
+states what that means in concrete terms for stormbox: the message
+iframe pipeline, link handling, and the small set of rules that
+follow from "untrusted HTML lives in exactly one place."
 
 ## Where untrusted HTML enters the app
 
-The only source of untrusted HTML is a JMAP `Email/get` body part
-served by the configured mail server. Every other byte rendered into
-the DOM is either user input the local user typed (compose draft) or
-build-time assets the project owns (icon SVGs).
+The only source of untrusted HTML in stormbox is a JMAP `Email/get`
+`text/html` body part served by the configured mail server. The
+sender controls those bytes. Everything else rendered into the DOM
+— Vue templates, compose draft content, icon SVGs — is bytes the
+project itself shipped at build time or that the local user typed
+into the compose editor.
 
-## Rules
+The job of the safe-rendering layer is to keep the sender-controlled
+bytes off the host page's origin and out of the host's JS context.
 
-### 1. Untrusted HTML renders only through the message iframe
+## The message iframe pipeline
 
-The reading-pane iframe in `src/components/MessageView.vue` is the
-single path for displaying received-email HTML. The pipeline is:
+`src/components/MessageView.vue` is the single path that displays
+received-email HTML. The pipeline:
 
-1. Read body parts from local SQLite via the worker.
-2. Sanitize with `DOMPurify.sanitize`, restricting the URI scheme
-   set via `ALLOWED_URI_REGEXP`.
-3. Wrap the sanitized HTML through `buildMessageSrcDoc` from
-   `src/utils/message-html.ts`, which prepends the CSP meta tag and
-   stylesheet.
+1. Read the body parts from local SQLite via the worker.
+2. Sanitize the HTML with `DOMPurify.sanitize`, restricting the URI
+   scheme set via `ALLOWED_URI_REGEXP` from
+   `src/utils/message-html.ts`.
+3. Wrap the sanitized HTML with `buildMessageSrcDoc`, which prepends
+   the CSP meta tag and the host's typography stylesheet.
 4. Bind the resulting srcdoc string to `<iframe :srcdoc>`. The
-   sandbox attribute is `IFRAME_SANDBOX` (no `allow-scripts`, no
-   `allow-top-navigation`).
-5. Rewrite anchor `target` and `rel` on the iframe `load` event so
-   link clicks open `_blank` with `noopener noreferrer`.
+   sandbox attribute is `IFRAME_SANDBOX` — no `allow-scripts`, no
+   `allow-top-navigation`, no `allow-popups`.
+5. On the iframe's `load` event, walk anchors and rewrite
+   `target="_blank"` + `rel="noopener noreferrer"` so link clicks
+   open in a new tab and cannot reach back into the host window.
 
-The iframe runs in its own browsing context with no `allow-scripts`,
-so a sanitizer bypass cannot execute JavaScript even if one slipped
-through DOMPurify.
+The defence is layered: DOMPurify removes scripts and active
+content, the CSP meta tag in the srcdoc blocks any tag DOMPurify
+might miss, and the sandboxed iframe with no `allow-scripts` makes a
+sanitizer bypass non-executable. Any one of those alone would still
+leave a meaningful gap; together they cover the realistic attack
+shapes (`<script>`, `<style>` exfiltration via `:visited`, inline
+event handlers, `javascript:` URLs, frame-busting top-navigation).
 
-### 2. `v-html` is restricted to compile-time-trusted strings
+### What this rules out
 
-`v-html` is permitted only for values whose source is one of:
+- Any code path that takes server-supplied HTML and writes it
+  outside the iframe (innerHTML, `v-html` of an email body,
+  `document.write`, etc.) is a bug.
+- Removing `allow-scripts` from the sandbox is non-negotiable.
+  Re-enabling it would bypass the third layer of defence even if
+  DOMPurify and the CSP both held.
+- Adding `allow-same-origin` to the sandbox is also non-negotiable.
+  The iframe must run as a null origin so script in it (if it ever
+  ran) could not reach `localStorage`, IndexedDB, or the SharedWorker
+  via `postMessage` to the parent.
 
-- A Vite `?raw` import (build-time-bundled file content from the
-  project's own asset directory).
-- A DOMPurify output that is in turn placed inside the message
-  iframe path described above.
+## Compose drafts
 
-All current uses (audit results below) fall into the first category.
-A new `v-html` whose source is anything else — server response, user
-input, draft contents, etc. — is a bug.
+The Squire rich-text editor in `src/components/ComposeDialog.vue`
+writes into a `contenteditable` element. The store reads
+`Squire.getHTML()` for the outgoing payload. Reply/forward previews
+are built in `src/utils/compose-quote.ts` and seeded into Squire via
+its API, not via `v-html`. Compose-side HTML is the local user's own
+input — no sanitisation is required against the user's own
+keystrokes — but it never round-trips through the iframe path
+either, because nothing renders it into a DOM the user reads in
+that session.
 
-### 3. Compose drafts and other user-typed HTML never use `v-html`
+## `v-html` and our own assets
 
-The Squire editor in `src/components/ComposeDialog.vue` writes into a
-contenteditable element and round-trips through `Squire.getHTML()`.
-Compose previews (replies, forwards) are constructed in
-`src/utils/compose-quote.ts` and assigned to the editor through the
-Squire API, never through a `v-html` binding.
+Inline SVG icons (folder rows, message-view toolbar) use `v-html`
+bound to a Vite `?raw` import — bytes from `src/assets/icons/` that
+the bundler embeds at build time. There is no untrusted-input
+surface there; the binding is the equivalent of writing the SVG
+markup directly in the template, with the bundler re-using one
+shared string. The `aria-hidden="true"` on the host `<span>` is
+present so screen readers do not narrate the SVG's internal
+`<title>`/`<desc>` over the button's `aria-label`.
 
-### 4. Icon SVGs that use `v-html` mark the host element `aria-hidden`
+The rule for new code is short: `v-html` is fine for build-time
+project-owned strings (`?raw` imports, hard-coded literals), and
+absolutely not for anything that could carry sender-controlled or
+network-fetched content. The latter goes through the iframe.
 
-All inline SVG host elements that take a `v-html` bind also set
-`aria-hidden="true"` so screen readers do not announce the SVG's
-internal title/desc accidentally. The accessible name for an
-icon-only button comes from the button's `aria-label`/`title`.
+## Audit (2026-05-24)
 
-## Current audit (2026-05-24)
+The reading-pane iframe is the only render surface that consumes
+sender-controlled HTML. It does not use `v-html`; it binds the
+sanitized + CSP-wrapped srcdoc string to `<iframe :srcdoc>` with
+the sandbox attribute set to `IFRAME_SANDBOX`.
 
-`v-html` appears in two places in `src/`, both bound to Vite `?raw`
-SVG imports:
+`v-html` itself is used in:
 
-| File                                      | Bound expression                                              | Source                            |
-| ----------------------------------------- | ------------------------------------------------------------- | --------------------------------- |
-| `src/components/FolderNode.vue:49`        | `iconSvg`                                                     | `tb-folder-*.svg?raw` (asset dir) |
-| `src/components/MessageView.vue:395,435` | `archiveIcon`                                                 | `tb-folder-archive.svg?raw`       |
-| `src/components/MessageView.vue:441`     | `replyIcon`                                                   | `tb-reply.svg?raw`                |
-| `src/components/MessageView.vue:444`     | `replyAllIcon`                                                | `tb-reply-all.svg?raw`            |
-| `src/components/MessageView.vue:447`     | `forwardIcon`                                                 | `tb-forward.svg?raw`              |
+- `src/components/FolderNode.vue` — folder icon SVG (`?raw` import).
+- `src/components/MessageView.vue` toolbar — archive / reply /
+  reply-all / forward icon SVGs (`?raw` imports).
 
-Each host `<span>` carries `aria-hidden="true"`. Both files import
-the SVGs at the top of `<script setup>` from
-`src/assets/icons/`, so the bundle includes them at build time and
-runtime cannot redirect the source.
-
-The reading-pane iframe in `MessageView.vue` does not use `v-html`;
-it binds the sanitized + CSP-wrapped srcdoc string to the iframe's
-`:srcdoc` attribute (line where `iframeSrcDoc` is bound).
+All hosts carry `aria-hidden="true"`.
 
 ## Adding a new render surface
 
-Before introducing a new `v-html` site, check that:
+When a new feature would render HTML that did not originate in the
+local app:
 
-1. The source string is either a `?raw` asset import or a DOMPurify
-   output bound for the message iframe.
-2. The host element is `aria-hidden="true"` if the binding is
-   purely decorative.
-3. The PR description states the source category explicitly so the
-   reviewer can confirm.
-
-If neither condition (1) holds, render through the iframe path
-described in rule 1 instead.
+1. Run it through the message iframe pipeline above. Sanitise with
+   DOMPurify, wrap with `buildMessageSrcDoc`, render into a
+   sandboxed iframe with the same `IFRAME_SANDBOX` mask.
+2. If the requirement is "render this without scripting in the host
+   page," the iframe path covers it. If the requirement is "render
+   this with the host's interactivity," reject the requirement;
+   stormbox does not have a safe answer for that and the constitution
+   does not allow inventing one.
