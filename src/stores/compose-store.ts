@@ -77,7 +77,7 @@ export const useComposeStore = defineStore('compose', () => {
         if (newId) {
           await refreshIdentities();
         } else {
-          identities.value = [];
+          $reset();
         }
       },
       { immediate: true },
@@ -87,6 +87,22 @@ export const useComposeStore = defineStore('compose', () => {
   function detach(): void {
     unsubscribe?.();
     unsubscribe = null;
+    repo = null;
+    $reset();
+  }
+
+  /**
+   * Drop every piece of session-scoped state the store holds:
+   * identity list, draft contents, status, error, and the open
+   * flag. Used by the accountId watch on logout and exposed as
+   * $reset for explicit callers (tests, account switching).
+   */
+  function $reset(): void {
+    identities.value = [];
+    Object.assign(draft, EMPTY_DRAFT);
+    isOpen.value = false;
+    status.value = COMPOSE_STATE.IDLE;
+    error.value = null;
   }
 
   function onTablesTouched(tables: string[]): void {
@@ -282,6 +298,7 @@ export const useComposeStore = defineStore('compose', () => {
     identities,
     draft,
     fromIdentity,
+    $reset,
     attach,
     detach,
     refreshIdentities,

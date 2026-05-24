@@ -135,6 +135,32 @@ export const useMailStore = defineStore('mail', () => {
   );
 
   /**
+   * Drop every piece of session-scoped state. Safe to call without a
+   * detach: just zeroes the refs and the per-folder cache. Used by
+   * the accountId watch on logout and exposed as $reset for callers
+   * that want an explicit knob.
+   */
+  function $reset() {
+    folders.value = [];
+    messages.value = [];
+    currentFolderId.value = null;
+    totalForFolder.value = 0;
+    selectedMessageId.value = null;
+    selectedIds.value = new Set();
+    folderProgress.value = new Map();
+    folderStates.clear();
+    folderState = null;
+    isLoading.value = false;
+    error.value = null;
+    bodyPrefetch.clear();
+    refreshLoadedPagesInflight = null;
+    refreshLoadedPagesDirty = false;
+    refreshFolderProgressInflight = null;
+    refreshFolderProgressDirty = false;
+    staleFolderIds.clear();
+  }
+
+  /**
    * Connect the store to the Repository and subscribe to broadcasts.
    * Idempotent.
    */
@@ -148,16 +174,7 @@ export const useMailStore = defineStore('mail', () => {
         if (newId) {
           refreshFolders();
         } else {
-          folders.value = [];
-          messages.value = [];
-          currentFolderId.value = null;
-          selectedMessageId.value = null;
-          selectedIds.value = new Set();
-          messageBody.value = null;
-          folderProgress.value = new Map();
-          folderStates.clear();
-          folderState = null;
-          bodyPrefetch.clear();
+          $reset();
         }
       },
       { immediate: true },
@@ -187,6 +204,7 @@ export const useMailStore = defineStore('mail', () => {
     unsubscribe?.();
     unsubscribe = null;
     repo = null;
+    $reset();
   }
 
   function onTablesTouched(tables: string[]) {
@@ -1650,6 +1668,7 @@ export const useMailStore = defineStore('mail', () => {
     messageBody,
     isLoading,
     error,
+    $reset,
     attach,
     detach,
     refreshFolders,

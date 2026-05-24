@@ -159,6 +159,20 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * Drop every piece of session-scoped auth state without touching
+   * the OIDC session. Used by logout after stopSyncAccount, and
+   * exposed as $reset for callers that want the local clear without
+   * the IdP redirect.
+   */
+  function $reset(): void {
+    accountId.value = null;
+    username.value = null;
+    error.value = null;
+    status.value = AUTH_STATE.IDLE;
+    clearStorageQuota();
+  }
+
   async function logout(): Promise<void> {
     if (accountId.value != null) {
       try {
@@ -169,11 +183,7 @@ export const useAuthStore = defineStore('auth', () => {
         console.warn('stopSyncAccount failed during logout', err);
       }
     }
-    accountId.value = null;
-    username.value = null;
-    clearStorageQuota();
-    error.value = null;
-    status.value = AUTH_STATE.IDLE;
+    $reset();
     const oidc = getOidc();
     if (oidc?.isUserLoggedIn) {
       await oidc.logout({ redirectTo: 'home' });
@@ -198,6 +208,7 @@ export const useAuthStore = defineStore('auth', () => {
     initialize,
     connectWithPassword,
     connectViaOidc,
+    $reset,
     logout,
   };
 });

@@ -44,8 +44,7 @@ export const useContactsStore = defineStore('contacts', () => {
           await refresh();
           return;
         }
-        addressbooks.value = [];
-        contacts.value = [];
+        $reset();
       },
       { immediate: true },
     );
@@ -55,6 +54,19 @@ export const useContactsStore = defineStore('contacts', () => {
     unsubscribe?.();
     unsubscribe = null;
     repo = null;
+    $reset();
+  }
+
+  /**
+   * Drop every piece of session-scoped state. Mirrors the reset
+   * shape used by mail-store and compose-store so a logout or
+   * account switch leaves the store empty rather than holding
+   * onto rows from the previous account.
+   */
+  function $reset(): void {
+    addressbooks.value = [];
+    contacts.value = [];
+    error.value = null;
   }
 
   function onTablesTouched(tables: string[]): void {
@@ -118,6 +130,7 @@ export const useContactsStore = defineStore('contacts', () => {
     addressbooks,
     contacts,
     error,
+    $reset,
     attach,
     detach,
     refresh,

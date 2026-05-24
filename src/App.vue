@@ -19,6 +19,7 @@ import MessageView from './components/MessageView.vue';
 import ComposeDialog from './components/ComposeDialog.vue';
 import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
+import StoreErrorToast from './components/StoreErrorToast.vue';
 import ThunderbirdLogo from './components/ThunderbirdLogo.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 
@@ -520,6 +521,7 @@ function clamp(value: number, min: number, max: number) {
     <ContactsView v-else-if="space === 'contacts'" />
 
     <ComposeDialog />
+    <StoreErrorToast />
   </div>
 </template>
 
