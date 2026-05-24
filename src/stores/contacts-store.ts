@@ -16,6 +16,7 @@ import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import type { AddressbookRow, ContactListRow } from '../types';
+import type { Repository } from '../db/repository.js';
 
 export interface AutocompleteCandidate {
   name?: string | null;
@@ -26,10 +27,10 @@ export interface AutocompleteCandidate {
 
 export const useContactsStore = defineStore('contacts', () => {
   const authStore = useAuthStore();
-  const addressbooks = ref<any[]>([]);
-  const contacts = ref<any[]>([]);
+  const addressbooks = ref<AddressbookRow[]>([]);
+  const contacts = ref<ContactListRow[]>([]);
   const error = ref<string | null>(null);
-  let repo: any = null;
+  let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
 
   async function attach(): Promise<void> {
@@ -97,7 +98,7 @@ export const useContactsStore = defineStore('contacts', () => {
    * can `await store.listContacts()` without depending on the watch
    * having already fired. Returns the same array bound to `contacts`.
    */
-  async function listContacts(options: { limit?: number } = {}): Promise<any[]> {
+  async function listContacts(options: { limit?: number } = {}): Promise<ContactListRow[]> {
     await refreshContacts(options);
     return contacts.value;
   }

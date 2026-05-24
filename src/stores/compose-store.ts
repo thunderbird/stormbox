@@ -12,8 +12,9 @@ import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store.js';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
-import type { ComposeState } from '../constants/states';
-import type { IdentityRow, MessageRow } from '../types';
+import type { ComposeState, MailboxRole } from '../constants/states';
+import type { FolderRow, IdentityRow, MessageRow } from '../types';
+import type { Repository } from '../db/repository.js';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import {
   buildQuotedHtml,
@@ -55,12 +56,12 @@ export const useComposeStore = defineStore('compose', () => {
   const status = ref<ComposeState>(COMPOSE_STATE.IDLE);
   const error = ref<string | null>(null);
   const isOpen = ref(false);
-  const identities = ref<any[]>([]);
+  const identities = ref<IdentityRow[]>([]);
   const draft = reactive<Draft>({ ...EMPTY_DRAFT });
-  let repo: any = null;
+  let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
 
-  const fromIdentity = computed<any | null>(() =>
+  const fromIdentity = computed<IdentityRow | null>(() =>
     identities.value[draft.fromIdx] ?? identities.value[0] ?? null,
   );
 
@@ -217,12 +218,17 @@ export const useComposeStore = defineStore('compose', () => {
     const toList = parseAddressList(draft.to);
     if (toList.length === 0) return failSend('Add at least one recipient.');
 
-    const drafts = mailStore.folders.find((f: any) => f.role === 'drafts');
-    const sent = mailStore.folders.find((f: any) => f.role === 'sent');
+    const folders = mailStore.folders as FolderRow[];
+    const findByRole = (role: MailboxRole) => folders.find((f) => f.role === role);
+    const drafts = findByRole('drafts');
+    const sent = findByRole('sent');
     // 'outbox' is not a JMAP role per RFC 8621 §2 — this find() is
     // effectively a no-op against a real Stalwart server. Kept for
     // back-compat with any backend that surfaces a custom role.
-    const outbox = mailStore.folders.find((f: any) => f.role === 'outbox');
+    // Cast to MailboxRole because 'outbox' is not in the RFC-8621 union
+    // but appears on backends that surface a custom role with the same
+    // semantics.
+    const outbox = folders.find((f) => f.role === ('outbox' as MailboxRole));
 
     status.value = COMPOSE_STATE.SENDING;
     error.value = null;

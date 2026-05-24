@@ -47,7 +47,7 @@ describe('compose-store reply and forward prefills', () => {
 
   it('prepares reply-all with the sender in To and non-self recipients in Cc', () => {
     const composeStore = useComposeStore();
-    composeStore.identities = [{ id: 1, name: 'Me', email: 'me@example.com' }];
+    composeStore.identities = [{ id: 1, name: 'Me', email: 'me@example.com' } as any];
 
     composeStore.prepareReplyAll(sourceMessage(), {
       text: 'Looping everyone in',

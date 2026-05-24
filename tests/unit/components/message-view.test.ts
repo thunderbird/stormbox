@@ -72,7 +72,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     await mailStore.attach();
 
     // Simulate the post-refreshLoadedPages cache shape that exposed
@@ -88,7 +88,7 @@ describe('MessageView with a sparse messages array', () => {
       from_text: 'sender@example.com',
       received_at: 1_700_000_000_000,
     };
-    mailStore.messages = [undefined, selected, undefined];
+    mailStore.messages = [undefined, selected, undefined] as any;
     mailStore.selectedMessageId = 42;
 
     const wrapper = mount(MessageView);
@@ -106,7 +106,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     await mailStore.attach();
 
     mailStore.messages = [];
@@ -124,7 +124,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     await mailStore.attach();
 
     mailStore.messages = [{
@@ -168,7 +168,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     await mailStore.attach();
 
     mailStore.messages = [{
@@ -194,7 +194,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     await mailStore.attach();
 
@@ -225,7 +225,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     await mailStore.attach();
 
@@ -256,7 +256,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     await mailStore.attach();
 
@@ -286,7 +286,7 @@ describe('MessageView with a sparse messages array', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     await mailStore.attach();
 
     mailStore.messages = [
@@ -315,7 +315,7 @@ describe('MessageView HTML body rendering', () => {
     authStore.accountId = 1;
     __setRepositoryForTests(makeRepo());
 
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     return mailStore.attach().then(() => {
       const selected = {
         id: 7,

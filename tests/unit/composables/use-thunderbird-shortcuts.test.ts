@@ -96,7 +96,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Delete destroys the viewed message', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2)];
     mailStore.selectedMessageId = 1;
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
@@ -109,7 +109,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Backspace destroys the viewed message', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2)];
     mailStore.selectedMessageId = 1;
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
@@ -122,7 +122,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Ctrl+A selects only loaded rows, not the full folder total', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), undefined, makeRow(4)];
     mailStore.totalForFolder = 3000;
 
@@ -134,7 +134,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('F and B move the viewed message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
     mailStore.selectedMessageId = 1;
 
@@ -147,7 +147,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('N moves to the next unread message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [
       makeRow(1, { is_seen: 1 }),
       makeRow(2, { is_seen: 1 }),
@@ -161,7 +161,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('plain A archives without selecting all loaded rows', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.folders = [{ id: 99, role: 'archive', name: 'Archive', is_deleted: 0 }];
     mailStore.messages = [makeRow(1), makeRow(2)];
     mailStore.selectedMessageId = 1;
@@ -181,7 +181,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('ignores shortcuts when compose is open', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     composeStore.isOpen = true;
     mailStore.messages = [makeRow(1)];
@@ -196,7 +196,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Delete works when focus is on a checkbox input', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2)];
     mailStore.selectedIds = new Set([1]);
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
@@ -218,7 +218,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('does not handle excluded shortcuts', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1)];
     mailStore.selectedMessageId = 1;
     const refreshSpy = vi.spyOn(mailStore, 'refresh').mockResolvedValue(undefined);
@@ -237,7 +237,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Ctrl+R prepares a reply for the viewed message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     mailStore.messages = [makeRow(7, { from_text: 'Alice <alice@example.com>', subject: 'Hi' })];
     mailStore.selectedMessageId = 7;
@@ -253,7 +253,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Ctrl+Shift+R prepares reply-all for the viewed message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     mailStore.messages = [makeRow(7, { from_text: 'Alice <alice@example.com>', subject: 'Hi' })];
     mailStore.selectedMessageId = 7;
@@ -269,7 +269,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Ctrl+L prepares a forward for the viewed message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
     mailStore.messages = [makeRow(7, { from_text: 'Alice <alice@example.com>', subject: 'Hi' })];
     mailStore.selectedMessageId = 7;
@@ -285,7 +285,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('M toggles read/unread on the targeted message', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1, { is_seen: 1 }), makeRow(2, { is_seen: 1 })];
     mailStore.selectedMessageId = 1;
     const toggleSpy = vi.spyOn(mailStore, 'toggleManySeen').mockResolvedValue(undefined);
@@ -298,7 +298,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('P moves to the previous unread message', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [
       makeRow(1, { is_seen: 0 }),
       makeRow(2, { is_seen: 1 }),
@@ -313,7 +313,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Home jumps to the first loaded row, End jumps to the last', () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), makeRow(3), makeRow(4)];
     mailStore.selectedMessageId = 2;
 
@@ -326,7 +326,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('Shift+Delete permanently destroys the targeted message', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2)];
     mailStore.selectedMessageId = 1;
     const purgeSpy = vi.spyOn(mailStore, 'permanentlyDestroyMessages')
@@ -343,7 +343,7 @@ describe('useThunderbirdShortcuts', () => {
 
   it('forwards key events from nested documents via invokeThunderbirdShortcut', async () => {
     mountHarness();
-    const mailStore = useMailStore();
+    const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1)];
     mailStore.selectedMessageId = 1;
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);

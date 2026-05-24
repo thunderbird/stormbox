@@ -25,13 +25,16 @@ import { getRepositoryAsync } from '../composables/use-repository.js';
 import { useAuthStore } from './auth-store';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import { MUTATION_TYPE, VIEW_TYPE } from '../constants/states';
-import type { JmapViewSort, MutationType } from '../constants/states';
+import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
 import type { FolderRow, MessageBody, MessageRow, PendingMutationRow, QueryViewProgress } from '../types';
+import type { Repository } from '../db/repository.js';
+
+type CachedRow = MessageRow | undefined;
 
 interface FolderCache {
   folderId: number;
   total: number;
-  rows: Array<any | undefined>;
+  rows: CachedRow[];
   paintedRanges: Array<{ start: number; end: number }>;
   sortProp: JmapViewSort;
   scrollTop: number;
@@ -94,13 +97,13 @@ const INITIAL_BODY_PREFETCH = 5;
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
 
-  const folders = ref<any[]>([]);
+  const folders = ref<FolderRow[]>([]);
   const currentFolderId = ref<number | null>(null);
   // Bound to the current folder's positional `rows` array. Indices
   // we haven't fetched are `undefined`, so the virtualiser renders
   // skeleton placeholders for them and the scrollbar reflects the
   // true total.
-  const messages = ref<Array<any | undefined>>([]);
+  const messages = ref<CachedRow[]>([]);
   const totalForFolder = ref(0);
   const folderProgress = ref<Map<number, QueryViewProgress>>(new Map());
   const selectedMessageId = ref<number | null>(null);
@@ -133,7 +136,7 @@ export const useMailStore = defineStore('mail', () => {
   const folderStates: Map<number, FolderCache> = new Map();
   let folderState: FolderCache | null = null;
 
-  let repo: any = null;
+  let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
   let bodyFetchToken = 0;
   const bodyQueue: number[] = [];
@@ -223,7 +226,7 @@ export const useMailStore = defineStore('mail', () => {
     repo = null;
   }
 
-  function onTablesTouched(tables) {
+  function onTablesTouched(tables: string[]) {
     if (tables.includes(TABLE_FAMILIES.FOLDERS)) {
       refreshFolders();
     }
@@ -339,7 +342,7 @@ export const useMailStore = defineStore('mail', () => {
     if (changed) folders.value = remapped;
   }
 
-  function _sortPropFor(folder) {
+  function _sortPropFor(folder: { role?: MailboxRole | null } | null | undefined): JmapViewSort {
     return folder?.role === 'sent' || folder?.role === 'drafts' ? 'sent' : 'received';
   }
 
@@ -354,7 +357,7 @@ export const useMailStore = defineStore('mail', () => {
    * "navigation complete" can. Subsequent visits resolve immediately
    * because the cache is already populated.
    */
-  function selectFolder(folderId) {
+  function selectFolder(folderId: number | null) {
     // Switch synchronously so the FolderTree highlight and the
     // MessageList rebind in the same tick. Any awaited work below
     // could race against another selectFolder call from a rapid
@@ -508,7 +511,7 @@ export const useMailStore = defineStore('mail', () => {
    * .finally re-evaluates against the *latest* visible range so a
    * fast scroll across several pages hydrates the right window.
    */
-  async function ensureLoaded(start, end) {
+  async function ensureLoaded(start: number, end: number) {
     const state = folderState;
     if (!state || state.folderId !== currentFolderId.value) return;
     if (authStore.accountId == null || !repo) return;
@@ -573,7 +576,7 @@ export const useMailStore = defineStore('mail', () => {
     return state.pageInflight;
   }
 
-  async function _loadPage(state, offset, limit) {
+  async function _loadPage(state: FolderCache, offset: number, limit: number) {
     // Try SQLite first. listMessagesForView is positional and only
     // returns rows whose query_view_items position falls inside
     // [offset, offset+limit). A stale destination view deliberately
@@ -650,7 +653,7 @@ export const useMailStore = defineStore('mail', () => {
    * messages.value = state.rows below as a fresh subscription source
    * but reads the same content.
    */
-  function _splice(state, offset, rows) {
+  function _splice(state: FolderCache, offset: number, rows: MessageRow[]) {
     if (state.rows.length < offset + rows.length) {
       state.rows.length = offset + rows.length;
     }
@@ -667,7 +670,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function rangeCovered(ranges, start, end) {
+  function rangeCovered(ranges: Array<{ start: number; end: number }>, start: number, end: number): boolean {
     if (end <= start) return true;
     for (const range of ranges) {
       if (start >= range.start && end <= range.end) return true;
@@ -675,7 +678,7 @@ export const useMailStore = defineStore('mail', () => {
     return false;
   }
 
-  function addRange(ranges, start, end) {
+  function addRange(ranges: Array<{ start: number; end: number }>, start: number, end: number) {
     if (end <= start) return;
     ranges.push({ start, end });
     ranges.sort((a, b) => a.start - b.start || a.end - b.end);
@@ -854,18 +857,18 @@ export const useMailStore = defineStore('mail', () => {
   // Persist the user's scroll position so navigating away and back
   // returns them to where they were. Called from MessageList on every
   // scroll event (rAF-throttled there).
-  function setScrollTop(folderId, scrollTop) {
+  function setScrollTop(folderId: number, scrollTop: number) {
     const state = folderStates.get(folderId);
     if (state) state.scrollTop = scrollTop;
   }
 
-  function getScrollTop(folderId) {
+  function getScrollTop(folderId: number): number {
     return folderStates.get(folderId)?.scrollTop ?? 0;
   }
 
   // Tracked separately from ensureLoaded args so the inflight-page
   // .finally can re-pump against the *latest* visible range.
-  function setRequestedRange(folderId, start, end) {
+  function setRequestedRange(folderId: number | null, start: number, end: number) {
     const state = folderStates.get(folderId);
     if (state) state.requestedRange = { start, end };
   }
@@ -975,7 +978,7 @@ export const useMailStore = defineStore('mail', () => {
     return next.size;
   }
 
-  function invalidateFolderStateForFreshWindow(folderId) {
+  function invalidateFolderStateForFreshWindow(folderId: number | string) {
     const id = Number(folderId);
     if (!Number.isFinite(id)) return;
     staleFolderIds.add(id);
@@ -997,7 +1000,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  async function reconcileSelectedFolderViewState(state) {
+  async function reconcileSelectedFolderViewState(state: FolderCache | null) {
     if (!repo || authStore.accountId == null || !state) return;
     if (state.folderId !== currentFolderId.value || folderState !== state) return;
     try {
@@ -1027,7 +1030,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function maybePrefetchInitialBodies(state) {
+  function maybePrefetchInitialBodies(state: FolderCache) {
     const folder = folders.value.find((f) => f.id === state.folderId);
     const isSmallFolder = Number(state.total ?? 0) <= PAGE_SIZE;
     const shouldPrefetch = folder?.role === 'inbox' || isSmallFolder;
@@ -1040,7 +1043,7 @@ export const useMailStore = defineStore('mail', () => {
     enqueueBodyPrefetch(ids);
   }
 
-  function nearbyMessageIds(messageId) {
+  function nearbyMessageIds(messageId: number): number[] {
     const idx = messages.value.findIndex((row) => row?.id === messageId);
     if (idx < 0) return [messageId];
     const order = [idx, idx + 1, idx + 2, idx - 1];
@@ -1049,7 +1052,7 @@ export const useMailStore = defineStore('mail', () => {
       .filter(Boolean);
   }
 
-  function enqueueBodyPrefetch(messageIds, { priority = false } = {}) {
+  function enqueueBodyPrefetch(messageIds: Array<number | undefined | null>, { priority = false }: { priority?: boolean } = {}) {
     if (!Array.isArray(messageIds) || messageIds.length === 0) return;
     const deduped = [];
     for (const id of messageIds) {
@@ -1078,7 +1081,7 @@ export const useMailStore = defineStore('mail', () => {
    * yet) are skipped silently; the next ensureLoaded round trip
    * will fill them and the next scroll-pause will pick them up.
    */
-  function enqueueVisibleBodyPrefetch(start, end) {
+  function enqueueVisibleBodyPrefetch(start: number, end: number) {
     if (!repo || authStore.accountId == null) return;
     const lo = Math.max(0, Number(start ?? 0));
     const hi = Math.max(lo, Number(end ?? lo));
@@ -1124,7 +1127,7 @@ export const useMailStore = defineStore('mail', () => {
    * priority fetch on miss). Ignores stale responses after fast selection
    * changes via bodyFetchToken.
    */
-  async function loadMessageBodyForDisplay(messageId, token) {
+  async function loadMessageBodyForDisplay(messageId: number, token: number) {
     if (!repo || authStore.accountId == null) return;
     try {
       const body = await repo.getMessageBodyForDisplay(authStore.accountId, messageId);
@@ -1141,7 +1144,7 @@ export const useMailStore = defineStore('mail', () => {
    * worker/sync layer handles cache vs network (including priority fetch
    * during an in-flight prefetch batch).
    */
-  function selectMessage(messageId) {
+  function selectMessage(messageId: number | null) {
     selectedMessageId.value = messageId;
     if (messageId == null || authStore.accountId == null) {
       messageBody.value = null;
@@ -1164,7 +1167,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function _isSeenInList(messageId) {
+  function _isSeenInList(messageId: number): boolean {
     const m = messages.value.find((row) => row?.id === messageId);
     return !!m && Number(m.is_seen) === 1;
   }
@@ -1188,7 +1191,7 @@ export const useMailStore = defineStore('mail', () => {
    * Email state, syncEmailChanges fetches the updated keywords, and
    * the MESSAGES broadcast triggers refreshLoadedPages here.
    */
-  async function markRead(messageId) {
+  async function markRead(messageId: number) {
     return _setSeen(messageId, true);
   }
 
@@ -1197,11 +1200,11 @@ export const useMailStore = defineStore('mail', () => {
    * `seen=false` for each id; this wrapper exists so single-row
    * callers (toolbar in MessageView) match the markRead shape.
    */
-  async function markUnread(messageId) {
+  async function markUnread(messageId: number) {
     return _setSeen(messageId, false);
   }
 
-  async function _setSeen(messageId, seen) {
+  async function _setSeen(messageId: number, seen: boolean) {
     if (!repo || authStore.accountId == null) return;
     const local = messages.value.find((m) => m?.id === messageId);
     const currentSeen = Number(local?.is_seen ?? 0) === 1;
@@ -1240,7 +1243,7 @@ export const useMailStore = defineStore('mail', () => {
    * Returns the number of rows whose state actually changed (so the
    * toolbar can show "marked N as read").
    */
-  async function markManySeen(ids, seen) {
+  async function markManySeen(ids: number[], seen: boolean): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     let changed = 0;
     for (const id of ids) {
@@ -1257,14 +1260,14 @@ export const useMailStore = defineStore('mail', () => {
     return changed;
   }
 
-  async function toggleManySeen(ids) {
+  async function toggleManySeen(ids: number[]): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     const first = messages.value.find((m) => m?.id === ids[0]);
     const seen = Number(first?.is_seen ?? 0) === 1;
     return markManySeen(ids, !seen);
   }
 
-  async function archiveMessages(ids) {
+  async function archiveMessages(ids: number[]) {
     const archive = folders.value.find((f) => f.role === 'archive');
     if (!archive?.id) {
       error.value = 'No archive folder is configured.';
@@ -1290,7 +1293,7 @@ export const useMailStore = defineStore('mail', () => {
    * Returns once the round trip is complete; the caller can re-read
    * mailStore.messages right after for the post-delete state.
    */
-  async function destroyMessages(ids, { permanent = false } = {}) {
+  async function destroyMessages(ids: number[], { permanent = false }: { permanent?: boolean } = {}) {
     if (!repo || authStore.accountId == null) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
     // Drop ids that no longer exist in messages (e.g. a previous
@@ -1385,7 +1388,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function removedMessageIds(beforeRows, afterRows) {
+  function removedMessageIds(beforeRows: CachedRow[], afterRows: CachedRow[]): number[] {
     const after = new Set<number>();
     for (const row of afterRows ?? []) {
       if (row?.id != null) after.add(Number(row.id));
@@ -1399,7 +1402,7 @@ export const useMailStore = defineStore('mail', () => {
     return [...new Set(removed)];
   }
 
-  function nextPreviewIdAfterRemoval(ids, rows = folderState?.rows ?? messages.value): number | null | undefined {
+  function nextPreviewIdAfterRemoval(ids: number | number[], rows: CachedRow[] = folderState?.rows ?? messages.value): number | null | undefined {
     const removed = new Set(normalizeMessageIds(ids));
     if (removed.size === 0) return undefined;
 
@@ -1437,7 +1440,7 @@ export const useMailStore = defineStore('mail', () => {
     return null;
   }
 
-  function applyPreviewAfterRemoval(nextPreviewId) {
+  function applyPreviewAfterRemoval(nextPreviewId: number | null | undefined) {
     if (nextPreviewId === undefined) return;
     selectMessage(nextPreviewId ?? null);
   }
@@ -1447,11 +1450,11 @@ export const useMailStore = defineStore('mail', () => {
    * named export so the open-message Delete button and any other
    * single-target caller stay readable.
    */
-  async function destroyMessage(messageId, options = {}) {
+  async function destroyMessage(messageId: number, options: { permanent?: boolean } = {}) {
     return destroyMessages([messageId], options);
   }
 
-  async function permanentlyDestroyMessages(ids) {
+  async function permanentlyDestroyMessages(ids: number[]) {
     return destroyMessages(ids, { permanent: true });
   }
 
@@ -1462,7 +1465,7 @@ export const useMailStore = defineStore('mail', () => {
    * the source/target pair, enqueue the mutation, and compact the
    * current painted rows once the cache has changed.
    */
-  async function moveMessages(ids, targetFolderId) {
+  async function moveMessages(ids: number[], targetFolderId: number): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) {
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
@@ -1515,12 +1518,12 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
-  async function moveMessage(messageId, targetFolderId) {
+  async function moveMessage(messageId: number, targetFolderId: number): Promise<boolean> {
     const result = await moveMessages([messageId], targetFolderId);
     return result.succeeded === 1;
   }
 
-  function canMoveToFolder(targetFolderId) {
+  function canMoveToFolder(targetFolderId: number): boolean {
     const source = currentFolder.value;
     const target = findFolder(targetFolderId);
     try {
@@ -1531,14 +1534,14 @@ export const useMailStore = defineStore('mail', () => {
     return Number(source.id) !== Number(target.id);
   }
 
-  async function filterExistingMessageIds(ids) {
+  async function filterExistingMessageIds(ids: number[]): Promise<number[]> {
     if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
     const numeric = normalizeMessageIds(ids);
     if (numeric.length === 0) return [];
     return repo.filterExistingMessageIds(authStore.accountId, numeric);
   }
 
-  function clearSelectionFor(ids) {
+  function clearSelectionFor(ids: number | number[]) {
     const normalized = normalizeMessageIds(ids);
     if (normalized.length === 0) return;
     const set = new Set(normalized);
@@ -1561,7 +1564,7 @@ export const useMailStore = defineStore('mail', () => {
     selectedIds.value = new Set();
   }
 
-  async function loadMutationError(mutationId) {
+  async function loadMutationError(mutationId: number | null | undefined) {
     if (!repo || mutationId == null) return null;
     try {
       return await repo.getPendingMutationError(mutationId);
@@ -1570,7 +1573,11 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function describeMutationFailure(result, detail, action = 'delete') {
+  function describeMutationFailure(
+    result: MutationOutcome | null | undefined,
+    detail: { error_json?: string | null } | null | undefined,
+    action: string = 'delete',
+  ): string {
     if (detail?.error_json) {
       try {
         const parsed = JSON.parse(detail.error_json);
@@ -1596,7 +1603,7 @@ export const useMailStore = defineStore('mail', () => {
    * id. For bulk deletes (N>1) target_message_id stays null and
    * the row gets a row-id lock instead.
    */
-  function buildDeleteMutation(messageIds) {
+  function buildDeleteMutation(messageIds: number | number[]): PendingMutationInsert {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
     const trash = folders.value.find((f) => f.role === 'trash');
     const current = currentFolder.value;
@@ -1621,7 +1628,7 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
-  function buildPermanentDeleteMutation(messageIds) {
+  function buildPermanentDeleteMutation(messageIds: number | number[]): PendingMutationInsert {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
     const target = ids.length === 1 ? ids[0] : null;
     return {
@@ -1646,13 +1653,13 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
-  function findFolder(folderId) {
+  function findFolder(folderId: number | null | undefined): FolderRow | null {
     const localId = Number(folderId);
     if (!Number.isFinite(localId)) return null;
     return folders.value.find((f) => Number(f.id) === localId) ?? null;
   }
 
-  function normalizeMessageIds(ids) {
+  function normalizeMessageIds(ids: number | number[] | null | undefined): number[] {
     const raw = Array.isArray(ids) ? ids : [ids];
     const out = raw
       .map(Number)
@@ -1660,7 +1667,7 @@ export const useMailStore = defineStore('mail', () => {
     return [...new Set(out)];
   }
 
-  function assertCanMoveToFolder(source, target) {
+  function assertCanMoveToFolder(source: FolderRow | null | undefined, target: FolderRow | null): asserts source is FolderRow {
     if (!source?.id) {
       throwMoveError('Cannot move message without a source folder.');
     }
@@ -1678,7 +1685,7 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  function throwMoveError(message) {
+  function throwMoveError(message: string): never {
     error.value = message;
     throw new Error(message);
   }

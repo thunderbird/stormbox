@@ -44,7 +44,7 @@ async function mountOpenCompose(htmlBody = 'hello world') {
     id: 1,
     name: 'Sender',
     email: 'sender@example.com',
-  }];
+  } as any];
   composeStore.open({ htmlBody });
 
   const wrapper = mount(ComposeDialog, { attachTo: document.body });
@@ -68,7 +68,7 @@ describe('ComposeDialog rich text toolbar', () => {
       id: 1,
       name: 'Sender',
       email: 'sender@example.com',
-    }];
+    } as any];
 
     const wrapper = mount(ComposeDialog, { attachTo: document.body });
     composeStore.open({ htmlBody: 'hello world' });

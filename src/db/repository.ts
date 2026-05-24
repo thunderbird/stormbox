@@ -63,12 +63,16 @@ export class Repository {
   }
 
   /**
-   * Low-level RPC. Most callers use one of the named helper methods below.
+   * Low-level RPC. Most callers use one of the named helper methods
+   * below. The result is a JSON-shaped value crossing the MessagePort
+   * boundary, so it is typed loosely; consumers narrow it at the call
+   * site (typed store assignment, explicit cast, or the named helper
+   * method's annotated return type).
    */
-  call(method, params = {}) {
+  call<T = any>(method: string, params: any = {}): Promise<T> {
     const id = this._nextId;
     this._nextId += 1;
-    return new Promise((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       this._pending.set(id, { resolve, reject });
       this._port.postMessage({ type: RPC_REQUEST, id, method, params });
     });

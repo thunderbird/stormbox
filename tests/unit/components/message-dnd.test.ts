@@ -51,7 +51,7 @@ function makeFolder(id, overrides = {}) {
     may_add_items: null,
     may_remove_items: null,
     ...overrides,
-  };
+  } as any;
 }
 
 function makeRow(id, overrides = {}) {
@@ -67,7 +67,7 @@ function makeRow(id, overrides = {}) {
     is_flagged: 0,
     has_attachment: 0,
     ...overrides,
-  };
+  } as any;
 }
 
 function makeDataTransfer() {
