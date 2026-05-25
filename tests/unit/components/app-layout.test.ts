@@ -66,6 +66,10 @@ function makePointerEvent(type: string, clientX: number, button = 0) {
   return event;
 }
 
+function dispatchClick(target: EventTarget) {
+  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));
+}
+
 function setWindowWidth(width: number, dispatchResize = false) {
   Object.defineProperty(window, 'innerWidth', {
     configurable: true,
@@ -125,6 +129,19 @@ describe('App mail layout', () => {
     expect(items[0].attributes('href')).toBe(APPOINTMENT_URL);
     expect(items[1].text()).toContain('Thunderbird Send');
     expect(items[1].attributes('href')).toBe(SEND_URL);
+  });
+
+  it('closes the Thundermail menu when clicking outside it', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    const appMenu = wrapper.get('.app-menu').element as HTMLDetailsElement;
+    appMenu.open = true;
+
+    dispatchClick(document.body);
+    await nextTick();
+
+    expect(appMenu.open).toBe(false);
   });
 
   it('shows the user identity, account settings link, and a log out button in the top-right avatar menu', async () => {

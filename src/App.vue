@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { onClickOutside } from '@vueuse/core';
 import { ChevronDown, Moon, Plus, Sun, X } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
@@ -74,6 +75,7 @@ const MAX_COLUMN_WIDTHS = {
 };
 
 const shellEl = ref<HTMLElement | null>(null);
+const appMenuEl = ref<HTMLDetailsElement | null>(null);
 const theme = ref<Theme>(getInitialTheme());
 applyTheme(theme.value);
 const themeToggleLabel = computed(() =>
@@ -107,6 +109,10 @@ const shellStyle = computed(() => ({
 }));
 
 useThunderbirdShortcuts({ space, enabled: shortcutsEnabled });
+
+onClickOutside(appMenuEl, () => {
+  if (appMenuEl.value?.open) appMenuEl.value.open = false;
+});
 
 onMounted(async () => {
   applyTheme(theme.value);
@@ -410,7 +416,7 @@ function clamp(value: number, min: number, max: number) {
     :style="shellStyle"
   >
     <div class="quick-filter">
-      <details class="app-menu">
+      <details ref="appMenuEl" class="app-menu">
         <summary class="app-menu__button" aria-label="Open Thundermail menu">
           <ThunderbirdLogo :size="26" class="app-menu__logo" aria-hidden="true" />
           <span>Thundermail</span>
@@ -673,6 +679,15 @@ function clamp(value: number, min: number, max: number) {
   border-color: var(--border-soft);
   outline: none;
 }
+.app-menu[open] .app-menu__button {
+  position: relative;
+  z-index: 31;
+  background: var(--app-menu-popover-bg);
+  border-color: var(--border);
+  border-bottom-color: transparent;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
 .app-menu__logo,
 .app-menu__item-icon {
   display: block;
@@ -691,7 +706,7 @@ function clamp(value: number, min: number, max: number) {
 .app-menu__popover {
   position: absolute;
   z-index: 30;
-  top: calc(100% + 8px);
+  top: calc(100% - 1px);
   left: 0;
   min-width: 240px;
   padding: 6px;
@@ -699,6 +714,9 @@ function clamp(value: number, min: number, max: number) {
   border-radius: 12px;
   background: var(--app-menu-popover-bg);
   box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
+}
+.app-menu[open] .app-menu__popover {
+  border-top-left-radius: 0;
 }
 .app-menu__item-icon {
   filter: drop-shadow(0 2px 3px color-mix(in srgb, #000 20%, transparent));

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
+import { onClickOutside } from '@vueuse/core';
 import { LogOut, Settings } from 'lucide-vue-next';
 
 import { useAuthStore } from '../stores/auth-store.js';
@@ -17,26 +18,14 @@ const identityLabel = computed(
 const initials = computed(() => senderInitials(identityLabel.value));
 const avatarStyle = computed(() => senderAvatarStyle(identityLabel.value));
 
-function onDocumentPointerDown(event: PointerEvent) {
-  const root = detailsEl.value;
-  if (!root || !root.open) return;
-  const target = event.target as Node | null;
-  if (target && root.contains(target)) return;
-  root.open = false;
-}
+onClickOutside(detailsEl, () => {
+  if (detailsEl.value?.open) detailsEl.value.open = false;
+});
 
 function onLogout() {
   if (detailsEl.value) detailsEl.value.open = false;
   authStore.logout();
 }
-
-onMounted(() => {
-  document.addEventListener('pointerdown', onDocumentPointerDown, true);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', onDocumentPointerDown, true);
-});
 </script>
 
 <template>
