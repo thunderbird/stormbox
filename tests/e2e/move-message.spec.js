@@ -93,8 +93,8 @@ test.describe('Move message e2e', () => {
       expect(inboxCache.remoteIds, 'remote id should be gone from Inbox cache').not.toContain(createdId);
 
       // The Archive folder's query_view_items are only materialized
-      // when the user navigates to it (outbox-apply marks the view
-      // stale on the move, but does not eagerly fetch). Click Archive
+      // when the user navigates to it (the move apply path marks the
+      // view stale, but does not eagerly fetch). Click Archive
       // so ensureFolderWindow runs and the moved row lands in the
       // cache the way the user would see it.
       await clickFolder(page, archive.name);

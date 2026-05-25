@@ -1,9 +1,18 @@
 /**
- * Direct unit coverage for outbox-apply.ts. The existing
- * jmap-outbox-delete tests reach apply* only through drainOutbox; this
- * file pins the apply contract so a refactor of outbox.ts cannot
- * silently change the cache invariants the constitution relies on
- * (cache-first reads, no stale rows after a server-confirmed move).
+ * Direct unit coverage for the post-mutation cache effects:
+ *
+ *   - DB_RPC.OUTBOX_APPLY_MOVE_BATCH and OUTBOX_APPLY_DESTROY_BATCH
+ *     (the protocol-neutral cache mutation handlers in db/handlers.ts
+ *     that outbox.ts calls after a server-confirmed Email/set).
+ *   - applySendLocally (the JMAP-specific helper in outbox.ts that
+ *     re-fetches the canonical row after a successful send and
+ *     prepends it into open Sent views).
+ *
+ * The existing jmap-outbox-delete tests reach the same code paths
+ * through drainOutbox; this file pins the cache contract so a
+ * refactor of either layer cannot silently change the cache
+ * invariants the constitution relies on (cache-first reads, no stale
+ * rows after a server-confirmed move).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -11,11 +20,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
 import { makeHandlers } from '../../../src/db/handlers.js';
 import { DB_RPC } from '../../../src/db/protocol.js';
-import {
-  applyMoveLocally,
-  applyDestroyLocally,
-  applySendLocally,
-} from '../../../src/sync/backends/jmap/outbox-apply.js';
+import { applySendLocally } from '../../../src/sync/backends/jmap/outbox.js';
 import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes.js';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages.js';
 import { MockTransport } from './_mock-transport.js';
@@ -136,10 +141,10 @@ async function loadViewItems(viewId: number) {
   );
 }
 
-describe('applyMoveLocally', () => {
+describe('OUTBOX_APPLY_MOVE_BATCH', () => {
   it('moves folder membership, drops the source view entry, and marks the destination stale', async () => {
     // Seed an existing (empty) Trash view through the normal sync path
-    // so the destination has a query_views row that applyMoveLocally
+    // so the destination has a query_views row that the move handler
     // can mark stale.
     const trashTransport = new MockTransport();
     trashTransport.handle('Email/query', () => ({
@@ -150,8 +155,9 @@ describe('applyMoveLocally', () => {
       transport: trashTransport, account, folder: trash, handlers,
     });
 
-    await applyMoveLocally(handlers, account, {
-      messageId,
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
       addFolderIds: [trash.id],
       removeFolderIds: [inbox.id],
     });
@@ -168,9 +174,10 @@ describe('applyMoveLocally', () => {
     expect(Number(trashView.stale)).toBe(1);
   });
 
-  it('is a no-op when messageId is null (defensive guard against partial mutation rows)', async () => {
-    await applyMoveLocally(handlers, account, {
-      messageId: null,
+  it('is a no-op when messageIds is empty (defensive guard against partial mutation rows)', async () => {
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id,
+      messageIds: [],
       addFolderIds: [trash.id],
       removeFolderIds: [inbox.id],
     });
@@ -183,9 +190,12 @@ describe('applyMoveLocally', () => {
   });
 });
 
-describe('applyDestroyLocally', () => {
+describe('OUTBOX_APPLY_DESTROY_BATCH', () => {
   it('removes the message row, folder membership, and every query_view_items reference', async () => {
-    await applyDestroyLocally(handlers, account, { messageId });
+    await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
+    });
 
     expect(await engine.get('SELECT id FROM messages WHERE id = ?', [messageId])).toBeNull();
     expect(await loadFolderMemberships(messageId)).toEqual([]);
@@ -195,8 +205,11 @@ describe('applyDestroyLocally', () => {
     expect(await loadViewItems(inboxView.id)).toEqual([]);
   });
 
-  it('is a no-op when messageId is null', async () => {
-    await applyDestroyLocally(handlers, account, { messageId: null });
+  it('is a no-op when messageIds is empty', async () => {
+    await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
+      accountId: account.id,
+      messageIds: [],
+    });
 
     expect(await engine.get('SELECT id FROM messages WHERE id = ?', [messageId])).not.toBeNull();
   });

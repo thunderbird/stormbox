@@ -1,8 +1,12 @@
 /**
- * JMAP mutation dispatch. Translates a single pending_mutations row
- * into the appropriate Email/set or EmailSubmission/set request and
- * applies the local-cache reconciliation that follows a successful
- * response.
+ * JMAP mutation dispatch + post-success cache reconciliation.
+ *
+ * Translates a single pending_mutations row into the appropriate
+ * Email/set or EmailSubmission/set request, then mirrors the
+ * server-confirmed result in the local SQLite cache before resolving.
+ * The constitution requires the cache to match the server before the
+ * mutation RPC returns, so we never wait for an async StateChange push
+ * to apply the local effect.
  *
  * Supported mutation_type values:
  *
@@ -12,6 +16,13 @@
  *   'send'             Email/set create + EmailSubmission/set with
  *                      onSuccessUpdateEmail moving the email out of
  *                      drafts/outbox into sent
+ *
+ * Move and destroy delegate the cache effect to the protocol-neutral
+ * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
+ * which do the work inside a single engine transaction. Send and the
+ * notUpdated/notDestroyed fallback are JMAP-specific (they issue an
+ * Email/get to reconcile) and live in `applySendLocally` /
+ * `reconcileMessageFromServer` below.
  *
  * Two entry points:
  *
@@ -34,12 +45,7 @@
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
-import {
-  applyMoveBatchLocally,
-  applyDestroyBatchLocally,
-  applySendLocally,
-  reconcileMessageFromServer,
-} from './outbox-apply.js';
+import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages.js';
 
 export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
@@ -180,8 +186,13 @@ async function runMoveToFolders({ transport, account, handlers, row, request, us
   const notUpdated = response.notUpdated ?? {};
 
   // Apply the local cache update once for the exact set of ids the
-  // server confirmed in this Email/set chunk.
-  await applyMoveBatchLocally(handlers, account, {
+  // server confirmed in this Email/set chunk. The DB handler does the
+  // folder_messages swap, view compaction, and stale-marking inside a
+  // single engine transaction; combining the steps is what keeps
+  // delete snappy under indexer contention (see docs/architecture/
+  // performance.md > Batched persistence).
+  await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+    accountId: account.id,
     messageIds: resolved
       .filter(({ remoteId }) => updatedRemoteIds.has(remoteId))
       .map(({ localId }) => localId),
@@ -244,7 +255,12 @@ async function runDestroy({ transport, account, handlers, row, request, useWebSo
   );
   const notDestroyed = response.notDestroyed ?? {};
 
-  await applyDestroyBatchLocally(handlers, account, {
+  // Mirror the server-confirmed destroy id set in one transaction:
+  // DELETE FROM messages cascades to folder_messages, and each
+  // affected query_view is compacted and its total decremented
+  // before the handler returns.
+  await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
+    accountId: account.id,
     messageIds: resolved
       .filter(({ remoteId }) => destroyedRemoteIds.has(remoteId))
       .map(({ localId }) => localId),
@@ -415,6 +431,205 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
   });
 
   return { ok: true, response: result };
+}
+
+// ----- post-success cache reconciliation -----------------------------
+//
+// Move and destroy delegate to the protocol-neutral DB handlers
+// (inlined at their call sites above). Send and the notUpdated /
+// notDestroyed fallback need a JMAP Email/get to find the canonical
+// row, so they live here next to the dispatch code that calls them.
+
+/**
+ * Apply a successful Email/set create + EmailSubmission/set send
+ * locally. The constitution requires the local cache to match the
+ * server before the mutation RPC resolves; without this step the new
+ * email would only land via a later StateChange push.
+ *
+ * Pulls the freshly-created email back from the server (its
+ * mailboxIds reflect the post-onSuccessUpdateEmail state, i.e. the
+ * Sent folder and not the transient Drafts/Outbox box used during
+ * create), persists it via persistEmails so messages and
+ * folder_messages match, and prepends the new remote_id at position 0
+ * in any open Sent mailbox-window query_view so a subsequent
+ * listMessagesForView read returns the row immediately.
+ *
+ * sentRemoteId is the JMAP mailbox id of Sent. With no sentRemoteId
+ * we still persist the message but skip the query_view update; the
+ * next folder visit will rebuild the window from the server.
+ *
+ * Exported so the unit test in tests/unit/sync/outbox-apply.test.ts
+ * can drive it directly without spinning up a full SEND row.
+ */
+export async function applySendLocally({
+  transport, account, handlers, useWebSocket = false,
+  createdRemoteId, sentRemoteId,
+}) {
+  if (!createdRemoteId) return;
+  const payload = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [[
+      'Email/get',
+      {
+        accountId: account.remote_account_id,
+        ids: [createdRemoteId],
+        properties: EMAIL_LIST_PROPERTIES,
+      },
+      'r1',
+    ]],
+    useWebSocket,
+  });
+  const got = pickResponse(payload, 'Email/get');
+  const email = got?.list?.[0];
+  if (!email) return;
+
+  await persistEmails({ account, emails: [email], handlers });
+
+  if (!sentRemoteId) return;
+  const folderRows = await handlers[DB_RPC.QUERY]({
+    sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+    params: [account.id, sentRemoteId],
+  });
+  const sentFolderId = folderRows[0]?.id;
+  if (sentFolderId == null) return;
+
+  // Prepend the new remote_id at position 0 of every open Sent
+  // mailbox-window query_view and bump total. Sent is sorted newest
+  // first, so position 0 is correct for any sort variant the open
+  // view holds.
+  const viewRows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id FROM query_views
+           WHERE account_id = ? AND folder_id = ?
+             AND view_type = 'mailbox-window'`,
+    params: [account.id, Number(sentFolderId)],
+  });
+  for (const view of viewRows) {
+    const viewId = Number(view.id);
+    const result = await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: [],
+      added: [{ id: createdRemoteId, index: 0 }],
+    });
+    if (Number(result?.added ?? 0) > 0) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `UPDATE query_views
+                 SET total = COALESCE(total, 0) + ?,
+                     updated_at = ?
+               WHERE id = ?`,
+        params: [Number(result.added), Date.now(), viewId],
+      });
+    }
+  }
+}
+
+/**
+ * Reconcile local state for a single message against what the server
+ * actually has. Called when Email/set update or destroy returned
+ * notUpdated/notDestroyed - the most common reason is that local cache
+ * and server are out of sync (someone else moved/deleted the message),
+ * so the patch could not be applied. A push-only client could trust
+ * Email/set and let the next StateChange catch up, but with a SQLite
+ * cache the user would navigate through stale rows until the push
+ * landed, so we reconcile inline instead.
+ *
+ * Returns:
+ *   { gone: true }                  -> message no longer on server; we
+ *                                      applied destroy locally
+ *   { gone: false, email }          -> message still on server with the
+ *                                      shown mailboxIds; local cache has
+ *                                      been refreshed to match
+ *   { gone: false, email: null,
+ *     error: 'getFailed' }          -> Email/get itself failed; local
+ *                                      state is unchanged
+ */
+async function reconcileMessageFromServer({
+  transport, account, handlers, messageId, remoteId,
+  removeRemoteFolderIds = [], useWebSocket = false,
+}) {
+  let payload;
+  try {
+    payload = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [[
+        'Email/get',
+        {
+          accountId: account.remote_account_id,
+          ids: [remoteId],
+          properties: EMAIL_LIST_PROPERTIES,
+        },
+        'r1',
+      ]],
+      useWebSocket,
+    });
+  } catch (err) {
+    return { gone: false, email: null, error: 'getFailed', detail: err?.message };
+  }
+
+  const got = pickResponse(payload, 'Email/get');
+  const list = got?.list ?? [];
+  const notFound = got?.notFound ?? [];
+
+  if (list.length === 0 || notFound.includes(remoteId)) {
+    // Server confirmed the message is gone; apply the destroy locally
+    // through the protocol-neutral handler.
+    await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
+    });
+    return { gone: true };
+  }
+
+  const email = list[0];
+  await persistEmails({ account, emails: [email], handlers });
+
+  // Even though persistEmails fixed folder_messages, query_view_items
+  // still references this remote_id in any view whose folder is no
+  // longer in the email's mailboxIds. Drop those entries explicitly so
+  // the user does not keep seeing the message in those folders.
+  for (const remoteFolderId of removeRemoteFolderIds) {
+    if (email.mailboxIds?.[remoteFolderId] === true) continue;
+    const rows = await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      params: [account.id, remoteFolderId],
+    });
+    if (!rows[0]) continue;
+    await dropFromActiveViews(handlers, account, {
+      folderId: Number(rows[0].id),
+      remoteId,
+    });
+  }
+
+  return { gone: false, email };
+}
+
+async function dropFromActiveViews(handlers, account, { folderId, remoteId }) {
+  // Used by reconcileMessageFromServer when an Email/get confirms the
+  // message moved out of a folder we expected it to leave. Going
+  // through OUTBOX_APPLY_MOVE here would require knowing the
+  // messageId; this narrow per-view fix only needs the remoteId.
+  const viewRows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id FROM query_views
+           WHERE account_id = ?
+             AND folder_id = ?
+             AND view_type = 'mailbox-window'`,
+    params: [account.id, folderId],
+  });
+  for (const view of viewRows) {
+    const result = await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId: Number(view.id),
+      removed: [remoteId],
+      added: [],
+    });
+    if (Number(result?.removed ?? 0) > 0) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `UPDATE query_views
+                 SET total = MAX(0, COALESCE(total, 0) - 1),
+                     updated_at = ?
+               WHERE id = ?`,
+        params: [Date.now(), Number(view.id)],
+      });
+    }
+  }
 }
 
 async function submitEmailSet({ transport, account, useWebSocket, update, destroy }: {

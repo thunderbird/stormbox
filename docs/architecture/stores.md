@@ -134,12 +134,16 @@ non-JMAP backend that consumes the same row.
 
 ### Local cache reconciliation is synchronous
 
-When a mutation's protocol call succeeds, the matching `apply*Locally`
-helper in `src/sync/backends/jmap/outbox-apply.ts` writes the local
-cache change before `runMutation` resolves. The store can therefore
-splice the affected rows out of `messages.value` synchronously
-after `runMutation` returns success — it does not need to wait for
-the JMAP push channel and the broadcast hop.
+When a mutation's protocol call succeeds, the matching cache effect
+in `src/sync/backends/jmap/outbox.ts` writes the local cache change
+before `runMutation` resolves. Move and destroy go straight to the
+protocol-neutral `OUTBOX_APPLY_MOVE_BATCH` /
+`OUTBOX_APPLY_DESTROY_BATCH` DB handlers; send and the
+notUpdated/notDestroyed fallback are handled by `applySendLocally`
+and `reconcileMessageFromServer` in the same file. The store can
+therefore splice the affected rows out of `messages.value`
+synchronously after `runMutation` returns success — it does not need
+to wait for the JMAP push channel and the broadcast hop.
 
 ## Type discipline
 

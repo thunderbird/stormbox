@@ -90,8 +90,9 @@ UI, local cache, and direct JMAP outcomes on Chromium and Firefox.
 Operational details:
 
 - Add coverage when introducing any new `mutation_type` in
-  `pending_mutations`, any new `apply*Locally` helper in
-  `src/sync/backends/jmap/outbox-apply.ts`, any change to
+  `pending_mutations`, any new post-success cache effect in
+  `src/sync/backends/jmap/outbox.ts` (or any new
+  `OUTBOX_APPLY_*` DB handler in `src/db/handlers.ts`), any change to
   `destroyMessage(s)`, `markManySeen`, `refresh`, compose `send`, or
   `resetViewForFolder` semantics, or any new field surfaced through
   `MESSAGE_LIST_FOR_VIEW` / `QUERY_VIEW_APPLY_CHANGES` that the mail

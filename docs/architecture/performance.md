@@ -122,13 +122,16 @@ via the DB layer hook, a JMAP `StateChange` push, and a backoff
 timer.
 
 After a successful `Email/set`, the local cache is reconciled
-in-process via `outbox-apply`. Bulk paths go through the
-`OUTBOX_APPLY_MOVE_BATCH` / `OUTBOX_APPLY_DESTROY_BATCH` worker
-handlers, which mirror the exact server-confirmed id set in one
-engine transaction: replace `folder_messages` rows, drop affected
-query view items, compact positions once per view, decrement
-`query_views.total`, and mark added-folder views stale. Single-row
-helpers are compatibility wrappers around the same batch shape.
+in-process from `outbox.ts`. Move and destroy paths call the
+protocol-neutral `OUTBOX_APPLY_MOVE_BATCH` /
+`OUTBOX_APPLY_DESTROY_BATCH` worker handlers directly, which mirror
+the exact server-confirmed id set in one engine transaction: replace
+`folder_messages` rows, drop affected query view items, compact
+positions once per view, decrement `query_views.total`, and mark
+added-folder views stale. Send and the `notUpdated`/`notDestroyed`
+fallback are JMAP-specific (they issue an `Email/get` to reconcile)
+and live in `applySendLocally` / `reconcileMessageFromServer` in
+`outbox.ts`.
 
 Trash semantics: ordinary delete moves to Trash via `moveToFolders`.
 Permanent destroy is reserved for messages already in Trash or
@@ -283,7 +286,7 @@ across paths.
 
 ### Optimistic UI splice on mutations
 
-**Issue.** Even after `outbox-apply` updated SQLite atomically, the
+**Issue.** Even after the outbox cache effects updated SQLite atomically, the
 mail store waited for a follow-up `MESSAGES` broadcast and then
 re-read the folder window before painting. Each delete carried
 roughly 200-400 ms of round-trip latency on top of the JMAP call,
