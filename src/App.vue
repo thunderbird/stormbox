@@ -20,6 +20,7 @@ import ComposeDialog from './components/ComposeDialog.vue';
 import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
 import StoreErrorToast from './components/StoreErrorToast.vue';
+import BulkOperationOverlay from './components/BulkOperationOverlay.vue';
 import ThunderbirdLogo from './components/ThunderbirdLogo.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 
@@ -540,6 +541,7 @@ function clamp(value: number, min: number, max: number) {
 
     <ComposeDialog />
     <StoreErrorToast />
+    <BulkOperationOverlay />
   </div>
 </template>
 

@@ -42,12 +42,17 @@ export const DB_RPC = Object.freeze({
   MESSAGE_FIND_BY_RFC822_MESSAGE_ID: 'message.findByRfc822MessageId',
   MESSAGE_FILTER_EXISTING_IDS: 'message.filterExistingIds',
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
+  MESSAGE_REPLACE_KEYWORDS_MANY: 'message.replaceKeywordsMany',
+  MESSAGE_BODY_PERSIST_BATCH: 'message.bodyPersistBatch',
+  MESSAGE_DESTROY_REMOTE_IDS_BATCH: 'message.destroyRemoteIdsBatch',
   MESSAGE_BODY_READ: 'message.bodyRead',
 
   FOLDER_MEMBERSHIP_REPLACE: 'folderMembership.replace',
   FOLDER_MEMBERSHIP_REPLACE_MANY: 'folderMembership.replaceMany',
   QUERY_VIEW_PROGRESS: 'queryView.progress',
   QUERY_VIEW_APPLY_CHANGES: 'queryView.applyChanges',
+  QUERY_VIEW_DROP_REMOTE_IDS: 'queryView.dropRemoteIds',
+  FOLDER_WINDOW_PERSIST_BATCH: 'folderWindow.persistBatch',
   QUERY_VIEW_RESET_FOR_FOLDER: 'queryView.resetForFolder',
   /**
    * Diagnostic-only consistency snapshot for the open folder. Returns
@@ -58,13 +63,13 @@ export const DB_RPC = Object.freeze({
    */
   FOLDER_VIEW_CONSISTENCY: 'folder.viewConsistency',
 
-  // Combined outbox reconciliation handlers: each runs all the
-  // per-move / per-destroy SQL inside a single engine transaction so
-  // the worker pays one lock-acquisition + one fsync per mutation
-  // instead of one per intermediate step. Cuts ~150-700 ms off a
-  // single-message delete depending on engine contention.
+  // Combined outbox reconciliation handlers. The batch variants are
+  // the normal bulk path: one successful JMAP Email/set chunk is
+  // mirrored by one SQLite transaction over the same confirmed rows.
   OUTBOX_APPLY_MOVE: 'outbox.applyMove',
+  OUTBOX_APPLY_MOVE_BATCH: 'outbox.applyMoveBatch',
   OUTBOX_APPLY_DESTROY: 'outbox.applyDestroy',
+  OUTBOX_APPLY_DESTROY_BATCH: 'outbox.applyDestroyBatch',
 
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',
@@ -75,6 +80,7 @@ export const DB_RPC = Object.freeze({
   SYNC_STATE_GET: 'syncState.get',
   SYNC_STATE_SET: 'syncState.set',
   PENDING_MUTATION_INSERT: 'pendingMutation.insert',
+  PENDING_MUTATION_INSERT_MANY: 'pendingMutation.insertMany',
   PENDING_MUTATION_LIST_PENDING: 'pendingMutation.listPending',
   PENDING_MUTATION_GET_ERROR: 'pendingMutation.getError',
   SYNC_JOB_INSERT: 'syncJob.insert',

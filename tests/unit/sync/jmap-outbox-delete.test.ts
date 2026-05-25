@@ -158,6 +158,13 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
     expect(await loadFolderMemberships(messageId)).toEqual([
       { folder_id: inbox.id },
     ]);
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE folders
+              SET total_emails = CASE WHEN id = ? THEN 1 ELSE 0 END,
+                  unread_emails = CASE WHEN id = ? THEN 1 ELSE 0 END
+            WHERE id IN (?, ?)`,
+      params: [inbox.id, inbox.id, inbox.id, trash.id],
+    });
 
     const mutation = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,
@@ -184,6 +191,12 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
     expect(await loadFolderMemberships(messageId)).toEqual([
       { folder_id: trash.id },
     ]);
+    const inboxAfterMove = await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [inbox.id]);
+    const trashAfterMove = await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [trash.id]);
+    expect(Number(inboxAfterMove.total_emails)).toBe(0);
+    expect(Number(inboxAfterMove.unread_emails)).toBe(0);
+    expect(Number(trashAfterMove.total_emails)).toBe(1);
+    expect(Number(trashAfterMove.unread_emails)).toBe(1);
 
     // The message row itself still exists - move does not delete.
     const message = await engine.get(
@@ -267,11 +280,106 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
 
     const trashViewAfter = await loadTrashView();
     expect(Number(trashViewAfter.stale)).toBe(1);
+    expect(Number(trashViewAfter.total)).toBe(1);
     const rangesAfter = await engine.all(
       'SELECT view_id FROM query_view_ranges WHERE view_id = ?',
       [trashViewAfter.id],
     );
     expect(rangesAfter).toHaveLength(rangesBefore.length);
+  });
+
+  it('applies a multi-message move through one chunk-matched SQLite transaction', async () => {
+    const messageTransport = new MockTransport();
+    messageTransport.handle('Email/query', () => ({
+      ids: ['e-5', 'e-4', 'e-3', 'e-2', 'e-1'],
+      total: 5,
+      queryState: 'qs-many',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    messageTransport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture(id)),
+      state: 'es',
+    }));
+    await syncFolderWindow({
+      transport: messageTransport,
+      account,
+      folder: inbox,
+      handlers,
+    });
+
+    const rows = await engine.all(
+      `SELECT id, remote_id FROM messages
+        WHERE account_id = ? AND remote_id IN ('e-2', 'e-4')
+        ORDER BY remote_id`,
+      [account.id],
+    );
+    const ids = rows.map((row) => Number(row.id));
+    const inboxViewBefore = await loadInboxView();
+    expect(await loadViewItems(inboxViewBefore.id)).toEqual([
+      { position: 0, remote_id: 'e-5' },
+      { position: 1, remote_id: 'e-4' },
+      { position: 2, remote_id: 'e-3' },
+      { position: 3, remote_id: 'e-2' },
+      { position: 4, remote_id: 'e-1' },
+    ]);
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE folders
+              SET total_emails = CASE WHEN id = ? THEN 5 ELSE 0 END,
+                  unread_emails = CASE WHEN id = ? THEN 5 ELSE 0 END
+            WHERE id IN (?, ?)`,
+      params: [inbox.id, inbox.id, inbox.id, trash.id],
+    });
+
+    let batchCalls = 0;
+    let singleCalls = 0;
+    const originalBatchApply = handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH];
+    const originalSingleApply = handlers[DB_RPC.OUTBOX_APPLY_MOVE];
+    handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH] = async (args) => {
+      batchCalls += 1;
+      expect(args.messageIds).toEqual(ids);
+      return originalBatchApply(args);
+    };
+    handlers[DB_RPC.OUTBOX_APPLY_MOVE] = async (args) => {
+      singleCalls += 1;
+      return originalSingleApply(args);
+    };
+
+    const mutation = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.MOVE_TO_FOLDERS,
+      requestJson: JSON.stringify({
+        messageIds: ids,
+        addFolderIds: [trash.id],
+        removeFolderIds: [inbox.id],
+      }),
+    });
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({ updated: { 'e-2': null, 'e-4': null } }));
+
+    const summary = await drainOutbox({
+      transport,
+      account,
+      handlers,
+      mutationId: mutation.id,
+    });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(batchCalls).toBe(1);
+    expect(singleCalls).toBe(0);
+
+    const inboxViewAfter = await loadInboxView();
+    expect(Number(inboxViewAfter.total)).toBe(3);
+    expect(await loadViewItems(inboxViewAfter.id)).toEqual([
+      { position: 0, remote_id: 'e-5' },
+      { position: 1, remote_id: 'e-3' },
+      { position: 2, remote_id: 'e-1' },
+    ]);
+    const inboxAfterMove = await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [inbox.id]);
+    const trashAfterMove = await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [trash.id]);
+    expect(Number(inboxAfterMove.total_emails)).toBe(3);
+    expect(Number(inboxAfterMove.unread_emails)).toBe(3);
+    expect(Number(trashAfterMove.total_emails)).toBe(2);
+    expect(Number(trashAfterMove.unread_emails)).toBe(2);
   });
 });
 
@@ -312,6 +420,10 @@ describe('outbox destroy (delete from Trash)', () => {
     expect(await loadViewItems(trashViewBefore.id)).toEqual([
       { position: 0, remote_id: 'e-1' },
     ]);
+    await handlers[DB_RPC.QUERY]({
+      sql: 'UPDATE folders SET total_emails = 1, unread_emails = 1 WHERE id = ?',
+      params: [trash.id],
+    });
 
     const destroy = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
       accountId: account.id,
@@ -339,6 +451,12 @@ describe('outbox destroy (delete from Trash)', () => {
       [messageId],
     );
     expect(memberships).toEqual([]);
+    const trashFolderAfter = await engine.get(
+      'SELECT total_emails, unread_emails FROM folders WHERE id = ?',
+      [trash.id],
+    );
+    expect(Number(trashFolderAfter.total_emails)).toBe(0);
+    expect(Number(trashFolderAfter.unread_emails)).toBe(0);
 
     // The Trash view has the row removed and total decremented to 0.
     const trashViewAfter = await loadTrashView();
@@ -398,6 +516,75 @@ describe('outbox destroy (delete from Trash)', () => {
       { position: 0, remote_id: 'e-3' },
       { position: 1, remote_id: 'e-1' },
     ]);
+  });
+
+  it('applies a multi-message destroy through one chunk-matched SQLite transaction', async () => {
+    const trashTransport = new MockTransport();
+    trashTransport.handle('Email/query', () => ({
+      ids: ['e-5', 'e-4', 'e-3', 'e-2', 'e-1'],
+      total: 5,
+      queryState: 'trash-qs-many',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    trashTransport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture(id, { mailboxIds: { 'mb-trash': true } })),
+      state: 'es',
+    }));
+    await syncFolderWindow({
+      transport: trashTransport, account, folder: trash, handlers,
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: 'UPDATE folders SET total_emails = 5, unread_emails = 5 WHERE id = ?',
+      params: [trash.id],
+    });
+
+    const rows = await engine.all(
+      `SELECT id, remote_id FROM messages
+        WHERE account_id = ? AND remote_id IN ('e-2', 'e-4')
+        ORDER BY remote_id`,
+      [account.id],
+    );
+    const ids = rows.map((row) => Number(row.id));
+
+    let batchCalls = 0;
+    let singleCalls = 0;
+    const originalBatchApply = handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH];
+    const originalSingleApply = handlers[DB_RPC.OUTBOX_APPLY_DESTROY];
+    handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH] = async (args) => {
+      batchCalls += 1;
+      expect(args.messageIds).toEqual(ids);
+      return originalBatchApply(args);
+    };
+    handlers[DB_RPC.OUTBOX_APPLY_DESTROY] = async (args) => {
+      singleCalls += 1;
+      return originalSingleApply(args);
+    };
+
+    const mutation = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY,
+      requestJson: JSON.stringify({ messageIds: ids }),
+    });
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({ destroyed: ['e-2', 'e-4'] }));
+    const summary = await drainOutbox({
+      transport, account, handlers, mutationId: mutation.id,
+    });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(batchCalls).toBe(1);
+    expect(singleCalls).toBe(0);
+
+    const trashViewAfter = await loadTrashView();
+    expect(Number(trashViewAfter.total)).toBe(3);
+    expect(await loadViewItems(trashViewAfter.id)).toEqual([
+      { position: 0, remote_id: 'e-5' },
+      { position: 1, remote_id: 'e-3' },
+      { position: 2, remote_id: 'e-1' },
+    ]);
+    const trashAfter = await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [trash.id]);
+    expect(Number(trashAfter.total_emails)).toBe(3);
+    expect(Number(trashAfter.unread_emails)).toBe(3);
   });
 });
 

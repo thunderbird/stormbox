@@ -107,6 +107,54 @@ describe('drainOutbox', () => {
     expect(remaining).toHaveLength(0);
   });
 
+  it('batches setKeywords across multiple messageIds into a single Email/set', async () => {
+    const m2 = new MockTransport();
+    m2.handle('Email/query', () => ({
+      ids: ['e-2'], total: 1, queryState: 'qs-2', canCalculateChanges: true, position: 0,
+    }));
+    m2.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        blobId: `b-${id}`,
+        threadId: `t-${id}`,
+        mailboxIds: { 'mb-inbox': true },
+        keywords: {},
+        size: 1,
+        receivedAt: new Date(NOW + 1).toISOString(),
+        sentAt: new Date(NOW + 1).toISOString(),
+        messageId: [`<${id}@example.com>`],
+        from: [{ email: 'from@example.com' }],
+        subject: `subject ${id}`,
+      })),
+      state: 'es',
+    }));
+    await syncFolderWindow({ transport: m2, account, folder: inbox, handlers });
+    const secondRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'e-2'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_KEYWORDS,
+      requestJson: JSON.stringify({ messageIds: [messageId, secondRow.id], add: ['$seen'], remove: [] }),
+      optimisticPatchJson: JSON.stringify({ is_seen: 1 }),
+    });
+
+    const transport = new MockTransport();
+    let setRequest;
+    transport.handle('Email/set', (params) => {
+      setRequest = params;
+      return { accountId: 'acct-1', updated: { 'e-1': null, 'e-2': null } };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(Object.keys(setRequest.update).sort()).toEqual(['e-1', 'e-2']);
+    expect(setRequest.update['e-1']).toEqual({ 'keywords/$seen': true });
+    expect(setRequest.update['e-2']).toEqual({ 'keywords/$seen': true });
+  });
+
   it('runs moveToFolders by translating local folder ids to remote ids', async () => {
     // Create a second folder and seed it as an Archive.
     await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
@@ -386,6 +434,51 @@ describe('drainOutbox', () => {
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
+  });
+
+  it('surfaces method-level JMAP errors instead of generic noResponse', async () => {
+    // RFC 8620 §3.6.1: when a JMAP server cannot run a method call,
+    // it replaces that call's response slot with ["error", {...},
+    // callId]. Stalwart does this for requestTooLarge / limit when
+    // the Email/set is too big for its batch handler. The outbox
+    // must surface that typed error to the user; the previous
+    // implementation reported "noResponse" which made every kind of
+    // failure look like a network blip and caused 8 useless retries.
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({}),
+    });
+
+    const transport = {
+      async request(_using: any, methodCalls: any) {
+        const callId = methodCalls?.[0]?.[2] ?? 's1';
+        return {
+          methodResponses: [
+            ['error', { type: 'requestTooLarge', description: 'too big' }, callId],
+          ],
+        };
+      },
+    };
+
+    const summary = await drainOutbox({
+      transport: transport as any,
+      account,
+      handlers,
+      mutationId: undefined,
+    });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations
+        WHERE mutation_type = ?`,
+      [MUTATION_TYPES.DESTROY],
+    );
+    expect(row.local_status).toBe('conflicted');
+    const err = JSON.parse(row.error_json);
+    expect(err.type).toBe('requestTooLarge');
+    expect(err.description).toBe('too big');
   });
 
   it('fails cleanly when identityId does not resolve to a local row', async () => {

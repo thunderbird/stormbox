@@ -221,6 +221,10 @@ export class Repository {
     });
   }
 
+  replaceMessageKeywordsMany(items) {
+    return this.call(DB_RPC.MESSAGE_REPLACE_KEYWORDS_MANY, { items });
+  }
+
   replaceFolderMembership(accountId, messageId, memberships) {
     return this.call(DB_RPC.FOLDER_MEMBERSHIP_REPLACE, {
       accountId,
@@ -279,6 +283,10 @@ export class Repository {
 
   insertPendingMutation(input) {
     return this.call(DB_RPC.PENDING_MUTATION_INSERT, input);
+  }
+
+  insertPendingMutations(accountId, mutations) {
+    return this.call(DB_RPC.PENDING_MUTATION_INSERT_MANY, { accountId, mutations });
   }
 
   listPendingMutations(accountId, limit = 50) {

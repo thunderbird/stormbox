@@ -40,9 +40,27 @@ export async function applyMoveLocally(handlers, account, {
   messageId, addFolderIds = [], removeFolderIds = [],
 }) {
   if (messageId == null) return;
-  await handlers[DB_RPC.OUTBOX_APPLY_MOVE]({
+  await applyMoveBatchLocally(handlers, account, {
+    messageIds: [messageId],
+    addFolderIds,
+    removeFolderIds,
+  });
+}
+
+/**
+ * Apply a successful chunk-sized Email/set update locally. This is the
+ * bulk invariant boundary: the same ids Stalwart accepted are mirrored
+ * in one SQLite transaction before the outbox advances to the next
+ * chunk.
+ */
+export async function applyMoveBatchLocally(handlers, account, {
+  messageIds = [], addFolderIds = [], removeFolderIds = [],
+}) {
+  const ids = (messageIds ?? []).map(Number).filter(Number.isFinite);
+  if (ids.length === 0) return;
+  await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
     accountId: account.id,
-    messageId,
+    messageIds: ids,
     addFolderIds: (addFolderIds ?? []).map(Number).filter(Number.isFinite),
     removeFolderIds: (removeFolderIds ?? []).map(Number).filter(Number.isFinite),
   });
@@ -56,9 +74,19 @@ export async function applyMoveLocally(handlers, account, {
  */
 export async function applyDestroyLocally(handlers, account, { messageId }) {
   if (messageId == null) return;
-  await handlers[DB_RPC.OUTBOX_APPLY_DESTROY]({
+  await applyDestroyBatchLocally(handlers, account, { messageIds: [messageId] });
+}
+
+/**
+ * Apply a successful chunk-sized Email/set destroy locally in one
+ * transaction, matching the JMAP operation's confirmed id set.
+ */
+export async function applyDestroyBatchLocally(handlers, account, { messageIds = [] }) {
+  const ids = (messageIds ?? []).map(Number).filter(Number.isFinite);
+  if (ids.length === 0) return;
+  await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
     accountId: account.id,
-    messageId,
+    messageIds: ids,
   });
 }
 

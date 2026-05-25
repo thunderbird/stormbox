@@ -206,6 +206,29 @@ export class OutboxRunner {
       list.push({ resolve });
       this._awaiters.set(mutationId, list);
     });
+    // PENDING_MUTATION_INSERT also auto-notifies the runner via the
+    // handlers hook. On a fast backend (especially Firefox's worker
+    // scheduling), that background drain can complete after our
+    // _loadRow() above observes the row but before this awaiter is
+    // registered. Re-read after registration: if the row already
+    // reached a terminal state, resolve the awaiter ourselves instead
+    // of waiting forever for a notification that already happened.
+    const current = await this._loadRow(mutationId);
+    if (!current) {
+      this._resolveAwaiters(mutationId, { ok: true });
+    } else if (current.local_status === 'conflicted') {
+      let error;
+      try {
+        error = current.error_json ? JSON.parse(current.error_json) : null;
+      } catch {
+        error = { type: 'unknown' };
+      }
+      this._resolveAwaiters(mutationId, { ok: false, error });
+    } else if (current.local_status !== 'pending'
+        && current.local_status !== 'retry'
+        && current.local_status !== 'in_flight') {
+      this._resolveAwaiters(mutationId, { ok: false, error: { type: 'unexpectedStatus' } });
+    }
     this.notify({ immediate: true });
     const outcome = await outcomePromise;
     return {

@@ -122,24 +122,35 @@ via the DB layer hook, a JMAP `StateChange` push, and a backoff
 timer.
 
 After a successful `Email/set`, the local cache is reconciled
-in-process via `outbox-apply`. `applyMoveLocally` and
-`applyDestroyLocally` go through the `OUTBOX_APPLY_MOVE` /
-`OUTBOX_APPLY_DESTROY` worker handlers, which do every step inside a
-single engine transaction: replace `folder_messages` rows, drop
-affected query view items, decrement `query_views.total`, and mark
-added-folder views stale. Combining the steps reduces a delete from
-six to nine round-trip-plus-fsync RPCs to one transaction, which is
-the difference between a roughly 200-800 ms apply and a 40-95 ms
-apply under indexer load.
+in-process via `outbox-apply`. Bulk paths go through the
+`OUTBOX_APPLY_MOVE_BATCH` / `OUTBOX_APPLY_DESTROY_BATCH` worker
+handlers, which mirror the exact server-confirmed id set in one
+engine transaction: replace `folder_messages` rows, drop affected
+query view items, compact positions once per view, decrement
+`query_views.total`, and mark added-folder views stale. Single-row
+helpers are compatibility wrappers around the same batch shape.
 
 Trash semantics: ordinary delete moves to Trash via `moveToFolders`.
 Permanent destroy is reserved for messages already in Trash or
 explicit destroy flows.
 
-`destroyMessage` and `destroyMessages` share a single code path: one
-`pending_mutations` row whose `request_json` carries
-`messageIds: [...]`, dispatched as one `Email/set` per outbox row
-regardless of array size.
+`destroyMessage` and `destroyMessages` share a single code path:
+each chunk is one `pending_mutations` row whose `request_json`
+carries `messageIds: [...]`, dispatched as one `Email/set` per
+outbox row. Move and destroy split into chunks of
+`BULK_OPERATION_BATCH_SIZE` (500) ids in the mail store before
+enqueueing; selections at or below that size go through as a single
+row, larger selections are dispatched as N sequential chunks while
+the `BulkOperationOverlay` shows progress and blocks other input.
+Each successful server chunk is mirrored by one SQLite transaction
+over the same confirmed ids, so the server write boundary and local
+cache apply boundary match exactly. Splitting matters because Stalwart silently drops a single
+`Email/set` that overflows its internal batch handler — the user
+previously saw a meaningless `noResponse` after eight backoff
+retries before the runner gave up. The outbox surfaces the JMAP
+method-level error (RFC 8620 §3.6.1) directly when the response
+slot is missing, so the user sees an actionable type
+(`requestTooLarge`, `limit`, …) instead of `noResponse`.
 
 ## JMAP edge bridge
 
@@ -222,17 +233,26 @@ side-table rebuild inside a single outer transaction.
 **Pattern.** Match the SQL batch shape to the network batch shape:
 
 - Resolve all folder ids and all remote message ids once per batch.
+- Persist a foreground folder window through `FOLDER_WINDOW_PERSIST_BATCH`:
+  query view metadata, positional rows, range coverage, threads,
+  messages, addresses, keywords, and folder memberships all commit
+  with the current `Email/query` / `Email/get` page.
 - Use `FOLDER_MEMBERSHIP_REPLACE_MANY` to delete and re-insert every
   touched membership row in one transaction.
 - Rebuild `message_addresses` and `message_keywords` with batched
   `DELETE ... WHERE message_id IN (?)` followed by a single bulk
   insert, all inside one transaction.
+- Persist body prefetch pages through `MESSAGE_BODY_PERSIST_BATCH`, so
+  `body_parts`, `body_values`, and `messages.body_fetched_at` update
+  once per `Email/get` body page instead of once per message.
+- Use the shared set-based query-view compactor for removals; do not
+  run one `UPDATE query_view_items SET position = position - 1` per
+  removed row.
 
-After the rewrite, persisting a 500-message chunk dropped from ~68 s
-to ~8-9 s, and full ~3000-message persisted folder metadata moved
-from a multi-minute timeout to about 48 s end to end. Persistence is
-still about three times slower than network-only for full folder
-indexing, but the pathological per-message transaction shape is gone.
+This keeps transactions bounded by the current protocol page/chunk.
+Foreground reads can still interrupt between pages; background
+indexing and body prefetch must not aggregate multiple pages into one
+larger transaction.
 
 `query_view_items` upserts handle both the `(view_id, position)` and
 `(view_id, remote_id)` unique constraints so foreground/background
@@ -254,6 +274,9 @@ resolves local ids to remote ids, skips messages with
 The reading-pane path is separate: `getMessageBodyForDisplay` reads
 SQLite first and, on cache miss, runs a priority single-id
 `Email/get` that does not block on the prefetch batch in flight. The
+batch persistence path still commits at most the current body page, so
+priority display fetches wait behind a bounded transaction rather than
+behind an entire background queue.
 backend tracks both `_bodyFetchInflight` (batch) and
 `_bodyPriorityInflight` (display) to dedupe overlapping requests
 across paths.

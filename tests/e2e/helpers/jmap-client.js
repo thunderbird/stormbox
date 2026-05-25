@@ -223,6 +223,102 @@ export async function createEmailInMailbox(jmap, {
   return id;
 }
 
+export async function createEmailsInMailbox(jmap, {
+  mailboxId,
+  fromEmail,
+  subjectPrefix,
+  count,
+  batchSize = 500,
+}) {
+  let created = 0;
+  const ids = [];
+  for (let offset = 0; offset < count; offset += batchSize) {
+    const create = {};
+    const batchCount = Math.min(batchSize, count - offset);
+    for (let i = 0; i < batchCount; i += 1) {
+      const n = offset + i;
+      create[`c${n}`] = {
+        mailboxIds: { [mailboxId]: true },
+        keywords: {},
+        from: [{ email: fromEmail }],
+        to: [{ email: fromEmail }],
+        subject: `${subjectPrefix} ${String(n).padStart(5, '0')}`,
+        bodyStructure: { type: 'text/plain', partId: 'p1' },
+        bodyValues: { p1: { value: `large move e2e ${n}` } },
+      };
+    }
+    const payload = await jmapRequest(jmap, [[
+      'Email/set',
+      { accountId: jmap.accountId, create },
+      'bulkCreate',
+    ]]);
+    const set = pickResponse(payload, 'Email/set');
+    if (set?.notCreated && Object.keys(set.notCreated).length > 0) {
+      throw new Error(`Could not create bulk test email batch ${offset}: ${JSON.stringify(set.notCreated)}`);
+    }
+    const createdEntries = Object.entries(set?.created ?? {})
+      .sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)));
+    for (const [, value] of createdEntries) {
+      if (value?.id) ids.push(value.id);
+    }
+    created += createdEntries.length;
+  }
+  if (created !== count) {
+    throw new Error(`Bulk create expected ${count} messages, created ${created}`);
+  }
+  return ids;
+}
+
+export async function ensureMailbox(jmap, { name }) {
+  const fullPayload = await jmapRequest(jmap, [[
+    'Mailbox/get',
+    {
+      accountId: jmap.accountId,
+      properties: ['id', 'name', 'role', 'parentId'],
+    },
+    'mbFull',
+  ]]);
+  const existing = pickResponse(fullPayload, 'Mailbox/get')?.list
+    ?.find((m) => (m.name ?? '').toLowerCase() === name.toLowerCase() && !m.parentId);
+  if (existing) return existing;
+
+  const createPayload = await jmapRequest(jmap, [[
+    'Mailbox/set',
+    {
+      accountId: jmap.accountId,
+      create: { mb1: { name } },
+    },
+    'mbSet',
+  ]]);
+  const set = pickResponse(createPayload, 'Mailbox/set');
+  if (set?.notCreated?.mb1) {
+    throw new Error(`Could not create mailbox "${name}": ${JSON.stringify(set.notCreated.mb1)}`);
+  }
+  const created = set?.created?.mb1;
+  if (!created?.id) throw new Error(`Mailbox/set returned no id for "${name}": ${JSON.stringify(set)}`);
+  return { id: created.id, name, role: null, parentId: null };
+}
+
+export async function countMessagesInMailboxBySubjectPrefix(jmap, { mailboxId, subjectPrefix }) {
+  const payload = await jmapRequest(jmap, [[
+    'Email/query',
+    {
+      accountId: jmap.accountId,
+      filter: {
+        operator: 'AND',
+        conditions: [
+          { inMailbox: mailboxId },
+          { subject: subjectPrefix },
+        ],
+      },
+      limit: 1,
+      calculateTotal: true,
+    },
+    'countBySubject',
+  ]]);
+  return pickResponse(payload, 'Email/query')?.total ?? 0;
+}
+
 export async function getEmailMailboxIds(jmap, emailId) {
   const payload = await jmapRequest(jmap, [[
     'Email/get',
@@ -270,7 +366,10 @@ export async function cleanupEmail(jmap, emailId, trashId) {
   await destroyEmail(jmap, emailId);
 }
 
-export async function sweepOrphanTestMessages(jmap, { subjectPrefix = 'Delete e2e' } = {}) {
+export async function sweepOrphanTestMessages(jmap, {
+  subjectPrefix = 'Delete e2e',
+  throwOnError = false,
+} = {}) {
   try {
     const mailboxes = await listMailboxes(jmap);
     const sent = mailboxes.find((m) => m.role === 'sent');
@@ -299,6 +398,7 @@ export async function sweepOrphanTestMessages(jmap, { subjectPrefix = 'Delete e2
       ]]);
     }
   } catch (err) {
+    if (throwOnError) throw err;
     console.warn('[jmap-client] sweepOrphanTestMessages failed:', err?.message ?? err);
   }
 }

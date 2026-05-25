@@ -47,10 +47,38 @@ interface PendingMutationInsert {
   optimisticPatchJson?: string | null;
 }
 
+/**
+ * Reactive state for an in-flight bulk move/destroy. The UI binds to
+ * this to render the BulkOperationOverlay, which blocks other input
+ * for the duration of the operation. `total` is set once when the
+ * batch starts; `completed` ticks up after each successful chunk.
+ *
+ * `kind` lets the overlay copy itself differently for delete vs
+ * move; `label` is the destination/scope name (e.g. "Archive" or
+ * "Trash") so the user knows where their messages are going.
+ */
+export interface BulkOperationState {
+  active: boolean;
+  kind: 'move' | 'destroy' | null;
+  label: string;
+  total: number;
+  completed: number;
+}
+
 // Page size for both Email/query/get round trips and the SQLite
 // positional reads. ~100 metadata records per Email/get is well below
 // the ~50KB-per-record envelope and fits in one WS frame.
 const PAGE_SIZE = 100;
+
+/**
+ * Maximum number of messages that the store sends to the outbox in a
+ * single Email/set call. JMAP servers advertise their own
+ * `maxObjectsInSet` cap (RFC 8620 §5). Local Stalwart advertises and
+ * enforces 500; every successful Email/set chunk is mirrored by one
+ * matching SQLite transaction, so this value controls both the server
+ * write size and the local cache apply size.
+ */
+const BULK_OPERATION_BATCH_SIZE = 500;
 
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
@@ -74,6 +102,18 @@ export const useMailStore = defineStore('mail', () => {
   const selectedIds = ref<Set<number>>(new Set());
   const isLoading = ref(false);
   const error = ref<string | null>(null);
+
+  // Bulk move/destroy progress. Mutates as the chunked drain advances
+  // so the BulkOperationOverlay can render a live progress bar. Reset
+  // back to inactive when the operation finishes (success or failure)
+  // so the overlay disappears.
+  const bulkOperation = ref<BulkOperationState>({
+    active: false,
+    kind: null,
+    label: '',
+    total: 0,
+    completed: 0,
+  });
 
   // Body prefetch + display-fetch queue. Owns its own ids/token
   // state and the messageBody ref; the store reaches into it
@@ -152,6 +192,7 @@ export const useMailStore = defineStore('mail', () => {
     folderState = null;
     isLoading.value = false;
     error.value = null;
+    resetBulkOperation();
     bodyPrefetch.clear();
     refreshLoadedPagesInflight = null;
     refreshLoadedPagesDirty = false;
@@ -429,6 +470,7 @@ export const useMailStore = defineStore('mail', () => {
   async function checkAndRepairFolderViewDrift(state: FolderCache) {
     if (!repo || authStore.accountId == null) return;
     if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    if (state.needsFreshWindow) return;
     if (state.driftCheckInflight) return state.driftCheckInflight;
     if (state.driftRebuildAttempted) return;
 
@@ -507,7 +549,7 @@ export const useMailStore = defineStore('mail', () => {
     // ensureLoaded for positions that don't exist. Without this,
     // virtualizer rowCount > state.total would loop the .finally
     // re-pump against an uncoverable range forever.
-    if (state.total > 0) {
+    if (state.total > 0 && !state.needsFreshWindow) {
       requestedEnd = Math.min(requestedEnd, state.total);
     }
     if (requestedEnd <= offset) return;
@@ -968,9 +1010,11 @@ export const useMailStore = defineStore('mail', () => {
     staleFolderIds.add(id);
     const state = folderStates.get(id);
     if (!state) return;
+    const folderRow = folders.value.find((f) => Number(f.id) === id);
+    const knownTotal = Number(folderRow?.index_total ?? folderRow?.total_emails ?? 0) || 0;
     state.rows = [];
     state.paintedRanges = [];
-    state.total = 0;
+    state.total = knownTotal;
     state.requestedRange = null;
     state.pageInflight = null;
     state.lastFailedRange = null;
@@ -978,7 +1022,7 @@ export const useMailStore = defineStore('mail', () => {
     state.expandInflight = null;
     state.needsFreshWindow = true;
     if (folderState === state) {
-      totalForFolder.value = 0;
+      totalForFolder.value = state.total;
       messages.value = [];
       isLoading.value = true;
     }
@@ -987,6 +1031,7 @@ export const useMailStore = defineStore('mail', () => {
   async function reconcileSelectedFolderViewState(state: FolderCache | null) {
     if (!repo || authStore.accountId == null || !state) return;
     if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    if (state.needsFreshWindow) return;
     try {
       const progress = await repo.queryViewProgress({
         accountId: authStore.accountId,
@@ -1139,27 +1184,65 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Bulk mark-seen. Fires the per-id mutations sequentially through
-   * the same outbox path single-row markRead uses, so each row gets
-   * its own pending_mutations entry and Stalwart sees a clean
-   * setKeywords per Email — no special-case batched Email/set
-   * required.
+   * Bulk mark-seen. Matches the same chunk invariant as move/delete:
+   * one optimistic keyword transaction and one pending mutation per
+   * chunk, then the outbox sends one Email/set update for that chunk.
    *
    * Returns the number of rows whose state actually changed (so the
    * toolbar can show "marked N as read").
    */
   async function markManySeen(ids: number[], seen: boolean): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
+    if (!repo || authStore.accountId == null) return 0;
     let changed = 0;
-    for (const id of ids) {
-      const before = messages.value.find((m) => m?.id === id);
-      const wasSeen = Number(before?.is_seen ?? 0) === 1;
-      if (wasSeen === seen) continue;
+    const normalized = normalizeMessageIds(ids);
+    for (let i = 0; i < normalized.length; i += BULK_OPERATION_BATCH_SIZE) {
+      const chunk = normalized.slice(i, i + BULK_OPERATION_BATCH_SIZE);
+      const optimisticItems: Array<{ messageId: number; keywords: string[]; keywordsJson: string }> = [];
+      const changedIds: number[] = [];
+      for (const id of chunk) {
+        const before = messages.value.find((m) => m?.id === id);
+        const wasSeen = Number(before?.is_seen ?? 0) === 1;
+        if (wasSeen === seen) continue;
+        const keywordsJson = JSON.parse(before?.keywords_json ?? '{}');
+        if (seen) {
+          keywordsJson.$seen = true;
+        } else {
+          delete keywordsJson.$seen;
+        }
+        optimisticItems.push({
+          messageId: id,
+          keywords: Object.keys(keywordsJson),
+          keywordsJson: JSON.stringify(keywordsJson),
+        });
+        changedIds.push(id);
+      }
+      if (changedIds.length === 0) continue;
       try {
-        await _setSeen(id, seen);
-        changed += 1;
+        if (typeof repo.replaceMessageKeywordsMany === 'function') {
+          await repo.replaceMessageKeywordsMany(optimisticItems);
+        } else {
+          for (const item of optimisticItems) {
+            await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
+          }
+        }
+        await repo.insertPendingMutation({
+          accountId: authStore.accountId,
+          mutationType: MUTATION_TYPE.SET_KEYWORDS,
+          targetMessageId: changedIds.length === 1 ? changedIds[0] : null,
+          requestJson: JSON.stringify(
+            seen
+              ? { messageIds: changedIds, add: ['$seen'], remove: [] }
+              : { messageIds: changedIds, add: [], remove: ['$seen'] },
+          ),
+          optimisticPatchJson: JSON.stringify({ is_seen: seen ? 1 : 0 }),
+        });
+        changed += changedIds.length;
       } catch (err) {
-        console.warn('[mail-store] markManySeen item failed', { id, err: err?.message ?? err });
+        console.warn('[mail-store] markManySeen chunk failed', {
+          ids: changedIds,
+          err: err?.message ?? err,
+        });
       }
     }
     return changed;
@@ -1182,18 +1265,28 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Delete one or more messages. Issues exactly one Email/set round
-   * trip regardless of how many ids are passed in: single-row delete
-   * from the open message and multi-select bulk delete go through the
-   * same path, both as a one-row pending_mutations entry whose
+   * Delete one or more messages. Single-row delete from the open
+   * message and multi-select bulk delete go through the same path,
+   * each chunk being a one-row pending_mutations entry whose
    * request_json carries `messageIds: [...]`.
+   *
+   * For batches above BULK_OPERATION_BATCH_SIZE the dispatch is split
+   * into multiple chunks: each chunk is one Email/set, runs through
+   * the outbox sequentially, and ticks `bulkOperation.completed` so
+   * the BulkOperationOverlay can show progress. Splitting matters
+   * because a single Email/set with 500+ ids exceeds Stalwart's batch
+   * handler and gets silently dropped (the user previously saw a
+   * useless `noResponse` after eight backoff retries). Sequential
+   * chunks also keep the per-chunk failure window small so a
+   * recoverable error doesn't drag every id with it.
    *
    * The outbox runs Email/set, applies the local cache update per id
    * (folder_messages, query_view_items, query_views.total), and
-   * returns once everything is persisted. We then refreshLoadedPages
-   * directly so the UI reflects the change immediately rather than
-   * depending on the post-write MESSAGES broadcast hop (which can be
-   * late or, in some Firefox builds, never arrives).
+   * returns once everything is persisted; the cache is authoritative
+   * before this RPC resolves. The store then splices the deleted ids
+   * out of messages.value synchronously rather than waiting for the
+   * MESSAGES broadcast hop (which can be late or, in some Firefox
+   * builds, never arrives).
    *
    * Returns once the round trip is complete; the caller can re-read
    * mailStore.messages right after for the post-delete state.
@@ -1212,24 +1305,21 @@ export const useMailStore = defineStore('mail', () => {
       clearSelectionFor(ids);
       return;
     }
-    const mutation = await repo.insertPendingMutation(
-      permanent ? buildPermanentDeleteMutation(liveIds) : buildDeleteMutation(liveIds),
-    );
-    const result = typeof repo.runMutation === 'function'
-      ? await repo.runMutation(authStore.accountId, mutation.id)
-      : await repo.drainOutbox(authStore.accountId);
-    if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
-      const detail = await loadMutationError(mutation.id);
-      const message = describeMutationFailure(result, detail);
-      const err = new Error(message) as Error & { result?: any; detail?: any };
-      err.result = result;
-      err.detail = detail;
-      error.value = message;
-      console.warn('[mail-store] destroyMessages failed', { ids: liveIds, result, detail });
-      throw err;
-    }
-    const nextPreviewId = nextPreviewIdAfterRemoval(liveIds);
     const trashTarget = permanent ? null : folders.value.find((f) => f.role === 'trash') ?? null;
+    const overlayLabel = permanent
+      ? 'Deleting messages permanently'
+      : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
+    const succeededIds = await runChunkedMutation({
+      liveIds,
+      kind: 'destroy',
+      label: overlayLabel,
+      buildMutation: (chunkIds) => (
+        permanent ? buildPermanentDeleteMutation(chunkIds) : buildDeleteMutation(chunkIds)
+      ),
+      failureAction: 'delete',
+    });
+    if (succeededIds.length === 0) return;
+    const nextPreviewId = nextPreviewIdAfterRemoval(succeededIds);
     // The outbox already updated the cache (folder_messages,
     // query_view_items, query_views.total) before runMutation
     // resolved. Doing one more refreshLoadedPages here used to add
@@ -1239,11 +1329,14 @@ export const useMailStore = defineStore('mail', () => {
     // messages.value synchronously, and let the eventual MESSAGES
     // broadcast confirm in the background through the coalescing
     // refreshLoadedPages path.
-    spliceMessagesOut(liveIds);
+    spliceMessagesOut(succeededIds);
     if (trashTarget?.id != null && trashTarget.id !== currentFolder.value?.id) {
+      await refreshFolders();
       invalidateFolderStateForFreshWindow(trashTarget.id);
+    } else {
+      await refreshFolders();
     }
-    clearSelectionFor(liveIds);
+    clearSelectionFor(succeededIds);
     applyPreviewAfterRemoval(nextPreviewId);
   }
 
@@ -1369,6 +1462,12 @@ export const useMailStore = defineStore('mail', () => {
    * locally after Email/set succeeds; the store's job is to validate
    * the source/target pair, enqueue the mutation, and compact the
    * current painted rows once the cache has changed.
+   *
+   * For batches above BULK_OPERATION_BATCH_SIZE the dispatch is
+   * chunked: see runChunkedMutation. The first chunk that fails
+   * stops the operation and surfaces an error; chunks that already
+   * succeeded are reflected in the splice + return value so the
+   * caller (and the user) can see the partial outcome.
    */
   async function moveMessages(ids: number[], targetFolderId: number): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) {
@@ -1391,33 +1490,26 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
 
-    const mutation = await repo.insertPendingMutation(buildMoveMutation(liveIds, target.id, source.id));
-    const result = typeof repo.runMutation === 'function'
-      ? await repo.runMutation(authStore.accountId, mutation.id)
-      : await repo.drainOutbox(authStore.accountId);
-    if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
-      const detail = await loadMutationError(mutation.id);
-      const message = describeMutationFailure(result, detail, 'move');
-      const err = new Error(message) as Error & { result?: any; detail?: any };
-      err.result = result;
-      err.detail = detail;
-      error.value = message;
-      console.warn('[mail-store] moveMessages failed', {
-        ids: liveIds,
-        targetFolderId: target.id,
-        result,
-        detail,
-      });
-      throw err;
+    const succeededIds = await runChunkedMutation({
+      liveIds,
+      kind: 'move',
+      label: target.name ? `Moving messages to ${target.name}` : 'Moving messages',
+      buildMutation: (chunkIds) => buildMoveMutation(chunkIds, target.id, source.id),
+      failureAction: 'move',
+    });
+
+    if (succeededIds.length === 0) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length - liveIds.length };
     }
 
-    const nextPreviewId = nextPreviewIdAfterRemoval(liveIds);
-    spliceMessagesOut(liveIds);
+    const nextPreviewId = nextPreviewIdAfterRemoval(succeededIds);
+    spliceMessagesOut(succeededIds);
+    await refreshFolders();
     invalidateFolderStateForFreshWindow(target.id);
-    clearSelectionFor(liveIds);
+    clearSelectionFor(succeededIds);
     applyPreviewAfterRemoval(nextPreviewId);
     return {
-      succeeded: liveIds.length,
+      succeeded: succeededIds.length,
       failed: 0,
       skipped: messageIds.length - liveIds.length,
     };
@@ -1476,6 +1568,110 @@ export const useMailStore = defineStore('mail', () => {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Drive the outbox through one or more chunks for a bulk move or
+   * destroy. Each chunk is its own pending_mutations row (and its own
+   * Email/set round trip), so the JMAP request size never exceeds
+   * BULK_OPERATION_BATCH_SIZE regardless of how many ids the user
+   * selected. Progress (`bulkOperation.completed`) ticks up after
+   * each chunk so the BulkOperationOverlay shows live feedback.
+   *
+   * Stops on the first failed chunk and rethrows: any chunks that
+   * already succeeded are persisted (the outbox already applied them
+   * locally), and the failed chunk's pending_mutations row stays
+   * `conflicted` so the user can see the error without losing the
+   * partial progress. Returns the array of ids whose chunks
+   * succeeded so the caller can splice them out of the list.
+   */
+  async function runChunkedMutation(args: {
+    liveIds: number[];
+    kind: 'move' | 'destroy';
+    label: string;
+    buildMutation: (chunkIds: number[]) => PendingMutationInsert;
+    failureAction: 'delete' | 'move';
+  }): Promise<number[]> {
+    const { liveIds, kind, label, buildMutation, failureAction } = args;
+    const useOverlay = liveIds.length > BULK_OPERATION_BATCH_SIZE;
+    if (useOverlay) {
+      bulkOperation.value = {
+        active: true,
+        kind,
+        label,
+        total: liveIds.length,
+        completed: 0,
+      };
+    }
+    const succeededIds: number[] = [];
+    try {
+      for (let i = 0; i < liveIds.length; i += BULK_OPERATION_BATCH_SIZE) {
+        const chunkIds = liveIds.slice(i, i + BULK_OPERATION_BATCH_SIZE);
+        const mutation = await repo!.insertPendingMutation(buildMutation(chunkIds));
+        const result = typeof repo!.runMutation === 'function'
+          ? await repo!.runMutation(authStore.accountId!, mutation.id)
+          : await repo!.drainOutbox(authStore.accountId!);
+        if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
+          const detail = await loadMutationError(mutation.id);
+          const message = describeChunkedFailure({
+            result,
+            detail,
+            action: failureAction,
+            succeeded: succeededIds.length,
+            total: liveIds.length,
+          });
+          const err = new Error(message) as Error & { result?: any; detail?: any };
+          err.result = result;
+          err.detail = detail;
+          error.value = message;
+          console.warn(`[mail-store] ${kind}Messages failed`, {
+            ids: chunkIds,
+            result,
+            detail,
+            succeededBefore: succeededIds.length,
+            total: liveIds.length,
+          });
+          throw err;
+        }
+        succeededIds.push(...chunkIds);
+        if (useOverlay) {
+          bulkOperation.value = {
+            ...bulkOperation.value,
+            completed: succeededIds.length,
+          };
+        }
+      }
+      return succeededIds;
+    } finally {
+      if (useOverlay) {
+        resetBulkOperation();
+      }
+    }
+  }
+
+  function resetBulkOperation() {
+    bulkOperation.value = {
+      active: false,
+      kind: null,
+      label: '',
+      total: 0,
+      completed: 0,
+    };
+  }
+
+  function describeChunkedFailure({
+    result, detail, action, succeeded, total,
+  }: {
+    result: MutationOutcome | null | undefined;
+    detail: { error_json?: string | null } | null | undefined;
+    action: string;
+    succeeded: number;
+    total: number;
+  }): string {
+    const base = describeMutationFailure(result, detail, action);
+    if (total <= BULK_OPERATION_BATCH_SIZE || succeeded <= 0) return base;
+    const trimmed = base.endsWith('.') ? base.slice(0, -1) : base;
+    return `${trimmed} (${succeeded} of ${total} succeeded).`;
   }
 
   function describeMutationFailure(
@@ -1668,6 +1864,7 @@ export const useMailStore = defineStore('mail', () => {
     messageBody,
     isLoading,
     error,
+    bulkOperation,
     $reset,
     attach,
     detach,

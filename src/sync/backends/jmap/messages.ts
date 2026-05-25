@@ -96,34 +96,28 @@ export async function syncFolderWindow({
     throw new Error('Email/query returned no payload');
   }
 
-  const viewId = await upsertQueryView({
-    handlers,
-    account,
-    folder,
+  const ids = query.ids ?? [];
+  const got = pickResponse(result, 'Email/get');
+  const list = got?.list ?? [];
+  const persisted = await handlers[DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]({
+    accountId: account.id,
+    folderId: folder.id,
+    folderRemoteId: folder.remote_id,
     sortProp,
     collapseThreads,
     queryState: query.queryState,
     canCalculateChanges: query.canCalculateChanges ?? null,
     total: query.total ?? null,
+    position,
+    ids,
+    messages: list.map((email) => emailToRecord(email)),
   });
-
-  const ids = query.ids ?? [];
-  await upsertQueryViewItems({ handlers, viewId, position, ids });
-  await recordQueryViewRange({ handlers, viewId, start: position, end: position + ids.length });
-
-  let fetched = 0;
-  const got = pickResponse(result, 'Email/get');
-  const list = got?.list ?? [];
-  if (list.length > 0) {
-    await persistEmails({ account, emails: list, handlers });
-    fetched = list.length;
-  }
 
   return {
     total: query.total ?? null,
     queryState: query.queryState,
-    fetched,
-    viewId,
+    fetched: list.length,
+    viewId: persisted.viewId,
   };
 }
 
@@ -279,12 +273,9 @@ export async function syncEmailChanges({
     // dead positions). _refreshActiveQueryViews only runs queryChanges
     // on the top-5 LRU views, so any other folder would keep the
     // ghost until the user manually navigated back to it.
-    await dropRemoteIdsFromAllViews(handlers, account, change.destroyed);
-    const placeholders = change.destroyed.map(() => '?').join(',');
-    await handlers[DB_RPC.QUERY]({
-      sql: `DELETE FROM messages
-              WHERE account_id = ? AND remote_id IN (${placeholders})`,
-      params: [account.id, ...change.destroyed],
+    await handlers[DB_RPC.MESSAGE_DESTROY_REMOTE_IDS_BATCH]({
+      accountId: account.id,
+      remoteIds: change.destroyed,
     });
   }
   await handlers[DB_RPC.SYNC_STATE_SET]({
@@ -337,37 +328,11 @@ export async function persistEmails({ account, emails, handlers }) {
 
   // Upsert messages with addresses + keywords cascaded.
   const ts = Date.now();
-  const messages = emails.map((e) => {
-    const keywords = Object.keys(e.keywords ?? {}).filter((k) => e.keywords[k]);
-    return {
-      remoteId: e.id,
-      threadId: threadMap.get(e.threadId) ?? null,
-      remoteThreadId: e.threadId ?? null,
-      blobId: e.blobId ?? null,
-      rfc822MessageId: extractMessageId(e.messageId),
-      inReplyToJson: e.inReplyTo ? JSON.stringify(e.inReplyTo) : null,
-      referencesJson: e.references ? JSON.stringify(e.references) : null,
-      subject: e.subject ?? null,
-      preview: e.preview ?? null,
-      size: e.size ?? null,
-      receivedAt: parseDate(e.receivedAt),
-      sentAt: parseDate(e.sentAt),
-      hasAttachment: !!e.hasAttachment,
-      keywordsJson: JSON.stringify(e.keywords ?? {}),
-      keywords,
-      isSeen: keywords.includes('$seen'),
-      isFlagged: keywords.includes('$flagged'),
-      isAnswered: keywords.includes('$answered'),
-      isDraft: keywords.includes('$draft'),
-      isForwarded: keywords.includes('$forwarded'),
-      isJunk: keywords.includes('$junk'),
-      fromText: joinAddresses(e.from),
-      toText: joinAddresses(e.to),
-      rawJson: JSON.stringify(e),
-      addresses: addressesFromEmail(e),
-      metadataFetchedAt: ts,
-    };
-  });
+  const messages = emails.map((e) => ({
+    ...emailToRecord(e),
+    threadId: threadMap.get(e.threadId) ?? null,
+    metadataFetchedAt: ts,
+  }));
   await handlers[DB_RPC.MESSAGE_UPSERT_MANY]({ accountId: account.id, messages });
 
   // Folder membership: replace rows for each touched message based on
@@ -473,104 +438,6 @@ async function upsertQueryView({
   return row[0]?.id;
 }
 
-/**
- * Bulk-write the positional ids returned by Email/query for the
- * initial syncFolderWindow pass. Deltas (`added` / `removed` from
- * Email/queryChanges) go through DB_RPC.QUERY_VIEW_APPLY_CHANGES so
- * they get proper position shifting and a MESSAGES broadcast.
- *
- * Implementation note: query_view_items has TWO unique constraints,
- * UNIQUE(view_id, position) and UNIQUE(view_id, remote_id). SQLite
- * supports multiple ON CONFLICT clauses, but they cannot resolve the
- * cross-constraint case where an INSERT both lands on an occupied
- * position AND duplicates an existing remote_id at another position:
- * the position-conflict UPSERT rewrites the row in place, which then
- * collides with the other remote_id-unique row that still exists. The
- * old multi-ON-CONFLICT version threw "UNIQUE constraint failed:
- * query_view_items.view_id, query_view_items.remote_id" every time
- * syncFolderWindow was re-run after applyMoveLocally had compacted
- * positions in the view; that took the whole Inbox load down.
- *
- * We write the range atomically by deleting any stale rows in the
- * target position range AND any rows that already hold one of the new
- * remote_ids elsewhere, then inserting clean. Leaving gaps at the
- * old positions of moved ids is fine: those positions are stale and
- * will be re-fetched on demand.
- */
-async function upsertQueryViewItems({ handlers, viewId, position, ids }) {
-  if (!ids || ids.length === 0) return;
-  const idPlaceholders = ids.map(() => '?').join(',');
-  const statements = [
-    {
-      sql: `DELETE FROM query_view_items
-              WHERE view_id = ? AND position >= ? AND position < ?`,
-      params: [viewId, position, position + ids.length],
-    },
-    {
-      sql: `DELETE FROM query_view_items
-              WHERE view_id = ? AND remote_id IN (${idPlaceholders})`,
-      params: [viewId, ...ids],
-    },
-    ...ids.map((id, i) => ({
-      sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
-            VALUES (?, ?, NULL, ?)`,
-      params: [viewId, position + i, id],
-    })),
-  ];
-  await handlers[DB_RPC.TRANSACTION]({ statements });
-}
-
-/**
- * Remove the given remote ids from every query_view_items entry in
- * the account, with position compaction inside each affected view
- * and a matching decrement of query_views.total. Used by
- * syncEmailChanges so destroyed-on-server messages cannot leave
- * skeleton-placeholder rows behind in any folder.
- */
-async function dropRemoteIdsFromAllViews(handlers, account, remoteIds) {
-  if (!remoteIds?.length) return;
-  const placeholders = remoteIds.map(() => '?').join(',');
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT qv.id AS view_id, qi.remote_id
-            FROM query_views qv
-            JOIN query_view_items qi ON qi.view_id = qv.id
-           WHERE qv.account_id = ?
-             AND qi.remote_id IN (${placeholders})`,
-    params: [account.id, ...remoteIds],
-  });
-  if (rows.length === 0) return;
-  const byView = new Map();
-  for (const row of rows) {
-    const viewId = Number(row.view_id);
-    if (!byView.has(viewId)) byView.set(viewId, []);
-    byView.get(viewId).push(row.remote_id);
-  }
-  for (const [viewId, ids] of byView) {
-    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
-      viewId, removed: ids, added: [],
-    });
-    // The JOIN above guarantees each id was in the view, so we can
-    // decrement total by exactly the number of pairs we found.
-    await handlers[DB_RPC.QUERY]({
-      sql: `UPDATE query_views
-               SET total = MAX(0, COALESCE(total, 0) - ?),
-                   updated_at = ?
-             WHERE id = ?`,
-      params: [ids.length, Date.now(), viewId],
-    });
-  }
-}
-
-async function recordQueryViewRange({ handlers, viewId, start, end }) {
-  if (end <= start) return;
-  await handlers[DB_RPC.QUERY]({
-    sql: `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT(view_id, start_position, end_position) DO NOTHING`,
-    params: [viewId, start, end, Date.now()],
-  });
-}
-
 function addressesFromEmail(email) {
   const out = [];
   for (const kind of ADDRESS_KINDS) {
@@ -587,6 +454,38 @@ function addressesFromEmail(email) {
     });
   }
   return out;
+}
+
+function emailToRecord(email) {
+  const keywords = Object.keys(email.keywords ?? {}).filter((k) => email.keywords[k]);
+  return {
+    remoteId: email.id,
+    remoteThreadId: email.threadId ?? null,
+    blobId: email.blobId ?? null,
+    rfc822MessageId: extractMessageId(email.messageId),
+    inReplyToJson: email.inReplyTo ? JSON.stringify(email.inReplyTo) : null,
+    referencesJson: email.references ? JSON.stringify(email.references) : null,
+    subject: email.subject ?? null,
+    preview: email.preview ?? null,
+    size: email.size ?? null,
+    receivedAt: parseDate(email.receivedAt),
+    sentAt: parseDate(email.sentAt),
+    hasAttachment: !!email.hasAttachment,
+    keywordsJson: JSON.stringify(email.keywords ?? {}),
+    keywords,
+    isSeen: keywords.includes('$seen'),
+    isFlagged: keywords.includes('$flagged'),
+    isAnswered: keywords.includes('$answered'),
+    isDraft: keywords.includes('$draft'),
+    isForwarded: keywords.includes('$forwarded'),
+    isJunk: keywords.includes('$junk'),
+    fromText: joinAddresses(email.from),
+    toText: joinAddresses(email.to),
+    rawJson: JSON.stringify(email),
+    addresses: addressesFromEmail(email),
+    mailboxIds: Object.keys(email.mailboxIds ?? {}),
+    metadataFetchedAt: Date.now(),
+  };
 }
 
 function joinAddresses(list) {

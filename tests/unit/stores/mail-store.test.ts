@@ -209,6 +209,7 @@ function makeRepo(): any {
     async drainOutbox() { return { attempted: 0, succeeded: 0, failed: 0 }; },
     async runMutation() { return { attempted: 1, succeeded: 1, failed: 0 }; },
     async replaceMessageKeywords() { return undefined; },
+    async replaceMessageKeywordsMany() { return { ok: true, applied: 0 }; },
     async resetViewForFolder(_accountId, folderId) {
       calls.resetViewForFolder = (calls.resetViewForFolder ?? 0) + 1;
       const view = views.get(folderId);
@@ -1090,6 +1091,47 @@ describe('selectMessage marks unread as seen via the auto-drained outbox', () =>
     expect(replaceCalls).toBe(0);
     expect(insertCalls).toBe(0);
   });
+
+  it('batches markManySeen optimistic writes and setKeywords mutations by chunk', async () => {
+    const folder = makeFolder(1, { total_emails: 750 });
+    const rows = Array.from({ length: 750 }, (_, index) => makeRow(index + 1, {
+      is_seen: 0,
+      keywords_json: '{}',
+    }));
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: { rows, total: 750 } },
+    });
+    await flush();
+
+    const replaceCalls = [];
+    repo.replaceMessageKeywordsMany = async (items) => {
+      replaceCalls.push(items);
+      return { ok: true, applied: items.length };
+    };
+    repo.replaceMessageKeywords = async () => {
+      throw new Error('single-row keyword replacement should not be used for bulk mark seen');
+    };
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+
+    const changed = await mailStore.markManySeen(rows.map((row) => row.id), true);
+
+    expect(changed).toBe(750);
+    expect(replaceCalls).toHaveLength(2);
+    expect(replaceCalls[0]).toHaveLength(500);
+    expect(replaceCalls[1]).toHaveLength(250);
+    expect(insertCalls).toHaveLength(2);
+    expect(JSON.parse(insertCalls[0].requestJson).messageIds).toHaveLength(500);
+    expect(JSON.parse(insertCalls[1].requestJson).messageIds).toHaveLength(250);
+    expect(JSON.parse(insertCalls[0].requestJson)).toMatchObject({
+      add: ['$seen'],
+      remove: [],
+    });
+  });
 });
 
 describe('successor selection after removal', () => {
@@ -1309,6 +1351,127 @@ describe('moveMessages', () => {
       .rejects.toThrow('Cannot move messages into that folder.');
     expect(insertCalls).toBe(0);
     expect(mailStore.canMoveToFolder(2)).toBe(false);
+  });
+
+  it('chunks large bulk moves into batches of 500 and ticks the bulk-operation overlay', async () => {
+    // The user can multi-select a large number of rows (the bug
+    // report had 536). A single Email/set with that many update
+    // entries silently times out on Stalwart and shows up as
+    // noResponse; the store must split the dispatch into chunks of
+    // BULK_OPERATION_BATCH_SIZE (500) and drive a progress overlay
+    // so the user gets feedback while it works through them.
+    const inbox = makeFolder(1, { total_emails: 750, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', name: 'Archive', may_add_items: 1 });
+    const ids = Array.from({ length: 750 }, (_, i) => i + 1);
+    const rows = ids.map((id) => makeRow(id));
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: { 1: { rows, total: 750 } },
+    });
+    await flush();
+
+    const insertCalls: any[] = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+    const observedProgress: Array<{ active: boolean; completed: number; total: number; label: string }> = [];
+    repo.runMutation = async (_accountId, _mutationId) => {
+      const snap = mailStore.bulkOperation;
+      observedProgress.push({
+        active: snap.active,
+        completed: snap.completed,
+        total: snap.total,
+        label: snap.label,
+      });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    const result = await mailStore.moveMessages(ids, archive.id);
+
+    expect(result.succeeded).toBe(750);
+    expect(insertCalls).toHaveLength(2);
+    expect(JSON.parse(insertCalls[0].requestJson).messageIds).toHaveLength(500);
+    expect(JSON.parse(insertCalls[1].requestJson).messageIds).toHaveLength(250);
+    expect(observedProgress[0]).toMatchObject({
+      active: true,
+      completed: 0,
+      total: 750,
+      label: 'Moving messages to Archive',
+    });
+    expect(observedProgress[1]).toMatchObject({
+      active: true,
+      completed: 500,
+      total: 750,
+    });
+    // Overlay clears once the operation finishes.
+    expect(mailStore.bulkOperation.active).toBe(false);
+    expect(mailStore.bulkOperation.total).toBe(0);
+  });
+
+  it('does not show the overlay for selections at or below the chunk size', async () => {
+    const inbox = makeFolder(1, { total_emails: 500, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', name: 'Archive', may_add_items: 1 });
+    const ids = Array.from({ length: 500 }, (_, i) => i + 1);
+    const rows = ids.map((id) => makeRow(id));
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: { 1: { rows, total: 500 } },
+    });
+    await flush();
+
+    const observedActive: boolean[] = [];
+    repo.insertPendingMutation = async () => ({ id: 1 });
+    repo.runMutation = async () => {
+      observedActive.push(mailStore.bulkOperation.active);
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    await mailStore.moveMessages(ids, archive.id);
+
+    // 500 fits in one chunk; the overlay must stay quiet to avoid
+    // flashing for a single-shot operation that finishes in one
+    // round trip.
+    expect(observedActive).toEqual([false]);
+    expect(mailStore.bulkOperation.active).toBe(false);
+  });
+
+  it('stops bulk move on first chunk failure and reports partial progress', async () => {
+    const inbox = makeFolder(1, { total_emails: 750, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', name: 'Archive', may_add_items: 1 });
+    const ids = Array.from({ length: 750 }, (_, i) => i + 1);
+    const rows = ids.map((id) => makeRow(id));
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: { 1: { rows, total: 750 } },
+    });
+    await flush();
+
+    const insertCalls: any[] = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+    let runCount = 0;
+    repo.runMutation = async () => {
+      runCount += 1;
+      if (runCount === 1) return { attempted: 1, succeeded: 1, failed: 0 };
+      return { attempted: 1, succeeded: 0, failed: 1 };
+    };
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({ type: 'requestTooLarge' }),
+    });
+
+    await expect(mailStore.moveMessages(ids, archive.id)).rejects.toThrow(
+      /requestTooLarge.*500 of 750 succeeded/,
+    );
+
+    // First chunk persisted, second chunk's pending row stays
+    // conflicted (handled by the runner). A third chunk is never
+    // dispatched.
+    expect(runCount).toBe(2);
+    expect(insertCalls).toHaveLength(2);
+    expect(mailStore.bulkOperation.active).toBe(false);
   });
 });
 

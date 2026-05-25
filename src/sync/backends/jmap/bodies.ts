@@ -75,28 +75,10 @@ export async function fetchEmailBodies({
 }
 
 async function persistBodies({ account, emails, handlers }) {
-  const ts = Date.now();
-
+  const bodies = [];
   for (const email of emails) {
-    const messageRow = await handlers[DB_RPC.MESSAGE_GET_BY_REMOTE]({
-      accountId: account.id,
-      remoteId: email.id,
-    });
-    if (!messageRow) {
-      continue;
-    }
-    const messageId = messageRow.id;
-
-    // Replace body_parts and body_values entirely; bodies are an LRU
-    // cache and the cheapest correct strategy is to drop and rewrite.
-    const txStatements = [
-      { sql: 'DELETE FROM body_parts WHERE message_id = ?', params: [messageId] },
-      { sql: 'DELETE FROM body_values WHERE message_id = ?', params: [messageId] },
-    ];
-    await handlers[DB_RPC.TRANSACTION]({ statements: txStatements });
-
-    const partInserts = [];
-    const valueInserts = [];
+    const parts = [];
+    const values = [];
 
     const textPartIds = new Set((email.textBody ?? []).map((p) => p.partId));
     const htmlPartIds = new Set((email.htmlBody ?? []).map((p) => p.partId));
@@ -105,51 +87,24 @@ async function persistBodies({ account, emails, handlers }) {
     let position = 0;
     walkParts(email.bodyStructure, null, (part, parentPartId) => {
       const partId = part.partId ?? null;
-      partInserts.push({
-        sql: `INSERT INTO body_parts(
-                message_id, part_id, position, blob_id, parent_part_id,
-                media_type, charset, name, disposition, cid,
-                language, location, size,
-                is_body_text, is_body_html, is_attachment, is_inline,
-                raw_json
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(message_id, part_id) DO UPDATE SET
-                position = excluded.position,
-                blob_id = excluded.blob_id,
-                parent_part_id = excluded.parent_part_id,
-                media_type = excluded.media_type,
-                charset = excluded.charset,
-                name = excluded.name,
-                disposition = excluded.disposition,
-                cid = excluded.cid,
-                language = excluded.language,
-                location = excluded.location,
-                size = excluded.size,
-                is_body_text = excluded.is_body_text,
-                is_body_html = excluded.is_body_html,
-                is_attachment = excluded.is_attachment,
-                is_inline = excluded.is_inline,
-                raw_json = excluded.raw_json`,
-        params: [
-          messageId,
-          partId ?? `idx-${position}`,
-          position,
-          part.blobId ?? null,
-          parentPartId,
-          part.type ?? null,
-          part.charset ?? null,
-          part.name ?? null,
-          part.disposition ?? null,
-          part.cid ? part.cid.replace(/^<|>$/g, '') : null,
-          Array.isArray(part.language) ? JSON.stringify(part.language) : (part.language ?? null),
-          part.location ?? null,
-          part.size ?? null,
-          textPartIds.has(partId) ? 1 : 0,
-          htmlPartIds.has(partId) ? 1 : 0,
-          attachmentPartIds.has(partId) ? 1 : 0,
-          part.disposition === 'inline' ? 1 : 0,
-          JSON.stringify(part),
-        ],
+      parts.push({
+        partId: partId ?? `idx-${position}`,
+        position,
+        blobId: part.blobId ?? null,
+        parentPartId,
+        mediaType: part.type ?? null,
+        charset: part.charset ?? null,
+        name: part.name ?? null,
+        disposition: part.disposition ?? null,
+        cid: part.cid ? part.cid.replace(/^<|>$/g, '') : null,
+        language: Array.isArray(part.language) ? JSON.stringify(part.language) : (part.language ?? null),
+        location: part.location ?? null,
+        size: part.size ?? null,
+        isBodyText: textPartIds.has(partId),
+        isBodyHtml: htmlPartIds.has(partId),
+        isAttachment: attachmentPartIds.has(partId),
+        isInline: part.disposition === 'inline',
+        rawJson: JSON.stringify(part),
       });
       position += 1;
     });
@@ -159,41 +114,24 @@ async function persistBodies({ account, emails, handlers }) {
       const isHtml = htmlPartIds.has(partId);
       const kind = isHtml ? 'html' : 'text';
       const value = payload?.value ?? '';
-      valueInserts.push({
-        sql: `INSERT INTO body_values(
-                message_id, part_id, kind, value, is_truncated,
-                fetched_at, last_accessed_at, byte_size
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(message_id, part_id, kind) DO UPDATE SET
-                value = excluded.value,
-                is_truncated = excluded.is_truncated,
-                fetched_at = excluded.fetched_at,
-                last_accessed_at = excluded.last_accessed_at,
-                byte_size = excluded.byte_size`,
-        params: [
-          messageId,
-          partId,
-          kind,
-          value,
-          payload?.isTruncated ? 1 : 0,
-          ts,
-          ts,
-          new Blob([value]).size,
-        ],
+      values.push({
+        partId,
+        kind,
+        value,
+        isTruncated: !!payload?.isTruncated,
+        byteSize: new Blob([value]).size,
       });
     }
-
-    if (partInserts.length > 0) {
-      await handlers[DB_RPC.TRANSACTION]({ statements: partInserts });
-    }
-    if (valueInserts.length > 0) {
-      await handlers[DB_RPC.TRANSACTION]({ statements: valueInserts });
-    }
-    await handlers[DB_RPC.QUERY]({
-      sql: 'UPDATE messages SET body_fetched_at = ?, updated_at = ? WHERE id = ?',
-      params: [ts, ts, messageId],
+    bodies.push({
+      remoteId: email.id,
+      parts,
+      values,
     });
   }
+  await handlers[DB_RPC.MESSAGE_BODY_PERSIST_BATCH]({
+    accountId: account.id,
+    bodies,
+  });
 }
 
 function walkParts(part, parentPartId, visit) {

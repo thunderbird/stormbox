@@ -35,8 +35,8 @@
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
 import {
-  applyMoveLocally,
-  applyDestroyLocally,
+  applyMoveBatchLocally,
+  applyDestroyBatchLocally,
   applySendLocally,
   reconcileMessageFromServer,
 } from './outbox-apply.js';
@@ -122,8 +122,12 @@ async function runOne(args) {
 }
 
 async function runSetKeywords({ transport, account, handlers, row, request, useWebSocket }) {
-  const remoteId = await resolveRemoteMessageId(handlers, account, row.target_message_id ?? request.messageId);
-  if (!remoteId) {
+  const messageIds = collectMessageIds(row, request);
+  if (messageIds.length === 0) {
+    return { ok: false, error: { type: 'unknownMessage' } };
+  }
+  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
+  if (resolved.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   const update = {};
@@ -133,7 +137,12 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
   for (const k of request.remove ?? []) {
     update[`keywords/${k}`] = null;
   }
-  return submitEmailSet({ transport, account, useWebSocket, update: { [remoteId]: update } });
+  return submitEmailSet({
+    transport,
+    account,
+    useWebSocket,
+    update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
+  });
 }
 
 async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {
@@ -163,22 +172,22 @@ async function runMoveToFolders({ transport, account, handlers, row, request, us
   });
   const response = pickResponse(raw, 'Email/set');
   if (!response) {
-    return { ok: false, error: { type: 'noResponse' } };
+    return { ok: false, error: extractMethodError(raw, { count: resolved.length }) };
   }
   const updatedRemoteIds = new Set(
     Object.keys(response.updated ?? {}),
   );
   const notUpdated = response.notUpdated ?? {};
 
-  // Apply the local cache update for the ids the server confirmed.
-  for (const { localId, remoteId } of resolved) {
-    if (!updatedRemoteIds.has(remoteId)) continue;
-    await applyMoveLocally(handlers, account, {
-      messageId: localId,
-      addFolderIds: addLocalIds,
-      removeFolderIds: removeLocalIds,
-    });
-  }
+  // Apply the local cache update once for the exact set of ids the
+  // server confirmed in this Email/set chunk.
+  await applyMoveBatchLocally(handlers, account, {
+    messageIds: resolved
+      .filter(({ remoteId }) => updatedRemoteIds.has(remoteId))
+      .map(({ localId }) => localId),
+    addFolderIds: addLocalIds,
+    removeFolderIds: removeLocalIds,
+  });
 
   // For each id the server refused, fall back to per-id reconcile so
   // a stale local cache (the message is already gone or already in
@@ -228,17 +237,18 @@ async function runDestroy({ transport, account, handlers, row, request, useWebSo
   });
   const response = pickResponse(raw, 'Email/set');
   if (!response) {
-    return { ok: false, error: { type: 'noResponse' } };
+    return { ok: false, error: extractMethodError(raw, { count: resolved.length }) };
   }
   const destroyedRemoteIds = new Set(
     Array.isArray(response.destroyed) ? response.destroyed : [],
   );
   const notDestroyed = response.notDestroyed ?? {};
 
-  for (const { localId, remoteId } of resolved) {
-    if (!destroyedRemoteIds.has(remoteId)) continue;
-    await applyDestroyLocally(handlers, account, { messageId: localId });
-  }
+  await applyDestroyBatchLocally(handlers, account, {
+    messageIds: resolved
+      .filter(({ remoteId }) => destroyedRemoteIds.has(remoteId))
+      .map(({ localId }) => localId),
+  });
 
   let unresolved = 0;
   for (const remoteId of Object.keys(notDestroyed)) {
@@ -424,7 +434,7 @@ async function submitEmailSet({ transport, account, useWebSocket, update, destro
   });
   const response = pickResponse(result, 'Email/set');
   if (!response) {
-    return { ok: false, error: { type: 'noResponse' } };
+    return { ok: false, error: extractMethodError(result) };
   }
   if (response.notUpdated && update && Object.values(response.notUpdated).length > 0) {
     return { ok: false, error: { type: 'notUpdated', detail: response.notUpdated } };
@@ -435,21 +445,11 @@ async function submitEmailSet({ transport, account, useWebSocket, update, destro
   return { ok: true, response };
 }
 
-async function resolveRemoteMessageId(handlers, account, messageId) {
-  if (messageId == null) return null;
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: 'SELECT remote_id FROM messages WHERE account_id = ? AND id = ?',
-    params: [account.id, messageId],
-  });
-  return rows[0]?.remote_id ?? null;
-}
-
 /**
- * Batch counterpart to resolveRemoteMessageId. Looks up remote ids for
- * an array of local message ids in one query, dropping any that no
- * longer exist locally (e.g. a peer already destroyed the row before
- * the outbox got to it). Returns [{ localId, remoteId }, ...] in no
- * guaranteed order.
+ * Looks up remote ids for an array of local message ids in one query,
+ * dropping any that no longer exist locally (e.g. a peer already
+ * destroyed the row before the outbox got to it). Returns
+ * [{ localId, remoteId }, ...] in no guaranteed order.
  */
 async function resolveRemoteMessageIds(handlers, account, messageIds) {
   if (!Array.isArray(messageIds) || messageIds.length === 0) return [];
@@ -553,4 +553,34 @@ function pickResponse(result, methodName) {
   const responses = result?.methodResponses ?? [];
   const found = responses.find((r) => r[0] === methodName);
   return found?.[1] ?? null;
+}
+
+/**
+ * Build a typed error result for the case where Email/set did not
+ * return its expected response slot. Most commonly this is a JMAP
+ * method-level error (RFC 8620 §3.6.1) returned in the "error" slot
+ * of methodResponses, e.g. requestTooLarge, limit, serverFail. We
+ * surface the server-reported type so the user gets actionable text
+ * ("Could not move message (requestTooLarge).") instead of the
+ * useless local fallback "noResponse" we used to emit.
+ *
+ * `hint.count` is included on requestTooLarge / limit so the store
+ * can suggest a smaller batch in the toast if it ever wants to.
+ */
+function extractMethodError(raw: any, hint: { count?: number } = {}) {
+  const responses = raw?.methodResponses ?? [];
+  const errorSlot = responses.find((r: any) => r?.[0] === 'error');
+  if (errorSlot) {
+    const detail = errorSlot[1] ?? {};
+    return {
+      type: detail.type ?? 'methodError',
+      description: detail.description,
+      ...(hint.count != null ? { count: hint.count } : {}),
+      detail,
+    };
+  }
+  return {
+    type: 'noResponse',
+    ...(hint.count != null ? { count: hint.count } : {}),
+  };
 }

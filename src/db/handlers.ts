@@ -12,6 +12,12 @@
  *   - Add their touched table families to the supplied broadcaster.
  */
 
+import {
+  batchResult,
+  compactViewAfterDeletingPositions,
+  numericUnique,
+  placeholdersFor,
+} from './batch-helpers.js';
 import { DB_RPC, TABLE_FAMILIES } from './protocol.js';
 
 /**
@@ -461,6 +467,297 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return { upserted: messages.length };
     },
 
+    [DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]: async ({
+      accountId,
+      folderId,
+      folderRemoteId,
+      sortProp = 'receivedAt',
+      collapseThreads = false,
+      queryState = null,
+      canCalculateChanges = null,
+      total = null,
+      position = 0,
+      ids = [],
+      messages = [],
+    }) => {
+      const safeFolderId = Number(folderId);
+      if (!Number.isFinite(safeFolderId)) {
+        throw new Error('folderWindow.persistBatch requires a numeric folderId');
+      }
+      const safePosition = Number(position);
+      const remoteIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
+      const records = Array.isArray(messages) ? messages.filter((m) => m?.remoteId) : [];
+      const ts = now();
+      let viewId = null;
+
+      await engine.transaction(async (tx) => {
+        const filterJson = JSON.stringify({ inMailbox: folderRemoteId });
+        const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+        await tx.run(
+          `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total, stale,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, view_type, folder_id, filter_json, sort_json, collapse_threads)
+            DO UPDATE SET
+              query_state = excluded.query_state,
+              can_calculate_changes = excluded.can_calculate_changes,
+              total = excluded.total,
+              stale = excluded.stale,
+              updated_at = excluded.updated_at,
+              last_accessed_at = excluded.last_accessed_at`,
+          [
+            accountId,
+            'mailbox-window',
+            safeFolderId,
+            filterJson,
+            sortJson,
+            collapseThreads ? 1 : 0,
+            queryState,
+            canCalculateChanges == null ? null : (canCalculateChanges ? 1 : 0),
+            total,
+            0,
+            ts,
+            ts,
+            ts,
+          ],
+        );
+        const viewRow = await tx.get(
+          `SELECT id FROM query_views
+             WHERE account_id = ? AND view_type = ? AND folder_id = ?
+               AND filter_json = ? AND sort_json = ? AND collapse_threads = ?`,
+          [accountId, 'mailbox-window', safeFolderId, filterJson, sortJson, collapseThreads ? 1 : 0],
+        );
+        viewId = Number(viewRow?.id);
+        if (!Number.isFinite(viewId)) {
+          throw new Error('folderWindow.persistBatch failed to resolve query view id');
+        }
+
+        if (remoteIds.length > 0) {
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND position >= ? AND position < ?`,
+            [viewId, safePosition, safePosition + remoteIds.length],
+          );
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${placeholdersFor(remoteIds)})`,
+            [viewId, ...remoteIds],
+          );
+          for (let i = 0; i < remoteIds.length; i += 1) {
+            await tx.run(
+              `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+               VALUES (?, ?, NULL, ?)`,
+              [viewId, safePosition + i, remoteIds[i]],
+            );
+          }
+          await tx.run(
+            `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(view_id, start_position, end_position) DO NOTHING`,
+            [viewId, safePosition, safePosition + remoteIds.length, ts],
+          );
+        }
+
+        const threadRemoteIds = [...new Set(records.map((m) => m.remoteThreadId).filter(Boolean))];
+        for (const remoteThreadId of threadRemoteIds) {
+          await tx.run(
+            `INSERT INTO threads(account_id, remote_id, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(account_id, remote_id) DO UPDATE SET
+               updated_at = excluded.updated_at`,
+            [accountId, remoteThreadId, ts],
+          );
+        }
+        const threadRows = threadRemoteIds.length > 0
+          ? await tx.all(
+            `SELECT id, remote_id FROM threads
+              WHERE account_id = ? AND remote_id IN (${placeholdersFor(threadRemoteIds)})`,
+            [accountId, ...threadRemoteIds],
+          )
+          : [];
+        const threadMap = new Map(threadRows.map((row) => [row.remote_id, row.id]));
+
+        for (const m of records) {
+          await tx.run(
+            `INSERT INTO messages(
+                account_id, remote_id, thread_id, remote_thread_id, blob_id,
+                rfc822_message_id, in_reply_to_json, references_json,
+                subject, preview, size, received_at, sent_at, has_attachment,
+                keywords_json, is_seen, is_flagged, is_answered, is_draft,
+                is_forwarded, is_junk, from_text, to_text, raw_json,
+                stale, body_fetched_at, metadata_fetched_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id, remote_id) DO UPDATE SET
+                thread_id = excluded.thread_id,
+                remote_thread_id = excluded.remote_thread_id,
+                blob_id = excluded.blob_id,
+                rfc822_message_id = excluded.rfc822_message_id,
+                in_reply_to_json = excluded.in_reply_to_json,
+                references_json = excluded.references_json,
+                subject = excluded.subject,
+                preview = excluded.preview,
+                size = excluded.size,
+                received_at = excluded.received_at,
+                sent_at = excluded.sent_at,
+                has_attachment = excluded.has_attachment,
+                keywords_json = excluded.keywords_json,
+                is_seen = excluded.is_seen,
+                is_flagged = excluded.is_flagged,
+                is_answered = excluded.is_answered,
+                is_draft = excluded.is_draft,
+                is_forwarded = excluded.is_forwarded,
+                is_junk = excluded.is_junk,
+                from_text = excluded.from_text,
+                to_text = excluded.to_text,
+                raw_json = excluded.raw_json,
+                stale = excluded.stale,
+                metadata_fetched_at = excluded.metadata_fetched_at,
+                updated_at = excluded.updated_at`,
+            [
+              accountId,
+              m.remoteId,
+              threadMap.get(m.remoteThreadId) ?? null,
+              m.remoteThreadId ?? null,
+              m.blobId ?? null,
+              m.rfc822MessageId ?? null,
+              m.inReplyToJson ?? null,
+              m.referencesJson ?? null,
+              m.subject ?? null,
+              m.preview ?? null,
+              m.size ?? null,
+              m.receivedAt ?? null,
+              m.sentAt ?? null,
+              m.hasAttachment ? 1 : 0,
+              m.keywordsJson ?? '{}',
+              m.isSeen ? 1 : 0,
+              m.isFlagged ? 1 : 0,
+              m.isAnswered ? 1 : 0,
+              m.isDraft ? 1 : 0,
+              m.isForwarded ? 1 : 0,
+              m.isJunk ? 1 : 0,
+              m.fromText ?? null,
+              m.toText ?? null,
+              m.rawJson ?? null,
+              m.stale ? 1 : 0,
+              m.bodyFetchedAt ?? null,
+              m.metadataFetchedAt ?? ts,
+              ts,
+            ],
+          );
+        }
+
+        if (records.length > 0) {
+          const recordRemoteIds = records.map((m) => m.remoteId);
+          const messageRows = await tx.all(
+            `SELECT id, remote_id FROM messages
+              WHERE account_id = ? AND remote_id IN (${placeholdersFor(recordRemoteIds)})`,
+            [accountId, ...recordRemoteIds],
+          );
+          const messageIdByRemote = new Map(messageRows.map((row) => [row.remote_id, row.id]));
+          const addressMessageIds = [];
+          const addressRows = [];
+          const keywordMessageIds = [];
+          const keywordRows = [];
+          const allMailboxIds = [...new Set(records.flatMap((m) => m.mailboxIds ?? []))];
+          const folderRows = allMailboxIds.length > 0
+            ? await tx.all(
+              `SELECT id, remote_id FROM folders
+                 WHERE account_id = ? AND remote_id IN (${placeholdersFor(allMailboxIds)})`,
+              [accountId, ...allMailboxIds],
+            )
+            : [];
+          const folderMap = new Map(folderRows.map((row) => [row.remote_id, row.id]));
+          const membershipMessageIds = [];
+          const membershipRows = [];
+
+          for (const m of records) {
+            const messageId = messageIdByRemote.get(m.remoteId);
+            if (!messageId) continue;
+            if (m.addresses) {
+              addressMessageIds.push(messageId);
+              for (const addr of m.addresses) {
+                addressRows.push([messageId, addr.kind, addr.position, addr.name ?? null, addr.email ?? null]);
+              }
+            }
+            if (m.keywords) {
+              keywordMessageIds.push(messageId);
+              for (const keyword of m.keywords) keywordRows.push([messageId, keyword]);
+            }
+            const memberships = (m.mailboxIds ?? [])
+              .map((mailboxId) => folderMap.get(mailboxId))
+              .filter(Boolean);
+            if (memberships.length > 0) {
+              membershipMessageIds.push(messageId);
+              for (const targetFolderId of memberships) {
+                membershipRows.push([
+                  targetFolderId,
+                  messageId,
+                  accountId,
+                  null,
+                  null,
+                  m.receivedAt ?? null,
+                  m.sentAt ?? m.receivedAt ?? null,
+                  null,
+                ]);
+              }
+            }
+          }
+
+          if (addressMessageIds.length > 0) {
+            await tx.run(
+              `DELETE FROM message_addresses
+                WHERE message_id IN (${placeholdersFor(addressMessageIds)})`,
+              addressMessageIds,
+            );
+            for (const params of addressRows) {
+              await tx.run(
+                `INSERT INTO message_addresses(message_id, kind, position, name, email)
+                 VALUES (?, ?, ?, ?, ?)`,
+                params,
+              );
+            }
+          }
+          if (keywordMessageIds.length > 0) {
+            await tx.run(
+              `DELETE FROM message_keywords
+                WHERE message_id IN (${placeholdersFor(keywordMessageIds)})`,
+              keywordMessageIds,
+            );
+            for (const params of keywordRows) {
+              await tx.run(
+                `INSERT INTO message_keywords(message_id, keyword) VALUES (?, ?)`,
+                params,
+              );
+            }
+          }
+          if (membershipMessageIds.length > 0) {
+            const uniqueMembershipIds = numericUnique(membershipMessageIds);
+            await tx.run(
+              `DELETE FROM folder_messages
+                WHERE message_id IN (${placeholdersFor(uniqueMembershipIds)})`,
+              uniqueMembershipIds,
+            );
+            for (const params of membershipRows) {
+              await tx.run(
+                `INSERT INTO folder_messages(
+                    folder_id, message_id, account_id,
+                    remote_membership_id, added_at,
+                    sort_received_at, sort_sent_at, instance_state_json
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                params,
+              );
+            }
+          }
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.THREADS);
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(records.length, { viewId });
+    },
+
     [DB_RPC.MESSAGE_LIST_FOR_FOLDER]: async ({ folderId, sort = 'received', limit = 100, offset = 0 }) => {
       const sortColumn = sort === 'sent' ? 'sort_sent_at' : 'sort_received_at';
       return engine.all(
@@ -646,17 +943,13 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               WHERE view_id = ? AND remote_id IN (${placeholders})`,
             [safeViewId, ...removedList],
           );
-          // Compact: each removed position shifts items at higher
-          // positions down by one. Highest-first so the cumulative
-          // offset stays consistent as we iterate.
-          for (const row of removedRows) {
-            await tx.run(
-              `UPDATE query_view_items
-                  SET position = position - 1
-                WHERE view_id = ? AND position > ?`,
-              [safeViewId, Number(row.position)],
-            );
-          }
+          await compactViewAfterDeletingPositions(
+            tx,
+            safeViewId,
+            removedRows.map((row) => Number(row.position)),
+            now(),
+            { updateTotal: false },
+          );
         }
         for (const entry of addedList) {
           const idx = Number(entry.index);
@@ -707,6 +1000,86 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       });
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
       return { removed: removedList.length, added: addedList.length };
+    },
+
+    [DB_RPC.QUERY_VIEW_DROP_REMOTE_IDS]: async ({ accountId, remoteIds = [] }) => {
+      const ids = [...new Set((Array.isArray(remoteIds) ? remoteIds : []).filter(Boolean))];
+      if (ids.length === 0) return batchResult(0, { views: 0 });
+      const ts = now();
+      let removed = 0;
+      let views = 0;
+      await engine.transaction(async (tx) => {
+        const rows = await tx.all(
+          `SELECT qv.id AS view_id, qi.position
+             FROM query_views qv
+             JOIN query_view_items qi ON qi.view_id = qv.id
+            WHERE qv.account_id = ?
+              AND qi.remote_id IN (${placeholdersFor(ids)})`,
+          [accountId, ...ids],
+        );
+        if (rows.length === 0) return;
+        const byView = new Map();
+        for (const row of rows) {
+          const viewId = Number(row.view_id);
+          const positions = byView.get(viewId) ?? [];
+          positions.push(Number(row.position));
+          byView.set(viewId, positions);
+        }
+        for (const [viewId, positions] of byView) {
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${placeholdersFor(ids)})`,
+            [viewId, ...ids],
+          );
+          const result = await compactViewAfterDeletingPositions(tx, viewId, positions, ts);
+          removed += result.removed;
+          views += 1;
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(removed, { views });
+    },
+
+    [DB_RPC.MESSAGE_DESTROY_REMOTE_IDS_BATCH]: async ({ accountId, remoteIds = [] }) => {
+      const ids = [...new Set((Array.isArray(remoteIds) ? remoteIds : []).filter(Boolean))];
+      if (ids.length === 0) return batchResult(0, { views: 0 });
+      const ts = now();
+      let removed = 0;
+      let views = 0;
+      await engine.transaction(async (tx) => {
+        const rows = await tx.all(
+          `SELECT qv.id AS view_id, qi.position
+             FROM query_views qv
+             JOIN query_view_items qi ON qi.view_id = qv.id
+            WHERE qv.account_id = ?
+              AND qi.remote_id IN (${placeholdersFor(ids)})`,
+          [accountId, ...ids],
+        );
+        const byView = new Map();
+        for (const row of rows) {
+          const viewId = Number(row.view_id);
+          const positions = byView.get(viewId) ?? [];
+          positions.push(Number(row.position));
+          byView.set(viewId, positions);
+        }
+        for (const [viewId, positions] of byView) {
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND remote_id IN (${placeholdersFor(ids)})`,
+            [viewId, ...ids],
+          );
+          const result = await compactViewAfterDeletingPositions(tx, viewId, positions, ts);
+          removed += result.removed;
+          views += 1;
+        }
+        await tx.run(
+          `DELETE FROM messages
+            WHERE account_id = ? AND remote_id IN (${placeholdersFor(ids)})`,
+          [accountId, ...ids],
+        );
+      });
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(removed, { views });
     },
 
     /**
@@ -827,6 +1200,180 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
     },
 
+    [DB_RPC.MESSAGE_REPLACE_KEYWORDS_MANY]: async ({ items = [] }) => {
+      const rows = (Array.isArray(items) ? items : [])
+        .map((item) => ({
+          messageId: Number(item?.messageId),
+          keywords: Array.isArray(item?.keywords) ? item.keywords : [],
+          keywordsJson: item?.keywordsJson ?? '{}',
+        }))
+        .filter((item) => Number.isFinite(item.messageId));
+      if (rows.length === 0) return batchResult(0);
+      const ts = now();
+      const messageIds = numericUnique(rows.map((row) => row.messageId));
+      await engine.transaction(async (tx) => {
+        for (const row of rows) {
+          const keywords = row.keywords;
+          await tx.run(
+            `UPDATE messages
+                SET keywords_json = ?,
+                    is_seen = ?,
+                    is_flagged = ?,
+                    is_answered = ?,
+                    is_draft = ?,
+                    is_forwarded = ?,
+                    is_junk = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [
+              row.keywordsJson,
+              keywords.includes('$seen') ? 1 : 0,
+              keywords.includes('$flagged') ? 1 : 0,
+              keywords.includes('$answered') ? 1 : 0,
+              keywords.includes('$draft') ? 1 : 0,
+              keywords.includes('$forwarded') ? 1 : 0,
+              keywords.includes('$junk') ? 1 : 0,
+              ts,
+              row.messageId,
+            ],
+          );
+        }
+        await tx.run(
+          `DELETE FROM message_keywords
+            WHERE message_id IN (${placeholdersFor(messageIds)})`,
+          messageIds,
+        );
+        for (const row of rows) {
+          for (const keyword of row.keywords) {
+            await tx.run(
+              `INSERT INTO message_keywords(message_id, keyword) VALUES (?, ?)`,
+              [row.messageId, keyword],
+            );
+          }
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(rows.length);
+    },
+
+    [DB_RPC.MESSAGE_BODY_PERSIST_BATCH]: async ({ accountId, bodies = [] }) => {
+      const items = (Array.isArray(bodies) ? bodies : [])
+        .filter((item) => item?.remoteId);
+      if (items.length === 0) return batchResult(0);
+      const remoteIds = [...new Set(items.map((item) => item.remoteId))];
+      const ts = now();
+      let applied = 0;
+      await engine.transaction(async (tx) => {
+        const messageRows = await tx.all(
+          `SELECT id, remote_id FROM messages
+            WHERE account_id = ? AND remote_id IN (${placeholdersFor(remoteIds)})`,
+          [accountId, ...remoteIds],
+        );
+        const messageIdByRemote = new Map(
+          messageRows.map((row) => [row.remote_id, Number(row.id)]),
+        );
+        const messageIds = numericUnique(messageRows.map((row) => row.id));
+        if (messageIds.length === 0) return;
+
+        await tx.run(
+          `DELETE FROM body_parts WHERE message_id IN (${placeholdersFor(messageIds)})`,
+          messageIds,
+        );
+        await tx.run(
+          `DELETE FROM body_values WHERE message_id IN (${placeholdersFor(messageIds)})`,
+          messageIds,
+        );
+
+        for (const item of items) {
+          const messageId = messageIdByRemote.get(item.remoteId);
+          if (!Number.isFinite(messageId)) continue;
+          applied += 1;
+          for (const part of item.parts ?? []) {
+            await tx.run(
+              `INSERT INTO body_parts(
+                  message_id, part_id, position, blob_id, parent_part_id,
+                  media_type, charset, name, disposition, cid,
+                  language, location, size,
+                  is_body_text, is_body_html, is_attachment, is_inline,
+                  raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id, part_id) DO UPDATE SET
+                  position = excluded.position,
+                  blob_id = excluded.blob_id,
+                  parent_part_id = excluded.parent_part_id,
+                  media_type = excluded.media_type,
+                  charset = excluded.charset,
+                  name = excluded.name,
+                  disposition = excluded.disposition,
+                  cid = excluded.cid,
+                  language = excluded.language,
+                  location = excluded.location,
+                  size = excluded.size,
+                  is_body_text = excluded.is_body_text,
+                  is_body_html = excluded.is_body_html,
+                  is_attachment = excluded.is_attachment,
+                  is_inline = excluded.is_inline,
+                  raw_json = excluded.raw_json`,
+              [
+                messageId,
+                part.partId,
+                part.position,
+                part.blobId ?? null,
+                part.parentPartId ?? null,
+                part.mediaType ?? null,
+                part.charset ?? null,
+                part.name ?? null,
+                part.disposition ?? null,
+                part.cid ?? null,
+                part.language ?? null,
+                part.location ?? null,
+                part.size ?? null,
+                part.isBodyText ? 1 : 0,
+                part.isBodyHtml ? 1 : 0,
+                part.isAttachment ? 1 : 0,
+                part.isInline ? 1 : 0,
+                part.rawJson ?? null,
+              ],
+            );
+          }
+          for (const value of item.values ?? []) {
+            await tx.run(
+              `INSERT INTO body_values(
+                  message_id, part_id, kind, value, is_truncated,
+                  fetched_at, last_accessed_at, byte_size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id, part_id, kind) DO UPDATE SET
+                  value = excluded.value,
+                  is_truncated = excluded.is_truncated,
+                  fetched_at = excluded.fetched_at,
+                  last_accessed_at = excluded.last_accessed_at,
+                  byte_size = excluded.byte_size`,
+              [
+                messageId,
+                value.partId,
+                value.kind,
+                value.value ?? '',
+                value.isTruncated ? 1 : 0,
+                ts,
+                ts,
+                value.byteSize ?? null,
+              ],
+            );
+          }
+        }
+
+        await tx.run(
+          `UPDATE messages
+              SET body_fetched_at = ?,
+                  updated_at = ?
+            WHERE id IN (${placeholdersFor(messageIds)})`,
+          [ts, ts, ...messageIds],
+        );
+      });
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(applied);
+    },
+
     [DB_RPC.FOLDER_MEMBERSHIP_REPLACE]: async ({ accountId, messageId, memberships }) => {
       await engine.transaction(async (tx) => {
         await tx.run(`DELETE FROM folder_messages WHERE message_id = ?`, [messageId]);
@@ -887,11 +1434,12 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const ts = now();
       await engine.transaction(async (tx) => {
         const remoteRow = await tx.get(
-          `SELECT remote_id FROM messages WHERE account_id = ? AND id = ?`,
+          `SELECT remote_id, is_seen FROM messages WHERE account_id = ? AND id = ?`,
           [accountId, msgId],
         );
         const remoteId = remoteRow?.remote_id ?? null;
         if (!remoteId) return;
+        const unreadDelta = Number(remoteRow?.is_seen ?? 1) === 0 ? 1 : 0;
 
         const existing = await tx.all(
           `SELECT folder_id, remote_membership_id, added_at,
@@ -904,6 +1452,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         const carriedSortReceived = existing[0]?.sort_received_at ?? null;
         const carriedSortSent = existing[0]?.sort_sent_at ?? null;
         const keep = existing.filter((row) => !removeSet.has(Number(row.folder_id)));
+        const removed = existing.filter((row) => removeSet.has(Number(row.folder_id)));
         const keepIds = new Set(keep.map((row) => Number(row.folder_id)));
         const additions = addList
           .filter((folderId) => !keepIds.has(folderId))
@@ -941,6 +1490,33 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 sort_received_at, sort_sent_at, instance_state_json
              ) VALUES (?, ?, ?, NULL, ?, ?, ?, NULL)`,
             [add.folderId, msgId, accountId, ts, add.sortReceivedAt, add.sortSentAt],
+          );
+        }
+
+        for (const row of removed) {
+          await tx.run(
+            `UPDATE folders
+                SET total_emails = CASE
+                      WHEN total_emails IS NULL THEN NULL
+                      ELSE MAX(0, total_emails - 1)
+                    END,
+                    unread_emails = CASE
+                      WHEN unread_emails IS NULL THEN NULL
+                      ELSE MAX(0, unread_emails - ?)
+                    END,
+                    updated_at = ?
+              WHERE account_id = ? AND id = ?`,
+            [unreadDelta, ts, accountId, Number(row.folder_id)],
+          );
+        }
+        for (const add of additions) {
+          await tx.run(
+            `UPDATE folders
+                SET total_emails = COALESCE(total_emails, 0) + 1,
+                    unread_emails = COALESCE(unread_emails, 0) + ?,
+                    updated_at = ?
+              WHERE account_id = ? AND id = ?`,
+            [unreadDelta, ts, accountId, add.folderId],
           );
         }
 
@@ -983,19 +1559,21 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           }
         }
 
-        for (const folderId of addList) {
+        for (const add of additions) {
           const viewRows = await tx.all(
             `SELECT id FROM query_views
               WHERE account_id = ? AND folder_id = ?
                 AND view_type = 'mailbox-window'`,
-            [accountId, folderId],
+            [accountId, add.folderId],
           );
           if (viewRows.length === 0) continue;
           const placeholders = viewRows.map(() => '?').join(',');
           const viewIds = viewRows.map((r) => Number(r.id));
           await tx.run(
             `UPDATE query_views
-                SET stale = 1, updated_at = ?
+                SET stale = 1,
+                    total = COALESCE(total, 0) + 1,
+                    updated_at = ?
               WHERE id IN (${placeholders})`,
             [ts, ...viewIds],
           );
@@ -1004,6 +1582,208 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       broadcaster.touch(TABLE_FAMILIES.FOLDERS);
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
       return { ok: true };
+    },
+
+    [DB_RPC.OUTBOX_APPLY_MOVE_BATCH]: async ({
+      accountId, messageIds = [], addFolderIds = [], removeFolderIds = [],
+    }) => {
+      const msgIds = numericUnique(messageIds);
+      if (msgIds.length === 0) return batchResult(0);
+      const addList = numericUnique(addFolderIds);
+      const removeList = numericUnique(removeFolderIds);
+      const removeSet = new Set(removeList);
+      const ts = now();
+      let applied = 0;
+
+      await engine.transaction(async (tx) => {
+        const idPlaceholders = placeholdersFor(msgIds);
+        const messageRows = await tx.all(
+          `SELECT id, remote_id, is_seen
+             FROM messages
+            WHERE account_id = ? AND id IN (${idPlaceholders})`,
+          [accountId, ...msgIds],
+        );
+        if (messageRows.length === 0) return;
+        const liveIds = messageRows.map((row) => Number(row.id));
+        const livePlaceholders = placeholdersFor(liveIds);
+        const membershipRows = await tx.all(
+          `SELECT folder_id, message_id, remote_membership_id, added_at,
+                  sort_received_at, sort_sent_at, instance_state_json
+             FROM folder_messages
+            WHERE account_id = ? AND message_id IN (${livePlaceholders})`,
+          [accountId, ...liveIds],
+        );
+        const membershipsByMessage = new Map();
+        for (const row of membershipRows) {
+          const id = Number(row.message_id);
+          const list = membershipsByMessage.get(id) ?? [];
+          list.push(row);
+          membershipsByMessage.set(id, list);
+        }
+
+        const deltas = new Map();
+        const removedRemoteIdsByFolder = new Map();
+        const additions = [];
+        const deltaFor = (folderId) => {
+          const id = Number(folderId);
+          const current = deltas.get(id) ?? {
+            removeTotal: 0, removeUnread: 0, addTotal: 0, addUnread: 0,
+          };
+          deltas.set(id, current);
+          return current;
+        };
+
+        for (const message of messageRows) {
+          const msgId = Number(message.id);
+          const remoteId = message.remote_id ?? null;
+          if (!remoteId) continue;
+          applied += 1;
+          const unreadDelta = Number(message.is_seen ?? 1) === 0 ? 1 : 0;
+          const existing = membershipsByMessage.get(msgId) ?? [];
+          const keepIds = new Set(
+            existing
+              .map((row) => Number(row.folder_id))
+              .filter((folderId) => !removeSet.has(folderId)),
+          );
+          const carriedSortReceived = existing[0]?.sort_received_at ?? null;
+          const carriedSortSent = existing[0]?.sort_sent_at ?? null;
+
+          for (const row of existing) {
+            const folderId = Number(row.folder_id);
+            if (!removeSet.has(folderId)) continue;
+            const delta = deltaFor(folderId);
+            delta.removeTotal += 1;
+            delta.removeUnread += unreadDelta;
+            const remoteIds = removedRemoteIdsByFolder.get(folderId) ?? new Set();
+            remoteIds.add(remoteId);
+            removedRemoteIdsByFolder.set(folderId, remoteIds);
+          }
+
+          for (const folderId of addList) {
+            if (keepIds.has(folderId)) continue;
+            additions.push({
+              folderId,
+              messageId: msgId,
+              sortReceivedAt: carriedSortReceived,
+              sortSentAt: carriedSortSent,
+              unreadDelta,
+            });
+            const delta = deltaFor(folderId);
+            delta.addTotal += 1;
+            delta.addUnread += unreadDelta;
+            keepIds.add(folderId);
+          }
+        }
+
+        if (removeList.length > 0) {
+          const removePlaceholders = placeholdersFor(removeList);
+          await tx.run(
+            `DELETE FROM folder_messages
+              WHERE account_id = ?
+                AND message_id IN (${livePlaceholders})
+                AND folder_id IN (${removePlaceholders})`,
+            [accountId, ...liveIds, ...removeList],
+          );
+        }
+
+        for (const add of additions) {
+          await tx.run(
+            `INSERT INTO folder_messages(
+                folder_id, message_id, account_id,
+                remote_membership_id, added_at,
+                sort_received_at, sort_sent_at, instance_state_json
+             ) VALUES (?, ?, ?, NULL, ?, ?, ?, NULL)
+             ON CONFLICT(folder_id, message_id) DO NOTHING`,
+            [add.folderId, add.messageId, accountId, ts, add.sortReceivedAt, add.sortSentAt],
+          );
+        }
+
+        for (const [folderId, delta] of deltas) {
+          await tx.run(
+            `UPDATE folders
+                SET total_emails = CASE
+                      WHEN total_emails IS NULL AND ? = 0 THEN NULL
+                      ELSE MAX(0, COALESCE(total_emails, 0) - ?) + ?
+                    END,
+                    unread_emails = CASE
+                      WHEN unread_emails IS NULL AND ? = 0 THEN NULL
+                      ELSE MAX(0, COALESCE(unread_emails, 0) - ?) + ?
+                    END,
+                    updated_at = ?
+              WHERE account_id = ? AND id = ?`,
+            [
+              delta.addTotal,
+              delta.removeTotal,
+              delta.addTotal,
+              delta.addUnread,
+              delta.removeUnread,
+              delta.addUnread,
+              ts,
+              accountId,
+              folderId,
+            ],
+          );
+        }
+
+        for (const [folderId, remoteIdsSet] of removedRemoteIdsByFolder) {
+          const remoteIds = [...remoteIdsSet];
+          if (remoteIds.length === 0) continue;
+          const viewRows = await tx.all(
+            `SELECT id FROM query_views
+              WHERE account_id = ? AND folder_id = ?
+                AND view_type = 'mailbox-window'`,
+            [accountId, folderId],
+          );
+          if (viewRows.length === 0) continue;
+          const remotePlaceholders = placeholdersFor(remoteIds);
+          for (const view of viewRows) {
+            const viewId = Number(view.id);
+            const removedRows = await tx.all(
+              `SELECT position FROM query_view_items
+                WHERE view_id = ? AND remote_id IN (${remotePlaceholders})
+                ORDER BY position`,
+              [viewId, ...remoteIds],
+            );
+            if (removedRows.length === 0) continue;
+            await tx.run(
+              `DELETE FROM query_view_items
+                WHERE view_id = ? AND remote_id IN (${remotePlaceholders})`,
+              [viewId, ...remoteIds],
+            );
+            await compactViewAfterDeletingPositions(
+              tx,
+              viewId,
+              removedRows.map((row) => Number(row.position)),
+              ts,
+            );
+          }
+        }
+
+        for (const folderId of addList) {
+          const delta = deltas.get(folderId);
+          const added = Number(delta?.addTotal ?? 0);
+          if (added <= 0) continue;
+          const viewRows = await tx.all(
+            `SELECT id FROM query_views
+              WHERE account_id = ? AND folder_id = ?
+                AND view_type = 'mailbox-window'`,
+            [accountId, folderId],
+          );
+          if (viewRows.length === 0) continue;
+          const viewIds = viewRows.map((r) => Number(r.id));
+          await tx.run(
+            `UPDATE query_views
+                SET stale = 1,
+                    total = COALESCE(total, 0) + ?,
+                    updated_at = ?
+              WHERE id IN (${placeholdersFor(viewIds)})`,
+            [added, ts, ...viewIds],
+          );
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(applied);
     },
 
     /**
@@ -1018,10 +1798,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const ts = now();
       await engine.transaction(async (tx) => {
         const row = await tx.get(
-          `SELECT remote_id FROM messages WHERE account_id = ? AND id = ?`,
+          `SELECT remote_id, is_seen FROM messages WHERE account_id = ? AND id = ?`,
           [accountId, msgId],
         );
         const remoteId = row?.remote_id ?? null;
+        const unreadDelta = Number(row?.is_seen ?? 1) === 0 ? 1 : 0;
+        const memberships = await tx.all(
+          `SELECT folder_id FROM folder_messages WHERE message_id = ?`,
+          [msgId],
+        );
         // The DELETE cascades via FK to folder_messages,
         // message_addresses, message_keywords, body_parts, body_values.
         await tx.run(
@@ -1029,6 +1814,23 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           [msgId, accountId],
         );
         if (!remoteId) return;
+
+        for (const membership of memberships) {
+          await tx.run(
+            `UPDATE folders
+                SET total_emails = CASE
+                      WHEN total_emails IS NULL THEN NULL
+                      ELSE MAX(0, total_emails - 1)
+                    END,
+                    unread_emails = CASE
+                      WHEN unread_emails IS NULL THEN NULL
+                      ELSE MAX(0, unread_emails - ?)
+                    END,
+                    updated_at = ?
+              WHERE account_id = ? AND id = ?`,
+            [unreadDelta, ts, accountId, Number(membership.folder_id)],
+          );
+        }
 
         const viewRows = await tx.all(
           `SELECT DISTINCT qv.id
@@ -1072,6 +1874,107 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       broadcaster.touch(TABLE_FAMILIES.FOLDERS);
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
       return { ok: true };
+    },
+
+    [DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]: async ({ accountId, messageIds = [] }) => {
+      const msgIds = numericUnique(messageIds);
+      if (msgIds.length === 0) return batchResult(0);
+      const ts = now();
+      let applied = 0;
+
+      await engine.transaction(async (tx) => {
+        const idPlaceholders = placeholdersFor(msgIds);
+        const messageRows = await tx.all(
+          `SELECT id, remote_id, is_seen
+             FROM messages
+            WHERE account_id = ? AND id IN (${idPlaceholders})`,
+          [accountId, ...msgIds],
+        );
+        if (messageRows.length === 0) return;
+        applied = messageRows.length;
+        const liveIds = messageRows.map((row) => Number(row.id));
+        const livePlaceholders = placeholdersFor(liveIds);
+        const messagesById = new Map<number, any>(messageRows.map((row) => [Number(row.id), row]));
+        const remoteIds = messageRows
+          .map((row) => row.remote_id)
+          .filter((remoteId) => typeof remoteId === 'string' && remoteId.length > 0);
+
+        const memberships = await tx.all(
+          `SELECT message_id, folder_id
+             FROM folder_messages
+            WHERE account_id = ? AND message_id IN (${livePlaceholders})`,
+          [accountId, ...liveIds],
+        );
+        const deltas = new Map();
+        for (const membership of memberships) {
+          const message = messagesById.get(Number(membership.message_id));
+          const unreadDelta = Number(message?.is_seen ?? 1) === 0 ? 1 : 0;
+          const folderId = Number(membership.folder_id);
+          const current = deltas.get(folderId) ?? { removeTotal: 0, removeUnread: 0 };
+          current.removeTotal += 1;
+          current.removeUnread += unreadDelta;
+          deltas.set(folderId, current);
+        }
+
+        await tx.run(
+          `DELETE FROM messages
+            WHERE account_id = ? AND id IN (${livePlaceholders})`,
+          [accountId, ...liveIds],
+        );
+
+        for (const [folderId, delta] of deltas) {
+          await tx.run(
+            `UPDATE folders
+                SET total_emails = CASE
+                      WHEN total_emails IS NULL THEN NULL
+                      ELSE MAX(0, total_emails - ?)
+                    END,
+                    unread_emails = CASE
+                      WHEN unread_emails IS NULL THEN NULL
+                      ELSE MAX(0, unread_emails - ?)
+                    END,
+                    updated_at = ?
+              WHERE account_id = ? AND id = ?`,
+            [delta.removeTotal, delta.removeUnread, ts, accountId, folderId],
+          );
+        }
+
+        if (remoteIds.length > 0) {
+          const remotePlaceholders = placeholdersFor(remoteIds);
+          const viewRows = await tx.all(
+            `SELECT DISTINCT qv.id
+               FROM query_views qv
+               JOIN query_view_items qi ON qi.view_id = qv.id
+              WHERE qv.account_id = ?
+                AND qi.remote_id IN (${remotePlaceholders})`,
+            [accountId, ...remoteIds],
+          );
+          for (const view of viewRows) {
+            const viewId = Number(view.id);
+            const removedRows = await tx.all(
+              `SELECT position FROM query_view_items
+                WHERE view_id = ? AND remote_id IN (${remotePlaceholders})
+                ORDER BY position`,
+              [viewId, ...remoteIds],
+            );
+            if (removedRows.length === 0) continue;
+            await tx.run(
+              `DELETE FROM query_view_items
+                WHERE view_id = ? AND remote_id IN (${remotePlaceholders})`,
+              [viewId, ...remoteIds],
+            );
+            await compactViewAfterDeletingPositions(
+              tx,
+              viewId,
+              removedRows.map((row) => Number(row.position)),
+              ts,
+            );
+          }
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return batchResult(applied);
     },
 
     [DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]: async ({ accountId, replacements }) => {
@@ -1363,6 +2266,58 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         // Swallow synchronous throws from the hook for the same reason.
       }
       return { id: result.lastInsertRowid };
+    },
+
+    [DB_RPC.PENDING_MUTATION_INSERT_MANY]: async ({ accountId, mutations = [] }) => {
+      const items = (Array.isArray(mutations) ? mutations : [])
+        .filter((item) => item?.mutationType && item?.requestJson);
+      if (items.length === 0) return { ids: [] };
+      const ts = now();
+      const ids = [];
+      await engine.transaction(async (tx) => {
+        for (const item of items) {
+          let targetMessageId = item.targetMessageId ?? null;
+          if (targetMessageId != null) {
+            const row = await tx.get(
+              'SELECT id FROM messages WHERE id = ? AND account_id = ?',
+              [targetMessageId, accountId],
+            );
+            if (!row) targetMessageId = null;
+          }
+          const result = await tx.run(
+            `INSERT INTO pending_mutations(
+                account_id, mutation_type, local_status, target_message_id,
+                request_json, optimistic_patch_json, server_response_json, error_json,
+                created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              accountId,
+              item.mutationType,
+              item.localStatus ?? 'pending',
+              targetMessageId,
+              item.requestJson,
+              item.optimisticPatchJson ?? null,
+              null,
+              null,
+              ts,
+              ts,
+            ],
+          );
+          ids.push(result.lastInsertRowid);
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      for (const mutationId of ids) {
+        try {
+          const maybePromise = onMutationInserted({ accountId, mutationId });
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            maybePromise.catch(() => {});
+          }
+        } catch {
+          // Same best-effort wakeup semantics as single insert.
+        }
+      }
+      return { ids };
     },
 
     [DB_RPC.PENDING_MUTATION_LIST_PENDING]: async ({ accountId, limit = 50 }) =>

@@ -516,6 +516,47 @@ describe('OutboxRunner runMutation', () => {
     expect(result).toEqual({ attempted: 0, succeeded: 1, failed: 0 });
     await runner.stop();
   });
+
+  it('does not hang if a concurrent auto-drain deletes the row before the awaiter is registered', async () => {
+    // Production inserts trigger the handlers hook, which notifies
+    // the runner before the store calls runMutation(id). Firefox can
+    // schedule that drain tightly enough that the row is deleted after
+    // runMutation's initial _loadRow() observes it but before
+    // runMutation registers its awaiter. Without the post-registration
+    // re-read, the awaiter was orphaned forever and the bulk progress
+    // overlay never disappeared even though the server-side move
+    // succeeded.
+    const localMsg = await seedMessage('e-race');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: { notifyDelayMs: 0 },
+    });
+    const mutationId = await insertSetKeywords({ targetMessageId: localMsg });
+    const originalLoadRow = runner._loadRow.bind(runner);
+    let loads = 0;
+    runner._loadRow = async (id) => {
+      const row = await originalLoadRow(id);
+      loads += 1;
+      if (loads === 1) {
+        await handlers[DB_RPC.QUERY]({
+          sql: 'DELETE FROM pending_mutations WHERE id = ?',
+          params: [id],
+        });
+      }
+      return row;
+    };
+
+    const result = await Promise.race([
+      runner.runMutation(mutationId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('runMutation hung')), 250)),
+    ]);
+
+    expect(result).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(await loadRow(mutationId)).toBeNull();
+    await runner.stop();
+  });
 });
 
 describe('OutboxRunner integration with the handlers hook', () => {
