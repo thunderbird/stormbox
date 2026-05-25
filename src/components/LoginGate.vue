@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-vue-next';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { AUTH_STATE } from '../constants/states.js';
-import ThunderbirdLogo from './ThunderbirdLogo.vue';
+import ThundermailLogo from './ThundermailLogo.vue';
 
 const authStore = useAuthStore();
 
@@ -48,7 +48,7 @@ function togglePassword() {
 <template>
   <div class="login-gate">
     <div class="login-card">
-      <ThunderbirdLogo :size="56" class="login-card__logo" />
+      <ThundermailLogo :size="56" class="login-card__logo" />
       <h1 class="login-card__title">Thundermail</h1>
       <p class="login-card__subtitle">Sign in with your Thunderbird account.</p>
 

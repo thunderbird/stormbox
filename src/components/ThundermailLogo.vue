@@ -10,13 +10,13 @@ defineProps({
     :width="size"
     :height="size"
     alt="Thundermail"
-    class="thunderbird-logo"
+    class="thundermail-logo"
     draggable="false"
   />
 </template>
 
 <style scoped>
-.thunderbird-logo {
+.thundermail-logo {
   display: block;
   object-fit: contain;
   user-select: none;

@@ -9,8 +9,8 @@ import {
 } from 'lucide-vue-next';
 
 import { useMailStore } from '../stores/mail-store.js';
-import { useListSelection } from '../composables/use-list-selection.js';
-import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
+import { useListSelection } from '../composables/useListSelection.js';
+import { useMessageDragDrop } from '../composables/useMessageDragDrop.js';
 import { SENDER_AVATAR_PROXY_URL } from '../defines.js';
 import { senderAvatarFor, shortFrom } from '../utils/sender-avatar.js';
 

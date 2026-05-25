@@ -13,7 +13,7 @@ import { initOidc, getOidc } from '../services/auth.js';
 import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL } from '../defines.js';
 import { AUTH_STATE } from '../constants/states';
 import type { AuthState } from '../constants/states';
-import { getRepositoryAsync } from '../composables/use-repository.js';
+import { getRepositoryAsync } from '../composables/useRepository.js';
 
 interface BasicAuth { kind: 'basic'; username: string; password: string }
 interface BearerAuth { kind: 'bearer'; token: string }

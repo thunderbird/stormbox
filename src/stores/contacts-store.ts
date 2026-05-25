@@ -12,7 +12,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/use-repository.js';
+import { getRepositoryAsync } from '../composables/useRepository.js';
 import { useAuthStore } from './auth-store';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import type { AddressbookRow, ContactListRow } from '../types';

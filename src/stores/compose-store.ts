@@ -8,7 +8,7 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/use-repository.js';
+import { getRepositoryAsync } from '../composables/useRepository.js';
 import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store.js';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';

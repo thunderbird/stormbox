@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 
 import { useMailStore } from '../stores/mail-store.js';
-import { useMessageDragDrop } from '../composables/use-message-drag-drop.js';
+import { useMessageDragDrop } from '../composables/useMessageDragDrop.js';
 import FolderNode from './FolderNode.vue';
 import {
   folderPresentation,

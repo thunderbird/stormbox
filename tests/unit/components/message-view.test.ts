@@ -35,7 +35,7 @@ import { useComposeStore } from '../../../src/stores/compose-store.js';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/use-repository.js';
+} from '../../../src/composables/useRepository.js';
 
 function makeRepo() {
   return {

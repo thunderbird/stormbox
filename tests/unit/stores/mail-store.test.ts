@@ -1,7 +1,7 @@
 /**
  * Unit tests for the mail-store. The store talks to a Repository via a
  * MessagePort in production; we inject a fake Repository through the
- * use-repository test seam so these tests run without a SharedWorker
+ * useRepository test seam so these tests run without a SharedWorker
  * or wa-sqlite engine.
  *
  * The fake repo is deliberately scripted (per-call responses) so each
@@ -23,7 +23,7 @@ import { useAuthStore } from '../../../src/stores/auth-store.js';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/use-repository.js';
+} from '../../../src/composables/useRepository.js';
 
 function makeFolder(id, overrides = {}) {
   return {

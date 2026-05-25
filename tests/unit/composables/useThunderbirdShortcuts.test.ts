@@ -12,13 +12,13 @@ vi.mock('../../../src/services/auth.js', () => ({
   getOidc: () => null,
 }));
 
-import { invokeThunderbirdShortcut, useThunderbirdShortcuts } from '../../../src/composables/use-thunderbird-shortcuts.js';
+import { invokeThunderbirdShortcut, useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts.js';
 import { useMailStore } from '../../../src/stores/mail-store.js';
 import { useComposeStore } from '../../../src/stores/compose-store.js';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/use-repository.js';
+} from '../../../src/composables/useRepository.js';
 
 function makeRepo() {
   return {

@@ -21,9 +21,9 @@
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/use-repository.js';
+import { getRepositoryAsync } from '../composables/useRepository.js';
 import { useAuthStore } from './auth-store';
-import { useBodyPrefetch } from '../composables/use-body-prefetch.js';
+import { useBodyPrefetch } from '../composables/useBodyPrefetch.js';
 import { TABLE_FAMILIES } from '../db/protocol.js';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { ChevronDown, Moon, Plus, Sun, X } from 'lucide-vue-next';
 
-import { useThunderbirdShortcuts } from './composables/use-thunderbird-shortcuts.js';
+import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts.js';
 import { APPOINTMENT_URL, SEND_URL } from './defines.js';
 
 import { useAuthStore } from './stores/auth-store.js';
@@ -22,7 +22,7 @@ import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
 import StoreErrorToast from './components/StoreErrorToast.vue';
 import BulkOperationOverlay from './components/BulkOperationOverlay.vue';
-import ThunderbirdLogo from './components/ThunderbirdLogo.vue';
+import ThundermailLogo from './components/ThundermailLogo.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 
 const authStore = useAuthStore();
@@ -418,7 +418,7 @@ function clamp(value: number, min: number, max: number) {
     <div class="quick-filter">
       <details ref="appMenuEl" class="app-menu">
         <summary class="app-menu__button" aria-label="Open Thundermail menu">
-          <ThunderbirdLogo :size="26" class="app-menu__logo" aria-hidden="true" />
+          <ThundermailLogo :size="26" class="app-menu__logo" aria-hidden="true" />
           <span>Thundermail</span>
           <ChevronDown class="app-menu__chevron" :size="14" :stroke-width="2" aria-hidden="true" />
         </summary>

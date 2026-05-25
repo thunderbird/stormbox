@@ -15,7 +15,7 @@ import {
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useComposeStore } from '../stores/compose-store.js';
-import { invokeThunderbirdShortcut } from '../composables/use-thunderbird-shortcuts.js';
+import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts.js';
 import {
   ALLOWED_URI_REGEXP,
   IFRAME_SANDBOX,

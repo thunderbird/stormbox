@@ -35,7 +35,7 @@ import { useAuthStore } from '../../../src/stores/auth-store.js';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/use-repository.js';
+} from '../../../src/composables/useRepository.js';
 
 if (typeof globalThis.BroadcastChannel === 'undefined') {
   globalThis.BroadcastChannel = NodeBroadcastChannel;

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { useBodyPrefetch } from '../../../src/composables/use-body-prefetch.js';
+import { useBodyPrefetch } from '../../../src/composables/useBodyPrefetch.js';
 
 function makeRepo() {
   return {

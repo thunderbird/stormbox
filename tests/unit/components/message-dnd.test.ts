@@ -34,7 +34,7 @@ import { useMailStore } from '../../../src/stores/mail-store.js';
 import {
   MESSAGE_DRAG_MIME,
   useMessageDragDrop,
-} from '../../../src/composables/use-message-drag-drop.js';
+} from '../../../src/composables/useMessageDragDrop.js';
 
 function makeFolder(id, overrides = {}) {
   return {
