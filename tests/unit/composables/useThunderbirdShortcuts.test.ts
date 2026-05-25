@@ -54,12 +54,16 @@ function makeRow(id: number, overrides: Record<string, unknown> = {}) {
   };
 }
 
-function mountHarness() {
+function mountHarness(options: { focusQuickFilter?: () => void } = {}) {
   const space = ref('mail');
   const enabled = ref(true);
   const Harness = defineComponent({
     setup() {
-      useThunderbirdShortcuts({ space, enabled });
+      useThunderbirdShortcuts({
+        space,
+        enabled,
+        focusQuickFilter: options.focusQuickFilter,
+      });
       return () => null;
     },
   });
@@ -130,6 +134,39 @@ describe('useThunderbirdShortcuts', () => {
 
     expect(mailStore.selectedIds.size).toBe(3);
     expect([...mailStore.selectedIds].sort()).toEqual([1, 2, 4]);
+  });
+
+  it('Ctrl+K invokes the Quick Filter focus callback', () => {
+    const focusQuickFilter = vi.fn();
+    mountHarness({ focusQuickFilter });
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'k',
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    });
+    document.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(focusQuickFilter).toHaveBeenCalledOnce();
+  });
+
+  it('Ctrl+K still works from editable targets', () => {
+    const focusQuickFilter = vi.fn();
+    mountHarness({ focusQuickFilter });
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'k',
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    }));
+    input.remove();
+
+    expect(focusQuickFilter).toHaveBeenCalledOnce();
   });
 
   it('F and B move the viewed message', () => {

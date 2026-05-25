@@ -116,6 +116,28 @@ describe('App mail layout', () => {
     expect(mailStore.selectedMessageId).toBeNull();
   });
 
+  it('focuses and selects the quick filter with Ctrl+K', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('.quick-filter__input').setValue('alice');
+    const input = wrapper.get('.quick-filter__input').element as HTMLInputElement;
+    const focusSpy = vi.spyOn(input, 'focus');
+    const selectSpy = vi.spyOn(input, 'select');
+    input.blur();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'k',
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    }));
+    await nextTick();
+
+    expect(focusSpy).toHaveBeenCalledOnce();
+    expect(selectSpy).toHaveBeenCalledOnce();
+  });
+
   it('renders a Thundermail menu linking to Thunderbird Appointment and Send', async () => {
     const wrapper = mountApp();
     await nextTick();

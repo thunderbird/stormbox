@@ -75,6 +75,7 @@ const MAX_COLUMN_WIDTHS = {
 };
 
 const shellEl = ref<HTMLElement | null>(null);
+const quickFilterInputEl = ref<HTMLInputElement | null>(null);
 const appMenuEl = ref<HTMLDetailsElement | null>(null);
 const theme = ref<Theme>(getInitialTheme());
 applyTheme(theme.value);
@@ -108,7 +109,11 @@ const shellStyle = computed(() => ({
   '--folder-list-transition-ms': `${FOLDER_LIST_TRANSITION_MS}ms`,
 }));
 
-useThunderbirdShortcuts({ space, enabled: shortcutsEnabled });
+useThunderbirdShortcuts({
+  space,
+  enabled: shortcutsEnabled,
+  focusQuickFilter: focusQuickFilterInput,
+});
 
 onClickOutside(appMenuEl, () => {
   if (appMenuEl.value?.open) appMenuEl.value.open = false;
@@ -158,6 +163,11 @@ function setQuickFilterQuery(event: Event) {
 
 function clearQuickFilterQuery() {
   updateQuickFilterQuery('');
+}
+
+function focusQuickFilterInput() {
+  quickFilterInputEl.value?.focus();
+  quickFilterInputEl.value?.select();
 }
 
 function updateQuickFilterQuery(next: string) {
@@ -436,6 +446,7 @@ function clamp(value: number, min: number, max: number) {
 
       <div class="quick-filter__search" role="search">
         <input
+          ref="quickFilterInputEl"
           class="quick-filter__input"
           type="search"
           :value="quickFilterQuery"

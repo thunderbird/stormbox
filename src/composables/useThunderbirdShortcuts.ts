@@ -27,6 +27,8 @@ export interface UseThunderbirdShortcutsOptions {
   space: Ref<string>;
   /** When false, no shortcuts are handled (e.g. login gate). */
   enabled: Ref<boolean>;
+  /** Focuses the app-level Quick Filter field. */
+  focusQuickFilter?: () => void;
 }
 
 function getTargetIds(mailStore: ReturnType<typeof useMailStore>): number[] {
@@ -108,13 +110,24 @@ export function invokeThunderbirdShortcut(event: KeyboardEvent) {
   void activeShortcutHandler?.(event);
 }
 
-export function useThunderbirdShortcuts({ space, enabled }: UseThunderbirdShortcutsOptions) {
+export function useThunderbirdShortcuts({
+  space,
+  enabled,
+  focusQuickFilter,
+}: UseThunderbirdShortcutsOptions) {
   const mailStore = useMailStore();
   const composeStore = useComposeStore();
 
   async function onKeyDown(event: KeyboardEvent) {
     if (!enabled.value || space.value !== 'mail') return;
     if (composeStore.isOpen) return;
+
+    if (matchesShortcut(event, { key: 'k', mod: true })) {
+      event.preventDefault();
+      focusQuickFilter?.();
+      return;
+    }
+
     if (isEditableTarget(event.target)) return;
 
     const mod = isModKey(event);
