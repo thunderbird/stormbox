@@ -160,4 +160,71 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterReopen.focusedIndexes).toEqual([0]);
     expect(afterReopen.shellMessageViewHidden).toBe(false);
   });
+
+  test('modifier row clicks multi-select and plain row clicks clear multi-select for viewing', async ({ sharedPage: page }) => {
+    await expect.poll(
+      async () => page.evaluate(() => Array.from(
+        document.querySelectorAll('.msg-list__items > li'),
+      ).filter((li) => li.dataset.placeholder !== 'true').length),
+      { timeout: 30_000, message: 'inbox messages never rendered' },
+    ).toBeGreaterThan(5);
+
+    const realRows = page.locator('.msg-list__items > li:not([data-placeholder="true"])');
+
+    await realRows.nth(1).locator('.msg-list__check input').click();
+    await realRows.nth(4).locator('.msg-list__content').click({ modifiers: ['Shift'] });
+    const afterShiftBodyClick = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'bulk-summary' && /\b4 selected\b/.test(d.headerCount),
+      { message: 'shift-clicking a row body should extend selection from the anchor' },
+    );
+    expect(afterShiftBodyClick.selectedIndexes).toEqual([1, 2, 3, 4]);
+    expect(afterShiftBodyClick.focusedIndexes).toEqual([]);
+
+    await realRows.nth(2).locator('.msg-list__content').click({ modifiers: ['Control'] });
+    const afterControlBodyClick = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'bulk-summary' && /\b3 selected\b/.test(d.headerCount),
+      { message: 'control-clicking a row body should toggle that row in selection' },
+    );
+    expect(afterControlBodyClick.selectedIndexes).toEqual([1, 3, 4]);
+    expect(afterControlBodyClick.focusedIndexes).toEqual([]);
+
+    await realRows.nth(5).locator('.msg-list__content').click();
+    const afterPlainBodyClick = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'article' && d.focusedIndexes[0] === 5,
+      { message: 'plain row body click should clear multi-select and open the clicked message' },
+    );
+    expect(afterPlainBodyClick.selectedIndexes).toEqual([]);
+    expect(afterPlainBodyClick.checkboxesChecked).toBe(0);
+  });
+
+  test('unanchored shift-select starts at the visible top and indeterminate select-all clears', async ({ sharedPage: page }) => {
+    await expect.poll(
+      async () => page.evaluate(() => Array.from(
+        document.querySelectorAll('.msg-list__items > li'),
+      ).filter((li) => li.dataset.placeholder !== 'true').length),
+      { timeout: 30_000, message: 'inbox messages never rendered' },
+    ).toBeGreaterThan(4);
+
+    const realRows = page.locator('.msg-list__items > li:not([data-placeholder="true"])');
+
+    await realRows.nth(3).locator('.msg-list__check input').click({ modifiers: ['Shift'] });
+    const afterUnanchoredShift = await pollDiagnostics(
+      page,
+      (d) => d.rightPaneMode === 'bulk-summary' && /\b4 selected\b/.test(d.headerCount),
+      { message: 'unanchored shift-click should select from the visible top row' },
+    );
+    expect(afterUnanchoredShift.selectedIndexes).toEqual([0, 1, 2, 3]);
+
+    await page.locator('.msg-list__select-all input').click();
+    const afterIndeterminateSelectAll = await pollDiagnostics(
+      page,
+      (d) => !/\bselected\b/.test(d.headerCount),
+      { message: 'indeterminate select-all should clear the active selection' },
+    );
+    expect(afterIndeterminateSelectAll.selectedIndexes).toEqual([]);
+    expect(afterIndeterminateSelectAll.checkboxesChecked).toBe(0);
+  });
 });

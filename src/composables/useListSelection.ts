@@ -12,6 +12,8 @@
  *   - Plain click on a row body  -> view (caller decides)
  *   - Plain click on a checkbox  -> toggle that row's membership
  *   - Shift+click on a checkbox  -> replace range from anchor to row
+ *                                    (or from the visible top row if
+ *                                    there is no anchor yet)
  *   - Cmd/Ctrl+A on the list     -> select all loaded rows
  *   - Esc                        -> clear selection
  *   - Space on focused row       -> toggle that row
@@ -113,10 +115,11 @@ export function useListSelection({
    * Mail/Fastmail and lets a shrinking shift-click correctly drop the
    * tail of the prior range.
    */
-  function extendRange(index) {
+  function extendRange(index, fallbackAnchorIndex = index) {
     if (index < 0 || index >= rows.value.length) return;
     const hadAnchor = anchorIndex.value >= 0;
-    const anchor = hadAnchor ? anchorIndex.value : index;
+    const fallback = Number.isFinite(fallbackAnchorIndex) ? fallbackAnchorIndex : index;
+    const anchor = hadAnchor ? anchorIndex.value : Math.max(0, Math.min(rows.value.length - 1, fallback));
     const lo = Math.min(index, anchor);
     const hi = Math.max(index, anchor) + 1;
     const next = new Set();
@@ -126,16 +129,16 @@ export function useListSelection({
       if (id != null) next.add(id);
     }
     selectedIds.value = next;
-    if (!hadAnchor) anchorIndex.value = index;
+    if (!hadAnchor) anchorIndex.value = anchor;
   }
 
   /**
    * Click handler for a checkbox. Shift-click extends the range from
    * the anchor; everything else just toggles.
    */
-  function handleCheckboxClick(index, event) {
+  function handleCheckboxClick(index, event, fallbackAnchorIndex = index) {
     if (event && event.shiftKey) {
-      extendRange(index);
+      extendRange(index, fallbackAnchorIndex);
     } else {
       toggleAt(index);
     }

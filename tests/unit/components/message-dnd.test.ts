@@ -7,6 +7,11 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { computed, nextTick } from 'vue';
 
+const virtualizerWindow = vi.hoisted(() => ({
+  start: 0,
+  count: null as number | null,
+}));
+
 vi.mock('../../../src/services/auth.js', () => ({
   initOidc: async () => null,
   getOidc: () => null,
@@ -15,15 +20,23 @@ vi.mock('../../../src/services/auth.js', () => ({
 vi.mock('@tanstack/vue-virtual', () => ({
   useVirtualizer: (optionsRef) => computed(() => ({
     getTotalSize: () => Number(optionsRef.value.count ?? 0) * 88,
-    getVirtualItems: () => Array.from(
-      { length: Number(optionsRef.value.count ?? 0) },
-      (_, index) => ({
-        index,
-        key: optionsRef.value.getItemKey?.(index) ?? index,
-        start: index * 88,
-        size: 88,
-      }),
-    ),
+    getVirtualItems: () => {
+      const total = Number(optionsRef.value.count ?? 0);
+      const start = Math.max(0, Math.min(virtualizerWindow.start, total));
+      const length = virtualizerWindow.count ?? (total - start);
+      return Array.from(
+        { length: Math.max(0, Math.min(length, total - start)) },
+        (_, offset) => {
+          const index = start + offset;
+          return {
+            index,
+            key: optionsRef.value.getItemKey?.(index) ?? index,
+            start: index * 88,
+            size: 88,
+          };
+        },
+      );
+    },
     measure: () => {},
   })),
 }));
@@ -89,6 +102,8 @@ function makeDataTransfer() {
 }
 
 beforeEach(() => {
+  virtualizerWindow.start = 0;
+  virtualizerWindow.count = null;
   setActivePinia(createPinia());
 });
 
@@ -130,6 +145,97 @@ describe('MessageList row click viewing', () => {
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBe(2);
+  });
+
+  it('plain row clicks clear active multi-selection and open the clicked message', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
+    mailStore.totalForFolder = 3;
+    mailStore.selectedMessageId = 1;
+    mailStore.selectedIds = new Set([1, 2]);
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.findAll('.msg-list__content')[2].trigger('click');
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([]);
+    expect(mailStore.selectedMessageId).toBe(3);
+  });
+
+  it('shift-click on a row body extends multi-selection without opening the message', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3), makeRow(4), makeRow(5)];
+    mailStore.totalForFolder = 5;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.findAll('.msg-list__check input')[1].trigger('click');
+    await wrapper.findAll('.msg-list__content')[3].trigger('click', { shiftKey: true });
+    await nextTick();
+
+    expect([...mailStore.selectedIds].sort()).toEqual([2, 3, 4]);
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
+  it('shift-click without an existing anchor selects from the top visible row', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = Array.from({ length: 40 }, (_, index) => makeRow(index + 1));
+    mailStore.totalForFolder = 40;
+    virtualizerWindow.start = 19;
+    virtualizerWindow.count = 15;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.findAll('.msg-list__check input')[10].trigger('click', { shiftKey: true });
+    await nextTick();
+
+    expect([...mailStore.selectedIds].sort((a, b) => a - b))
+      .toEqual([20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
+  it('control-click on a row body toggles multi-selection without opening the message', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
+    mailStore.totalForFolder = 3;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.findAll('.msg-list__content')[2].trigger('click', { ctrlKey: true });
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([3]);
+    expect(mailStore.selectedMessageId).toBeNull();
+  });
+
+  it('select-all clears a partial selection instead of selecting every row', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
+    mailStore.totalForFolder = 3;
+    mailStore.selectedIds = new Set([2]);
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.find('.msg-list__select-all input').trigger('change');
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([]);
   });
 
   it('uses Unread as a lone text toggle and selects only visible unread rows', async () => {
@@ -293,7 +399,7 @@ describe('MessageList row click viewing', () => {
     expect(expand).toHaveBeenCalledTimes(1);
   });
 
-  it('selects only unread targets when selected read rows are sticky in the filter', async () => {
+  it('clears sticky selected rows when select-all is indeterminate in a filter', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
     mailStore.currentFolderId = 1;
@@ -317,7 +423,7 @@ describe('MessageList row click viewing', () => {
     await wrapper.find('.msg-list__select-all input').trigger('change');
     await nextTick();
 
-    expect([...mailStore.selectedIds]).toEqual([2]);
+    expect([...mailStore.selectedIds]).toEqual([]);
     expect(wrapper.text()).not.toContain('Selected read message');
   });
 

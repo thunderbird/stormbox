@@ -267,16 +267,24 @@ watch(cardLayout, async () => {
 });
 
 /**
- * Fastmail interaction model: a click anywhere on the row body just
- * opens the message. Selection lives entirely on the checkbox column
- * — never on the row body. The right pane decides on its own whether
- * to render the message body or the "N selected" summary based on
- * `selectedIds.size`.
+ * Fastmail interaction model: a plain row-body click opens the
+ * message, while modifier row-body clicks participate in the same
+ * anchored multi-select model as checkbox clicks.
  */
-function onRowClick(index) {
+function onRowClick(index, event) {
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    handleCheckboxClick(index, event, firstVisibleIndex());
+    return;
+  }
+
+  const hadSelection = hasSelection.value;
   const id = setFocused(index);
   if (id == null) return;
-  if (id === mailStore.selectedMessageId) {
+  if (hadSelection) {
+    selectNone();
+  }
+  if (!hadSelection && id === mailStore.selectedMessageId) {
     mailStore.selectMessage(null);
     return;
   }
@@ -285,7 +293,11 @@ function onRowClick(index) {
 
 function onCheckboxClick(index, event) {
   event.stopPropagation();
-  handleCheckboxClick(index, event);
+  handleCheckboxClick(index, event, firstVisibleIndex());
+}
+
+function firstVisibleIndex() {
+  return virtualItems.value[0]?.index ?? 0;
 }
 
 function onRowDragStart(message, event) {
@@ -341,7 +353,7 @@ function selectAllForCurrentFilter() {
 }
 
 function toggleSelectAll() {
-  if (allLoadedSelected.value) {
+  if (hasSelection.value) {
     selectNone();
   } else {
     selectAllForCurrentFilter();
@@ -489,7 +501,7 @@ function normalizeFilterText(value) {
               role="button"
               tabindex="-1"
               draggable="true"
-              @click="onRowClick(v.index)"
+              @click="onRowClick(v.index, $event)"
               @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
               @dragend="endMessageDrag"
             >

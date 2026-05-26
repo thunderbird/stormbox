@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
 
 import {
   STACK_STALWART_API_AUTH,
@@ -15,6 +14,21 @@ import {
 // — push-delivery.spec.js authenticates with the matching
 // `TEST_SMTP_PASSWORD = "admin"`).
 const SMTP_E2E_SECRET = '$app$e2e$$argon2id$v=19$m=102400,t=2,p=8$YVB5aXpQS285N3dFQnQ5eHI0dklMWQ$5AyShFD8q3xhw8U84OYJiZ1wFCZtmMXjUAwdLxSEve0';
+const DEV_STALWART_PRINCIPAL = process.env.DEV_STALWART_PRINCIPAL ?? 'admin@example.org';
+const LOCAL_ACCOUNT_QUOTA_BYTES = 10 * 1024 ** 3;
+
+const LOCAL_ACCOUNTS = [
+  {
+    id: STACK_STALWART_PRINCIPAL,
+    description: 'Stormbox e2e (do not use for dev)',
+    permissions: ['unlimited-requests'],
+    secrets: [SMTP_E2E_SECRET],
+  },
+  {
+    id: DEV_STALWART_PRINCIPAL,
+    description: 'Stormbox developer account',
+  },
+];
 
 async function fetchPrincipalById(id) {
   const res = await fetch(
@@ -31,10 +45,6 @@ async function fetchPrincipalById(id) {
   // real 404 in some configurations; treat both consistently.
   if (body?.error === 'notFound') return null;
   return body.data;
-}
-
-async function fetchPrincipal() {
-  return fetchPrincipalById(STACK_STALWART_PRINCIPAL);
 }
 
 // Idempotent. Mirrors the `_stalwart_check_or_create_domain_entry`
@@ -71,9 +81,9 @@ async function ensureDomainPrincipal(domain) {
   console.log(`[configure-stalwart] created domain ${domain}`);
 }
 
-async function patchPrincipal(actions) {
+async function patchPrincipal(id, actions) {
   const res = await fetch(
-    `${STACK_STALWART_API_URL}/api/principal/${encodeURIComponent(STACK_STALWART_PRINCIPAL)}`,
+    `${STACK_STALWART_API_URL}/api/principal/${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
       headers: {
@@ -86,37 +96,32 @@ async function patchPrincipal(actions) {
   );
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Patch principal failed: ${res.status} ${text}`);
+    throw new Error(`Patch principal ${id} failed: ${res.status} ${text}`);
   }
   const body = await res.json();
   if (body?.error) {
-    throw new Error(`Patch principal Stalwart error: ${JSON.stringify(body)}`);
+    throw new Error(`Patch principal ${id} Stalwart error: ${JSON.stringify(body)}`);
   }
 }
 
 // Idempotent. Mirrors what `MailClient.create_account` in the
 // accounts repo does (POST /api/principal/deploy with type
-// individual + emails + roles=user) so the e2e principal looks
+// individual + emails + roles=user) so local principals look
 // the same as one provisioned through the accounts UI. We only
 // run this if the principal isn't already there, e.g. on a fresh
 // stack or after a tmpfs wipe.
 //
-// Also grants `unlimited-requests`. The default Stalwart
+// The e2e account also gets `unlimited-requests`. The default Stalwart
 // JMAP rate limit (~1000 req/min per account) trips during
 // zz-large-bulk-move's 1000+-message create+destroy phase
 // combined with the cumulative request volume of the rest of
 // the suite. The Stalwart maintainer's documented escape hatch
 // for rate-limited test accounts is the `unlimited-requests`
 // permission (see stalwart#2922). Local dev only.
-async function ensureE2eIndividualPrincipal() {
-  const existing = await fetchPrincipal();
+async function ensureIndividualPrincipal(account) {
+  const existing = await fetchPrincipalById(account.id);
   if (existing) {
-    if (!(existing.enabledPermissions ?? []).includes('unlimited-requests')) {
-      await patchPrincipal([
-        { action: 'addItem', field: 'enabledPermissions', value: 'unlimited-requests' },
-      ]);
-      console.log(`[configure-stalwart] granted unlimited-requests on ${STACK_STALWART_PRINCIPAL}`);
-    }
+    await patchExistingIndividualPrincipal(account, existing);
     return;
   }
   const res = await fetch(`${STACK_STALWART_API_URL}/api/principal/deploy`, {
@@ -128,41 +133,66 @@ async function ensureE2eIndividualPrincipal() {
     },
     body: JSON.stringify({
       type: 'individual',
-      name: STACK_STALWART_PRINCIPAL,
-      description: 'Stormbox e2e (do not use for dev)',
-      emails: [STACK_STALWART_PRINCIPAL],
+      name: account.id,
+      description: account.description,
+      emails: [account.id],
       roles: ['user'],
-      enabledPermissions: ['unlimited-requests'],
-      quota: 0,
-      secrets: [],
+      quota: LOCAL_ACCOUNT_QUOTA_BYTES,
+      ...(account.permissions?.length ? { enabledPermissions: account.permissions } : {}),
+      ...(account.secrets?.length ? { secrets: account.secrets } : {}),
     }),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Create principal failed: ${res.status} ${text}`);
+    throw new Error(`Create principal ${account.id} failed: ${res.status} ${text}`);
   }
   const body = await res.json();
   if (body?.error) {
-    throw new Error(`Create principal Stalwart error: ${JSON.stringify(body)}`);
+    throw new Error(`Create principal ${account.id} Stalwart error: ${JSON.stringify(body)}`);
   }
-  console.log(`[configure-stalwart] created principal ${STACK_STALWART_PRINCIPAL}`);
+  console.log(`[configure-stalwart] created principal ${account.id}`);
 }
 
-async function ensureSmtpAppPassword() {
-  await patchPrincipal([
-    { action: 'addItem', field: 'secrets', value: SMTP_E2E_SECRET },
-  ]);
-  console.log(`[configure-stalwart] SMTP e2e app password ready on ${STACK_STALWART_PRINCIPAL}`);
+async function patchExistingIndividualPrincipal(account, existing) {
+  const actions = [];
+  const permissions = existing.enabledPermissions ?? [];
+  for (const permission of account.permissions ?? []) {
+    if (!permissions.includes(permission)) {
+      actions.push({ action: 'addItem', field: 'enabledPermissions', value: permission });
+    }
+  }
+
+  const secrets = existing.secrets ?? [];
+  for (const secret of account.secrets ?? []) {
+    if (!secrets.includes(secret)) {
+      actions.push({ action: 'addItem', field: 'secrets', value: secret });
+    }
+  }
+
+  if (Number(existing.quota) !== LOCAL_ACCOUNT_QUOTA_BYTES) {
+    actions.push({ action: 'set', field: 'quota', value: LOCAL_ACCOUNT_QUOTA_BYTES });
+  }
+
+  if (!actions.length) return;
+  await patchPrincipal(account.id, actions);
+  console.log(`[configure-stalwart] updated principal ${account.id}`);
+}
+
+function domainForPrincipal(id) {
+  const domain = id.split('@')[1];
+  if (!domain) {
+    throw new Error(`Stalwart principal ${id} has no domain part`);
+  }
+  return domain;
 }
 
 export async function configureStalwart() {
-  const domain = STACK_STALWART_PRINCIPAL.split('@')[1];
-  if (!domain) {
-    throw new Error(`STACK_STALWART_PRINCIPAL ${STACK_STALWART_PRINCIPAL} has no domain part`);
+  for (const domain of new Set(LOCAL_ACCOUNTS.map((account) => domainForPrincipal(account.id)))) {
+    await ensureDomainPrincipal(domain);
   }
-  await ensureDomainPrincipal(domain);
-  await ensureE2eIndividualPrincipal();
-  await ensureSmtpAppPassword();
+  for (const account of LOCAL_ACCOUNTS) {
+    await ensureIndividualPrincipal(account);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
