@@ -19,6 +19,8 @@ const REALM = process.env.KEYCLOAK_REALM ?? 'tbpro';
 const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? 'https://localhost:3000';
 const ADMIN_USER = process.env.KEYCLOAK_ADMIN_USER ?? 'admin';
 const ADMIN_PASSWORD = process.env.KEYCLOAK_ADMIN_PASSWORD ?? 'admin';
+const DEV_OIDC_USERNAME = process.env.DEV_OIDC_USERNAME ?? 'admin@example.org';
+const DEV_OIDC_PASSWORD = process.env.DEV_OIDC_PASSWORD ?? 'admin';
 
 async function request(url, options = {}) {
   const res = await fetch(url, {
@@ -187,10 +189,9 @@ export async function configureKeycloak() {
   const token = await adminToken();
   await configureRealm(token);
   await configureClient(token);
-  // Ensure the dedicated e2e account exists. We do NOT touch the
-  // realm-imported admin@example.org developer account here so a
-  // human can still sign into the accounts UI / Stormbox dev
-  // session without colliding with Playwright runs.
+  // Ensure the dedicated e2e account exists. It stays separate from
+  // the developer account so Playwright sweeps and fixtures never
+  // mutate a human's local mailbox.
   await ensureUser(token, {
     username: TEST_OIDC_EMAIL,
     email: TEST_OIDC_EMAIL,
@@ -198,7 +199,20 @@ export async function configureKeycloak() {
     lastName: 'E2E',
     password: TEST_OIDC_PASSWORD,
   });
-  console.log(`[configure-keycloak] ${REALM} ready for ${PUBLIC_ORIGIN}; e2e user: ${TEST_OIDC_EMAIL}`);
+  // Keep the local developer login deterministic too. Existing
+  // Keycloak volumes can otherwise preserve an unknown imported
+  // password, which breaks seed-dev-mail's direct-grant auth.
+  await ensureUser(token, {
+    username: DEV_OIDC_USERNAME,
+    email: DEV_OIDC_USERNAME,
+    firstName: 'Stormbox',
+    lastName: 'Dev',
+    password: DEV_OIDC_PASSWORD,
+  });
+  console.log(
+    `[configure-keycloak] ${REALM} ready for ${PUBLIC_ORIGIN}; `
+    + `e2e user: ${TEST_OIDC_EMAIL}; dev user: ${DEV_OIDC_USERNAME}`,
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

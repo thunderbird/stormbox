@@ -111,13 +111,8 @@ async function patchPrincipal(id, actions) {
 // run this if the principal isn't already there, e.g. on a fresh
 // stack or after a tmpfs wipe.
 //
-// The e2e account also gets `unlimited-requests`. The default Stalwart
-// JMAP rate limit (~1000 req/min per account) trips during
-// zz-large-bulk-move's 1000+-message create+destroy phase
-// combined with the cumulative request volume of the rest of
-// the suite. The Stalwart maintainer's documented escape hatch
-// for rate-limited test accounts is the `unlimited-requests`
-// permission (see stalwart#2922). Local dev only.
+// The e2e account gets `unlimited-requests` for bulk-move's JMAP churn.
+// This only works post-0.16; local dev only.
 async function ensureIndividualPrincipal(account) {
   const existing = await fetchPrincipalById(account.id);
   if (existing) {

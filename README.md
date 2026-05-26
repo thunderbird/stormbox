@@ -1,6 +1,6 @@
 # Stormbox Webmail
 
-Stormbox is a Vue 3 + Pinia webmail client backed by browser-local SQLite in a
+Stormbox is a prototype Vue 3 + Pinia webmail client backed by browser-local SQLite in a
 `SharedWorker`. JMAP is the mail source of truth; the UI reads through the local
 repository/cache layer and the sync backend keeps that cache current.
 
@@ -23,65 +23,79 @@ APIs, are available.
 ## Local Mail Stack
 
 Live development and full E2E tests use the `thunderbird-accounts/` submodule
-for Keycloak, Stalwart, and Accounts services.
+for Keycloak and Stalwart.
 
 ```bash
-git submodule update --init
-
-cd thunderbird-accounts
-docker compose up --build -d
-cd ..
-
-docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
-  'cd /workspace && npm run stack:seed'
-
-docker compose -f .devcontainer/docker-compose.yml exec -d app bash -c \
-  'cd /workspace && npm run stack:ws-proxy >/tmp/ws-proxy.log 2>&1'
+./scripts/local-stack-up.sh
 ```
 
-On a fresh stack, first open **http://localhost:8087**, sign in as
-`admin@example.org` / `admin`, and provision a Thundermail address. Optional
-test account overrides live in `tests/e2e/.env.local.example`.
+The helper initializes the submodule, starts the minimal local auth/mail stack
+(Keycloak, Keycloak's Postgres, and Stalwart), starts the Stormbox dev
+container, runs `stack:configure`, and starts the local JMAP WebSocket auth
+proxy inside the dev container. Stalwart stores local mail in its own RocksDB
+data directory; the Postgres service here is only Keycloak's database. To also
+start the Thunderbird Accounts UI and its Django Postgres/Redis services, run
+`WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`.
+
+`stack:configure` is idempotent: it updates Keycloak for the HTTPS Vite origin,
+provisions the dedicated Playwright account (`e2e@example.org`) directly in
+Keycloak and Stalwart, and ensures the default developer Stalwart principal
+(`admin@example.org`) exists without touching the Keycloak user imported by the
+submodule. Local-stack E2E tests run the same configure step from Playwright
+global setup, so a fresh test stack does not need a manual `stack:seed` step.
+
+The developer account is kept separate from the Playwright account. Sign into
+Stormbox manually as `admin@example.org` / `admin`. Optional test account
+overrides live in `tests/e2e/.env.local.example`.
 
 To populate that developer account with realistic-looking fake mail
-(Netflix / Amazon / LinkedIn / GitHub / Spotify / Substack / UPS, plus
-a couple of archived items) and ensure the account has an `Archive`
-role folder, run:
+(30 inbox messages plus 1500 archive messages by default) and ensure the account
+has an `Archive` role folder, run:
 
 ```bash
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run stack:seed-dev'
 ```
 
-The script is idempotent (re-running sweeps its own previously-seeded
-messages by subject prefix and re-creates them) and only touches the
-developer account; `npm run stack:seed` continues to handle the
-separate e2e Playwright account.
+The script is idempotent: re-running sweeps messages with its own `[dev seed]`
+subject prefix and recreates them. It only touches the developer account; E2E
+specs seed their own baseline inbox/archive data as needed.
 
 ## Configuration
 
 The app defaults to the local stack during development through
-`.env.development`. Hosted stage/prod builds use the Cloudflare edge bridge
-at `infra/jmap-bridge/` by default. The bridge fronts the WebSocket auth
-contract on `wsmail.*.thundermail.com` and the HTTP JMAP surface on
+`.env.development`: Vite keeps Stormbox on self-signed HTTPS and reverse-proxies
+Keycloak, Stalwart JMAP HTTP, the local JMAP WebSocket auth bridge, and sender
+avatar lookups through `https://localhost:3000`.
+
+Hosted stage/prod builds use the Cloudflare edge bridge at `infra/jmap-bridge/`
+by default. The bridge fronts the WebSocket auth contract on
+`wsmail.*.thundermail.com` and the HTTP JMAP surface on
 `jmap.*.thundermail.com` (with first-party CORS so the SPA at
-`webmail.*.thundermail.com` can call it cross-origin). The app menu
-points at the matching Thunderbird Accounts environment:
+`webmail.*.thundermail.com` can call it cross-origin). The app links and
+transport defaults follow the current hostname:
 
 - `webmail.stage-thundermail.com` JMAP HTTP -> `https://jmap.stage-thundermail.com`
-- `webmail.stage-thundermail.com` JMAP WS  -> `https://wsmail.stage-thundermail.com`
+- `webmail.stage-thundermail.com` JMAP WS -> `https://wsmail.stage-thundermail.com`
 - `webmail.thundermail.com` JMAP HTTP -> `https://jmap.thundermail.com`
-- `webmail.thundermail.com` JMAP WS  -> `https://wsmail.thundermail.com`
-- dev/local -> `https://accounts-stage.tb.pro`
-- hosted stage -> `https://accounts-stage.tb.pro`
-- hosted prod -> `https://accounts.tb.pro`
+- `webmail.thundermail.com` JMAP WS -> `https://wsmail.thundermail.com`
+- hosted sender avatars -> [`https://avatars.thunderbird.net`](https://avatars.thunderbird.net)
+  ([thunderbird/avatars](https://github.com/thunderbird/avatars))
+- dev/local product links -> stage services (`accounts-stage.tb.pro`,
+  `appointment-stage.tb.pro`, `send-stage.tb.pro`)
+- hosted stage product links -> stage services
+- hosted prod product links -> production services
 
 To point a local build at another JMAP server or proxy, set
-`VITE_JMAP_SERVER_URL` in `.env.local`. To override the Accounts menu link,
-set `VITE_ACCOUNTS_URL`.
+`VITE_JMAP_SERVER_URL` and, when needed, `VITE_JMAP_WS_PROXY` in `.env.local`.
+To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
+`VITE_SEND_URL`. To override sender logo lookup, set
+`VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.
 
 ```bash
 VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com
+VITE_JMAP_WS_PROXY=https://your-ws-auth-bridge.com/jmap/ws
+VITE_SENDER_AVATAR_PROXY_URL=https://your-avatar-proxy.com
 ```
 
 ## Common Commands
@@ -99,16 +113,22 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run test:e2e'
 
-# Full local-stack E2E tests
+# Local-stack E2E tests (Firefox by default; auto-configures the e2e account)
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
-  'cd /workspace && npm run test:e2e:local -- --project=chromium --project=firefox'
+  'cd /workspace && npm run test:e2e:local'
+
+# Full local-stack E2E tests, including Chromium
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:e2e:local:full'
 
 # Production build
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run build'
 ```
 
-See [BUILD.md](BUILD.md) for production build notes.
+The production bundle is written to `dist/`. That directory is static output and
+can be served by any static web host that supports the deployment's HTTPS and
+routing requirements.
 
 ## Documentation
 

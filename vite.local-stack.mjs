@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 /**
  * Vite dev-server proxies for LOCAL_STACK=1.
  *
@@ -9,6 +11,16 @@
 
 const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? "https://localhost:3000";
 const EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
+
+export function localStackHost() {
+  if (process.env.STACK_HOST) return process.env.STACK_HOST;
+  const inDocker = process.env.STORMBOX_IN_DOCKER === "1" || fs.existsSync("/.dockerenv");
+  return inDocker ? "172.17.0.1" : "127.0.0.1";
+}
+
+export function localStackHttpTarget(port) {
+  return `http://${localStackHost()}:${port}`;
+}
 
 function rewriteKeycloakBody(body) {
   return body
