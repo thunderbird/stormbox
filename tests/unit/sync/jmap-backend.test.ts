@@ -1308,6 +1308,115 @@ describe('JmapBackend StateChange dispatch', () => {
     await backend.stop();
   });
 
+  it('reopens the WebSocket with the last pushState after an unexpected close', async () => {
+    // Failure mode: today the transport rejects pending requests
+    // on close and sets _ws = null, but nothing reopens the
+    // socket. Push notifications stop until the user reloads the
+    // tab — which is how we discover the bug, with a message of
+    // "new mail isn't arriving".
+    const scenario = {
+      'Mailbox/get': () => ({ list: [], state: 'mb-1' }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+      options: { reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 50 },
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws1 = await FakeWebSocket._waitForInstance();
+
+    // Establish a pushState so the reopen handshake should resume
+    // from it. The transport stores _lastPushState from incoming
+    // StateChange frames; we drive one through to set it.
+    ws1._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { Mailbox: 'mb-1' } },
+      pushState: 'push-original',
+    });
+    await backend._stateChangeIdle();
+
+    // Server hangs up unexpectedly (network drop, server restart,
+    // proxy timeout, …). Anything other than the client-initiated
+    // closeWebSocket() should trigger a reopen.
+    ws1._close(1006, 'abnormal');
+
+    // A second WS instance should appear after the configured
+    // backoff. Use waitFor so the test isn't sensitive to the
+    // exact scheduling of the backoff timer.
+    await vi.waitFor(
+      () => expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2),
+      { timeout: 2_000 },
+    );
+    const ws2 = FakeWebSocket.instances[1];
+    autoRespondWebSocket(ws2, scenario);
+    ws2._open();
+    // Wait for the WebSocketPushEnable handshake frame.
+    await vi.waitFor(() => expect(ws2.sent.length).toBeGreaterThanOrEqual(1));
+    const enable = JSON.parse(ws2.sent[0]);
+    expect(enable['@type']).toBe('WebSocketPushEnable');
+    expect(enable.pushState).toBe('push-original');
+
+    await backend.stop();
+  });
+
+  it('does not reopen the WebSocket after an explicit stop()', async () => {
+    const scenario = {
+      'Mailbox/get': () => ({ list: [], state: 'mb-1' }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+      options: { reconnectBaseDelayMs: 10, reconnectMaxDelayMs: 50 },
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Explicit teardown. The close listener must NOT schedule a
+    // reopen — otherwise sign-out and account-switch flows would
+    // immediately re-establish the socket they just tore down.
+    await backend.stop();
+    // Wait well past the configured backoff window.
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
   it('eagerly fetches the body of a newly-delivered message so click-to-read is a local read', async () => {
     // After my push refresh lands the new metadata row, the backend
     // must also fetch the body and persist it into body_values.

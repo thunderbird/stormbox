@@ -250,6 +250,86 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
     await expect(pending).rejects.toThrow(/closed/);
   });
 
+  it('rejects a wsRequest with a typed timeout error when the server never replies', async () => {
+    // Failure mode: wsRequest stores a pending entry keyed by
+    // requestId and only resolves when a matching Response /
+    // RequestError frame arrives. If the server holds the
+    // connection open but never sends one (slow path, server bug,
+    // half-open NAT), the pending promise — and the JMAP method
+    // call awaiting it — hangs forever. Browser TCP keepalives
+    // can take minutes to tear down the connection, by which point
+    // the user has already navigated away.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+      wsRequestTimeoutMs: 80,
+    });
+    const open = t.openWebSocket(['Email'], null);
+    const ws = await FakeWebSocket._waitForInstance();
+    ws._open();
+    await open;
+
+    const started = Date.now();
+    const pending = t.wsRequest(
+      ['urn:ietf:params:jmap:core'],
+      [['Core/echo', { hi: true }, 'c1']],
+    );
+    await expect(pending).rejects.toMatchObject({
+      message: expect.stringMatching(/timed out/i),
+    });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeLessThan(2_000);
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+
+    // The pending entry must also be removed so the requestId can be
+    // re-used and a late-arriving Response does not blow up.
+    expect((t as any)._wsPending.size).toBe(0);
+  });
+
+  it('clears the wsRequest timeout when the server replies in time', async () => {
+    // Negative-space test: a response that arrives before the timeout
+    // must clear the timer so the resolved promise is not later
+    // overwritten by a spurious timeout rejection.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+      wsRequestTimeoutMs: 60,
+    });
+    const open = t.openWebSocket(['Email'], null);
+    const ws = await FakeWebSocket._waitForInstance();
+    ws._open();
+    await open;
+
+    const pending = t.wsRequest(
+      ['urn:ietf:params:jmap:core'],
+      [['Core/echo', { hi: true }, 'c1']],
+    );
+    const request = JSON.parse(ws.sent[1]);
+    ws._receive({
+      '@type': 'Response',
+      requestId: request.id,
+      methodResponses: [['Core/echo', { hi: true }, 'c1']],
+    });
+    const result = await pending as any;
+    expect(result.methodResponses[0][0]).toBe('Core/echo');
+
+    // Wait past the timeout window. If the timer was not cleared,
+    // unhandled-rejection or extra wsPending side-effects would
+    // surface here.
+    await new Promise((r) => setTimeout(r, 120));
+    expect((t as any)._wsPending.size).toBe(0);
+  });
+
   it('throws if the server does not advertise the websocket capability', async () => {
     const fetchMock = makeFetch({
       'https://mail.example.com/.well-known/jmap': () =>

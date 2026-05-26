@@ -78,6 +78,11 @@ export class JmapBackend {
   _bootstrappedPromise: Promise<void> | null;
   _stateChangeInflight: Promise<void> | null;
   _stateChangePending: { changed: Record<string, Record<string, string>>; pushState: string | null } | null;
+  _unsubClose: (() => void) | null;
+  _reconnectTimer: any;
+  _reconnectAttempts: number;
+  _reconnectBaseDelayMs: number;
+  _reconnectMaxDelayMs: number;
 
   constructor({ transport, serverOrigin, handlers, options = {} }: {
     transport: any;
@@ -161,6 +166,18 @@ export class JmapBackend {
     // trailing iteration then runs once with the union.
     this._stateChangeInflight = null;
     this._stateChangePending = null;
+    // Reconnect supervisor. The transport rejects pending requests
+    // on close but does not reopen the socket itself; without this
+    // a single network blip leaves push notifications dead until
+    // the user reloads. Exponential backoff between attempts
+    // (1s → 30s by default) so we don't hammer a dead server, and
+    // the supervisor only runs while _started is true so explicit
+    // teardown (stop, sign-out, account switch) cleanly stops it.
+    this._unsubClose = null;
+    this._reconnectTimer = null;
+    this._reconnectAttempts = 0;
+    this._reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? 1_000;
+    this._reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
   }
 
   /**
@@ -292,6 +309,9 @@ export class JmapBackend {
     this._unsubStateChange = this.transport.onStateChange(
       (change) => this._onStateChange(change),
     );
+    this._unsubClose = this.transport.onClose(
+      (event) => this._onTransportClose(event),
+    );
     // Catch up on whatever changed while we were disconnected. The
     // WebSocketPushEnable+pushState handshake is supposed to deliver
     // a StateChange for any types that moved, but servers may decline
@@ -308,6 +328,18 @@ export class JmapBackend {
 
   async stop() {
     if (!this._started) return;
+    // Flip _started first so the reconnect supervisor's onClose
+    // listener (which we are about to fire via closeWebSocket)
+    // recognises the close as intentional and skips its backoff
+    // scheduling. Same reasoning for cancelling any pending
+    // reopen timer up front.
+    this._started = false;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._unsubClose?.();
+    this._unsubClose = null;
     this._unsubStateChange?.();
     this._unsubStateChange = null;
     if (this._indexerTimer) {
@@ -319,7 +351,6 @@ export class JmapBackend {
       this.outboxRunner = null;
     }
     this.transport.closeWebSocket();
-    this._started = false;
   }
 
   // ----- SyncClient.Backend surface -----------------------------------
@@ -740,6 +771,64 @@ export class JmapBackend {
       return { attempted: 0, succeeded: 0, failed: 0 };
     }
     return this.outboxRunner.runMutation(mutationId);
+  }
+
+  // ----- WebSocket reconnect supervisor -------------------------------
+
+  /**
+   * Close listener registered with the transport. Fires for every
+   * close — intentional or otherwise. _started is the policy gate:
+   * stop() flips it false before calling closeWebSocket(), so this
+   * handler distinguishes an intentional teardown from a network
+   * blip by reading that flag.
+   */
+  _onTransportClose(_event: any) {
+    if (!this._started) return;
+    if (this._reconnectTimer) return;
+    const attempt = this._reconnectAttempts;
+    const delay = Math.min(
+      this._reconnectBaseDelayMs * 2 ** attempt,
+      this._reconnectMaxDelayMs,
+    );
+    this._reconnectAttempts = attempt + 1;
+    wlog.info(
+      'jmap-backend',
+      `WebSocket closed; reopening in ${delay}ms (attempt ${this._reconnectAttempts})`,
+    );
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      void this._reconnect();
+    }, delay);
+  }
+
+  async _reconnect() {
+    if (!this._started) return;
+    let pushState = this.transport.lastPushState;
+    if (!pushState) {
+      pushState = await this._loadPushState();
+    }
+    try {
+      await this.transport.openWebSocket(SUBSCRIBED_TYPES, pushState);
+    } catch (err) {
+      wlog.warn('jmap-backend', `WebSocket reopen failed: ${(err as any)?.message ?? err}`);
+      // openWebSocket may have failed before the underlying socket
+      // ever emitted close, in which case our close listener never
+      // fired. Schedule another attempt explicitly.
+      if (this._started && !this._reconnectTimer) {
+        this._onTransportClose({});
+      }
+      return;
+    }
+    if (!this._started) return;
+    wlog.info('jmap-backend', 'WebSocket reopened');
+    this._reconnectAttempts = 0;
+    // Drain any mutations that piled up while disconnected and
+    // catch up on any state changes the server may have buffered.
+    // Mirrors the startup catch-up path.
+    this.outboxRunner?.notify();
+    await this._refreshActiveQueryViews().catch((err) => {
+      wlog.warn('jmap-backend', 'reconnect view refresh failed', err);
+    });
   }
 
   // ----- StateChange dispatch -----------------------------------------

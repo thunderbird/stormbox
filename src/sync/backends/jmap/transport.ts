@@ -73,8 +73,10 @@ export class JmapTransport {
   _wsReadyPromise: Promise<void> | null;
   _wsPending: Map<string, { resolve: (v: any) => void; reject: (e: any) => void }>;
   _stateListeners: Set<(state: any) => void>;
+  _closeListeners: Set<(event: any) => void>;
   _nextWsId: number;
   _lastPushState: any;
+  _wsRequestTimeoutMs: number;
 
   constructor(options: any) {
     this._sessionUrl = options.sessionUrl;
@@ -93,8 +95,19 @@ export class JmapTransport {
     this._wsPending = new Map();
     /** @type {Set<(state: any) => void>} */
     this._stateListeners = new Set();
+    /** @type {Set<(event: any) => void>} */
+    this._closeListeners = new Set();
     this._nextWsId = 1;
     this._lastPushState = null;
+    // Per-wsRequest timeout. Without this a server that holds the
+    // TCP connection open but never sends a Response leaves the
+    // pending entry — and the awaiting caller — hung indefinitely
+    // (browser TCP keepalives can take minutes). 30s is a generous
+    // upper bound: typical Email/get + Email/query round trips
+    // finish in well under a second, and the slow paths (large
+    // folder indexer chunks against a contended Stalwart) finish
+    // in a few seconds.
+    this._wsRequestTimeoutMs = options.wsRequestTimeoutMs ?? 30_000;
   }
 
   /**
@@ -231,7 +244,7 @@ export class JmapTransport {
    * @param {string[]} using
    * @param {Array<[string, object, string]>} methodCalls
    */
-  wsRequest(using, methodCalls) {
+  wsRequest(using, methodCalls, opts: { timeoutMs?: number } = {}) {
     if (!this._ws || this._ws.readyState !== this._ws.OPEN) {
       return Promise.reject(new Error('WebSocket is not open'));
     }
@@ -241,10 +254,48 @@ export class JmapTransport {
       `${name}(${params?.position != null ? `pos=${params.position}` : ''}${params?.limit != null ? ` lim=${params.limit}` : ''})`,
     ).join(' + ');
     wlog.info('jmap-transport', `wsRequest ${requestId}: ${summary}`);
+    const timeoutMs = opts.timeoutMs ?? this._wsRequestTimeoutMs;
     return new Promise((resolve, reject) => {
+      let timeoutHandle: any = null;
+      const cleanup = () => {
+        if (timeoutHandle != null) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+      };
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        const started = Date.now();
+        timeoutHandle = setTimeout(() => {
+          timeoutHandle = null;
+          // Only honour the timeout if the pending entry is still
+          // ours. A late Response can race with the timer; whoever
+          // removes the entry first wins, and the other becomes a
+          // no-op.
+          if (this._wsPending.get(requestId)) {
+            this._wsPending.delete(requestId);
+            const elapsedMs = Date.now() - started;
+            wlog.warn('jmap-transport', `wsResponse ${requestId} timeout after ${elapsedMs}ms`);
+            const err: any = new Error(
+              `JMAP WebSocket request ${requestId} timed out after ${elapsedMs}ms`,
+            );
+            err.type = 'wsRequestTimeout';
+            err.requestId = requestId;
+            err.elapsedMs = elapsedMs;
+            reject(err);
+          }
+        }, timeoutMs);
+      }
       this._wsPending.set(requestId, {
-        resolve: (v) => { wlog.info('jmap-transport', `wsResponse ${requestId} ok`); resolve(v); },
-        reject: (e) => { wlog.warn('jmap-transport', `wsResponse ${requestId} err: ${e?.message}`); reject(e); },
+        resolve: (v) => {
+          cleanup();
+          wlog.info('jmap-transport', `wsResponse ${requestId} ok`);
+          resolve(v);
+        },
+        reject: (e) => {
+          cleanup();
+          wlog.warn('jmap-transport', `wsResponse ${requestId} err: ${e?.message}`);
+          reject(e);
+        },
       });
       this._ws.send(JSON.stringify({
         '@type': 'Request',
@@ -264,6 +315,20 @@ export class JmapTransport {
   onStateChange(listener) {
     this._stateListeners.add(listener);
     return () => this._stateListeners.delete(listener);
+  }
+
+  /**
+   * Subscribe to WebSocket close events. Listener fires whenever the
+   * underlying socket transitions to closed, regardless of cause
+   * (server hangup, network drop, client-initiated closeWebSocket).
+   * Used by the backend's reconnect supervisor; the listener is
+   * responsible for deciding whether to reopen.
+   *
+   * @param {(event: any) => void} listener
+   */
+  onClose(listener) {
+    this._closeListeners.add(listener);
+    return () => this._closeListeners.delete(listener);
   }
 
   /**
@@ -341,13 +406,23 @@ export class JmapTransport {
     }
   }
 
-  _onWsClose(_event?: any) {
+  _onWsClose(event?: any) {
     for (const pending of this._wsPending.values()) {
       pending.reject(new Error('WebSocket closed mid-request'));
     }
     this._wsPending.clear();
     this._ws = null;
     this._wsReadyPromise = null;
+    // Fan out to close listeners after pending requests have been
+    // rejected, so a listener that decides to reopen sees a clean
+    // _ws/_wsPending state.
+    for (const listener of this._closeListeners) {
+      try {
+        listener(event ?? {});
+      } catch (err) {
+        console.error('JMAP close listener threw', err);
+      }
+    }
   }
 
   _onWsError(_event?: any) {
