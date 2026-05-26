@@ -933,6 +933,381 @@ describe('JmapBackend StateChange dispatch', () => {
     await backend.stop();
   });
 
+  it('does not race the Email state token across overlapping StateChange frames', async () => {
+    // Failure mode: the transport fires StateChange listeners without
+    // awaiting them. If two Email pushes arrive while the first
+    // _onStateChange is still awaiting Email/changes, both passes
+    // independently load sync_states.Email at the same moment, both
+    // issue Email/changes with the same sinceState, and only the
+    // last write to SYNC_STATE_SET wins. The middle delta can be
+    // missed on the next reconnect if the order goes wrong.
+    //
+    // Contract this test pins: when push frames overlap, the second
+    // pass observes the first pass's newState (or coalesces away
+    // entirely). It must never re-call Email/changes with the same
+    // sinceState the first call used.
+
+    let emailChangesGateResolve;
+    const emailChangesGate = new Promise((r) => { emailChangesGateResolve = r; });
+    const seenSinceStates = [];
+    let emailChangesCallCount = 0;
+    const scenario = {
+      'Mailbox/get': () => ({ list: [], state: 'mb-1' }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/changes': async (params) => {
+        emailChangesCallCount += 1;
+        seenSinceStates.push(params.sinceState);
+        if (emailChangesCallCount === 1) {
+          await emailChangesGate;
+        }
+        return {
+          accountId: params.accountId,
+          oldState: params.sinceState,
+          newState: emailChangesCallCount === 1 ? 'es-2' : 'es-3',
+          hasMoreChanges: false,
+          created: [], updated: [], destroyed: [],
+        };
+      },
+      'Email/get': (params) => ({ state: 'es', list: [], notFound: params.ids ?? [] }),
+    };
+
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws = await FakeWebSocket._waitForInstance();
+
+    // The StateChange handler only fires Email/changes when a
+    // baseline sync_states.Email row exists (cold-start clients
+    // wait for the first full sync to populate it). Seed one
+    // directly so we can exercise the changes path on push.
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: backend.account.id,
+      objectType: 'Email',
+      state: 'es-1',
+    });
+
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { Email: 'es-2' } },
+      pushState: 'push-1',
+    });
+    // Wait for the first Email/changes to enter the gated handler.
+    await vi.waitFor(() => expect(emailChangesCallCount).toBe(1));
+
+    // Second push arrives while the first pass is still gated.
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { Email: 'es-3' } },
+      pushState: 'push-2',
+    });
+
+    // Under the buggy concurrent path, the second StateChange
+    // listener starts a parallel _doStateChange that races to
+    // _loadSyncState before the first call has written its new
+    // state — try to wait for that second Email/changes to enter
+    // the handler, which pins the race window. Under the fixed
+    // (serialized) path the second call cannot enter until SC1
+    // releases the gate, so this waitFor will time out; the
+    // .catch swallows the timeout and the test continues. Either
+    // way the assertions below see the eventual call pattern.
+    await vi.waitFor(
+      () => expect(emailChangesCallCount).toBe(2),
+      { timeout: 250 },
+    ).catch(() => {});
+
+    emailChangesGateResolve();
+
+    await vi.waitFor(() => expect(emailChangesCallCount).toBe(2), { timeout: 2_000 });
+    // Brief drain for the final SYNC_STATE_SET write to land.
+    await new Promise((r) => setTimeout(r, 50));
+
+    const persisted = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: backend.account.id,
+      objectType: 'Email',
+      scope: '',
+    });
+
+    // Bug exposure #1 (sinceState race): without serialization both
+    // passes load sync_states.Email='es-1' before either writes a
+    // new state, so the server sees ['es-1', 'es-1']. With
+    // serialization the second pass observes the first pass's
+    // newState and runs with sinceState='es-2'.
+    expect(seenSinceStates).not.toEqual(['es-1', 'es-1']);
+
+    // Bug exposure #2 (write order race): under the current code
+    // the slow first call resolves AFTER the fast second call, so
+    // sync_states.Email is overwritten with the older 'es-2' even
+    // though the server's most recent newState was 'es-3'. On the
+    // next reconnect that stale token replays already-applied
+    // changes (or worse, misses changes if the server has GC'd it).
+    // The fixed code threads newState forward and ends up at es-3.
+    expect(persisted?.state).toBe('es-3');
+
+    await backend.stop();
+  });
+
+  it('does not race query_views.query_state across overlapping EmailDelivery frames', async () => {
+    // Same shape of race, different code path. _refreshActiveQueryViews
+    // reads each view's saved query_state at the start of the loop
+    // and issues Email/queryChanges with it. Two concurrent passes
+    // both read the same query_state, so the second call replays a
+    // delta the first call already applied. With per-view uniqueness
+    // constraints the apply step doesn't corrupt rows, but it wastes
+    // a JMAP round trip per overlapping push and races the
+    // query_views.total bookkeeping.
+    const emailFixture = (id) => ({
+      id, blobId: `blob-${id}`, threadId: `thr-${id}`,
+      mailboxIds: { 'mb-inbox': true }, keywords: {},
+      size: 100,
+      receivedAt: '2026-05-01T12:00:00Z',
+      sentAt: '2026-05-01T11:59:00Z',
+      messageId: [`<${id}@example.com>`],
+      sender: [{ name: 'S', email: 's@example.com' }],
+      from: [{ name: 'F', email: 'f@example.com' }],
+      to: [{ name: 'T', email: 't@example.com' }],
+      subject: `Subject ${id}`, preview: `preview ${id}`,
+      hasAttachment: false,
+    });
+
+    let queryChangesGateResolve;
+    const queryChangesGate = new Promise((r) => { queryChangesGateResolve = r; });
+    const seenSinceQueryStates = [];
+    let queryChangesCallCount = 0;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1 }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/query': () => ({
+        ids: ['e-1'], total: 1,
+        queryState: 'eqs-1', canCalculateChanges: true, position: 0,
+      }),
+      'Email/get': (params) => ({
+        list: (params.ids ?? []).map((id) => emailFixture(id)),
+        state: 'es-1',
+      }),
+      'Email/queryChanges': async (params) => {
+        queryChangesCallCount += 1;
+        seenSinceQueryStates.push(params.sinceQueryState);
+        if (queryChangesCallCount === 1) {
+          await queryChangesGate;
+        }
+        return {
+          oldQueryState: params.sinceQueryState,
+          newQueryState: queryChangesCallCount === 1 ? 'eqs-2' : 'eqs-3',
+          total: 1 + queryChangesCallCount,
+          removed: [],
+          added: [{ id: `e-new-${queryChangesCallCount}`, index: 0 }],
+        };
+      },
+    };
+
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws = await FakeWebSocket._waitForInstance();
+
+    // Seed an active inbox query view so _refreshActiveQueryViews
+    // has something to run Email/queryChanges against.
+    const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
+    const inboxRow = folders.find((f) => f.role === 'inbox');
+    await backend.ensureFolderWindow(inboxRow.id, { offset: 0, limit: 50 });
+    expect(queryChangesCallCount).toBe(0);
+
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { EmailDelivery: 'd-1' } },
+      pushState: 'push-1',
+    });
+    await vi.waitFor(() => expect(queryChangesCallCount).toBe(1));
+
+    // Second EmailDelivery push while the first refresh is gated.
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { EmailDelivery: 'd-2' } },
+      pushState: 'push-2',
+    });
+
+    // Try-then-release pattern: under the buggy code the second
+    // refresh enters Email/queryChanges concurrently with the first
+    // and pins the race; under the fixed code it's queued and won't
+    // enter until SC1 finishes. The .catch swallows the inevitable
+    // timeout in the fixed path so the test still proceeds.
+    await vi.waitFor(
+      () => expect(queryChangesCallCount).toBe(2),
+      { timeout: 250 },
+    ).catch(() => {});
+
+    queryChangesGateResolve();
+
+    await vi.waitFor(() => expect(queryChangesCallCount).toBe(2), { timeout: 2_000 });
+    // Let trailing writes settle.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Same bug shape: without serialization both refreshes read
+    // sinceQueryState='eqs-1' before either writes a new one. The
+    // fixed code either coalesces (1 call) or threads the state
+    // forward (2 calls with ['eqs-1', 'eqs-2']).
+    expect(seenSinceQueryStates).not.toEqual(['eqs-1', 'eqs-1']);
+
+    await backend.stop();
+  });
+
+  it('coalesces an EmailDelivery+Email burst into one refresh pass', async () => {
+    // Stalwart sends EmailDelivery and Email as separate frames
+    // when new mail lands. Today each frame starts an independent
+    // _onStateChange invocation, so we run two refresh passes for
+    // a single arrival event. With coalescing we should see one
+    // pass that handles both type-state updates.
+    const emailFixture = (id) => ({
+      id, blobId: `blob-${id}`, threadId: `thr-${id}`,
+      mailboxIds: { 'mb-inbox': true }, keywords: {},
+      size: 100,
+      receivedAt: '2026-05-01T12:00:00Z',
+      sentAt: '2026-05-01T11:59:00Z',
+      messageId: [`<${id}@example.com>`],
+      sender: [{ name: 'S', email: 's@example.com' }],
+      from: [{ name: 'F', email: 'f@example.com' }],
+      to: [{ name: 'T', email: 't@example.com' }],
+      subject: `Subject ${id}`, preview: `preview ${id}`,
+      hasAttachment: false,
+    });
+    let queryChangesCallCount = 0;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1 }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/query': () => ({
+        ids: ['e-1'], total: 1,
+        queryState: 'eqs-1', canCalculateChanges: true, position: 0,
+      }),
+      'Email/changes': (params) => ({
+        accountId: params.accountId,
+        oldState: params.sinceState,
+        newState: 'es-2',
+        hasMoreChanges: false,
+        created: [], updated: [], destroyed: [],
+      }),
+      'Email/get': (params) => ({
+        list: (params.ids ?? []).map((id) => emailFixture(id)),
+        state: 'es-1',
+      }),
+      'Email/queryChanges': () => {
+        queryChangesCallCount += 1;
+        return {
+          oldQueryState: 'eqs-1',
+          newQueryState: 'eqs-2',
+          total: 2,
+          removed: [],
+          added: [{ id: 'e-new', index: 0 }],
+        };
+      },
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+    const ws = await FakeWebSocket._waitForInstance();
+
+    const folders = await handlers[DB_RPC.FOLDER_LIST]({ accountId: backend.account.id });
+    const inboxRow = folders.find((f) => f.role === 'inbox');
+    await backend.ensureFolderWindow(inboxRow.id, { offset: 0, limit: 50 });
+    expect(queryChangesCallCount).toBe(0);
+
+    // EmailDelivery + Email arrive in the same turn — this is the
+    // exact shape Stalwart emits on new-mail delivery.
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { EmailDelivery: 'd-1' } },
+      pushState: 'push-1',
+    });
+    ws._receive({
+      '@type': 'StateChange',
+      changed: { 'acct-1': { Email: 'es-2' } },
+      pushState: 'push-2',
+    });
+
+    // Wait until the refresh has fired and the new id has landed.
+    await vi.waitFor(async () => {
+      const items = await engine.all(
+        `SELECT remote_id FROM query_view_items
+          WHERE view_id IN (SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?)
+          ORDER BY position`,
+        [backend.account.id, inboxRow.id],
+      );
+      expect(items.map((i) => i.remote_id)).toContain('e-new');
+    });
+    // Give any trailing pass a chance to fire.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Bug exposure: without coalescing each frame kicks its own
+    // _onStateChange, so the two close-arriving frames produce two
+    // _refreshActiveQueryViews passes, each issuing its own
+    // Email/queryChanges per active view.
+    expect(queryChangesCallCount).toBe(1);
+
+    await backend.stop();
+  });
+
   it('eagerly fetches the body of a newly-delivered message so click-to-read is a local read', async () => {
     // After my push refresh lands the new metadata row, the backend
     // must also fetch the body and persist it into body_values.

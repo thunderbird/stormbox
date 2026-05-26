@@ -76,6 +76,8 @@ export class JmapBackend {
   outboxRunner: any;
   _outboxRunnerOptions: any;
   _bootstrappedPromise: Promise<void> | null;
+  _stateChangeInflight: Promise<void> | null;
+  _stateChangePending: { changed: Record<string, Record<string, string>>; pushState: string | null } | null;
 
   constructor({ transport, serverOrigin, handlers, options = {} }: {
     transport: any;
@@ -143,6 +145,22 @@ export class JmapBackend {
     this.outboxRunner = null;
     this._outboxRunnerOptions = options.outboxRunnerOptions ?? null;
     this._bootstrappedPromise = null;
+    // StateChange serialization. The transport delivers push frames
+    // by firing each registered listener synchronously, without
+    // awaiting the Promise the listener returns; if it awaited we
+    // would block the message pump. So without explicit
+    // serialization here, two pushes arriving in quick succession
+    // (the EmailDelivery + Email pair Stalwart emits on a new-mail
+    // delivery is the canonical case) start two concurrent
+    // _doStateChange invocations which can race.
+    //
+    // The fix is the same pattern OutboxRunner uses for its drain
+    // queue: one inflight pass at a time, with a coalescing pending
+    // bucket that the trailing iteration of the inflight loop picks
+    // up. Frames arriving during a pass merge into the bucket; a
+    // trailing iteration then runs once with the union.
+    this._stateChangeInflight = null;
+    this._stateChangePending = null;
   }
 
   /**
@@ -272,9 +290,7 @@ export class JmapBackend {
       }
     }
     this._unsubStateChange = this.transport.onStateChange(
-      (change) => this._onStateChange(change).catch((err) => {
-        wlog.error('jmap-backend', 'StateChange dispatch failed', err);
-      }),
+      (change) => this._onStateChange(change),
     );
     // Catch up on whatever changed while we were disconnected. The
     // WebSocketPushEnable+pushState handshake is supposed to deliver
@@ -728,7 +744,69 @@ export class JmapBackend {
 
   // ----- StateChange dispatch -----------------------------------------
 
-  async _onStateChange({ changed, pushState }) {
+  /**
+   * Entry point called synchronously by the transport for every push
+   * frame. Merges the incoming change into the pending bucket and
+   * starts the inflight loop if it isn't already running. The
+   * trailing iteration of the loop picks up any frames that arrived
+   * during the current pass, so the EmailDelivery+Email burst (and
+   * any other rapid sequence) collapses into one catch-up pass with
+   * a unioned type-state map.
+   *
+   * Synchronous on purpose: returning a Promise to the transport
+   * tempted earlier code to .catch() on it, which let two pushes
+   * race because the transport never awaited the Promise. The
+   * inflight loop now owns error handling.
+   */
+  _onStateChange(change) {
+    if (!this.account) return;
+    this._stateChangePending = mergeStateChange(this._stateChangePending, change);
+    if (this._stateChangeInflight) {
+      // A pass is already running; it will see the updated pending
+      // bucket on its next loop iteration.
+      return;
+    }
+    this._stateChangeInflight = (async () => {
+      try {
+        // Yield once so frames arriving synchronously in the same
+        // event-loop turn can merge into the pending bucket before
+        // we consume it. Stalwart emits the EmailDelivery + Email
+        // pair on new-mail delivery as two back-to-back WS frames
+        // delivered in one message-pump turn; without this yield
+        // the IIFE would read pending after the first frame, set
+        // it to null, then race the second frame to write back —
+        // and we'd end up running _doStateChange twice for one
+        // logical delivery event.
+        await Promise.resolve();
+        while (this._stateChangePending) {
+          const next = this._stateChangePending;
+          this._stateChangePending = null;
+          try {
+            await this._doStateChange(next);
+          } catch (err) {
+            wlog.error('jmap-backend', 'StateChange dispatch failed', err);
+          }
+        }
+      } finally {
+        this._stateChangeInflight = null;
+      }
+    })();
+  }
+
+  /**
+   * Visible for tests: resolves once the current StateChange pass
+   * (and any trailing iteration the pending bucket has queued) has
+   * finished. Production code does not need this — fire-and-forget
+   * is the contract — but unit tests that drive the WS frame stream
+   * synchronously need a deterministic completion signal.
+   */
+  async _stateChangeIdle() {
+    while (this._stateChangeInflight) {
+      await this._stateChangeInflight.catch(() => {});
+    }
+  }
+
+  async _doStateChange({ changed, pushState }) {
     if (!this.account) return;
     if (pushState) {
       await this._persistPushState(pushState);
@@ -1033,4 +1111,29 @@ export class JmapBackend {
       ? { offset: cursor, limit: Math.min(limit, effectiveTotal - cursor) }
       : null;
   }
+}
+
+/**
+ * Union the type-state maps of two consecutive StateChange frames so
+ * a single trailing pass can catch up on every type that changed.
+ * The state values themselves are opaque to us — we only iterate the
+ * keys in _doStateChange to decide which /changes call to issue — so
+ * later-wins for any duplicate type key is fine. The pushState
+ * always takes the freshest value because that is what gets
+ * persisted to account_services and replayed on reconnect.
+ */
+function mergeStateChange(prev: any, next: any) {
+  const nextChanged = next?.changed ?? {};
+  const nextPushState = next?.pushState ?? null;
+  if (!prev) {
+    return { changed: { ...nextChanged }, pushState: nextPushState };
+  }
+  const changed = { ...prev.changed };
+  for (const [accountId, types] of Object.entries(nextChanged) as Array<[string, Record<string, string>]>) {
+    changed[accountId] = { ...(changed[accountId] ?? {}), ...types };
+  }
+  return {
+    changed,
+    pushState: nextPushState ?? prev.pushState,
+  };
 }
