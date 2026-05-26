@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
+  computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchPostEffect,
 } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
@@ -99,6 +99,7 @@ const CARD_LAYOUT_WIDTH = 320;
 const ROW_HEIGHT = 64;
 const CARD_ROW_HEIGHT = 112;
 const msgListEl = ref<HTMLElement | null>(null);
+const selectAllEl = ref<HTMLInputElement | null>(null);
 const scrollEl = ref(null);
 const listWidth = ref(0);
 const failedAvatarDomains = ref<Set<string>>(new Set());
@@ -339,6 +340,12 @@ const allLoadedSelected = computed(() => {
   return true;
 });
 
+watchPostEffect(() => {
+  if (!selectAllEl.value) return;
+  selectAllEl.value.checked = allLoadedSelected.value;
+  selectAllEl.value.indeterminate = hasSelection.value && !allLoadedSelected.value;
+});
+
 function selectAllForCurrentFilter() {
   if (quickFilterActive.value) {
     const next = new Set<number>();
@@ -426,6 +433,7 @@ function normalizeFilterText(value) {
         :title="rowCount === 0 ? 'No messages to select' : (allLoadedSelected ? 'Deselect all' : 'Select all loaded')"
       >
         <input
+          ref="selectAllEl"
           type="checkbox"
           :checked="allLoadedSelected"
           :disabled="rowCount === 0"

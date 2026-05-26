@@ -232,10 +232,36 @@ describe('MessageList row click viewing', () => {
     const wrapper = mount(MessageList);
     await nextTick();
 
-    await wrapper.find('.msg-list__select-all input').trigger('change');
+    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
     await nextTick();
 
     expect([...mailStore.selectedIds]).toEqual([]);
+  });
+
+  it('leaves select-all unchecked after clearing an indeterminate shift range', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3), makeRow(4), makeRow(5)];
+    mailStore.totalForFolder = 5;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    await wrapper.findAll('.msg-list__check input')[3].trigger('click', { shiftKey: true });
+    await nextTick();
+
+    const selectAll = wrapper.find<HTMLInputElement>('.msg-list__select-all input');
+    expect([...mailStore.selectedIds]).toEqual([1, 2, 3, 4]);
+    expect(selectAll.element.indeterminate).toBe(true);
+    expect(selectAll.element.checked).toBe(false);
+
+    selectAll.element.click();
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([]);
+    expect(selectAll.element.indeterminate).toBe(false);
+    expect(selectAll.element.checked).toBe(false);
   });
 
   it('uses Unread as a lone text toggle and selects only visible unread rows', async () => {
@@ -264,7 +290,7 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).toContain('Unread message');
     expect(wrapper.text()).not.toContain('Read message');
 
-    await wrapper.find('.msg-list__select-all input').trigger('change');
+    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
 
     expect([...mailStore.selectedIds].sort()).toEqual([2, 3]);
 
@@ -420,7 +446,7 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).toContain('Selected read message');
     expect(wrapper.text()).toContain('Unread message');
 
-    await wrapper.find('.msg-list__select-all input').trigger('change');
+    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
     await nextTick();
 
     expect([...mailStore.selectedIds]).toEqual([]);

@@ -31,6 +31,8 @@ async function listDiagnostics(page) {
       focusedIndexes: focused,
       selectedIndexes: selected.sort((a, b) => a - b),
       checkboxesChecked: document.querySelectorAll('.msg-list__check input:checked').length,
+      selectAllChecked: document.querySelector('.msg-list__select-all input')?.checked ?? false,
+      selectAllIndeterminate: document.querySelector('.msg-list__select-all input')?.indeterminate ?? false,
       headerCount: (document.querySelector('.msg-list__count')?.textContent ?? '').trim(),
       rightPaneMode: (() => {
         if (document.querySelector('.message-view__bulk')) return 'bulk-summary';
@@ -226,5 +228,7 @@ test.describe('multi-select (Fastmail model)', () => {
     );
     expect(afterIndeterminateSelectAll.selectedIndexes).toEqual([]);
     expect(afterIndeterminateSelectAll.checkboxesChecked).toBe(0);
+    expect(afterIndeterminateSelectAll.selectAllChecked).toBe(false);
+    expect(afterIndeterminateSelectAll.selectAllIndeterminate).toBe(false);
   });
 });
