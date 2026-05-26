@@ -232,8 +232,7 @@ describe('MessageList row click viewing', () => {
     const wrapper = mount(MessageList);
     await nextTick();
 
-    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
-    await nextTick();
+    await wrapper.find('.msg-list__select-all input').trigger('change');
 
     expect([...mailStore.selectedIds]).toEqual([]);
   });
@@ -256,7 +255,12 @@ describe('MessageList row click viewing', () => {
     expect(selectAll.element.indeterminate).toBe(true);
     expect(selectAll.element.checked).toBe(false);
 
-    selectAll.element.click();
+    // A real browser toggles `checked` while clearing the native
+    // indeterminate flag before it emits `change`. The component must
+    // force both DOM properties back to the model state after clearing.
+    selectAll.element.checked = true;
+    selectAll.element.indeterminate = false;
+    await selectAll.trigger('change');
     await nextTick();
 
     expect([...mailStore.selectedIds]).toEqual([]);
@@ -290,7 +294,7 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).toContain('Unread message');
     expect(wrapper.text()).not.toContain('Read message');
 
-    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
+    await wrapper.find('.msg-list__select-all input').trigger('change');
 
     expect([...mailStore.selectedIds].sort()).toEqual([2, 3]);
 
@@ -446,8 +450,7 @@ describe('MessageList row click viewing', () => {
     expect(wrapper.text()).toContain('Selected read message');
     expect(wrapper.text()).toContain('Unread message');
 
-    wrapper.find<HTMLInputElement>('.msg-list__select-all input').element.click();
-    await nextTick();
+    await wrapper.find('.msg-list__select-all input').trigger('change');
 
     expect([...mailStore.selectedIds]).toEqual([]);
     expect(wrapper.text()).not.toContain('Selected read message');
