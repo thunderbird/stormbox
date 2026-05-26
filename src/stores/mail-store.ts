@@ -47,6 +47,12 @@ interface PendingMutationInsert {
   optimisticPatchJson?: string | null;
 }
 
+interface RefreshSelectionSnapshot {
+  id: number;
+  remoteId: string | null;
+  index: number;
+}
+
 /**
  * Reactive state for an in-flight bulk move/destroy. The UI binds to
  * this to render the BulkOperationOverlay, which blocks other input
@@ -165,6 +171,7 @@ export const useMailStore = defineStore('mail', () => {
   let refreshFolderProgressInflight: Promise<void> | null = null;
   let refreshFolderProgressDirty = false;
   const staleFolderIds = new Set<number>();
+  let manualRefreshFolderId: number | null = null;
 
   const currentFolder = computed(
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
@@ -199,6 +206,7 @@ export const useMailStore = defineStore('mail', () => {
     refreshFolderProgressInflight = null;
     refreshFolderProgressDirty = false;
     staleFolderIds.clear();
+    manualRefreshFolderId = null;
   }
 
   /**
@@ -253,11 +261,13 @@ export const useMailStore = defineStore('mail', () => {
       refreshFolders();
     }
     if (tables.includes(TABLE_FAMILIES.MESSAGES)) {
-      if (currentFolderId.value != null) {
+      const manualRefreshOwnsCurrentFolder = manualRefreshFolderId != null
+        && Number(currentFolderId.value) === manualRefreshFolderId;
+      if (currentFolderId.value != null && !manualRefreshOwnsCurrentFolder) {
         refreshLoadedPages();
       }
       refreshFolderProgress();
-      if (selectedMessageId.value != null) {
+      if (selectedMessageId.value != null && !manualRefreshOwnsCurrentFolder) {
         // Re-issue a display load using a fresh token so a stale
         // in-flight Email/get for the same id cannot land after
         // this broadcast did and clobber the new body.
@@ -1791,6 +1801,84 @@ export const useMailStore = defineStore('mail', () => {
     throw new Error(message);
   }
 
+  function snapshotRefreshSelection(state: FolderCache): RefreshSelectionSnapshot | null {
+    const selectedId = Number(selectedMessageId.value);
+    if (!Number.isFinite(selectedId)) return null;
+    const index = state.rows.findIndex((row) => row?.id === selectedId);
+    if (index < 0) return null;
+    return {
+      id: selectedId,
+      remoteId: state.rows[index]?.remote_id ?? null,
+      index,
+    };
+  }
+
+  function selectRefreshSelectionIfLoaded(state: FolderCache, snapshot: RefreshSelectionSnapshot): boolean {
+    const restored = state.rows.some((row) =>
+      row?.id === snapshot.id && (!snapshot.remoteId || row.remote_id === snapshot.remoteId),
+    );
+    if (restored) selectMessage(snapshot.id);
+    return restored;
+  }
+
+  async function restoreSelectionAfterRefresh(state: FolderCache, snapshot: RefreshSelectionSnapshot | null) {
+    if (!snapshot || !repo || authStore.accountId == null) return;
+    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+
+    if (selectRefreshSelectionIfLoaded(state, snapshot)) return;
+
+    if (!snapshot.remoteId) {
+      clearRefreshSelectionIfUnchanged(snapshot);
+      return;
+    }
+
+    let anchorResult: any = null;
+    try {
+      anchorResult = await repo.ensureFolderWindow(
+        authStore.accountId,
+        state.folderId,
+        {
+          anchor: snapshot.remoteId,
+          anchorOffset: 0,
+          limit: 1,
+          sortProp: state.sortProp === 'sent' ? 'sentAt' : 'receivedAt',
+        },
+      );
+    } catch (err) {
+      console.warn('[mail-store] refresh selection restore failed', err);
+      return;
+    }
+
+    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+    const ids = Array.isArray(anchorResult?.ids)
+      ? anchorResult.ids.map((id) => String(id))
+      : [];
+    if (!ids.includes(snapshot.remoteId)) {
+      clearRefreshSelectionIfUnchanged(snapshot);
+      return;
+    }
+    if (Number.isFinite(anchorResult?.total)) {
+      state.total = Number(anchorResult.total);
+      totalForFolder.value = state.total;
+    }
+
+    const position = Number(anchorResult?.position);
+    const offset = Number.isFinite(position)
+      ? Math.max(0, position)
+      : Math.max(0, snapshot.index);
+    await ensureLoaded(offset, offset + 1);
+    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+
+    if (selectRefreshSelectionIfLoaded(state, snapshot)) return;
+    clearRefreshSelectionIfUnchanged(snapshot);
+  }
+
+  function clearRefreshSelectionIfUnchanged(snapshot: RefreshSelectionSnapshot) {
+    if (selectedMessageId.value === snapshot.id) {
+      selectMessage(null);
+    }
+  }
+
   /**
    * Nuke the current folder's local view cache and rebuild from the
    * server. Bound to the toolbar refresh button.
@@ -1812,8 +1900,10 @@ export const useMailStore = defineStore('mail', () => {
   async function refresh() {
     if (!repo || authStore.accountId == null || !folderState) return;
     const state = folderState;
+    const refreshSelection = snapshotRefreshSelection(state);
     state.lastFailedRange = null;
     isLoading.value = true;
+    manualRefreshFolderId = state.folderId;
     try {
       await repo.ensureFolderTree(authStore.accountId);
 
@@ -1842,10 +1932,14 @@ export const useMailStore = defineStore('mail', () => {
       // the next folder open re-check for drift with a clean slate.
       state.driftRebuildAttempted = false;
       await ensureLoaded(0, PAGE_SIZE);
+      await restoreSelectionAfterRefresh(state, refreshSelection);
     } catch (err) {
       console.warn('[mail-store] refresh failed', err);
       error.value = err?.message ?? String(err);
     } finally {
+      if (manualRefreshFolderId === state.folderId) {
+        manualRefreshFolderId = null;
+      }
       if (folderState === state) {
         isLoading.value = false;
       }

@@ -134,6 +134,50 @@ describe('syncFolderWindow', () => {
     expect(addresses.find((r) => r.kind === 'sender')?.n).toBe(3);
   });
 
+  it('persists anchored query windows at the server-returned position', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/query', (params) => {
+      expect(params.anchor).toBe('e-42');
+      expect(params.anchorOffset).toBe(0);
+      expect(params.position).toBeUndefined();
+      return {
+        ids: ['e-42'],
+        total: 100,
+        queryState: 'qs-anchor',
+        canCalculateChanges: true,
+        position: 41,
+      };
+    });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es-anchor',
+    }));
+
+    const result = await syncFolderWindow({
+      transport,
+      account,
+      folder: inbox,
+      handlers,
+      anchor: 'e-42',
+      anchorOffset: 0,
+      limit: 1,
+    });
+
+    expect(result.position).toBe(41);
+    expect(result.ids).toEqual(['e-42']);
+
+    const view = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inbox.id],
+    );
+    const item = await engine.get(
+      'SELECT position, remote_id FROM query_view_items WHERE view_id = ?',
+      [view.id],
+    );
+    expect(Number(item.position)).toBe(41);
+    expect(item.remote_id).toBe('e-42');
+  });
+
   it('issues a single chained method-call request via JMAP back reference', async () => {
     const transport = new MockTransport();
     transport.handle('Email/query', () => ({

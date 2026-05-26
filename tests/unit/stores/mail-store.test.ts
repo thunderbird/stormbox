@@ -24,6 +24,7 @@ import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository.js';
+import { TABLE_FAMILIES } from '../../../src/db/protocol.js';
 
 function makeFolder(id, overrides = {}) {
   return {
@@ -1525,6 +1526,116 @@ describe('refresh button (nuke and rebuild)', () => {
     expect(mailStore.messages.map((m) => m?.id)).toEqual([99]);
     expect(mailStore.totalForFolder).toBe(1);
     expect(mailStore.isLoading).toBe(false);
+  });
+
+  it('re-selects the previously open message when it survives the refresh', async () => {
+    const folder = makeFolder(1, { total_emails: 250 });
+    const view = {
+      rows: Array.from({ length: 250 }, (_, index) => makeRow(index + 1)),
+      total: 250,
+    };
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: view },
+    });
+    await flush();
+    await mailStore.ensureLoaded(149, 150);
+    await flush();
+
+    mailStore.selectMessage(150);
+    await flush();
+    expect(mailStore.selectedMessageId).toBe(150);
+
+    let emptyViewReadsFromResetBroadcast = 0;
+    const originalListMessagesForView = repo.listMessagesForView;
+    repo.listMessagesForView = async (args) => {
+      const v = repo._views.get(args.folderId);
+      if ((v?.rows ?? []).length === 0) emptyViewReadsFromResetBroadcast += 1;
+      return originalListMessagesForView(args);
+    };
+    repo.resetViewForFolder = async (_accountId, folderId) => {
+      const v = repo._views.get(folderId);
+      if (v) {
+        v.rows = [];
+        v.total = 0;
+      }
+      repo.triggerBroadcast([TABLE_FAMILIES.MESSAGES]);
+      return { deleted: 1 };
+    };
+
+    repo.ensureFolderWindow = async (_accountId, folderId, range: any = {}) => {
+      const v = repo._views.get(folderId);
+      if (!v) return { total: 0, fetched: 0 };
+      v.total = 250;
+      if (range.anchor === 'e-150') {
+        v.rows[149] = makeRow(150, { subject: 'Subject 150 refreshed' });
+        return {
+          total: 250,
+          fetched: 1,
+          position: 149,
+          ids: ['e-150'],
+        };
+      }
+      const offset = range.offset ?? 0;
+      const limit = range.limit ?? 100;
+      for (let i = offset; i < Math.min(offset + limit, 100); i += 1) {
+        v.rows[i] = makeRow(i + 1);
+      }
+      return {
+        total: 250,
+        fetched: Math.min(limit, 100 - offset),
+        position: offset,
+        ids: v.rows.slice(offset, offset + limit).filter(Boolean).map((row) => row.remote_id),
+      };
+    };
+
+    await mailStore.refresh();
+    await flush();
+
+    expect(mailStore.selectedMessageId).toBe(150);
+    expect(mailStore.messages[149]?.subject).toBe('Subject 150 refreshed');
+    expect(mailStore.messageBody?.text).toBe('body-150');
+    expect(emptyViewReadsFromResetBroadcast).toBe(0);
+  });
+
+  it('clears the open message when it no longer exists after refresh', async () => {
+    const folder = makeFolder(1, { total_emails: 3 });
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectMessage(2);
+    await flush();
+
+    repo.ensureFolderWindow = async (_accountId, folderId, range: any = {}) => {
+      const v = repo._views.get(folderId);
+      if (!v) return { total: 0, fetched: 0 };
+      v.total = 2;
+      if (range.anchor === 'e-2') {
+        return {
+          total: 2,
+          fetched: 0,
+          position: 0,
+          ids: [],
+        };
+      }
+      v.rows = [makeRow(1), makeRow(3)];
+      return {
+        total: 2,
+        fetched: 2,
+        position: range.offset ?? 0,
+        ids: ['e-1', 'e-3'],
+      };
+    };
+
+    await mailStore.refresh();
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1, 3]);
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect(mailStore.messageBody).toBeNull();
   });
 });
 

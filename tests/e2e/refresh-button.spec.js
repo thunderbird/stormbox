@@ -125,6 +125,8 @@ test.describe('Refresh button nuke-and-rebuild', () => {
         async () => page.locator('.msg-list__item').filter({ hasText: ghostSubject }).count(),
         { timeout: 30_000, message: 'ghost row should be visible before refresh' },
       ).toBeGreaterThan(0);
+      await page.locator('.msg-list__item').filter({ hasText: baselineSubject }).first().click();
+      await expect(page.locator('.message-view__title h2')).toHaveText(baselineSubject, { timeout: 30_000 });
 
       // Resolve as soon as we observe the spinner class (or after a
       // short ceiling). The previous 5 s sleep was always paid even
@@ -177,6 +179,8 @@ test.describe('Refresh button nuke-and-rebuild', () => {
         await attachConsoleTail(testInfo, consoleLines);
       }
       expect(cacheRemoteIds).not.toContain(ghostRemoteId);
+      await expect(page.locator('.message-view__title h2')).toHaveText(baselineSubject, { timeout: 30_000 });
+      await expect(page.locator('.msg-list__items > li.is-focused .msg-list__subject')).toHaveText(baselineSubject);
     } finally {
       if (baselineId) await cleanupEmail(jmap, baselineId, trash.id);
     }

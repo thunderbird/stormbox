@@ -48,11 +48,22 @@ export async function syncFolderWindow({
   sortProp = 'receivedAt',
   position = 0,
   limit = 100,
+  anchor = null,
+  anchorOffset = 0,
   collapseThreads = false,
   useWebSocket = false,
 }) {
   const filter = { inMailbox: folder.remote_id };
   const sort = [{ property: sortProp, isAscending: false }];
+  const queryArgs: any = {
+    accountId: account.remote_account_id,
+    filter,
+    sort,
+    limit,
+    calculateTotal: true,
+    collapseThreads,
+    ...(anchor ? { anchor, anchorOffset } : { position }),
+  };
 
   // Single round trip: Email/query + Email/get chained via JMAP back
   // reference (RFC 8620 §3.1.3). The server resolves "ids" of the get
@@ -65,15 +76,7 @@ export async function syncFolderWindow({
     methodCalls: [
       [
         'Email/query',
-        {
-          accountId: account.remote_account_id,
-          filter,
-          sort,
-          position,
-          limit,
-          calculateTotal: true,
-          collapseThreads,
-        },
+        queryArgs,
         'q1',
       ],
       [
@@ -98,6 +101,9 @@ export async function syncFolderWindow({
   }
 
   const ids = query.ids ?? [];
+  const resolvedPosition = Number.isFinite(query.position)
+    ? Number(query.position)
+    : position;
   const got = pickResponse(result, 'Email/get');
   const list = got?.list ?? [];
   const persisted = await handlers[DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]({
@@ -109,7 +115,7 @@ export async function syncFolderWindow({
     queryState: query.queryState,
     canCalculateChanges: query.canCalculateChanges ?? null,
     total: query.total ?? null,
-    position,
+    position: resolvedPosition,
     ids,
     messages: list.map((email) => emailToRecord(email)),
   });
@@ -118,6 +124,8 @@ export async function syncFolderWindow({
     total: query.total ?? null,
     queryState: query.queryState,
     fetched: list.length,
+    position: resolvedPosition,
+    ids,
     viewId: persisted.viewId,
   };
 }

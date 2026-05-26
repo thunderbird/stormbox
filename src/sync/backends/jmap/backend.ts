@@ -376,12 +376,14 @@ export class JmapBackend {
         sortProp: range.sortProp ?? this._defaultSortPropFor(folder),
         position: range.offset ?? 0,
         limit: range.limit ?? 100,
+        anchor: range.anchor ?? null,
+        anchorOffset: range.anchorOffset ?? 0,
         collapseThreads: range.collapseThreads ?? false,
         useWebSocket: this._wsReady(),
       });
       wlog.info(
         'jmap-backend',
-        `ensureFolderWindow offset=${range.offset ?? 0} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
+        `ensureFolderWindow offset=${range.offset ?? 0} anchor=${range.anchor ?? ''} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
       );
       return r;
     } finally {
