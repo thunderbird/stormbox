@@ -16,6 +16,7 @@
 import { DB_RPC } from '../../../db/protocol.js';
 import { SERVICE_KIND } from '../../../constants/states.js';
 import { JMAP_CAPS } from './transport.js';
+import { callJmap, pickResponse } from './invoke.js';
 
 const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
@@ -249,15 +250,3 @@ function uniq(arr) {
   return Array.from(new Set(arr));
 }
 
-async function callJmap(transport, { using, methodCalls, useWebSocket }) {
-  if (useWebSocket) {
-    return transport.wsRequest(using, methodCalls);
-  }
-  return transport.request(using, methodCalls);
-}
-
-function pickResponse(result, methodName) {
-  const responses = result?.methodResponses ?? [];
-  const found = responses.find((r) => r[0] === methodName);
-  return found?.[1] ?? null;
-}

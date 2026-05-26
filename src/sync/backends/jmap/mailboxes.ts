@@ -12,6 +12,7 @@
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
+import { callJmap, pickResponse } from './invoke.js';
 
 const MAILBOX_PROPERTIES = [
   'id', 'name', 'parentId', 'role', 'sortOrder',
@@ -148,15 +149,3 @@ async function persistMailboxes({ account, mailboxes, handlers }) {
   }
 }
 
-async function callJmap(transport, { using, methodCalls, useWebSocket }) {
-  if (useWebSocket) {
-    return transport.wsRequest(using, methodCalls);
-  }
-  return transport.request(using, methodCalls);
-}
-
-function pickResponse(result, methodName) {
-  const responses = result?.methodResponses ?? [];
-  const found = responses.find((r) => r[0] === methodName);
-  return found?.[1] ?? null;
-}

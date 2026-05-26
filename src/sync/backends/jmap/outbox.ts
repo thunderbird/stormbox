@@ -45,6 +45,7 @@
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
+import { callJmap, pickResponse } from './invoke.js';
 import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages.js';
 
 export const MUTATION_TYPES = Object.freeze({
@@ -755,19 +756,6 @@ async function deleteRow(handlers, id) {
     sql: 'DELETE FROM pending_mutations WHERE id = ?',
     params: [id],
   });
-}
-
-async function callJmap(transport, { using, methodCalls, useWebSocket }) {
-  if (useWebSocket) {
-    return transport.wsRequest(using, methodCalls);
-  }
-  return transport.request(using, methodCalls);
-}
-
-function pickResponse(result, methodName) {
-  const responses = result?.methodResponses ?? [];
-  const found = responses.find((r) => r[0] === methodName);
-  return found?.[1] ?? null;
 }
 
 /**

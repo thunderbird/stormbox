@@ -5,6 +5,7 @@
 
 import { DB_RPC } from '../../../db/protocol.js';
 import { JMAP_CAPS } from './transport.js';
+import { callJmap, pickResponse } from './invoke.js';
 
 const IDENTITY_PROPERTIES = ['id', 'name', 'email', 'replyTo', 'bcc', 'textSignature', 'htmlSignature', 'mayDelete'];
 
@@ -40,15 +41,3 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
   return { count: list.length, state: response?.state ?? null };
 }
 
-async function callJmap(transport, { using, methodCalls, useWebSocket }) {
-  if (useWebSocket) {
-    return transport.wsRequest(using, methodCalls);
-  }
-  return transport.request(using, methodCalls);
-}
-
-function pickResponse(result, methodName) {
-  const responses = result?.methodResponses ?? [];
-  const found = responses.find((r) => r[0] === methodName);
-  return found?.[1] ?? null;
-}
