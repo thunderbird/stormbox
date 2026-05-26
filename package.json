@@ -20,6 +20,7 @@
     "stack:up": "docker compose -f thunderbird-accounts/docker-compose.yml up --build -d",
     "stack:configure": "node tests/fixtures/configure-keycloak.mjs && node tests/fixtures/configure-stalwart.mjs",
     "stack:seed": "npm run stack:configure && node tests/fixtures/seed-mail.mjs",
+    "stack:seed-dev": "node tests/fixtures/seed-dev-mail.mjs",
     "stack:ws-proxy": "node tests/fixtures/ws-proxy/server.mjs"
   },
   "dependencies": {

@@ -43,6 +43,21 @@ On a fresh stack, first open **http://localhost:8087**, sign in as
 `admin@example.org` / `admin`, and provision a Thundermail address. Optional
 test account overrides live in `tests/e2e/.env.local.example`.
 
+To populate that developer account with realistic-looking fake mail
+(Netflix / Amazon / LinkedIn / GitHub / Spotify / Substack / UPS, plus
+a couple of archived items) and ensure the account has an `Archive`
+role folder, run:
+
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run stack:seed-dev'
+```
+
+The script is idempotent (re-running sweeps its own previously-seeded
+messages by subject prefix and re-creates them) and only touches the
+developer account; `npm run stack:seed` continues to handle the
+separate e2e Playwright account.
+
 ## Configuration
 
 The app defaults to the local stack during development through
