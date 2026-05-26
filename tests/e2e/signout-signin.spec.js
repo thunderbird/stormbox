@@ -8,7 +8,7 @@ import {
 import {
   attachConsoleTail,
   trackConsole,
-  waitForInboxReady,
+  waitForFolderTreeReady,
 } from './helpers/ui.js';
 
 /**
@@ -33,7 +33,15 @@ test.describe('Sign out + sign in regression', () => {
     trackConsole(page, consoleLines);
 
     await loginViaOidc(page);
-    await waitForInboxReady(page);
+    // The point of this regression test is "no ensureLoaded
+    // failures", which is detectable via console regardless of
+    // whether any Inbox rows have rendered yet. waitForFolderTreeReady
+    // (vs waitForInboxReady) waits for the folder tree without
+    // requiring rows in the message list — important because the
+    // post-sign-out OPFS reset can leave the second sign-in's
+    // initial Email/query slower than 30 s under load. The test
+    // body's ensureLoadedFailures assertion is the real signal.
+    await waitForFolderTreeReady(page);
 
     // The avatar menu is a <details><summary> pair; <summary> doesn't get
     // exposed as a button in Playwright's accessibility tree across all
@@ -45,7 +53,7 @@ test.describe('Sign out + sign in regression', () => {
     ensureLoadedFailures.length = 0;
 
     await loginViaOidc(page);
-    await waitForInboxReady(page);
+    await waitForFolderTreeReady(page);
 
     if (ensureLoadedFailures.length > 0) {
       await testInfo.attach('ensureLoaded-failures.txt', {

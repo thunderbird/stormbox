@@ -25,11 +25,21 @@ export const OIDC_ISSUER =
 export const OIDC_CLIENT_ID =
   process.env.OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test';
 
+// e2e tests run against a dedicated, isolated account so the
+// developer's own dev account (`admin@example.org`) doesn't get
+// polluted with seed mail, sweep deletions, or stray test artifacts.
+// `tests/fixtures/configure-keycloak.mjs` and
+// `tests/fixtures/configure-stalwart.mjs` create this account
+// idempotently on first run (and on every re-run, in case the
+// stack was wiped). The account is provisioned through the same
+// HTTP APIs the accounts service would use (Keycloak admin API +
+// Stalwart management API), without touching the
+// thunderbird-accounts submodule.
 export const TEST_OIDC_EMAIL =
-  process.env.TEST_OIDC_EMAIL ?? 'admin@example.org';
+  process.env.TEST_OIDC_EMAIL ?? 'e2e@example.org';
 
 export const TEST_OIDC_PASSWORD =
-  process.env.TEST_OIDC_PASSWORD ?? 'admin';
+  process.env.TEST_OIDC_PASSWORD ?? 'e2e';
 
 /** Provisioned primary Thundermail / JMAP From address for fixtures and JMAP helpers. */
 export const TEST_THUNDERMAIL =
@@ -58,8 +68,13 @@ export const SMTP_HOST = process.env.SMTP_HOST ?? host;
 
 export const SMTP_TLS_PORT = Number(process.env.SMTP_TLS_PORT ?? 465);
 
+// Pinned literally to `admin` because that's what the argon2id
+// hash baked into configure-stalwart.mjs is over. The OIDC
+// password and the SMTP app password are intentionally
+// different: OIDC auth flows through Keycloak (TEST_OIDC_PASSWORD),
+// SMTP auth uses Stalwart's per-principal app-password list.
 export const TEST_SMTP_PASSWORD =
-  process.env.TEST_SMTP_PASSWORD ?? TEST_OIDC_PASSWORD;
+  process.env.TEST_SMTP_PASSWORD ?? 'admin';
 
 /** Primary RFC-822 address for JMAP create/send in tests. */
 export function selfEmail() {

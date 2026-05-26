@@ -114,15 +114,47 @@ async function configureClient(token) {
   }
 }
 
-async function configureUser(token) {
+async function findUser(token, username) {
   const users = await request(
-    `${KEYCLOAK_BASE}/admin/realms/${REALM}/users?username=${encodeURIComponent(TEST_OIDC_EMAIL)}&exact=true`,
+    `${KEYCLOAK_BASE}/admin/realms/${REALM}/users?username=${encodeURIComponent(username)}&exact=true`,
     { headers: { Authorization: `Bearer ${token}` } },
   );
-  const user = users?.[0];
-  if (!user?.id) return;
+  return users?.[0] ?? null;
+}
 
-  // Direct grant cannot satisfy OTP, so strip it from the bundled dev admin.
+async function ensureUser(token, { username, email, firstName, lastName, password }) {
+  let user = await findUser(token, username);
+  if (!user?.id) {
+    // Idempotent create: the e2e account isn't in the realm import,
+    // so on a fresh stack (or any time the Keycloak postgres volume
+    // gets wiped) we provision it from this script. Plain
+    // password credential, emailVerified=true so the OIDC flow
+    // doesn't gate on a verification email.
+    await request(`${KEYCLOAK_BASE}/admin/realms/${REALM}/users`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        username,
+        email,
+        firstName,
+        lastName,
+        emailVerified: true,
+        enabled: true,
+        attributes: {
+          locale: ['en'],
+          zoneinfo: ['UTC'],
+        },
+        credentials: [
+          { type: 'password', value: password, temporary: false },
+        ],
+      }),
+    });
+    user = await findUser(token, username);
+    if (!user?.id) throw new Error(`Failed to create Keycloak user ${username}`);
+  }
+
+  // Direct grant cannot satisfy OTP, so strip it from any test
+  // user (the realm-imported admin sometimes carries one).
   const credentials = await request(
     `${KEYCLOAK_BASE}/admin/realms/${REALM}/users/${user.id}/credentials`,
     { headers: { Authorization: `Bearer ${token}` } },
@@ -136,23 +168,37 @@ async function configureUser(token) {
     }
   }
 
+  // Always reset the password, so a stale hash from an earlier run
+  // (or a pre-imported user) doesn't break direct-grant auth.
   await request(`${KEYCLOAK_BASE}/admin/realms/${REALM}/users/${user.id}/reset-password`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({
       type: 'password',
-      value: TEST_OIDC_PASSWORD,
+      value: password,
       temporary: false,
     }),
   });
+
+  return user;
 }
 
 export async function configureKeycloak() {
   const token = await adminToken();
   await configureRealm(token);
   await configureClient(token);
-  await configureUser(token);
-  console.log(`[configure-keycloak] ${REALM} ready for ${PUBLIC_ORIGIN}`);
+  // Ensure the dedicated e2e account exists. We do NOT touch the
+  // realm-imported admin@example.org developer account here so a
+  // human can still sign into the accounts UI / Stormbox dev
+  // session without colliding with Playwright runs.
+  await ensureUser(token, {
+    username: TEST_OIDC_EMAIL,
+    email: TEST_OIDC_EMAIL,
+    firstName: 'Stormbox',
+    lastName: 'E2E',
+    password: TEST_OIDC_PASSWORD,
+  });
+  console.log(`[configure-keycloak] ${REALM} ready for ${PUBLIC_ORIGIN}; e2e user: ${TEST_OIDC_EMAIL}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

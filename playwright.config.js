@@ -33,7 +33,10 @@ function buildWebServer() {
     return {
       command: `npm run dev -- --host 0.0.0.0 --port ${PORT}`,
       url: BASE_URL,
-      reuseExistingServer: process.env.PLAYWRIGHT_REUSE === '1',
+      // Default to reusing an already-running vite under LOCAL_STACK so
+      // iterative local runs skip the ~5s vite boot. Opt out with
+      // PLAYWRIGHT_NO_REUSE=1 if you suspect a stale dev server.
+      reuseExistingServer: process.env.PLAYWRIGHT_NO_REUSE !== '1',
       timeout: 60_000,
       ignoreHTTPSErrors: true,
       env: {
@@ -68,6 +71,14 @@ function buildWebServer() {
 const STORAGE_STATE_CHROMIUM = '.playwright-auth/chromium.json';
 const STORAGE_STATE_FIREFOX = '.playwright-auth/firefox.json';
 
+// Firefox is the default LOCAL_STACK lane because the suite has
+// historically uncovered more Firefox-only regressions than
+// Chromium-only ones. Set INCLUDE_CHROMIUM=1 to also run the chromium
+// lane (e.g. for pre-merge / nightly), or pass --project=chromium
+// explicitly to run chromium only.
+const INCLUDE_CHROMIUM =
+  process.env.INCLUDE_CHROMIUM === '1' || process.env.INCLUDE_CHROMIUM === 'true';
+
 function localStackProjects() {
   if (!LOCAL_STACK) {
     return [
@@ -79,33 +90,41 @@ function localStackProjects() {
     ...devices['Desktop Chrome'],
     launchOptions: { args: ['--ignore-certificate-errors'] },
   };
-  const firefoxSetupUse = { ...devices['Desktop Firefox'] };
-  return [
-    // Setup projects capture a shared OIDC session per browser so the
-    // dependent test projects boot already authenticated. Each setup
-    // project writes its own storageState file (see auth.setup.js
-    // which keys off project.name); chromium and firefox sessions
-    // don't stomp on each other.
-    {
-      name: 'setup-chromium',
-      testMatch: /auth\.setup\.js/,
-      use: chromiumSetupUse,
-    },
+  // Firefox throttles JS in background/unfocused tabs by default
+  // (setTimeout clamped to 1 s, microtask budget reduced). Playwright
+  // doesn't always keep its windows in OS foreground when other
+  // apps are active, so the test page can land in throttled mode
+  // mid-test — observed as 30 s+ delays between StateChange WS
+  // delivery and the corresponding UI re-render. These prefs disable
+  // the throttling for the test browser only; production Firefox
+  // continues to throttle as designed.
+  const firefoxNoThrottle = {
+    'dom.min_background_timeout_value': 4,
+    'dom.timeout.background_throttling_max_budget': -1,
+    'dom.timeout.background_budget_regeneration_rate': -1,
+    'dom.timeout.foreground_throttling_max_budget': -1,
+  };
+  const firefoxSetupUse = {
+    ...devices['Desktop Firefox'],
+    launchOptions: { firefoxUserPrefs: firefoxNoThrottle },
+  };
+
+  // Setup projects capture a shared OIDC session per browser so the
+  // dependent test projects boot already authenticated. Each setup
+  // project writes its own storageState file (see auth.setup.js
+  // which keys off project.name); chromium and firefox sessions
+  // don't stomp on each other.
+  //
+  // Both browser projects (when INCLUDE_CHROMIUM=1) run serially
+  // under workers: 1 because the single shared Stalwart account
+  // can't tolerate parallel mutation. The per-test speedup comes
+  // from storageState (Keycloak login skipped, ~3-5s per test),
+  // not from worker parallelism.
+  const firefoxProjects = [
     {
       name: 'setup-firefox',
       testMatch: /auth\.setup\.js/,
       use: firefoxSetupUse,
-    },
-    // All specs run serially within each browser project (the single
-    // Stalwart account makes parallel mutation tests race), but the
-    // two browser projects can run side-by-side under workers: 2.
-    // The big per-test speedup comes from storageState: every test
-    // boots already signed in to Keycloak (~3-5s saved per test).
-    {
-      name: 'chromium',
-      testMatch: /\.spec\.js$/,
-      dependencies: ['setup-chromium'],
-      use: { ...chromiumSetupUse, storageState: STORAGE_STATE_CHROMIUM },
     },
     {
       name: 'firefox',
@@ -113,6 +132,23 @@ function localStackProjects() {
       dependencies: ['setup-firefox'],
       use: { ...firefoxSetupUse, storageState: STORAGE_STATE_FIREFOX },
     },
+  ];
+  if (!INCLUDE_CHROMIUM) {
+    return firefoxProjects;
+  }
+  return [
+    {
+      name: 'setup-chromium',
+      testMatch: /auth\.setup\.js/,
+      use: chromiumSetupUse,
+    },
+    {
+      name: 'chromium',
+      testMatch: /\.spec\.js$/,
+      dependencies: ['setup-chromium'],
+      use: { ...chromiumSetupUse, storageState: STORAGE_STATE_CHROMIUM },
+    },
+    ...firefoxProjects,
   ];
 }
 
@@ -122,12 +158,12 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
-  // One worker so chromium and firefox specs do not parallel-mutate
-  // the single shared Stalwart account. The per-test speedup comes
+  // One worker so specs do not parallel-mutate the single shared
+  // Stalwart account. Two browser projects under INCLUDE_CHROMIUM=1
+  // would race on the same mailbox; lifting workers to 2 needs a
+  // second Thundermail principal first. The per-test speedup comes
   // from storageState (Keycloak login skipped), not from worker
-  // parallelism. With one shared mailbox the only safe way to
-  // parallelize would be one Stalwart account per worker, which is a
-  // bigger fixture change.
+  // parallelism.
   workers: LOCAL_STACK ? 1 : undefined,
   forbidOnly: !!process.env.CI,
   // One retry covers the occasional Keycloak SSO blip; real

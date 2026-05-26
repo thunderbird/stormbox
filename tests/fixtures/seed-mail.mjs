@@ -48,11 +48,16 @@ async function main() {
   let archive = mailboxByRole(mailboxes, 'archive');
   if (!inbox) throw new Error('No Inbox mailbox found — provision Thundermail first');
 
+  // Always require a role-bearing Archive mailbox. The previous
+  // fallback to mailboxes.find(/archive/i) accidentally satisfied
+  // itself on the user-mailbox "Archives" (plural, role: null) that
+  // ensureUserMailboxes creates above, leaving no role:archive
+  // mailbox at all. archive.spec.js then fails because it looks up
+  // the archive mailbox by role. Forcing role:archive here keeps
+  // the seed deterministic on a fresh data dir (e.g. after the
+  // Stalwart container is recreated with a tmpfs data mount).
   if (!archive) {
-    archive = mailboxes.find((m) => /archive/i.test(m.name ?? '')) ?? null;
-  }
-  if (!archive) {
-    console.warn('[seed-mail] No Archive mailbox; creating one');
+    console.warn('[seed-mail] No Archive mailbox with role; creating one');
     const createMb = await jmapRequest(jmap, [[
       'Mailbox/set',
       {

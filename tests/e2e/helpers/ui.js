@@ -24,7 +24,11 @@ export async function waitForShellReady(page) {
   await expect(page.locator('.shell')).toBeVisible({ timeout: WAIT_MS });
 }
 
-export async function waitForInboxReady(page) {
+// Wait until the folder tree has hydrated and Inbox is auto-selected.
+// Stops short of asserting any rows in the message list — useful for
+// shared-context beforeAll hooks where the previous test may have
+// just emptied the Inbox via cleanup.
+export async function waitForFolderTreeReady(page) {
   await waitForShellReady(page);
   await expect.poll(
     async () => {
@@ -34,6 +38,10 @@ export async function waitForInboxReady(page) {
     },
     { timeout: WAIT_MS, message: 'expected Inbox to be auto-selected' },
   ).toMatch(/inbox/);
+}
+
+export async function waitForInboxReady(page) {
+  await waitForFolderTreeReady(page);
   await expect.poll(
     async () => page.locator('.msg-list__item').count(),
     { timeout: WAIT_MS, message: 'expected at least one Inbox row to render' },
@@ -117,6 +125,58 @@ export async function openMessageBySubject(page, subject) {
   await expect(row).toBeVisible({ timeout: WAIT_MS });
   await row.locator('.msg-list__content').click();
   await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: WAIT_MS });
+  // Wait for the body to actually render (iframe for HTML or .text
+  // fallback). Tests that immediately press a shortcut like Reply
+  // depend on the body being in the cache; without this wait the
+  // compose dialog opens with empty quoted content because the
+  // body fetch hasn't completed when the shortcut fires. Faster
+  // Stalwart made this race visible — pre-tmpfs the body fetch
+  // happened to land in time on most runs.
+  await expect.poll(
+    async () => (
+      await page.locator('iframe.message-view__html-frame').count()
+    ) + (
+      await page.locator('.message-view__text').count()
+    ),
+    { timeout: WAIT_MS, message: `expected message body to render for "${subject}"` },
+  ).toBeGreaterThan(0);
+}
+
+// Wait for a row with the given subject to appear in whatever
+// folder is currently selected. The fast path assumes JMAP push
+// delivered the change; if push lags more than `pushBudgetMs` we
+// fall through to an explicit refresh-button click (the same path
+// the user takes when the UI looks stale) and keep polling.
+//
+// Earlier attempts to gate on a "WebSocket open, push enabled"
+// console log proved unreliable — the SharedWorker log doesn't
+// always propagate to the page console in time, so the gate
+// itself became a flake source. The poll-then-refresh pattern
+// here makes the test deterministic without depending on log
+// observability.
+export async function expectRowSoon(page, subject, {
+  timeout = WAIT_MS,
+  pushBudgetMs = 2_000,
+} = {}) {
+  const row = page.locator('.msg-list__item').filter({ hasText: subject });
+  try {
+    await expect.poll(
+      async () => row.count(),
+      { timeout: pushBudgetMs, message: `push delivery for "${subject}"` },
+    ).toBeGreaterThan(0);
+    return;
+  } catch {
+    // Fall through to manual refresh; the assertion below carries
+    // the real failure message if the row still doesn't appear.
+  }
+  await page.locator('.msg-list__refresh').click().catch(() => {});
+  await expect.poll(
+    async () => row.count(),
+    {
+      timeout: Math.max(1_000, timeout - pushBudgetMs),
+      message: `expected "${subject}" to render after manual refresh`,
+    },
+  ).toBeGreaterThan(0);
 }
 
 export async function readOpenMessageSubject(page) {

@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   classifyMailboxState,
   cleanupEmail,
@@ -9,20 +7,24 @@ import {
   getEmailMailboxIds,
   listMailboxes,
   mailboxByRole,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
   clickFolder,
+  expectRowSoon,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
 } from './helpers/ui.js';
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
@@ -30,8 +32,8 @@ test.skip(!localStackEnabled, skipLocalStackMessage);
 // One parameterised spec that exercises the Delete-button path from
 // both Drafts and Inbox. Both flows enqueue MOVE_TO_FOLDERS through
 // the outbox; the only intentional difference is the source mailbox
-// role and the JMAP helper used to seed the message. Keeping these
-// as a single test cuts a Playwright login per CI run.
+// role and the JMAP helper used to seed the message. Both cases run
+// in the same shared session — no per-test BrowserContext.
 const CASES = [
   {
     name: 'delete moves a real server-side draft to Trash',
@@ -56,16 +58,12 @@ const CASES = [
 ];
 
 test.describe('Delete message e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap);
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
   });
 
-  for (const { name, sourceRole, subjectPrefix, createMessage } of CASES) {
-    test(name, async ({ page }, testInfo) => {
-      const consoleLines = [];
-      trackConsole(page, consoleLines);
-
+  for (const { name, sourceRole, createMessage, subjectPrefix } of CASES) {
+    test(name, async ({ sharedPage: page }, testInfo) => {
       const jmap = await connectJmap();
       const mailboxes = await listMailboxes(jmap);
       const source = mailboxByRole(mailboxes, sourceRole);
@@ -94,14 +92,8 @@ test.describe('Delete message e2e', () => {
           { timeout: 30_000, message: `created test message should start in ${source.name}` },
         ).toBe('source');
 
-        await loginViaOidc(page);
-        await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-
         await clickFolder(page, source.name);
-        await expect.poll(
-          async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 30_000, message: `expected test message "${subject}" to render in ${source.name}` },
-        ).toBeGreaterThan(0);
+        await expectRowSoon(page, subject);
 
         await page.locator('.msg-list__item').filter({ hasText: subject }).first().click();
         await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
@@ -134,7 +126,7 @@ test.describe('Delete message e2e', () => {
           throw err;
         }
       } finally {
-        await attachConsoleTail(testInfo, consoleLines);
+        await attachConsoleTail(testInfo, consoleLinesFor(page));
         if (createdId) {
           await cleanupEmail(jmap, createdId, trash.id);
         }

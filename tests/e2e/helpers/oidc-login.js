@@ -24,7 +24,33 @@ export async function loginViaOidc(page) {
     return;
   }
   await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
-  await page.getByRole('button', { name: /sign in with thunderbird/i }).click();
+  // We're on the LoginGate, but storageState carried OIDC tokens
+  // so oidc-spa is most likely doing a SILENT REFRESH against
+  // Keycloak (the access token is short-lived, refresh token is
+  // long-lived). During silent refresh:
+  //   - the LoginGate is rendered with the Sign-in button DISABLED,
+  //   - if refresh succeeds, the app transitions straight to .shell
+  //     without the button ever being clicked,
+  //   - if refresh fails (rare), the button enables and the user
+  //     is expected to click it manually.
+  // So we race "shell appeared" against "button became enabled"
+  // and continue with whichever wins. Only the rare failure case
+  // hits the form-fill flow below.
+  const signInBtn = page.getByRole('button', { name: /sign in with thunderbird/i });
+  const shellLocator = page.locator('.shell');
+  const winner = await Promise.race([
+    shellLocator.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'shell'),
+    expect(signInBtn).toBeEnabled({ timeout: 30_000 }).then(() => 'button'),
+  ]).catch((err) => {
+    throw new Error(`OIDC LoginGate stuck: neither .shell nor enabled "Sign in" button appeared within 30 s (${err?.message ?? err})`);
+  });
+  if (winner === 'shell') {
+    // Silent refresh succeeded; nothing more to do.
+    return;
+  }
+  // Refresh failed (or storageState is genuinely stale) — fall
+  // through to form fill.
+  await signInBtn.click();
 
   // Keycloak login is proxied at /realms/tbpro on the Vite HTTPS origin.
   await page.waitForURL(/\/realms\/tbpro/, { timeout: 15_000 });
@@ -56,8 +82,19 @@ export async function loginViaOidc(page) {
 }
 
 async function isAppShellAlreadyVisible(page) {
+  // Generous timeout: when storageState is valid (the common case
+  // every test should hit), the shell paints in under 1 s on warm
+  // Stalwart but can take 2-4 s under suite load when many fresh
+  // BrowserContexts have just torn down. Earlier 1.5 s was tight
+  // enough that some tests fell through to the OIDC slow path
+  // unnecessarily, then hit a 30 s wait for a button that would
+  // never enable because storageState was actually valid. Note:
+  // expect.toBeVisible resolves the moment the element appears, so
+  // a generous timeout doesn't slow the warm path — it only widens
+  // the window where we accept a slightly delayed paint as "still
+  // valid storageState" rather than "OIDC is broken".
   try {
-    await expect(page.locator('.shell')).toBeVisible({ timeout: 1_500 });
+    await expect(page.locator('.shell')).toBeVisible({ timeout: 4_000 });
     return true;
   } catch {
     return false;

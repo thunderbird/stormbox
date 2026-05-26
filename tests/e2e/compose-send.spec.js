@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   cleanupEmail,
   connectJmap,
@@ -7,21 +5,23 @@ import {
   listMailboxes,
   mailboxByRole,
   pickResponse,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
   clickFolder,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
-  waitForInboxReady,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
@@ -79,15 +79,11 @@ async function findSentMessageBySubject(jmap, sentMailbox, subject) {
 }
 
 test.describe('Compose + send e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Compose send e2e' });
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
   });
 
-  test('Send delivers a self-addressed message into Sent (UI + cache + JMAP)', async ({ page }, testInfo) => {
-    const consoleLines = [];
-    trackConsole(page, consoleLines);
-
+  test('Send delivers a self-addressed message into Sent (UI + cache + JMAP)', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const sent = mailboxByRole(mailboxes, 'sent');
@@ -102,15 +98,6 @@ test.describe('Compose + send e2e', () => {
     const subject = `Compose send e2e ${Date.now()}`;
     let serverId = null;
     try {
-      await loginViaOidc(page);
-      // waitForInboxReady waits until the Inbox folder is auto-selected
-      // and at least one message has rendered. That synchronises us
-      // with App.vue's onMounted chain (authStore.initialize -> mailStore
-      // -> contactsStore -> composeStore.attach), so by the time we
-      // open compose its accountId watch has fired and refreshIdentities
-      // has had a chance to populate the From dropdown.
-      await waitForInboxReady(page);
-
       // Warm up the Sent folder so a mailbox-window query_view exists
       // before send runs. The post-send apply step prepends the new
       // remote_id into existing Sent views; if no view exists it can
@@ -215,7 +202,7 @@ test.describe('Compose + send e2e', () => {
       expect(sentCache, 'local Sent cache should be reachable via window.__repo').not.toBeNull();
       expect(sentCache.remoteIds, 'sent remote id should be in the Sent cache').toContain(serverId);
     } finally {
-      await attachConsoleTail(testInfo, consoleLines);
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (serverId) {
         await cleanupEmail(jmap, serverId, trash.id);
       }

@@ -1,28 +1,29 @@
-import { test, expect } from '@playwright/test';
-
 import {
-  cleanupEmail,
   connectJmap,
   createEmailInMailbox,
+  destroyEmails,
   getEmailMailboxIds,
   jmapRequest,
   listMailboxes,
   mailboxByRole,
   pickResponse,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
-  clickFolder,
+  expectRowSoon,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
@@ -50,21 +51,16 @@ async function getEmailKeywords(jmap, emailId) {
 }
 
 test.describe('Mark read/unread e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Mark unread e2e' });
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
   });
 
-  test('bulk "Mark as unread" removes $seen on every selected row (UI + cache + server)', async ({ page }, testInfo) => {
-    const consoleLines = [];
-    trackConsole(page, consoleLines);
-
+  test('bulk "Mark as unread" removes $seen on every selected row (UI + cache + server)', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
-    const trash = mailboxByRole(mailboxes, 'trash');
-    if (!inbox || !trash) {
-      throw new Error(`Test requires Inbox and Trash mailboxes; saw ${mailboxes.map((m) => `${m.name}:${m.role}`).join(', ')}`);
+    if (!inbox) {
+      throw new Error(`Test requires Inbox mailbox; saw ${mailboxes.map((m) => `${m.name}:${m.role}`).join(', ')}`);
     }
 
     const fromEmail = selfEmail();
@@ -76,41 +72,23 @@ test.describe('Mark read/unread e2e', () => {
     const createdIds = [];
     try {
       // Seed messages with $seen already set so flipping them to unread
-      // is a real keyword removal, not a no-op.
+      // is a real keyword removal, not a no-op. Routed through
+      // createEmailInMailbox so we wait for Stalwart's index to catch
+      // up before the UI poll runs (otherwise the row visibility
+      // poll can outrun the server's queryability).
       for (const subject of subjects) {
-        const payload = await jmapRequest(jmap, [[
-          'Email/set',
-          {
-            accountId: jmap.accountId,
-            create: {
-              c1: {
-                mailboxIds: { [inbox.id]: true },
-                keywords: { $seen: true },
-                from: [{ email: fromEmail }],
-                to: [{ email: fromEmail }],
-                subject,
-                bodyStructure: { type: 'text/plain', partId: 'p1' },
-                bodyValues: { p1: { value: 'mark-unread fixture' } },
-              },
-            },
-          },
-          's1',
-        ]]);
-        const set = pickResponse(payload, 'Email/set');
-        const id = set?.created?.c1?.id;
-        if (!id) throw new Error(`could not seed read message: ${JSON.stringify(set)}`);
+        const id = await createEmailInMailbox(jmap, {
+          mailboxId: inbox.id,
+          fromEmail,
+          subject,
+          bodyText: 'mark-unread fixture',
+          keywords: { $seen: true },
+        });
         createdIds.push(id);
       }
 
-      await loginViaOidc(page);
-      await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-
-      await clickFolder(page, inbox.name);
       for (const subject of subjects) {
-        await expect.poll(
-          async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 30_000, message: `expected "${subject}" in Inbox` },
-        ).toBeGreaterThan(0);
+        await expectRowSoon(page, subject);
       }
 
       for (const subject of subjects) {
@@ -180,10 +158,15 @@ test.describe('Mark read/unread e2e', () => {
         expect(inboxCache.remoteIds).toContain(remoteId);
       }
     } finally {
-      await attachConsoleTail(testInfo, consoleLines);
-      for (const id of createdIds) {
-        await cleanupEmail(jmap, id, trash.id);
-      }
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      // Bulk destroy. Previously this looped cleanupEmail (get +
+      // move-to-trash + destroy = 3 round trips per id), which
+      // routinely cost 5-15 s in this test because the post-bulk-
+      // mutation Email/get on the second id occasionally stalled
+      // 10-15 s waiting for Stalwart to settle. Direct destroy
+      // skips both the get and the trash move, so cleanup is
+      // ~50 ms regardless of indexer state.
+      await destroyEmails(jmap, createdIds);
     }
   });
 });

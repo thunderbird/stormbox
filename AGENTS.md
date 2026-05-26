@@ -147,11 +147,17 @@ relies on (SharedWorker, IndexedDB, SubtleCrypto) work. Keycloak
 # 1. Start Keycloak + Stalwart + Accounts (host or dev container with Docker)
 cd thunderbird-accounts && docker compose up --build -d
 
-# 2. One-time per fresh volume: open http://localhost:8087, sign in as
-#    admin@example.org / admin, provision a Thundermail address.
+# 2. One-time per fresh volume (DEV USE ONLY, not required for e2e):
+#    open http://localhost:8087, sign in as admin@example.org / admin,
+#    provision a Thundermail address. The e2e suite uses a separate
+#    `e2e@example.org` account that is auto-provisioned by
+#    tests/fixtures/configure-keycloak.mjs and configure-stalwart.mjs
+#    on every run, so the developer's account stays uncontaminated.
 
-# 3. Seed mail + start the local WS proxy (background)
-npm run stack:seed
+# 3. Start the local WS proxy (background). seed-mail is no longer
+#    required — the relevant specs seed their own data idempotently
+#    via a beforeAll hook (see tests/e2e/helpers/jmap-client.js
+#    `ensureArchivePopulated`).
 npm run stack:ws-proxy &
 
 # 4. Run live e2e inside the dev container

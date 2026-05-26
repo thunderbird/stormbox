@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   cleanupEmail,
   connectJmap,
@@ -7,21 +5,24 @@ import {
   getEmailMailboxIds,
   listMailboxes,
   mailboxByRole,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
-  clickFolder,
+  expectRowSoon,
   openMessageBySubject,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
@@ -47,15 +48,13 @@ test.skip(!localStackEnabled, skipLocalStackMessage);
 const TEST_SUBJECT_PREFIX = 'ArchiveAction e2e';
 
 test.describe('Archive e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap, { subjectPrefix: TEST_SUBJECT_PREFIX });
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage, {
+      extraSubjectPrefixes: [TEST_SUBJECT_PREFIX],
+    });
   });
 
-  test('Archive button moves an Inbox message into the Archive folder', async ({ page }, testInfo) => {
-    const consoleLines = [];
-    trackConsole(page, consoleLines);
-
+  test('Archive button moves an Inbox message into the Archive folder', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -77,14 +76,7 @@ test.describe('Archive e2e', () => {
         subject,
       });
 
-      await loginViaOidc(page);
-      await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-
-      await clickFolder(page, inbox.name);
-      await expect.poll(
-        async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-        { timeout: 30_000, message: `expected "${subject}" to render in Inbox` },
-      ).toBeGreaterThan(0);
+      await expectRowSoon(page, subject);
       await openMessageBySubject(page, subject);
 
       await page.getByTitle('Archive (A)').click();
@@ -122,7 +114,7 @@ test.describe('Archive e2e', () => {
         throw err;
       }
     } finally {
-      await attachConsoleTail(testInfo, consoleLines);
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (createdId) {
         await cleanupEmail(jmap, createdId, trash.id);
       }

@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   cleanupEmail,
   connectJmap,
@@ -7,7 +5,11 @@ import {
   listMailboxes,
   mailboxByRole,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
@@ -38,7 +40,13 @@ async function iframeHeight(page) {
   });
 }
 
-test('iframe height grows past 120 on first open and survives body refresh', async ({ page }) => {
+test.beforeEach(async ({ sharedPage }) => {
+  await resetSharedSession(sharedPage, {
+    extraSubjectPrefixes: ['Iframe height e2e'],
+  });
+});
+
+test('iframe height grows past 120 on first open and survives body refresh', async ({ sharedPage: page }) => {
   const jmap = await connectJmap();
   const mailboxes = await listMailboxes(jmap);
   const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -55,9 +63,6 @@ test('iframe height grows past 120 on first open and survives body refresh', asy
       bodyText: 'Plain fallback for iframe height e2e.',
       htmlBody: tallHtmlBody(),
     });
-
-    await loginViaOidc(page);
-    await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
 
     const target = page.locator('.msg-list__item').filter({ hasText: subject }).first();
     await expect(target).toBeVisible({ timeout: 30_000 });

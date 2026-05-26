@@ -15,6 +15,7 @@
     "typecheck": "vue-tsc --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:local": "LOCAL_STACK=1 playwright test",
+    "test:e2e:local:full": "LOCAL_STACK=1 INCLUDE_CHROMIUM=1 playwright test",
     "test:e2e:install": "playwright install --with-deps",
     "stack:up": "docker compose -f thunderbird-accounts/docker-compose.yml up --build -d",
     "stack:configure": "node tests/fixtures/configure-keycloak.mjs && node tests/fixtures/configure-stalwart.mjs",

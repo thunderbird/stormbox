@@ -1,12 +1,19 @@
 import { test, expect } from '@playwright/test';
 
+import {
+  connectJmap,
+  ensureArchiveMailbox,
+  ensureArchivePopulated,
+} from './helpers/jmap-client.js';
 import { loginViaOidc } from './helpers/oidc-login.js';
 import {
   localStackEnabled,
+  selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
   attachConsoleTail,
+  escapeRegExp,
   trackConsole,
   waitForShellReady,
 } from './helpers/ui.js';
@@ -39,6 +46,18 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Large folder scroll renders rows, no orphan placeholders', () => {
+  // Idempotent: pays the ~7 s seed cost once on a fresh account
+  // (or after a tmpfs Stalwart wipe), no-ops on a populated one.
+  // Replaces the previous reliance on a separate stack:seed step.
+  test.beforeAll(async () => {
+    const jmap = await connectJmap();
+    const archive = await ensureArchiveMailbox(jmap);
+    await ensureArchivePopulated(jmap, {
+      archiveMailboxId: archive.id,
+      fromEmail: selfEmail(),
+    });
+  });
+
   test('rapid mid-folder scroll fills the visible window', async ({ page }, testInfo) => {
     const consoleLines = [];
     trackConsole(page, consoleLines);
@@ -57,10 +76,25 @@ test.describe('Large folder scroll renders rows, no orphan placeholders', () => 
       const folder = big[0];
       return folder ? { name: folder.name, total: Number(folder.total_emails) } : null;
     });
-    test.skip(!target, 'no folder over 1000 messages - run npm run stack:seed first');
+    // The describe-level beforeAll guarantees a >1000-msg Archive
+    // exists, but the client may not have synced its folder
+    // counts yet on a freshly-seeded account. Fail loud rather
+    // than silently skipping.
+    if (!target) {
+      throw new Error(
+        'no folder over 1000 messages visible to client; expected ensureArchivePopulated to seed Archive',
+      );
+    }
 
     try {
-      await page.locator('.folder-node').filter({ hasText: target.name }).click();
+      // hasText would do a substring match, which collides when
+      // multiple folders share a prefix (e.g. seed-mail.mjs creates
+      // both a role:archive "Archive" and a user-folder "Archives"
+      // — both >1000 messages after a re-seed). Use the accessible
+      // name with a regex anchored to the row's count suffix to
+      // pick the exact folder we sized off.
+      const exactName = new RegExp(`^${escapeRegExp(target.name)}\\s*\\d`);
+      await page.getByRole('button', { name: exactName }).first().click();
       const scroller = page.locator('.msg-list__scroller');
       await scroller.waitFor({ state: 'visible' });
       // Wait for the first page of rows to render so we know the

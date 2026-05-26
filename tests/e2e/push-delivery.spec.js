@@ -8,7 +8,13 @@ import {
 } from './helpers/stack-env.js';
 import { sendSmtpMessage } from './helpers/smtp-client.js';
 import { attachConsoleTail, clickFolder, trackConsole } from './helpers/ui.js';
-import { connectJmap, sweepOrphanTestMessages } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  ensureInboxBaseline,
+  listMailboxes,
+  mailboxByRole,
+  sweepOrphanTestMessages,
+} from './helpers/jmap-client.js';
 
 /**
  * End-to-end push-delivery regression. Injects a real message through
@@ -23,6 +29,20 @@ import { connectJmap, sweepOrphanTestMessages } from './helpers/jmap-client.js';
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Push delivery to the open Inbox', () => {
+  // Need at least one inbox row so the "initial paint" gate the
+  // test uses to know push is wired up actually fires. Idempotent
+  // — only the first run on a fresh account pays the seed cost.
+  test.beforeAll(async () => {
+    const jmap = await connectJmap();
+    const mailboxes = await listMailboxes(jmap);
+    const inbox = mailboxByRole(mailboxes, 'inbox');
+    if (!inbox) throw new Error('Test requires Inbox mailbox');
+    await ensureInboxBaseline(jmap, {
+      inboxMailboxId: inbox.id,
+      fromEmail: selfEmail(),
+    });
+  });
+
   test.beforeEach(async () => {
     const jmap = await connectJmap();
     await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Push delivery' });

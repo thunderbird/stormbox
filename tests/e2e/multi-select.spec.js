@@ -1,6 +1,8 @@
-import { test, expect } from '@playwright/test';
-
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
@@ -59,10 +61,11 @@ async function pollDiagnostics(page, predicate, { timeout = 5_000, message } = {
 }
 
 test.describe('multi-select (Fastmail model)', () => {
-  test('row click views without selecting; checkbox selects without viewing', async ({ page }) => {
-    await loginViaOidc(page);
-    await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
+  });
 
+  test('row click views without selecting; checkbox selects without viewing', async ({ sharedPage: page }) => {
     await expect.poll(
       async () => page.evaluate(() => Array.from(
         document.querySelectorAll('.msg-list__items > li'),

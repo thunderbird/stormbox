@@ -4,6 +4,7 @@ import {
   connectJmap,
   countMessagesInMailboxBySubjectPrefix,
   createEmailsInMailbox,
+  destroyEmails,
   ensureMailbox,
   sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
@@ -22,7 +23,10 @@ import {
   waitForShellReady,
 } from './helpers/ui.js';
 
-const MOVE_COUNT = Number(process.env.LARGE_BULK_MOVE_COUNT ?? 1_000);
+// Default an uneven count (1033) so off-by-one chunking bugs in the
+// bulk overlay / outbox apply path don't get masked by a round
+// number. Override via LARGE_BULK_MOVE_COUNT for stress runs.
+const MOVE_COUNT = Number(process.env.LARGE_BULK_MOVE_COUNT ?? 1_033);
 const SOURCE_FOLDER = 'Large Move Source';
 const DEST_FOLDER = 'Large Move Destination';
 const SUBJECT_PREFIX = 'Large move e2e';
@@ -59,8 +63,13 @@ test.describe('Large bulk move e2e', () => {
     const destination = await ensureMailbox(jmap, { name: DEST_FOLDER });
     mark('connect-and-mailboxes');
 
+    // Hoisted so the finally block can call destroyEmails on the
+    // exact ids we created. Skipping the Email/query phase the
+    // sweep would otherwise pay cuts cleanup from ~10 round trips
+    // to one batched destroy per chunkSize (default 500).
+    let remoteIds = [];
     try {
-      const remoteIds = await createEmailsInMailbox(jmap, {
+      remoteIds = await createEmailsInMailbox(jmap, {
         mailboxId: source.id,
         fromEmail,
         subjectPrefix: SUBJECT_PREFIX,
@@ -168,6 +177,14 @@ test.describe('Large bulk move e2e', () => {
     } finally {
       await attachConsoleTail(testInfo, consoleLines);
       const cleanupStart = Date.now();
+      // Fast path: destroy the ids we tracked. Falls back to the
+      // sweep below for anything that slipped through (e.g. an
+      // earlier interrupted run that left orphans).
+      if (remoteIds.length > 0) {
+        await destroyEmails(jmap, remoteIds).catch((err) => {
+          console.warn(`[large-bulk-move] destroyEmails failed, falling back to sweep: ${err?.message ?? err}`);
+        });
+      }
       await sweepOrphanTestMessages(jmap, { subjectPrefix: SUBJECT_PREFIX });
       timings.push({ name: 'cleanup', ms: Date.now() - cleanupStart });
       console.log(`[large-bulk-move timings] ${JSON.stringify(timings)}`);

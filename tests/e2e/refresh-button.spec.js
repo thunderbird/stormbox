@@ -126,17 +126,27 @@ test.describe('Refresh button nuke-and-rebuild', () => {
         { timeout: 30_000, message: 'ghost row should be visible before refresh' },
       ).toBeGreaterThan(0);
 
+      // Resolve as soon as we observe the spinner class (or after a
+      // short ceiling). The previous 5 s sleep was always paid even
+      // on the happy path; the spinner appears within ms of the
+      // click for a healthy refresh.
       const sawSpinner = page.evaluate(async () => {
         const btn = document.querySelector('.msg-list__refresh svg');
         if (!btn) return false;
-        let seen = false;
-        const observer = new MutationObserver(() => {
-          if (btn.classList.contains('is-spinning')) seen = true;
+        if (btn.classList.contains('is-spinning')) return true;
+        return await new Promise((resolve) => {
+          const observer = new MutationObserver(() => {
+            if (btn.classList.contains('is-spinning')) {
+              observer.disconnect();
+              resolve(true);
+            }
+          });
+          observer.observe(btn, { attributes: true, attributeFilter: ['class'] });
+          setTimeout(() => {
+            observer.disconnect();
+            resolve(btn.classList.contains('is-spinning'));
+          }, 1500);
         });
-        observer.observe(btn, { attributes: true, attributeFilter: ['class'] });
-        await new Promise((r) => setTimeout(r, 5000));
-        observer.disconnect();
-        return seen || btn.classList.contains('is-spinning');
       });
 
       await page.locator('.msg-list__refresh').click();

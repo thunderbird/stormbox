@@ -3,6 +3,9 @@ import { test, expect } from '@playwright/test';
 import {
   connectJmap,
   createEmailInMailbox,
+  ensureArchiveMailbox,
+  ensureArchivePopulated,
+  ensureInboxBaseline,
   listMailboxes,
   mailboxByRole,
   sweepOrphanTestMessages,
@@ -35,6 +38,29 @@ function tallHtmlBody() {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Local stack mail flow e2e', () => {
+  // Idempotent account preconditions:
+  //   - Archive role mailbox + 1500 seeded messages for the
+  //     deep-scroll assertion at the bottom of the test.
+  //   - 12 baseline Inbox messages so the Inbox-scrollable
+  //     assertion has enough rows to fill the scroller.
+  // Both no-op on a populated account, so re-runs are cheap;
+  // a fresh tmpfs Stalwart pays ~7 s once for the archive seed.
+  test.beforeAll(async () => {
+    const jmap = await connectJmap();
+    const archive = await ensureArchiveMailbox(jmap);
+    await ensureArchivePopulated(jmap, {
+      archiveMailboxId: archive.id,
+      fromEmail: selfEmail(),
+    });
+    const mailboxes = await listMailboxes(jmap);
+    const inbox = mailboxByRole(mailboxes, 'inbox');
+    if (!inbox) throw new Error('Test requires Inbox mailbox');
+    await ensureInboxBaseline(jmap, {
+      inboxMailboxId: inbox.id,
+      fromEmail: selfEmail(),
+    });
+  });
+
   test.beforeEach(async () => {
     const jmap = await connectJmap();
     await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Mail flow e2e' });

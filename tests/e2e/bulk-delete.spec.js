@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   classifyMailboxState,
   cleanupEmail,
@@ -8,20 +6,23 @@ import {
   getEmailMailboxIds,
   listMailboxes,
   mailboxByRole,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
-  clickFolder,
+  expectRowSoon,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
@@ -35,15 +36,11 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Bulk delete e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap);
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
   });
 
-  test('multi-select delete drops every row from the Inbox list (UI + cache)', async ({ page }, testInfo) => {
-    const consoleLines = [];
-    trackConsole(page, consoleLines);
-
+  test('multi-select delete drops every row from the Inbox list (UI + cache)', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -70,15 +67,8 @@ test.describe('Bulk delete e2e', () => {
         createdIds.push(id);
       }
 
-      await loginViaOidc(page);
-      await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-
-      await clickFolder(page, inbox.name);
       for (const subject of subjects) {
-        await expect.poll(
-          async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
-          { timeout: 30_000, message: `expected test message "${subject}" to render in Inbox` },
-        ).toBeGreaterThan(0);
+        await expectRowSoon(page, subject);
       }
 
       for (const subject of subjects) {
@@ -132,7 +122,7 @@ test.describe('Bulk delete e2e', () => {
         }
       }
     } finally {
-      await attachConsoleTail(testInfo, consoleLines);
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
       for (const id of createdIds) {
         await cleanupEmail(jmap, id, trash.id);
       }

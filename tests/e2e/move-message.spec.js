@@ -1,5 +1,3 @@
-import { test, expect } from '@playwright/test';
-
 import {
   cleanupEmail,
   connectJmap,
@@ -7,20 +5,23 @@ import {
   getEmailMailboxIds,
   listMailboxes,
   mailboxByRole,
-  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
-import { loginViaOidc } from './helpers/oidc-login.js';
+import {
+  attachConsoleTail,
+  consoleLinesFor,
+  expect,
+  resetSharedSession,
+  test,
+} from './helpers/shared-session.js';
 import {
   localStackEnabled,
   selfEmail,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
-  attachConsoleTail,
   clickFolder,
   readRecentMutations,
   readViewCacheForFolderRole,
-  trackConsole,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
@@ -38,15 +39,11 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 test.describe('Move message e2e', () => {
-  test.beforeEach(async () => {
-    const jmap = await connectJmap();
-    await sweepOrphanTestMessages(jmap, { subjectPrefix: 'Move e2e' });
+  test.beforeEach(async ({ sharedPage }) => {
+    await resetSharedSession(sharedPage);
   });
 
-  test('drag-and-drop moves an Inbox row to the Archive folder', async ({ page }, testInfo) => {
-    const consoleLines = [];
-    trackConsole(page, consoleLines);
-
+  test('drag-and-drop moves an Inbox row to the Archive folder', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -68,10 +65,6 @@ test.describe('Move message e2e', () => {
         subject,
       });
 
-      await loginViaOidc(page);
-      await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 });
-
-      await clickFolder(page, inbox.name);
       const sourceRow = page.locator('.msg-list__items > li').filter({ hasText: subject }).first();
       await expect(sourceRow).toBeVisible({ timeout: 30_000 });
 
@@ -129,7 +122,7 @@ test.describe('Move message e2e', () => {
         throw err;
       }
     } finally {
-      await attachConsoleTail(testInfo, consoleLines);
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (createdId) {
         await cleanupEmail(jmap, createdId, trash.id);
       }
