@@ -10,8 +10,9 @@
  * session document so every URL the SPA subsequently dereferences
  * stays inside the bridge. Rewrites absolute `Location` headers
  * for the same reason. Strips Cloudflare meta headers and `Cookie`
- * before talking to Stalwart. Rejects WebSocket upgrades as defense
- * in depth — `/jmap/ws` lives on `wsmail.*`.
+ * before talking to Stalwart. WebSocket upgrades are dispatched to
+ * `ws.ts` before this handler runs; non-upgrade `/jmap/ws` requests
+ * are rejected here so URL credentials never get proxied upstream.
  */
 
 import type { Route } from './routes';
@@ -52,11 +53,15 @@ const ALLOWED_REQUEST_HEADERS = 'Authorization, Content-Type, Accept';
 
 export async function handleHttpProxy(request: Request, route: Route): Promise<Response> {
   if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    return new Response('Use wsmail.* for /jmap/ws upgrades', { status: 426 });
+    return new Response('WebSocket upgrades must be handled by the WS bridge', { status: 426 });
   }
 
   const url = new URL(request.url);
   const origin = request.headers.get('origin');
+  if (url.pathname === '/jmap/ws') {
+    const headers = corsHeadersFor(origin, route);
+    return new Response('Expected Upgrade: websocket', { status: 426, headers });
+  }
 
   // Short-circuit preflights at the edge. Stalwart's CORS is exactly
   // what we are working around; we must NOT forward OPTIONS to it.
@@ -240,9 +245,8 @@ export function rewriteHttpHost(value: string, route: Route): string {
  * any string fields we don't know about that happen to contain the
  * Stalwart origin) get pointed at `route.httpBridgeOrigin`. The
  * WebSocket URL inside `capabilities['urn:ietf:params:jmap:websocket']`
- * is rewritten to `route.wsBridgeOrigin` so the browser opens the
- * upgrade against `wsmail.*`, which is the only host on the network
- * that knows how to bridge browser WebSocket auth.
+ * is rewritten to `route.wsBridgeOrigin` on the same jmap.* bridge
+ * host so the browser upgrade uses the same public proxy URL.
  */
 export function rewriteSessionUrls(session: unknown, route: Route): unknown {
   if (session === null || typeof session !== 'object') return session;

@@ -6,10 +6,18 @@ export function defaultJmapServerUrl(hostname = globalThis.location?.hostname): 
 }
 
 export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname): string {
-  if (hostname === "webmail.thundermail.com") {
-    return "https://wsmail.thundermail.com";
-  }
-  return "https://wsmail.stage-thundermail.com";
+  return jmapWsProxyUrlForServer(defaultJmapServerUrl(hostname));
+}
+
+export function jmapWsProxyUrlForServer(serverUrl: string): string {
+  const url = new URL(serverUrl);
+  url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+  url.username = "";
+  url.password = "";
+  url.pathname = "/jmap/ws";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 export function accountsUrlForHostname(hostname = globalThis.location?.hostname): string {
@@ -59,19 +67,12 @@ export const OIDC_CLIENT_ID =
   import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox-test";
 
 /**
- * URL of the JMAP-over-WebSocket auth bridge. Stalwart's /jmap/ws
- * only authenticates via the HTTP Authorization header, which
- * browsers cannot set on a WebSocket upgrade. The Worker at
- * wsmail.stage-thundermail.com / wsmail.thundermail.com reads the
- * credential off the URL query string and synthesises the header
- * upstream. See stormbox/infra/jmap-bridge.
- *
- * Set to an empty string to fall back to the URL Stalwart advertises
- * in the session document (and accept that the open will fail in any
- * browser).
+ * URL of the JMAP-over-WebSocket auth bridge. It is derived from the
+ * same public bridge origin as JMAP HTTP, with /jmap/ws on the WS
+ * scheme. The bridge reads the credential off the URL query string
+ * and synthesises the Authorization header upstream.
  */
-export const JMAP_WS_PROXY_URL =
-  import.meta.env.VITE_JMAP_WS_PROXY ?? `${defaultJmapWsProxyUrl()}/jmap/ws`;
+export const JMAP_WS_PROXY_URL = jmapWsProxyUrlForServer(JMAP_SERVER_URL);
 
 /**
  * Optional same-origin/edge proxy for sender domain icons. An empty

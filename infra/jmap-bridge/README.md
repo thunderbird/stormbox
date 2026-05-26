@@ -1,9 +1,8 @@
 # stormbox-jmap-bridge
 
 A single Cloudflare Worker that fronts both halves of Stormbox's
-JMAP transport on dedicated bridge hostnames: the WebSocket auth
-bridge on `wsmail.*.thundermail.com`, and the HTTP proxy with
-first-party CORS on `jmap.*.thundermail.com`.
+JMAP transport on `jmap.*.thundermail.com`: the HTTP proxy with
+first-party CORS and the `/jmap/ws` WebSocket auth bridge.
 
 ## Why it exists
 
@@ -25,7 +24,7 @@ CORS itself: it allowlists the SPA's webmail origins (plus
 edge so Stalwart's CORS settings never reach the browser.
 
 ```
-Browser ─ WS upgrade ───►  wsmail.thundermail.com/jmap/ws?access_token=<jwt>
+Browser ─ WS upgrade ───►  jmap.thundermail.com/jmap/ws?access_token=<jwt>
                                         │
                                         ▼  (this Worker, ws.ts)
                           strip access_token / basic from URL
@@ -50,7 +49,7 @@ SPA at webmail.* ─ HTTP ─►  jmap.thundermail.com/jmap/api
                               apiUrl / uploadUrl / downloadUrl /
                               eventSourceUrl → jmap.*
                               urn:ietf:params:jmap:websocket
-                                capability url → wsmail.*
+                                capability url → jmap.*
                             rewrite absolute Location headers
                             merge Access-Control-Allow-Origin into
                               the response
@@ -98,16 +97,15 @@ behaviour. The Worker is never an open CORS oracle.
 
 ## Dispatch model
 
-Dispatch is by **hostname**, not by request inspection. A request
-to `wsmail.*` only reaches `ws.ts`; a request to `jmap.*` only
-reaches `http.ts`. The handlers do not share request-handling code.
-The host classifier lives in `src/routes.ts`.
+Dispatch is by **request shape** after hostname routing selects the
+environment. A WebSocket upgrade on `jmap.*` reaches `ws.ts`; every
+non-upgrade request reaches `http.ts`. The production hostnames never
+route by path-scoped Cloudflare rules.
 
 | Hostname           | Reaches    | Wrong-shape response |
 |--------------------|------------|----------------------|
-| `wsmail.*`         | `ws.ts`    | 426 if not a WS upgrade |
-| `jmap.*`           | `http.ts`  | 426 if a WS upgrade (defense in depth — Cloudflare strips Upgrade on HTTP/2, so this only fires on HTTP/1.1) |
-| `*.workers.dev`    | both       | dispatched by request `Upgrade` header (test mode) |
+| `jmap.*`           | `http.ts` or `ws.ts` | Non-upgrade `/jmap/ws` gets 426 before proxying |
+| `*.workers.dev`    | `http.ts` or `ws.ts` | Same dispatch, plus test upstream header |
 | anything else      | none       | 404 |
 
 ## File layout
@@ -119,7 +117,7 @@ infra/jmap-bridge/
 ├── tsconfig.json
 ├── wrangler.toml
 └── src/
-    ├── index.ts        # dispatcher (hostname → handler)
+    ├── index.ts        # dispatcher (hostname + Upgrade → handler)
     ├── routes.ts       # Route + CORS allowlist + selectRoute + classifyHost
     ├── ws.ts           # WebSocket upgrade auth bridge
     └── http.ts         # HTTP proxy + CORS + session-URL rewrite
@@ -130,14 +128,14 @@ infra/jmap-bridge/
 | Command                       | What it does                                              | When to use            |
 |-------------------------------|-----------------------------------------------------------|------------------------|
 | `npm run deploy`              | Publish to `*.workers.dev` only. No production hostname.  | Local smoke testing.   |
-| `npm run deploy:production`   | Publish under `[env.production]`, binding all four custom domains. | Real production deploy.|
+| `npm run deploy:production`   | Publish under `[env.production]`, binding the two jmap.* custom domains. | Real production deploy.|
 
 The default `wrangler deploy` cannot accidentally claim a
 production hostname — those only fire under the production env.
 
 For `--env production` the `thundermail.com` and
 `stage-thundermail.com` zones must live in this Cloudflare account.
-Cloudflare manages the DNS records for the four custom domains
+Cloudflare manages the DNS records for the two custom domains
 automatically when the Worker is deployed against this config.
 **The SPA at `webmail.*.thundermail.com` does not need to be
 proxied through Cloudflare** — it stays on GitHub Pages with
@@ -190,12 +188,12 @@ curl -i -X OPTIONS \
 # Cloudflare doesn't strip the Upgrade header at the edge)
 basic=$(printf 'user:pass' | base64 -w0)
 wscat -c "$BRIDGE/jmap/ws?basic=$basic" -s jmap   # workers.dev test
-wscat -c "wss://wsmail.stage-thundermail.com/jmap/ws?basic=$basic" -s jmap   # production
+wscat -c "wss://jmap.stage-thundermail.com/jmap/ws?basic=$basic" -s jmap   # production
 ```
 
 Expected: HTTP responses carry `apiUrl` and friends pointing at the
 bridge host (`jmap.*`), not at `mail.*`. The WebSocket capability
-URL points at `wsmail.*`. Preflights from allowlisted origins
+URL also points at `jmap.*`. Preflights from allowlisted origins
 return 204 with `Access-Control-Allow-Origin` echoing the request
 origin and `Access-Control-Max-Age: 3600`; preflights from
 unrecognised origins return 403 with no CORS headers (so the
@@ -207,8 +205,8 @@ browser blocks the request).
 
 - `JMAP_SERVER_URL` resolves to `https://jmap.*.thundermail.com`
   for hosted SPA builds, so the transport hits the bridge.
-- `JMAP_WS_PROXY_URL` resolves to `https://wsmail.*.thundermail.com/jmap/ws`,
-  matching the bridge's WS half.
+- `JMAP_WS_PROXY_URL` is derived from `JMAP_SERVER_URL` as
+  `wss://jmap.*.thundermail.com/jmap/ws`.
 
 The transport reads `apiUrl`, `uploadUrl`, `downloadUrl`, and
 `eventSourceUrl` out of the session document, so the rewritten

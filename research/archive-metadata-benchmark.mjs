@@ -53,7 +53,7 @@ function chunkSummary(chunks) {
 
 async function networkOnly() {
   const basic = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
-  const wsUrl = `wss://wsmail.stage-thundermail.com/jmap/ws?basic=${encodeURIComponent(basic)}`;
+  const wsUrl = `wss://jmap.stage-thundermail.com/jmap/ws?basic=${encodeURIComponent(basic)}`;
   const connectStart = nowMs();
   const ws = new WebSocket(wsUrl, ['jmap']);
   await waitFor(ws, 'open');
@@ -120,7 +120,7 @@ async function networkOnly() {
   }
   ws.close(1000, 'done');
   return {
-    transport: 'direct WS via wsmail.stage-thundermail.com proxy',
+    transport: 'direct WS via jmap.stage-thundermail.com proxy',
     connectMs: Math.round(connectMs),
     chunkLimit: CHUNK,
     totalMessages: total,

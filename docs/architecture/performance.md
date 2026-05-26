@@ -161,7 +161,7 @@ Browsers cannot set `Authorization` on `new WebSocket(url, protocols)`,
 and JMAP `/jmap/ws` (RFC 8887) authenticates only via that header.
 The Cloudflare Worker at `infra/jmap-bridge/` accepts
 `?access_token=<bearer>` (RFC 6750 §2.3) or `?basic=<base64>` on the
-`wsmail.*.thundermail.com` hostname's `/jmap/ws` upgrades, strips
+`jmap.*.thundermail.com` hostname's `/jmap/ws` upgrades, strips
 the credential from the forwarded URL, sets the upstream
 `Authorization` header, and proxies the WebSocket.
 
@@ -172,9 +172,9 @@ for vite dev), short-circuits preflights, and echoes back
 `Access-Control-Allow-Origin` only when the request `Origin` is in
 the allowlist — so the SPA's JMAP calls work cross-origin without
 needing Stalwart's CORS to be touched. It rewrites session-document
-URLs from `mail.*` to `jmap.*` for HTTP fields and to `wsmail.*`
-for the WebSocket capability so every URL the client subsequently
-dereferences stays inside the bridge.
+URLs from `mail.*` to `jmap.*` for both HTTP fields and the WebSocket
+capability so every URL the client subsequently dereferences stays
+inside the bridge.
 
 The worker captures `fetch` and `WebSocket` once at startup and
 binds them to `globalThis`. Firefox's SharedWorker enforces the
@@ -363,5 +363,5 @@ WebSocket via the proxy described above.
 - `src/components/MessageList.vue`: virtualized list using
   `@tanstack/vue-virtual`.
 - `infra/jmap-bridge/`: Cloudflare Worker fronting both halves of
-  the JMAP transport — the WebSocket auth bridge on `wsmail.*` and
-  the HTTP proxy with first-party CORS on `jmap.*`.
+  the JMAP transport on `jmap.*`: the HTTP proxy with first-party
+  CORS and the WebSocket auth bridge at `/jmap/ws`.

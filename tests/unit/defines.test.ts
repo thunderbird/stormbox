@@ -5,6 +5,7 @@ import {
   appointmentUrlForHostname,
   defaultJmapServerUrl,
   defaultJmapWsProxyUrl,
+  jmapWsProxyUrlForServer,
   sendUrlForHostname,
   senderAvatarProxyUrlForHostname,
 } from '../../src/defines.js';
@@ -81,12 +82,26 @@ describe('defaultJmapServerUrl', () => {
 });
 
 describe('defaultJmapWsProxyUrl', () => {
-  it('points the production webmail host at the production WebSocket auth bridge', () => {
-    expect(defaultJmapWsProxyUrl('webmail.thundermail.com')).toBe('https://wsmail.thundermail.com');
+  it('derives the production WebSocket auth bridge from the production JMAP bridge', () => {
+    expect(defaultJmapWsProxyUrl('webmail.thundermail.com')).toBe('wss://jmap.thundermail.com/jmap/ws');
   });
 
-  it('points every non-production host at the stage WebSocket auth bridge', () => {
-    expect(defaultJmapWsProxyUrl('webmail.stage-thundermail.com')).toBe('https://wsmail.stage-thundermail.com');
-    expect(defaultJmapWsProxyUrl('localhost')).toBe('https://wsmail.stage-thundermail.com');
+  it('derives every non-production WebSocket auth bridge from the stage JMAP bridge', () => {
+    expect(defaultJmapWsProxyUrl('webmail.stage-thundermail.com')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
+    expect(defaultJmapWsProxyUrl('localhost')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
+  });
+});
+
+describe('jmapWsProxyUrlForServer', () => {
+  it('uses the same origin as the configured JMAP server', () => {
+    expect(jmapWsProxyUrlForServer('https://jmap.stage-thundermail.com')).toBe(
+      'wss://jmap.stage-thundermail.com/jmap/ws',
+    );
+  });
+
+  it('drops local HTTP proxy paths when deriving the local WebSocket route', () => {
+    expect(jmapWsProxyUrlForServer('https://localhost:3000/stalwart-jmap')).toBe(
+      'wss://localhost:3000/jmap/ws',
+    );
   });
 });

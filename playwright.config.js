@@ -20,7 +20,6 @@ const stackProxies = LOCAL_STACK ? stackProxyDefaults() : {};
 const localStackViteEnv = LOCAL_STACK
   ? {
       VITE_JMAP_SERVER_URL: process.env.VITE_JMAP_SERVER_URL ?? `https://localhost:${PORT}/stalwart-jmap`,
-      VITE_JMAP_WS_PROXY: process.env.VITE_JMAP_WS_PROXY ?? `https://localhost:${PORT}/jmap/ws`,
       VITE_OIDC_ISSUER: process.env.VITE_OIDC_ISSUER ?? `https://localhost:${PORT}/realms/tbpro`,
       VITE_OIDC_CLIENT_ID: process.env.VITE_OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test',
       VITE_SENDER_AVATAR_PROXY_URL: process.env.VITE_SENDER_AVATAR_PROXY_URL ?? `https://localhost:${PORT}/sender-avatar`,

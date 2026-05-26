@@ -1,8 +1,10 @@
 # Stormbox Webmail
 
 Stormbox is a prototype Vue 3 + Pinia webmail client backed by browser-local SQLite in a
-`SharedWorker`. JMAP is the mail source of truth; the UI reads through the local
+`SharedWorker`. JMAP is the source of truth; the UI reads through the local
 repository/cache layer and the sync backend keeps that cache current.
+
+This is an experiment! In addition to the experimental sqlite backend, this project is experimenting with spec-based development. You can find the [spec here](specs/001-mvp-scope/spec.md). There are also [architecture docs](docs/README.md) and [research benchmarks](research/README.md).
 
 ## Development
 
@@ -31,10 +33,11 @@ for Keycloak and Stalwart.
 
 The helper initializes the submodule, starts the minimal local auth/mail stack
 (Keycloak, Keycloak's Postgres, and Stalwart), starts the Stormbox dev
-container, runs `stack:configure`, and starts the local JMAP WebSocket auth
-proxy inside the dev container. Stalwart stores local mail in its own RocksDB
-data directory; the Postgres service here is only Keycloak's database. To also
-start the Thunderbird Accounts UI and its Django Postgres/Redis services, run
+container, runs `stack:configure`, and starts the local WebSocket auth bridge
+(the WS half of the same contract as `infra/jmap-bridge/`) inside the dev
+container. Stalwart stores local mail in its own RocksDB data directory; the
+Postgres service here is only Keycloak's database. To also start the Thunderbird
+Accounts UI and its Django Postgres/Redis services, run
 `WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`.
 
 `stack:configure` is idempotent: it updates Keycloak for the HTTPS Vite origin,
@@ -65,20 +68,19 @@ specs seed their own baseline inbox/archive data as needed.
 
 The app defaults to the local stack during development through
 `.env.development`: Vite keeps Stormbox on self-signed HTTPS and reverse-proxies
-Keycloak, Stalwart JMAP HTTP, the local JMAP WebSocket auth bridge, and sender
-avatar lookups through `https://localhost:3000`.
+Keycloak, Stalwart JMAP HTTP (`/stalwart-jmap`), the local WebSocket auth
+bridge (`/jmap/ws`), and sender avatar lookups through `https://localhost:3000`.
 
-Hosted stage/prod builds use the Cloudflare edge bridge at `infra/jmap-bridge/`
-by default. The bridge fronts the WebSocket auth contract on
-`wsmail.*.thundermail.com` and the HTTP JMAP surface on
-`jmap.*.thundermail.com` (with first-party CORS so the SPA at
-`webmail.*.thundermail.com` can call it cross-origin). The app links and
-transport defaults follow the current hostname:
+Hosted stage/prod builds use a single Cloudflare Worker at `infra/jmap-bridge/`
+by default. That bridge fronts both halves of JMAP transport on
+`jmap.*.thundermail.com`: HTTP JMAP with first-party CORS, plus the
+`/jmap/ws` WebSocket auth bridge. The app links and transport defaults follow
+the current hostname:
 
-- `webmail.stage-thundermail.com` JMAP HTTP -> `https://jmap.stage-thundermail.com`
-- `webmail.stage-thundermail.com` JMAP WS -> `https://wsmail.stage-thundermail.com`
-- `webmail.thundermail.com` JMAP HTTP -> `https://jmap.thundermail.com`
-- `webmail.thundermail.com` JMAP WS -> `https://wsmail.thundermail.com`
+- `webmail.stage-thundermail.com` -> `https://jmap.stage-thundermail.com`
+  (HTTP) and `wss://jmap.stage-thundermail.com/jmap/ws` (WS)
+- `webmail.thundermail.com` -> `https://jmap.thundermail.com` (HTTP) and
+  `wss://jmap.thundermail.com/jmap/ws` (WS)
 - hosted sender avatars -> [`https://avatars.thunderbird.net`](https://avatars.thunderbird.net)
   ([thunderbird/avatars](https://github.com/thunderbird/avatars))
 - dev/local product links -> stage services (`accounts-stage.tb.pro`,
@@ -86,15 +88,15 @@ transport defaults follow the current hostname:
 - hosted stage product links -> stage services
 - hosted prod product links -> production services
 
-To point a local build at another JMAP server or proxy, set
-`VITE_JMAP_SERVER_URL` and, when needed, `VITE_JMAP_WS_PROXY` in `.env.local`.
+To point a local build at another JMAP server or bridge, set
+`VITE_JMAP_SERVER_URL` in `.env.local`. The WebSocket auth bridge URL is derived
+from the same origin with `/jmap/ws`.
 To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 `VITE_SEND_URL`. To override sender logo lookup, set
 `VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.
 
 ```bash
-VITE_JMAP_SERVER_URL=https://your-jmap-proxy-or-server.com
-VITE_JMAP_WS_PROXY=https://your-ws-auth-bridge.com/jmap/ws
+VITE_JMAP_SERVER_URL=https://your-jmap-bridge-or-server.com
 VITE_SENDER_AVATAR_PROXY_URL=https://your-avatar-proxy.com
 ```
 
@@ -144,18 +146,37 @@ routing requirements.
 ## Project Layout
 
 ```text
-src/
-├── components/   # Vue components
-├── composables/  # Vue composables
-├── constants/    # Shared constants
-├── db/           # SQLite engine, migrations, RPC handlers, repository client
-├── services/     # Browser/service helpers
-├── stores/       # Pinia stores
-├── sync/         # Sync client and JMAP backend
-├── types/        # TypeScript declarations
-├── utils/        # Shared utilities
-├── App.vue
-└── main.ts
+stormbox/
+├── src/                      # Vue app source
+│   ├── assets/               # Static assets (icons)
+│   ├── components/           # Vue components
+│   ├── composables/          # Vue composables
+│   ├── constants/            # Shared constants
+│   ├── db/                   # SQLite SharedWorker, migrations, RPC handlers
+│   ├── services/             # Auth and browser helpers
+│   ├── stores/               # Pinia stores
+│   ├── sync/                 # Sync host/client and JMAP backend
+│   │   └── backends/jmap/    # JMAP transport, session, outbox, indexers
+│   ├── types/                # TypeScript declarations
+│   ├── utils/                # Shared utilities
+│   ├── App.vue
+│   ├── defines.ts            # Env and product URL config
+│   └── main.ts
+├── tests/
+│   ├── e2e/                  # Playwright specs and helpers
+│   ├── fixtures/             # Stack configure/seed scripts, local WS auth bridge
+│   └── unit/                 # Vitest tests (mirrors src layout)
+├── infra/
+│   └── jmap-bridge/          # Unified Cloudflare Worker (HTTP JMAP + WS auth)
+├── scripts/
+│   └── local-stack-up.sh     # Dev container + auth/mail stack bootstrap
+├── docs/                     # Architecture notes and doc index
+├── specs/                    # Spec Kit feature specs
+├── research/                 # Benchmark scripts and perf experiments
+├── thunderbird-accounts/     # Git submodule (Keycloak, Stalwart, Accounts UI)
+├── .devcontainer/            # Dev container definition
+├── .specify/                 # Spec Kit templates and constitution
+└── public/                   # Static PWA assets (favicons, icons)
 ```
 
 ## Key Dependencies

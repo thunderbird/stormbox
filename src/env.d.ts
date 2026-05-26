@@ -12,7 +12,6 @@ interface ImportMetaEnv {
   readonly PROD: boolean;
   readonly MODE: string;
   readonly VITE_JMAP_SERVER_URL?: string;
-  readonly VITE_JMAP_WS_PROXY?: string;
   readonly VITE_ACCOUNTS_URL?: string;
   readonly VITE_APPOINTMENT_URL?: string;
   readonly VITE_SEND_URL?: string;

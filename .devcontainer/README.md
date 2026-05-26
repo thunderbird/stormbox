@@ -69,11 +69,10 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
 ## Stage Overrides
 
 The default local environment uses the local stack. To point a local build at
-stage instead, override both JMAP endpoints:
+stage instead, override the JMAP bridge endpoint:
 
 ```bash
 VITE_JMAP_SERVER_URL=https://jmap.stage-thundermail.com
-VITE_JMAP_WS_PROXY=https://wsmail.stage-thundermail.com/jmap/ws
 ```
 
 ## Troubleshooting

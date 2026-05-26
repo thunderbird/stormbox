@@ -2,7 +2,7 @@
   "name": "stormbox-jmap-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker that fronts both Stormbox JMAP transport halves: WebSocket auth bridge on wsmail.* and same-origin HTTP proxy on webmail.*.",
+  "description": "Cloudflare Worker that fronts Stormbox JMAP HTTP and WebSocket auth on jmap.*.",
   "scripts": {
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",

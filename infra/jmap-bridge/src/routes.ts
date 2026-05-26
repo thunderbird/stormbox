@@ -2,13 +2,11 @@
  * Upstream routing + CORS allowlist shared by every code path in
  * `stormbox-jmap-bridge`.
  *
- * The Worker terminates on four production hostnames as Workers
+ * The Worker terminates on two production hostnames as Workers
  * Custom Domains:
  *
- *   wsmail.stage-thundermail.com   → handle WebSocket upgrade
- *   wsmail.thundermail.com         → handle WebSocket upgrade
- *   jmap.stage-thundermail.com     → handle HTTP /jmap/* + /.well-known/jmap
- *   jmap.thundermail.com           → handle HTTP /jmap/* + /.well-known/jmap
+ *   jmap.stage-thundermail.com     → handle HTTP /jmap/* + /.well-known/jmap and /jmap/ws
+ *   jmap.thundermail.com           → handle HTTP /jmap/* + /.well-known/jmap and /jmap/ws
  *
  * The webmail SPA lives at `webmail.*.thundermail.com` and is served
  * by GitHub Pages (untouched by Cloudflare). Because the SPA and the
@@ -43,18 +41,21 @@ export interface Route {
   allowedOrigins: ReadonlySet<string>;
 }
 
-const LOCAL_DEV_ORIGINS = ['https://localhost:3000', 'http://localhost:3000'];
+const STAGE_DEV_ORIGINS = [
+  'https://localhost:3000',
+  'http://localhost:3000',
+];
 
 export const STAGE_ROUTE: Route = {
   upstream: 'https://mail.stage-thundermail.com',
   stalwartOrigin: 'https://mail.stage-thundermail.com',
   httpBridgeOrigin: 'https://jmap.stage-thundermail.com',
-  wsBridgeOrigin: 'wss://wsmail.stage-thundermail.com',
+  wsBridgeOrigin: 'wss://jmap.stage-thundermail.com',
   allowedOrigins: new Set([
     'https://webmail.stage-thundermail.com',
-    // Vite dev server with self-signed cert; lets devs run a local
-    // SPA build against stage Stalwart through the bridge.
-    ...LOCAL_DEV_ORIGINS,
+    // Vite dev origins; lets devs run a local SPA build against
+    // stage Stalwart through the bridge.
+    ...STAGE_DEV_ORIGINS,
   ]),
 };
 
@@ -62,7 +63,7 @@ export const PROD_ROUTE: Route = {
   upstream: 'https://mail.thundermail.com',
   stalwartOrigin: 'https://mail.thundermail.com',
   httpBridgeOrigin: 'https://jmap.thundermail.com',
-  wsBridgeOrigin: 'wss://wsmail.thundermail.com',
+  wsBridgeOrigin: 'wss://jmap.thundermail.com',
   // Prod allowlist is strict: webmail prod only.
   allowedOrigins: new Set(['https://webmail.thundermail.com']),
 };
@@ -77,10 +78,10 @@ export const TEST_UPSTREAM_HEADER = 'x-jmap-bridge-test-upstream';
 
 export function selectRoute(request: Request): Route | null {
   const host = new URL(request.url).hostname;
-  if (host === 'jmap.thundermail.com' || host === 'wsmail.thundermail.com') {
+  if (host === 'jmap.thundermail.com') {
     return PROD_ROUTE;
   }
-  if (host === 'jmap.stage-thundermail.com' || host === 'wsmail.stage-thundermail.com') {
+  if (host === 'jmap.stage-thundermail.com') {
     return STAGE_ROUTE;
   }
   if (host.endsWith('.workers.dev')) {
@@ -90,10 +91,9 @@ export function selectRoute(request: Request): Route | null {
   return null;
 }
 
-export type HostKind = 'wsmail' | 'jmap' | 'workers-dev' | 'unknown';
+export type HostKind = 'jmap' | 'workers-dev' | 'unknown';
 
 export function classifyHost(host: string): HostKind {
-  if (host.startsWith('wsmail.')) return 'wsmail';
   if (host.startsWith('jmap.')) return 'jmap';
   if (host.endsWith('.workers.dev')) return 'workers-dev';
   return 'unknown';

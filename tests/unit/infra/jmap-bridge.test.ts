@@ -34,17 +34,13 @@ const STAGE_SESSION_BODY = JSON.stringify({
 // routes.ts
 // ---------------------------------------------------------------------------
 describe('jmap-bridge routes.selectRoute', () => {
-  it('selects prod for jmap.thundermail.com and wsmail.thundermail.com', () => {
+  it('selects prod for jmap.thundermail.com', () => {
     expect(selectRoute(new Request('https://jmap.thundermail.com/jmap/'))?.upstream)
-      .toBe('https://mail.thundermail.com');
-    expect(selectRoute(new Request('https://wsmail.thundermail.com/jmap/ws'))?.upstream)
       .toBe('https://mail.thundermail.com');
   });
 
-  it('selects stage for jmap.stage-thundermail.com and wsmail.stage-thundermail.com', () => {
+  it('selects stage for jmap.stage-thundermail.com', () => {
     expect(selectRoute(new Request('https://jmap.stage-thundermail.com/jmap/'))?.upstream)
-      .toBe('https://mail.stage-thundermail.com');
-    expect(selectRoute(new Request('https://wsmail.stage-thundermail.com/jmap/ws'))?.upstream)
       .toBe('https://mail.stage-thundermail.com');
   });
 
@@ -63,23 +59,23 @@ describe('jmap-bridge routes.selectRoute', () => {
   it('returns null for unknown hosts (no open proxy)', () => {
     expect(selectRoute(new Request('https://attacker.example/jmap/'))).toBeNull();
     expect(selectRoute(new Request('https://webmail.thundermail.com/jmap/'))).toBeNull();
+    expect(selectRoute(new Request('https://wsmail.thundermail.com/jmap/ws'))).toBeNull();
   });
 });
 
 describe('jmap-bridge routes.classifyHost', () => {
-  it('classifies wsmail / jmap / workers-dev / unknown', () => {
-    expect(classifyHost('wsmail.stage-thundermail.com')).toBe('wsmail');
-    expect(classifyHost('wsmail.thundermail.com')).toBe('wsmail');
+  it('classifies jmap / workers-dev / unknown', () => {
     expect(classifyHost('jmap.stage-thundermail.com')).toBe('jmap');
     expect(classifyHost('jmap.thundermail.com')).toBe('jmap');
     expect(classifyHost('x.workers.dev')).toBe('workers-dev');
+    expect(classifyHost('wsmail.thundermail.com')).toBe('unknown');
     expect(classifyHost('webmail.thundermail.com')).toBe('unknown');
     expect(classifyHost('example.com')).toBe('unknown');
   });
 });
 
 describe('jmap-bridge routes.allowedOrigins', () => {
-  it('stage allows the stage webmail and localhost dev origins', () => {
+  it('stage allows the stage webmail and local dev origins', () => {
     expect(STAGE_ROUTE.allowedOrigins.has('https://webmail.stage-thundermail.com')).toBe(true);
     expect(STAGE_ROUTE.allowedOrigins.has('https://localhost:3000')).toBe(true);
     expect(STAGE_ROUTE.allowedOrigins.has('http://localhost:3000')).toBe(true);
@@ -100,7 +96,7 @@ describe('jmap-bridge routes.allowedOrigins', () => {
 // http.ts rewriting helpers
 // ---------------------------------------------------------------------------
 describe('jmap-bridge http.rewriteSessionUrls', () => {
-  it('rewrites HTTP URLs to jmap.* and the WS URL to wsmail.*', () => {
+  it('rewrites HTTP and WS URLs to jmap.*', () => {
     const session = JSON.parse(STAGE_SESSION_BODY);
     const out = rewriteSessionUrls(session, STAGE_ROUTE) as Record<string, any>;
 
@@ -113,7 +109,7 @@ describe('jmap-bridge http.rewriteSessionUrls', () => {
       'https://jmap.stage-thundermail.com/jmap/eventsource/?types={types}&closeafter={closeafter}&ping={ping}',
     );
     expect(out.capabilities['urn:ietf:params:jmap:websocket'].url).toBe(
-      'wss://wsmail.stage-thundermail.com/jmap/ws',
+      'wss://jmap.stage-thundermail.com/jmap/ws',
     );
   });
 
@@ -145,7 +141,7 @@ describe('jmap-bridge http.rewriteSessionUrls', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WebSocket auth bridge (ws.ts via worker.fetch on wsmail.* hosts)
+// WebSocket auth bridge (ws.ts via worker.fetch on jmap.* hosts)
 // ---------------------------------------------------------------------------
 describe('jmap-bridge WebSocket upgrade auth bridge', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -164,7 +160,7 @@ describe('jmap-bridge WebSocket upgrade auth bridge', () => {
 
   it('promotes ?access_token=... to Authorization: Bearer and strips it from the URL', async () => {
     const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/jmap/ws?access_token=jwt-abc', {
+      new Request('https://jmap.stage-thundermail.com/jmap/ws?access_token=jwt-abc', {
         headers: {
           Upgrade: 'websocket',
           Connection: 'Upgrade',
@@ -182,7 +178,7 @@ describe('jmap-bridge WebSocket upgrade auth bridge', () => {
 
   it('promotes ?basic=... to Authorization: Basic', async () => {
     await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/jmap/ws?basic=dXNlcjpwYXNz', {
+      new Request('https://jmap.stage-thundermail.com/jmap/ws?basic=dXNlcjpwYXNz', {
         headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
@@ -190,9 +186,9 @@ describe('jmap-bridge WebSocket upgrade auth bridge', () => {
     expect((fetchMock.mock.calls[0][0] as Request).headers.get('Authorization')).toBe('Basic dXNlcjpwYXNz');
   });
 
-  it('routes wsmail.thundermail.com upgrades to the prod Stalwart', async () => {
+  it('routes jmap.thundermail.com upgrades to the prod Stalwart', async () => {
     await worker.fetch(
-      new Request('https://wsmail.thundermail.com/jmap/ws?access_token=jwt-prod', {
+      new Request('https://jmap.thundermail.com/jmap/ws?access_token=jwt-prod', {
         headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
@@ -202,14 +198,14 @@ describe('jmap-bridge WebSocket upgrade auth bridge', () => {
 
   it('rejects missing creds with 401 and conflicting creds with 400', async () => {
     const missing = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/jmap/ws', {
+      new Request('https://jmap.stage-thundermail.com/jmap/ws', {
         headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
     expect(missing.status).toBe(401);
 
     const both = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/jmap/ws?access_token=x&basic=y', {
+      new Request('https://jmap.stage-thundermail.com/jmap/ws?access_token=x&basic=y', {
         headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
@@ -220,36 +216,21 @@ describe('jmap-bridge WebSocket upgrade auth bridge', () => {
 
   it('refuses to bridge upgrades that target paths outside /jmap/*', async () => {
     const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/anything-else?access_token=x', {
+      new Request('https://jmap.stage-thundermail.com/anything-else?access_token=x', {
         headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
     expect(response.status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
   });
-});
 
-describe('jmap-bridge wsmail.* non-upgrade traffic', () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it('returns 426 for plain HTTP on wsmail.* and never calls upstream', async () => {
+  it('does not route old wsmail.* hosts', async () => {
     const response = await worker.fetch(
-      new Request('https://wsmail.stage-thundermail.com/jmap/api', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
+      new Request('https://wsmail.stage-thundermail.com/jmap/ws?access_token=x', {
+        headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
       }),
     );
-    expect(response.status).toBe(426);
+    expect(response.status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -419,7 +400,7 @@ describe('jmap-bridge HTTP proxy forwarding', () => {
     const session = await response.json();
     expect(session.apiUrl).toBe('https://jmap.stage-thundermail.com/jmap/');
     expect(session.capabilities['urn:ietf:params:jmap:websocket'].url)
-      .toBe('wss://wsmail.stage-thundermail.com/jmap/ws');
+      .toBe('wss://jmap.stage-thundermail.com/jmap/ws');
   });
 
   it('forwards responses without Allow-Origin when origin is unrecognised, but keeps Vary: Origin', async () => {
@@ -508,11 +489,13 @@ describe('jmap-bridge HTTP proxy forwarding', () => {
     expect(response.headers.get('location')).toBe('/jmap/session');
   });
 
-  it('rejects WebSocket upgrades on jmap.* with 426 (defense in depth)', async () => {
-    const response = await worker.fetch(new Request('https://jmap.thundermail.com/jmap/ws', {
-      headers: { Upgrade: 'websocket', Connection: 'Upgrade' },
+  it('rejects non-upgrade /jmap/ws requests without forwarding URL credentials', async () => {
+    const response = await worker.fetch(new Request('https://jmap.thundermail.com/jmap/ws?access_token=jwt', {
+      headers: { Origin: 'https://webmail.thundermail.com' },
     }));
     expect(response.status).toBe(426);
+    expect(response.headers.get('access-control-allow-origin'))
+      .toBe('https://webmail.thundermail.com');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -561,7 +544,7 @@ describe('jmap-bridge HTTP proxy forwarding', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Cross-cutting dispatch behaviour (one Worker, two hostnames)
+// Cross-cutting dispatch behaviour (one Worker, one bridge hostname shape)
 // ---------------------------------------------------------------------------
 describe('jmap-bridge workers.dev test mode dispatch', () => {
   let fetchMock: ReturnType<typeof vi.fn>;

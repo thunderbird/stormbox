@@ -100,7 +100,6 @@
     "STORMBOX_IN_DOCKER": "1",
     "VITE_LOCAL_STACK": "1",
     "VITE_JMAP_SERVER_URL": "https://localhost:3000/stalwart-jmap",
-    "VITE_JMAP_WS_PROXY": "https://localhost:3000/jmap/ws",
     "VITE_OIDC_ISSUER": "https://localhost:3000/realms/tbpro",
     "VITE_OIDC_CLIENT_ID": "thunderbird-stormbox-test"
   },
