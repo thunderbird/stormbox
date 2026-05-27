@@ -2,7 +2,7 @@ name: CI and Deploy to Cloudflare Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, local-cache]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -46,11 +46,13 @@ jobs:
         run: npm test
 
   e2e-test:
-    name: E2E smoke tests
+    name: E2E tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -64,14 +66,69 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium firefox
 
+      - name: Prepare thunderbird-accounts env
+        run: cp thunderbird-accounts/.env.example thunderbird-accounts/.env
+
+      - name: Start local e2e stack
+        run: npm run stack:up
+
+      - name: Wait for local e2e stack
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..60}; do
+            if curl --silent --fail --output /dev/null \
+              http://127.0.0.1:8999/realms/tbpro/.well-known/openid-configuration; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Keycloak did not become ready in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          for attempt in {1..60}; do
+            status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              http://127.0.0.1:8081/.well-known/jmap || true)"
+            if [ "$status" = "200" ] || [ "$status" = "401" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Stalwart JMAP did not become ready in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Start JMAP WebSocket proxy
+        run: npm run stack:ws-proxy >/tmp/stormbox-ws-proxy.log 2>&1 &
+
+      - name: Wait for JMAP WebSocket proxy
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..30}; do
+            status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              http://127.0.0.1:8787/jmap/ws || true)"
+            if [ "$status" = "426" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "JMAP WebSocket proxy did not become ready in time"
+              exit 1
+            fi
+            sleep 1
+          done
+
       # PLAYWRIGHT_NO_REUSE=1 makes playwright.config.js spawn
-      # `npm run dev` against the self-signed HTTPS dev origin. Without
-      # LOCAL_STACK, only smoke.spec.js runs (no Keycloak/Stalwart needed).
-      - name: Run Playwright smoke tests
+      # `npm run dev` against the self-signed HTTPS dev origin. LOCAL_STACK=1
+      # runs the live Keycloak/Stalwart specs instead of the smoke-only lane.
+      - name: Run Playwright local-stack tests
         env:
           PLAYWRIGHT_NO_REUSE: "1"
           CI: "1"
-        run: npx playwright test
+        run: npm run test:e2e:local:full
 
       - name: Upload Playwright report
         if: failure()
