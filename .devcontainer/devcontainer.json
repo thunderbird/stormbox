@@ -84,7 +84,7 @@
   },
 
   // Run commands after container is created
-  "postCreateCommand": "npm ci",
+  "postCreateCommand": "npm ci && npx playwright install chromium firefox",
 
   // Run commands when container starts
   "postStartCommand": "git config --global safe.directory /workspace",

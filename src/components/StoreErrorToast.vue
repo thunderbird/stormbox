@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { X } from 'lucide-vue-next';
+import { X } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useComposeStore } from '../stores/compose-store.js';

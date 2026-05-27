@@ -6,7 +6,7 @@ import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
   Paperclip, Star, RefreshCw,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useListSelection } from '../composables/useListSelection.js';

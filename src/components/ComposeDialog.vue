@@ -22,7 +22,7 @@ import {
   TextAlignStart,
   Underline,
   Undo2,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import DOMPurify from 'dompurify';
 import Squire from 'squire-rte';
 

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 
 /**
  * Vite dev-server proxies for LOCAL_STACK=1.
@@ -51,12 +52,26 @@ function rewriteStalwartHeaders(headers) {
   return next;
 }
 
+function stripHopByHopHeaders(headers) {
+  const next = { ...headers };
+  delete next.connection;
+  delete next["keep-alive"];
+  delete next["proxy-authenticate"];
+  delete next["proxy-authorization"];
+  delete next.te;
+  delete next.trailer;
+  delete next["transfer-encoding"];
+  delete next.upgrade;
+  return next;
+}
+
 function bufferAndRewriteResponse(proxyRes, req, res, { rewriteBody = false, rewriteBodyFn, rewriteHeadersFn } = {}) {
   const chunks = [];
   proxyRes.on("data", (chunk) => chunks.push(chunk));
   proxyRes.on("end", () => {
     let body = Buffer.concat(chunks);
-    const headers = rewriteHeadersFn ? rewriteHeadersFn(proxyRes.headers) : proxyRes.headers;
+    const rewrittenHeaders = rewriteHeadersFn ? rewriteHeadersFn(proxyRes.headers) : proxyRes.headers;
+    const headers = stripHopByHopHeaders(rewrittenHeaders);
     delete headers["content-length"];
 
     if (rewriteBody) {
@@ -116,6 +131,140 @@ export function stalwartJmapDevProxy(target) {
           rewriteBodyFn: rewriteStalwartBody,
           rewriteHeadersFn: rewriteStalwartHeaders,
         });
+      });
+    },
+  };
+}
+
+function socketCanWrite(socket) {
+  return !socket.destroyed && !socket.writableEnded;
+}
+
+function writeIfOpen(socket, data) {
+  if (!socketCanWrite(socket)) return false;
+  socket.write(data);
+  return true;
+}
+
+function endIfOpen(socket) {
+  if (socketCanWrite(socket)) socket.end();
+}
+
+function destroyIfOpen(socket) {
+  if (!socket.destroyed) socket.destroy();
+}
+
+function isExpectedPeerClose(err) {
+  return err?.code === "ECONNRESET"
+    || err?.code === "EPIPE"
+    || err?.code === "ERR_STREAM_WRITE_AFTER_END"
+    || /socket has been ended|write after end/i.test(String(err?.message ?? ""));
+}
+
+function logUnexpectedSocketError(logger, label, err) {
+  if (isExpectedPeerClose(err)) return;
+  logger.warn(`[jmap-ws-proxy] ${label}: ${err?.message ?? err}`);
+}
+
+function rawHeaders(rawHeaders) {
+  const lines = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    lines.push(`${rawHeaders[index]}: ${rawHeaders[index + 1]}`);
+  }
+  return lines;
+}
+
+function responseHead(proxyRes) {
+  const statusCode = proxyRes.statusCode ?? 502;
+  const statusMessage = proxyRes.statusMessage ?? http.STATUS_CODES[statusCode] ?? "";
+  return [
+    `HTTP/1.1 ${statusCode} ${statusMessage}`,
+    ...rawHeaders(proxyRes.rawHeaders ?? []),
+    "",
+    "",
+  ].join("\r\n");
+}
+
+function pipeWebSocketSockets(clientSocket, upstreamSocket, logger) {
+  const forward = (source, destination) => (chunk) => {
+    if (!writeIfOpen(destination, chunk)) {
+      destroyIfOpen(source);
+    }
+  };
+
+  clientSocket.on("data", forward(clientSocket, upstreamSocket));
+  upstreamSocket.on("data", forward(upstreamSocket, clientSocket));
+  clientSocket.on("end", () => endIfOpen(upstreamSocket));
+  upstreamSocket.on("end", () => endIfOpen(clientSocket));
+  clientSocket.on("close", () => destroyIfOpen(upstreamSocket));
+  upstreamSocket.on("close", () => destroyIfOpen(clientSocket));
+  clientSocket.on("error", (err) => {
+    logUnexpectedSocketError(logger, "client socket error", err);
+    destroyIfOpen(upstreamSocket);
+  });
+  upstreamSocket.on("error", (err) => {
+    logUnexpectedSocketError(logger, "upstream socket error", err);
+    destroyIfOpen(clientSocket);
+  });
+}
+
+function proxyJmapWebSocket(req, clientSocket, head, target, logger) {
+  const proxyReq = http.request({
+    protocol: target.protocol,
+    hostname: target.hostname,
+    port: target.port,
+    method: req.method,
+    path: req.url,
+    headers: {
+      ...req.headers,
+      host: target.host,
+    },
+  });
+
+  proxyReq.on("upgrade", (proxyRes, upstreamSocket, proxyHead) => {
+    if (!writeIfOpen(clientSocket, responseHead(proxyRes))) {
+      destroyIfOpen(upstreamSocket);
+      return;
+    }
+    if (proxyHead.length > 0) writeIfOpen(clientSocket, proxyHead);
+    if (head.length > 0) writeIfOpen(upstreamSocket, head);
+    pipeWebSocketSockets(clientSocket, upstreamSocket, logger);
+  });
+
+  proxyReq.on("response", (proxyRes) => {
+    if (!writeIfOpen(clientSocket, responseHead(proxyRes))) {
+      proxyRes.resume();
+      return;
+    }
+    proxyRes.on("data", (chunk) => writeIfOpen(clientSocket, chunk));
+    proxyRes.on("end", () => destroyIfOpen(clientSocket));
+  });
+
+  proxyReq.on("error", (err) => {
+    logUnexpectedSocketError(logger, "upgrade request error", err);
+    if (socketCanWrite(clientSocket)) {
+      clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+    }
+  });
+
+  clientSocket.on("error", (err) => {
+    logUnexpectedSocketError(logger, "client socket error", err);
+    proxyReq.destroy();
+  });
+  clientSocket.on("close", () => proxyReq.destroy());
+
+  proxyReq.end();
+}
+
+export function jmapWsDevProxyPlugin(target = "http://127.0.0.1:8787") {
+  const proxyTarget = new URL(target);
+  return {
+    name: "stormbox:jmap-ws-dev-proxy",
+    apply: "serve",
+    configureServer(server) {
+      server.httpServer?.on("upgrade", (req, socket, head) => {
+        if (!req.url?.startsWith("/jmap/ws")) return;
+        proxyJmapWebSocket(req, socket, head, proxyTarget, server.config.logger);
       });
     },
   };
@@ -182,6 +331,7 @@ async function bufferSenderAvatarResponse(proxyRes, req, res) {
 }
 
 function writeSenderAvatarResponse(res, { body, headers, status }) {
+  headers = stripHopByHopHeaders(headers);
   delete headers["content-length"];
   headers["content-length"] = String(body.length);
   res.writeHead(status, headers);

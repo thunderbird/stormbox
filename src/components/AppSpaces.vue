@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Mail, Users } from 'lucide-vue-next';
+import { Mail, Users } from '@lucide/vue';
 
 const props = defineProps({
   active: { type: String, default: 'mail' },

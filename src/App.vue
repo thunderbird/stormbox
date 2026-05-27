@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from 'lucide-vue-next';
+import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts.js';
 import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines.js';

@@ -8,7 +8,7 @@ import {
   Search,
   ShieldCheck,
   X,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 import {
   computed,
   nextTick,

@@ -3,6 +3,7 @@ import vue from "@vitejs/plugin-vue";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 
 import {
+  jmapWsDevProxyPlugin,
   keycloakDevProxy,
   localStackHttpTarget,
   localStackPublicOrigin,
@@ -24,7 +25,11 @@ const publicOrigin = localStackPublicOrigin();
 // through the Vite origin (see vite.local-stack.mjs) so mixed-content
 // rules do not block OIDC discovery or JMAP session fetch.
 export default defineConfig({
-  plugins: [vue(), basicSsl()],
+  plugins: [
+    vue(),
+    basicSsl(),
+    ...(localStack ? [jmapWsDevProxyPlugin()] : []),
+  ],
   base: "/",
   server: {
     host: "0.0.0.0",
@@ -48,11 +53,6 @@ export default defineConfig({
             "/resources": keycloakDevProxy(
               process.env.KEYCLOAK_PROXY ?? localStackHttpTarget(8999),
             ),
-            "/jmap/ws": {
-              target: "http://127.0.0.1:8787",
-              ws: true,
-              changeOrigin: true,
-            },
             "/stalwart-jmap": stalwartJmapDevProxy(
               process.env.STALWART_JMAP_PROXY ?? localStackHttpTarget(8081),
             ),

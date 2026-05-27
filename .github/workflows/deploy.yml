@@ -2,7 +2,7 @@ name: CI and Deploy to Cloudflare Pages
 
 on:
   push:
-    branches: [main, local-cache]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -31,13 +31,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            thunderbird-accounts/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -50,14 +53,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           submodules: recursive
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -66,11 +69,20 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium firefox
 
-      - name: Prepare thunderbird-accounts env
-        run: cp thunderbird-accounts/.env.example thunderbird-accounts/.env
+      - name: Prepare local e2e stack config
+        run: |
+          mkdir -p thunderbird-accounts/mail/etc
+          cp thunderbird-accounts/config.toml.example thunderbird-accounts/mail/etc/config.toml
+          npm ci --prefix thunderbird-accounts
+          npm run --prefix thunderbird-accounts build-theme
 
       - name: Start local e2e stack
-        run: npm run stack:up
+        run: >-
+          docker compose -f thunderbird-accounts/docker-compose.yml up
+          --build -d
+          kcpostgres
+          keycloak
+          stalwart
 
       - name: Wait for local e2e stack
         run: |
@@ -89,13 +101,13 @@ jobs:
           done
 
           for attempt in {1..60}; do
-            status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
+            status="$(curl --silent --location --output /dev/null --write-out "%{http_code}" \
               http://127.0.0.1:8081/.well-known/jmap || true)"
-            if [ "$status" = "200" ] || [ "$status" = "401" ]; then
+            if [ "$status" = "200" ] || [ "$status" = "307" ] || [ "$status" = "401" ]; then
               break
             fi
             if [ "$attempt" -eq 60 ]; then
-              echo "Stalwart JMAP did not become ready in time"
+              echo "Stalwart JMAP did not become ready in time; last status was ${status}"
               exit 1
             fi
             sleep 2
@@ -130,9 +142,15 @@ jobs:
           CI: "1"
         run: npm run test:e2e:local:full
 
+      - name: Dump local e2e stack logs
+        if: failure()
+        run: |
+          docker compose -f thunderbird-accounts/docker-compose.yml ps
+          docker compose -f thunderbird-accounts/docker-compose.yml logs --tail=200 kcpostgres keycloak stalwart
+
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: playwright-report
           path: |
@@ -140,6 +158,8 @@ jobs:
             test-results/
           retention-days: 7
 
+  # Deploy jobs only publish a new deployment to an existing Cloudflare Pages
+  # project. Custom domains and DNS records are provisioned out-of-band.
   deploy-stage:
     name: Deploy stage
     runs-on: ubuntu-latest
@@ -166,12 +186,12 @@ jobs:
       VITE_SENDER_AVATAR_PROXY_URL: https://avatars.thunderbird.net
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -180,7 +200,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to preconfigured Cloudflare Pages project
         run: >-
           npx -y wrangler@3.99.0 pages deploy dist
           --project-name "$CLOUDFLARE_PAGES_PROJECT"
@@ -210,12 +230,12 @@ jobs:
       VITE_SENDER_AVATAR_PROXY_URL: https://avatars.thunderbird.net
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -224,7 +244,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to preconfigured Cloudflare Pages project
         run: >-
           npx -y wrangler@3.99.0 pages deploy dist
           --project-name "$CLOUDFLARE_PAGES_PROJECT"

@@ -5,6 +5,11 @@ import {
   TEST_OIDC_PASSWORD,
 } from './stack-env.js';
 
+const APP_ORIGIN = new URL(
+  process.env.PLAYWRIGHT_BASE_URL
+    ?? `https://localhost:${process.env.PLAYWRIGHT_PORT ?? 3000}`,
+).origin;
+
 /**
  * Sign in via OIDC ("Sign in with Thunderbird" → Keycloak tbpro theme).
  *
@@ -65,7 +70,7 @@ export async function loginViaOidc(page) {
     await username.fill(TEST_OIDC_EMAIL);
     await password.fill(TEST_OIDC_PASSWORD);
     await page.getByRole('button', { name: /^sign in$/i }).click();
-    await page.waitForURL(/localhost:3000/, { timeout: 20_000 });
+    await page.waitForURL((url) => url.origin === APP_ORIGIN, { timeout: 20_000 });
   }
 
   const loginError = page.locator('.login-card__error');

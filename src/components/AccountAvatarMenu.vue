@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { LogOut, RotateCcw, Settings } from 'lucide-vue-next';
+import { LogOut, RotateCcw, Settings } from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { ACCOUNTS_URL } from '../defines.js';

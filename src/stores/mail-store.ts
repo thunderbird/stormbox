@@ -1832,7 +1832,7 @@ export const useMailStore = defineStore('mail', () => {
       return;
     }
 
-    let anchorResult: any = null;
+    let anchorResult: any;
     try {
       anchorResult = await repo.ensureFolderWindow(
         authStore.accountId,

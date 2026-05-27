@@ -11,7 +11,7 @@ import DOMPurify from 'dompurify';
 import {
   Trash2, Paperclip,
   MailOpen, Mail, X, ArrowLeft,
-} from 'lucide-vue-next';
+} from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store.js';
 import { useComposeStore } from '../stores/compose-store.js';
@@ -208,7 +208,7 @@ function onIframeLoad() {
     const bodyEl = doc.body;
     // documentElement.scrollHeight catches content that overflows
     // the body (e.g. when an email sets html { height:100% }).
-    let next = Math.max(
+    const next = Math.max(
       docEl.scrollHeight,
       bodyEl.scrollHeight,
       docEl.offsetHeight,

@@ -32,7 +32,8 @@ avatar requests through the HTTPS Vite origin.
 
 If you open the repo through VS Code or Cursor's devcontainer support:
 
-- `postCreateCommand` runs `npm ci`.
+- `postCreateCommand` runs `npm ci` and installs the Chromium/Firefox
+  Playwright browser binaries used by the local E2E suite.
 - `postAttachCommand` starts `npm run dev`.
 - Port `3000` is forwarded as the Vite dev server.
 
@@ -51,7 +52,7 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
 - `docker-compose.yml`: defines `thundermail-dev`, mounts the repo and SSH keys,
   sets local-stack Vite environment variables, and maps ports `3000`, `5173`,
   and `9229`.
-- `Dockerfile`: Node 20-based development image with git, build tools, and
+- `Dockerfile`: development image matching the project Node version, with git, build tools, and
   global npm tooling.
 
 ## Common Commands

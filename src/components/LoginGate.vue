@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Loader2 } from 'lucide-vue-next';
+import { Loader2 } from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { AUTH_STATE } from '../constants/states.js';
