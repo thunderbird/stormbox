@@ -920,9 +920,17 @@ function normalizeFilterText(value) {
 .msg-list--card .msg-list__subject {
   font-size: 13px;
 }
+.msg-list--card .msg-list__subject {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
 .msg-list--card .msg-list__preview {
   margin-top: 3px;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .msg-list__item--placeholder {

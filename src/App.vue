@@ -62,6 +62,7 @@ const WELCOME_MODAL_STORAGE_KEY = 'stormbox.welcomeModalDismissed.v1';
 const SPACE_RAIL_WIDTH = 56;
 const RESIZER_WIDTH = 6;
 const COMPACT_READING_WIDTH = 1024;
+const SINGLE_COLUMN_WIDTH = 640;
 const FOLDER_LIST_TRANSITION_MS = 360;
 const MESSAGE_VIEW_PRELOAD_MS = 50;
 const THEMES = ['dark', 'light'] as const;
@@ -79,12 +80,6 @@ const MAX_COLUMN_WIDTHS = {
   folderList: 420,
   messageList: 720,
 };
-const SINGLE_COLUMN_WIDTH =
-  SPACE_RAIL_WIDTH
-  + MIN_COLUMN_WIDTHS.messageList
-  + RESIZER_WIDTH
-  + MIN_COLUMN_WIDTHS.messageView;
-
 const shellEl = ref<HTMLElement | null>(null);
 const quickFilterInputEl = ref<HTMLInputElement | null>(null);
 const appMenuEl = ref<HTMLDetailsElement | null>(null);
@@ -102,12 +97,12 @@ const shortcutsEnabled = computed(() =>
 );
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const displayedMessageView = ref(
-  showMessageView.value && !(space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH),
+  showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),
 );
 const shouldUseSingleMailColumn = computed(() =>
   space.value === 'mail'
   && showMessageView.value
-  && windowWidth.value <= SINGLE_COLUMN_WIDTH,
+  && windowWidth.value < SINGLE_COLUMN_WIDTH,
 );
 const displayedMessageList = computed(() =>
   !(space.value === 'mail' && shouldUseSingleMailColumn.value),
@@ -407,8 +402,8 @@ function onWindowResize() {
 }
 
 function applyResponsiveLayout() {
-  const compactMailLayout = space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH;
-  const singleColumnMailLayout = space.value === 'mail' && windowWidth.value <= SINGLE_COLUMN_WIDTH;
+  const compactMailLayout = space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH;
+  const singleColumnMailLayout = space.value === 'mail' && windowWidth.value < SINGLE_COLUMN_WIDTH;
   const shouldHideFolderList = singleColumnMailLayout || (compactMailLayout && showMessageView.value);
   const shouldShowSingleColumn = shouldUseSingleMailColumn.value;
   const willHideFolderList = shouldHideFolderList && !folderListHidden.value;
@@ -585,6 +580,7 @@ function clamp(value: number, min: number, max: number) {
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
       'shell--message-list-hidden': space === 'mail' && !displayedMessageList,
       'shell--folder-list-hidden': folderListHidden,
+      'shell--contacts': space === 'contacts',
       'shell--column-resizing': activeResizePane !== null,
       'shell--resize-spotlight': resizeLayoutSpotlight,
       'shell--compose-spotlight': composeActionSpotlight,
@@ -677,11 +673,13 @@ function clamp(value: number, min: number, max: number) {
       :active="space"
       :unread-count="totalUnread"
       :folder-list-hidden="folderListHidden"
+      :show-folder-list-toggle="space === 'mail'"
       @change="space = $event"
       @toggle-folder-list="toggleFolderList"
     />
 
     <div
+      v-if="space === 'mail'"
       class="sidebar-slot"
       :class="{ 'sidebar-slot--hidden': folderListHidden }"
       :aria-hidden="folderListHidden"
@@ -714,6 +712,7 @@ function clamp(value: number, min: number, max: number) {
     </div>
 
     <div
+      v-if="space === 'mail'"
       class="column-resizer column-resizer--folder-list"
       :class="{
         'is-active': activeResizePane === 'folderList',
@@ -775,6 +774,7 @@ function clamp(value: number, min: number, max: number) {
 :root {
   --surface: var(--panel);
   --fg: var(--text);
+  --spaces-bar-height: calc(56px + env(safe-area-inset-bottom));
   --border-soft: color-mix(in srgb, var(--border) 55%, transparent);
   --accent-bg: color-mix(in srgb, var(--accent) 22%, var(--panel2));
   --accent-fg: var(--accent);
@@ -829,6 +829,9 @@ function clamp(value: number, min: number, max: number) {
 .shell--folder-list-hidden {
   --folder-resizer-width: 0px;
 }
+.shell--contacts {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
 .shell--resize-spotlight {
   transition: grid-template-columns 0.55s ease;
 }
@@ -853,6 +856,7 @@ function clamp(value: number, min: number, max: number) {
   grid-column: 4 / -1;
 }
 .shell > .contacts { grid-column: 4 / -1; }
+.shell--contacts > .contacts { grid-column: 2 / -1; }
 .shell--folder-list-hidden > .contacts { grid-column: 2 / -1; }
 
 .quick-filter {
@@ -1079,7 +1083,7 @@ function clamp(value: number, min: number, max: number) {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 639px) {
   .shell {
     --folder-resizer-width: 0px;
   }
@@ -1132,6 +1136,42 @@ function clamp(value: number, min: number, max: number) {
   }
 }
 
+@media (max-width: 639px) {
+  .shell,
+  .shell--message-view-hidden,
+  .shell--message-list-hidden {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) var(--spaces-bar-height);
+  }
+  .quick-filter {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .shell > .app-spaces {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .shell .sidebar-slot {
+    top: 56px;
+    bottom: var(--spaces-bar-height);
+    left: 0;
+    width: min(var(--folder-list-width, 240px), 100vw);
+    max-width: 100vw;
+  }
+  .shell .sidebar-slot--hidden {
+    width: min(var(--folder-list-width, 240px), 100vw);
+  }
+  .shell > .msg-list,
+  .shell > .message-view,
+  .shell > .contacts,
+  .shell--message-view-hidden > .msg-list,
+  .shell--message-list-hidden > .message-view,
+  .shell--folder-list-hidden > .contacts {
+    grid-column: 1;
+    grid-row: 2;
+  }
+}
+
 .sidebar-slot {
   width: var(--folder-list-width, 240px);
   min-width: 0;
@@ -1162,8 +1202,12 @@ function clamp(value: number, min: number, max: number) {
 .sidebar-slot--hidden .sidebar {
   transform: translateX(-100%);
 }
+.sidebar > * {
+  min-width: 0;
+}
 .sidebar > :nth-child(3) { min-height: 0; overflow-y: auto; }
 .sidebar__header {
+  min-width: 0;
   padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft);
 }

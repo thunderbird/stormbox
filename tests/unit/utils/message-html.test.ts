@@ -9,9 +9,9 @@
  *     fixed width — whichever email's <style> last won the cascade),
  *   - any stray <script> survives only inert (no allow-scripts in
  *     the sandbox, no script-src in the CSP),
- *   - the email's own design — including its width, alignment, and
- *     background — is preserved verbatim. We do NOT clamp tables or
- *     images; if the email is 640-px wide we let it be 640-px wide.
+ *   - the email's own design is mostly preserved, but fixed-width
+ *     content is constrained to the iframe width so the reading pane
+ *     never needs horizontal scrolling.
  *
  * These tests pin those guarantees by exercising the pure builder
  * (no Vue, no real DOMPurify) under happy-dom and parsing the
@@ -87,17 +87,10 @@ describe('buildMessageSrcDoc', () => {
     // matters for plain HTML messages with no <style> at all.
     expect(css).toMatch(/font-family:/);
 
-    // We must NOT touch widths. Earlier versions of this builder
-    // injected `img { max-width: 100% !important }` and
-    // `table[width] { width: auto !important }`, which destroyed
-    // hand-laid-out marketing emails (PLEDGEBOX/UltraPill regression).
-    // The user explicitly wants emails to render at their natural
-    // design width with whitespace around them in a wide pane.
-    expect(css).not.toMatch(/max-width:\s*100%\s*!important/);
-    expect(css).not.toMatch(/width:\s*auto\s*!important/);
-    expect(css).not.toMatch(/table\s*\{/);
-    expect(css).not.toMatch(/\bimg\s*\{/);
-    expect(css).not.toMatch(/\[width\]/);
+    // We DO constrain common fixed-width content so the message pane
+    // never develops horizontal scrolling.
+    expect(css).toMatch(/img,\s*video,\s*canvas,\s*svg\s*\{[^}]*max-width:\s*100%/);
+    expect(css).toMatch(/table\s*\{[^}]*max-width:\s*100%/);
     expect(css).not.toMatch(/body\s*\*\s*\{/);
 
     // We must NOT add broad dark-mode hacks or re-style email-specific
@@ -214,11 +207,8 @@ describe('ALLOWED_URI_REGEXP', () => {
 describe('integration: a real-world wide marketing email', () => {
   // The screenshot that motivated this change was a PledgeBox
   // newsletter built around the classic 640-px hero table with a
-  // fixed-width image inside it. The user's correction was: "if an
-  // email wants to be 600px wide, that's fine — just put white space
-  // around it." So the contract here is that the builder PRESERVES
-  // the email structure verbatim and does NOT inject CSS that fights
-  // the email's own design.
+  // fixed-width image inside it. The current reading-pane contract is
+  // that even these emails must not create horizontal message scrolling.
   const wideEmail = `
     <table width="640" cellpadding="0" cellspacing="0" align="center"
            style="width:640px; max-width:640px;">
@@ -238,7 +228,7 @@ describe('integration: a real-world wide marketing email', () => {
     </table>
   `;
 
-  it('preserves the email markup verbatim — width attributes and inline styles intact', () => {
+  it('preserves the email markup while pairing it with overflow-prevention CSS', () => {
     const out = buildMessageSrcDoc(wideEmail);
     const doc = parseSrcDoc(out);
 
@@ -254,19 +244,17 @@ describe('integration: a real-world wide marketing email', () => {
 
     const h1 = doc.querySelector('h1');
     expect(h1?.getAttribute('style')).toContain('font-size:32px');
+
+    const css = doc.querySelector('style')?.textContent ?? '';
+    expect(css).toMatch(/img,\s*video,\s*canvas,\s*svg\s*\{[^}]*max-width:\s*100%/);
+    expect(css).toMatch(/table\s*\{[^}]*max-width:\s*100%/);
   });
 
-  it('does NOT pair the email with override CSS that would change its layout', () => {
+  it('does NOT pair the email with broad override CSS beyond overflow prevention', () => {
     const out = buildMessageSrcDoc(wideEmail);
     const doc = parseSrcDoc(out);
     const css = doc.querySelector('style')?.textContent ?? '';
 
-    // None of the rules that previously broke the email design.
-    expect(css).not.toMatch(/max-width:\s*100%\s*!important/);
-    expect(css).not.toMatch(/width:\s*auto\s*!important/);
-    expect(css).not.toMatch(/table\s*\{/);
-    expect(css).not.toMatch(/\bimg\s*\{/);
-    expect(css).not.toMatch(/\[width\]/);
     expect(css).not.toMatch(/body\s*\*\s*\{/);
     expect(css).not.toMatch(/!important/);
     expect(css).not.toMatch(/\bfilter:/);

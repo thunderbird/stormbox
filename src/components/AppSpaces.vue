@@ -6,6 +6,7 @@ const props = defineProps({
   active: { type: String, default: 'mail' },
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
+  showFolderListToggle: { type: Boolean, default: true },
 });
 const emit = defineEmits(['change', 'toggle-folder-list']);
 const folderListToggleLabel = computed(() =>
@@ -38,7 +39,7 @@ function pick(name) { emit('change', name); }
     >
       <Users :size="20" :stroke-width="1.75" />
     </button>
-    <div class="app-spaces__bottom-actions">
+    <div v-if="props.showFolderListToggle" class="app-spaces__bottom-actions">
       <button
         class="app-spaces__item"
         :class="{ 'is-active': !props.folderListHidden }"
@@ -148,5 +149,29 @@ function pick(name) { emit('change', name); }
   letter-spacing: -0.2px;
   text-align: center;
   pointer-events: none;
+}
+
+@media (max-width: 639px) {
+  .app-spaces {
+    position: relative;
+    flex-direction: row;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    height: var(--spaces-bar-height, 56px);
+    padding:
+      8px max(56px, env(safe-area-inset-right))
+      calc(8px + env(safe-area-inset-bottom))
+      max(56px, env(safe-area-inset-left));
+    border-right: 0;
+    border-top: 1px solid var(--border);
+  }
+  .app-spaces__bottom-actions {
+    position: absolute;
+    top: 8px;
+    left: max(8px, env(safe-area-inset-left));
+    margin-top: 0;
+    flex-direction: row;
+  }
 }
 </style>

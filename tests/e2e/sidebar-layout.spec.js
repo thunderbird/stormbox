@@ -47,7 +47,7 @@ test.describe('Sidebar layout', () => {
         return Math.round(rect.left);
       }),
       { timeout: 5_000, message: 'expected mobile folder overlay to finish opening' },
-    ).toBe(56);
+    ).toBe(0);
     await expect.poll(
       async () => page.locator('.sidebar-slot').evaluate((slot) => slot.getBoundingClientRect().width),
       { timeout: 5_000, message: 'expected mobile folder overlay to keep a usable width' },
@@ -73,6 +73,9 @@ test.describe('Sidebar layout', () => {
         buttonLeft: buttonRect.left,
         buttonRight: buttonRect.right,
         buttonWidth: buttonRect.width,
+        headerLeft: headerRect.left,
+        headerRight: headerRect.right,
+        headerWidth: headerRect.width,
         contentLeft,
         contentRight,
         contentWidth: contentRight - contentLeft,
@@ -96,6 +99,10 @@ test.describe('Sidebar layout', () => {
       `New Message button should not be wider than its header content: ${JSON.stringify(metrics)}`,
     ).toBeLessThanOrEqual(metrics.contentWidth + pixelTolerance);
     expect(
+      metrics.headerRight,
+      `Folder-list header should not be wider than the visible folder-list slot: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(metrics.slotRight + pixelTolerance);
+    expect(
       metrics.buttonRight,
       `New Message button should not be clipped by the visible folder-list slot: ${JSON.stringify(metrics)}`,
     ).toBeLessThanOrEqual(metrics.slotRight + pixelTolerance);
@@ -112,13 +119,19 @@ test.describe('Sidebar layout', () => {
 
     const metrics = await page.evaluate(() => {
       const shell = document.querySelector('.shell');
+      const spaces = document.querySelector('.app-spaces');
       const toggle = document.querySelector('[aria-label="Show folder list"], [aria-label="Hide folder list"]');
-      if (!shell || !toggle) {
-        throw new Error('Expected shell and folder-list toggle to be rendered');
+      const mail = document.querySelector('[aria-label="Mail"]');
+      const contacts = document.querySelector('[aria-label="Contacts"]');
+      if (!shell || !spaces || !toggle || !mail || !contacts) {
+        throw new Error('Expected shell, spaces bar, and spaces actions to be rendered');
       }
 
       const shellRect = shell.getBoundingClientRect();
+      const spacesRect = spaces.getBoundingClientRect();
       const toggleRect = toggle.getBoundingClientRect();
+      const mailRect = mail.getBoundingClientRect();
+      const contactsRect = contacts.getBoundingClientRect();
       const viewportHeightToken = getComputedStyle(document.documentElement)
         .getPropertyValue('--app-viewport-height')
         .trim();
@@ -128,7 +141,13 @@ test.describe('Sidebar layout', () => {
         viewportHeight: window.innerHeight,
         visualViewportHeight: window.visualViewport?.height ?? window.innerHeight,
         shellBottom: shellRect.bottom,
+        spacesLeft: spacesRect.left,
+        spacesRight: spacesRect.right,
+        spacesBottom: spacesRect.bottom,
+        spacesCenter: spacesRect.left + spacesRect.width / 2,
+        toggleLeft: toggleRect.left,
         toggleBottom: toggleRect.bottom,
+        actionsCenter: (mailRect.left + contactsRect.right) / 2,
       };
     });
     const pixelTolerance = 0.5;
@@ -141,13 +160,39 @@ test.describe('Sidebar layout', () => {
       `App shell should fit within the visible viewport: ${JSON.stringify(metrics)}`,
     ).toBeLessThanOrEqual(metrics.visualViewportHeight + pixelTolerance);
     expect(
-      metrics.toggleBottom,
-      `Folder-list toggle should remain visible at the bottom of the spaces rail: ${JSON.stringify(metrics)}`,
+      metrics.spacesBottom,
+      `Spaces bar should sit at the bottom of the visible viewport: ${JSON.stringify(metrics)}`,
     ).toBeLessThanOrEqual(metrics.visualViewportHeight + pixelTolerance);
+    expect(
+      metrics.toggleBottom,
+      `Folder-list toggle should remain visible in the bottom-left spaces bar: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(metrics.visualViewportHeight + pixelTolerance);
+    expect(
+      metrics.toggleLeft,
+      `Folder-list toggle should be anchored at the bottom-left: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(16 + pixelTolerance);
+    expect(
+      Math.abs(metrics.actionsCenter - metrics.spacesCenter),
+      `Mail and Contacts actions should be centered in the bottom spaces bar: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(8);
   });
 
-  test('keeps unfolded fold widths in a two-pane mail layout without clipping', async ({ page }) => {
-    await page.setViewportSize({ width: 588, height: 852 });
+  test('does not show the folder-list toggle or drawer in Contacts', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+    });
+
+    await loginViaOidc(page);
+    await waitForFolderTreeReady(page);
+    await page.getByRole('button', { name: /^contacts$/i }).click();
+    await expect(page.locator('.contacts')).toBeVisible();
+    await expect(page.locator('.sidebar-slot')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /folder list/i })).toHaveCount(0);
+  });
+
+  test('keeps the 640px boundary in a two-pane mail layout without clipping', async ({ page }) => {
+    await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
       window.localStorage.setItem(
@@ -202,8 +247,8 @@ test.describe('Sidebar layout', () => {
     ).toBeGreaterThan(220);
   });
 
-  test('lets the message view fill the single-column layout below compact two-pane minimums', async ({ page }) => {
-    await page.setViewportSize({ width: 560, height: 852 });
+  test('lets the message view fill the single-column layout below 640px', async ({ page }) => {
+    await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
       window.localStorage.setItem(
@@ -219,21 +264,23 @@ test.describe('Sidebar layout', () => {
     await expect(page.locator('.msg-list')).toHaveCount(0);
 
     const metrics = await page.locator('.shell').evaluate((shell) => {
-      const rail = shell.querySelector('.app-spaces');
+      const spaces = shell.querySelector('.app-spaces');
       const view = shell.querySelector('.message-view');
-      if (!rail || !view) {
-        throw new Error('Expected spaces rail and message view to be rendered');
+      if (!spaces || !view) {
+        throw new Error('Expected spaces bar and message view to be rendered');
       }
 
       const shellRect = shell.getBoundingClientRect();
-      const railRect = rail.getBoundingClientRect();
+      const spacesRect = spaces.getBoundingClientRect();
       const viewRect = view.getBoundingClientRect();
       return {
-        availableLeft: railRect.right,
+        availableLeft: shellRect.left,
         availableRight: shellRect.right,
-        availableWidth: shellRect.right - railRect.right,
+        availableBottom: spacesRect.top,
+        availableWidth: shellRect.width,
         viewLeft: viewRect.left,
         viewRight: viewRect.right,
+        viewBottom: viewRect.bottom,
         viewWidth: viewRect.width,
       };
     });
@@ -251,6 +298,10 @@ test.describe('Sidebar layout', () => {
       metrics.viewWidth,
       `Message view should fill all available single-column width: ${JSON.stringify(metrics)}`,
     ).toBeGreaterThanOrEqual(metrics.availableWidth - pixelTolerance);
+    expect(
+      metrics.viewBottom,
+      `Message view should stop above the bottom spaces bar: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(metrics.availableBottom + pixelTolerance);
   });
 
   test('keeps the message view from causing page overflow below 300px column width', async ({ page }) => {
@@ -271,14 +322,27 @@ test.describe('Sidebar layout', () => {
 
     const metrics = await page.evaluate(() => {
       const shell = document.querySelector('.shell');
-      const rail = document.querySelector('.app-spaces');
+      const spaces = document.querySelector('.app-spaces');
       const view = document.querySelector('.message-view');
       const article = document.querySelector('.message-view__article');
-      if (!shell || !rail || !view || !article) {
-        throw new Error('Expected shell, spaces rail, message view, and article to be rendered');
+      const body = document.querySelector('.message-view__body');
+      const frame = document.querySelector('iframe.message-view__html-frame');
+      let frameDocumentScrollWidth = 0;
+      let frameDocumentClientWidth = 0;
+      if (frame?.contentDocument) {
+        frameDocumentScrollWidth = Math.max(
+          frame.contentDocument.documentElement?.scrollWidth ?? 0,
+          frame.contentDocument.body?.scrollWidth ?? 0,
+        );
+        frameDocumentClientWidth = Math.max(
+          frame.contentDocument.documentElement?.clientWidth ?? 0,
+          frame.contentDocument.body?.clientWidth ?? 0,
+        );
+      }
+      if (!shell || !spaces || !view || !article || !body) {
+        throw new Error('Expected shell, spaces bar, message view, article, and body to be rendered');
       }
 
-      const railRect = rail.getBoundingClientRect();
       const viewRect = view.getBoundingClientRect();
       const articleRect = article.getBoundingClientRect();
       return {
@@ -286,9 +350,13 @@ test.describe('Sidebar layout', () => {
         documentScrollWidth: document.documentElement.scrollWidth,
         shellClientWidth: shell.clientWidth,
         shellScrollWidth: shell.scrollWidth,
-        expectedColumnWidth: window.innerWidth - railRect.right,
+        expectedColumnWidth: shell.clientWidth,
         viewWidth: viewRect.width,
         articleWidth: articleRect.width,
+        bodyClientWidth: body.clientWidth,
+        bodyScrollWidth: body.scrollWidth,
+        frameDocumentClientWidth,
+        frameDocumentScrollWidth,
       };
     });
     const pixelTolerance = 0.5;
@@ -309,6 +377,16 @@ test.describe('Sidebar layout', () => {
       metrics.articleWidth,
       `Message article should not preserve a wider intrinsic width: ${JSON.stringify(metrics)}`,
     ).toBeLessThanOrEqual(metrics.viewWidth + pixelTolerance);
+    expect(
+      metrics.bodyScrollWidth,
+      `Message body should not develop horizontal scrolling: ${JSON.stringify(metrics)}`,
+    ).toBeLessThanOrEqual(metrics.bodyClientWidth + pixelTolerance);
+    if (metrics.frameDocumentClientWidth > 0) {
+      expect(
+        metrics.frameDocumentScrollWidth,
+        `HTML message iframe should not develop horizontal scrolling: ${JSON.stringify(metrics)}`,
+      ).toBeLessThanOrEqual(metrics.frameDocumentClientWidth + pixelTolerance);
+    }
   });
 
   test('wraps long message metadata instead of truncating with ellipses', async ({ page }) => {
@@ -326,7 +404,7 @@ test.describe('Sidebar layout', () => {
       bodyText: 'Long metadata wrapping regression body.',
     });
 
-    await page.setViewportSize({ width: 588, height: 852 });
+    await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
       window.localStorage.setItem(
@@ -392,7 +470,7 @@ test.describe('Sidebar layout', () => {
       keywords: {},
     });
 
-    await page.setViewportSize({ width: 588, height: 852 });
+    await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
       window.localStorage.setItem(
@@ -409,22 +487,31 @@ test.describe('Sidebar layout', () => {
     await expect(page.locator('.message-view')).toBeVisible();
     await expect(page.locator('.msg-list')).toHaveClass(/msg-list--card/);
 
-    const weights = await page.evaluate(({ read, unread }) => {
+    const cardMetrics = await page.evaluate(({ read, unread }) => {
       const rows = Array.from(document.querySelectorAll('.msg-list__item'));
       const readRow = rows.find((row) => row.textContent?.includes(read));
       const unreadRow = rows.find((row) => row.textContent?.includes(unread));
       const readSubjectEl = readRow?.querySelector('.msg-list__subject');
       const unreadSubjectEl = unreadRow?.querySelector('.msg-list__subject');
-      if (!readSubjectEl || !unreadSubjectEl) {
-        throw new Error('Expected read and unread card subjects to be rendered');
+      const readPreviewEl = readRow?.querySelector('.msg-list__preview');
+      if (!readSubjectEl || !unreadSubjectEl || !readPreviewEl) {
+        throw new Error('Expected read and unread card content to be rendered');
       }
+      const readSubjectStyles = getComputedStyle(readSubjectEl);
+      const readPreviewStyles = getComputedStyle(readPreviewEl);
       return {
-        read: Number(getComputedStyle(readSubjectEl).fontWeight),
-        unread: Number(getComputedStyle(unreadSubjectEl).fontWeight),
+        readWeight: Number(readSubjectStyles.fontWeight),
+        unreadWeight: Number(getComputedStyle(unreadSubjectEl).fontWeight),
+        subjectClamp: readSubjectStyles.getPropertyValue('-webkit-line-clamp'),
+        subjectWhiteSpace: readSubjectStyles.whiteSpace,
+        previewClamp: readPreviewStyles.getPropertyValue('-webkit-line-clamp'),
       };
     }, { read: readSubject, unread: unreadSubject });
 
-    expect(weights.read).toBeLessThan(600);
-    expect(weights.unread).toBeGreaterThanOrEqual(600);
+    expect(cardMetrics.readWeight).toBeLessThan(600);
+    expect(cardMetrics.unreadWeight).toBeGreaterThanOrEqual(600);
+    expect(cardMetrics.subjectClamp).toBe('2');
+    expect(cardMetrics.subjectWhiteSpace).toBe('normal');
+    expect(cardMetrics.previewClamp).toBe('1');
   });
 });

@@ -77,13 +77,10 @@ export const IFRAME_CSP = [
  *    to fix simple HTML bodies like "<p>test</p>" in dark mode without
  *    adding the kind of global inversion/filter rules that break real
  *    marketing email designs.
- *  - That's it. We deliberately do NOT touch widths, tables, images,
- *    links, blockquotes, descendant backgrounds, or anything else that
- *    might be part of the email's design. When the email is narrower
- *    than the iframe we let the iframe's themed canvas fill the gap;
- *    when it's wider we let the iframe show a horizontal scrollbar
- *    (the default `scrolling="auto"` behaviour) so the user can scroll
- *    within the message body without affecting the rest of the page.
+ *  - We constrain replaced elements and common fixed-width containers
+ *    to the iframe width so message bodies never require horizontal
+ *    scrolling in the reading pane. We intentionally avoid colour,
+ *    typography, spacing, or other broad design rewrites.
  */
 export const BODY_THEME_COLORS = {
   light: {
@@ -109,6 +106,17 @@ export function buildBodyCss(colorScheme = 'light') {
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow-wrap: anywhere;
+  }
+  img, video, canvas, svg {
+    max-width: 100%;
+    height: auto;
+  }
+  table {
+    max-width: 100%;
+  }
+  div, section, article, main, header, footer, aside, table, tbody, thead, tfoot, tr, td, th {
+    max-width: 100%;
   }
 `;
 }

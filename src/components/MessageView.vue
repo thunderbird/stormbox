@@ -217,20 +217,6 @@ function onIframeLoad() {
       initialIframeHeight(),
     );
 
-    // If the email's design is wider than the message-view pane, the
-    // iframe will paint a horizontal scrollbar. We don't shrink the
-    // email — the user explicitly asked to let a 640-px email be
-    // 640-px and just put whitespace around it — but the horizontal
-    // scrollbar eats ~17px of the iframe's content area, which would
-    // otherwise force a vertical scrollbar INSIDE the iframe (we're
-    // already growing the iframe to scrollHeight, so there should
-    // never be a need for one). Add a small buffer so the
-    // scrollbar has room without clipping the last line.
-    const horizOverflow =
-      (docEl.scrollWidth ?? 0) > (docEl.clientWidth ?? 0)
-      || (bodyEl.scrollWidth ?? 0) > (bodyEl.clientWidth ?? 0);
-    if (horizOverflow) next += 18;
-
     if (next && next !== iframeHeight.value) {
       iframeHeight.value = next;
     }
@@ -647,12 +633,8 @@ function closeMessageView() {
   min-width: 0;
   min-height: 57px;
   padding: 11px 12px;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
-}
-.message-view__header::-webkit-scrollbar {
-  display: none;
 }
 .message-view__details {
   min-width: 0;
@@ -768,6 +750,7 @@ function closeMessageView() {
    * theme while styled emails keep their own design. */
   padding: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   min-width: 0;
   min-height: 0;
 }
@@ -779,9 +762,7 @@ function closeMessageView() {
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document
    * has laid out; min-height is the floor for the first paint when
-   * the body viewport is not measurable yet. The iframe's own
-   * scrolling="auto" default takes care of the horizontal scrollbar
-   * if the email is wider than the pane. */
+   * the body viewport is not measurable yet. */
   min-height: 120px;
   background: var(--panel);
 }

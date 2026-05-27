@@ -432,7 +432,21 @@ describe('App mail layout', () => {
     expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
   });
 
-  it('auto-hides the folder list at 1024px when a message is selected', async () => {
+  it('does not render folder-list controls in the Contacts space', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--contacts');
+    expect(wrapper.find('.sidebar-slot').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Hide folder list"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Show folder list"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Resize folder list"]').exists()).toBe(false);
+  });
+
+  it('auto-hides the folder list below 1024px when a message is selected', async () => {
     vi.useFakeTimers();
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
@@ -441,7 +455,7 @@ describe('App mail layout', () => {
     await nextTick();
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
 
-    setWindowWidth(1024, true);
+    setWindowWidth(1023, true);
     await nextTick();
 
     expect(wrapper.find('.message-view').exists()).toBe(false);
@@ -481,9 +495,9 @@ describe('App mail layout', () => {
     expect(wrapper.find('.message-view').exists()).toBe(true);
   });
 
-  it('keeps unfolded fold widths in a two-pane mail layout', async () => {
+  it('keeps the 640px boundary in a two-pane mail layout', async () => {
     vi.useFakeTimers();
-    setWindowWidth(588);
+    setWindowWidth(640);
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
 
@@ -503,9 +517,9 @@ describe('App mail layout', () => {
     expect(wrapper.find('.message-view').exists()).toBe(true);
   });
 
-  it('uses a single mail column below compact two-pane minimums', async () => {
+  it('uses a single mail column below 640px', async () => {
     vi.useFakeTimers();
-    setWindowWidth(560);
+    setWindowWidth(639);
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
 
@@ -518,7 +532,7 @@ describe('App mail layout', () => {
   });
 
   it('hides the folder list by default below the single-column threshold', async () => {
-    setWindowWidth(560);
+    setWindowWidth(639);
 
     const wrapper = mountApp();
     await nextTick();
@@ -594,7 +608,7 @@ describe('App mail layout', () => {
     await nextTick();
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
 
-    setWindowWidth(1025, true);
+    setWindowWidth(1024, true);
     await nextTick();
 
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
@@ -605,7 +619,7 @@ describe('App mail layout', () => {
     expect(wrapper.find('.message-view').exists()).toBe(true);
   });
 
-  it('keeps the folder list visible at 1024px until a message is selected', async () => {
+  it('keeps the folder list visible at 1024px', async () => {
     setWindowWidth(1024);
 
     const wrapper = mountApp();
