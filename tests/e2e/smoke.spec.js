@@ -27,6 +27,9 @@ test('login gate renders and the SharedWorker SQLite boots', async ({ page }) =>
 
   await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
   await expect(
+    page.getByText('This is an Early Alpha and subject to (very) frequent change. Use at your own risk!'),
+  ).toBeVisible();
+  await expect(
     page.getByRole('button', { name: /sign in with thunderbird/i }),
   ).toBeVisible();
 
