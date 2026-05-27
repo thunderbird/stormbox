@@ -24,8 +24,9 @@ APIs, are available.
 
 ## Local Mail Stack
 
-Live development and full E2E tests use the `thunderbird-accounts/` submodule
-for Keycloak and Stalwart.
+This is NOT REQUIRED for basic development or deployment! But a full local mail stack
+is necessary for proper end to end testing. The stack uses the
+`thunderbird-accounts/` submodule for Keycloak and Stalwart.
 
 ```bash
 ./scripts/local-stack-up.sh
@@ -33,22 +34,14 @@ for Keycloak and Stalwart.
 
 The helper initializes the submodule, starts the minimal local auth/mail stack
 (Keycloak, Keycloak's Postgres, and Stalwart), starts the Stormbox dev
-container, runs `stack:configure`, and starts the local WebSocket auth bridge
-(the WS half of the same contract as `infra/jmap-bridge/`) inside the dev
-container. Stalwart stores local mail in its own RocksDB data directory; the
-Postgres service here is only Keycloak's database. To also start the Thunderbird
-Accounts UI and its Django Postgres/Redis services, run
-`WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`.
+container, runs `stack:configure`, and starts the local WebSocket auth bridge inside
+the dev container. To also start the Thunderbird Accounts UI and its Django
+Postgres/Redis services, run `WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`.
 
-`stack:configure` is idempotent: it updates Keycloak for the HTTPS Vite origin,
-provisions the dedicated Playwright account (`e2e@example.org`) directly in
-Keycloak and Stalwart, and ensures the default developer Stalwart principal
-(`admin@example.org`) exists without touching the Keycloak user imported by the
-submodule. Local-stack E2E tests run the same configure step from Playwright
-global setup, so a fresh test stack does not need a manual `stack:seed` step.
+`stack:configure` is idempotent and configures Keycloak as well as creates the
+(`e2e@example.org`) account for tests and (`admin@example.org`) for dev.
 
-The developer account is kept separate from the Playwright account. Sign into
-Stormbox manually as `admin@example.org` / `admin`. Optional test account
+Sign into Stormbox manually as `admin@example.org` / `admin`. Optional test account
 overrides live in `tests/e2e/.env.local.example`.
 
 To populate that developer account with realistic-looking fake mail
@@ -60,9 +53,7 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run stack:seed-dev'
 ```
 
-The script is idempotent: re-running sweeps messages with its own `[dev seed]`
-subject prefix and recreates them. It only touches the developer account; E2E
-specs seed their own baseline inbox/archive data as needed.
+E2E tests seed their own baseline inbox/archive data as needed.
 
 ## Configuration
 
