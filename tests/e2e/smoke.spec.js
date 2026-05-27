@@ -62,6 +62,13 @@ test('login gate renders and the SharedWorker SQLite boots', async ({ page }) =>
     && !e.includes('NetworkError')
     && !e.includes('JMAP')
     && !e.includes('OIDC')
+    // Without LOCAL_STACK, oidc-spa attempts a silent-renew iframe
+    // against the configured stage issuer, which responds with
+    // `frame-ancestors 'self'` and trips a CSP console error. This
+    // is expected when the OIDC provider is external; LOCAL_STACK
+    // proxies the issuer through the same origin and avoids it.
+    && !e.includes('Content Security Policy')
+    && !e.includes('frame-ancestors')
     // Vite HMR sometimes warns about expected reloads in dev.
     && !e.includes('Vite'),
   );
