@@ -34,7 +34,7 @@ capability.
 | 5 | Contacts | 4 | — | — | — |
 | 6 | Attachments | 1 | — | 1 | Download |
 | 7 | Account storage usage | 2 | — | — | — |
-| 8 | Application chrome and cross-product navigation | 4 | — | — | — |
+| 8 | Application chrome and cross-product navigation | 4 | — | 1 | services-ui adoption |
 | 9 | Browser notifications | — | — | 4 | Whole section is a draft |
 
 ## Capabilities
@@ -126,6 +126,7 @@ capability.
 | R-8.2 🟩 Done | The Thundermail product menu shall link the user to other Thunderbird Pro web products, including Thunderbird Appointment and Thunderbird Send. URLs shall resolve to production hosts when the app runs on the production webmail origin and to staging hosts in all other environments, and shall be overridable via Vite env vars for self-hosters. |
 | R-8.3 🟩 Done | The account avatar menu shall display an initials-based avatar derived deterministically from the user's email address. On activation it shall reveal the signed-in email, an Account Settings link to the Thunderbird Accounts site (per R-8.2 host resolution), and a Log Out action that signs the user out per R-1.4. The folder list shall not duplicate a sign-out affordance. |
 | R-8.4 🟩 Done | The system shall let the user toggle between dark and light themes via a button in the top bar, default to the system colour-scheme preference on first run, and persist the chosen theme across reloads. |
+| R-8.5 🟧 Planned | The system shall consume Thunderbird `services-ui` for shared UI primitives, starting with button components, and shall follow `services-ui` conventions for component variants, sizes, disabled states, focus treatment, tooltips, design tokens, and light/dark theme integration unless Stormbox-specific mail UX requires a documented exception. |
 
 ### 9. Browser notifications
 
