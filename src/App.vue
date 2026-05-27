@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { ChevronDown, Moon, Plus, Sun, X } from 'lucide-vue-next';
+import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from 'lucide-vue-next';
 
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts.js';
-import { APPOINTMENT_URL, SEND_URL } from './defines.js';
+import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines.js';
 
 import { useAuthStore } from './stores/auth-store.js';
 import { useMailStore } from './stores/mail-store.js';
@@ -469,8 +469,28 @@ function clamp(value: number, min: number, max: number) {
       </div>
 
       <div class="quick-filter__actions">
+        <a
+          class="quick-filter__action"
+          :href="BUG_REPORT_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Report a bug"
+          title="Report a bug"
+        >
+          <Bug :size="18" :stroke-width="1.75" aria-hidden="true" />
+        </a>
+        <a
+          class="quick-filter__action"
+          :href="FEEDBACK_URL"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Give feedback"
+          title="Give feedback"
+        >
+          <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
+        </a>
         <button
-          class="theme-toggle"
+          class="quick-filter__action theme-toggle"
           type="button"
           :aria-label="themeToggleLabel"
           :title="themeToggleLabel"
@@ -646,7 +666,8 @@ function clamp(value: number, min: number, max: number) {
   align-items: center;
   gap: 6px;
 }
-.theme-toggle {
+.quick-filter__action,
+.quick-filter__action.theme-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -658,9 +679,12 @@ function clamp(value: number, min: number, max: number) {
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  text-decoration: none;
 }
-.theme-toggle:hover,
-.theme-toggle:focus-visible {
+.quick-filter__action:hover,
+.quick-filter__action:focus-visible,
+.quick-filter__action.theme-toggle:hover,
+.quick-filter__action.theme-toggle:focus-visible {
   background: var(--rowHover);
   border-color: var(--border-soft);
   outline: none;

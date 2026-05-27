@@ -14,7 +14,13 @@ vi.mock('../../../src/services/auth.js', () => ({
 
 import App from '../../../src/App.vue';
 import { AUTH_STATE } from '../../../src/constants/states.js';
-import { ACCOUNTS_URL, APPOINTMENT_URL, SEND_URL } from '../../../src/defines.js';
+import {
+  ACCOUNTS_URL,
+  APPOINTMENT_URL,
+  BUG_REPORT_URL,
+  FEEDBACK_URL,
+  SEND_URL,
+} from '../../../src/defines.js';
 import { useAuthStore } from '../../../src/stores/auth-store.js';
 import { useMailStore } from '../../../src/stores/mail-store.js';
 import {
@@ -164,6 +170,22 @@ describe('App mail layout', () => {
     await nextTick();
 
     expect(appMenu.open).toBe(false);
+  });
+
+  it('renders bug report and feedback links next to the theme toggle', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    const bugLink = wrapper.get('.quick-filter__action[aria-label="Report a bug"]');
+    expect(bugLink.attributes('href')).toBe(BUG_REPORT_URL);
+    expect(bugLink.attributes('target')).toBe('_blank');
+    expect(bugLink.get('svg').exists()).toBe(true);
+
+    const feedbackLink = wrapper.get('.quick-filter__action[aria-label="Give feedback"]');
+    expect(feedbackLink.attributes('href')).toBe(FEEDBACK_URL);
+    expect(feedbackLink.attributes('target')).toBe('_blank');
+
+    expect(wrapper.get('.theme-toggle').classes()).toContain('quick-filter__action');
   });
 
   it('shows the user identity, account settings link, and a log out button in the top-right avatar menu', async () => {
