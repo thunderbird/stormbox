@@ -26,6 +26,10 @@ import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 
+defineProps<{
+  spotlightActions?: boolean;
+}>();
+
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
 
@@ -380,7 +384,11 @@ function closeMessageView() {
 </script>
 
 <template>
-  <section class="message-view" aria-label="Message detail">
+  <section
+    class="message-view"
+    :class="{ 'message-view--spotlight-actions': spotlightActions }"
+    aria-label="Message detail"
+  >
     <div
       v-if="isMultiSelecting"
       class="message-view__bulk"
@@ -423,6 +431,31 @@ function closeMessageView() {
         </li>
       </ol>
     </div>
+    <article v-else-if="spotlightActions" class="message-view__article">
+      <header class="message-view__header">
+        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" title="Back" aria-label="Back">
+          <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+        </button>
+        <button class="message-view__action" type="button" title="Archive (A)" aria-label="Archive">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+        </button>
+        <button class="message-view__action message-view__action--danger" type="button" title="Delete (Del)" aria-label="Delete">
+          <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+        </button>
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Reply (Ctrl+R)" aria-label="Reply">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
+        </button>
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
+        </button>
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Forward (Ctrl+L)" aria-label="Forward">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
+        </button>
+      </header>
+      <div class="message-view__empty">
+        <p>Select a message to read it.</p>
+      </div>
+    </article>
     <div v-else-if="!message" class="message-view__empty">
       <p>Select a message to read it.</p>
     </div>
@@ -437,13 +470,13 @@ function closeMessageView() {
         <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <button class="message-view__action" type="button" @click="reply" title="Reply (Ctrl+R)" aria-label="Reply">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="reply" title="Reply (Ctrl+R)" aria-label="Reply">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
         </button>
-        <button class="message-view__action" type="button" @click="replyAll" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="replyAll" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
         </button>
-        <button class="message-view__action" type="button" @click="forward" title="Forward (Ctrl+L)" aria-label="Forward">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="forward" title="Forward (Ctrl+L)" aria-label="Forward">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </button>
       </header>
@@ -668,6 +701,13 @@ function closeMessageView() {
 .message-view__action--danger:hover { background: rgba(255, 107, 107, 0.12); color: #ff6b6b; }
 .message-view__action--ghost { color: var(--muted); }
 .message-view__action--back { margin-right: 12px; }
+.message-view--spotlight-actions .message-view__action--compose-spotlight {
+  position: relative;
+  z-index: 130;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel2));
+  animation: message-action-spotlight-pulse 3.2s ease-in-out infinite;
+}
 .message-view__toolbar-icon {
   width: 18px;
   height: 18px;
@@ -765,4 +805,17 @@ function closeMessageView() {
 .att-name { font-weight: 500; color: var(--text); }
 .att-meta { color: var(--muted); font-size: 12px; }
 .message-view__placeholder { margin: 0; padding: 18px 22px; color: var(--muted); }
+
+@keyframes message-action-spotlight-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--accent) 24%, transparent),
+      0 0 0 1px color-mix(in srgb, var(--accent) 86%, #fff),
+      0 10px 24px color-mix(in srgb, #000 24%, transparent);
+    filter: brightness(1.12);
+  }
+  50% {
+    filter: brightness(1.22);
+  }
+}
 </style>

@@ -47,6 +47,7 @@ const mountedWrappers = [];
 
 function mountApp() {
   const wrapper = mount(App, {
+    attachTo: document.body,
     global: {
       stubs: {
         LoginGate: { template: '<div />' },
@@ -86,10 +87,39 @@ function setWindowWidth(width: number, dispatchResize = false) {
   }
 }
 
+function featureByTitle(wrapper: ReturnType<typeof mountApp>, title: string) {
+  const feature = wrapper.findAll('.welcome__feature')
+    .find((candidate) => candidate.text().includes(title));
+  if (!feature) throw new Error(`Could not find welcome feature: ${title}`);
+  return feature;
+}
+
+function setElementRect(
+  element: Element,
+  rect: { left: number; top: number; width: number; height: number },
+) {
+  const { left, top, width, height } = rect;
+  Object.defineProperty(element, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      x: left,
+      y: top,
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      toJSON: () => ({}),
+    }),
+  });
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   __setRepositoryForTests(makeRepo());
   window.localStorage?.clear();
+  window.localStorage?.setItem('stormbox.welcomeModalDismissed.v1', '1');
   setWindowWidth(1280);
   const authStore = useAuthStore();
   authStore.status = AUTH_STATE.CONNECTED;
@@ -105,6 +135,143 @@ afterEach(() => {
 });
 
 describe('App mail layout', () => {
+  it('shows the welcome modal on first login and persists dismissal', async () => {
+    vi.useFakeTimers();
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
+    expect(wrapper.text()).toContain('Quick Filter');
+    expect(wrapper.text()).toContain('Keyboard Shortcuts');
+    expect(wrapper.text()).toContain('Ctrl+K');
+    expect(wrapper.text()).not.toContain('Your Thunderbird mail workspace is ready');
+    expect(wrapper.findAll('.welcome__shortcut-group h3').map((heading) => heading.text()))
+      .toEqual(['Navigate', 'Message actions', 'Find and compose']);
+
+    await wrapper.get('.welcome').trigger('click');
+    await nextTick();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+
+    await wrapper.get('.welcome__feature--quick-filter').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('.welcome--spotlighting').exists()).toBe(true);
+    expect(wrapper.find('.quick-filter__search--spotlight').exists()).toBe(true);
+    expect(wrapper.get('.quick-filter__input').attributes('placeholder')).toBe('');
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+
+    vi.advanceTimersByTime(1300);
+    await nextTick();
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+
+    vi.advanceTimersByTime(1300);
+    await nextTick();
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    expect(wrapper.find('.welcome--spotlighting').exists()).toBe(false);
+    expect(window.localStorage.getItem('stormbox.welcomeModalDismissed.v1')).toBeNull();
+
+    await wrapper.get('.welcome__primary').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(window.localStorage.getItem('stormbox.welcomeModalDismissed.v1')).toBe('1');
+  });
+
+  it('keeps global shortcuts inactive while the welcome modal is open', async () => {
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    const input = wrapper.get('.quick-filter__input').element as HTMLInputElement;
+    const focusSpy = vi.spyOn(input, 'focus');
+
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'k',
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    }));
+    await nextTick();
+
+    expect(focusSpy).not.toHaveBeenCalled();
+
+    await wrapper.get('.welcome__primary').trigger('click');
+    await nextTick();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'k',
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    }));
+    await nextTick();
+
+    expect(focusSpy).toHaveBeenCalledOnce();
+  });
+
+  it('anchors the resize spotlight card below the quick filter while highlighting resize handles', async () => {
+    vi.useFakeTimers();
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    setElementRect(wrapper.get('.quick-filter__search').element, {
+      left: 420,
+      top: 8,
+      width: 320,
+      height: 34,
+    });
+    const resizeFeature = featureByTitle(wrapper, 'Resizable mail layout');
+    setElementRect(resizeFeature.element, {
+      left: 100,
+      top: 220,
+      width: 220,
+      height: 72,
+    });
+
+    await resizeFeature.trigger('click');
+    await nextTick();
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.find('.shell--resize-spotlight').exists()).toBe(true);
+    expect(wrapper.findAll('.column-resizer--spotlight')).toHaveLength(2);
+    expect(wrapper.get('.welcome__feature--active').text()).toContain('Resizable mail layout');
+    expect(wrapper.get('.welcome__feature--active').attributes('style'))
+      .toContain('--spotlight-transform: translate(370px, -86px)');
+  });
+
+  it('resets spotlighted cards without animating them back into the modal', async () => {
+    vi.useFakeTimers();
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('.welcome__feature--quick-filter').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('.welcome--spotlighting').exists()).toBe(true);
+
+    vi.advanceTimersByTime(2600);
+    await nextTick();
+
+    expect(wrapper.find('.welcome--spotlighting').exists()).toBe(false);
+    expect(wrapper.find('.welcome--spotlight-resetting').exists()).toBe(true);
+    expect(wrapper.find('.welcome__feature--active').exists()).toBe(false);
+
+    vi.advanceTimersByTime(32);
+    await nextTick();
+
+    expect(wrapper.find('.welcome--spotlight-resetting').exists()).toBe(false);
+  });
+
   it('renders a centered quick filter above the mail columns and passes it to the message list', async () => {
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
@@ -179,7 +346,7 @@ describe('App mail layout', () => {
     const bugLink = wrapper.get('.quick-filter__action[aria-label="Report a bug"]');
     expect(bugLink.attributes('href')).toBe(BUG_REPORT_URL);
     expect(bugLink.attributes('target')).toBe('_blank');
-    expect(bugLink.get('svg').exists()).toBe(true);
+    expect(bugLink.find('svg').exists()).toBe(true);
 
     const feedbackLink = wrapper.get('.quick-filter__action[aria-label="Give feedback"]');
     expect(feedbackLink.attributes('href')).toBe(FEEDBACK_URL);

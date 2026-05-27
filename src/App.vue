@@ -24,6 +24,7 @@ import StoreErrorToast from './components/StoreErrorToast.vue';
 import BulkOperationOverlay from './components/BulkOperationOverlay.vue';
 import ThundermailLogo from './components/ThundermailLogo.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
+import WelcomeModal from './components/WelcomeModal.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -32,6 +33,9 @@ const composeStore = useComposeStore();
 
 const space = ref('mail');
 const quickFilterQuery = ref('');
+const quickFilterSpotlight = ref(false);
+const resizeLayoutSpotlight = ref(false);
+const composeActionSpotlight = ref(false);
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
@@ -44,15 +48,17 @@ const accountLabel = computed(() =>
 );
 
 const showMessageView = computed(() =>
-  mailStore.selectedMessageId != null || mailStore.selectedIds.size > 0,
+  mailStore.selectedMessageId != null
+  || mailStore.selectedIds.size > 0
+  || resizeLayoutSpotlight.value
+  || composeActionSpotlight.value,
 );
-
-const shortcutsEnabled = computed(() => authStore.status === AUTH_STATE.CONNECTED);
 
 type ResizePane = 'folderList' | 'messageList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
 const THEME_STORAGE_KEY = 'stormbox.theme.v1';
+const WELCOME_MODAL_STORAGE_KEY = 'stormbox.welcomeModalDismissed.v1';
 const SPACE_RAIL_WIDTH = 56;
 const RESIZER_WIDTH = 6;
 const COMPACT_READING_WIDTH = 1024;
@@ -85,12 +91,21 @@ const themeToggleLabel = computed(() =>
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
+const showWelcomeModal = ref(false);
+const shortcutsEnabled = computed(() =>
+  authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
+);
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH),
 );
 const activeResizePane = ref<ResizePane | null>(null);
 let messageViewTimer: number | null = null;
+let quickFilterSpotlightTimer: number | null = null;
+let resizeLayoutSpotlightTimer: number | null = null;
+let composeActionSpotlightTimer: number | null = null;
+let resizeLayoutDemoStart: { folderList: number; messageList: number } | null = null;
+let resizeLayoutDemoTimers: number[] = [];
 let responsiveFolderListHidden = false;
 
 let resizeState: {
@@ -135,6 +150,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopColumnResize();
   clearMessageViewTimer();
+  clearQuickFilterSpotlightTimer();
+  clearResizeLayoutSpotlightTimer();
+  clearComposeActionSpotlightTimer();
   window.removeEventListener('resize', onWindowResize);
 });
 
@@ -151,6 +169,14 @@ watch(space, () => {
 watch(folderListHidden, () => {
   clampColumnWidths();
 });
+
+watch(() => authStore.status, (status) => {
+  if (status === AUTH_STATE.CONNECTED) {
+    maybeShowWelcomeModal();
+    return;
+  }
+  showWelcomeModal.value = false;
+}, { immediate: true });
 
 function startCompose() {
   composeStore.open();
@@ -187,6 +213,122 @@ function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark';
   applyTheme(theme.value);
   saveTheme(theme.value);
+}
+
+function maybeShowWelcomeModal() {
+  try {
+    if (window.localStorage?.getItem(WELCOME_MODAL_STORAGE_KEY) === '1') {
+      showWelcomeModal.value = false;
+      return;
+    }
+  } catch {
+    // If storage is blocked, keep the welcome as a session-only affordance.
+  }
+  showWelcomeModal.value = true;
+}
+
+function dismissWelcomeModal() {
+  showWelcomeModal.value = false;
+  quickFilterSpotlight.value = false;
+  resizeLayoutSpotlight.value = false;
+  composeActionSpotlight.value = false;
+  clearQuickFilterSpotlightTimer();
+  clearResizeLayoutSpotlightTimer();
+  clearComposeActionSpotlightTimer();
+  try {
+    window.localStorage?.setItem(WELCOME_MODAL_STORAGE_KEY, '1');
+  } catch {
+    // Dismissal still applies for this session when storage is unavailable.
+  }
+}
+
+function spotlightQuickFilter() {
+  quickFilterSpotlight.value = true;
+  clearQuickFilterSpotlightTimer();
+  quickFilterSpotlightTimer = window.setTimeout(() => {
+    quickFilterSpotlightTimer = null;
+    quickFilterSpotlight.value = false;
+  }, 3000);
+}
+
+function spotlightResizeLayout() {
+  resizeLayoutSpotlight.value = true;
+  clearResizeLayoutSpotlightTimer();
+  startResizeLayoutDemo();
+  resizeLayoutSpotlightTimer = window.setTimeout(() => {
+    resizeLayoutSpotlightTimer = null;
+    restoreResizeLayoutDemo();
+    resizeLayoutSpotlight.value = false;
+  }, 4600);
+}
+
+function spotlightComposeActions() {
+  composeActionSpotlight.value = true;
+  clearComposeActionSpotlightTimer();
+  composeActionSpotlightTimer = window.setTimeout(() => {
+    composeActionSpotlightTimer = null;
+    composeActionSpotlight.value = false;
+  }, 3400);
+}
+
+function clearQuickFilterSpotlightTimer() {
+  if (quickFilterSpotlightTimer == null) return;
+  window.clearTimeout(quickFilterSpotlightTimer);
+  quickFilterSpotlightTimer = null;
+}
+
+function clearResizeLayoutSpotlightTimer() {
+  if (resizeLayoutSpotlightTimer == null) return;
+  window.clearTimeout(resizeLayoutSpotlightTimer);
+  resizeLayoutSpotlightTimer = null;
+  restoreResizeLayoutDemo();
+}
+
+function clearComposeActionSpotlightTimer() {
+  if (composeActionSpotlightTimer == null) return;
+  window.clearTimeout(composeActionSpotlightTimer);
+  composeActionSpotlightTimer = null;
+}
+
+function startResizeLayoutDemo() {
+  restoreResizeLayoutDemo();
+  resizeLayoutDemoStart = {
+    folderList: folderListWidth.value,
+    messageList: messageListWidth.value,
+  };
+
+  const applyDemoStep = (delay: number, folderDelta: number, messageDelta: number) => {
+    const timer = window.setTimeout(() => {
+      if (!resizeLayoutDemoStart) return;
+      folderListWidth.value = clamp(
+        resizeLayoutDemoStart.folderList + folderDelta,
+        MIN_COLUMN_WIDTHS.folderList,
+        maxFolderListWidth(messageListWidth.value),
+      );
+      messageListWidth.value = clamp(
+        resizeLayoutDemoStart.messageList + messageDelta,
+        MIN_COLUMN_WIDTHS.messageList,
+        maxMessageListWidth(folderListWidth.value),
+      );
+    }, delay);
+    resizeLayoutDemoTimers.push(timer);
+  };
+
+  applyDemoStep(1200, 40, -30);
+  applyDemoStep(2600, -24, 36);
+  applyDemoStep(3900, 0, 0);
+}
+
+function restoreResizeLayoutDemo() {
+  for (const timer of resizeLayoutDemoTimers) {
+    window.clearTimeout(timer);
+  }
+  resizeLayoutDemoTimers = [];
+  if (resizeLayoutDemoStart) {
+    folderListWidth.value = resizeLayoutDemoStart.folderList;
+    messageListWidth.value = resizeLayoutDemoStart.messageList;
+    resizeLayoutDemoStart = null;
+  }
 }
 
 function startColumnResize(pane: ResizePane, event: PointerEvent) {
@@ -422,6 +564,8 @@ function clamp(value: number, min: number, max: number) {
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
       'shell--folder-list-hidden': folderListHidden,
       'shell--column-resizing': activeResizePane !== null,
+      'shell--resize-spotlight': resizeLayoutSpotlight,
+      'shell--compose-spotlight': composeActionSpotlight,
     }"
     :style="shellStyle"
   >
@@ -444,14 +588,18 @@ function clamp(value: number, min: number, max: number) {
         </div>
       </details>
 
-      <div class="quick-filter__search" role="search">
+      <div
+        class="quick-filter__search"
+        :class="{ 'quick-filter__search--spotlight': quickFilterSpotlight }"
+        role="search"
+      >
         <input
           ref="quickFilterInputEl"
           class="quick-filter__input"
           type="search"
           :value="quickFilterQuery"
           aria-label="Quick Filter messages by from, to, or subject"
-          placeholder="Quick Filter"
+          :placeholder="quickFilterSpotlight ? '' : 'Quick Filter'"
           autocomplete="off"
           spellcheck="false"
           @input="setQuickFilterQuery"
@@ -519,7 +667,12 @@ function clamp(value: number, min: number, max: number) {
     >
       <aside class="sidebar">
         <header class="sidebar__header">
-          <button class="sidebar__compose" type="button" @click="startCompose">
+          <button
+            class="sidebar__compose"
+            :class="{ 'sidebar__compose--spotlight': composeActionSpotlight }"
+            type="button"
+            @click="startCompose"
+          >
             <Plus :size="16" :stroke-width="2" />
             <span>New Message</span>
           </button>
@@ -543,6 +696,7 @@ function clamp(value: number, min: number, max: number) {
       :class="{
         'is-active': activeResizePane === 'folderList',
         'column-resizer--hidden': folderListHidden,
+        'column-resizer--spotlight': resizeLayoutSpotlight,
       }"
       role="separator"
       aria-label="Resize folder list"
@@ -561,7 +715,10 @@ function clamp(value: number, min: number, max: number) {
       <div
         v-if="displayedMessageView"
         class="column-resizer column-resizer--message-list"
-        :class="{ 'is-active': activeResizePane === 'messageList' }"
+        :class="{
+          'is-active': activeResizePane === 'messageList',
+          'column-resizer--spotlight': resizeLayoutSpotlight,
+        }"
         role="separator"
         aria-label="Resize message list"
         aria-orientation="vertical"
@@ -572,13 +729,23 @@ function clamp(value: number, min: number, max: number) {
         @pointerdown="startColumnResize('messageList', $event)"
         @keydown="onResizeHandleKeydown('messageList', $event)"
       />
-      <MessageView v-if="displayedMessageView" />
+      <MessageView
+        v-if="displayedMessageView"
+        :spotlight-actions="composeActionSpotlight"
+      />
     </template>
     <ContactsView v-else-if="space === 'contacts'" />
 
     <ComposeDialog />
     <StoreErrorToast />
     <BulkOperationOverlay />
+    <WelcomeModal
+      v-if="showWelcomeModal"
+      @dismiss="dismissWelcomeModal"
+      @spotlight-quick-filter="spotlightQuickFilter"
+      @spotlight-resize-layout="spotlightResizeLayout"
+      @spotlight-compose-actions="spotlightComposeActions"
+    />
   </div>
 </template>
 
@@ -630,6 +797,14 @@ function clamp(value: number, min: number, max: number) {
 }
 .shell--folder-list-hidden {
   --folder-resizer-width: 0px;
+}
+.shell--resize-spotlight {
+  transition: grid-template-columns 0.55s ease;
+}
+.shell--compose-spotlight .sidebar-slot,
+.shell--compose-spotlight .message-view {
+  position: relative;
+  z-index: 130;
 }
 /* Grid items default to min-height: auto, which makes inner
  * overflow:auto containers grow to their content instead of scrolling.
@@ -776,6 +951,21 @@ function clamp(value: number, min: number, max: number) {
   position: relative;
   width: clamp(160px, 40vw, 520px);
 }
+.quick-filter__search--spotlight {
+  z-index: 130;
+}
+.quick-filter__search--spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 78%, #fff);
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 7px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 18px 46px color-mix(in srgb, #000 32%, transparent);
+  pointer-events: none;
+  animation: quick-filter-spotlight-pulse 1.4s ease-in-out infinite;
+}
 .quick-filter__input {
   width: 100%;
   min-height: 36px;
@@ -788,6 +978,10 @@ function clamp(value: number, min: number, max: number) {
   padding: 0 40px 0 16px;
   outline: none;
   box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
+}
+.quick-filter__search--spotlight .quick-filter__input {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .quick-filter__input::placeholder {
   color: var(--muted);
@@ -823,6 +1017,26 @@ function clamp(value: number, min: number, max: number) {
   border-color: var(--border-soft);
   color: var(--text);
   outline: none;
+}
+
+@keyframes quick-filter-spotlight-pulse {
+  0%, 100% {
+    opacity: 0.82;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.025);
+  }
+}
+
+@keyframes control-spotlight-pulse {
+  0%, 100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.16);
+  }
 }
 
 @media (max-width: 640px) {
@@ -916,6 +1130,14 @@ function clamp(value: number, min: number, max: number) {
   filter: brightness(1.04);
   box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
 }
+.sidebar__compose--spotlight {
+  position: relative;
+  z-index: 130;
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--accent) 60%, #fff),
+    0 12px 28px color-mix(in srgb, #000 20%, transparent);
+}
 
 .sidebar__account {
   padding: 10px 14px 4px;
@@ -979,6 +1201,16 @@ function clamp(value: number, min: number, max: number) {
 .column-resizer.is-active::before {
   background: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.column-resizer--spotlight {
+  z-index: 90;
+}
+.column-resizer--spotlight::before {
+  background: var(--accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 0 22px color-mix(in srgb, var(--accent) 64%, transparent);
+  animation: control-spotlight-pulse 1.4s ease-in-out infinite;
 }
 body.is-column-resizing {
   cursor: col-resize;
