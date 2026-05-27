@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { LogOut, Settings } from 'lucide-vue-next';
+import { LogOut, RotateCcw, Settings } from 'lucide-vue-next';
 
 import { useAuthStore } from '../stores/auth-store.js';
 import { ACCOUNTS_URL } from '../defines.js';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar.js';
 
 const authStore = useAuthStore();
+const emit = defineEmits<{
+  (event: 'show-welcome-modal'): void;
+}>();
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
 
@@ -25,6 +28,11 @@ onClickOutside(detailsEl, () => {
 function onLogout() {
   if (detailsEl.value) detailsEl.value.open = false;
   authStore.logout();
+}
+
+function onShowWelcomeModal() {
+  if (detailsEl.value) detailsEl.value.open = false;
+  emit('show-welcome-modal');
 }
 </script>
 
@@ -46,6 +54,10 @@ function onLogout() {
         <Settings :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span>Account Settings</span>
       </a>
+      <button class="account-menu__item" type="button" role="menuitem" @click="onShowWelcomeModal">
+        <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <span>Show Welcome Modal</span>
+      </button>
       <button class="account-menu__item" type="button" role="menuitem" @click="onLogout">
         <LogOut :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span>Log Out</span>

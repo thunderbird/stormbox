@@ -242,6 +242,12 @@ function dismissWelcomeModal() {
   }
 }
 
+function showWelcomeModalAgain() {
+  if (authStore.status === AUTH_STATE.CONNECTED) {
+    showWelcomeModal.value = true;
+  }
+}
+
 function spotlightQuickFilter() {
   quickFilterSpotlight.value = true;
   clearQuickFilterSpotlightTimer();
@@ -647,7 +653,7 @@ function clamp(value: number, min: number, max: number) {
           <Sun v-if="theme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
           <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         </button>
-        <AccountAvatarMenu />
+        <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
       </div>
     </div>
 
