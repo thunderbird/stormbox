@@ -71,6 +71,7 @@ const SIMPLE_SPEC_SUBJECT_PREFIXES = [
   'Push delivery e2e',
   'Refresh baseline e2e',
   'Ghost refresh e2e',
+  'Sidebar layout e2e',
 ];
 
 export const test = base.extend({
@@ -101,6 +102,9 @@ export const test = base.extend({
       ignoreHTTPSErrors: true,
     });
     const page = await ctx.newPage();
+    await page.addInitScript(() => {
+      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+    });
     // The console buffer lives on the page object so per-test
     // beforeEach can reset it without rewiring listeners.
     const consoleLines = [];
@@ -134,6 +138,7 @@ export async function resetSharedSession(page, {
     subjectPrefixes: [...SIMPLE_SPEC_SUBJECT_PREFIXES, ...extraSubjectPrefixes],
   });
   await page.keyboard.press('Escape').catch(() => {});
+  await dismissWelcomeModal(page);
   const composeOpen = await page.locator('.compose-dialog').count();
   if (composeOpen > 0) {
     await page.getByRole('button', { name: /^discard$/i }).click().catch(() => {});
@@ -143,6 +148,15 @@ export async function resetSharedSession(page, {
   if (Array.isArray(page.__consoleLines)) {
     page.__consoleLines.length = 0;
   }
+}
+
+async function dismissWelcomeModal(page) {
+  const welcome = page.locator('[role="dialog"]').filter({ hasText: 'Welcome to Thundermail' });
+  if (await welcome.count() === 0) return;
+  await page.getByRole('button', { name: /^get started$/i }).click().catch(async () => {
+    await page.getByRole('button', { name: /^close welcome$/i }).click().catch(() => {});
+  });
+  await welcome.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
 }
 
 /** Convenience: get the per-test console buffer attached to the page. */

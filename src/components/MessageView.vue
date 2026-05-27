@@ -545,7 +545,9 @@ function closeMessageView() {
    * marketing emails (e.g. PledgeBox) impossible to scroll. */
   display: grid;
   grid-template-rows: auto auto 1fr;
+  min-width: 0;
   min-height: 0;
+  width: 100%;
   --message-content-inset: 20px;
   --message-header-label-width: 56px;
 }
@@ -559,6 +561,7 @@ function closeMessageView() {
   display: grid;
   grid-template-rows: auto 1fr;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   color: var(--text);
 }
@@ -641,11 +644,18 @@ function closeMessageView() {
   gap: 6px;
   align-items: center;
   justify-content: flex-start;
+  min-width: 0;
   min-height: 57px;
   padding: 11px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--border);
 }
+.message-view__header::-webkit-scrollbar {
+  display: none;
+}
 .message-view__details {
+  min-width: 0;
   padding: 12px 16px 12px var(--message-content-inset);
   border-bottom: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 92%, var(--panel2));
@@ -653,6 +663,7 @@ function closeMessageView() {
 .message-view__metadata {
   display: grid;
   grid-template-columns: var(--message-header-label-width) minmax(0, 1fr);
+  min-width: 0;
   column-gap: 12px;
   row-gap: 7px;
   margin: 0;
@@ -670,17 +681,15 @@ function closeMessageView() {
   min-width: 0;
   margin: 0;
   color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .message-view__title h2 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .message-view__date { font-variant-numeric: tabular-nums; }
 .message-view__action {
@@ -759,11 +768,13 @@ function closeMessageView() {
    * theme while styled emails keep their own design. */
   padding: 0;
   overflow-y: auto;
+  min-width: 0;
   min-height: 0;
 }
 .message-view__html-frame {
   display: block;
   width: calc(100% - var(--message-content-inset));
+  max-width: 100%;
   margin-left: var(--message-content-inset);
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document

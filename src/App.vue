@@ -73,12 +73,17 @@ const DEFAULT_COLUMN_WIDTHS = {
 const MIN_COLUMN_WIDTHS = {
   folderList: 180,
   messageList: 280,
-  messageView: 320,
+  messageView: 240,
 };
 const MAX_COLUMN_WIDTHS = {
   folderList: 420,
   messageList: 720,
 };
+const SINGLE_COLUMN_WIDTH =
+  SPACE_RAIL_WIDTH
+  + MIN_COLUMN_WIDTHS.messageList
+  + RESIZER_WIDTH
+  + MIN_COLUMN_WIDTHS.messageView;
 
 const shellEl = ref<HTMLElement | null>(null);
 const quickFilterInputEl = ref<HTMLInputElement | null>(null);
@@ -98,6 +103,14 @@ const shortcutsEnabled = computed(() =>
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH),
+);
+const shouldUseSingleMailColumn = computed(() =>
+  space.value === 'mail'
+  && showMessageView.value
+  && windowWidth.value <= SINGLE_COLUMN_WIDTH,
+);
+const displayedMessageList = computed(() =>
+  !(space.value === 'mail' && shouldUseSingleMailColumn.value),
 );
 const activeResizePane = ref<ResizePane | null>(null);
 let messageViewTimer: number | null = null;
@@ -395,7 +408,9 @@ function onWindowResize() {
 
 function applyResponsiveLayout() {
   const compactMailLayout = space.value === 'mail' && windowWidth.value <= COMPACT_READING_WIDTH;
-  const shouldHideFolderList = compactMailLayout && showMessageView.value;
+  const singleColumnMailLayout = space.value === 'mail' && windowWidth.value <= SINGLE_COLUMN_WIDTH;
+  const shouldHideFolderList = singleColumnMailLayout || (compactMailLayout && showMessageView.value);
+  const shouldShowSingleColumn = shouldUseSingleMailColumn.value;
   const willHideFolderList = shouldHideFolderList && !folderListHidden.value;
 
   if (shouldHideFolderList) {
@@ -408,7 +423,7 @@ function applyResponsiveLayout() {
     responsiveFolderListHidden = false;
   }
 
-  syncDisplayedMessageView({ delayForFolderSlide: willHideFolderList });
+  syncDisplayedMessageView({ delayForFolderSlide: willHideFolderList && !shouldShowSingleColumn });
 }
 
 function syncDisplayedMessageView({ delayForFolderSlide = false } = {}) {
@@ -568,6 +583,7 @@ function clamp(value: number, min: number, max: number) {
     class="shell"
     :class="{
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
+      'shell--message-list-hidden': space === 'mail' && !displayedMessageList,
       'shell--folder-list-hidden': folderListHidden,
       'shell--column-resizing': activeResizePane !== null,
       'shell--resize-spotlight': resizeLayoutSpotlight,
@@ -717,9 +733,9 @@ function clamp(value: number, min: number, max: number) {
     />
 
     <template v-if="space === 'mail'">
-      <MessageList :quick-filter-query="quickFilterQuery" />
+      <MessageList v-if="displayedMessageList" :quick-filter-query="quickFilterQuery" />
       <div
-        v-if="displayedMessageView"
+        v-if="displayedMessageView && displayedMessageList"
         class="column-resizer column-resizer--message-list"
         :class="{
           'is-active': activeResizePane === 'messageList',
@@ -787,7 +803,7 @@ function clamp(value: number, min: number, max: number) {
     var(--column-resizer-width, 6px)
     minmax(var(--message-view-min-width, 320px), 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  height: 100vh;
+  height: var(--app-viewport-height);
   background: var(--bg);
   color: var(--text);
   overflow: hidden;
@@ -800,6 +816,15 @@ function clamp(value: number, min: number, max: number) {
     minmax(var(--message-list-min-width, 280px), 1fr)
     0px
     0px;
+}
+.shell--message-list-hidden {
+  grid-template-columns:
+    56px
+    auto
+    var(--folder-resizer-width)
+    0px
+    0px
+    minmax(0, 1fr);
 }
 .shell--folder-list-hidden {
   --folder-resizer-width: 0px;
@@ -817,7 +842,16 @@ function clamp(value: number, min: number, max: number) {
  * Force every shell column to be allowed to shrink so its children can
  * own the vertical scroll. */
 .shell > * { min-height: 0; min-width: 0; }
-.shell > .msg-list { border-right: 0; }
+.shell > .msg-list {
+  grid-column: 4;
+  border-right: 0;
+}
+.shell > .message-view {
+  grid-column: 6;
+}
+.shell--message-list-hidden > .message-view {
+  grid-column: 4 / -1;
+}
 .shell > .contacts { grid-column: 4 / -1; }
 .shell--folder-list-hidden > .contacts { grid-column: 2 / -1; }
 
@@ -1046,6 +1080,41 @@ function clamp(value: number, min: number, max: number) {
 }
 
 @media (max-width: 640px) {
+  .shell {
+    --folder-resizer-width: 0px;
+  }
+  .shell .sidebar-slot {
+    position: absolute;
+    z-index: 70;
+    top: 56px;
+    bottom: 0;
+    left: 56px;
+    width: min(var(--folder-list-width, 240px), calc(100vw - 56px));
+    max-width: calc(100vw - 56px);
+    height: auto;
+    transform: translateX(0);
+    transition: transform var(--folder-list-transition-ms, 360ms) ease,
+      box-shadow var(--folder-list-transition-ms, 360ms) ease;
+    box-shadow: 18px 0 34px color-mix(in srgb, #000 28%, transparent);
+  }
+  .shell .sidebar-slot--hidden {
+    width: min(var(--folder-list-width, 240px), calc(100vw - 56px));
+    transform: translateX(-100%);
+    box-shadow: none;
+    pointer-events: none;
+  }
+  .shell .sidebar {
+    width: 100%;
+    transform: none;
+  }
+  .shell .column-resizer--folder-list {
+    display: none;
+  }
+  .shell--message-view-hidden > .msg-list,
+  .shell--message-list-hidden > .message-view,
+  .shell > .contacts {
+    grid-column: 2 / -1;
+  }
   .quick-filter {
     grid-template-columns: auto 1fr auto;
     column-gap: 8px;
@@ -1100,6 +1169,8 @@ function clamp(value: number, min: number, max: number) {
 }
 .sidebar__compose {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   min-width: 0;
   margin: 0 auto;
   min-height: 34px;
@@ -1112,11 +1183,13 @@ function clamp(value: number, min: number, max: number) {
   border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
   border-radius: 6px;
   padding: 0 10px;
+  appearance: none;
   cursor: pointer;
   font: inherit;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.25;
+  overflow: hidden;
   box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
   transition: filter 0.12s ease, box-shadow 0.12s ease;
 }

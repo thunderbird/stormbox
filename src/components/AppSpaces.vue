@@ -66,7 +66,7 @@ function pick(name) { emit('change', name); }
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 14px 0;
+  padding: 14px 0 max(14px, env(safe-area-inset-bottom));
   background: var(--space-rail-bg, var(--panel2));
   color: var(--muted);
   width: 56px;

@@ -370,7 +370,9 @@ describe('App mail layout', () => {
     expect(settingsLink.attributes('href')).toBe(ACCOUNTS_URL);
     expect(settingsLink.text()).toContain('Account Settings');
 
-    const logoutButton = avatarMenu.get('button.account-menu__item');
+    const logoutButton = avatarMenu.findAll('button.account-menu__item')
+      .find((button) => button.text().includes('Log Out'));
+    if (!logoutButton) throw new Error('Could not find Log Out account menu item');
     expect(logoutButton.text()).toContain('Log Out');
 
     expect(wrapper.find('.sidebar__signout').exists()).toBe(false);
@@ -477,6 +479,61 @@ describe('App mail layout', () => {
     vi.advanceTimersByTime(400);
     await nextTick();
     expect(wrapper.find('.message-view').exists()).toBe(true);
+  });
+
+  it('keeps unfolded fold widths in a two-pane mail layout', async () => {
+    vi.useFakeTimers();
+    setWindowWidth(588);
+    const mailStore = useMailStore();
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
+    expect(wrapper.find('.message-view').exists()).toBe(false);
+
+    vi.advanceTimersByTime(400);
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--message-list-hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Resize message list"]').exists()).toBe(true);
+    expect(wrapper.find('.message-view').exists()).toBe(true);
+  });
+
+  it('uses a single mail column below compact two-pane minimums', async () => {
+    vi.useFakeTimers();
+    setWindowWidth(560);
+    const mailStore = useMailStore();
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--message-list-hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(false);
+    expect(wrapper.find('.message-view').exists()).toBe(true);
+  });
+
+  it('hides the folder list by default below the single-column threshold', async () => {
+    setWindowWidth(560);
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).toContain('sidebar-slot--hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
+    expect(wrapper.find('.message-view').exists()).toBe(false);
+
+    await wrapper.get('[aria-label="Show folder list"]').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
   });
 
   it('lets the toggle button change only the current folder-list state', async () => {

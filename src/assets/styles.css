@@ -124,9 +124,21 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-viewport-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
+}
+
 html,
 body {
   height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
@@ -134,7 +146,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 14px/1.4 var(--font-sans);
-  height: 100vh;
+  height: var(--app-viewport-height);
   overflow: hidden;
   transition: background-color 0.18s ease, color 0.18s ease;
 }
@@ -142,7 +154,7 @@ body {
 /* The shell layout lives in App.vue; #app just needs to fill the
  * viewport so the grid can size itself. */
 #app {
-  height: 100vh;
+  height: var(--app-viewport-height);
   min-height: 0;
 }
 

@@ -95,7 +95,7 @@ function handleKeyDown(event) {
   }
 }
 
-const CARD_LAYOUT_WIDTH = 320;
+const CARD_LAYOUT_WIDTH = 360;
 const ROW_HEIGHT = 64;
 const CARD_ROW_HEIGHT = 112;
 const msgListEl = ref<HTMLElement | null>(null);
@@ -103,7 +103,7 @@ const selectAllEl = ref<HTMLInputElement | null>(null);
 const scrollEl = ref(null);
 const listWidth = ref(0);
 const failedAvatarDomains = ref<Set<string>>(new Set());
-const cardLayout = computed(() => listWidth.value > 0 && listWidth.value <= CARD_LAYOUT_WIDTH);
+const cardLayout = computed(() => listWidth.value > 0 && listWidth.value < CARD_LAYOUT_WIDTH);
 let listResizeObserver: ResizeObserver | null = null;
 
 const virtualizer = useVirtualizer(
@@ -919,7 +919,6 @@ function normalizeFilterText(value) {
 .msg-list--card .msg-list__from,
 .msg-list--card .msg-list__subject {
   font-size: 13px;
-  font-weight: 600;
 }
 .msg-list--card .msg-list__preview {
   margin-top: 3px;

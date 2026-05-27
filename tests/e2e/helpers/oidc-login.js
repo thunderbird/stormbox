@@ -19,6 +19,9 @@ import {
  * when the cached SSO cookie has expired.
  */
 export async function loginViaOidc(page) {
+  await page.addInitScript(() => {
+    window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+  });
   await page.goto('/');
   if (await isAppShellAlreadyVisible(page)) {
     return;

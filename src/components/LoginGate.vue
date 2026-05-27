@@ -120,7 +120,7 @@ function togglePassword() {
 .login-gate {
   display: grid;
   place-items: center;
-  min-height: 100vh;
+  min-height: var(--app-viewport-height);
   background: var(--bg);
   color: var(--text);
   padding: 24px;

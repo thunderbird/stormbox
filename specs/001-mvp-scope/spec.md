@@ -36,6 +36,7 @@ capability.
 | 7 | Account storage usage | 2 | — | — | — |
 | 8 | Application chrome and cross-product navigation | 4 | — | 1 | services-ui adoption |
 | 9 | Browser notifications | — | — | 4 | Whole section is a draft |
+| 10 | Responsive mail layout contracts | 9 | — | — | — |
 
 ## Capabilities
 
@@ -139,6 +140,20 @@ capability.
 | R-9.2 🟧 Planned | The system shall request browser notification permission only in response to an explicit user opt-in (e.g. a setting toggle or first-run prompt) rather than on app load, and shall respect a denied or dismissed permission without re-prompting. |
 | R-9.3 🟧 Planned | The system shall suppress notifications for mail that arrives in folders other than the Inbox, for messages already marked read on the server, and while the app tab is focused; activating a notification shall focus the app tab and open the corresponding message. |
 | R-9.4 🟧 Planned | When multiple new messages arrive in quick succession, the system shall coalesce them into a single summary notification rather than emitting one per message. |
+
+### 10. Responsive mail layout contracts
+
+| ID / Status | Requirement |
+|:--|:--|
+| R-10.1 🟩 Done | The mail shell shall enforce pane minimums without allowing horizontal shell overflow: the folder list shall support a minimum width of 180 px, the message list shall support a minimum width of 280 px, and the message view shall support a minimum width of 240 px. Desktop users may resize panes down to these minimums. |
+| R-10.2 🟩 Done | When the viewport is 1024 px or narrower and a message detail or bulk pane is visible, the folder list shall collapse automatically to preserve reading space; at the single-column threshold it shall collapse regardless of whether a message is selected. When the responsive condition no longer applies, a folder list hidden by this responsive behavior shall be restored. Manual folder-list toggles from the spaces toolbar shall affect only the current visibility state. |
+| R-10.3 🟩 Done | When a selected-message or bulk-reading layout cannot fit both the message list and message view at their minimum widths, the system shall enter a single-mail-column layout immediately when the reading pane is requested: the message list and message-list resizer shall be hidden, and the message view shall fill the width after the spaces rail. With no reading pane selected, the message list shall occupy that same single content column. With the current rail and pane minimums, this applies at 582 px and narrower; unfolded foldable widths above that, including approximately 588 px, shall remain two-pane. |
+| R-10.4 🟩 Done | The message list shall use its multiline card row layout when the message-list pane is narrower than 360 px, and shall keep the single-line row layout at 360 px and wider. Card layout shall not make read message subjects or senders look unread; only rows whose message is unread shall render sender and subject text in the unread bold weight. |
+| R-10.5 🟩 Done | In the open message header, From, To, Subject, and Date values shall wrap to additional lines when needed rather than truncating with ellipses. Long unbroken values such as email addresses and long subjects shall be allowed to break within the value so they do not force horizontal overflow. |
+| R-10.6 🟩 Done | The message view and its internal article, header, metadata, body, iframe, and action toolbar shall shrink with the available column width and shall not force page-level or shell-level horizontal overflow, including when the message-view column is narrower than 300 px. If action buttons exceed the available header width, the action toolbar may scroll internally. |
+| R-10.7 🟩 Done | The folder-list New Message button shall remain contained within the visible folder-list header at the minimum folder-list width, including when the folder list is opened as a mobile overlay; its label may ellipsize, but the button shall not overflow into the resizer or adjacent panes. |
+| R-10.8 🟩 Done | On mobile browsers whose visible viewport changes as browser chrome appears or hides, the app shell shall size to the dynamic visible viewport rather than the larger layout viewport, keeping the spaces rail bottom actions visible and clear of safe-area insets. |
+| R-10.9 🟩 Done | Mobile browsers shall not inflate the app chrome or message-list text beyond the authored CSS sizes through automatic text autosizing; normal pinch zoom and user accessibility settings remain browser-controlled. |
 
 ## Deferred to Future
 

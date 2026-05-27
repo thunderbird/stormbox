@@ -113,6 +113,32 @@ afterEach(() => {
 });
 
 describe('MessageList row click viewing', () => {
+  it('uses card layout below 360px but not at 360px', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1)];
+    mailStore.totalForFolder = 1;
+
+    const widthSpy = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockImplementation(function clientWidth() {
+        return this.classList?.contains('msg-list') ? 359 : 0;
+      });
+    const narrowWrapper = mount(MessageList);
+    await nextTick();
+    expect(narrowWrapper.classes()).toContain('msg-list--card');
+    narrowWrapper.unmount();
+
+    widthSpy.mockImplementation(function clientWidth() {
+      return this.classList?.contains('msg-list') ? 360 : 0;
+    });
+    const thresholdWrapper = mount(MessageList);
+    await nextTick();
+    expect(thresholdWrapper.classes()).not.toContain('msg-list--card');
+    thresholdWrapper.unmount();
+  });
+
   it('closes the open message when the already-viewed row is clicked again', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
@@ -354,9 +380,12 @@ describe('MessageList row click viewing', () => {
     // unread rows in whatever subset the user happened to have
     // scrolled into view. The data-scale variant of this assertion
     // (10,000 rows) lives in the mail-store tests where there's no
-    // DOM overhead; this test scales to ~1500 because the happy-dom
-    // virtualizer mock materializes one li per row.
+    // DOM overhead; here we pin the virtualizer window near the tail
+    // so the DOM test proves off-screen rows are included without
+    // materializing the whole folder.
     const mailStore = useMailStore();
+    virtualizerWindow.start = 1_450;
+    virtualizerWindow.count = 40;
     const visibleWindow = Array.from({ length: 100 }, (_, index) => (
       makeRow(index + 1, {
         subject: `Visible ${index + 1}`,
