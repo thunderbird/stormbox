@@ -7,6 +7,8 @@
  * write are published on the broadcast channel as { tables: string[] }.
  */
 
+export const SHARED_WORKER_NAME = 'stormbox-db';
+
 export const BROADCAST_CHANNEL = 'stormbox.tables-touched';
 
 export const DB_RPC = Object.freeze({

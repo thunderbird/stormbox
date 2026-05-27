@@ -6,6 +6,8 @@
  * SharedWorker file is bundled correctly under both dev and prod.
  */
 
+import DbSharedWorker from '../db/shared-worker.ts?sharedworker';
+import { SHARED_WORKER_NAME } from '../db/protocol.js';
 import { createRepository } from '../db/repository.js';
 
 let repoPromise = null;
@@ -13,8 +15,9 @@ let repoPromise = null;
 export function getRepositoryAsync() {
   if (!repoPromise) {
     repoPromise = (async () => {
-      const workerUrl = new URL('../db/shared-worker.ts', import.meta.url);
-      const repo = await createRepository({ workerUrl });
+      const repo = await createRepository({
+        worker: new DbSharedWorker({ name: SHARED_WORKER_NAME }),
+      });
       // Expose on window in dev/test builds so Playwright (and you in
       // devtools) can poke at the repository directly. No-op in
       // production builds because import.meta.env.DEV is false.

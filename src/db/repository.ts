@@ -8,7 +8,7 @@
  */
 
 import { assertSupportedBrowser } from './availability.js';
-import { BROADCAST_CHANNEL, DB_RPC } from './protocol.js';
+import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol.js';
 import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch.js';
 
 /**
@@ -16,17 +16,23 @@ import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dis
  */
 
 /**
- * Create a Repository connected to the SharedWorker at workerUrl.
+ * Create a Repository connected to the SharedWorker.
  *
  * @param {object} options
- * @param {string|URL} options.workerUrl  resolved URL of shared-worker.js
- *   (typically built via `new URL('./shared-worker.js', import.meta.url)`
- *   so Vite captures it as a worker entry).
+ * @param {SharedWorker} [options.worker]  preconstructed worker, typically
+ *   from Vite's `?sharedworker` import so production emits a real worker chunk.
+ * @param {string|URL} [options.workerUrl]  resolved URL fallback for tests or
+ *   non-Vite callers.
  * @returns {Repository}
  */
-export function createRepository({ workerUrl }) {
+export function createRepository(
+  { worker, workerUrl }: { worker?: SharedWorker; workerUrl?: string | URL },
+) {
   assertSupportedBrowser();
-  const worker = new SharedWorker(workerUrl, { type: 'module', name: 'stormbox-db' });
+  if (!worker && workerUrl == null) {
+    throw new Error('createRepository requires a SharedWorker or workerUrl.');
+  }
+  worker ??= new SharedWorker(workerUrl!, { type: 'module', name: SHARED_WORKER_NAME });
   const channel = new BroadcastChannel(BROADCAST_CHANNEL);
   const repo = new Repository(worker.port, channel);
   worker.port.start();
