@@ -11,6 +11,7 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
+import { wlog } from '../../../db/worker-log';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 
@@ -35,14 +36,21 @@ export async function syncMailboxes({ transport, account, handlers, useWebSocket
     useWebSocket,
   });
   const response = pickResponse(result, 'Mailbox/get');
-  const list = response.list ?? [];
+  const repaired = await ensureArchiveMailbox({
+    transport,
+    account,
+    mailboxes: response.list ?? [],
+    state: response.state,
+    useWebSocket,
+  });
+  const list = repaired.mailboxes;
   await persistMailboxes({ account, mailboxes: list, handlers });
   await handlers[DB_RPC.SYNC_STATE_SET]({
     accountId: account.id,
     objectType: 'Mailbox',
-    state: response.state,
+    state: repaired.state,
   });
-  return { state: response.state, count: list.length };
+  return { state: repaired.state, count: list.length };
 }
 
 /**
@@ -104,6 +112,95 @@ export async function syncMailboxChanges({ transport, account, handlers, sinceSt
     upserted,
     newState: change.newState,
   };
+}
+
+async function ensureArchiveMailbox({
+  transport,
+  account,
+  mailboxes,
+  state,
+  useWebSocket,
+}) {
+  if (mailboxes.some((mailbox) => mailbox.role === 'archive')) {
+    return { mailboxes, state };
+  }
+
+  const target = selectArchiveRoleTarget(mailboxes);
+  const methodCalls = target
+    ? [[
+        'Mailbox/set',
+        {
+          accountId: account.remote_account_id,
+          update: {
+            [target.id]: { role: 'archive' },
+          },
+        },
+        's1',
+      ]]
+    : [[
+        'Mailbox/set',
+        {
+          accountId: account.remote_account_id,
+          create: {
+            archive: { name: 'Archives', role: 'archive' },
+          },
+        },
+        's1',
+      ]];
+
+  try {
+    const setResult = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls,
+      useWebSocket,
+    });
+    const setResponse = pickResponse(setResult, 'Mailbox/set');
+    const changedId = target?.id ?? setResponse?.created?.archive?.id;
+    if (!setResponse || !changedId || setResponse.notCreated?.archive || setResponse.notUpdated?.[changedId]) {
+      wlog.warn('jmap-mailboxes', 'archive mailbox repair was rejected by server');
+      return { mailboxes, state };
+    }
+
+    const getResult = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [[
+        'Mailbox/get',
+        { accountId: account.remote_account_id, ids: [changedId], properties: MAILBOX_PROPERTIES },
+        'g-archive',
+      ]],
+      useWebSocket,
+    });
+    const getResponse = pickResponse(getResult, 'Mailbox/get');
+    const repairedMailbox = getResponse?.list?.[0];
+    if (!repairedMailbox) {
+      wlog.warn('jmap-mailboxes', 'archive mailbox repair could not refetch changed mailbox');
+      return { mailboxes, state: setResponse.newState ?? state };
+    }
+
+    return {
+      mailboxes: mergeMailbox(mailboxes, repairedMailbox),
+      state: getResponse.state ?? setResponse.newState ?? state,
+    };
+  } catch (err) {
+    wlog.warn('jmap-mailboxes', 'archive mailbox repair failed', err);
+    return { mailboxes, state };
+  }
+}
+
+function selectArchiveRoleTarget(mailboxes) {
+  return mailboxes.find((mailbox) => mailbox.name === 'Archives')
+    ?? mailboxes.find((mailbox) => mailbox.name === 'Archive')
+    ?? null;
+}
+
+function mergeMailbox(mailboxes, mailbox) {
+  const index = mailboxes.findIndex((existing) => existing.id === mailbox.id);
+  if (index === -1) {
+    return [...mailboxes, mailbox];
+  }
+  const next = mailboxes.slice();
+  next[index] = mailbox;
+  return next;
 }
 
 async function persistMailboxes({ account, mailboxes, handlers }) {
