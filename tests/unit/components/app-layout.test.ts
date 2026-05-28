@@ -311,7 +311,7 @@ describe('App mail layout', () => {
     expect(selectSpy).toHaveBeenCalledOnce();
   });
 
-  it('renders a Thundermail menu linking to Thunderbird Appointment and Send', async () => {
+  it('renders a Thundermail menu linking to Appointment and Send', async () => {
     const wrapper = mountApp();
     await nextTick();
 
@@ -320,10 +320,14 @@ describe('App mail layout', () => {
 
     const items = wrapper.findAll('.app-menu__popover .app-menu__item');
     expect(items).toHaveLength(2);
-    expect(items[0].text()).toContain('Thunderbird Appointment');
+    expect(items[0].text()).toContain('Appointment');
     expect(items[0].attributes('href')).toBe(APPOINTMENT_URL);
-    expect(items[1].text()).toContain('Thunderbird Send');
+    expect(items[0].attributes('target')).toBe('_blank');
+    expect(items[0].attributes('rel')).toBe('noopener noreferrer');
+    expect(items[1].text()).toContain('Send');
     expect(items[1].attributes('href')).toBe(SEND_URL);
+    expect(items[1].attributes('target')).toBe('_blank');
+    expect(items[1].attributes('rel')).toBe('noopener noreferrer');
   });
 
   it('closes the Thundermail menu when clicking outside it', async () => {

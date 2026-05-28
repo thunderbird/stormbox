@@ -599,13 +599,25 @@ function clamp(value: number, min: number, max: number) {
           <ChevronDown class="app-menu__chevron" :size="14" :stroke-width="2" aria-hidden="true" />
         </summary>
         <div class="app-menu__popover" role="menu">
-          <a class="app-menu__item" :href="APPOINTMENT_URL" role="menuitem">
+          <a
+            class="app-menu__item"
+            :href="APPOINTMENT_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            role="menuitem"
+          >
             <img src="/icons/icon-appointment.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
-            <span>Thunderbird Appointment</span>
+            <span>Appointment</span>
           </a>
-          <a class="app-menu__item" :href="SEND_URL" role="menuitem">
+          <a
+            class="app-menu__item"
+            :href="SEND_URL"
+            target="_blank"
+            rel="noopener noreferrer"
+            role="menuitem"
+          >
             <img src="/icons/icon-send.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
-            <span>Thunderbird Send</span>
+            <span>Send</span>
           </a>
         </div>
       </details>
@@ -879,6 +891,7 @@ function clamp(value: number, min: number, max: number) {
   justify-self: start;
   position: relative;
   z-index: 30;
+  margin-left: -7px;
 }
 .quick-filter > .quick-filter__search {
   justify-self: center;
@@ -942,9 +955,6 @@ function clamp(value: number, min: number, max: number) {
   z-index: 31;
   background: var(--app-menu-popover-bg);
   border-color: var(--border);
-  border-bottom-color: transparent;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
 }
 .app-menu__logo,
 .app-menu__item-icon {
@@ -974,7 +984,7 @@ function clamp(value: number, min: number, max: number) {
   box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
 }
 .app-menu[open] .app-menu__popover {
-  border-top-left-radius: 0;
+  margin-top: 4px;
 }
 .app-menu__item-icon {
   filter: drop-shadow(0 2px 3px color-mix(in srgb, #000 20%, transparent));
@@ -984,7 +994,7 @@ function clamp(value: number, min: number, max: number) {
   align-items: center;
   gap: 10px;
   min-height: 42px;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 0;
   border-radius: 8px;
   color: var(--text);
   font-weight: 600;
