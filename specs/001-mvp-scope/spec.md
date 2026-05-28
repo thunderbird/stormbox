@@ -128,7 +128,8 @@ capability.
 | R-8.3 🟩 Done | The account avatar menu shall display an initials-based avatar derived deterministically from the user's email address. On activation it shall reveal the signed-in email, an Account Settings link to the Thunderbird Accounts site (per R-8.2 host resolution), and a Log Out action that signs the user out per R-1.4. The folder list shall not duplicate a sign-out affordance. |
 | R-8.4 🟩 Done | The system shall let the user toggle between dark and light themes via a button in the top bar, default to the system colour-scheme preference on first run, and persist the chosen theme across reloads. |
 | R-8.5 🟩 Done | Space-specific UI shall not cross space boundaries. Mail-only UI such as the folder list, folder-list toggle, folder-list resizer, New Message button, and mail folder navigation shall not render in Contacts. |
-| R-8.6 🟧 Planned | The system shall consume Thunderbird `services-ui` for shared UI primitives, starting with button components, and shall follow `services-ui` conventions for component variants, sizes, disabled states, focus treatment, tooltips, design tokens, and light/dark theme integration unless Stormbox-specific mail UX requires a documented exception. |
+| R-8.6 🟩 Done | The browser document title shall be `Thundermail` before the signed-in email is known and shall update to `Thundermail - <email address>` once an account email is available. |
+| R-8.7 🟧 Planned | The system shall consume Thunderbird `services-ui` for shared UI primitives, starting with button components, and shall follow `services-ui` conventions for component variants, sizes, disabled states, focus treatment, tooltips, design tokens, and light/dark theme integration unless Stormbox-specific mail UX requires a documented exception. |
 
 ### 9. Browser notifications
 
