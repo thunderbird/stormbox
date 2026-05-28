@@ -43,4 +43,11 @@ describe('sender-avatar', () => {
     expect(avatar.style.background).toMatch(/^hsl\(/);
     expect(senderInitials('UPS <tracking@ups.com>')).toBe('UP');
   });
+
+  it('matches services-ui avatar initials behavior', () => {
+    expect(senderInitials('sancus@thundermail.com')).toBe('SA');
+    expect(senderInitials('Andrei Hajdukewycz')).toBe('AH');
+    expect(senderInitials('First Middle Last')).toBe('FL');
+    expect(senderInitials(null)).toBe('?');
+  });
 });

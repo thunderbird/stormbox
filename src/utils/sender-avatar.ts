@@ -69,14 +69,19 @@ export function shortFrom(text: string | null | undefined): string {
 }
 
 export function senderInitials(text: string | null | undefined): string {
-  const label = shortFrom(text);
-  const words = label
-    .replace(/['"]/g, '')
-    .split(/[\s._-]+/)
-    .filter(Boolean);
-  const first = words[0]?.[0] ?? '?';
-  const second = words.length > 1 ? words[1]?.[0] : words[0]?.[1];
-  return `${first}${second ?? ''}`.toUpperCase();
+  const label = text ? shortFrom(text) : '';
+  if (!label) return '?';
+
+  const compactInitials = label
+    .match(/(^\S\S?|\s\S)?/g)
+    ?.map((part) => part.trim())
+    .join('');
+  const initials = compactInitials
+    ?.match(/(^\S|\S$)?/g)
+    ?.join('')
+    .toLocaleUpperCase();
+
+  return initials || '?';
 }
 
 export function senderAvatarStyle(text: string | null | undefined): Record<string, string> {
