@@ -1,5 +1,72 @@
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter/Inter-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter/Inter-Medium.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter/Inter-SemiBold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/Inter/Inter-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Metropolis";
+  src: url("/fonts/Metropolis/Metropolis-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Metropolis";
+  src: url("/fonts/Metropolis/Metropolis-Light.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Metropolis";
+  src: url("/fonts/Metropolis/Metropolis-SemiBold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Metropolis";
+  src: url("/fonts/Metropolis/Metropolis-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
   /* Default to dark; system light overrides below */
+  --font-sans: "Inter", sans-serif;
+  --font-display: "Metropolis", "Inter", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
@@ -57,73 +124,37 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-viewport-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
+}
+
 html,
 body {
   height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.4 system-ui, Segoe UI, Roboto, sans-serif;
-  height: 100vh;
+  font: 14px/1.4 var(--font-sans);
+  height: var(--app-viewport-height);
   overflow: hidden;
   transition: background-color 0.18s ease, color 0.18s ease;
 }
 
-/* Hide app chrome until connected */
-body:not(.connected) header,
-body:not(.connected) main {
-  display: none;
-}
-
-/* Root app grid: header + main */
+/* The shell layout lives in App.vue; #app just needs to fill the
+ * viewport so the grid can size itself. */
 #app {
-  height: 100vh;
-  display: grid;
-  grid-template-rows: auto 1fr;
-  min-height: 0;
-}
-
-header {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-
-header strong {
-  font-weight: 700;
-}
-
-header .spacer {
-  flex: 1;
-}
-
-/* Main: 3-column layout with fixed reading pane width */
-main {
-  height: 100%;
-  display: grid;
-  grid-template-columns: 280px 1fr 930px;
-  min-height: 0;
-  overflow: hidden;
-  transition: grid-template-columns 0.15s ease;
-}
-
-main.hide-detail {
-  grid-template-columns: 280px 1fr 0;
-}
-
-main.hide-detail .detail {
-  display: none;
-}
-
-.list,
-.detail {
-  min-width: 0;
+  height: var(--app-viewport-height);
   min-height: 0;
 }
 

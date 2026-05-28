@@ -1,6 +1,5 @@
 # Use the official Node.js image as base
-# Using Node 20 LTS for stability
-FROM node:20-bullseye
+FROM node:24-bookworm
 
 # Install additional development tools
 RUN apt-get update && apt-get install -y \
@@ -16,8 +15,14 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install global npm packages for development
-# Note: yarn is already installed in node:20 image
+# Keep local E2E browser runtime dependencies in the image. Browser binaries
+# are installed in postCreateCommand so they match the checked-out lockfile.
+RUN npx -y playwright@1.60.0 install-deps chromium firefox \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install global npm packages for development.
+# Note: yarn is already installed in the official node image.
 RUN npm install -g --force \
     npm@latest \
     pnpm \

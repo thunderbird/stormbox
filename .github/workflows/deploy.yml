@@ -1,35 +1,197 @@
-name: Deploy to GitHub Pages
+name: CI and Deploy to Cloudflare Pages
 
 on:
-  # Runs on pushes to main branch
   push:
     branches: [main]
-  # Allows you to run this workflow manually from the Actions tab
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        type: choice
+        required: true
+        default: stage
+        options:
+          - stage
+          - prod
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-# Allow only one concurrent deployment
+# Allow only one CI/deploy workflow per ref. PR runs queue independently
+# from main so a long-running PR check never blocks a main deploy.
 concurrency:
-  group: "pages"
+  group: "cloudflare-pages-${{ github.ref }}"
   cancel-in-progress: false
 
 jobs:
-  # Build job
-  build:
+  unit-test:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            thunderbird-accounts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run vitest
+        run: npm test
+
+  e2e-test:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version-file: .node-version
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium firefox
+
+      - name: Prepare local e2e stack config
+        run: |
+          mkdir -p thunderbird-accounts/mail/etc
+          cp thunderbird-accounts/config.toml.example thunderbird-accounts/mail/etc/config.toml
+          npm ci --prefix thunderbird-accounts
+          npm run --prefix thunderbird-accounts build-theme
+
+      - name: Start local e2e stack
+        run: >-
+          docker compose -f thunderbird-accounts/docker-compose.yml up
+          --build -d
+          kcpostgres
+          keycloak
+          stalwart
+
+      - name: Wait for local e2e stack
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..60}; do
+            if curl --silent --fail --output /dev/null \
+              http://127.0.0.1:8999/realms/tbpro/.well-known/openid-configuration; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Keycloak did not become ready in time"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          for attempt in {1..60}; do
+            status="$(curl --silent --location --output /dev/null --write-out "%{http_code}" \
+              http://127.0.0.1:8081/.well-known/jmap || true)"
+            if [ "$status" = "200" ] || [ "$status" = "307" ] || [ "$status" = "401" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Stalwart JMAP did not become ready in time; last status was ${status}"
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Start JMAP WebSocket proxy
+        run: npm run stack:ws-proxy >/tmp/stormbox-ws-proxy.log 2>&1 &
+
+      - name: Wait for JMAP WebSocket proxy
+        run: |
+          set -euo pipefail
+
+          for attempt in {1..30}; do
+            status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              http://127.0.0.1:8787/jmap/ws || true)"
+            if [ "$status" = "426" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "JMAP WebSocket proxy did not become ready in time"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      # PLAYWRIGHT_NO_REUSE=1 makes playwright.config.js spawn
+      # `npm run dev` against the self-signed HTTPS dev origin. LOCAL_STACK=1
+      # runs the live Keycloak/Stalwart specs instead of the smoke-only lane.
+      - name: Run Playwright local-stack tests
+        env:
+          PLAYWRIGHT_NO_REUSE: "1"
+          CI: "1"
+        run: npm run test:e2e:local:full
+
+      - name: Dump local e2e stack logs
+        if: failure()
+        run: |
+          docker compose -f thunderbird-accounts/docker-compose.yml ps
+          docker compose -f thunderbird-accounts/docker-compose.yml logs --tail=200 kcpostgres keycloak stalwart
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+  # Deploy jobs only publish a new deployment to an existing Cloudflare Pages
+  # project. Custom domains and DNS records are provisioned out-of-band.
+  deploy-stage:
+    name: Deploy stage
+    runs-on: ubuntu-latest
+    needs: [unit-test, e2e-test]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      || (github.event_name == 'workflow_dispatch' && inputs.target == 'stage')
+    environment:
+      name: stage
+      url: https://webmail.stage-thundermail.com
+    concurrency:
+      group: cloudflare-pages-stage
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-stage' }}
+      VITE_JMAP_SERVER_URL: https://jmap.stage-thundermail.com
+      VITE_OIDC_ISSUER: https://auth-stage.tb.pro/realms/tbpro
+      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
+      VITE_ACCOUNTS_URL: https://accounts-stage.tb.pro
+      VITE_APPOINTMENT_URL: https://appointment-stage.tb.pro
+      VITE_SEND_URL: https://send-stage.tb.pro
+      VITE_SENDER_AVATAR_PROXY_URL: https://avatars.thunderbird.net
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
@@ -38,26 +200,52 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Create CNAME file
-        run: echo "mail-dev.tb.pro" > ./dist/CNAME
+      - name: Deploy to preconfigured Cloudflare Pages project
+        run: >-
+          npx -y wrangler@3.99.0 pages deploy dist
+          --project-name "$CLOUDFLARE_PAGES_PROJECT"
+          --branch main
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          # Upload dist folder
-          path: "./dist"
-
-  # Deployment job
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  deploy-prod:
+    name: Deploy prod
     runs-on: ubuntu-latest
-    needs: build
+    needs: [unit-test, e2e-test]
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
+    environment:
+      name: prod
+      url: https://webmail.thundermail.com
+    concurrency:
+      group: cloudflare-pages-prod
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-prod' }}
+      VITE_JMAP_SERVER_URL: https://jmap.thundermail.com
+      VITE_OIDC_ISSUER: https://auth.tb.pro/realms/tbpro
+      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
+      VITE_ACCOUNTS_URL: https://accounts.tb.pro
+      VITE_APPOINTMENT_URL: https://appointment.tb.pro
+      VITE_SEND_URL: https://send.tb.pro
+      VITE_SENDER_AVATAR_PROXY_URL: https://avatars.thunderbird.net
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version-file: .node-version
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to preconfigured Cloudflare Pages project
+        run: >-
+          npx -y wrangler@3.99.0 pages deploy dist
+          --project-name "$CLOUDFLARE_PAGES_PROJECT"
+          --branch main

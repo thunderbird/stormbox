@@ -39,8 +39,19 @@ Thumbs.db
 # Testing
 coverage/
 .nyc_output/
+test-results/
+playwright-report/
+playwright/.cache/
+.playwright-auth/
+screenshots/
 
 # Temporary files
 *.tmp
 *.temp
 .cache/
+
+# Cloudflare Workers (infra/jmap-bridge) local state
+.wrangler/
+
+# Don't track client-specific rule files.
+.cursor/

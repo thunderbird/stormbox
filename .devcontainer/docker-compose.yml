@@ -36,6 +36,11 @@ services:
     # Environment variables
     environment:
       - NODE_ENV=development
+      - STORMBOX_IN_DOCKER=1
+      - VITE_LOCAL_STACK=1
+      - VITE_JMAP_SERVER_URL=https://localhost:3000/stalwart-jmap
+      - VITE_OIDC_ISSUER=https://localhost:3000/realms/tbpro
+      - VITE_OIDC_CLIENT_ID=thunderbird-stormbox-test
       - CHOKIDAR_USEPOLLING=true # Helps with file watching in containers
       - WATCHPACK_POLLING=true # For webpack file watching
 
@@ -44,6 +49,10 @@ services:
       - "3000:3000" # Vite dev server
       - "5173:5173" # Vite HMR port (alternative)
       - "9229:9229" # Node.js debugging port
+
+    # Keycloak advertises http://keycloak:8999 in OIDC discovery; map it to the host.
+    extra_hosts:
+      - "keycloak:host-gateway"
 
     # Resource limits (optional - adjust as needed)
     # deploy:
