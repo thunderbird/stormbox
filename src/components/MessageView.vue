@@ -26,6 +26,14 @@ import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 
+// Minimum logical width we lay HTML email out at before scaling down.
+// Reflowing typical marketing HTML below this gets visually messy
+// (image-heavy headers collapse, multi-column tables stack awkwardly,
+// inline buttons overlap). Below this shell width we therefore treat
+// content as if it has at least this width and apply CSS zoom to fit,
+// even when scrollWidth would technically not overflow.
+const MIN_EMAIL_LAYOUT_WIDTH = 400;
+
 defineProps<{
   spotlightActions?: boolean;
 }>();
@@ -38,8 +46,6 @@ const htmlShellRef = ref(null);
 const iframeRef = ref(null);
 const iframeSrcDoc = ref('');
 const iframeHeight = ref(120);
-const iframeWidth = ref('100%');
-const iframeScale = ref(1);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
 
 const body = computed(() => mailStore.messageBody);
@@ -58,9 +64,6 @@ const message = computed(() =>
 // checked row plus bulk actions.
 const selectionCount = computed(() => mailStore.selectedIds.size);
 const isMultiSelecting = computed(() => selectionCount.value >= 1);
-const iframeShellHeight = computed(() =>
-  Math.max(120, Math.ceil(iframeHeight.value * iframeScale.value)),
-);
 let resizeObserver = null;
 let iframeMeasurementCleanup = null;
 let themeMediaQuery = null;
@@ -83,7 +86,7 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   if (!next?.html) {
     teardownResizeObserver();
     iframeSrcDoc.value = '';
-    resetIframeLayout(120);
+    iframeHeight.value = 120;
     return;
   }
   const sanitized = DOMPurify.sanitize(next.html, {
@@ -104,7 +107,7 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   if (nextSrcDoc === iframeSrcDoc.value) return;
   teardownResizeObserver();
   iframeSrcDoc.value = nextSrcDoc;
-  resetIframeLayout(initialIframeHeight());
+  iframeHeight.value = initialIframeHeight();
   nextTick(() => {
     if (iframeSrcDoc.value === nextSrcDoc) {
       iframeHeight.value = Math.max(iframeHeight.value, initialIframeHeight());
@@ -159,12 +162,6 @@ function initialIframeHeight() {
   return Math.max(120, bodyRef.value?.clientHeight ?? 0);
 }
 
-function resetIframeLayout(height = 120) {
-  iframeHeight.value = height;
-  iframeWidth.value = '100%';
-  iframeScale.value = 1;
-}
-
 onMounted(() => {
   updateEffectiveColorScheme();
 
@@ -214,95 +211,113 @@ function onIframeLoad() {
   doc.addEventListener('keydown', onIframeKeyDown, true);
 
   let active = true;
-  const measure = () => {
+  let rafScheduled = false;
+  const docEl = doc.documentElement;
+  const bodyEl = doc.body;
+
+  // Apply a fit ratio against the *current* iframe viewport. We
+  // deliberately re-measure on every call (and never observe the
+  // iframe document directly): caching a "natural" width from one
+  // viewport size and re-using it at another viewport produced
+  // unpredictable zoom values for responsive content, because text
+  // and other reflowable elements report scrollWidth == viewport at
+  // the moment of measurement rather than their true min-content
+  // width.
+  //
+  // Clearing `zoom` before measuring ensures scrollWidth reflects the
+  // content's preferred width at the current viewport, independent of
+  // any prior fit we applied. The browser only commits one frame per
+  // animation tick, so the transient zoom=1 reset is not visible.
+  //
+  // The approach is the CSS `zoom` model used by Gmail's mobile web
+  // viewer, not `transform: scale` from the host — `zoom` participates
+  // in layout, so the iframe document's scaled metrics stay consistent
+  // and a ResizeObserver scoped to the host shell does not feed back
+  // on its own writes.
+  const applyFit = () => {
     if (!active) return;
-    const docEl = doc.documentElement;
-    const bodyEl = doc.body;
     const shellEl = htmlShellRef.value;
-    const availableWidth = Math.max(
-      shellEl?.clientWidth ?? 0,
-      Math.ceil(shellEl?.getBoundingClientRect?.().width ?? 0),
-      iframe.clientWidth ?? 0,
-    );
+    const shellWidth = shellEl?.clientWidth ?? 0;
+    if (shellWidth <= 0) return;
+    docEl.style.zoom = '';
     const contentWidth = Math.max(
       docEl.scrollWidth,
       bodyEl.scrollWidth,
-      docEl.offsetWidth,
-      bodyEl.offsetWidth,
-      Math.ceil(bodyEl.getBoundingClientRect?.().width ?? 0),
-      availableWidth,
+      1,
     );
-    // documentElement.scrollHeight catches content that overflows
-    // the body (e.g. when an email sets html { height:100% }).
-    const next = Math.max(
+    const contentHeight = Math.max(
       docEl.scrollHeight,
       bodyEl.scrollHeight,
-      docEl.offsetHeight,
-      bodyEl.offsetHeight,
-      Math.ceil(bodyEl.getBoundingClientRect?.().height ?? 0),
       initialIframeHeight(),
     );
-
-    if (next && next !== iframeHeight.value) {
-      iframeHeight.value = next;
-    }
-
-    if (availableWidth > 0 && contentWidth > availableWidth) {
-      const nextScale = availableWidth / contentWidth;
-      const nextWidth = `${Math.ceil(contentWidth)}px`;
-      if (iframeWidth.value !== nextWidth) iframeWidth.value = nextWidth;
-      if (Math.abs(iframeScale.value - nextScale) > 0.001) {
-        iframeScale.value = nextScale;
-      }
-    } else {
-      if (iframeWidth.value !== '100%') iframeWidth.value = '100%';
-      if (iframeScale.value !== 1) iframeScale.value = 1;
+    // Clamp the effective content width: even if the document reflowed
+    // to fit a very narrow viewport, fall back to MIN_EMAIL_LAYOUT_WIDTH
+    // so the email still renders at a sensible layout size and zooms
+    // down rather than reflowing into something cramped.
+    const effectiveWidth = Math.max(contentWidth, MIN_EMAIL_LAYOUT_WIDTH);
+    const ratio = effectiveWidth > shellWidth ? shellWidth / effectiveWidth : 1;
+    docEl.style.zoom = ratio === 1 ? '' : String(ratio);
+    const nextHeight = Math.max(120, Math.ceil(contentHeight * ratio));
+    if (nextHeight !== iframeHeight.value) {
+      iframeHeight.value = nextHeight;
     }
   };
-  measure();
 
-  const cleanups = [];
-  const scheduleMeasure = (delay) => {
+  // MDN guidance for ResizeObserver feedback safety: defer the
+  // callback to a rAF and skip re-entrant scheduling.
+  const scheduleApplyFit = () => {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      applyFit();
+    });
+  };
+
+  applyFit();
+
+  const cleanups: Array<() => void> = [];
+  const scheduleApplyFitAfter = (delay: number | 'raf') => {
     if (delay === 'raf') {
       if (typeof requestAnimationFrame !== 'function') return;
-      const id = requestAnimationFrame(measure);
+      const id = requestAnimationFrame(applyFit);
       cleanups.push(() => cancelAnimationFrame(id));
       return;
     }
-    const id = setTimeout(measure, delay);
+    const id = window.setTimeout(applyFit, delay);
     cleanups.push(() => clearTimeout(id));
   };
 
-  scheduleMeasure('raf');
-  scheduleMeasure(50);
-  scheduleMeasure(150);
-  scheduleMeasure(300);
-  scheduleMeasure(600);
+  // Late-arriving inline content (fonts, images, slow stylesheets) may
+  // grow the iframe document after the initial measurement. Re-apply a
+  // few times so the height and zoom settle correctly.
+  scheduleApplyFitAfter('raf');
+  scheduleApplyFitAfter(150);
+  scheduleApplyFitAfter(600);
 
   for (const img of Array.from(doc.images ?? []) as HTMLImageElement[]) {
     if (img.complete) continue;
-    img.addEventListener('load', measure, { once: true });
-    img.addEventListener('error', measure, { once: true });
+    img.addEventListener('load', applyFit, { once: true });
+    img.addEventListener('error', applyFit, { once: true });
     cleanups.push(() => {
-      img.removeEventListener('load', measure);
-      img.removeEventListener('error', measure);
+      img.removeEventListener('load', applyFit);
+      img.removeEventListener('error', applyFit);
     });
   }
 
   if (doc.fonts?.ready) {
-    doc.fonts.ready.then(measure).catch(() => {});
+    doc.fonts.ready.then(applyFit).catch(() => {});
   }
+
   iframeMeasurementCleanup = () => {
     active = false;
     doc.removeEventListener('keydown', onIframeKeyDown, true);
     for (const cleanup of cleanups) cleanup();
   };
 
-  if (typeof ResizeObserver === 'function') {
-    resizeObserver = new ResizeObserver(measure);
-    if (htmlShellRef.value) resizeObserver.observe(htmlShellRef.value);
-    resizeObserver.observe(doc.documentElement);
-    resizeObserver.observe(doc.body);
+  if (typeof ResizeObserver === 'function' && htmlShellRef.value) {
+    resizeObserver = new ResizeObserver(scheduleApplyFit);
+    resizeObserver.observe(htmlShellRef.value);
   }
 }
 
@@ -530,18 +545,13 @@ function closeMessageView() {
           v-if="iframeSrcDoc"
           ref="htmlShellRef"
           class="message-view__html-shell"
-          :style="{ height: `${iframeShellHeight}px` }"
         >
           <iframe
             ref="iframeRef"
             class="message-view__html-frame"
             :srcdoc="iframeSrcDoc"
             :sandbox="IFRAME_SANDBOX"
-            :style="{
-              width: iframeWidth,
-              height: `${iframeHeight}px`,
-              transform: `scale(${iframeScale})`,
-            }"
+            :style="{ height: `${iframeHeight}px` }"
             title="Message body"
             @load="onIframeLoad"
           />
@@ -809,17 +819,20 @@ function closeMessageView() {
 .message-view__html-shell {
   margin-left: var(--message-html-edge-inset);
   margin-right: var(--message-html-edge-inset);
-  overflow: hidden;
 }
 .message-view__html-frame {
   display: block;
+  width: 100%;
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document
    * has laid out; min-height is the floor for the first paint when
-   * the body viewport is not measurable yet. */
+   * the body viewport is not measurable yet. Fit-to-width for emails
+   * with fixed widths is handled by CSS `zoom` on the iframe document
+   * (set from onIframeLoad), not by an outer transform — that keeps the
+   * iframe's outer box and content in the same coordinate space so a
+   * ResizeObserver on the host shell cannot feedback-loop with itself. */
   min-height: 120px;
   background: var(--panel);
-  transform-origin: top left;
 }
 .message-view__text {
   margin: 0;

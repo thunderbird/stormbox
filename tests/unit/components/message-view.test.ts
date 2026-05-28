@@ -550,7 +550,14 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('scales a wide iframe document down to the visible message width instead of clipping it', async () => {
+  it('zooms a wide iframe document down to the visible message width instead of clipping it', async () => {
+    // Fit-to-width is applied via CSS `zoom` on the iframe's own
+    // documentElement (the approach Gmail's mobile web viewer uses).
+    // We deliberately avoid `transform: scale` on the host iframe
+    // because that requires manually keeping iframe.width / iframe.height
+    // in sync with the unscaled content, and ResizeObserver firing on
+    // the resulting layout change was creating a feedback loop and
+    // visible flicker at narrow widths.
     await makeSelectedMessage({
       text: '',
       html: '<table width="640" style="width:640px;"><tr><td>wide</td></tr></table>',
@@ -592,10 +599,70 @@ describe('MessageView HTML body rendering', () => {
     iframe.dispatchEvent(new Event('load'));
     await nextTick();
 
-    expect(iframe.getAttribute('style')).toContain('width: 640px');
-    expect(iframe.getAttribute('style')).toContain('height: 800px');
-    expect(iframe.getAttribute('style')).toContain('transform: scale(0.5)');
-    expect(shell.getAttribute('style')).toContain('height: 400px');
+    expect(doc!.documentElement.style.zoom).toBe('0.5');
+    const iframeStyle = iframe.getAttribute('style') ?? '';
+    expect(iframeStyle).toContain('height: 400px');
+    expect(iframeStyle).not.toContain('transform');
+    expect(iframeStyle).not.toMatch(/\bwidth:\s*640px/);
+    expect(shell.getAttribute('style') ?? '').not.toMatch(/\bheight:/);
+
+    wrapper.unmount();
+  });
+
+  it('zooms reflowable content down when the shell is narrower than the minimum email layout width', async () => {
+    // Reflowable text would otherwise report scrollWidth == viewport
+    // at any shell size and never zoom. That looks fine for plain
+    // paragraphs but produces a cramped layout for typical HTML email
+    // bodies (image headers collapse, buttons wrap, etc.). Below the
+    // MIN_EMAIL_LAYOUT_WIDTH threshold we therefore apply CSS zoom even
+    // when the document's scrollWidth matches the viewport, so the
+    // email still lays out at the threshold width and is scaled down.
+    await makeSelectedMessage({
+      text: '',
+      html: '<p>Short reflowable email body.</p>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const shell = wrapper.find('.message-view__html-shell').element as HTMLElement;
+    Object.defineProperty(shell, 'clientWidth', {
+      configurable: true,
+      value: 300,
+    });
+
+    const iframe = wrapper.find('iframe.message-view__html-frame').element as HTMLIFrameElement;
+    const doc = iframe.contentDocument;
+    expect(doc).toBeTruthy();
+
+    // Reflowable content reports scrollWidth that just matches the
+    // viewport — no real horizontal overflow.
+    Object.defineProperty(doc!.documentElement, 'scrollWidth', {
+      configurable: true,
+      value: 300,
+    });
+    Object.defineProperty(doc!.documentElement, 'scrollHeight', {
+      configurable: true,
+      value: 600,
+    });
+    Object.defineProperty(doc!.body, 'scrollWidth', {
+      configurable: true,
+      value: 300,
+    });
+    Object.defineProperty(doc!.body, 'scrollHeight', {
+      configurable: true,
+      value: 600,
+    });
+
+    iframe.dispatchEvent(new Event('load'));
+    await nextTick();
+
+    // Shell 300 < MIN_EMAIL_LAYOUT_WIDTH (400) → ratio = 300 / 400 = 0.75.
+    expect(doc!.documentElement.style.zoom).toBe('0.75');
+    expect(iframe.getAttribute('style') ?? '').toContain('height: 450px');
 
     wrapper.unmount();
   });
