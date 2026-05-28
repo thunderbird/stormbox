@@ -248,6 +248,13 @@ describe('integration: a real-world wide marketing email', () => {
     const css = doc.querySelector('style')?.textContent ?? '';
     expect(css).toMatch(/img,\s*video,\s*canvas,\s*svg\s*\{[^}]*max-width:\s*100%/);
     expect(css).toMatch(/table\s*\{[^}]*max-width:\s*100%/);
+    // The iframe document must never own a scrollbar itself: the host
+    // .message-view__body is the sole scroll container for the open
+    // message, and a residual iframe-level scrollbar stacks beside the
+    // host scrollbar as visual noise (and worse, can layer a horizontal
+    // scrollbar inside the iframe when our zoom fit is even one pixel
+    // off).
+    expect(css).toMatch(/html,\s*body\s*\{[\s\S]*?overflow:\s*hidden/);
   });
 
   it('does NOT pair the email with broad override CSS beyond overflow prevention', () => {

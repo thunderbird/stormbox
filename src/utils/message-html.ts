@@ -103,6 +103,13 @@ export function buildBodyCss(colorScheme = 'light') {
     padding: 0;
     background: ${colors.background};
     color: ${colors.color};
+    /* The host (.message-view__body) is the sole scroll container for
+     * the open message. The iframe document must never grow its own
+     * scrollbars: we already size the iframe element to the document's
+     * scroll height (post-zoom) from MessageView.vue, so any residual
+     * iframe-level scrollbar would be visual noise stacked beside the
+     * host's scrollbar, not a navigation affordance. */
+    overflow: hidden;
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
