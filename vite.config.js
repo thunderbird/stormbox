@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 
+import { APP_TITLE } from "./src/app-config.js";
 import {
   jmapWsDevProxyPlugin,
   keycloakDevProxy,
@@ -13,6 +14,15 @@ import {
 
 const localStack = process.env.VITE_LOCAL_STACK === "1";
 const publicOrigin = localStackPublicOrigin();
+
+function appHtmlConfigPlugin() {
+  return {
+    name: "stormbox-html-config",
+    transformIndexHtml(html) {
+      return html.replaceAll("%APP_TITLE%", APP_TITLE);
+    },
+  };
+}
 
 // Self-signed HTTPS is required so the browser treats the dev origin
 // as a secure context. OPFS, SharedWorker isolation, and SubtleCrypto
@@ -26,6 +36,7 @@ const publicOrigin = localStackPublicOrigin();
 // rules do not block OIDC discovery or JMAP session fetch.
 export default defineConfig({
   plugins: [
+    appHtmlConfigPlugin(),
     vue(),
     basicSsl(),
     ...(localStack ? [jmapWsDevProxyPlugin()] : []),

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { onClickOutside } from '@vueuse/core';
+import { onClickOutside, useTitle } from '@vueuse/core';
 import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
+import { APP_TITLE } from './app-config';
 import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
 
 import { useAuthStore } from './stores/auth-store';
@@ -47,6 +48,11 @@ const inboxUnread = computed(() => {
 const accountLabel = computed(() =>
   authStore.username || authStore.serverHostname,
 );
+const documentTitle = computed(() => {
+  const username = authStore.username?.trim();
+  return username ? `${APP_TITLE} - ${username}` : APP_TITLE;
+});
+useTitle(documentTitle, { restoreOnUnmount: false });
 
 type ResizePane = 'folderList' | 'messageList';
 

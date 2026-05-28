@@ -22,6 +22,7 @@ import {
   FEEDBACK_URL,
   SEND_URL,
 } from '../../../src/defines';
+import { APP_TITLE } from '../../../src/app-config';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 import {
@@ -119,6 +120,7 @@ function setElementRect(
 beforeEach(() => {
   setActivePinia(createPinia());
   __setRepositoryForTests(makeRepo());
+  document.title = APP_TITLE;
   window.localStorage?.clear();
   window.localStorage?.setItem('stormbox.welcomeModalDismissed.v1', '1');
   setWindowWidth(1280);
@@ -329,6 +331,26 @@ describe('App mail layout', () => {
     expect(items[1].attributes('href')).toBe(SEND_URL);
     expect(items[1].attributes('target')).toBe('_blank');
     expect(items[1].attributes('rel')).toBe('noopener noreferrer');
+  });
+
+  it('updates the document title with the signed-in account email', async () => {
+    const authStore = useAuthStore();
+    authStore.username = 'alice@example.com';
+
+    mountApp();
+    await nextTick();
+
+    expect(document.title).toBe(`${APP_TITLE} - alice@example.com`);
+
+    authStore.username = 'bob@example.net';
+    await nextTick();
+
+    expect(document.title).toBe(`${APP_TITLE} - bob@example.net`);
+
+    authStore.username = null;
+    await nextTick();
+
+    expect(document.title).toBe(APP_TITLE);
   });
 
   it('passes the Inbox unread count to the spaces toolbar badge', async () => {
