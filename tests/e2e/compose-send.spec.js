@@ -78,6 +78,20 @@ async function findSentMessageBySubject(jmap, sentMailbox, subject) {
   return ids[0] ?? null;
 }
 
+async function getEmailKeywords(jmap, emailId) {
+  const payload = await jmapRequest(jmap, [[
+    'Email/get',
+    {
+      accountId: jmap.accountId,
+      ids: [emailId],
+      properties: ['keywords'],
+    },
+    'g1',
+  ]]);
+  const row = pickResponse(payload, 'Email/get')?.list?.[0] ?? null;
+  return row?.keywords ?? null;
+}
+
 test.describe('Compose + send e2e', () => {
   test.beforeEach(async ({ sharedPage }) => {
     await resetSharedSession(sharedPage);
@@ -201,6 +215,35 @@ test.describe('Compose + send e2e', () => {
       const sentCache = await readViewCacheForFolderRole(page, 'sent');
       expect(sentCache, 'local Sent cache should be reachable via window.__repo').not.toBeNull();
       expect(sentCache.remoteIds, 'sent remote id should be in the Sent cache').toContain(serverId);
+
+      // Local cache: the sent copy is already read before any push-driven
+      // reconciliation can repair it.
+      const sentSeenState = await page.evaluate(async ({ remoteId, folderId }) => {
+        if (!globalThis.__repo) return null;
+        const accounts = await globalThis.__repo.listAccounts();
+        const accountId = accounts?.[0]?.id;
+        if (accountId == null) return null;
+        const rows = await globalThis.__repo.listMessagesForView({
+          accountId,
+          folderId,
+          sort: 'sent',
+          offset: 0,
+          limit: 10,
+        });
+        const row = rows.find((candidate) => candidate.remote_id === remoteId);
+        return row ? Number(row.is_seen) : null;
+      }, { remoteId: serverId, folderId: sentLocalId });
+      expect(sentSeenState, 'local Sent cache should mark the sent message read').toBe(1);
+
+      // Server: Thunderbird Desktop sees the same canonical read state.
+      await expect.poll(
+        async () => {
+          const keywords = await getEmailKeywords(jmap, serverId);
+          if (!keywords) return 'missing';
+          return keywords.$seen === true ? 'seen' : 'unseen';
+        },
+        { timeout: 30_000, message: 'server should mark the sent message read with $seen' },
+      ).toBe('seen');
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (serverId) {

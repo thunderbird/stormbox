@@ -254,7 +254,7 @@ describe('applySendLocally', () => {
     return {
       ...emailFixture(id),
       mailboxIds: { 'mb-sent': true },
-      keywords: {},
+      keywords: { $seen: true },
       subject: 'Hello world',
     };
   }
@@ -281,10 +281,11 @@ describe('applySendLocally', () => {
     });
 
     const newRow = await engine.get(
-      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      'SELECT id, is_seen FROM messages WHERE account_id = ? AND remote_id = ?',
       [account.id, 'em-new'],
     );
     expect(newRow).not.toBeNull();
+    expect(Number(newRow.is_seen)).toBe(1);
     expect(await loadFolderMemberships(Number(newRow.id))).toEqual([
       { folder_id: sent.id },
     ]);

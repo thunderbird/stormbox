@@ -382,6 +382,7 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
     ...(sentRemoteId ? { [`mailboxIds/${sentRemoteId}`]: true } : {}),
     ...(targetBox ? { [`mailboxIds/${targetBox}`]: null } : {}),
     'keywords/$draft': null,
+    'keywords/$seen': true,
   };
 
   const result = await callJmap(transport, {

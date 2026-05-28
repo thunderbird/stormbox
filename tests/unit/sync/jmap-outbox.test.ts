@@ -403,7 +403,7 @@ describe('drainOutbox', () => {
         blobId: `b-${id}`,
         threadId: 'thr-new',
         mailboxIds: { 'mb-sent': true },
-        keywords: {},
+        keywords: { $seen: true },
         size: 100,
         receivedAt: '2026-05-01T12:00:00Z',
         sentAt: '2026-05-01T12:00:00Z',
@@ -434,6 +434,7 @@ describe('drainOutbox', () => {
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
+    expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$seen']).toBe(true);
   });
 
   it('surfaces method-level JMAP errors instead of generic noResponse', async () => {
