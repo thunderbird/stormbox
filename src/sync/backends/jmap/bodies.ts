@@ -85,9 +85,22 @@ async function persistBodies({ account, emails, handlers }) {
     const htmlPartIds = new Set((email.htmlBody ?? []).map((p) => p.partId));
     const attachmentPartIds = new Set((email.attachments ?? []).map((p) => p.partId));
 
+    // partId -> MIME media type, captured from the body structure walk so
+    // body values can be classified by their actual content type rather
+    // than by list membership. A plaintext-only message lists its single
+    // text/plain part in BOTH textBody and htmlBody (RFC 8621: htmlBody
+    // falls back to the text part when no text/html alternative exists),
+    // so keying off htmlBody alone misfiles plaintext as HTML and the
+    // viewer then renders it through the HTML iframe, collapsing every
+    // newline into one unformatted block (issue #25).
+    const mediaTypeByPartId = new Map<string, string>();
+
     let position = 0;
     walkParts(email.bodyStructure, null, (part, parentPartId) => {
       const partId = part.partId ?? null;
+      if (partId != null && part.type) {
+        mediaTypeByPartId.set(partId, String(part.type).toLowerCase());
+      }
       parts.push({
         partId: partId ?? `idx-${position}`,
         position,
@@ -112,8 +125,17 @@ async function persistBodies({ account, emails, handlers }) {
 
     const bodyValues = email.bodyValues ?? {};
     for (const [partId, payload] of Object.entries(bodyValues) as Array<[string, any]>) {
-      const isHtml = htmlPartIds.has(partId);
-      const kind = isHtml ? 'html' : 'text';
+      const mediaType = mediaTypeByPartId.get(partId) ?? '';
+      let kind: 'html' | 'text';
+      if (mediaType === 'text/html') {
+        kind = 'html';
+      } else if (mediaType === 'text/plain') {
+        kind = 'text';
+      } else {
+        // No usable media type (truncated/odd structure): only treat as
+        // HTML when the part is exclusively in the htmlBody list.
+        kind = htmlPartIds.has(partId) && !textPartIds.has(partId) ? 'html' : 'text';
+      }
       const value = payload?.value ?? '';
       values.push({
         partId,

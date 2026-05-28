@@ -145,6 +145,49 @@ describe('fetchEmailBodies', () => {
     expect(stamped.body_fetched_at).not.toBeNull();
   });
 
+  it('classifies a plaintext-only body as text even when htmlBody echoes the text/plain part', async () => {
+    // RFC 8621: a message with no text/html alternative still lists its
+    // single text/plain part in BOTH textBody and htmlBody. The classifier
+    // must key off the part's media type, otherwise the plaintext is stored
+    // as kind='html' and the viewer renders it through the HTML iframe,
+    // collapsing newlines into one unformatted block (issue #25).
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => ({
+      list: [{
+        id: 'e-1',
+        blobId: 'blob-e-1',
+        threadId: 'thr-e-1',
+        mailboxIds: { 'mb-inbox': true },
+        keywords: {},
+        bodyStructure: { partId: '1', type: 'text/plain', charset: 'utf-8' },
+        textBody: [{ partId: '1', type: 'text/plain' }],
+        htmlBody: [{ partId: '1', type: 'text/plain' }],
+        attachments: [],
+        bodyValues: {
+          1: { value: 'line one\nline two\n\nindented:\n    spaced', isTruncated: false },
+        },
+      }],
+      state: 'es',
+    }));
+
+    await fetchEmailBodies({ transport, account, handlers, remoteIds: ['e-1'] });
+
+    const messageRow = await handlers[DB_RPC.MESSAGE_GET_BY_REMOTE]({
+      accountId: account.id,
+      remoteId: 'e-1',
+    });
+    const values = await engine.all(
+      'SELECT kind, value FROM body_values WHERE message_id = ?',
+      [messageRow.id],
+    );
+    expect(values).toHaveLength(1);
+    expect(values[0].kind).toBe('text');
+
+    const body = await handlers[DB_RPC.MESSAGE_BODY_READ]({ messageId: messageRow.id });
+    expect(body.text).toBe('line one\nline two\n\nindented:\n    spaced');
+    expect(body.html).toBe('');
+  });
+
   it('records is_truncated when the server reports a truncated body value', async () => {
     const transport = new MockTransport();
     transport.handle('Email/get', () => ({

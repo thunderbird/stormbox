@@ -1116,10 +1116,19 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       ),
 
     [DB_RPC.MESSAGE_BODY_READ]: async ({ messageId }) => {
+      // Join the part's media type so display classification follows the
+      // actual content type rather than the stored `kind`. A plaintext-
+      // only message lists its text/plain part in both textBody and
+      // htmlBody (RFC 8621), which historically got persisted as
+      // kind='html' and rendered through the HTML iframe — collapsing
+      // newlines into one unformatted block (issue #25). Preferring
+      // media_type heals those rows without a re-fetch.
       const values = await engine.all(
-        `SELECT kind, value, is_truncated
-           FROM body_values
-          WHERE message_id = ?`,
+        `SELECT bv.kind, bv.value, bv.is_truncated, bp.media_type
+           FROM body_values bv
+           LEFT JOIN body_parts bp
+             ON bp.message_id = bv.message_id AND bp.part_id = bv.part_id
+          WHERE bv.message_id = ?`,
         [messageId],
       );
       const attachments = await engine.all(
@@ -1132,8 +1141,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       if (values.length === 0 && attachments.length === 0) {
         return null;
       }
-      const text = values.find((r) => r.kind === 'text')?.value ?? '';
-      const html = values.find((r) => r.kind === 'html')?.value ?? '';
+      const isHtmlValue = (row) => {
+        const mediaType = String(row.media_type ?? '').toLowerCase();
+        if (mediaType === 'text/html') return true;
+        if (mediaType === 'text/plain') return false;
+        return row.kind === 'html';
+      };
+      const text = values.find((r) => !isHtmlValue(r))?.value ?? '';
+      const html = values.find((r) => isHtmlValue(r))?.value ?? '';
       return { text, html, attachments };
     },
 

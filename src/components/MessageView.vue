@@ -21,6 +21,7 @@ import {
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
 } from '../utils/message-html';
+import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
@@ -49,6 +50,20 @@ const iframeHeight = ref(120);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
 
 const body = computed(() => mailStore.messageBody);
+
+// Render plaintext bodies the way Thunderbird Desktop does: keep the
+// original line breaks/whitespace (white-space: pre-wrap), linkify URLs
+// and addresses, and tag quoted lines. The converter only emits escaped
+// text plus our own anchor/span tags, but we still sanitize for defence
+// in depth (and to keep target/rel on the generated links).
+const textHtml = computed(() => {
+  const raw = body.value?.text;
+  if (!raw) return '';
+  return DOMPurify.sanitize(plaintextToHtml(raw), {
+    ALLOWED_URI_REGEXP,
+    ADD_ATTR: ['target'],
+  });
+});
 const message = computed(() =>
   // The messages array is positional and can carry explicit `undefined`
   // slots (sparse query_view_items, mid-shrink, etc.) — guard the slot
@@ -556,7 +571,7 @@ function closeMessageView() {
             @load="onIframeLoad"
           />
         </div>
-        <pre v-else-if="body?.text" class="message-view__text">{{ body.text }}</pre>
+        <div v-else-if="textHtml" class="message-view__text" v-html="textHtml" />
         <p v-else class="message-view__placeholder">Loading message…</p>
         <ul v-if="body?.attachments?.length" class="message-view__attachments">
           <li v-for="a in body.attachments" :key="a.part_id">
@@ -840,8 +855,36 @@ function closeMessageView() {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   line-height: 1.55;
+  /* Preserve the message's own line breaks and spacing (issue #25)
+   * while still wrapping long lines and unbreakable tokens (URLs) so
+   * the reading pane never needs horizontal scrolling. */
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--text);
+}
+.message-view__text :deep(a) {
+  color: var(--accent);
+}
+/* Quoted text, styled like Thunderbird Desktop: the `>` markers are
+ * stripped and each nesting level gets a coloured left bar from the
+ * Tango palette (comm-central messageQuotes.css), cycling every five
+ * levels. The quoted text itself is not recoloured. */
+.message-view__text :deep(blockquote.pt-quote) {
+  margin: 1ex 0;
+  padding: 0.4ex 1ex;
+  border-inline-start: 2px solid rgb(114, 159, 207); /* Sky Blue 1 */
+}
+.message-view__text :deep(blockquote.pt-quote--l2) {
+  border-inline-start-color: rgb(173, 127, 168); /* Plum 1 */
+}
+.message-view__text :deep(blockquote.pt-quote--l3) {
+  border-inline-start-color: rgb(138, 226, 52); /* Chameleon 1 */
+}
+.message-view__text :deep(blockquote.pt-quote--l4) {
+  border-inline-start-color: rgb(252, 175, 62); /* Orange 1 */
+}
+.message-view__text :deep(blockquote.pt-quote--l5) {
+  border-inline-start-color: rgb(233, 185, 110); /* Chocolate 1 */
 }
 .message-view__attachments {
   list-style: none;
