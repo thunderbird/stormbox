@@ -441,7 +441,7 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('preserves the email design verbatim — no width or layout overrides injected', async () => {
+  it('preserves the email markup while keeping host layout control outside the iframe', async () => {
     // Regression: an earlier iteration of the iframe builder injected
     // `body * { max-width: 100% !important }` and friends, on the
     // theory that it would tame wide marketing emails. In practice
@@ -465,11 +465,13 @@ describe('MessageView HTML body rendering', () => {
     const body = wrapper.find('.message-view__body');
     expect(body.exists()).toBe(true);
 
-    // The iframe is the sole rendering path for HTML bodies, with no
-    // inner wrapper that would impose its own width.
-    const directIframeChild = body.find(':scope > iframe.message-view__html-frame');
-    expect(directIframeChild.exists()).toBe(true);
-    expect(body.findAll('div, section, article').length).toBe(0);
+    // The host may wrap/scale the iframe to fit narrow reading panes,
+    // but the HTML email still renders only inside the sandboxed frame.
+    const shell = body.find(':scope > .message-view__html-shell');
+    expect(shell.exists()).toBe(true);
+    const iframeInShell = shell.find(':scope > iframe.message-view__html-frame');
+    expect(iframeInShell.exists()).toBe(true);
+    expect(body.findAll('section, article').length).toBe(0);
 
     const srcdoc = iframe.attributes('srcdoc') ?? '';
 
@@ -528,7 +530,7 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('aligns simple text-like HTML message content with the message header labels', async () => {
+  it('renders HTML message content inside the host gutter shell', async () => {
     await makeSelectedMessage({
       text: 'plain alternative',
       html: 'simple html body',
@@ -540,12 +542,60 @@ describe('MessageView HTML body rendering', () => {
     });
     await nextTick();
 
-    const details = wrapper.find('.message-view__details');
-    const iframe = wrapper.find('iframe.message-view__html-frame');
+    const shell = wrapper.find('.message-view__html-shell');
 
-    expect(iframe.exists()).toBe(true);
-    expect(window.getComputedStyle(iframe.element).marginLeft)
-      .toBe(window.getComputedStyle(details.element).paddingLeft);
+    expect(shell.exists()).toBe(true);
+    expect(shell.find(':scope > iframe.message-view__html-frame').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it('scales a wide iframe document down to the visible message width instead of clipping it', async () => {
+    await makeSelectedMessage({
+      text: '',
+      html: '<table width="640" style="width:640px;"><tr><td>wide</td></tr></table>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const shell = wrapper.find('.message-view__html-shell').element as HTMLElement;
+    Object.defineProperty(shell, 'clientWidth', {
+      configurable: true,
+      value: 320,
+    });
+
+    const iframe = wrapper.find('iframe.message-view__html-frame').element as HTMLIFrameElement;
+    const doc = iframe.contentDocument;
+    expect(doc).toBeTruthy();
+
+    Object.defineProperty(doc!.documentElement, 'scrollWidth', {
+      configurable: true,
+      value: 640,
+    });
+    Object.defineProperty(doc!.documentElement, 'scrollHeight', {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(doc!.body, 'scrollWidth', {
+      configurable: true,
+      value: 640,
+    });
+    Object.defineProperty(doc!.body, 'scrollHeight', {
+      configurable: true,
+      value: 800,
+    });
+
+    iframe.dispatchEvent(new Event('load'));
+    await nextTick();
+
+    expect(iframe.getAttribute('style')).toContain('width: 640px');
+    expect(iframe.getAttribute('style')).toContain('height: 800px');
+    expect(iframe.getAttribute('style')).toContain('transform: scale(0.5)');
+    expect(shell.getAttribute('style')).toContain('height: 400px');
 
     wrapper.unmount();
   });

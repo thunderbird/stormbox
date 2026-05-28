@@ -34,9 +34,12 @@ const mailStore = useMailStore();
 const composeStore = useComposeStore();
 
 const bodyRef = ref(null);
+const htmlShellRef = ref(null);
 const iframeRef = ref(null);
 const iframeSrcDoc = ref('');
 const iframeHeight = ref(120);
+const iframeWidth = ref('100%');
+const iframeScale = ref(1);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
 
 const body = computed(() => mailStore.messageBody);
@@ -55,6 +58,9 @@ const message = computed(() =>
 // checked row plus bulk actions.
 const selectionCount = computed(() => mailStore.selectedIds.size);
 const isMultiSelecting = computed(() => selectionCount.value >= 1);
+const iframeShellHeight = computed(() =>
+  Math.max(120, Math.ceil(iframeHeight.value * iframeScale.value)),
+);
 let resizeObserver = null;
 let iframeMeasurementCleanup = null;
 let themeMediaQuery = null;
@@ -77,7 +83,7 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   if (!next?.html) {
     teardownResizeObserver();
     iframeSrcDoc.value = '';
-    iframeHeight.value = 120;
+    resetIframeLayout(120);
     return;
   }
   const sanitized = DOMPurify.sanitize(next.html, {
@@ -98,7 +104,7 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
   if (nextSrcDoc === iframeSrcDoc.value) return;
   teardownResizeObserver();
   iframeSrcDoc.value = nextSrcDoc;
-  iframeHeight.value = initialIframeHeight();
+  resetIframeLayout(initialIframeHeight());
   nextTick(() => {
     if (iframeSrcDoc.value === nextSrcDoc) {
       iframeHeight.value = Math.max(iframeHeight.value, initialIframeHeight());
@@ -151,6 +157,12 @@ function teardownThemeObservers() {
 
 function initialIframeHeight() {
   return Math.max(120, bodyRef.value?.clientHeight ?? 0);
+}
+
+function resetIframeLayout(height = 120) {
+  iframeHeight.value = height;
+  iframeWidth.value = '100%';
+  iframeScale.value = 1;
 }
 
 onMounted(() => {
@@ -206,6 +218,20 @@ function onIframeLoad() {
     if (!active) return;
     const docEl = doc.documentElement;
     const bodyEl = doc.body;
+    const shellEl = htmlShellRef.value;
+    const availableWidth = Math.max(
+      shellEl?.clientWidth ?? 0,
+      Math.ceil(shellEl?.getBoundingClientRect?.().width ?? 0),
+      iframe.clientWidth ?? 0,
+    );
+    const contentWidth = Math.max(
+      docEl.scrollWidth,
+      bodyEl.scrollWidth,
+      docEl.offsetWidth,
+      bodyEl.offsetWidth,
+      Math.ceil(bodyEl.getBoundingClientRect?.().width ?? 0),
+      availableWidth,
+    );
     // documentElement.scrollHeight catches content that overflows
     // the body (e.g. when an email sets html { height:100% }).
     const next = Math.max(
@@ -219,6 +245,18 @@ function onIframeLoad() {
 
     if (next && next !== iframeHeight.value) {
       iframeHeight.value = next;
+    }
+
+    if (availableWidth > 0 && contentWidth > availableWidth) {
+      const nextScale = availableWidth / contentWidth;
+      const nextWidth = `${Math.ceil(contentWidth)}px`;
+      if (iframeWidth.value !== nextWidth) iframeWidth.value = nextWidth;
+      if (Math.abs(iframeScale.value - nextScale) > 0.001) {
+        iframeScale.value = nextScale;
+      }
+    } else {
+      if (iframeWidth.value !== '100%') iframeWidth.value = '100%';
+      if (iframeScale.value !== 1) iframeScale.value = 1;
     }
   };
   measure();
@@ -262,6 +300,7 @@ function onIframeLoad() {
 
   if (typeof ResizeObserver === 'function') {
     resizeObserver = new ResizeObserver(measure);
+    if (htmlShellRef.value) resizeObserver.observe(htmlShellRef.value);
     resizeObserver.observe(doc.documentElement);
     resizeObserver.observe(doc.body);
   }
@@ -487,16 +526,26 @@ function closeMessageView() {
         </dl>
       </section>
       <div ref="bodyRef" class="message-view__body">
-        <iframe
+        <div
           v-if="iframeSrcDoc"
-          ref="iframeRef"
-          class="message-view__html-frame"
-          :srcdoc="iframeSrcDoc"
-          :sandbox="IFRAME_SANDBOX"
-          :style="{ height: `${iframeHeight}px` }"
-          title="Message body"
-          @load="onIframeLoad"
-        />
+          ref="htmlShellRef"
+          class="message-view__html-shell"
+          :style="{ height: `${iframeShellHeight}px` }"
+        >
+          <iframe
+            ref="iframeRef"
+            class="message-view__html-frame"
+            :srcdoc="iframeSrcDoc"
+            :sandbox="IFRAME_SANDBOX"
+            :style="{
+              width: iframeWidth,
+              height: `${iframeHeight}px`,
+              transform: `scale(${iframeScale})`,
+            }"
+            title="Message body"
+            @load="onIframeLoad"
+          />
+        </div>
         <pre v-else-if="body?.text" class="message-view__text">{{ body.text }}</pre>
         <p v-else class="message-view__placeholder">Loading message…</p>
         <ul v-if="body?.attachments?.length" class="message-view__attachments">
@@ -535,6 +584,9 @@ function closeMessageView() {
   min-height: 0;
   width: 100%;
   --message-content-inset: 20px;
+  --message-content-trailing-inset: 16px;
+  --message-html-edge-inset: 8px;
+  --message-toolbar-edge-inset: 12px;
   --message-header-label-width: 56px;
 }
 .message-view__empty {
@@ -632,13 +684,13 @@ function closeMessageView() {
   justify-content: flex-start;
   min-width: 0;
   min-height: 57px;
-  padding: 11px 12px;
+  padding: 11px var(--message-toolbar-edge-inset);
   overflow: hidden;
   border-bottom: 1px solid var(--border);
 }
 .message-view__details {
   min-width: 0;
-  padding: 12px 16px 12px var(--message-content-inset);
+  padding: 12px var(--message-content-trailing-inset) 12px var(--message-content-inset);
   border-bottom: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 92%, var(--panel2));
 }
@@ -754,17 +806,20 @@ function closeMessageView() {
   min-width: 0;
   min-height: 0;
 }
+.message-view__html-shell {
+  margin-left: var(--message-html-edge-inset);
+  margin-right: var(--message-html-edge-inset);
+  overflow: hidden;
+}
 .message-view__html-frame {
   display: block;
-  width: calc(100% - var(--message-content-inset));
-  max-width: 100%;
-  margin-left: var(--message-content-inset);
   border: 0;
   /* Height is driven imperatively from onIframeLoad once the document
    * has laid out; min-height is the floor for the first paint when
    * the body viewport is not measurable yet. */
   min-height: 120px;
   background: var(--panel);
+  transform-origin: top left;
 }
 .message-view__text {
   margin: 0;
@@ -797,6 +852,15 @@ function closeMessageView() {
 .att-name { font-weight: 500; color: var(--text); }
 .att-meta { color: var(--muted); font-size: 12px; }
 .message-view__placeholder { margin: 0; padding: 18px 22px; color: var(--muted); }
+
+@media (max-width: 639px) {
+  .message-view__article {
+    --message-content-inset: 5px;
+    --message-content-trailing-inset: 5px;
+    --message-html-edge-inset: 5px;
+    --message-toolbar-edge-inset: 5px;
+  }
+}
 
 @keyframes message-action-spotlight-pulse {
   0%, 100% {

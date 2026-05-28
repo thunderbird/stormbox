@@ -47,13 +47,6 @@ const accountLabel = computed(() =>
   authStore.username || authStore.serverHostname,
 );
 
-const showMessageView = computed(() =>
-  mailStore.selectedMessageId != null
-  || mailStore.selectedIds.size > 0
-  || resizeLayoutSpotlight.value
-  || composeActionSpotlight.value,
-);
-
 type ResizePane = 'folderList' | 'messageList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
@@ -96,6 +89,18 @@ const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
 );
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
+const isSingleColumnMailWidth = computed(() =>
+  space.value === 'mail' && windowWidth.value < SINGLE_COLUMN_WIDTH,
+);
+const wantsMessageDetailView = computed(() =>
+  mailStore.selectedMessageId != null
+  || resizeLayoutSpotlight.value
+  || composeActionSpotlight.value,
+);
+const showMessageView = computed(() =>
+  wantsMessageDetailView.value
+  || (mailStore.selectedIds.size > 0 && !isSingleColumnMailWidth.value),
+);
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),
 );

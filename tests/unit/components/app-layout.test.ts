@@ -531,6 +531,20 @@ describe('App mail layout', () => {
     expect(wrapper.find('.message-view').exists()).toBe(true);
   });
 
+  it('keeps the message list visible for bulk selection in single-column layout', async () => {
+    setWindowWidth(639);
+    const mailStore = useMailStore();
+    mailStore.selectedIds = new Set([7]);
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--message-view-hidden');
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--message-list-hidden');
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
+    expect(wrapper.find('.message-view').exists()).toBe(false);
+  });
+
   it('hides the folder list by default below the single-column threshold', async () => {
     setWindowWidth(639);
 

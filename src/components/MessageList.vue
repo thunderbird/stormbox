@@ -933,6 +933,15 @@ function normalizeFilterText(value) {
   -webkit-line-clamp: 1;
 }
 
+@media (max-width: 639px) {
+  .msg-list__check {
+    opacity: 1;
+  }
+  .msg-list__unread-dot {
+    opacity: 0;
+  }
+}
+
 .msg-list__item--placeholder {
   border-bottom: 1px solid var(--border-soft);
   padding: 10px 14px 10px 22px;
