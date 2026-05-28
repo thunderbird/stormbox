@@ -17,6 +17,7 @@ on:
           - prod
 
 permissions:
+  actions: read
   contents: read
 
 # Allow only one CI/deploy workflow per ref. PR runs queue independently
@@ -29,6 +30,7 @@ jobs:
   unit-test:
     name: Unit tests
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -51,6 +53,7 @@ jobs:
   e2e-test:
     name: E2E tests
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -158,6 +161,41 @@ jobs:
             test-results/
           retention-days: 7
 
+  verify-main-ci:
+    name: Verify main CI
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
+    steps:
+      - name: Require successful main push CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "Prod deploys must be dispatched from main; got ${REF}."
+            exit 1
+          fi
+
+          successful_runs="$(gh api \
+            --method GET \
+            "repos/${REPO}/actions/workflows/deploy.yml/runs" \
+            -f branch=main \
+            -f event=push \
+            -f head_sha="${HEAD_SHA}" \
+            -f status=success \
+            -f per_page=1 \
+            --jq '.total_count')"
+
+          if [ "${successful_runs}" -lt 1 ]; then
+            echo "No successful main push CI run found for ${HEAD_SHA}."
+            echo "Push this commit to main and wait for CI before deploying prod."
+            exit 1
+          fi
+
   # Deploy jobs only publish a new deployment to an existing Cloudflare Pages
   # project. Custom domains and DNS records are provisioned out-of-band.
   deploy-stage:
@@ -209,7 +247,7 @@ jobs:
   deploy-prod:
     name: Deploy prod
     runs-on: ubuntu-latest
-    needs: [unit-test, e2e-test]
+    needs: [verify-main-ci]
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
     environment:
       name: prod
