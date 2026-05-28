@@ -90,6 +90,10 @@ export class Repository {
     return this.call(DB_RPC.ACCOUNT_LIST);
   }
 
+  getAccount(accountId) {
+    return this.call(DB_RPC.ACCOUNT_GET, { accountId });
+  }
+
   upsertAccount(account) {
     return this.call(DB_RPC.ACCOUNT_UPSERT, account);
   }

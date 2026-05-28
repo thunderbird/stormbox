@@ -17,6 +17,11 @@ import type { FolderRow, IdentityRow, MessageRow } from '../types';
 import type { Repository } from '../db/repository';
 import { TABLE_FAMILIES } from '../db/protocol';
 import {
+  findMatchingIdentityIndex,
+  resolveComposeIdentityIndex,
+  type RememberedComposeIdentity,
+} from '../utils/compose-identity';
+import {
   buildQuotedHtml,
   buildQuotedText,
   buildReplyAllRecipients,
@@ -45,6 +50,40 @@ const EMPTY_DRAFT: Readonly<Draft> = Object.freeze({
   htmlBody: '',
 });
 
+const FROM_IDENTITY_STORAGE_PREFIX = 'stormbox.compose.fromIdentity';
+
+function fromIdentityStorageKey(accountId: number): string {
+  return `${FROM_IDENTITY_STORAGE_PREFIX}.${accountId}`;
+}
+
+function readRememberedIdentity(accountId: number | null): RememberedComposeIdentity | null {
+  if (accountId == null) return null;
+  try {
+    const raw = globalThis.localStorage?.getItem(fromIdentityStorageKey(accountId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      remoteId: typeof parsed.remoteId === 'string' ? parsed.remoteId : null,
+      email: typeof parsed.email === 'string' ? parsed.email : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rememberIdentity(accountId: number | null, identity: IdentityRow | null): void {
+  if (accountId == null || !identity) return;
+  try {
+    globalThis.localStorage?.setItem(
+      fromIdentityStorageKey(accountId),
+      JSON.stringify({ remoteId: identity.remote_id, email: identity.email }),
+    );
+  } catch {
+    // Storage can be unavailable in private contexts; compose still works for this session.
+  }
+}
+
 export const useComposeStore = defineStore('compose', () => {
   const authStore = useAuthStore();
   const mailStore = useMailStore();
@@ -53,6 +92,7 @@ export const useComposeStore = defineStore('compose', () => {
   const error = ref<string | null>(null);
   const isOpen = ref(false);
   const identities = ref<IdentityRow[]>([]);
+  const accountPrimaryEmail = ref<string | null>(null);
   const draft = reactive<Draft>({ ...EMPTY_DRAFT });
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -75,6 +115,7 @@ export const useComposeStore = defineStore('compose', () => {
       () => authStore.accountId,
       async (newId) => {
         if (newId) {
+          await refreshAccount();
           await refreshIdentities();
         } else {
           $reset();
@@ -99,6 +140,7 @@ export const useComposeStore = defineStore('compose', () => {
    */
   function $reset(): void {
     identities.value = [];
+    accountPrimaryEmail.value = null;
     Object.assign(draft, EMPTY_DRAFT);
     isOpen.value = false;
     status.value = COMPOSE_STATE.IDLE;
@@ -113,13 +155,55 @@ export const useComposeStore = defineStore('compose', () => {
     });
   }
 
+  async function refreshAccount(): Promise<void> {
+    if (!repo || authStore.accountId == null) {
+      accountPrimaryEmail.value = null;
+      return;
+    }
+    if (typeof repo.getAccount !== 'function') {
+      accountPrimaryEmail.value = null;
+      return;
+    }
+    const account = await repo.getAccount(authStore.accountId);
+    accountPrimaryEmail.value = account?.primary_email ?? null;
+  }
+
+  function defaultFromIdx(): number {
+    return resolveComposeIdentityIndex(identities.value, {
+      remembered: readRememberedIdentity(authStore.accountId),
+      primaryEmail: accountPrimaryEmail.value,
+    });
+  }
+
+  function reconcileFromIdxAfterIdentityRefresh(previousIdentity: IdentityRow | null): void {
+    if (identities.value.length === 0) {
+      draft.fromIdx = 0;
+      return;
+    }
+
+    const preservedIdx = findMatchingIdentityIndex(identities.value, previousIdentity);
+    if (preservedIdx >= 0) {
+      draft.fromIdx = preservedIdx;
+      return;
+    }
+
+    if (isOpen.value || draft.fromIdx >= identities.value.length) {
+      draft.fromIdx = defaultFromIdx();
+    }
+  }
+
   async function refreshIdentities(): Promise<void> {
     if (!repo || authStore.accountId == null) return;
+    const previousIdentity = fromIdentity.value;
     identities.value = await repo.listIdentities(authStore.accountId);
+    reconcileFromIdxAfterIdentityRefresh(previousIdentity);
   }
 
   function open(prefill: Partial<Draft> = {}): void {
     Object.assign(draft, EMPTY_DRAFT, prefill);
+    if (!Object.prototype.hasOwnProperty.call(prefill, 'fromIdx')) {
+      draft.fromIdx = defaultFromIdx();
+    }
     isOpen.value = true;
     status.value = COMPOSE_STATE.EDITING;
     error.value = null;
@@ -130,6 +214,16 @@ export const useComposeStore = defineStore('compose', () => {
     status.value = COMPOSE_STATE.IDLE;
     Object.assign(draft, EMPTY_DRAFT);
     error.value = null;
+  }
+
+  function selectFromIndex(value: number | string): void {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    const maxIdx = identities.value.length - 1;
+    const nextIdx = Number.isFinite(parsed)
+      ? Math.min(Math.max(Math.trunc(parsed), 0), Math.max(maxIdx, 0))
+      : 0;
+    draft.fromIdx = nextIdx;
+    rememberIdentity(authStore.accountId, fromIdentity.value);
   }
 
   function prepareReply(
@@ -304,6 +398,7 @@ export const useComposeStore = defineStore('compose', () => {
     refreshIdentities,
     open,
     close,
+    selectFromIndex,
     prepareReply,
     prepareReplyFromMessage,
     prepareReplyAll,

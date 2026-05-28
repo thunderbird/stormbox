@@ -90,7 +90,7 @@ capability.
 |:--|:--|
 | R-4.1 🟩 Done | The system shall let the user compose a new message and reply, reply-all, or forward an open message. |
 | R-4.2 🟩 Done | The system shall offer rich-text editing via Squire and send a plain-text alternative alongside the HTML body. |
-| R-4.3 🟩 Done | The system shall let the user pick a sending identity when more than one is available. |
+| R-4.3 🟩 Done | The system shall let the user pick a sending identity when more than one is available. New compose windows shall default to the signed-in account's primary identity when it is known, fall back to the provider's non-deletable or Thundermail identity when needed, and remember the user's most recently selected sending identity for later compose windows in the same account. |
 | R-4.4 🟩 Done | When the user sends, the system shall create the message and submit it through `EmailSubmission/set` in a chained JMAP call, and the sent message shall appear in the Sent folder. |
 | R-4.5 🟩 Done | When send fails, the system shall surface the failure and keep the compose draft visible so the user can retry. |
 | R-4.6 🟩 Done | Visible Reply-all and Forward toolbar buttons. |

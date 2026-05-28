@@ -546,6 +546,11 @@ function applySuggestion(field: 'to' | 'cc' | 'bcc', candidate: any) {
 async function send() {
   await composeStore.send();
 }
+
+function selectFromIdentity(event: Event) {
+  const select = event.target as HTMLSelectElement | null;
+  composeStore.selectFromIndex(select?.value ?? 0);
+}
 </script>
 
 <template>
@@ -558,7 +563,7 @@ async function send() {
 
       <div class="row">
         <label>From</label>
-        <select v-model="composeStore.draft.fromIdx">
+        <select :value="composeStore.draft.fromIdx" @change="selectFromIdentity">
           <option v-for="(id, idx) in composeStore.identities" :key="id.id" :value="idx">
             {{ id.name ? `${id.name} <${id.email}>` : id.email }}
           </option>
