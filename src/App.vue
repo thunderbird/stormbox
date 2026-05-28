@@ -39,9 +39,10 @@ const composeActionSpotlight = ref(false);
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
-const totalUnread = computed(() =>
-  mailStore.folders.reduce((sum, f) => sum + (Number(f.unread_emails) || 0), 0),
-);
+const inboxUnread = computed(() => {
+  const inbox = mailStore.folders.find((folder) => folder.role === 'inbox');
+  return Number(inbox?.unread_emails) || 0;
+});
 
 const accountLabel = computed(() =>
   authStore.username || authStore.serverHostname,
@@ -687,7 +688,7 @@ function clamp(value: number, min: number, max: number) {
 
     <AppSpaces
       :active="space"
-      :unread-count="totalUnread"
+      :unread-count="inboxUnread"
       :folder-list-hidden="folderListHidden"
       :show-folder-list-toggle="space === 'mail'"
       @change="space = $event"

@@ -13,6 +13,7 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import App from '../../../src/App.vue';
+import AppSpaces from '../../../src/components/AppSpaces.vue';
 import { AUTH_STATE } from '../../../src/constants/states';
 import {
   ACCOUNTS_URL,
@@ -328,6 +329,58 @@ describe('App mail layout', () => {
     expect(items[1].attributes('href')).toBe(SEND_URL);
     expect(items[1].attributes('target')).toBe('_blank');
     expect(items[1].attributes('rel')).toBe('noopener noreferrer');
+  });
+
+  it('passes the Inbox unread count to the spaces toolbar badge', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [
+      {
+        id: 1,
+        account_id: 1,
+        remote_id: 'inbox',
+        parent_id: null,
+        name: 'Inbox',
+        role: 'inbox',
+        sort_order: 0,
+        total_emails: 10,
+        unread_emails: 3,
+        total_threads: null,
+        unread_threads: null,
+        may_read_items: 1,
+        may_add_items: 1,
+        may_remove_items: 1,
+        rights_json: null,
+        raw_json: null,
+        is_deleted: 0,
+        updated_at: 0,
+      },
+      {
+        id: 2,
+        account_id: 1,
+        remote_id: 'archive',
+        parent_id: null,
+        name: 'Archive',
+        role: 'archive',
+        sort_order: 1,
+        total_emails: 10,
+        unread_emails: 7,
+        total_threads: null,
+        unread_threads: null,
+        may_read_items: 1,
+        may_add_items: 1,
+        may_remove_items: 1,
+        rights_json: null,
+        raw_json: null,
+        is_deleted: 0,
+        updated_at: 0,
+      },
+    ];
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.getComponent(AppSpaces).props('unreadCount')).toBe(3);
+    expect(wrapper.get('.app-spaces__badge').text()).toBe('3');
   });
 
   it('closes the Thundermail menu when clicking outside it', async () => {
