@@ -19,7 +19,7 @@ import {
   type Ref,
 } from 'vue';
 
-import { isMacPlatform } from '../utils/keyboard.js';
+import { isMacPlatform } from '../utils/keyboard';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const emit = defineEmits<{

@@ -31,9 +31,9 @@
 
 import SQLiteAsyncESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs';
 import * as SQLite from '@journeyapps/wa-sqlite';
-import { IDBBatchAtomicVFS } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS.js';
+import { IDBBatchAtomicVFS } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS';
 
-import { openEngine } from './engine.js';
+import { openEngine } from './engine';
 
 const DB_NAME = 'stormbox.sqlite';
 const VFS_NAME = 'idb-stormbox';

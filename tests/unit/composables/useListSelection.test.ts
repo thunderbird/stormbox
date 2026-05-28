@@ -13,7 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { ref } from 'vue';
 
-import { useListSelection } from '../../../src/composables/useListSelection.js';
+import { useListSelection } from '../../../src/composables/useListSelection';
 
 function makeRows(count: number, { holes = [] as number[] } = {}) {
   const out: Array<{ id: string } | undefined> = [];

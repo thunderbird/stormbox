@@ -12,11 +12,11 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/useRepository.js';
+import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
-import { TABLE_FAMILIES } from '../db/protocol.js';
+import { TABLE_FAMILIES } from '../db/protocol';
 import type { AddressbookRow, ContactListRow } from '../types';
-import type { Repository } from '../db/repository.js';
+import type { Repository } from '../db/repository';
 
 export interface AutocompleteCandidate {
   name?: string | null;

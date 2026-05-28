@@ -17,8 +17,8 @@ import {
   compactViewAfterDeletingPositions,
   numericUnique,
   placeholdersFor,
-} from './batch-helpers.js';
-import { DB_RPC, TABLE_FAMILIES } from './protocol.js';
+} from './batch-helpers';
+import { DB_RPC, TABLE_FAMILIES } from './protocol';
 
 /**
  * Build the handler map for a given engine. Broadcaster is optional in

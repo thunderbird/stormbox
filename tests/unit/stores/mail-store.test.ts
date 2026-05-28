@@ -18,13 +18,13 @@ import {
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
-import { useMailStore } from '../../../src/stores/mail-store.js';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
+import { useMailStore } from '../../../src/stores/mail-store';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
-import { TABLE_FAMILIES } from '../../../src/db/protocol.js';
+} from '../../../src/composables/useRepository';
+import { TABLE_FAMILIES } from '../../../src/db/protocol';
 
 function makeFolder(id, overrides = {}) {
   return {

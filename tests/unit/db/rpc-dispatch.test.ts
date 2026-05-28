@@ -6,7 +6,7 @@ import {
   TABLES_TOUCHED,
   dispatchRpc,
   makeBroadcaster,
-} from '../../../src/db/rpc-dispatch.js';
+} from '../../../src/db/rpc-dispatch';
 
 describe('dispatchRpc', () => {
   it('returns the handler result wrapped in a response envelope', async () => {

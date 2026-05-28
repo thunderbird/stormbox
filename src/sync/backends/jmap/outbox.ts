@@ -43,10 +43,10 @@
  *     OutboxRunner instead.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
-import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages.js';
+import { DB_RPC } from '../../../db/protocol';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
+import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
 
 export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',

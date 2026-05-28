@@ -36,8 +36,8 @@
  * stub processRow.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { wlog } from '../../../db/worker-log.js';
+import { DB_RPC } from '../../../db/protocol';
+import { wlog } from '../../../db/worker-log';
 
 // SetError types that cannot succeed by retrying: no amount of waiting
 // will turn 'forbidden' into 'success'. Anything else (serverFail,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import { useMailStore } from '../stores/mail-store.js';
+import { useMailStore } from '../stores/mail-store';
 
 /**
  * Modal progress overlay for bulk move/destroy. Shown by the mail

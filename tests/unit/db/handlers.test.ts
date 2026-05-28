@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers.js';
-import { DB_RPC, TABLE_FAMILIES } from '../../../src/db/protocol.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers';
+import { DB_RPC, TABLE_FAMILIES } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
 
 let engine;

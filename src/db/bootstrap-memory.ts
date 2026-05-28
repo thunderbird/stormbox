@@ -14,7 +14,7 @@
 import SQLiteESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite.mjs';
 import * as SQLite from '@journeyapps/wa-sqlite';
 
-import { openEngine } from './engine.js';
+import { openEngine } from './engine';
 
 const isNode =
   typeof process !== 'undefined' && process.versions != null && process.versions.node != null;

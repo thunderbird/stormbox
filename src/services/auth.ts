@@ -1,5 +1,5 @@
 import { createOidc, oidcEarlyInit } from "oidc-spa/core";
-import { OIDC_ISSUER, OIDC_CLIENT_ID } from "../defines.js";
+import { OIDC_ISSUER, OIDC_CLIENT_ID } from "../defines";
 
 oidcEarlyInit({ BASE_URL: "/" });
 

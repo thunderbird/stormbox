@@ -7,12 +7,12 @@
  * and shared across all stores.
  */
 
-import { assertSupportedBrowser } from './availability.js';
-import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol.js';
-import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch.js';
+import { assertSupportedBrowser } from './availability';
+import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol';
+import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch';
 
 /**
- * @typedef {import('./protocol.js').DB_RPC} DBRpcMethods
+ * @typedef {import('./protocol').DB_RPC} DBRpcMethods
  */
 
 /**

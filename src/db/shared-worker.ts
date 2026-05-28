@@ -8,17 +8,17 @@
  * keeps the ES module imports intact.
  */
 
-import { bootProductionEngine } from './bootstrap-idb.js';
-import { makeHandlers } from './handlers.js';
+import { bootProductionEngine } from './bootstrap-idb';
+import { makeHandlers } from './handlers';
 import {
   dispatchRpc,
   makeBroadcaster,
   RPC_REQUEST,
   RPC_RESPONSE,
-} from './rpc-dispatch.js';
-import { BROADCAST_CHANNEL } from './protocol.js';
-import { attachWorkerLogger, wlog } from './worker-log.js';
-import { makeSyncRpcHandlers } from '../sync/sync-host.js';
+} from './rpc-dispatch';
+import { BROADCAST_CHANNEL } from './protocol';
+import { attachWorkerLogger, wlog } from './worker-log';
+import { makeSyncRpcHandlers } from '../sync/sync-host';
 
 const channel = new BroadcastChannel(BROADCAST_CHANNEL);
 const broadcaster = makeBroadcaster(channel);

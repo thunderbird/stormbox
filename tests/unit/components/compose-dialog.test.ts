@@ -7,13 +7,13 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
-import { useComposeStore } from '../../../src/stores/compose-store.js';
+import { useComposeStore } from '../../../src/stores/compose-store';
 
 function firstTextNode(node) {
   if (node.nodeType === Node.TEXT_NODE) return node;

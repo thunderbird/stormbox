@@ -13,14 +13,14 @@ import {
   type Ref,
 } from 'vue';
 
-import { useMailStore } from '../stores/mail-store.js';
-import { useComposeStore } from '../stores/compose-store.js';
+import { useMailStore } from '../stores/mail-store';
+import { useComposeStore } from '../stores/compose-store';
 import {
   isDeleteKey,
   isEditableTarget,
   isModKey,
   matchesShortcut,
-} from '../utils/keyboard.js';
+} from '../utils/keyboard';
 
 export interface UseThunderbirdShortcutsOptions {
   /** Current app space ('mail' | 'contacts'). Shortcuts only run in mail. */

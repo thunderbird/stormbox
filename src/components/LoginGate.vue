@@ -2,8 +2,8 @@
 import { computed, ref } from 'vue';
 import { Loader2 } from '@lucide/vue';
 
-import { useAuthStore } from '../stores/auth-store.js';
-import { AUTH_STATE } from '../constants/states.js';
+import { useAuthStore } from '../stores/auth-store';
+import { AUTH_STATE } from '../constants/states';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const authStore = useAuthStore();

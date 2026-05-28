@@ -22,7 +22,7 @@
 import { ref } from 'vue';
 import type { Ref } from 'vue';
 
-import type { Repository } from '../db/repository.js';
+import type { Repository } from '../db/repository';
 import type { CachedRow } from '../stores/mail-store-types';
 import type { MessageBody } from '../types';
 

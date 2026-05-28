@@ -45,6 +45,6 @@ declare module '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS.js' {
       name: string,
       module: unknown,
       options?: IDBBatchAtomicVFSOptions,
-    ): Promise<import('@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS.js').IDBBatchAtomicVFS>;
+    ): Promise<import('@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS').IDBBatchAtomicVFS>;
   }
 }

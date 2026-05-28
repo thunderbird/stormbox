@@ -20,11 +20,11 @@ import {
   describe, it, expect, beforeEach, afterEach,
 } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { JmapBackend } from '../../../src/sync/backends/jmap/backend.js';
-import { MockTransport } from './_mock-transport.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
+import { MockTransport } from './_mock-transport';
 
 const INBOX_TOTAL = 350; // ~3.5 pages of 100 each
 

@@ -10,9 +10,9 @@
  * the sync engine can find it without re-walking the session document.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { SERVICE_KIND } from '../../../constants/states.js';
-import { JMAP_CAPS } from './transport.js';
+import { DB_RPC } from '../../../db/protocol';
+import { SERVICE_KIND } from '../../../constants/states';
+import { JMAP_CAPS } from './transport';
 
 /**
  * Map a JMAP capability URI to the service_kind we store in

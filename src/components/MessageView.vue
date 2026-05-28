@@ -13,14 +13,14 @@ import {
   MailOpen, Mail, X, ArrowLeft,
 } from '@lucide/vue';
 
-import { useMailStore } from '../stores/mail-store.js';
-import { useComposeStore } from '../stores/compose-store.js';
-import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts.js';
+import { useMailStore } from '../stores/mail-store';
+import { useComposeStore } from '../stores/compose-store';
+import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
 import {
   ALLOWED_URI_REGEXP,
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
-} from '../utils/message-html.js';
+} from '../utils/message-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';

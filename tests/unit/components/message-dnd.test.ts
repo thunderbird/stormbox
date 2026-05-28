@@ -12,7 +12,7 @@ const virtualizerWindow = vi.hoisted(() => ({
   count: null as number | null,
 }));
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
@@ -43,11 +43,11 @@ vi.mock('@tanstack/vue-virtual', () => ({
 
 import MessageList from '../../../src/components/MessageList.vue';
 import FolderTree from '../../../src/components/FolderTree.vue';
-import { useMailStore } from '../../../src/stores/mail-store.js';
+import { useMailStore } from '../../../src/stores/mail-store';
 import {
   MESSAGE_DRAG_MIME,
   useMessageDragDrop,
-} from '../../../src/composables/useMessageDragDrop.js';
+} from '../../../src/composables/useMessageDragDrop';
 
 function makeFolder(id, overrides = {}) {
   return {

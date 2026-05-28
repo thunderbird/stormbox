@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 
-import { useContactsStore } from '../stores/contacts-store.js';
+import { useContactsStore } from '../stores/contacts-store';
 
 const contactsStore = useContactsStore();
 const { contacts } = storeToRefs(contactsStore);

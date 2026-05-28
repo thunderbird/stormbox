@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { SERVICE_KIND } from '../../../src/constants/states.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { SERVICE_KIND } from '../../../src/constants/states';
 import {
   syncAddressBooks,
   syncContacts,
   syncContactCardChanges,
-} from '../../../src/sync/backends/jmap/contacts.js';
-import { MockTransport } from './_mock-transport.js';
+} from '../../../src/sync/backends/jmap/contacts';
+import { MockTransport } from './_mock-transport';
 
 let engine;
 let handlers;

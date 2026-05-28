@@ -11,7 +11,7 @@
  * for fetch and WebSocket without monkey-patching globals.
  */
 
-import { wlog } from '../../../db/worker-log.js';
+import { wlog } from '../../../db/worker-log';
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail';

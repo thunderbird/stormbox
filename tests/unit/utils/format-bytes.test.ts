@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { formatBytes } from '../../../src/utils/format-bytes.js';
+import { formatBytes } from '../../../src/utils/format-bytes';
 
 describe('formatBytes', () => {
   it('returns null for missing values', () => {

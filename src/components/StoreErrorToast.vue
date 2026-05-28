@@ -2,9 +2,9 @@
 import { computed } from 'vue';
 import { X } from '@lucide/vue';
 
-import { useMailStore } from '../stores/mail-store.js';
-import { useComposeStore } from '../stores/compose-store.js';
-import { useContactsStore } from '../stores/contacts-store.js';
+import { useMailStore } from '../stores/mail-store';
+import { useComposeStore } from '../stores/compose-store';
+import { useContactsStore } from '../stores/contacts-store';
 
 interface ToastEntry {
   source: 'mail' | 'compose' | 'contacts';

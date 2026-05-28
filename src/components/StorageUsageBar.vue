@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-import { useAuthStore } from '../stores/auth-store.js';
-import { formatBytes } from '../utils/format-bytes.js';
+import { useAuthStore } from '../stores/auth-store';
+import { formatBytes } from '../utils/format-bytes';
 
 const authStore = useAuthStore();
 

@@ -7,26 +7,26 @@ import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
 import App from '../../../src/App.vue';
-import { AUTH_STATE } from '../../../src/constants/states.js';
+import { AUTH_STATE } from '../../../src/constants/states';
 import {
   ACCOUNTS_URL,
   APPOINTMENT_URL,
   BUG_REPORT_URL,
   FEEDBACK_URL,
   SEND_URL,
-} from '../../../src/defines.js';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
-import { useMailStore } from '../../../src/stores/mail-store.js';
+} from '../../../src/defines';
+import { useAuthStore } from '../../../src/stores/auth-store';
+import { useMailStore } from '../../../src/stores/mail-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
+} from '../../../src/composables/useRepository';
 
 function makeRepo() {
   return {

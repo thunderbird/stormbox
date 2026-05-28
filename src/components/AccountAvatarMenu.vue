@@ -3,9 +3,9 @@ import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { LogOut, RotateCcw, Settings } from '@lucide/vue';
 
-import { useAuthStore } from '../stores/auth-store.js';
-import { ACCOUNTS_URL } from '../defines.js';
-import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar.js';
+import { useAuthStore } from '../stores/auth-store';
+import { ACCOUNTS_URL } from '../defines';
+import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 
 const authStore = useAuthStore();
 const emit = defineEmits<{

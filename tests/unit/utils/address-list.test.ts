@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { parseAddressList } from '../../../src/utils/address-list.js';
+import { parseAddressList } from '../../../src/utils/address-list';
 
 describe('parseAddressList', () => {
   it('returns an empty array for empty input', () => {

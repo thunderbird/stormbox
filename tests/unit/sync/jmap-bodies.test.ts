@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { fetchEmailBodies } from '../../../src/sync/backends/jmap/bodies.js';
-import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes.js';
-import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages.js';
-import { MockTransport } from './_mock-transport.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { fetchEmailBodies } from '../../../src/sync/backends/jmap/bodies';
+import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes';
+import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
+import { MockTransport } from './_mock-transport';
 
 let engine;
 let handlers;

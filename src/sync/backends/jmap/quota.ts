@@ -2,9 +2,9 @@
  * Storage quota sync via RFC 9425 Quota/get.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
+import { DB_RPC } from '../../../db/protocol';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
 
 const QUOTA_PROPERTIES = [
   'id',

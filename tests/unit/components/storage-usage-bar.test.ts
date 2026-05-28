@@ -6,13 +6,13 @@ import {
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
 import StorageUsageBar from '../../../src/components/StorageUsageBar.vue';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
+import { useAuthStore } from '../../../src/stores/auth-store';
 
 beforeEach(() => {
   setActivePinia(createPinia());

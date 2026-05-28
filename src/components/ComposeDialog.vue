@@ -26,9 +26,9 @@ import {
 import DOMPurify from 'dompurify';
 import Squire from 'squire-rte';
 
-import { useComposeStore } from '../stores/compose-store.js';
-import { useContactsStore } from '../stores/contacts-store.js';
-import { COMPOSE_STATE } from '../constants/states.js';
+import { useComposeStore } from '../stores/compose-store';
+import { useContactsStore } from '../stores/contacts-store';
+import { COMPOSE_STATE } from '../constants/states';
 
 const composeStore = useComposeStore();
 const contactsStore = useContactsStore();
@@ -61,7 +61,6 @@ let squire = null;
 let lastSelection = null;
 let toolbarResizeObserver = null;
 const toolbarGroupWidths = new Map();
-let currentPath = '';
 
 const defaultTextColor = '#e5e7eb';
 const defaultHighlightColor = '#fef3c7';
@@ -190,7 +189,6 @@ function updateToolbarState(pathOverride = null) {
   }
 
   const path = pathOverride ?? squire.getPath();
-  currentPath = path;
   const fontInfo = range ? squire.getFontInfo(range) : {};
   toolbarState.value = {
     ...toolbarState.value,
@@ -480,7 +478,6 @@ function destroyEditor() {
   squire?.destroy?.();
   squire = null;
   lastSelection = null;
-  currentPath = '';
 }
 
 function initEditor() {

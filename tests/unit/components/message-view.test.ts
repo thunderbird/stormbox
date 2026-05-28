@@ -19,7 +19,7 @@ import {
 // load and throws against happy-dom's stricter URL handling. Stub
 // it before importing anything that transitively imports it
 // (mail-store -> auth-store -> services/auth.js).
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
@@ -29,13 +29,13 @@ import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
 import MessageView from '../../../src/components/MessageView.vue';
-import { useMailStore } from '../../../src/stores/mail-store.js';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
-import { useComposeStore } from '../../../src/stores/compose-store.js';
+import { useMailStore } from '../../../src/stores/mail-store';
+import { useAuthStore } from '../../../src/stores/auth-store';
+import { useComposeStore } from '../../../src/stores/compose-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
+} from '../../../src/composables/useRepository';
 
 function makeRepo() {
   return {

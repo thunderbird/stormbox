@@ -18,10 +18,10 @@ import {
   describe, it, expect, beforeEach, afterEach,
 } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner';
 
 let engine;
 let handlers;

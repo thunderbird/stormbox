@@ -26,7 +26,7 @@ import {
   BODY_THEME_COLORS,
   buildBodyCss,
   buildMessageSrcDoc,
-} from '../../../src/utils/message-html.js';
+} from '../../../src/utils/message-html';
 
 function parseSrcDoc(srcdoc) {
   return new DOMParser().parseFromString(srcdoc, 'text/html');

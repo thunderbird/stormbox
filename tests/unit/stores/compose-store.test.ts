@@ -5,12 +5,12 @@ import {
 } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
-import { useComposeStore } from '../../../src/stores/compose-store.js';
+import { useComposeStore } from '../../../src/stores/compose-store';
 
 function sourceMessage(overrides: Record<string, unknown> = {}) {
   return {

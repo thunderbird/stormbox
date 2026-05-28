@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 
 describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {

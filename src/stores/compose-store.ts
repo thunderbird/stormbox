@@ -8,22 +8,22 @@
 import { defineStore } from 'pinia';
 import { computed, reactive, ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/useRepository.js';
+import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
-import { useMailStore } from './mail-store.js';
+import { useMailStore } from './mail-store';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
 import type { ComposeState, MailboxRole } from '../constants/states';
 import type { FolderRow, IdentityRow, MessageRow } from '../types';
-import type { Repository } from '../db/repository.js';
-import { TABLE_FAMILIES } from '../db/protocol.js';
+import type { Repository } from '../db/repository';
+import { TABLE_FAMILIES } from '../db/protocol';
 import {
   buildQuotedHtml,
   buildQuotedText,
   buildReplyAllRecipients,
   makeForwardSubject,
   makeReplySubject,
-} from '../utils/compose-quote.js';
-import { parseAddressList } from '../utils/address-list.js';
+} from '../utils/compose-quote';
+import { parseAddressList } from '../utils/address-list';
 
 interface Draft {
   fromIdx: number;

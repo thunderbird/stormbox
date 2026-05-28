@@ -12,7 +12,7 @@
  * the same interface and a different service_kind.
  */
 
-import { SERVICE_KIND } from '../constants/states.js';
+import { SERVICE_KIND } from '../constants/states';
 
 /**
  * Backend interface (duck-typed). Method names align with the spec's

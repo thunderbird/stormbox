@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-import { SyncClient } from '../../../src/sync/sync-client.js';
-import { SERVICE_KIND } from '../../../src/constants/states.js';
+import { SyncClient } from '../../../src/sync/sync-client';
+import { SERVICE_KIND } from '../../../src/constants/states';
 
 /**
  * SyncClient is the single dispatch point that routes

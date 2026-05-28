@@ -13,10 +13,10 @@
  * services it hosts.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { SERVICE_KIND } from '../../../constants/states.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
+import { DB_RPC } from '../../../db/protocol';
+import { SERVICE_KIND } from '../../../constants/states';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
 
 const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',

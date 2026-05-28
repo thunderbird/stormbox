@@ -24,26 +24,26 @@
  *   runMutation
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
+import { DB_RPC } from '../../../db/protocol';
 import { SERVICE_KIND } from '../../../constants/states';
-import { wlog } from '../../../db/worker-log.js';
-import { ingestSession } from './session.js';
-import { syncMailboxes, syncMailboxChanges } from './mailboxes.js';
+import { wlog } from '../../../db/worker-log';
+import { ingestSession } from './session';
+import { syncMailboxes, syncMailboxChanges } from './mailboxes';
 import {
   syncFolderWindow,
   syncFolderWindowChanges,
   syncEmailChanges,
-} from './messages.js';
-import { fetchEmailBodies } from './bodies.js';
-import { syncIdentities } from './identities.js';
-import { syncQuota } from './quota.js';
+} from './messages';
+import { fetchEmailBodies } from './bodies';
+import { syncIdentities } from './identities';
+import { syncQuota } from './quota';
 import {
   syncAddressBooks,
   syncContacts,
   syncContactCardChanges,
-} from './contacts.js';
-import { processMutationRow } from './outbox.js';
-import { OutboxRunner } from './outbox-runner.js';
+} from './contacts';
+import { processMutationRow } from './outbox';
+import { OutboxRunner } from './outbox-runner';
 
 const SUBSCRIBED_TYPES = [
   'Mailbox',
@@ -146,7 +146,7 @@ export class JmapBackend {
     // makeHandlers hook), on StateChange (any push that signals the
     // WS is live also signals it can carry our queued writes), and on
     // backoff timer expiry. See sync/backends/jmap/outbox-runner.js.
-    /** @type {import('./outbox-runner.js').OutboxRunner | null} */
+    /** @type {import('./outbox-runner').OutboxRunner | null} */
     this.outboxRunner = null;
     this._outboxRunnerOptions = options.outboxRunnerOptions ?? null;
     this._bootstrappedPromise = null;

@@ -9,7 +9,7 @@
  * Each entry is { type: 'worker.log', level, source, message, time }.
  */
 
-import { WORKER_LOG } from './rpc-dispatch.js';
+import { WORKER_LOG } from './rpc-dispatch';
 
 let channel = null;
 

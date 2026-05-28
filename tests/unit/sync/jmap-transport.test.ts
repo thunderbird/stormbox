@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
-import { FakeWebSocket } from './_fake-ws.js';
+import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { FakeWebSocket } from './_fake-ws';
 
 const SESSION = {
   apiUrl: 'https://mail.example.com/jmap',

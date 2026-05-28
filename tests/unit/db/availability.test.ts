@@ -4,7 +4,7 @@ import {
   checkBrowserSupport,
   assertSupportedBrowser,
   UnsupportedBrowserError,
-} from '../../../src/db/availability.js';
+} from '../../../src/db/availability';
 
 const ORIGINAL = {};
 

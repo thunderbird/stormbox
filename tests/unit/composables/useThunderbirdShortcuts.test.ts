@@ -7,18 +7,18 @@ import { defineComponent, ref } from 'vue';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
-import { invokeThunderbirdShortcut, useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts.js';
-import { useMailStore } from '../../../src/stores/mail-store.js';
-import { useComposeStore } from '../../../src/stores/compose-store.js';
+import { invokeThunderbirdShortcut, useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
+import { useMailStore } from '../../../src/stores/mail-store';
+import { useComposeStore } from '../../../src/stores/compose-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
+} from '../../../src/composables/useRepository';
 
 function makeRepo() {
   return {

@@ -7,8 +7,8 @@
  */
 
 import DbSharedWorker from '../db/shared-worker.ts?sharedworker';
-import { SHARED_WORKER_NAME } from '../db/protocol.js';
-import { createRepository } from '../db/repository.js';
+import { SHARED_WORKER_NAME } from '../db/protocol';
+import { createRepository } from '../db/repository';
 
 let repoPromise = null;
 
@@ -22,7 +22,6 @@ export function getRepositoryAsync() {
       // devtools) can poke at the repository directly. No-op in
       // production builds because import.meta.env.DEV is false.
       if (import.meta.env.DEV) {
-        // eslint-disable-next-line no-undef
         globalThis.__repo = repo;
       }
       return repo;

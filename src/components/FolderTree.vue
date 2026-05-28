@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 
-import { useMailStore } from '../stores/mail-store.js';
-import { useMessageDragDrop } from '../composables/useMessageDragDrop.js';
+import { useMailStore } from '../stores/mail-store';
+import { useMessageDragDrop } from '../composables/useMessageDragDrop';
 import FolderNode from './FolderNode.vue';
 import {
   folderPresentation,
   folderSortKey,
   isMainFolder,
-} from '../utils/folder-presentation.js';
+} from '../utils/folder-presentation';
 
 const mailStore = useMailStore();
 const dragOverFolderId = ref(null);

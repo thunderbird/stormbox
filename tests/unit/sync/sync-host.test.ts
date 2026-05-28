@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { makeSyncRpcHandlers } from '../../../src/sync/sync-host.js';
-import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
-import { FakeWebSocket } from './_fake-ws.js';
-import { resolveResultRefs } from './_mock-transport.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { makeSyncRpcHandlers } from '../../../src/sync/sync-host';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { FakeWebSocket } from './_fake-ws';
+import { resolveResultRefs } from './_mock-transport';
 
 const SESSION = {
   apiUrl: 'https://mail.example.com/jmap',

@@ -21,21 +21,21 @@ import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 import { BroadcastChannel as NodeBroadcastChannel } from 'node:worker_threads';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC, BROADCAST_CHANNEL } from '../../../src/db/protocol.js';
-import { makeBroadcaster, TABLES_TOUCHED } from '../../../src/db/rpc-dispatch.js';
-import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes.js';
-import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages.js';
-import { processMutationRow } from '../../../src/sync/backends/jmap/outbox.js';
-import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner.js';
-import { MockTransport } from '../sync/_mock-transport.js';
-import { useMailStore } from '../../../src/stores/mail-store.js';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC, BROADCAST_CHANNEL } from '../../../src/db/protocol';
+import { makeBroadcaster, TABLES_TOUCHED } from '../../../src/db/rpc-dispatch';
+import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes';
+import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
+import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
+import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner';
+import { MockTransport } from '../sync/_mock-transport';
+import { useMailStore } from '../../../src/stores/mail-store';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
+} from '../../../src/composables/useRepository';
 
 if (typeof globalThis.BroadcastChannel === 'undefined') {
   globalThis.BroadcastChannel = NodeBroadcastChannel;

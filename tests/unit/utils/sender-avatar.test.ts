@@ -7,7 +7,7 @@ import {
   senderAvatarFor,
   senderDomainFromText,
   senderInitials,
-} from '../../../src/utils/sender-avatar.js';
+} from '../../../src/utils/sender-avatar';
 
 describe('sender-avatar', () => {
   it('extracts sender email and normalizes its domain', () => {

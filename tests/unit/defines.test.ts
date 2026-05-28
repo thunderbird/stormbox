@@ -8,7 +8,7 @@ import {
   jmapWsProxyUrlForServer,
   sendUrlForHostname,
   senderAvatarProxyUrlForHostname,
-} from '../../src/defines.js';
+} from '../../src/defines';
 
 describe('accountsUrlForHostname', () => {
   it('uses Thunderbird Accounts stage for dev hosts', () => {

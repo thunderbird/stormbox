@@ -5,7 +5,7 @@ import {
   folderPresentation,
   folderSortKey,
   isMainFolder,
-} from '../../../src/utils/folder-presentation.js';
+} from '../../../src/utils/folder-presentation';
 
 describe('folderPresentation', () => {
   it('returns the role icon and accent for a JMAP role', () => {

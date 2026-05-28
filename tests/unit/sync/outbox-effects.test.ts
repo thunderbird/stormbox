@@ -17,13 +17,13 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { applySendLocally } from '../../../src/sync/backends/jmap/outbox.js';
-import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes.js';
-import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages.js';
-import { MockTransport } from './_mock-transport.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { applySendLocally } from '../../../src/sync/backends/jmap/outbox';
+import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes';
+import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
+import { MockTransport } from './_mock-transport';
 
 const NOW = Date.parse('2026-05-01T12:00:00Z');
 

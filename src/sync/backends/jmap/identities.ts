@@ -3,9 +3,9 @@
  * Identities feed the compose form's "From" picker.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
+import { DB_RPC } from '../../../db/protocol';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
 
 const IDENTITY_PROPERTIES = ['id', 'name', 'email', 'replyTo', 'bcc', 'textSignature', 'htmlSignature', 'mayDelete'];
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { buildReplyAllRecipients, makeReplySubject } from '../../../src/utils/compose-quote.js';
+import { buildReplyAllRecipients, makeReplySubject } from '../../../src/utils/compose-quote';
 
 describe('compose-quote', () => {
   it('makeReplySubject avoids duplicate Re: prefix', () => {

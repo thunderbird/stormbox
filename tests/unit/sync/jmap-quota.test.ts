@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory.js';
-import { makeHandlers } from '../../../src/db/handlers.js';
-import { DB_RPC } from '../../../src/db/protocol.js';
-import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport.js';
-import { syncQuota } from '../../../src/sync/backends/jmap/quota.js';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { syncQuota } from '../../../src/sync/backends/jmap/quota';
 
 const SESSION = {
   capabilities: {

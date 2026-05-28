@@ -8,11 +8,11 @@ import {
   Paperclip, Star, RefreshCw,
 } from '@lucide/vue';
 
-import { useMailStore } from '../stores/mail-store.js';
-import { useListSelection } from '../composables/useListSelection.js';
-import { useMessageDragDrop } from '../composables/useMessageDragDrop.js';
-import { SENDER_AVATAR_PROXY_URL } from '../defines.js';
-import { senderAvatarFor, shortFrom } from '../utils/sender-avatar.js';
+import { useMailStore } from '../stores/mail-store';
+import { useListSelection } from '../composables/useListSelection';
+import { useMessageDragDrop } from '../composables/useMessageDragDrop';
+import { SENDER_AVATAR_PROXY_URL } from '../defines';
+import { senderAvatarFor, shortFrom } from '../utils/sender-avatar';
 
 const mailStore = useMailStore();
 

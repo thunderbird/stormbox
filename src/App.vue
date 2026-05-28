@@ -3,14 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 
-import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts.js';
-import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines.js';
+import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
+import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
 
-import { useAuthStore } from './stores/auth-store.js';
-import { useMailStore } from './stores/mail-store.js';
-import { useContactsStore } from './stores/contacts-store.js';
-import { useComposeStore } from './stores/compose-store.js';
-import { AUTH_STATE } from './constants/states.js';
+import { useAuthStore } from './stores/auth-store';
+import { useMailStore } from './stores/mail-store';
+import { useContactsStore } from './stores/contacts-store';
+import { useComposeStore } from './stores/compose-store';
+import { AUTH_STATE } from './constants/states';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -58,8 +58,7 @@ const COMPACT_READING_WIDTH = 1024;
 const SINGLE_COLUMN_WIDTH = 640;
 const FOLDER_LIST_TRANSITION_MS = 360;
 const MESSAGE_VIEW_PRELOAD_MS = 50;
-const THEMES = ['dark', 'light'] as const;
-type Theme = typeof THEMES[number];
+type Theme = 'dark' | 'light';
 const DEFAULT_COLUMN_WIDTHS = {
   folderList: 240,
   messageList: 360,

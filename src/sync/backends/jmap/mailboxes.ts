@@ -10,9 +10,9 @@
  * created/updated ids, then upsert. Destroyed ids are soft-deleted.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
+import { DB_RPC } from '../../../db/protocol';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
 
 const MAILBOX_PROPERTIES = [
   'id', 'name', 'parentId', 'role', 'sortOrder',

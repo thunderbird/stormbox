@@ -7,7 +7,7 @@ import { createPinia, setActivePinia } from 'pinia';
 
 // services/auth.js calls oidcEarlyInit({ BASE_URL: '/' }) at module
 // load and throws under happy-dom unless the OIDC bootstrap is stubbed.
-vi.mock('../../../src/services/auth.js', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
@@ -17,9 +17,9 @@ vi.mock('../../../src/services/auth.js', () => ({
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
-} from '../../../src/composables/useRepository.js';
-import { useAuthStore } from '../../../src/stores/auth-store.js';
-import { AUTH_STATE } from '../../../src/constants/states.js';
+} from '../../../src/composables/useRepository';
+import { useAuthStore } from '../../../src/stores/auth-store';
+import { AUTH_STATE } from '../../../src/constants/states';
 
 function makeRepo() {
   return {

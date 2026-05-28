@@ -10,12 +10,12 @@
  * the worker, and a JmapBackend gets started.
  */
 
-import { DB_RPC } from '../db/protocol.js';
-import { SERVICE_KIND } from '../constants/states.js';
-import { wlog } from '../db/worker-log.js';
-import { SyncClient } from './sync-client.js';
-import { JmapTransport } from './backends/jmap/transport.js';
-import { JmapBackend } from './backends/jmap/backend.js';
+import { DB_RPC } from '../db/protocol';
+import { SERVICE_KIND } from '../constants/states';
+import { wlog } from '../db/worker-log';
+import { SyncClient } from './sync-client';
+import { JmapTransport } from './backends/jmap/transport';
+import { JmapBackend } from './backends/jmap/backend';
 
 /**
  * @typedef {object} StartAccountInput

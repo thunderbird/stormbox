@@ -21,14 +21,14 @@
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
 
-import { getRepositoryAsync } from '../composables/useRepository.js';
+import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
-import { useBodyPrefetch } from '../composables/useBodyPrefetch.js';
-import { TABLE_FAMILIES } from '../db/protocol.js';
+import { useBodyPrefetch } from '../composables/useBodyPrefetch';
+import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
 import type { FolderRow, MessageRow, QueryViewProgress } from '../types';
-import type { Repository } from '../db/repository.js';
+import type { Repository } from '../db/repository';
 import type { CachedRow, FolderCache } from './mail-store-types';
 
 interface MutationOutcome {

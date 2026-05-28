@@ -9,10 +9,10 @@
  * complete content.
  */
 
-import { DB_RPC } from '../../../db/protocol.js';
-import { wlog } from '../../../db/worker-log.js';
-import { JMAP_CAPS } from './transport.js';
-import { callJmap, pickResponse } from './invoke.js';
+import { DB_RPC } from '../../../db/protocol';
+import { wlog } from '../../../db/worker-log';
+import { JMAP_CAPS } from './transport';
+import { callJmap, pickResponse } from './invoke';
 
 const BODY_PROPERTIES = [
   'id', 'blobId', 'threadId', 'mailboxIds', 'keywords',

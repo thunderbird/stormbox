@@ -7,7 +7,7 @@ import {
   isEditableTarget,
   isModKey,
   matchesShortcut,
-} from '../../../src/utils/keyboard.js';
+} from '../../../src/utils/keyboard';
 
 function keyEvent(
   key: string,
