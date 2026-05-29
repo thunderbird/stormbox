@@ -182,6 +182,48 @@ export class JmapTransport {
   }
 
   /**
+   * Upload a binary blob to the account's JMAP upload endpoint
+   * (RFC 8620 §6.1). Returns the server's upload response, most
+   * importantly { blobId, type, size }, so the caller can reference the
+   * blob from an Email/set create (e.g. inline pasted images).
+   *
+   * @param {object} args
+   * @param {string} args.accountId  JMAP account id (remote_account_id)
+   *                                  substituted into the uploadUrl template.
+   * @param {string} args.type       MIME type sent as the Content-Type.
+   * @param {BodyInit} args.body     The blob bytes (Uint8Array/Blob/ArrayBuffer).
+   * @returns {Promise<{ accountId: string, blobId: string, type: string, size: number }>}
+   */
+  async upload({ accountId, type, body }: { accountId: string; type: string; body: any }) {
+    if (!this._session?.uploadUrl) {
+      await this.fetchSession();
+    }
+    const template = this._session?.uploadUrl;
+    if (!template) {
+      throw new Error('JMAP session does not advertise an uploadUrl');
+    }
+    const url = template.replace('{accountId}', encodeURIComponent(accountId));
+    const auth = await this._getAuthHeader();
+    wlog.info('jmap-transport', `upload ${type} -> ${accountId}`);
+    const response = await this._fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: auth,
+        'Content-Type': type || 'application/octet-stream',
+        Accept: 'application/json',
+      },
+      mode: 'cors',
+      credentials: 'omit',
+      body,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`JMAP upload failed: ${response.status} ${response.statusText}\n${detail}`);
+    }
+    return response.json();
+  }
+
+  /**
    * Download a blob from the account's JMAP download endpoint
    * (RFC 8620 §6.2). The endpoint requires the Authorization header, so
    * a raw <img src> cannot fetch it directly; callers fetch the bytes

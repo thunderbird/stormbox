@@ -47,6 +47,7 @@ import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
+import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
 
 export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
@@ -346,21 +347,55 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
 
   const targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
   const hasHtml = !!(request.htmlBody && /\S/.test(request.htmlBody));
-  const [bodyStructure, bodyValues] = hasHtml
-    ? [
-      {
+
+  // Inline pasted images arrive as base64 data: URLs embedded in the
+  // HTML. JMAP cannot carry binary in the Email/set body, so upload each
+  // one as a blob and rewrite the HTML to reference it via cid:.
+  const extracted = hasHtml
+    ? extractDataUriImages(request.htmlBody)
+    : { html: request.htmlBody ?? '', images: [] };
+  let inlineAttachments;
+  try {
+    inlineAttachments = await uploadInlineImages({ transport, account, images: extracted.images });
+  } catch (err: any) {
+    return { ok: false, error: { type: 'uploadFailed', message: err?.message ?? String(err) } };
+  }
+
+  let bodyFields;
+  if (hasHtml && inlineAttachments.length > 0) {
+    // Convenience-property form: the server assembles multipart/related
+    // (html + inline images) within a multipart/alternative alongside
+    // the text part. bodyStructure is intentionally omitted here;
+    // setting it makes the server ignore htmlBody/textBody/attachments.
+    bodyFields = {
+      bodyValues: {
+        p1: { value: request.textBody ?? '' },
+        h1: { value: extracted.html },
+      },
+      textBody: [{ partId: 'p1', type: 'text/plain' }],
+      htmlBody: [{ partId: 'h1', type: 'text/html' }],
+      attachments: inlineAttachments,
+    };
+  } else if (hasHtml) {
+    bodyFields = {
+      bodyStructure: {
         type: 'multipart/alternative',
         subParts: [
           { type: 'text/plain', partId: 'p1' },
           { type: 'text/html', partId: 'h1' },
         ],
       },
-      { p1: { value: request.textBody ?? '' }, h1: { value: request.htmlBody } },
-    ]
-    : [
-      { type: 'text/plain', partId: 'p1' },
-      { p1: { value: request.textBody ?? '' } },
-    ];
+      bodyValues: {
+        p1: { value: request.textBody ?? '' },
+        h1: { value: extracted.html },
+      },
+    };
+  } else {
+    bodyFields = {
+      bodyStructure: { type: 'text/plain', partId: 'p1' },
+      bodyValues: { p1: { value: request.textBody ?? '' } },
+    };
+  }
 
   const emailCreate = {
     ...(targetBox ? { mailboxIds: { [targetBox]: true } } : {}),
@@ -374,8 +409,7 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
     ...(request.bcc?.length ? { bcc: request.bcc } : {}),
     ...(request.replyTo?.length ? { replyTo: request.replyTo } : {}),
     subject: request.subject ?? '',
-    bodyStructure,
-    bodyValues,
+    ...bodyFields,
   };
 
   const onSuccessUpdate = {
@@ -433,6 +467,35 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
   });
 
   return { ok: true, response: result };
+}
+
+/**
+ * Upload each inline pasted image to the JMAP blob endpoint and return
+ * the EmailBodyPart attachment descriptors (blobId + cid + inline
+ * disposition) the Email/set create references. Returns [] when there
+ * are no images. Throws if any upload fails or returns no blobId so the
+ * caller can fail the whole send and keep the draft for retry.
+ */
+async function uploadInlineImages({ transport, account, images }) {
+  const attachments = [];
+  for (const image of images) {
+    const result = await transport.upload({
+      accountId: account.remote_account_id,
+      type: image.type,
+      body: base64ToBytes(image.base64),
+    });
+    const blobId = result?.blobId;
+    if (!blobId) {
+      throw new Error('JMAP upload returned no blobId');
+    }
+    attachments.push({
+      blobId,
+      type: image.type,
+      cid: image.cid,
+      disposition: 'inline',
+    });
+  }
+  return attachments;
 }
 
 // ----- post-success cache reconciliation -----------------------------

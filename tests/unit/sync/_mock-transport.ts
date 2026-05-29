@@ -12,11 +12,15 @@ export class MockTransport {
   _session: any;
   _handlers: Map<string, (params: any, callId?: string) => any>;
   requests: Array<{ using: any; methodCalls: any }>;
+  uploads: Array<{ accountId: string; type: string; body: any }>;
+  _uploadHandler: ((args: { accountId: string; type: string; body: any }) => any) | null;
 
   constructor(session: any = null) {
     this._session = session;
     this._handlers = new Map();
     this.requests = [];
+    this.uploads = [];
+    this._uploadHandler = null;
   }
 
   set session(s) {
@@ -34,6 +38,28 @@ export class MockTransport {
    */
   handle(methodName: string, fn: (params: any, callId?: string) => any) {
     this._handlers.set(methodName, fn);
+  }
+
+  /**
+   * Override the blob upload behaviour. Without an override, upload()
+   * records the call and returns a synthetic blobId. Throw to simulate
+   * an upload failure.
+   */
+  handleUpload(fn: (args: { accountId: string; type: string; body: any }) => any) {
+    this._uploadHandler = fn;
+  }
+
+  async upload({ accountId, type, body }: { accountId: string; type: string; body: any }) {
+    this.uploads.push({ accountId, type, body });
+    if (this._uploadHandler) {
+      return this._uploadHandler({ accountId, type, body });
+    }
+    return {
+      accountId,
+      blobId: `blob-${this.uploads.length}`,
+      type,
+      size: body?.length ?? body?.byteLength ?? 0,
+    };
   }
 
   async request(using: any, methodCalls: any) {

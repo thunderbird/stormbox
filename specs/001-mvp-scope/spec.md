@@ -30,7 +30,7 @@ capability.
 | 1 | Sign in and session lifecycle | 4 | — | 1 | Session-expired UX |
 | 2 | Read mail | 7 | 2 | 1 | Conversation UI, full mail search, browser navigation |
 | 3 | Triage | 13 | — | 1 | Undo/redo queue |
-| 4 | Compose and send | 6 | — | 1 | Cc/Bcc autocomplete |
+| 4 | Compose and send | 7 | — | 1 | Cc/Bcc autocomplete |
 | 5 | Contacts | 4 | — | — | — |
 | 6 | Attachments | 1 | — | 1 | Download |
 | 7 | Account storage usage | 2 | — | — | — |
@@ -95,6 +95,7 @@ capability.
 | R-4.5 🟩 Done | When send fails, the system shall surface the failure and keep the compose draft visible so the user can retry. |
 | R-4.6 🟩 Done | Visible Reply-all and Forward toolbar buttons. |
 | R-4.7 🟧 Planned | Cc/Bcc input fields with autocomplete. (The outbound payload already includes Cc/Bcc when populated.) |
+| R-4.8 🟩 Done | When the user pastes an image from the clipboard into the compose editor, the system shall inline it in the draft immediately as a data URL, and on send shall upload the image as a server blob and reference it as a `cid:` inline attachment so it renders for recipients. This shall work across the supported browsers and platforms. |
 
 ### 5. Contacts
 
@@ -167,7 +168,7 @@ The MVP excludes:
 - Calendar.
 - Automatic email categorization (e.g. social/promotions tabs).
 - Agent-based or advanced search and rules.
-- Editing contacts or sending attachments.
+- Editing contacts, or attaching files via a picker (inline images pasted into compose are supported per R-4.8).
 - Offline mode.
 - Mail rules and filters.
 - Multi-account unified inbox.

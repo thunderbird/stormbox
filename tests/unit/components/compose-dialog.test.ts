@@ -52,6 +52,28 @@ async function mountOpenCompose(htmlBody = 'hello world') {
   return { wrapper, composeStore };
 }
 
+async function pasteImageIntoEditor(editor, composeStore) {
+  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const file = new File([bytes], 'paste.png', { type: 'image/png' });
+  const clipboardData = {
+    items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
+    types: ['Files'],
+    getData: () => '',
+  };
+  // Squire's real paste handler detects the image-only clipboard,
+  // preventDefaults, and fires its 'pasteImage' custom event, which our
+  // component listens for. Drive that whole path with a paste event.
+  const pasteEvent = new window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(pasteEvent, 'clipboardData', { value: clipboardData });
+  editor.dispatchEvent(pasteEvent);
+
+  // FileReader.readAsDataURL is async; poll until the draft picks it up.
+  for (let i = 0; i < 50 && !/<img[^>]+src="data:image\/png/i.test(composeStore.draft.htmlBody); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await nextTick();
+  }
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
 });
@@ -151,6 +173,33 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(composeStore.draft.htmlBody).toMatch(/<i\b[^>]*>hello<\/i>/i);
     expect(wrapper.get('[aria-label="Italic"]').classes()).toContain('active');
+  });
+
+  it('inlines a pasted image as a data: URL via the squire pasteImage hook', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose('<p>hello</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+
+    await pasteImageIntoEditor(editor, composeStore);
+
+    expect(composeStore.draft.htmlBody).toMatch(/<img[^>]+src="data:image\/png;base64,/i);
+    // Pasted images default to centered, applied to the containing block
+    // (text-align) so the toolbar alignment buttons can re-align them.
+    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*center/i);
+  });
+
+  it('re-aligns a pasted image with the toolbar alignment buttons', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose('<p>hello</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+
+    await pasteImageIntoEditor(editor, composeStore);
+    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*center/i);
+
+    await wrapper.get('[aria-label="Align right"]').trigger('pointerdown');
+    await wrapper.get('[aria-label="Align right"]').trigger('click');
+    await nextTick();
+
+    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*right/i);
+    expect(composeStore.draft.htmlBody).not.toMatch(/text-align:\s*center/i);
   });
 
   it('moves rightmost toolbar groups into More as width shrinks', async () => {

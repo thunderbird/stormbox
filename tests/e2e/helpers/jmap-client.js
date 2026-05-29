@@ -102,11 +102,39 @@ export async function connectJmap() {
   }
   // Stalwart may advertise an internal Docker hostname; always call via JMAP_BASE_URL.
   const sessionPath = new URL(session.apiUrl).pathname.replace(/\/$/, '');
+  // The download URL is a template (RFC 8620 §6.2) whose origin may also
+  // be the internal Docker host; rewrite its origin to JMAP_BASE_URL the
+  // same way, leaving the {accountId}/{blobId}/{name}/{type} placeholders.
+  let downloadUrlTemplate = null;
+  if (session.downloadUrl) {
+    const advertisedOrigin = new URL(session.downloadUrl).origin;
+    downloadUrlTemplate = session.downloadUrl.replace(advertisedOrigin, new URL(jmapBase).origin);
+  }
   return {
     apiUrl: `${jmapBase}${sessionPath}/`,
     accountId: mailAccountId,
     authHeader,
+    downloadUrlTemplate,
   };
+}
+
+// Download a blob via the account's JMAP download endpoint. Returns the
+// raw bytes as a Buffer. Used to prove an uploaded inline-image blob is
+// actually retrievable from the server.
+export async function downloadBlob(jmap, { blobId, type = 'application/octet-stream', name = 'blob' }) {
+  if (!jmap.downloadUrlTemplate) {
+    throw new Error('JMAP session did not advertise a downloadUrl');
+  }
+  const url = jmap.downloadUrlTemplate
+    .replace('{accountId}', encodeURIComponent(jmap.accountId))
+    .replace('{blobId}', encodeURIComponent(blobId))
+    .replace('{name}', encodeURIComponent(name))
+    .replace('{type}', encodeURIComponent(type));
+  const response = await fetchWithTls(url, { headers: { Authorization: jmap.authHeader } });
+  if (!response.ok) {
+    throw new Error(`Blob download failed: ${response.status} ${response.statusText}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
 }
 
 export async function jmapRequest(jmap, methodCalls) {

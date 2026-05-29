@@ -374,6 +374,48 @@ function promptForImage() {
   runEditorCommand((editor) => editor.insertImage(src.trim(), { alt }));
 }
 
+// Pasted images are inlined as data: URLs for an instant, offline-safe
+// draft. The send pipeline (runSend) later uploads them as JMAP blobs
+// and rewrites them to cid: inline attachments so recipients see them.
+const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
+
+function insertPastedImageFile(file: File | null) {
+  if (!file || !file.type.startsWith('image/')) return;
+  if (file.size > MAX_PASTED_IMAGE_BYTES) {
+    console.warn('[compose] pasted image exceeds size limit; skipping', file.size);
+    return;
+  }
+  // Capture the caret before the async read so the image lands where the
+  // user pasted rather than wherever the selection drifts to.
+  rememberSelection();
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+    if (!dataUrl.startsWith('data:image/')) return;
+    runEditorCommand((editor: any) => {
+      editor.insertImage(dataUrl, { style: 'max-width:100%;height:auto;' });
+      // Centre by default via the containing block's text-align rather
+      // than the image's own margin, so the toolbar alignment buttons
+      // (which set block text-align) can re-align the image afterwards.
+      // text-align centering also survives Outlook, unlike margin:auto.
+      editor.setTextAlignment('center');
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+// Squire fires 'pasteImage' for image-only clipboard payloads (it has
+// already called preventDefault), handing us the ClipboardData so we can
+// inline the bitmap ourselves.
+function handlePasteImage(event: any) {
+  const clipboardData = event?.detail?.clipboardData;
+  const items = clipboardData?.items ? Array.from(clipboardData.items) : [];
+  const imageItem = items.find(
+    (item: any) => item?.kind === 'file' && typeof item?.type === 'string' && item.type.startsWith('image/'),
+  ) as any;
+  insertPastedImageFile(imageItem?.getAsFile?.() ?? null);
+}
+
 function syncAfterKeyboardCommand(editor, range = null) {
   ensureEditorBlocks();
   syncDraftFromEditor();
@@ -488,6 +530,7 @@ function initEditor() {
   squire.setHTML(composeStore.draft.htmlBody || '<p><br></p>');
   registerKeyboardShortcuts();
   squire.addEventListener('input', handleEditorInput);
+  squire.addEventListener('pasteImage', handlePasteImage);
   squire.addEventListener('pathChange', handleSquirePathChange);
   squire.addEventListener('select', handlePathChange);
   squire.addEventListener('cursor', handlePathChange);
@@ -1248,6 +1291,12 @@ function selectFromIdentity(event: Event) {
   min-height: 100%;
   outline: none;
   font-size: 14px;
+}
+/* Inserted images are added dynamically, so they never carry the scoped
+   data-attribute; :deep keeps pasted screenshots from overflowing. */
+.editor :deep(img) {
+  max-width: 100%;
+  height: auto;
 }
 footer {
   display: flex;

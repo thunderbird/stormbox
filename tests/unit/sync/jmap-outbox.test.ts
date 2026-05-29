@@ -435,6 +435,178 @@ describe('drainOutbox', () => {
     expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
     expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$seen']).toBe(true);
+    // No inline images means no blob uploads and no attachments.
+    expect(transport.uploads).toHaveLength(0);
+    expect(setParams.create.c1.attachments).toBeUndefined();
+  });
+
+  it('uploads inline pasted images and sends them as cid attachments', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
+        { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
+      ],
+    });
+    const drafts = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-drafts'],
+    );
+    const sent = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-sent'],
+    );
+    await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
+      accountId: account.id,
+      identities: [{
+        remoteId: 'id-1',
+        name: 'Tester',
+        email: 'tester@example.com',
+        replyToJson: null,
+        rawJson: null,
+      }],
+    });
+    const identity = await engine.get(
+      'SELECT id FROM identities WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'id-1'],
+    );
+
+    const pngBase64 = btoa('fake-png-bytes');
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      requestJson: JSON.stringify({
+        identityId: identity.id,
+        to: [{ email: 'rcpt@example.com' }],
+        subject: 'With image',
+        textBody: 'See image.',
+        htmlBody: `<p>See image.</p><img src="data:image/png;base64,${pngBase64}">`,
+        draftsFolderId: drafts.id,
+        sentFolderId: sent.id,
+        outboxFolderId: null,
+      }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
+    });
+    transport.handle('EmailSubmission/set', () => ({
+      created: { s1: { id: 'sub-1', sendAt: '2026-05-01T12:00:00Z' } },
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        blobId: `b-${id}`,
+        threadId: 'thr-new',
+        mailboxIds: { 'mb-sent': true },
+        keywords: { $seen: true },
+        size: 100,
+        receivedAt: '2026-05-01T12:00:00Z',
+        sentAt: '2026-05-01T12:00:00Z',
+        messageId: [`<${id}@example.com>`],
+        from: [{ email: 'tester@example.com' }],
+        to: [{ email: 'rcpt@example.com' }],
+        sender: [{ email: 'tester@example.com' }],
+        subject: 'With image',
+        preview: 'See image.',
+        hasAttachment: true,
+      })),
+      state: 'es',
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+
+    // The image bytes are uploaded as a blob before Email/set references it.
+    expect(transport.uploads).toHaveLength(1);
+    expect(transport.uploads[0].type).toBe('image/png');
+    expect(transport.uploads[0].body).toBeInstanceOf(Uint8Array);
+
+    // Convenience-property body form: no bodyStructure, inline cid attachment.
+    const create = setParams.create.c1;
+    expect(create.bodyStructure).toBeUndefined();
+    expect(create.htmlBody).toEqual([{ partId: 'h1', type: 'text/html' }]);
+    expect(create.textBody).toEqual([{ partId: 'p1', type: 'text/plain' }]);
+    expect(create.attachments).toHaveLength(1);
+    const { cid } = create.attachments[0];
+    expect(create.attachments[0]).toMatchObject({
+      blobId: 'blob-1',
+      type: 'image/png',
+      disposition: 'inline',
+    });
+    expect(cid).toBeTruthy();
+    // The HTML now references the cid and no longer carries the data: URL.
+    expect(create.bodyValues.h1.value).toContain(`src="cid:${cid}"`);
+    expect(create.bodyValues.h1.value).not.toContain('data:image/');
+  });
+
+  it('fails the send and keeps the draft when an inline image upload fails', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
+        { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
+      ],
+    });
+    const drafts = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-drafts'],
+    );
+    const sent = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-sent'],
+    );
+    await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
+      accountId: account.id,
+      identities: [{
+        remoteId: 'id-1',
+        name: 'Tester',
+        email: 'tester@example.com',
+        replyToJson: null,
+        rawJson: null,
+      }],
+    });
+    const identity = await engine.get(
+      'SELECT id FROM identities WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'id-1'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      requestJson: JSON.stringify({
+        identityId: identity.id,
+        to: [{ email: 'rcpt@example.com' }],
+        subject: 'With image',
+        textBody: 'See image.',
+        htmlBody: `<img src="data:image/png;base64,${btoa('x')}">`,
+        draftsFolderId: drafts.id,
+        sentFolderId: sent.id,
+        outboxFolderId: null,
+      }),
+    });
+
+    const transport = new MockTransport();
+    transport.handleUpload(() => {
+      throw new Error('upload boom');
+    });
+    transport.handle('Email/set', () => {
+      throw new Error('Email/set must not run when an inline image upload fails');
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations
+        WHERE mutation_type = ?`,
+      [MUTATION_TYPES.SEND],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('uploadFailed');
   });
 
   it('surfaces method-level JMAP errors instead of generic noResponse', async () => {
