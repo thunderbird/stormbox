@@ -21,6 +21,8 @@ Keep commit messages concise, a single sentence when possible. 2-3 additional se
 
 Use a commit style similar to the other commits in the repository, don't randomly introduce conventional commit or any other types of tags.
 
+When a commit closes a GitHub issue, append the issue reference in the historical format: `Commit message sentence. (Fixes #123)`.
+
 ## Spec-driven development
 
 Spec Kit is the shared spec workflow. Slash commands:
