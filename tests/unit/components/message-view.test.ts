@@ -49,6 +49,7 @@ function makeRepo() {
     async ensureFolderTree() { return { count: 0 }; },
     async insertPendingMutation() { return undefined; },
     async replaceMessageKeywords() { return undefined; },
+    async downloadBlob() { return null; },
     async filterExistingMessageIds(_accountId, ids) {
       return (ids ?? []).map(Number).filter((id) => Number.isFinite(id));
     },
@@ -747,6 +748,45 @@ describe('MessageView HTML body rendering', () => {
     expect(second).toContain('image/png');
     // No size segment when size is null.
     expect(second).not.toContain('KB');
+
+    wrapper.unmount();
+  });
+
+  it('hides inline cid images from the attachment list when the HTML references them', async () => {
+    await makeSelectedMessage({
+      text: '',
+      html: '<p>logo <img src="cid:%3Clogo%40example.com%3E"></p>',
+      attachments: [
+        {
+          part_id: 'logo',
+          blob_id: 'blob-logo',
+          name: 'logo.png',
+          mime_type: 'image/png',
+          size: 1024,
+          disposition: 'inline',
+          cid: '<logo@example.com>',
+        },
+        {
+          part_id: 'pdf',
+          blob_id: 'blob-pdf',
+          name: 'report.pdf',
+          mime_type: 'application/pdf',
+          size: 2048,
+          disposition: 'attachment',
+          cid: null,
+        },
+      ],
+    });
+
+    const wrapper = mount(MessageView, {
+      attachTo: document.body,
+    });
+    await nextTick();
+
+    const items = wrapper.findAll('.message-view__attachments li');
+    expect(items).toHaveLength(1);
+    expect(items[0].text()).toContain('report.pdf');
+    expect(wrapper.text()).not.toContain('logo.png');
 
     wrapper.unmount();
   });

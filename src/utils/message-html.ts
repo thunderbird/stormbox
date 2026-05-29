@@ -32,13 +32,204 @@
  * simpler equivalent and gets style isolation for free.
  */
 
+import DOMPurify from 'dompurify';
+
 /**
- * URI scheme allowlist for DOMPurify. Same set Bulwark uses for its
- * iframe srcdoc: standard web schemes plus `cid:` so inline images
- * survive sanitisation (we may rewrite them to blob URLs later).
+ * URI scheme allowlist for DOMPurify: standard web schemes plus `cid:`
+ * so inline images survive sanitisation (sanitizeMessageHtml resolves
+ * them to data: URLs). `data:` is intentionally absent here — DOMPurify
+ * permits data: on media tags via its built-in DATA_URI_TAGS branch
+ * regardless of this regexp, so the raster allowlist is enforced in the
+ * sanitizeMessageHtml hook instead.
  */
 export const ALLOWED_URI_REGEXP =
   /^(?:(?:https?|mailto|tel|cid):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
+
+// Raster image types we will inline as data: URLs. This is a strict
+// allowlist on purpose, drawing the same line Bulwark's webmail does:
+//
+//  - Never trust the Content-Type an email declares for inline render
+//    (the Proton Mail CVE, Sonar 2024, abused a part typed
+//    application/javascript). An exact allowlist means a hostile type
+//    is simply not inlined.
+//  - SVG is excluded. It is an active document format whose bytes the
+//    surrounding HTML sanitizer cannot see once wrapped in a data: URL.
+//    Even though we only ever place the URL in an <img> (secure static
+//    mode), excluding it keeps our own attack surface minimal. Pasted
+//    clipboard images are always raster (PNG/JPEG), so nothing the
+//    feature targets is affected.
+const INLINE_IMAGE_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
+  'image/bmp', 'image/avif', 'image/x-icon', 'image/vnd.microsoft.icon',
+]);
+const BASE64_ONLY = /^[A-Za-z0-9+/]*={0,2}$/;
+const CID_URL_RE = /cid:\s*(?:<([^>]+)>|([^"'\s)>]+))/gi;
+
+/**
+ * Whether a MIME type is an image we will inline. Non-image parts (e.g.
+ * application/javascript dressed up as an inline part) and SVG are
+ * refused so they never become a renderable inline URL.
+ */
+export function isInlineImageType(type: string | null | undefined): boolean {
+  return !!type && INLINE_IMAGE_TYPES.has(type.trim().toLowerCase());
+}
+
+/**
+ * Build a `data:` URL for an inline image part from its base64 bytes and
+ * declared MIME type, or null if the part is not an allowed raster image
+ * or the payload is not valid base64.
+ *
+ * We use `data:` (opaque origin) rather than `blob:` deliberately: blob
+ * URLs inherit the creating document's origin, the property the Proton
+ * Mail CVE leaned on to smuggle a script past CSP. A data: URL has an
+ * opaque origin and, with the type allowlisted to a raster image, can
+ * only ever render as a picture.
+ */
+export function buildInlineImageDataUrl(
+  base64: string | null | undefined,
+  type: string | null | undefined,
+): string | null {
+  if (!base64 || !isInlineImageType(type)) return null;
+  const mime = (type as string).trim().toLowerCase();
+  const clean = String(base64).replace(/\s+/g, '');
+  if (!BASE64_ONLY.test(clean)) return null;
+  return `data:${mime};base64,${clean}`;
+}
+
+function stripCidBrackets(value: string): string {
+  return value.trim().replace(/^<\s*/, '').replace(/\s*>$/, '').trim();
+}
+
+function decodeCidComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Normalize a MIME Content-ID or cid: URL payload for comparison. Mirrors
+ * the practical cases Roundcube handles: Content-ID headers commonly arrive
+ * wrapped in angle brackets, while HTML may reference the same id as
+ * `cid:foo`, `cid:<foo>`, or a percent-encoded URL component.
+ */
+export function normalizeContentId(value: string | null | undefined): string {
+  if (value == null) return '';
+  const trimmed = String(value).trim().replace(/^cid:/i, '');
+  return stripCidBrackets(decodeCidComponent(stripCidBrackets(trimmed)));
+}
+
+export function cidUrlContentId(value: string | null | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!/^cid:/i.test(raw)) return '';
+  return normalizeContentId(raw.slice(4));
+}
+
+function addCidReference(out: Set<string>, value: string | null | undefined) {
+  const id = cidUrlContentId(value);
+  if (id) out.add(id);
+}
+
+function addCidReferencesInText(out: Set<string>, value: string | null | undefined) {
+  if (!value) return;
+  for (const match of String(value).matchAll(CID_URL_RE)) {
+    const id = normalizeContentId(match[1] ?? match[2] ?? '');
+    if (id) out.add(id);
+  }
+}
+
+/**
+ * Return Content-IDs referenced by cid: URLs in an HTML body. This is used
+ * both to decide which JMAP blobs to fetch for inline rendering and which
+ * referenced image parts should not be duplicated in the attachment list.
+ */
+export function referencedContentIds(html: string | null | undefined): Set<string> {
+  const out = new Set<string>();
+  if (!html) return out;
+
+  if (typeof DOMParser === 'function') {
+    const doc = new DOMParser().parseFromString(String(html), 'text/html');
+    doc.querySelectorAll('*').forEach((node) => {
+      if (!(node instanceof Element)) return;
+      addCidReference(out, node.getAttribute('src'));
+      addCidReference(out, node.getAttribute('poster'));
+      addCidReference(out, node.getAttribute('href'));
+      addCidReference(out, node.getAttribute('xlink:href'));
+      const srcset = node.getAttribute('srcset');
+      if (srcset) {
+        for (const candidate of srcset.split(',')) {
+          addCidReference(out, candidate.trim().split(/\s+/)[0]);
+        }
+      }
+      addCidReferencesInText(out, node.getAttribute('style'));
+    });
+  } else {
+    addCidReferencesInText(out, html);
+  }
+
+  return out;
+}
+
+// URI-bearing attributes a data: image can ride in on a media tag.
+const DATA_URI_ATTRS = ['src', 'poster', 'xlink:href'];
+
+/**
+ * Extract the lowercased media type from a `data:` URL, or '' when it
+ * has none (e.g. `data:,...`, which defaults to text/plain).
+ */
+function dataUrlMediaType(value: string): string {
+  const match = /^data:([^;,]*)/i.exec(value.trim());
+  return (match?.[1] ?? '').trim().toLowerCase();
+}
+
+/**
+ * Sanitise message HTML for the reading-pane iframe. A single DOMPurify
+ * `afterSanitizeAttributes` hook does two things:
+ *
+ *  1. Resolves known inline `cid:` image references (from `cidUrls`) to
+ *     their data: URLs, via `setAttribute` so the value is DOM-escaped
+ *     and can never break out of the attribute — the "resolve during the
+ *     wash" approach Roundcube uses. Unknown cids are left as-is (render
+ *     broken, never fetched).
+ *  2. Enforces the raster allowlist on author-embedded `data:` images.
+ *     DOMPurify's built-in DATA_URI_TAGS branch otherwise lets *any*
+ *     `data:image/*` (including svg) through on <img>/<source>/etc.
+ *     regardless of ALLOWED_URI_REGEXP, and that set cannot be narrowed
+ *     by config — so we strip disallowed data: URIs here instead.
+ */
+export function sanitizeMessageHtml(
+  html: string,
+  cidUrls: Map<string, string> | null = null,
+): string {
+  if (!html) return '';
+  const cidMap = cidUrls;
+  const hook = (node: any) => {
+    if (!node || node.nodeType !== 1 || typeof node.getAttribute !== 'function') return;
+    if (node.nodeName === 'IMG' && cidMap && cidMap.size > 0) {
+      const src = node.getAttribute('src');
+      if (src) {
+        const cid = cidUrlContentId(src);
+        const url = cidMap.get(cid);
+        if (url) node.setAttribute('src', url);
+      }
+    }
+    for (const attr of DATA_URI_ATTRS) {
+      const value = node.getAttribute(attr);
+      if (!value) continue;
+      const trimmed = value.trim();
+      if (/^data:/i.test(trimmed) && !INLINE_IMAGE_TYPES.has(dataUrlMediaType(trimmed))) {
+        node.removeAttribute(attr);
+      }
+    }
+  };
+  DOMPurify.addHook('afterSanitizeAttributes', hook);
+  try {
+    return DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP });
+  } finally {
+    DOMPurify.removeHook('afterSanitizeAttributes');
+  }
+}
 
 /**
  * Content-Security-Policy applied INSIDE the iframe. The outer document

@@ -174,6 +174,12 @@ export function makeSyncRpcHandlers({
       }
       return backend.runMutation(mutationId);
     },
+
+    [DB_RPC.SYNC_DOWNLOAD_BLOB]: async ({ accountId, blobId, type, name }) => {
+      const backend = backends.get(accountId);
+      if (!backend) return null;
+      return backend.downloadBlob({ blobId, type, name });
+    },
   };
 }
 

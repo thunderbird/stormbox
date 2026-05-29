@@ -389,6 +389,17 @@ export class Repository {
     return this.call(DB_RPC.SYNC_RUN_MUTATION, { accountId, mutationId });
   }
 
+  /**
+   * Download a blob (e.g. an inline cid: image part) through the worker,
+   * which has the authenticated transport. Returns { base64, type } or
+   * null. Used by the message viewer to resolve inline images.
+   */
+  downloadBlob(accountId, { blobId, type = null, name = null }) {
+    return this.call(DB_RPC.SYNC_DOWNLOAD_BLOB, {
+      accountId, blobId, type, name,
+    });
+  }
+
   // Internals ----------------------------------------------------------
 
   _onMessage(msg) {

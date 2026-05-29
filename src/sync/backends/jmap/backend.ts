@@ -44,6 +44,7 @@ import {
 } from './contacts';
 import { processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
+import { bytesToBase64 } from '../../../utils/inline-images';
 
 const SUBSCRIBED_TYPES = [
   'Mailbox',
@@ -773,6 +774,23 @@ export class JmapBackend {
       return { attempted: 0, succeeded: 0, failed: 0 };
     }
     return this.outboxRunner.runMutation(mutationId);
+  }
+
+  /**
+   * Download a blob (e.g. an inline cid: image) and return it base64-
+   * encoded so it crosses the worker RPC boundary as plain JSON. The UI
+   * builds a data: URL from this to render the part. Returns null when
+   * the account is not bootstrapped yet.
+   */
+  async downloadBlob({ blobId, type, name }) {
+    if (!this.account || !blobId) return null;
+    const bytes = await this.transport.download({
+      accountId: this.account.remote_account_id,
+      blobId,
+      type: type ?? undefined,
+      name: name ?? undefined,
+    });
+    return { base64: bytesToBase64(bytes), type: type ?? null };
   }
 
   // ----- WebSocket reconnect supervisor -------------------------------

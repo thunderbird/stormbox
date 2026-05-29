@@ -20,6 +20,10 @@ import {
   ALLOWED_URI_REGEXP,
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
+  isInlineImageType,
+  normalizeContentId,
+  referencedContentIds,
+  sanitizeMessageHtml,
 } from '../utils/message-html';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
@@ -50,6 +54,7 @@ const iframeHeight = ref(120);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
 
 const body = computed(() => mailStore.messageBody);
+const referencedInlineContentIds = computed(() => referencedContentIds(body.value?.html ?? ''));
 
 // Render plaintext bodies the way Thunderbird Desktop does: keep the
 // original line breaks/whitespace (white-space: pre-wrap), linkify URLs
@@ -83,6 +88,9 @@ let resizeObserver = null;
 let iframeMeasurementCleanup = null;
 let themeMediaQuery = null;
 let themeMutationObserver = null;
+// Monotonic guard so an async inline-image render can detect that a newer
+// body/scheme render has superseded it.
+let renderToken = 0;
 
 // Walk the folder list in display order so the summary matches the
 // message list top-to-bottom, not arbitrary Set iteration order.
@@ -97,17 +105,19 @@ const selectedMessages = computed(() => {
   return out;
 });
 
-watch([body, effectiveColorScheme], ([next, colorScheme]) => {
-  if (!next?.html) {
-    teardownResizeObserver();
-    iframeSrcDoc.value = '';
-    iframeHeight.value = 120;
-    return;
-  }
-  const sanitized = DOMPurify.sanitize(next.html, {
-    ALLOWED_URI_REGEXP,
-  });
-  const nextSrcDoc = buildMessageSrcDoc(sanitized, { colorScheme });
+function isReferencedInlinePart(part) {
+  const cid = normalizeContentId(part?.cid);
+  return !!cid && referencedInlineContentIds.value.has(cid);
+}
+
+const visibleAttachments = computed(() => {
+  const attachments = body.value?.attachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.filter((part) => !isReferencedInlinePart(part));
+});
+
+function applyHtmlSrcDoc(html, colorScheme) {
+  const nextSrcDoc = buildMessageSrcDoc(html, { colorScheme });
   // Only reset the height when the srcdoc actually changes. The
   // mail-store fires `refreshMessageBody` twice per `selectMessage`
   // call (once immediately, once after the body-prefetch queue
@@ -128,6 +138,47 @@ watch([body, effectiveColorScheme], ([next, colorScheme]) => {
       iframeHeight.value = Math.max(iframeHeight.value, initialIframeHeight());
     }
   });
+}
+
+// Resolve inline `cid:` image references to data: URLs. We only fetch
+// parts that (a) belong to this message, (b) are an allowed raster image
+// type, and (c) are actually referenced by the body. Any other cid is
+// left untouched — it renders broken and never triggers a request.
+async function resolveCidImageUrls(next) {
+  const map = new Map<string, string>();
+  const html = next?.html;
+  const parts = next?.attachments;
+  if (!html || !Array.isArray(parts)) return map;
+  const referenced = referencedContentIds(html);
+  for (const part of parts) {
+    const cid = normalizeContentId(part?.cid);
+    const blobId = part?.blob_id;
+    if (!cid || !blobId || !isInlineImageType(part?.mime_type)) continue;
+    if (!referenced.has(cid)) continue;
+    const url = await mailStore.loadInlineImageUrl(blobId, part.mime_type, part.name);
+    if (url) map.set(cid, url);
+  }
+  return map;
+}
+
+async function renderHtmlBody(next, colorScheme) {
+  if (!next?.html) {
+    teardownResizeObserver();
+    iframeSrcDoc.value = '';
+    iframeHeight.value = 120;
+    return;
+  }
+  // Guard against a newer body/scheme starting to render while we await
+  // inline-image blob downloads, so a fast selection change can't paint
+  // a stale message.
+  const myToken = (renderToken += 1);
+  const cidUrls = await resolveCidImageUrls(next);
+  if (myToken !== renderToken) return;
+  applyHtmlSrcDoc(sanitizeMessageHtml(next.html, cidUrls), colorScheme);
+}
+
+watch([body, effectiveColorScheme], ([next, colorScheme]) => {
+  void renderHtmlBody(next, colorScheme);
 }, { immediate: true });
 
 function getEffectiveColorScheme() {
@@ -573,8 +624,8 @@ function closeMessageView() {
         </div>
         <div v-else-if="textHtml" class="message-view__text" v-html="textHtml" />
         <p v-else class="message-view__placeholder">Loading message…</p>
-        <ul v-if="body?.attachments?.length" class="message-view__attachments">
-          <li v-for="a in body.attachments" :key="a.part_id">
+        <ul v-if="visibleAttachments.length" class="message-view__attachments">
+          <li v-for="a in visibleAttachments" :key="a.part_id">
             <Paperclip :size="14" :stroke-width="1.75" class="message-view__att-icon" />
             <span class="att-name">{{ a.name || '(unnamed)' }}</span>
             <span class="att-meta">{{ a.mime_type || '?' }}{{ a.size ? ` · ${Math.ceil(a.size / 1024)} KB` : '' }}</span>

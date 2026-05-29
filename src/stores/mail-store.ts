@@ -24,6 +24,7 @@ import { computed, ref, watch } from 'vue';
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
+import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-html';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
@@ -1133,6 +1134,36 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Resolve an inline message part (a cid: image) to a data: URL the
+   * message viewer can render. The blob download runs in the worker
+   * (which holds the authenticated transport). We only resolve parts the
+   * server typed as an image and build the URL through
+   * buildInlineImageDataUrl, which enforces a safe MIME type, validates
+   * the base64, and sanitises SVG. Returns null on any failure or for a
+   * non-image part, so the viewer leaves the original reference in place.
+   */
+  async function loadInlineImageUrl(
+    blobId: string,
+    mimeType: string | null = null,
+    name: string | null = null,
+  ): Promise<string | null> {
+    if (!repo || authStore.accountId == null || !blobId) return null;
+    if (!isInlineImageType(mimeType)) return null;
+    try {
+      const result = await repo.downloadBlob(authStore.accountId, {
+        blobId,
+        type: mimeType,
+        name,
+      });
+      if (!result?.base64) return null;
+      return buildInlineImageDataUrl(result.base64, mimeType);
+    } catch (err) {
+      console.warn('[mail-store] inline image download failed', err);
+      return null;
+    }
+  }
+
+  /**
    * Optimistically mark a message $seen locally and push the change
    * to the server in the background. The optimistic write to SQLite
    * makes the row un-bold in the message list immediately; the
@@ -1965,6 +1996,7 @@ export const useMailStore = defineStore('mail', () => {
     refreshFolders,
     selectFolder,
     selectMessage,
+    loadInlineImageUrl,
     ensureLoaded,
     enqueueVisibleBodyPrefetch,
     setScrollTop,

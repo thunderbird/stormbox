@@ -25,12 +25,19 @@ import {
   IFRAME_SANDBOX,
   BODY_THEME_COLORS,
   buildBodyCss,
+  buildInlineImageDataUrl,
   buildMessageSrcDoc,
+  isInlineImageType,
+  normalizeContentId,
+  referencedContentIds,
+  sanitizeMessageHtml,
 } from '../../../src/utils/message-html';
 
 function parseSrcDoc(srcdoc) {
   return new DOMParser().parseFromString(srcdoc, 'text/html');
 }
+
+const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
 describe('buildMessageSrcDoc', () => {
   it('returns a complete HTML document with utf-8 charset and viewport', () => {
@@ -265,5 +272,117 @@ describe('integration: a real-world wide marketing email', () => {
     expect(css).not.toMatch(/body\s*\*\s*\{/);
     expect(css).not.toMatch(/!important/);
     expect(css).not.toMatch(/\bfilter:/);
+  });
+});
+
+describe('isInlineImageType', () => {
+  it('accepts allowlisted raster types case-insensitively', () => {
+    expect(isInlineImageType('image/png')).toBe(true);
+    expect(isInlineImageType('IMAGE/JPEG')).toBe(true);
+    expect(isInlineImageType(' image/gif ')).toBe(true);
+    expect(isInlineImageType('image/webp')).toBe(true);
+  });
+
+  it('rejects svg, non-image, and malformed types', () => {
+    expect(isInlineImageType('image/svg+xml')).toBe(false);
+    expect(isInlineImageType('application/javascript')).toBe(false);
+    expect(isInlineImageType('text/html')).toBe(false);
+    expect(isInlineImageType('image/png" onerror="x')).toBe(false);
+    expect(isInlineImageType('')).toBe(false);
+    expect(isInlineImageType(null)).toBe(false);
+  });
+});
+
+describe('buildInlineImageDataUrl', () => {
+  it('builds a data: URL for an allowlisted raster image', () => {
+    expect(buildInlineImageDataUrl(PNG_B64, 'image/png')).toBe(`data:image/png;base64,${PNG_B64}`);
+  });
+
+  it('refuses svg, non-image types, and bad base64', () => {
+    expect(buildInlineImageDataUrl(PNG_B64, 'image/svg+xml')).toBeNull();
+    expect(buildInlineImageDataUrl(PNG_B64, 'application/javascript')).toBeNull();
+    expect(buildInlineImageDataUrl('not*valid*base64!', 'image/png')).toBeNull();
+    expect(buildInlineImageDataUrl('', 'image/png')).toBeNull();
+  });
+});
+
+describe('Content-ID matching helpers', () => {
+  it('normalizes common Content-ID and cid: URL spellings', () => {
+    expect(normalizeContentId('<logo@example.com>')).toBe('logo@example.com');
+    expect(normalizeContentId(' < logo@example.com > ')).toBe('logo@example.com');
+    expect(normalizeContentId('cid:%3Clogo%40example.com%3E')).toBe('logo@example.com');
+  });
+
+  it('finds cid references in HTML attributes without matching unrelated attachments', () => {
+    const ids = referencedContentIds(`
+      <img src="cid:%3Clogo%40example.com%3E">
+      <picture><source srcset="cid:hero@example.com 1x, https://example.com/hero2.png 2x"></picture>
+      <div style="background-image: url('cid:bg@example.com')"></div>
+      <a href="mailto:person@example.com">not a cid</a>
+    `);
+
+    expect([...ids].sort()).toEqual([
+      'bg@example.com',
+      'hero@example.com',
+      'logo@example.com',
+    ]);
+  });
+});
+
+describe('sanitizeMessageHtml', () => {
+  function imgSrc(html, cidUrls = null) {
+    const out = sanitizeMessageHtml(html, cidUrls);
+    return new DOMParser().parseFromString(out, 'text/html').querySelector('img');
+  }
+
+  it('resolves a known cid: image to its mapped data: URL', () => {
+    const dataUrl = `data:image/png;base64,${PNG_B64}`;
+    const img = imgSrc('<p><img src="cid:logo@x"></p>', new Map([['logo@x', dataUrl]]));
+    expect(img?.getAttribute('src')).toBe(dataUrl);
+  });
+
+  it('resolves angle-bracketed and percent-encoded cid: references', () => {
+    const dataUrl = `data:image/png;base64,${PNG_B64}`;
+    const img = imgSrc('<p><img src="cid:%3Clogo%40x%3E"></p>', new Map([['logo@x', dataUrl]]));
+    expect(img?.getAttribute('src')).toBe(dataUrl);
+  });
+
+  it('leaves an unknown cid: reference untouched (renders broken, no fetch)', () => {
+    const img = imgSrc('<img src="cid:missing@x">', new Map([['other@x', 'data:image/png;base64,AAAA']]));
+    expect(img?.getAttribute('src')).toBe('cid:missing@x');
+  });
+
+  it('keeps an author-embedded raster data: image', () => {
+    const src = `data:image/png;base64,${PNG_B64}`;
+    const img = imgSrc(`<img src="${src}">`);
+    expect(img?.getAttribute('src')).toBe(src);
+  });
+
+  it('strips an author-embedded data:image/svg+xml (the DATA_URI_TAGS gap)', () => {
+    const img = imgSrc('<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">');
+    // The img survives but its disallowed src is removed.
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute('src')).toBeNull();
+  });
+
+  it('strips non-image data: URLs smuggled onto an <img>', () => {
+    const js = imgSrc('<img src="data:application/javascript;base64,YWxlcnQoMSk=">');
+    expect(js?.getAttribute('src')).toBeNull();
+    const html = imgSrc('<img src="data:text/html;base64,PHNjcmlwdD4=">');
+    expect(html?.getAttribute('src')).toBeNull();
+  });
+
+  it('strips a disallowed data: image hidden in a <source> srcset sibling attribute', () => {
+    const out = sanitizeMessageHtml('<picture><source src="data:image/svg+xml,foo"><img src="data:image/png;base64,' + PNG_B64 + '"></picture>');
+    const doc = new DOMParser().parseFromString(out, 'text/html');
+    const source = doc.querySelector('source');
+    if (source) expect(source.getAttribute('src')).toBeNull();
+    expect(doc.querySelector('img')?.getAttribute('src')).toBe(`data:image/png;base64,${PNG_B64}`);
+  });
+
+  it('never executes script: inline <script> is dropped', () => {
+    const out = sanitizeMessageHtml('<p>hi</p><script>alert(1)</script>');
+    expect(out).not.toMatch(/<script/i);
+    expect(out).toContain('hi');
   });
 });

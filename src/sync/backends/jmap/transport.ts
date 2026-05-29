@@ -182,6 +182,49 @@ export class JmapTransport {
   }
 
   /**
+   * Download a blob from the account's JMAP download endpoint
+   * (RFC 8620 §6.2). The endpoint requires the Authorization header, so
+   * a raw <img src> cannot fetch it directly; callers fetch the bytes
+   * here and turn them into a data:/blob: URL for rendering (e.g. inline
+   * cid: images in the message viewer). Returns the raw bytes.
+   *
+   * @param {object} args
+   * @param {string} args.accountId  JMAP account id (remote_account_id).
+   * @param {string} args.blobId     Server blob id.
+   * @param {string} [args.type]     MIME type, substituted into the
+   *                                  template's {type} and sent as Accept.
+   * @param {string} [args.name]     File name for the template's {name}.
+   * @returns {Promise<Uint8Array>}
+   */
+  async download({ accountId, blobId, type = 'application/octet-stream', name = 'blob' }:
+  { accountId: string; blobId: string; type?: string; name?: string }) {
+    if (!this._session?.downloadUrl) {
+      await this.fetchSession();
+    }
+    const template = this._session?.downloadUrl;
+    if (!template) {
+      throw new Error('JMAP session does not advertise a downloadUrl');
+    }
+    const url = template
+      .replace('{accountId}', encodeURIComponent(accountId))
+      .replace('{blobId}', encodeURIComponent(blobId))
+      .replace('{name}', encodeURIComponent(name || 'blob'))
+      .replace('{type}', encodeURIComponent(type || 'application/octet-stream'));
+    const auth = await this._getAuthHeader();
+    wlog.info('jmap-transport', `download ${blobId} (${type})`);
+    const response = await this._fetch(url, {
+      headers: { Authorization: auth },
+      mode: 'cors',
+      credentials: 'omit',
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`JMAP download failed: ${response.status} ${response.statusText}\n${detail}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  /**
    * Open the JMAP WebSocket and complete the @type:WebSocketPushEnable
    * handshake. Idempotent; concurrent callers share the same connect
    * promise.
