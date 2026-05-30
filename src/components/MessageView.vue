@@ -413,19 +413,32 @@ function fmtListDate(ms) {
     : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// The stored body HTML references inline images by cid:, which only
+// resolve within the original message. For reply/forward, inline those
+// images as data: URLs in the quote so the compose send pipeline
+// re-uploads them as fresh cid attachments on the new message; otherwise
+// the quoted image is a dangling cid: reference.
+async function quoteBody() {
+  const b = body.value;
+  if (!b?.html) return b ?? {};
+  const cidUrls = await resolveCidImageUrls(b);
+  if (cidUrls.size === 0) return b;
+  return { ...b, html: sanitizeMessageHtml(b.html, cidUrls) };
+}
+
 async function reply() {
   if (!message.value) return;
-  composeStore.prepareReplyFromMessage(message.value, body.value ?? {});
+  composeStore.prepareReplyFromMessage(message.value, await quoteBody());
 }
 
 async function replyAll() {
   if (!message.value) return;
-  composeStore.prepareReplyAll(message.value, body.value ?? {});
+  composeStore.prepareReplyAll(message.value, await quoteBody());
 }
 
 async function forward() {
   if (!message.value) return;
-  composeStore.prepareForward(message.value, body.value ?? {});
+  composeStore.prepareForward(message.value, await quoteBody());
 }
 
 async function archive() {

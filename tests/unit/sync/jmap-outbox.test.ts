@@ -525,21 +525,28 @@ describe('drainOutbox', () => {
     expect(transport.uploads[0].type).toBe('image/png');
     expect(transport.uploads[0].body).toBeInstanceOf(Uint8Array);
 
-    // Convenience-property body form: no bodyStructure, inline cid attachment.
+    // Inline images must be multipart/related to the HTML so recipients
+    // can resolve the cid:; the convenience attachments property is not used.
     const create = setParams.create.c1;
-    expect(create.bodyStructure).toBeUndefined();
-    expect(create.htmlBody).toEqual([{ partId: 'h1', type: 'text/html' }]);
-    expect(create.textBody).toEqual([{ partId: 'p1', type: 'text/plain' }]);
-    expect(create.attachments).toHaveLength(1);
-    const { cid } = create.attachments[0];
-    expect(create.attachments[0]).toMatchObject({
+    expect(create.attachments).toBeUndefined();
+    expect(create.bodyStructure.type).toBe('multipart/related');
+    const relatedParts = create.bodyStructure.subParts;
+    expect(relatedParts[0]).toEqual({
+      type: 'multipart/alternative',
+      subParts: [
+        { type: 'text/plain', partId: 'p1' },
+        { type: 'text/html', partId: 'h1' },
+      ],
+    });
+    const imagePart = relatedParts.find((p) => p.disposition === 'inline');
+    expect(imagePart).toMatchObject({
       blobId: 'blob-1',
       type: 'image/png',
       disposition: 'inline',
     });
-    expect(cid).toBeTruthy();
-    // The HTML now references the cid and no longer carries the data: URL.
-    expect(create.bodyValues.h1.value).toContain(`src="cid:${cid}"`);
+    expect(imagePart.cid).toBeTruthy();
+    // The HTML references the cid and no longer carries the data: URL.
+    expect(create.bodyValues.h1.value).toContain(`src="cid:${imagePart.cid}"`);
     expect(create.bodyValues.h1.value).not.toContain('data:image/');
   });
 

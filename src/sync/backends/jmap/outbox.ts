@@ -363,18 +363,34 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
 
   let bodyFields;
   if (hasHtml && inlineAttachments.length > 0) {
-    // Convenience-property form: the server assembles multipart/related
-    // (html + inline images) within a multipart/alternative alongside
-    // the text part. bodyStructure is intentionally omitted here;
-    // setting it makes the server ignore htmlBody/textBody/attachments.
+    // Inline images must be multipart/related to the HTML part or the
+    // recipient cannot resolve the cid: reference (it shows a broken
+    // image). The JMAP convenience `attachments` property does not
+    // guarantee this — Stalwart places those parts in a multipart/mixed
+    // sibling of the body — so build the structure explicitly:
+    //   multipart/related
+    //     multipart/alternative
+    //       text/plain
+    //       text/html  (references cid:)
+    //     image/*      (blobId + cid + disposition:inline)
     bodyFields = {
+      bodyStructure: {
+        type: 'multipart/related',
+        subParts: [
+          {
+            type: 'multipart/alternative',
+            subParts: [
+              { type: 'text/plain', partId: 'p1' },
+              { type: 'text/html', partId: 'h1' },
+            ],
+          },
+          ...inlineAttachments,
+        ],
+      },
       bodyValues: {
         p1: { value: request.textBody ?? '' },
         h1: { value: extracted.html },
       },
-      textBody: [{ partId: 'p1', type: 'text/plain' }],
-      htmlBody: [{ partId: 'h1', type: 'text/html' }],
-      attachments: inlineAttachments,
     };
   } else if (hasHtml) {
     bodyFields = {

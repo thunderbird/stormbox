@@ -74,9 +74,9 @@ async function getInlineImageEmail(jmap, emailId) {
     {
       accountId: jmap.accountId,
       ids: [emailId],
-      properties: ['attachments', 'htmlBody', 'bodyValues', 'hasAttachment'],
+      properties: ['attachments', 'htmlBody', 'bodyValues', 'hasAttachment', 'bodyStructure'],
       fetchHTMLBodyValues: true,
-      bodyProperties: ['partId', 'blobId', 'type', 'disposition', 'cid', 'size'],
+      bodyProperties: ['partId', 'blobId', 'type', 'disposition', 'cid', 'size', 'subParts'],
     },
     'g1',
   ]]);
@@ -172,6 +172,15 @@ test.describe('Compose paste image e2e', () => {
 
       const email = await getInlineImageEmail(jmap, serverId);
       expect(email, 'sent message should be retrievable via Email/get').not.toBeNull();
+
+      // The inline image must be multipart/related to the HTML, otherwise
+      // recipients (e.g. Thunderbird) cannot resolve the cid: reference.
+      expect(email.bodyStructure?.type).toBe('multipart/related');
+      const relatedParts = email.bodyStructure.subParts ?? [];
+      expect(relatedParts.some((p) => p.type === 'multipart/alternative')).toBe(true);
+      expect(relatedParts.some((p) => p.disposition === 'inline' && p.type?.startsWith('image/')))
+        .toBe(true);
+
       const inlineParts = (email.attachments ?? []).filter(
         (part) => part.disposition === 'inline' && part.cid,
       );
