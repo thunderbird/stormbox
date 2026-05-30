@@ -106,6 +106,44 @@ async function pasteImageIntoEditor(page, base64) {
   }, base64);
 }
 
+// Paste a canvas-generated image of a known size, so it renders large
+// enough to click and measure (a 1x1 px image is too small to resize).
+async function pasteGeneratedImage(page, width, height) {
+  await page.evaluate(({ w, h }) => new Promise((resolve) => {
+    const editor = document.querySelector('.compose-dialog .editor[contenteditable]');
+    editor.focus();
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#3366cc';
+    ctx.fillRect(0, 0, w, h);
+    canvas.toBlob((blob) => {
+      const file = new File([blob], 'gen.png', { type: 'image/png' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: dt });
+      editor.dispatchEvent(event);
+      resolve();
+    }, 'image/png');
+  }), { w: width, h: height });
+}
+
+// Wait until the editor image has decoded and rendered at full size, so
+// Squire's resize handles are placed over its final box before we click
+// or drag (a not-yet-decoded image leaves the handles mispositioned).
+async function waitForRenderedEditorImage(page, minWidth) {
+  await expect.poll(
+    async () => page.evaluate(() => {
+      const img = document.querySelector('.compose-dialog .editor img');
+      if (!img || !img.complete || !img.naturalWidth) return 0;
+      return Math.round(img.getBoundingClientRect().width);
+    }),
+    { timeout: 10_000, message: 'pasted image should finish loading at full size' },
+  ).toBeGreaterThan(minWidth);
+}
+
 test.describe('Compose paste image e2e', () => {
   test.beforeEach(async ({ sharedPage }) => {
     await resetSharedSession(sharedPage);
@@ -228,6 +266,113 @@ test.describe('Compose paste image e2e', () => {
       if (serverId) {
         await cleanupEmail(jmap, serverId, trash.id);
       }
+    }
+  });
+
+  test('Pasted image shows Squire resize handles positioned over it', async ({ sharedPage: page }, testInfo) => {
+    try {
+      await page.keyboard.press('ControlOrMeta+n');
+      await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
+      await expect.poll(
+        async () => page.locator('.compose-dialog select').first().locator('option').count(),
+        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
+      ).toBeGreaterThan(0);
+
+      const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
+      await editor.click();
+      await pasteGeneratedImage(page, 160, 100);
+
+      const img = editor.locator('img').first();
+      await expect(img).toBeVisible({ timeout: 10_000 });
+      await waitForRenderedEditorImage(page, 120);
+
+      // Clicking the image invokes Squire's built-in object resizer, which
+      // appends a handle container to the editor root.
+      await img.click();
+
+      const handles = page.locator('.compose-dialog .squire-resize-handle');
+      await expect.poll(
+        async () => handles.count(),
+        { timeout: 10_000, message: 'Squire should render resize handles on the selected image' },
+      ).toBeGreaterThan(0);
+
+      // The handle container must sit over the image. The bug this guards
+      // against was a static editor root anchoring the absolutely
+      // positioned container to the fixed dialog overlay instead.
+      const placement = await page.evaluate(() => {
+        const image = document.querySelector('.compose-dialog .editor img');
+        const box = document.querySelector('.compose-dialog .squire-image-resize-container');
+        if (!image || !box) return null;
+        const a = image.getBoundingClientRect();
+        const b = box.getBoundingClientRect();
+        return {
+          dTop: Math.abs(a.top - b.top),
+          dLeft: Math.abs(a.left - b.left),
+          dWidth: Math.abs(a.width - b.width),
+          dHeight: Math.abs(a.height - b.height),
+        };
+      });
+      expect(placement, 'resize container should exist over the image').not.toBeNull();
+      expect(placement.dTop).toBeLessThan(4);
+      expect(placement.dLeft).toBeLessThan(4);
+      expect(placement.dWidth).toBeLessThan(4);
+      expect(placement.dHeight).toBeLessThan(4);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+    }
+  });
+
+  test('Dragging the resize handle shrinks the pasted image', async ({ sharedPage: page }, testInfo) => {
+    try {
+      await page.keyboard.press('ControlOrMeta+n');
+      await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
+      await expect.poll(
+        async () => page.locator('.compose-dialog select').first().locator('option').count(),
+        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
+      ).toBeGreaterThan(0);
+
+      const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
+      await editor.click();
+      await pasteGeneratedImage(page, 400, 300);
+
+      const img = editor.locator('img').first();
+      await expect(img).toBeVisible({ timeout: 10_000 });
+      await waitForRenderedEditorImage(page, 350);
+      await img.click();
+
+      const handles = page.locator('.compose-dialog .squire-resize-handle');
+      await expect.poll(
+        async () => handles.count(),
+        { timeout: 10_000, message: 'image should be selected with its resize handles' },
+      ).toBe(8);
+
+      const seHandle = page.locator('.compose-dialog .squire-resize-handle-se');
+      const beforeWidth = Math.round((await img.boundingBox()).width);
+      // Hover the handle so the press lands on the 8px target; a cached
+      // boundingBox can miss it and start a text-selection drag instead.
+      await seHandle.hover();
+      const hb = await seHandle.boundingBox();
+      const cx = hb.x + hb.width / 2;
+      const cy = hb.y + hb.height / 2;
+
+      // Drag the bottom-right handle toward the top-left in steps, sampling
+      // the image width after each step so the trace shows where (if) it
+      // gets stuck.
+      await page.mouse.down();
+      const widths = [];
+      for (let i = 1; i <= 10; i += 1) {
+        await page.mouse.move(cx - i * 14, cy - i * 10, { steps: 2 });
+        widths.push(Math.round((await img.boundingBox()).width));
+      }
+      await page.mouse.up();
+
+      const afterWidth = Math.round((await img.boundingBox()).width);
+      console.log(`[resize repro] before=${beforeWidth} steps=${JSON.stringify(widths)} after=${afterWidth}`);
+
+      expect(afterWidth, 'dragging the handle should shrink the image substantially')
+        .toBeLessThan(beforeWidth * 0.6);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
     }
   });
 });

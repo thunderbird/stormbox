@@ -60,6 +60,7 @@ const visibleToolbarGroups = ref(['style', 'font', 'insert', 'lists', 'alignment
 let squire = null;
 let lastSelection = null;
 let toolbarResizeObserver = null;
+let isResizingImage = false;
 const toolbarGroupWidths = new Map();
 
 const defaultTextColor = '#e5e7eb';
@@ -214,10 +215,34 @@ function updateToolbarState(pathOverride = null) {
   };
 }
 
-function handleEditorInput() {
+function syncEditorState() {
   syncDraftFromEditor();
   rememberSelection();
   updateToolbarState();
+}
+
+function handleEditorInput() {
+  // Squire's image resizer mutates the <img> on every pointermove, which
+  // fires 'input'. syncDraftFromEditor() reads squire.getHTML(), and
+  // getHTML() momentarily removes and re-adds Squire's resize-handle
+  // container — which releases the in-flight pointer capture and freezes
+  // the drag after a single step. Skip the per-mutation sync while a
+  // resize handle is being dragged; we sync once when the drag ends.
+  if (isResizingImage) return;
+  syncEditorState();
+}
+
+function handleResizeHandlePointerDown(event: PointerEvent) {
+  const target = event.target as Element | null;
+  if (target?.closest?.('.squire-resize-handle')) {
+    isResizingImage = true;
+  }
+}
+
+function handleResizeHandlePointerUp() {
+  if (!isResizingImage) return;
+  isResizingImage = false;
+  syncEditorState();
 }
 
 function handlePathChange() {
@@ -517,6 +542,10 @@ function observeToolbarSize() {
 function destroyEditor() {
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
+  document.removeEventListener('pointerdown', handleResizeHandlePointerDown, true);
+  document.removeEventListener('pointerup', handleResizeHandlePointerUp);
+  document.removeEventListener('pointercancel', handleResizeHandlePointerUp);
+  isResizingImage = false;
   squire?.destroy?.();
   squire = null;
   lastSelection = null;
@@ -535,6 +564,12 @@ function initEditor() {
   squire.addEventListener('select', handlePathChange);
   squire.addEventListener('cursor', handlePathChange);
   squire.addEventListener('undoStateChange', handleUndoStateChange);
+  // Squire's resize handles capture the pointer; track drag start/end so
+  // handleEditorInput can suppress the getHTML sync that would break it.
+  // pointerdown is captured because Squire stops propagation on the handle.
+  document.addEventListener('pointerdown', handleResizeHandlePointerDown, true);
+  document.addEventListener('pointerup', handleResizeHandlePointerUp);
+  document.addEventListener('pointercancel', handleResizeHandlePointerUp);
   updateToolbarState();
   scheduleToolbarOverflowUpdate();
   observeToolbarSize();
@@ -1288,6 +1323,10 @@ function selectFromIdentity(event: Event) {
   min-height: 0;
 }
 .editor {
+  /* Positioned so Squire's built-in image resize handles, which it
+     appends to the editor root and positions absolutely relative to it,
+     anchor over the image instead of the fixed dialog overlay. */
+  position: relative;
   min-height: 100%;
   outline: none;
   font-size: 14px;
