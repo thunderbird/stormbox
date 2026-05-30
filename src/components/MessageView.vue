@@ -10,7 +10,7 @@ import {
 import DOMPurify from 'dompurify';
 import {
   Trash2, Paperclip,
-  MailOpen, Mail, X, ArrowLeft,
+  MailOpen, Mail, X, ArrowLeft, Sun, Moon,
 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
@@ -25,6 +25,7 @@ import {
   referencedContentIds,
   sanitizeMessageHtml,
 } from '../utils/message-html';
+import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
@@ -52,6 +53,16 @@ const iframeRef = ref(null);
 const iframeSrcDoc = ref('');
 const iframeHeight = ref(120);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
+// Allow the user to disable dark mode in the message view only,
+// independently of the global theme toggle. Resets when the open message
+// changes so it's not a sticky preference.
+const forceLightBody = ref(false);
+
+// App theme, unless this one message has been escaped to light.
+const bodyColorScheme = computed(() =>
+  (effectiveColorScheme.value === 'dark' && forceLightBody.value)
+    ? 'light'
+    : effectiveColorScheme.value);
 
 const body = computed(() => mailStore.messageBody);
 const referencedInlineContentIds = computed(() => referencedContentIds(body.value?.html ?? ''));
@@ -174,12 +185,29 @@ async function renderHtmlBody(next, colorScheme) {
   const myToken = (renderToken += 1);
   const cidUrls = await resolveCidImageUrls(next);
   if (myToken !== renderToken) return;
-  applyHtmlSrcDoc(sanitizeMessageHtml(next.html, cidUrls), colorScheme);
+  // Adapt for dark before building the srcdoc, so the first paint is already
+  // dark-correct and never flashes the un-themed email (see dark-email.ts).
+  const safeHtml = sanitizeMessageHtml(next.html, cidUrls);
+  const themedHtml = colorScheme === 'dark' ? adaptHtmlForDarkMode(safeHtml) : safeHtml;
+  applyHtmlSrcDoc(themedHtml, colorScheme);
 }
 
-watch([body, effectiveColorScheme], ([next, colorScheme]) => {
+watch([body, bodyColorScheme], ([next, colorScheme]) => {
   void renderHtmlBody(next, colorScheme);
 }, { immediate: true });
+
+watch(() => mailStore.selectedMessageId, () => {
+  forceLightBody.value = false;
+});
+
+// Only offered in dark mode for HTML bodies; plain text already follows the
+// readable app theme.
+const canForceLightBody = computed(() =>
+  effectiveColorScheme.value === 'dark' && !!iframeSrcDoc.value);
+
+function toggleBodyLightMode() {
+  forceLightBody.value = !forceLightBody.value;
+}
 
 function getEffectiveColorScheme() {
   if (typeof document !== 'undefined') {
@@ -598,6 +626,18 @@ function closeMessageView() {
         <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="forward" title="Forward (Ctrl+L)" aria-label="Forward">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </button>
+        <button
+          v-if="canForceLightBody"
+          class="message-view__action message-view__action--view-mode"
+          type="button"
+          :aria-pressed="forceLightBody"
+          :title="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
+          :aria-label="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
+          @click="toggleBodyLightMode"
+        >
+          <Moon v-if="forceLightBody" :size="16" :stroke-width="1.75" />
+          <Sun v-else :size="16" :stroke-width="1.75" />
+        </button>
       </header>
       <section class="message-view__details" aria-label="Message header">
         <dl class="message-view__metadata">
@@ -833,6 +873,12 @@ function closeMessageView() {
 .message-view__action--danger:hover { background: rgba(255, 107, 107, 0.12); color: #ff6b6b; }
 .message-view__action--ghost { color: var(--muted); }
 .message-view__action--back { margin-right: 12px; }
+/* View option, not a mail action — sits at the trailing edge. */
+.message-view__action--view-mode { margin-left: auto; }
+.message-view__action--view-mode[aria-pressed="true"] {
+  background: var(--rowHover);
+  color: var(--text);
+}
 .message-view--spotlight-actions .message-view__action--compose-spotlight {
   position: relative;
   z-index: 130;

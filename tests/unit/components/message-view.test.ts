@@ -442,6 +442,133 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
+  it('adapts a styled email body for dark mode before building the iframe srcdoc', async () => {
+    // In the dark theme the email's hard-coded white background and black
+    // text must be stripped (per dark-email.ts) so the body falls back to
+    // the dark canvas, rather than punching a white slab into the dark UI.
+    document.documentElement.setAttribute('data-theme', 'dark');
+    await makeSelectedMessage({
+      text: '',
+      html: '<div style="background:#ffffff;color:#000000">styled body</div>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('styled body');
+    expect(srcdoc).not.toMatch(/#ffffff/i);
+    expect(srcdoc).not.toMatch(/#000000/i);
+
+    wrapper.unmount();
+  });
+
+  it('does not adapt email colours in the light theme', async () => {
+    document.documentElement.setAttribute('data-theme', 'light');
+    await makeSelectedMessage({
+      text: '',
+      html: '<div style="background:#ffffff;color:#000000">styled body</div>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toMatch(/#ffffff/i);
+    expect(srcdoc).toMatch(/#000000/i);
+
+    wrapper.unmount();
+  });
+
+  it('offers a per-message light escape hatch in dark mode that bypasses the adapter', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    await makeSelectedMessage({
+      text: '',
+      html: '<div style="background:#ffffff;color:#000000">styled body</div>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    const toggle = wrapper.find('.message-view__action--view-mode');
+    expect(toggle.exists()).toBe(true);
+    expect(toggle.attributes('aria-pressed')).toBe('false');
+
+    // Default dark view: the adapter has stripped the hard-coded colours.
+    let srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('color-scheme: dark');
+    expect(srcdoc).not.toMatch(/#ffffff/i);
+
+    // Escape this one message to light: the original colours come back.
+    await toggle.trigger('click');
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.find('.message-view__action--view-mode').attributes('aria-pressed')).toBe('true');
+    srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('color-scheme: light');
+    expect(srcdoc).toMatch(/#ffffff/i);
+    expect(srcdoc).toMatch(/#000000/i);
+
+    wrapper.unmount();
+  });
+
+  it('resets the light escape hatch when a different message is opened', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    const mailStore = await makeSelectedMessage({
+      text: '',
+      html: '<div style="background:#ffffff;color:#000000">first</div>',
+      attachments: [],
+    });
+    mailStore.messages = [
+      { id: 7, subject: 'a', from_text: 'a@example.com', received_at: 1 },
+      { id: 8, subject: 'b', from_text: 'b@example.com', received_at: 2 },
+    ];
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    await wrapper.find('.message-view__action--view-mode').trigger('click');
+    await nextTick();
+    expect(wrapper.find('.message-view__action--view-mode').attributes('aria-pressed')).toBe('true');
+
+    // Switch to another message: the override must clear.
+    mailStore.selectedMessageId = 8;
+    mailStore.messageBody = {
+      text: '', html: '<div style="background:#ffffff;color:#000000">second</div>', attachments: [],
+    };
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.find('.message-view__action--view-mode').attributes('aria-pressed')).toBe('false');
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('color-scheme: dark');
+    expect(srcdoc).not.toMatch(/#ffffff/i);
+
+    wrapper.unmount();
+  });
+
+  it('hides the light escape hatch for plain-text bodies and in the light theme', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    await makeSelectedMessage({ text: 'just text', html: '', attachments: [] });
+    const textWrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+    expect(textWrapper.find('.message-view__action--view-mode').exists()).toBe(false);
+    textWrapper.unmount();
+
+    document.documentElement.setAttribute('data-theme', 'light');
+    await makeSelectedMessage({
+      text: '', html: '<div style="color:#000000">styled</div>', attachments: [],
+    });
+    const lightWrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+    expect(lightWrapper.find('.message-view__action--view-mode').exists()).toBe(false);
+    lightWrapper.unmount();
+  });
+
   it('preserves the email markup while keeping host layout control outside the iframe', async () => {
     // Regression: an earlier iteration of the iframe builder injected
     // `body * { max-width: 100% !important }` and friends, on the
