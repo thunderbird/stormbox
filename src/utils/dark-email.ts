@@ -39,22 +39,15 @@ const DARK_CANVAS = BODY_THEME_COLORS.dark.background;
 // default) vs. a chromatic accent (hue preserved).
 const CHROMA_THRESHOLD = 32;
 
-// Thunderbird's selector: inline style or a bgcolor/color attr, minus
-// <button>. We inspect every styled node so uppercase legacy declarations
-// (`COLOR`, `BACKGROUND`) are not skipped by case-sensitive substring
-// selectors.
+// Thunderbird's selector: any inline style, or a bgcolor/color attr, minus
+// <button>. We match on the presence of `style` rather than substringing for
+// "color"/"background" so a declaration the CSSOM exposes is never skipped
+// (and case-insensitively, since the CSSOM normalises property names).
 const COLOR_SELECTOR = [
   ':not(button)[style]',
   ':not(button)[bgcolor]',
   ':not(button)[color]',
 ].join(',');
-
-const INLINE_COLOR_PROPERTY_RE = /(^|;)\s*(background(?:-color|-image)?|color)\s*:/gi;
-
-function normalizeInlineColorPropertyNames(style: string): string {
-  return style.replace(INLINE_COLOR_PROPERTY_RE, (_match, prefix: string, property: string) =>
-    `${prefix}${property.toLowerCase()}:`);
-}
 
 function hasGradient(value: string): boolean {
   return value.includes('gradient');
@@ -99,6 +92,12 @@ export function sanitizeStyleDeclaration(style: CSSStyleDeclaration): boolean {
     }
   };
 
+  // A declared background is unsafe on the dark canvas when it is too bright
+  // to sit behind light text, or too low-contrast against the text it carries.
+  const backgroundIsUnsafe = (value: string) =>
+    luminance(value) > LUMINANCE_THRESHOLD
+    || (!!color && contrast(color, value) < CONTRAST_THRESHOLD);
+
   // Strip background images that assume a light context (we cannot inspect
   // a raster image's luminance). Gradients are handled at the end.
   if (backgroundImage && backgroundImage !== 'none' && !hasGradient(backgroundImage)) {
@@ -112,26 +111,16 @@ export function sanitizeStyleDeclaration(style: CSSStyleDeclaration): boolean {
   }
 
   // Background colour too bright, or insufficient contrast with the text.
-  if (backgroundColor && isValidColor(backgroundColor)) {
-    if (
-      luminance(backgroundColor) > LUMINANCE_THRESHOLD ||
-      (color && contrast(color, backgroundColor) < CONTRAST_THRESHOLD)
-    ) {
-      remove('background-color');
-      remove('background');
-      adaptTextColor();
-    }
+  if (backgroundColor && isValidColor(backgroundColor) && backgroundIsUnsafe(backgroundColor)) {
+    remove('background-color');
+    remove('background');
+    adaptTextColor();
   }
 
   // Same test for the `background` shorthand when it is a plain colour.
-  if (background && isValidColor(background)) {
-    if (
-      luminance(background) > LUMINANCE_THRESHOLD ||
-      (color && contrast(color, background) < CONTRAST_THRESHOLD)
-    ) {
-      remove('background');
-      adaptTextColor();
-    }
+  if (background && isValidColor(background) && backgroundIsUnsafe(background)) {
+    remove('background');
+    adaptTextColor();
   }
 
   // Never let a gradient (which may be light) survive.
@@ -141,17 +130,6 @@ export function sanitizeStyleDeclaration(style: CSSStyleDeclaration): boolean {
   }
 
   return changed;
-}
-
-function sanitizeInlineStyle(element: HTMLElement): boolean {
-  const initialStyle = element.getAttribute('style') ?? '';
-  if (sanitizeStyleDeclaration(element.style)) return true;
-
-  const normalizedStyle = normalizeInlineColorPropertyNames(initialStyle);
-  if (normalizedStyle === initialStyle) return false;
-
-  element.setAttribute('style', normalizedStyle);
-  return sanitizeStyleDeclaration(element.style) || normalizedStyle !== initialStyle;
 }
 
 interface MaybeStyleRule {
@@ -179,12 +157,7 @@ function visitRules(rules: CSSRuleList): boolean {
 }
 
 function serializeSheet(sheet: CSSStyleSheet): string {
-  const rules = sheet.cssRules;
-  let out = '';
-  for (let i = 0; i < rules.length; i += 1) {
-    out += `${rules[i].cssText}\n`;
-  }
-  return out;
+  return Array.from(sheet.cssRules, (rule) => `${rule.cssText}\n`).join('');
 }
 
 // Sanitize an embedded <style>'s CSS via a constructable sheet — works in
@@ -210,6 +183,10 @@ function currentEnvironmentPrefersDark(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return false;
   }
+  // `prefers-color-scheme` is an OS/UA-level preference shared with the
+  // sandboxed iframe, so the host window's value is what the email's own
+  // `@media` branch will see when it renders (the in-app `data-theme`
+  // toggle is independent and does not affect it).
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
@@ -248,28 +225,25 @@ export function adaptHtmlForDarkMode(html: string): string {
   try {
     // Parse inertly in a <template>: keeps <style> inline (a full parse
     // hoists a top-level <style> to <head>), loads nothing, never touches
-    // the host.
+    // the host. This re-parse/re-serialize round-trips already-sanitized
+    // HTML; it is safe because the output is only ever rendered in the
+    // sandboxed, no-scripts, strict-CSP iframe (`buildMessageSrcDoc`).
     const template = document.createElement('template');
     template.innerHTML = html;
     const content = template.content;
 
     if (emailDeclaresDarkSupport(content, html)) return html;
 
-    const body = content.querySelector('body');
-    if (body) {
-      for (const attr of ['bgcolor', 'text', 'link', 'vlink']) {
-        body.removeAttribute(attr);
-      }
-      for (const property of ['background-color', 'color']) {
-        body.style.removeProperty(property);
-      }
-    }
-
+    // Note: there is no <body> to special-case here — `sanitizeMessageHtml`
+    // (DOMPurify) strips the document wrapper and its bgcolor/text attributes
+    // before we ever run, and <template> parsing would discard a <body> anyway.
+    // Body-level colours declared in an embedded <style> are handled by the
+    // <style> pass below.
     for (const node of content.querySelectorAll(COLOR_SELECTOR)) {
       node.removeAttribute('bgcolor');
       node.removeAttribute('color');
       if (!node.hasAttribute('style')) continue;
-      sanitizeInlineStyle(node as HTMLElement);
+      sanitizeStyleDeclaration((node as HTMLElement).style);
     }
 
     for (const node of content.querySelectorAll('text[fill]')) {

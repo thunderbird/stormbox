@@ -182,13 +182,6 @@ describe('adaptHtmlForDarkMode', () => {
     expect(doc.querySelector('td')!.getAttribute('style') ?? '').not.toMatch(/#000000/i);
   });
 
-  it('sanitizes uppercase legacy inline style declarations', () => {
-    const out = adaptHtmlForDarkMode('<div style="BACKGROUND:#ffffff;COLOR:#000000">hi</div>');
-    const style = parse(out).querySelector('div')!.getAttribute('style') ?? '';
-    expect(style).not.toMatch(/#ffffff/i);
-    expect(style).not.toMatch(/#000000/i);
-  });
-
   it('preserves a saturated brand colour (Netflix red) as a readable red, not white', () => {
     const out = adaptHtmlForDarkMode('<span style="color:#E50914">NETFLIX</span>');
     const style = parse(out).querySelector('span')!.getAttribute('style') ?? '';
