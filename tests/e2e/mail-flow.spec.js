@@ -130,7 +130,15 @@ test.describe('Local stack mail flow e2e', () => {
     await testInfo.attach(`${browserName}-folder-opened.png`, { body: folderShot, contentType: 'image/png' });
     await page.screenshot({ path: `screenshots/${browserName}-02-folder-opened.png`, fullPage: true });
 
-    await page.locator('.msg-list__item').first().click();
+    // Open the "second" message by subject rather than .first(). The
+    // "tall" message is created last and usually sorts to row 0, so a
+    // .first() click here would land on the same row the targetClick
+    // below opens — and a plain click on the already-previewed row
+    // toggles the preview closed (R-3.6), emptying the reading pane.
+    // Opening a deterministically different row keeps the two opens
+    // independent regardless of the received-time tiebreak.
+    await page.locator('.msg-list__item').filter({ hasText: subjects[1] }).first()
+      .locator('.msg-list__content').click();
 
     await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
 
