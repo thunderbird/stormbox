@@ -280,4 +280,55 @@ describe('useListSelection', () => {
       expect(external.value).not.toBe(initial);
     });
   });
+
+  describe('externally-owned focusedId (id-based cursor)', () => {
+    function makeFocusedHarness(count: number) {
+      const rows = ref(makeRows(count));
+      const total = ref(count);
+      const selectedIds = ref(new Set<string>());
+      const focusedId = ref<unknown>(null);
+      const sel = useListSelection({
+        rows, total, selectedIds, focusedId,
+      });
+      return {
+        rows, total, selectedIds, focusedId, sel,
+      };
+    }
+
+    it('writes the cursor id through to the provided ref on setFocused and arrow nav', () => {
+      const { sel, focusedId } = makeFocusedHarness(5);
+      sel.setFocused(2);
+      expect(focusedId.value).toBe('m2');
+      sel.handleKeyDown({ key: 'ArrowDown', preventDefault: noop });
+      expect(focusedId.value).toBe('m3');
+      // Shift+Arrow keeps moving the cursor (this is what drives
+      // scroll-follow during range extension).
+      sel.handleKeyDown({ key: 'ArrowDown', shiftKey: true, preventDefault: noop });
+      expect(focusedId.value).toBe('m4');
+    });
+
+    it('derives focusedIndex from the id, surviving row reordering', () => {
+      const { sel, rows, focusedId } = makeFocusedHarness(5);
+      sel.setFocused(3);
+      expect(focusedId.value).toBe('m3');
+      expect(sel.focusedIndex.value).toBe(3);
+      // Rows shift (e.g. a page loads above, or a row above is
+      // deleted). The id-based cursor follows its row to the new index
+      // where an index-based pointer would have gone stale.
+      rows.value = [{ id: 'm3' }, { id: 'm0' }, { id: 'm1' }, { id: 'm2' }, { id: 'm4' }];
+      expect(sel.focusedIndex.value).toBe(0);
+    });
+
+    it('reports focusedIndex as -1 when the cursor id is absent or null', () => {
+      const { sel, rows, focusedId } = makeFocusedHarness(5);
+      expect(sel.focusedIndex.value).toBe(-1);
+      sel.setFocused(2);
+      expect(sel.focusedIndex.value).toBe(2);
+      // The cursor row is removed from the list entirely.
+      rows.value = [{ id: 'm0' }, { id: 'm1' }, { id: 'm3' }, { id: 'm4' }];
+      expect(sel.focusedIndex.value).toBe(-1);
+      focusedId.value = null;
+      expect(sel.focusedIndex.value).toBe(-1);
+    });
+  });
 });

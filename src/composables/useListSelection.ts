@@ -4,10 +4,11 @@
  *
  *   - "Viewing" and "selected" are two separate concepts. A row can
  *     be viewed (focused) without being checked, and a row can be
- *     checked without being viewed. The "focused" pointer is owned
- *     elsewhere (the mail-store's selectedMessageId); this composable
- *     owns only the multi-select Set and the anchor for range
- *     extensions.
+ *     checked without being viewed. The keyboard cursor (the "focused"
+ *     row) is an id passed in by the caller (the mail-store's
+ *     focusedMessageId) so a scroll-follow watcher and other panes can
+ *     read it; this composable derives the cursor's index and owns only
+ *     the multi-select Set and the anchor for range extensions.
  *
  *   - Plain click on a row body  -> view (caller decides)
  *   - Plain click on a checkbox  -> toggle that row's membership
@@ -39,27 +40,36 @@ import { computed, ref } from 'vue';
  * @property {import('vue').Ref<number>} total
  * @property {import('vue').Ref<Set<unknown>>} [selectedIds]
  *   Optional externally-owned selection set (mail-store).
- * @property {import('vue').Ref<number>} [focusedIndex]
- *   Optional externally-owned focused/viewing index. When the caller
- *   keeps `focusedIndex` in a Pinia store so MessageView can read it,
- *   pass the same ref here so the composable updates it on arrow
- *   nav. If omitted, the composable owns a local ref that the caller
- *   reads back via the returned `focusedIndex`.
+ * @property {import('vue').Ref<unknown>} [focusedId]
+ *   Optional externally-owned keyboard cursor, as a stable row id.
+ *   When the caller keeps the cursor in a Pinia store (so other panes
+ *   and a scroll-follow watcher can read it), pass the same ref here
+ *   and the composable writes the cursor's id on arrow nav. If
+ *   omitted, the composable owns a local ref. The cursor is kept as an
+ *   id rather than an index so it survives rows loading, filtering, or
+ *   being removed underneath the virtualized window; the positional
+ *   `focusedIndex` is derived from it on demand.
  */
 
 export function useListSelection({
   rows,
   total,
   selectedIds: externalSelectedIds,
-  focusedIndex: externalFocusedIndex,
+  focusedId: externalFocusedId,
 }: {
   rows: any;
   total: any;
   selectedIds?: any;
-  focusedIndex?: any;
+  focusedId?: any;
 }) {
   const selectedIds = externalSelectedIds ?? ref(new Set());
-  const focusedIndex = externalFocusedIndex ?? ref(-1);
+  // Canonical cursor is an id; the index is derived. -1 when the cursor
+  // is unset or its row isn't currently in `rows` (e.g. scrolled out of
+  // a sparse window or filtered away).
+  const focusedId = externalFocusedId ?? ref(null);
+  const focusedIndex = computed(() => (focusedId.value == null
+    ? -1
+    : rows.value.findIndex((row) => row?.id === focusedId.value)));
   const anchorIndex = ref(-1);
 
   const selectionCount = computed(() => selectedIds.value.size);
@@ -85,8 +95,9 @@ export function useListSelection({
    */
   function setFocused(index) {
     if (index < 0 || index >= rows.value.length) return null;
-    focusedIndex.value = index;
-    return _idAt(index);
+    const id = _idAt(index);
+    focusedId.value = id;
+    return id;
   }
 
   /**
@@ -202,10 +213,12 @@ export function useListSelection({
       const next = Math.max(0, Math.min(len - 1, from + dir));
       if (event.shiftKey) {
         extendRange(next);
-        focusedIndex.value = next;
-      } else {
-        focusedIndex.value = next;
       }
+      // Move the cursor by id. On plain nav the caller also routes this
+      // id through selectMessage (which writes the same store ref); on
+      // Shift+Arrow this is the only write, so the cursor advances while
+      // the previewed message stays put.
+      focusedId.value = _idAt(next);
       result.consumed = true;
       result.focusChanged = true;
       result.focusedId = _idAt(next);
@@ -264,6 +277,7 @@ export function useListSelection({
   return {
     selectedIds,
     anchorIndex,
+    focusedId,
     focusedIndex,
     selectionCount,
     hasSelection,

@@ -26,7 +26,7 @@ const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
 // useListSelection needs the actual ref<Set> so it can replace the
 // Set instance when it mutates (the `_bump()` pattern), and a plain
 // `mailStore.selectedIds` access returns the unwrapped value.
-const { messages, selectedIds } = storeToRefs(mailStore);
+const { messages, selectedIds, focusedMessageId } = storeToRefs(mailStore);
 
 const unreadOnly = ref(false);
 const quickFilterNeedle = computed(() => normalizeFilterText(props.quickFilterQuery));
@@ -72,6 +72,10 @@ const {
   rows: visibleMessages,
   total: computed(() => rowCount.value),
   selectedIds,
+  // The keyboard cursor is the store's focusedMessageId, so the global
+  // shortcut handler (F/B/N/P via selectMessage) and arrow nav share
+  // one source of truth and the scroll-follow watcher below tracks it.
+  focusedId: focusedMessageId,
 });
 
 const {
@@ -216,6 +220,47 @@ function onScroll() {
     }
   });
 }
+
+// Keep the virtualized viewport following the keyboard cursor. Every
+// path that moves the cursor — Arrow and Shift+Arrow (useListSelection),
+// the global Thunderbird shortcuts (F/B/N/P/Home/End ->
+// selectMessage), a row click, and the neighbour that becomes current
+// after a delete/archive — funnels through mailStore.focusedMessageId.
+// Because the list is virtualized, an off-screen cursor row isn't even
+// in the DOM to scroll to, so watching this single source of truth and
+// driving the virtualizer is the general fix rather than patching each
+// call site. Tracking the cursor (not the previewed selectedMessageId)
+// is what lets a Shift+Arrow range extension scroll the viewport too.
+// aria-activedescendant target for the scroller's listbox role. The
+// cursor row is always scrolled into view, so its <li id> is rendered
+// and the reference resolves; undefined clears it when nothing is
+// focused.
+const activeRowDomId = computed(() => (mailStore.focusedMessageId == null
+  ? undefined
+  : `msg-row-${mailStore.focusedMessageId}`));
+
+function scrollCursorIntoView(messageId: number) {
+  if (!scrollEl.value) return;
+  const index = visibleMessages.value.findIndex((row) => row?.id === messageId);
+  if (index < 0) return;
+  // align: 'auto' is a no-op when the row is already fully visible, so a
+  // plain row click never yanks the list; it scrolls only the minimum
+  // needed when keyboard nav steps the cursor past a viewport edge.
+  virtualizer.value.scrollToIndex(index, { align: 'auto' });
+}
+
+watch(
+  () => mailStore.focusedMessageId,
+  async (messageId) => {
+    if (messageId == null) return;
+    // Let visibleMessages / virtualizer count settle (e.g. when a
+    // delete mutates the row array in the same tick as the cursor
+    // move) before resolving the target index.
+    await nextTick();
+    if (mailStore.focusedMessageId !== messageId) return;
+    scrollCursorIntoView(messageId);
+  },
+);
 
 watch(
   () => mailStore.currentFolderId,
@@ -474,6 +519,9 @@ function normalizeFilterText(value) {
       ref="scrollEl"
       class="msg-list__scroller"
       tabindex="0"
+      role="listbox"
+      aria-label="Messages"
+      :aria-activedescendant="activeRowDomId"
       @scroll="onScroll"
       @keydown="handleKeyDown"
     >
@@ -484,11 +532,14 @@ function normalizeFilterText(value) {
         <RefreshCw :size="18" class="is-spinning" />
         <p>Loading {{ folderName }}…</p>
       </div>
-      <ol class="msg-list__items" :style="{ height: totalSize + 'px' }">
+      <ol class="msg-list__items" role="presentation" :style="{ height: totalSize + 'px' }">
         <template v-for="v in virtualItems" :key="v.key">
           <li
             v-if="visibleMessages[v.index]"
+            :id="`msg-row-${visibleMessages[v.index].id}`"
             :data-index="v.index"
+            role="option"
+            :aria-selected="isSelected(visibleMessages[v.index].id)"
             :class="{
               'is-focused': mailStore.selectedMessageId === visibleMessages[v.index].id,
               'is-selected': isSelected(visibleMessages[v.index].id),
@@ -506,7 +557,6 @@ function normalizeFilterText(value) {
           >
             <div
               class="msg-list__item"
-              role="button"
               tabindex="-1"
               draggable="true"
               @click="onRowClick(v.index, $event)"

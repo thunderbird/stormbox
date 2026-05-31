@@ -173,12 +173,27 @@ describe('useThunderbirdShortcuts', () => {
     mountHarness();
     const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
-    mailStore.selectedMessageId = 1;
+    mailStore.selectMessage(1);
 
     fireKey('f');
     expect(mailStore.selectedMessageId).toBe(2);
 
     fireKey('b');
+    expect(mailStore.selectedMessageId).toBe(1);
+  });
+
+  it('F and B move the keyboard cursor in lockstep with the preview', () => {
+    mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
+    mailStore.selectMessage(1);
+
+    fireKey('f');
+    expect(mailStore.focusedMessageId).toBe(2);
+    expect(mailStore.selectedMessageId).toBe(2);
+
+    fireKey('b');
+    expect(mailStore.focusedMessageId).toBe(1);
     expect(mailStore.selectedMessageId).toBe(1);
   });
 

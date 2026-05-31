@@ -100,6 +100,16 @@ export const useMailStore = defineStore('mail', () => {
   const totalForFolder = ref(0);
   const folderProgress = ref<Map<number, QueryViewProgress>>(new Map());
   const selectedMessageId = ref<number | null>(null);
+  // Keyboard "cursor": the active row, as a stable id. Single source of
+  // truth for which row the keyboard is on, written by every navigation
+  // path (Arrow/Shift+Arrow via useListSelection, F/B/N/P/Home/End via
+  // useThunderbirdShortcuts -> selectMessage, click, and delete/archive
+  // auto-advance). MessageList drives scroll-follow and
+  // aria-activedescendant off this. It coincides with selectedMessageId
+  // on plain nav/click but intentionally diverges during a Shift+Arrow
+  // range extension, where the cursor advances without changing the
+  // previewed message.
+  const focusedMessageId = ref<number | null>(null);
   // Multi-select set, distinct from `selectedMessageId` (which is the
   // "focused / previewed" row). Ports Overture's split between
   // SelectionController (set) and SingleSelectionController (current).
@@ -194,6 +204,7 @@ export const useMailStore = defineStore('mail', () => {
     currentFolderId.value = null;
     totalForFolder.value = 0;
     selectedMessageId.value = null;
+    focusedMessageId.value = null;
     selectedIds.value = new Set();
     folderProgress.value = new Map();
     folderStates.clear();
@@ -402,6 +413,7 @@ export const useMailStore = defineStore('mail', () => {
     // bug entirely.
     currentFolderId.value = folderId;
     selectedMessageId.value = null;
+    focusedMessageId.value = null;
     selectedIds.value = new Set();
     messageBody.value = null;
     if (folderId == null) {
@@ -1107,6 +1119,10 @@ export const useMailStore = defineStore('mail', () => {
    */
   function selectMessage(messageId: number | null) {
     selectedMessageId.value = messageId;
+    // Plain nav/click/global-shortcut/delete-advance all couple the
+    // cursor to the preview. Shift+Arrow range extension is the one
+    // path that moves the cursor without calling selectMessage.
+    focusedMessageId.value = messageId;
     if (messageId == null || authStore.accountId == null) {
       bodyPrefetch.messageBody.value = null;
       return;
@@ -1587,6 +1603,9 @@ export const useMailStore = defineStore('mail', () => {
       selectedMessageId.value = null;
       messageBody.value = null;
     }
+    if (focusedMessageId.value != null && set.has(Number(focusedMessageId.value))) {
+      focusedMessageId.value = null;
+    }
     if (selectedIds.value.size > 0) {
       let changed = false;
       const next = new Set(selectedIds.value);
@@ -1985,6 +2004,7 @@ export const useMailStore = defineStore('mail', () => {
     messages,
     totalForFolder,
     selectedMessageId,
+    focusedMessageId,
     selectedIds,
     messageBody,
     isLoading,

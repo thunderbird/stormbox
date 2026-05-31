@@ -1194,6 +1194,41 @@ describe('successor selection after removal', () => {
   });
 });
 
+describe('focusedMessageId (keyboard cursor)', () => {
+  it('couples the cursor to the preview on selectMessage and clears it on deselect', async () => {
+    const inbox = makeFolder(1, { total_emails: 3 });
+    const { mailStore } = await setupStore({
+      folders: [inbox],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectMessage(2);
+    expect(mailStore.focusedMessageId).toBe(2);
+
+    mailStore.selectMessage(null);
+    expect(mailStore.focusedMessageId).toBeNull();
+  });
+
+  it('advances the cursor to the successor row after a delete', async () => {
+    const inbox = makeFolder(1, { total_emails: 3 });
+    const trash = makeFolder(2, { role: 'trash' });
+    const { mailStore } = await setupStore({
+      folders: [inbox, trash],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectMessage(2);
+    await flush();
+    await mailStore.destroyMessage(2);
+    await flush();
+
+    expect(mailStore.selectedMessageId).toBe(3);
+    expect(mailStore.focusedMessageId).toBe(3);
+  });
+});
+
 describe('moveMessages', () => {
   it('refetches a previously visited destination folder after moving a message into it', async () => {
     const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });

@@ -37,6 +37,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
         },
       );
     },
+    scrollToIndex: () => {},
     measure: () => {},
   })),
 }));
