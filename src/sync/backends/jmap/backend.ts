@@ -56,6 +56,13 @@ const SUBSCRIBED_TYPES = [
   'ContactCard',
 ];
 
+// How many mailbox-window views the startup / push catch-up reconciles
+// by recency. The inbox view is always reconciled in addition to these
+// (see _refreshActiveQueryViews), since it is the folder the UI opens
+// by default and must never be left stale just because the user last
+// browsed other folders.
+const ACTIVE_VIEW_REFRESH_LIMIT = 5;
+
 export class JmapBackend {
   transport: any;
   serverOrigin: string;
@@ -272,26 +279,45 @@ export class JmapBackend {
   }
 
   async _continueBootstrap() {
-    const idResult = await syncIdentities({
-      transport: this.transport,
-      account: this.account,
-      handlers: this.handlers,
-    });
-    wlog.info('jmap-backend', `syncIdentities -> ${idResult.count} identities`);
+    // Identities and contacts are auxiliary to the mail list. A
+    // transient failure on Identity/get or any contacts call must NOT
+    // abort the rest of the bootstrap chain: the mail-view catch-up
+    // below (_refreshActiveQueryViews) is what reconciles a warm
+    // relogin's persisted inbox against the server, and on a fresh
+    // login the inbox is painted from last session's
+    // query_view_items. If an identities/contacts error short-circuited
+    // _continueBootstrap, that catch-up would never run and a
+    // returning user would keep looking at stale mail until they
+    // manually refreshed. Each auxiliary step is therefore isolated so
+    // its failure degrades only itself.
+    try {
+      const idResult = await syncIdentities({
+        transport: this.transport,
+        account: this.account,
+        handlers: this.handlers,
+      });
+      wlog.info('jmap-backend', `syncIdentities -> ${idResult.count} identities`);
+    } catch (err) {
+      wlog.warn('jmap-backend', 'syncIdentities failed; continuing bootstrap', err);
+    }
 
     if (this._hasContactsService()) {
-      const abResult = await syncAddressBooks({
-        transport: this.transport,
-        account: this.account,
-        handlers: this.handlers,
-      });
-      wlog.info('jmap-backend', `syncAddressBooks -> ${abResult.count}`);
-      const cResult = await syncContacts({
-        transport: this.transport,
-        account: this.account,
-        handlers: this.handlers,
-      });
-      wlog.info('jmap-backend', `syncContacts -> ${cResult.fetched} fetched of ${cResult.total}`);
+      try {
+        const abResult = await syncAddressBooks({
+          transport: this.transport,
+          account: this.account,
+          handlers: this.handlers,
+        });
+        wlog.info('jmap-backend', `syncAddressBooks -> ${abResult.count}`);
+        const cResult = await syncContacts({
+          transport: this.transport,
+          account: this.account,
+          handlers: this.handlers,
+        });
+        wlog.info('jmap-backend', `syncContacts -> ${cResult.fetched} fetched of ${cResult.total}`);
+      } catch (err) {
+        wlog.warn('jmap-backend', 'contacts sync failed; continuing bootstrap', err);
+      }
     }
 
     if (this.useWebSocket) {
@@ -1032,11 +1058,35 @@ export class JmapBackend {
   }
 
   async _refreshActiveQueryViews() {
+    // Reconcile the N most-recently-accessed mailbox windows AND the
+    // inbox window, unioned and de-duplicated. The inbox is forced in
+    // regardless of its recency rank because it is the folder the UI
+    // auto-opens on login: if a user's previous session ended deep in
+    // other folders, a plain "top N by last_accessed_at" window would
+    // push the inbox out and leave newly-delivered mail invisible
+    // until a push frame or a manual refresh arrived.
     const views = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT * FROM query_views
              WHERE account_id = ? AND view_type = 'mailbox-window'
-             ORDER BY last_accessed_at DESC LIMIT 5`,
-      params: [this.account.id],
+               AND (
+                 folder_id IN (
+                   SELECT id FROM folders
+                   WHERE account_id = ? AND role = 'inbox'
+                 )
+                 OR id IN (
+                   SELECT id FROM query_views
+                   WHERE account_id = ? AND view_type = 'mailbox-window'
+                   ORDER BY last_accessed_at DESC
+                   LIMIT ?
+                 )
+               )
+             ORDER BY last_accessed_at DESC`,
+      params: [
+        this.account.id,
+        this.account.id,
+        this.account.id,
+        ACTIVE_VIEW_REFRESH_LIMIT,
+      ],
     });
     // Track ids that newly entered an active view as a result of
     // this refresh so we can eagerly fetch their bodies into the

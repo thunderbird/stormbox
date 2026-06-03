@@ -1568,3 +1568,288 @@ describe('JmapBackend StateChange dispatch', () => {
     await backend.stop();
   });
 });
+
+describe('JmapBackend startup catch-up resilience', () => {
+  // These tests cover the "new inbox mail isn't loaded on initial
+  // login" report. On a warm relogin the inbox list is painted from
+  // the previous session's persisted query_view_items; the only thing
+  // that reconciles it against the server before the user manually
+  // refreshes is the startup _refreshActiveQueryViews pass
+  // (Email/queryChanges per active view). Each test seeds a warm
+  // inbox view whose newer item (e-2) the server has since removed and
+  // asserts the catch-up reconciles it down to [e-1]. They are RED
+  // today because the catch-up either never runs or skips the inbox.
+
+  /**
+   * Seed an account + inbox folder + a mailbox-window query view left
+   * over from a previous session, containing two items (e-1, e-2).
+   * Returns the local ids the assertions need.
+   */
+  async function seedWarmInbox({ accessedAt = Date.now() } = {}) {
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{
+        remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox',
+        totalEmails: 1, unreadEmails: 0,
+      }],
+    });
+    const inboxRow = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-inbox'],
+    );
+    const ts = Date.now();
+    await handlers[DB_RPC.QUERY]({
+      sql: `INSERT INTO query_views(
+              account_id, view_type, folder_id, filter_json, sort_json,
+              collapse_threads, query_state, can_calculate_changes, total,
+              created_at, updated_at, last_accessed_at
+            ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, 'eqs-inbox', 1, 2, ?, ?, ?)`,
+      params: [
+        account.id,
+        inboxRow.id,
+        JSON.stringify({ inMailbox: 'mb-inbox' }),
+        JSON.stringify([{ property: 'receivedAt', isAscending: false }]),
+        ts, ts, accessedAt,
+      ],
+    });
+    const view = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inboxRow.id],
+    );
+    await handlers[DB_RPC.TRANSACTION]({
+      statements: ['e-1', 'e-2'].map((id, i) => ({
+        sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+              VALUES (?, ?, NULL, ?)`,
+        params: [view.id, i, id],
+      })),
+    });
+    return { account, inboxRow, viewId: view.id };
+  }
+
+  it('still runs the inbox queryChanges catch-up when identities sync fails on login', async () => {
+    // Bug: _continueBootstrap awaits syncIdentities (and syncContacts)
+    // BEFORE _refreshActiveQueryViews, with no per-step error
+    // isolation. A transient failure on Identity/get (or any contacts
+    // call) therefore rejects the whole bootstrap chain and the
+    // startup inbox catch-up never runs — so a returning user keeps
+    // looking at the previous session's stale inbox (the e-2 the
+    // server already removed stays put, and symmetrically newly
+    // delivered mail never lands) until they manually hit refresh.
+    //
+    // The fix must isolate the identities/contacts steps so a failure
+    // there cannot suppress the mail-view catch-up.
+    const { viewId } = await seedWarmInbox();
+
+    let queryChangesCalls = 0;
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1 }],
+        state: 'mb-1',
+      }),
+      // Simulate a flaky submission/identity endpoint at login time.
+      'Identity/get': () => { throw new Error('Identity/get 503'); },
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/queryChanges': (params) => {
+        queryChangesCalls += 1;
+        return {
+          oldQueryState: params.sinceQueryState,
+          newQueryState: 'eqs-inbox-2',
+          total: 1,
+          removed: ['e-2'],
+          added: [],
+        };
+      },
+      'Email/get': () => ({ list: [], state: 'es-1' }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    // Swallow the expected bootstrap error log so the test output
+    // stays clean; the contract under test is the side effect, not
+    // the log line.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const startPromise = backend.start();
+    // After the fix the bootstrap reaches openWebSocket; feed it an
+    // open socket so the catch-up can run over WS. In the buggy path
+    // the chain rejects before any socket is created, so this waiter
+    // simply stays pending and is harmless.
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+
+    expect(queryChangesCalls).toBeGreaterThan(0);
+    const items = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [viewId],
+    );
+    expect(items.map((i) => i.remote_id)).toEqual(['e-1']);
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+    await backend.stop();
+  });
+
+  it('catches up the inbox on login even when five other folders were viewed more recently', async () => {
+    // Bug: _refreshActiveQueryViews only refreshes the 5 query_views
+    // with the most recent last_accessed_at (ORDER BY ... DESC LIMIT
+    // 5). A user who, in their previous session, last browsed five
+    // non-inbox folders pushes the inbox out of that window — so on
+    // next login the inbox is the one folder that does NOT get a
+    // queryChanges catch-up, even though it's the folder that opens by
+    // default. New inbox mail therefore doesn't appear until a push
+    // frame or a manual refresh.
+    //
+    // The fix must guarantee the inbox (and/or the folder that will be
+    // auto-opened) is always part of the startup catch-up.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+
+    const folderDefs = [
+      { remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        remoteId: `mb-f${i + 1}`, name: `Folder ${i + 1}`, role: null,
+      })),
+    ];
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: folderDefs.map((f) => ({ ...f, totalEmails: 1, unreadEmails: 0 })),
+    });
+    const folderRows = await handlers[DB_RPC.FOLDER_LIST]({ accountId: account.id });
+    const byRemote = new Map<string, any>(
+      folderRows.map((f: any) => [f.remote_id, f]),
+    );
+
+    const baseTs = Date.now();
+    // Inbox is the OLDEST-accessed view; the five others are all newer,
+    // so a naive "5 most recently accessed" window excludes the inbox.
+    const seeds: Array<[string, number, string]> = [
+      ['mb-inbox', baseTs - 10_000, 'eqs-inbox'],
+      ['mb-f1', baseTs - 5, 'eqs-f1'],
+      ['mb-f2', baseTs - 4, 'eqs-f2'],
+      ['mb-f3', baseTs - 3, 'eqs-f3'],
+      ['mb-f4', baseTs - 2, 'eqs-f4'],
+      ['mb-f5', baseTs - 1, 'eqs-f5'],
+    ];
+    for (const [remote, accessedAt, queryState] of seeds) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `INSERT INTO query_views(
+                account_id, view_type, folder_id, filter_json, sort_json,
+                collapse_threads, query_state, can_calculate_changes, total,
+                created_at, updated_at, last_accessed_at
+              ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, ?, 1, 2, ?, ?, ?)`,
+        params: [
+          account.id,
+          byRemote.get(remote).id,
+          JSON.stringify({ inMailbox: remote }),
+          JSON.stringify([{ property: 'receivedAt', isAscending: false }]),
+          queryState, baseTs, baseTs, accessedAt,
+        ],
+      });
+    }
+    const inboxView = await engine.get(
+      'SELECT id FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, byRemote.get('mb-inbox').id],
+    );
+    await handlers[DB_RPC.TRANSACTION]({
+      statements: ['e-1', 'e-2'].map((id, i) => ({
+        sql: `INSERT INTO query_view_items(view_id, position, message_id, remote_id)
+              VALUES (?, ?, NULL, ?)`,
+        params: [inboxView.id, i, id],
+      })),
+    });
+
+    const seenInMailboxes: Array<string | undefined> = [];
+    const scenario = {
+      'Mailbox/get': () => ({
+        // JMAP Mailbox/get returns mailbox `id`s; syncMailboxes maps
+        // them to folders.remote_id.
+        list: folderDefs.map((f) => ({
+          id: f.remoteId, name: f.name, role: f.role, totalEmails: 1,
+        })),
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+      'Email/queryChanges': (params) => {
+        const inMailbox = params.filter?.inMailbox;
+        seenInMailboxes.push(inMailbox);
+        if (inMailbox === 'mb-inbox') {
+          return {
+            oldQueryState: params.sinceQueryState,
+            newQueryState: 'eqs-inbox-2',
+            total: 1,
+            removed: ['e-2'],
+            added: [],
+          };
+        }
+        return {
+          oldQueryState: params.sinceQueryState,
+          newQueryState: `${params.sinceQueryState}-2`,
+          total: 0,
+          removed: [],
+          added: [],
+        };
+      },
+      'Email/get': () => ({ list: [], state: 'es-1' }),
+    };
+    const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport, serverOrigin: 'https://mail.example.com', handlers,
+    });
+
+    const startPromise = backend.start();
+    queueMicrotask(async () => {
+      const ws = await FakeWebSocket._waitForInstance();
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+    });
+    await startPromise;
+    await backend.bootstrapped();
+
+    // The inbox view must have been part of the startup catch-up.
+    expect(seenInMailboxes).toContain('mb-inbox');
+    const items = await engine.all(
+      'SELECT remote_id FROM query_view_items WHERE view_id = ? ORDER BY position',
+      [inboxView.id],
+    );
+    expect(items.map((i) => i.remote_id)).toEqual(['e-1']);
+
+    await backend.stop();
+  });
+});
