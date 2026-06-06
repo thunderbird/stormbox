@@ -11,24 +11,40 @@ import {
   shouldRewriteKeycloakBody,
 } from '../../../vite.local-stack.mjs';
 
+type ProxyHeaders = Record<string, string | string[] | undefined>;
+
+interface BufferedRequest {
+  body: Buffer;
+  headers: ProxyHeaders;
+  rewriteBody?: boolean;
+  rewriteBodyFn?: (body: string) => string;
+  statusCode?: number;
+}
+
+interface BufferedResult {
+  body: Buffer;
+  headers: ProxyHeaders;
+  status: number;
+}
+
 function bufferedResponse({
   body,
   headers,
   rewriteBody = false,
   rewriteBodyFn,
   statusCode = 200,
-}) {
-  return new Promise((resolve) => {
-    const proxyRes = new EventEmitter();
-    proxyRes.headers = headers;
-    proxyRes.statusCode = statusCode;
+}: BufferedRequest): Promise<BufferedResult> {
+  return new Promise<BufferedResult>((resolve) => {
+    const proxyRes = Object.assign(new EventEmitter(), { headers, statusCode });
 
     const res = {
-      writeHead(status, writtenHeaders) {
+      status: 0,
+      headers: {} as ProxyHeaders,
+      writeHead(status: number, writtenHeaders: ProxyHeaders) {
         this.status = status;
         this.headers = writtenHeaders;
       },
-      end(writtenBody) {
+      end(writtenBody: Buffer | string) {
         resolve({
           body: Buffer.from(writtenBody),
           headers: this.headers,
@@ -37,10 +53,8 @@ function bufferedResponse({
       },
     };
 
-    bufferAndRewriteResponse(proxyRes, { url: '/test' }, res, {
-      rewriteBody,
-      rewriteBodyFn,
-    });
+    const rewriteOptions = { rewriteBody, rewriteBodyFn };
+    bufferAndRewriteResponse(proxyRes, { url: '/test' }, res, rewriteOptions);
 
     proxyRes.emit('data', body);
     proxyRes.emit('end');
