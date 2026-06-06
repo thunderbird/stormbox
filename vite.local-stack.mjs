@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import http from "node:http";
+import zlib from "node:zlib";
 
 /**
  * Vite dev-server proxies for LOCAL_STACK=1.
@@ -65,24 +66,80 @@ function stripHopByHopHeaders(headers) {
   return next;
 }
 
-function bufferAndRewriteResponse(proxyRes, req, res, { rewriteBody = false, rewriteBodyFn, rewriteHeadersFn } = {}) {
+function stripStaleBodyHeaders(headers) {
+  delete headers["content-encoding"];
+  delete headers["content-md5"];
+  delete headers["digest"];
+  delete headers.etag;
+}
+
+function contentEncoding(headers) {
+  return String(headers["content-encoding"] ?? "").trim().toLowerCase();
+}
+
+function decodeBody(body, encoding) {
+  switch (encoding) {
+    case "":
+    case "identity":
+      return Promise.resolve(body);
+    case "br":
+      return new Promise((resolve, reject) => {
+        zlib.brotliDecompress(body, (err, decoded) => (err ? reject(err) : resolve(decoded)));
+      });
+    case "deflate":
+      return new Promise((resolve, reject) => {
+        zlib.inflate(body, (err, decoded) => (err ? reject(err) : resolve(decoded)));
+      });
+    case "gzip":
+    case "x-gzip":
+      return new Promise((resolve, reject) => {
+        zlib.gunzip(body, (err, decoded) => (err ? reject(err) : resolve(decoded)));
+      });
+    default:
+      return Promise.reject(new Error(`Unsupported proxied response encoding: ${encoding}`));
+  }
+}
+
+export function shouldRewriteKeycloakBody(req, proxyRes) {
+  const contentType = String(proxyRes.headers["content-type"] ?? "");
+  return Boolean(
+    req.url?.includes(".well-known/openid-configuration")
+      || contentType.includes("json")
+      || contentType.includes("html"),
+  );
+}
+
+export function bufferAndRewriteResponse(proxyRes, req, res, { rewriteBody = false, rewriteBodyFn, rewriteHeadersFn } = {}) {
   const chunks = [];
   proxyRes.on("data", (chunk) => chunks.push(chunk));
-  proxyRes.on("end", () => {
+  proxyRes.on("end", async () => {
     let body = Buffer.concat(chunks);
     const rewrittenHeaders = rewriteHeadersFn ? rewriteHeadersFn(proxyRes.headers) : proxyRes.headers;
     const headers = stripHopByHopHeaders(rewrittenHeaders);
     delete headers["content-length"];
 
-    if (rewriteBody) {
-      const text = body.toString("utf8");
-      const rewritten = rewriteBodyFn ? rewriteBodyFn(text) : text;
-      body = Buffer.from(rewritten, "utf8");
-    }
+    try {
+      if (rewriteBody) {
+        body = await decodeBody(body, contentEncoding(headers));
+        stripStaleBodyHeaders(headers);
 
-    headers["content-length"] = String(body.length);
-    res.writeHead(proxyRes.statusCode ?? 502, headers);
-    res.end(body);
+        const text = body.toString("utf8");
+        const rewritten = rewriteBodyFn ? rewriteBodyFn(text) : text;
+        body = Buffer.from(rewritten, "utf8");
+      }
+
+      headers["content-length"] = String(body.length);
+      res.writeHead(proxyRes.statusCode ?? 502, headers);
+      res.end(body);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errorBody = Buffer.from(`Proxy response rewrite failed: ${message}`, "utf8");
+      res.writeHead(502, {
+        "content-length": String(errorBody.length),
+        "content-type": "text/plain; charset=utf-8",
+      });
+      res.end(errorBody);
+    }
   });
 }
 
@@ -93,18 +150,17 @@ export function keycloakDevProxy(target) {
     secure: false,
     selfHandleResponse: true,
     headers: {
+      "Accept-Encoding": "identity",
       "X-Forwarded-Proto": "https",
       "X-Forwarded-Host": "localhost:3000",
       "X-Forwarded-Port": "3000",
     },
     configure(proxy) {
+      proxy.on("proxyReq", (proxyReq) => {
+        proxyReq.setHeader("Accept-Encoding", "identity");
+      });
       proxy.on("proxyRes", (proxyRes, req, res) => {
-        const ct = String(proxyRes.headers["content-type"] ?? "");
-        const shouldRewrite =
-          req.url?.includes(".well-known/openid-configuration")
-          || ct.includes("json")
-          || ct.includes("html")
-          || ct.includes("javascript");
+        const shouldRewrite = shouldRewriteKeycloakBody(req, proxyRes);
         bufferAndRewriteResponse(proxyRes, req, res, {
           rewriteBody: shouldRewrite,
           rewriteBodyFn: rewriteKeycloakBody,

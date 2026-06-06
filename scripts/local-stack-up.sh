@@ -8,6 +8,32 @@ APP_COMPOSE=(docker compose -f .devcontainer/docker-compose.yml)
 STACK_COMPOSE=(docker compose -f thunderbird-accounts/docker-compose.yml)
 STACK_SERVICES=(kcpostgres keycloak stalwart)
 
+ensure_keycloak_theme_static() {
+  local static_dir="thunderbird-accounts/keycloak/themes/tbpro/static"
+  local image_id=""
+  local container_id=""
+
+  echo "[local-stack] ensuring local Keycloak theme static assets"
+  "${STACK_COMPOSE[@]}" build keycloak
+  image_id="$("${STACK_COMPOSE[@]}" images -q keycloak)"
+  if [[ -z "$image_id" ]] || ! docker image inspect "$image_id" >/dev/null 2>&1; then
+    image_id="thunderbird-accounts-keycloak:latest"
+  fi
+  if ! docker image inspect "$image_id" >/dev/null 2>&1; then
+    echo "[local-stack] could not resolve built Keycloak image" >&2
+    exit 1
+  fi
+
+  mkdir -p "$static_dir"
+  container_id="$(docker create "$image_id")"
+  if ! docker cp "$container_id:/opt/keycloak/themes/tbpro/static/." "$static_dir/"; then
+    docker rm "$container_id" >/dev/null
+    echo "[local-stack] failed to copy Keycloak theme static assets" >&2
+    exit 1
+  fi
+  docker rm "$container_id" >/dev/null
+}
+
 if [[ "${WITH_ACCOUNTS:-}" == "1" || "${WITH_ACCOUNTS:-}" == "true" ]]; then
   STACK_SERVICES=(postgres redis accounts mailpit "${STACK_SERVICES[@]}")
 fi
@@ -25,6 +51,8 @@ if [[ ! -f "$stalwart_config" ]] \
     sudo cp thunderbird-accounts/config.toml.example "$stalwart_config"
   fi
 fi
+
+ensure_keycloak_theme_static
 
 echo "[local-stack] starting local auth and mail services"
 "${STACK_COMPOSE[@]}" up --build -d "${STACK_SERVICES[@]}"
