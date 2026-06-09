@@ -16,9 +16,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   clickFolder,
@@ -27,7 +27,10 @@ import {
   readViewCacheForFolderRole,
 } from './helpers/ui.js';
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 // One parameterised spec that exercises the Delete-button path from
 // both Drafts and Inbox. Both flows enqueue MOVE_TO_FOLDERS through

@@ -14,9 +14,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   expectRowSoon,
@@ -35,7 +35,7 @@ import {
  * and the server moved the message to the Archive mailbox.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 // Stalwart's JMAP `subject:` filter stems "Archive" / "Archived" /
 // "Archives" all back to "archive", which collides with the 1500

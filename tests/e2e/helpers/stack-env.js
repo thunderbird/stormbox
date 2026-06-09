@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 
-/** Shared env for Playwright e2e against the local thunderbird-accounts stack. */
+import { loadE2eEnvFile } from './env-file.js';
+
+/** Shared env for Playwright live e2e against local or remote mail stacks. */
 
 function stackHost() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -10,24 +12,59 @@ function stackHost() {
 
 const host = stackHost();
 
-export const localStackEnabled =
-  process.env.LOCAL_STACK === '1' || process.env.LOCAL_STACK === 'true';
+function envFlag(name) {
+  return process.env[name] === '1' || process.env[name] === 'true';
+}
 
-export const skipLocalStackMessage =
-  'LOCAL_STACK not set; live local-stack e2e skipped (see README test:e2e:local)';
+loadE2eEnvFile({ remote: envFlag('E2E_BROWSERSTACK') });
+
+export const localStackEnabled =
+  envFlag('LOCAL_STACK');
+
+export const remoteE2eEnabled =
+  envFlag('E2E_BROWSERSTACK');
+
+export const liveE2eEnabled =
+  localStackEnabled || remoteE2eEnabled;
+
+export const skipLiveE2eMessage =
+  'LOCAL_STACK or E2E_BROWSERSTACK not set; live e2e skipped (see README E2E docs)';
+
+function requiredRemoteEnv(name) {
+  const value = process.env[name];
+  if (remoteE2eEnabled && !value) {
+    throw new Error(`E2E_BROWSERSTACK requires ${name} to be set`);
+  }
+  return value;
+}
+
+export const PLAYWRIGHT_BASE_URL =
+  remoteE2eEnabled
+    ? requiredRemoteEnv('PLAYWRIGHT_BASE_URL')
+    : process.env.PLAYWRIGHT_BASE_URL;
 
 export const JMAP_BASE_URL =
-  process.env.JMAP_BASE_URL ?? `http://${host}:8081`;
+  remoteE2eEnabled
+    ? requiredRemoteEnv('JMAP_BASE_URL')
+    : process.env.JMAP_BASE_URL ?? `http://${host}:8081`;
 
 export const OIDC_ISSUER =
-  process.env.OIDC_ISSUER ?? `http://${host}:8999/realms/tbpro`;
+  remoteE2eEnabled
+    ? requiredRemoteEnv('OIDC_ISSUER')
+    : process.env.OIDC_ISSUER ?? `http://${host}:8999/realms/tbpro`;
 
 export const OIDC_CLIENT_ID =
-  process.env.OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test';
+  remoteE2eEnabled
+    ? requiredRemoteEnv('OIDC_CLIENT_ID')
+    : process.env.OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test';
 
-// e2e tests run against a dedicated, isolated account so the
-// developer's own dev account (`admin@example.org`) doesn't get
-// polluted with seed mail, sweep deletions, or stray test artifacts.
+// Live e2e tests run against a dedicated account so developer
+// (`admin@example.org`) or user mailboxes do not get polluted with
+// seed mail, sweep deletions, or stray test artifacts. Local-stack
+// runs provision that account idempotently; remote runs require the
+// account to already exist and reuse it across suite runs.
+//
+// For local-stack runs:
 // `tests/fixtures/configure-keycloak.mjs` and
 // `tests/fixtures/configure-stalwart.mjs` create this account
 // idempotently on first run (and on every re-run, in case the
@@ -35,15 +72,22 @@ export const OIDC_CLIENT_ID =
 // HTTP APIs the accounts service would use (Keycloak admin API +
 // Stalwart management API), without touching the
 // thunderbird-accounts submodule.
+
 export const TEST_OIDC_EMAIL =
-  process.env.TEST_OIDC_EMAIL ?? 'e2e@example.org';
+  remoteE2eEnabled
+    ? requiredRemoteEnv('TEST_OIDC_EMAIL')
+    : process.env.TEST_OIDC_EMAIL ?? 'e2e@example.org';
 
 export const TEST_OIDC_PASSWORD =
-  process.env.TEST_OIDC_PASSWORD ?? 'e2e';
+  remoteE2eEnabled
+    ? requiredRemoteEnv('TEST_OIDC_PASSWORD')
+    : process.env.TEST_OIDC_PASSWORD ?? 'e2e';
 
 /** Provisioned primary Thundermail / JMAP From address for fixtures and JMAP helpers. */
 export const TEST_THUNDERMAIL =
-  process.env.TEST_THUNDERMAIL ?? TEST_OIDC_EMAIL;
+  remoteE2eEnabled
+    ? requiredRemoteEnv('TEST_THUNDERMAIL')
+    : process.env.TEST_THUNDERMAIL ?? TEST_OIDC_EMAIL;
 
 function stackHostForStalwartApi() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -80,4 +124,3 @@ export const TEST_SMTP_PASSWORD =
 export function selfEmail() {
   return TEST_THUNDERMAIL;
 }
-

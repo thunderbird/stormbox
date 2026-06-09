@@ -1,5 +1,16 @@
 # Use the official Node.js image as base
-FROM node:24-bookworm
+
+# We must keep node in this devcontainer pinned to 24:14, why?
+# We need to use @playwright/test 1.59.0 because that is the latest version that is
+# supported on BrowserStack / compatible with the latest browserstack-node-sdk (where
+# we optionally run E2E tests). In playwright/test 1.59 and earlier there is a known bug
+# where installing the playwright browsers hangs/fails if using node v24:15 or higher.
+# It is fixed in playwright/test 1.60.0 but as mentioned we cannot upgrade to that yet.
+# Therefore our only solution, in order to run tests in BrowserStack, is to use
+# playwrignt/test 1.59.0 and ensure we use node 24:14 at the highest. Once a new
+# browserstack-node-sdk is released that is compatible with @playwright/test 1.60+ then
+# we can upgrade the browserstack-node-sdk and remove this pinned node version.
+FROM node:24:14-bookworm
 
 # Install additional development tools
 RUN apt-get update && apt-get install -y \
@@ -17,7 +28,8 @@ RUN apt-get update && apt-get install -y \
 
 # Keep local E2E browser runtime dependencies in the image. Browser binaries
 # are installed in postCreateCommand so they match the checked-out lockfile.
-RUN npx -y playwright@1.60.0 install-deps chromium firefox \
+# Do NOT upgrade playwright as we need 1.59.0 as that is compatible with BrowserStack
+RUN npx -y playwright@1.59.0 install-deps chromium firefox \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

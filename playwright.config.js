@@ -2,9 +2,27 @@ import fs from 'node:fs';
 
 import { defineConfig, devices } from '@playwright/test';
 
+import { loadE2eEnvFile } from './tests/e2e/helpers/env-file.js';
+
+const rawRemoteE2e = process.env.E2E_BROWSERSTACK === '1' || process.env.E2E_BROWSERSTACK === 'true';
+loadE2eEnvFile({ remote: rawRemoteE2e });
+
 const PORT = process.env.PLAYWRIGHT_PORT ? Number(process.env.PLAYWRIGHT_PORT) : 3000;
 const LOCAL_STACK = process.env.LOCAL_STACK === '1' || process.env.LOCAL_STACK === 'true';
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `https://localhost:${PORT}`;
+const E2E_BROWSERSTACK = process.env.E2E_BROWSERSTACK === '1' || process.env.E2E_BROWSERSTACK === 'true';
+const LIVE_E2E = LOCAL_STACK || E2E_BROWSERSTACK;
+
+function requiredRemoteEnv(name) {
+  const value = process.env[name];
+  if (E2E_BROWSERSTACK && !value) {
+    throw new Error(`E2E_BROWSERSTACK requires ${name} to be set`);
+  }
+  return value;
+}
+
+const BASE_URL = E2E_BROWSERSTACK
+  ? requiredRemoteEnv('PLAYWRIGHT_BASE_URL')
+  : process.env.PLAYWRIGHT_BASE_URL ?? `https://localhost:${PORT}`;
 
 function stackProxyDefaults() {
   const inDocker = process.env.STORMBOX_IN_DOCKER === '1' || fs.existsSync('/.dockerenv');
@@ -45,6 +63,15 @@ function buildWebServer() {
       },
     };
   }
+  if (E2E_BROWSERSTACK) {
+    return {
+      command: 'true',
+      url: BASE_URL,
+      reuseExistingServer: true,
+      timeout: 10_000,
+      ignoreHTTPSErrors: true,
+    };
+  }
   if (process.env.PLAYWRIGHT_NO_REUSE) {
     return {
       command: `npm run dev -- --host 0.0.0.0 --port ${PORT}`,
@@ -70,7 +97,7 @@ function buildWebServer() {
 const STORAGE_STATE_CHROMIUM = '.playwright-auth/chromium.json';
 const STORAGE_STATE_FIREFOX = '.playwright-auth/firefox.json';
 
-// Firefox is the default LOCAL_STACK lane because the suite has
+// Firefox is the default live-e2e lane because the suite has
 // historically uncovered more Firefox-only regressions than
 // Chromium-only ones. Set INCLUDE_CHROMIUM=1 to also run the chromium
 // lane (e.g. for pre-merge / nightly), or pass --project=chromium
@@ -78,8 +105,8 @@ const STORAGE_STATE_FIREFOX = '.playwright-auth/firefox.json';
 const INCLUDE_CHROMIUM =
   process.env.INCLUDE_CHROMIUM === '1' || process.env.INCLUDE_CHROMIUM === 'true';
 
-function localStackProjects() {
-  if (!LOCAL_STACK) {
+function projects() {
+  if (!LIVE_E2E) {
     return [
       { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
       { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
@@ -115,8 +142,8 @@ function localStackProjects() {
   // don't stomp on each other.
   //
   // Both browser projects (when INCLUDE_CHROMIUM=1) run serially
-  // under workers: 1 because the single shared Stalwart account
-  // can't tolerate parallel mutation. The per-test speedup comes
+  // under workers: 1 because the single shared mail account can't
+  // tolerate parallel mutation. The per-test speedup comes
   // from storageState (Keycloak login skipped, ~3-5s per test),
   // not from worker parallelism.
   const firefoxProjects = [
@@ -158,18 +185,18 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   // One worker so specs do not parallel-mutate the single shared
-  // Stalwart account. Two browser projects under INCLUDE_CHROMIUM=1
+  // mail account. Two browser projects under INCLUDE_CHROMIUM=1
   // would race on the same mailbox; lifting workers to 2 needs a
   // second Thundermail principal first. The per-test speedup comes
   // from storageState (Keycloak login skipped), not from worker
   // parallelism.
-  workers: LOCAL_STACK ? 1 : undefined,
+  workers: LIVE_E2E ? 1 : undefined,
   forbidOnly: !!process.env.CI,
   // One retry covers the occasional Keycloak SSO blip; real
   // regressions fail twice in a row.
-  retries: LOCAL_STACK ? 1 : 0,
+  retries: LIVE_E2E ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
-  globalSetup: LOCAL_STACK ? './tests/e2e/global-setup.js' : undefined,
+  globalSetup: LIVE_E2E ? './tests/e2e/global-setup.js' : undefined,
 
   use: {
     baseURL: BASE_URL,
@@ -179,7 +206,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
 
-  projects: localStackProjects(),
+  projects: projects(),
 
   webServer: buildWebServer(),
 });

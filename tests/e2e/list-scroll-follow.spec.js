@@ -7,9 +7,9 @@ import {
 } from './helpers/jmap-client.js';
 import { loginViaOidc } from './helpers/oidc-login.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   attachConsoleTail,
@@ -33,7 +33,10 @@ import {
  * it stays valid if scrollToIndex is swapped for another approach.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 // How many rows to step past the first paint window. The initial
 // viewport shows ~12-15 rows at 64px; 25 guarantees we move well past

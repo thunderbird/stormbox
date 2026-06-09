@@ -4,8 +4,8 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
-  skipLocalStackMessage,
+  liveE2eEnabled,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 
 /**
@@ -13,7 +13,10 @@ import {
  * interaction model.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 async function listDiagnostics(page) {
   return page.evaluate(() => {

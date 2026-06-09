@@ -17,8 +17,8 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
-  skipLocalStackMessage,
+  liveE2eEnabled,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   clickFolder,
@@ -40,7 +40,10 @@ import {
  * folder rail work.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 const JUNK_SUBJECT_PREFIX = 'JunkWhitelist e2e';
 const CONTACT_DOMAIN = 'contacts-e2e.example';

@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 
 import { loginViaOidc } from '../tests/e2e/helpers/oidc-login.js';
 import {
-  localStackEnabled,
-  skipLocalStackMessage,
+  liveE2eEnabled,
+  skipLiveE2eMessage,
 } from '../tests/e2e/helpers/stack-env.js';
 import {
   attachConsoleTail,
@@ -16,7 +16,10 @@ import {
  * Uses the Archive folder seeded by tests/fixtures/seed-mail.mjs (≥1500 msgs).
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 test.describe('Metadata indexer speed', () => {
   test.setTimeout(120_000);

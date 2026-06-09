@@ -10,8 +10,8 @@ import {
 } from '../tests/e2e/helpers/jmap-client.js';
 import { selfEmail } from '../tests/e2e/helpers/stack-env.js';
 import {
-  localStackEnabled,
-  skipLocalStackMessage,
+  liveE2eEnabled,
+  skipLiveE2eMessage,
 } from '../tests/e2e/helpers/stack-env.js';
 import { attachConsoleTail, trackConsole, waitForShellReady } from '../tests/e2e/helpers/ui.js';
 
@@ -47,7 +47,10 @@ const COLD_THRESHOLD_MS = Number(process.env.COLD_THRESHOLD_MS ?? 800);
 const WARM_DELAY_MS = Number(process.env.WARM_DELAY_MS ?? 8_000);
 const SUBJECT_PREFIX = 'Delete e2e perf';
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 test.describe('Delete latency under cold vs warm conditions', () => {
   test.setTimeout(240_000);

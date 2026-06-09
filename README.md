@@ -123,6 +123,61 @@ The production bundle is written to `dist/`. That directory is static output and
 can be served by any static web host that supports the deployment's HTTPS and
 routing requirements.
 
+## Running E2E Tests in BrowserStack
+
+The same Playwright E2E specs can run in BrowserStack browsers against a publicly
+accessible Stormbox deployment (instead of the local Vite/local mail stack). The
+tests will still run from within the dev container but `E2E_BROWSERSTACK=1` tells
+Playwright to run the tests in BrowserStack against the public Webmail and skip local
+Keycloak/Stalwart provisioning.
+
+BrowserStack runs require a dedicated test account on the target platform. The account
+is reused across runs, so tests only clean messages with known E2E subject prefixes
+and must not rely on the mailbox or credentials being disposable.
+
+Copy `tests/e2e/.env.browserstack.example` to `tests/e2e/.env.browserstack` and fill in
+the target values:
+
+```bash
+E2E_BROWSERSTACK=1
+PLAYWRIGHT_BASE_URL=https://public-stormbox.example
+JMAP_BASE_URL=https://public-jmap.example
+OIDC_ISSUER=https://public-auth.example/realms/tbpro
+OIDC_CLIENT_ID=your-test-client-id
+TEST_OIDC_EMAIL=your-test-oidc-email
+TEST_OIDC_PASSWORD=secret
+TEST_THUNDERMAIL=your-test-thundermail-email
+
+# Optional if running on BrowserStack
+BROWSERSTACK_USERNAME=<your-browserstack-user-name>
+BROWSERSTACK_ACCESS_KEY=<your-browserstack-access-key>
+
+# SMTP/push-delivery coverage additionally needs remote SMTP settings
+SMTP_HOST=https://public-smtp.example
+SMTP_TLS_PORT=smtp-port
+TEST_SMTP_PASSWORD=secret
+```
+
+The real `tests/e2e/.env.browserstack` file is ignored because it contains reusable
+test account credentials.
+
+Start the dev container:
+```bash
+docker compose -f .devcontainer/docker-compose.yml up -d
+```
+
+Install container dependencies:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm ci'
+```
+
+Run E2E tests from the dev container but in BrowserStack:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -lc \
+  'cd /workspace && npm run test:e2e:browserstack:desktop:firefox'
+```
+
 ## Documentation
 
 - [Project docs](docs/README.md): architecture notes, storage design, research,
@@ -178,4 +233,3 @@ stormbox/
 - **wa-sqlite**: browser-local SQLite storage.
 - **Squire**: rich-text compose editor.
 - **@tanstack/vue-virtual**: virtualized message lists.
-
