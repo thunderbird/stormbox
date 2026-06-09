@@ -1,5 +1,6 @@
 # Use the official Node.js image as base
-FROM node:24-bookworm
+# Playwright 1.59 has a known issue with Node 24.16+ (we need Playwright 1.59.0 for BrowserStack; so pin node:24.15.0)
+FROM node:24.15.0-bookworm
 
 # Install additional development tools
 RUN apt-get update && apt-get install -y \
@@ -17,7 +18,8 @@ RUN apt-get update && apt-get install -y \
 
 # Keep local E2E browser runtime dependencies in the image. Browser binaries
 # are installed in postCreateCommand so they match the checked-out lockfile.
-RUN npx -y playwright@1.60.0 install-deps chromium firefox \
+# Do NOT upgrade to playwright 1.60+ b/c it's not supported yet on BrowserStack
+RUN npx -y playwright@1.59.1 install-deps chromium firefox \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

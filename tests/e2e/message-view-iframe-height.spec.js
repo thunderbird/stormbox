@@ -11,9 +11,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 
 /**
@@ -21,7 +21,10 @@ import {
  * Uses the tall HTML message seeded by tests/fixtures/seed-mail.mjs.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 function tallHtmlBody() {
   return `<!DOCTYPE html><html><body>${

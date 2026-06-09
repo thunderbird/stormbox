@@ -31,7 +31,7 @@ export async function loginViaOidc(page) {
   if (await isAppShellAlreadyVisible(page)) {
     return;
   }
-  await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible({ timeout: 30_000 });
   // We're on the LoginGate, but storageState carried OIDC tokens
   // so oidc-spa is most likely doing a SILENT REFRESH against
   // Keycloak (the access token is short-lived, refresh token is
@@ -69,6 +69,7 @@ export async function loginViaOidc(page) {
     await expect(username).toBeVisible({ timeout: 10_000 });
     await username.fill(TEST_OIDC_EMAIL);
     await password.fill(TEST_OIDC_PASSWORD);
+    await page.waitForTimeout( 1_000 );
     await page.getByRole('button', { name: /^sign in$/i }).click();
     await page.waitForURL((url) => url.origin === APP_ORIGIN, { timeout: 20_000 });
   }

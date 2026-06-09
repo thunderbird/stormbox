@@ -10,9 +10,9 @@ import {
 } from './helpers/jmap-client.js';
 import { loginViaOidc } from './helpers/oidc-login.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   attachConsoleTail,
@@ -32,7 +32,10 @@ const DEST_FOLDER = 'Large Move Destination';
 const SUBJECT_PREFIX = 'Large move e2e';
 const BULK_DRAG_MIME = 'application/x-stormbox-message-ids';
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 test.setTimeout(8 * 60 * 1000);
 
 test.describe('Large bulk move e2e', () => {

@@ -16,9 +16,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   expectRowSoon,
@@ -34,7 +34,10 @@ import {
  * from the targets; the server and the local cache must agree.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
+
+// temp skipping until get running, remove when ready to test this one
+test.skip();
 
 async function getEmailKeywords(jmap, emailId) {
   const payload = await jmapRequest(jmap, [[

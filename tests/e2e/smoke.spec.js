@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test';
 
+import {
+  remoteE2eEnabled,
+} from './helpers/stack-env.js';
+
 /**
  * Boot smoke test.
  *
@@ -15,6 +19,10 @@ import { test, expect } from '@playwright/test';
  *    "Database failed to initialise" message instead of "Failed.")
  *  - no fatal console errors leak through
  */
+
+// ensure we are not logged into stormbox for this test
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test('login gate renders and the SharedWorker SQLite boots', async ({ page }) => {
   const consoleErrors = [];
   page.on('console', (msg) => {
