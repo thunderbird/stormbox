@@ -123,6 +123,72 @@ The production bundle is written to `dist/`. That directory is static output and
 can be served by any static web host that supports the deployment's HTTPS and
 routing requirements.
 
+## Remote E2E
+
+The same Playwright E2E specs can run against a publicly accessible Stormbox
+deployment instead of the local Vite/local mail stack. Remote E2E commands still
+run inside the dev container, but `REMOTE_E2E=1` tells Playwright to reuse the
+public app URL and skip local Keycloak/Stalwart provisioning.
+
+Remote runs require a dedicated test account on the target platform. The account
+is reused across runs, so tests only clean messages with known E2E subject
+prefixes and must not rely on the mailbox or credentials being disposable.
+
+Copy `tests/e2e/.env.remote.example` to `tests/e2e/.env.remote` and fill in
+the target values:
+
+```bash
+REMOTE_E2E=1
+PLAYWRIGHT_BASE_URL=https://public-stormbox.example
+JMAP_BASE_URL=https://public-jmap.example
+OIDC_ISSUER=https://public-auth.example/realms/tbpro
+OIDC_CLIENT_ID=your-test-client-id
+TEST_OIDC_EMAIL=your-test-oidc-email
+TEST_OIDC_PASSWORD=secret
+TEST_THUNDERMAIL=your-test-thundermail-email
+
+# Optional if running on BrowserStack
+BROWSERSTACK_USERNAME=<your-browserstack-user-name>
+BROWSERSTACK_ACCESS_KEY=<your-browserstack-access-key>
+
+# SMTP/push-delivery coverage additionally needs remote SMTP settings
+SMTP_HOST=https://public-smtp.example
+SMTP_TLS_PORT=smtp-port
+TEST_SMTP_PASSWORD=secret
+```
+
+The real `tests/e2e/.env.remote` file is ignored because it contains reusable
+test account credentials.
+
+Start the dev container:
+```bash
+docker compose -f .devcontainer/docker-compose.yml up -d
+```
+
+Install container dependencies:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm ci'
+```
+
+Install playwright browsers:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npx playwright install firefox chromium'
+```
+
+Run remote E2E in the dev container:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:e2e:remote'
+```
+
+Run remote E2E from the dev container but in a BrowserStack browser:
+```bash
+docker compose -f .devcontainer/docker-compose.yml exec app bash -lc \
+  'cd /workspace && npm run test:e2e:remote:browserstack:desktop:firefox'
+```
+
 ## Documentation
 
 - [Project docs](docs/README.md): architecture notes, storage design, research,
@@ -178,4 +244,3 @@ stormbox/
 - **wa-sqlite**: browser-local SQLite storage.
 - **Squire**: rich-text compose editor.
 - **@tanstack/vue-virtual**: virtualized message lists.
-

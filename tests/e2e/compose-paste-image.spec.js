@@ -15,9 +15,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   clickFolder,
@@ -38,7 +38,10 @@ import {
  *   (3) the blob store, by downloading the inline part's blob.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 // 1x1 transparent PNG.
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';

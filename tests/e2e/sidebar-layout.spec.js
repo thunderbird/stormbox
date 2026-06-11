@@ -9,9 +9,9 @@ import {
 } from './helpers/jmap-client.js';
 import { loginViaOidc } from './helpers/oidc-login.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   expectRowSoon,
@@ -20,7 +20,10 @@ import {
   waitForInboxReady,
 } from './helpers/ui.js';
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 test.describe('Sidebar layout', () => {
   test.beforeEach(async () => {

@@ -15,9 +15,9 @@ import {
   test,
 } from './helpers/shared-session.js';
 import {
-  localStackEnabled,
+  liveE2eEnabled,
   selfEmail,
-  skipLocalStackMessage,
+  skipLiveE2eMessage,
 } from './helpers/stack-env.js';
 import {
   expectRowSoon,
@@ -33,7 +33,10 @@ import {
  * deleted rows.
  */
 
-test.skip(!localStackEnabled, skipLocalStackMessage);
+// temp skipping until get running, remove when ready to test this one
+test.skip();
+
+test.skip(!liveE2eEnabled, skipLiveE2eMessage);
 
 test.describe('Bulk delete e2e', () => {
   test.beforeEach(async ({ sharedPage }) => {

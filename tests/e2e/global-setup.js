@@ -1,20 +1,19 @@
-import fs from 'node:fs';
-
 import { configureKeycloak } from '../fixtures/configure-keycloak.mjs';
 import { configureStalwart } from '../fixtures/configure-stalwart.mjs';
+import {
+  JMAP_BASE_URL,
+  OIDC_ISSUER,
+  PLAYWRIGHT_BASE_URL,
+  localStackEnabled,
+  remoteE2eEnabled,
+} from './helpers/stack-env.js';
 
-function stackHost() {
-  if (process.env.STACK_HOST) return process.env.STACK_HOST;
-  const inDocker = process.env.STORMBOX_IN_DOCKER === '1' || fs.existsSync('/.dockerenv');
-  return inDocker ? '172.17.0.1' : '127.0.0.1';
-}
-
-const host = stackHost();
-const JMAP_BASE = process.env.JMAP_BASE_URL ?? `http://${host}:8081`;
-const OIDC_ISSUER = process.env.OIDC_ISSUER ?? `http://${host}:8999/realms/tbpro`;
 const WS_PROXY = process.env.WS_PROXY_URL ?? 'http://127.0.0.1:8787';
 
-async function checkUrl(label, url, { okStatuses = [200] } = {}) {
+async function checkUrl(label, url, {
+  okStatuses = [200],
+  failureHint = '',
+} = {}) {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(5_000), redirect: 'follow' });
     if (!okStatuses.includes(res.status)) {
@@ -23,23 +22,56 @@ async function checkUrl(label, url, { okStatuses = [200] } = {}) {
   } catch (err) {
     throw new Error(
       `${label} unreachable at ${url}: ${err?.message ?? err}\n`
-      + 'Start the stack: cd thunderbird-accounts && docker compose up --build\n'
-      + 'Start WS proxy: node tests/fixtures/ws-proxy/server.mjs',
+      + failureHint,
     );
   }
 }
 
 export default async function globalSetup() {
-  await configureKeycloak();
-  await configureStalwart();
+  if (remoteE2eEnabled) {
+    await checkUrl(
+      'Stormbox app',
+      PLAYWRIGHT_BASE_URL,
+      { failureHint: 'Check PLAYWRIGHT_BASE_URL for the remote public app.\n' },
+    );
+    await checkUrl(
+      'OIDC issuer',
+      `${OIDC_ISSUER.replace(/\/$/, '')}/.well-known/openid-configuration`,
+      { failureHint: 'Check OIDC_ISSUER for the remote auth realm.\n' },
+    );
+    await checkUrl(
+      'JMAP',
+      `${JMAP_BASE_URL.replace(/\/$/, '')}/.well-known/jmap`,
+      {
+        okStatuses: [200, 401],
+        failureHint: 'Check JMAP_BASE_URL for the remote JMAP endpoint.\n',
+      },
+    );
+    return;
+  }
+
+  if (localStackEnabled) {
+    await configureKeycloak();
+    await configureStalwart();
+  }
   await checkUrl(
     'Keycloak',
     `${OIDC_ISSUER.replace(/\/$/, '')}/.well-known/openid-configuration`,
+    {
+      failureHint:
+        'Start the stack: cd thunderbird-accounts && docker compose up --build\n'
+        + 'Start WS proxy: node tests/fixtures/ws-proxy/server.mjs\n',
+    },
   );
   await checkUrl(
     'Stalwart JMAP',
-    `${JMAP_BASE.replace(/\/$/, '')}/.well-known/jmap`,
-    { okStatuses: [200, 401] },
+    `${JMAP_BASE_URL.replace(/\/$/, '')}/.well-known/jmap`,
+    {
+      okStatuses: [200, 401],
+      failureHint:
+        'Start the stack: cd thunderbird-accounts && docker compose up --build\n'
+        + 'Start WS proxy: node tests/fixtures/ws-proxy/server.mjs\n',
+    },
   );
   const wsRes = await fetch(`${WS_PROXY}/jmap/ws`, { signal: AbortSignal.timeout(5_000) });
   if (wsRes.status !== 426) {
