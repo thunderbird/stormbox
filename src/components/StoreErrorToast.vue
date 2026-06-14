@@ -7,8 +7,9 @@ import { useComposeStore } from '../stores/compose-store';
 import { useContactsStore } from '../stores/contacts-store';
 
 interface ToastEntry {
-  source: 'mail' | 'compose' | 'contacts';
+  source: 'mail' | 'compose' | 'contacts' | 'mail-notice';
   message: string;
+  kind?: 'error' | 'success';
 }
 
 const mailStore = useMailStore();
@@ -21,7 +22,10 @@ const contactsStore = useContactsStore();
 const entries = computed<ToastEntry[]>(() => {
   const out: ToastEntry[] = [];
   if (mailStore.error) {
-    out.push({ source: 'mail', message: mailStore.error });
+    out.push({ source: 'mail', message: mailStore.error, kind: 'error' });
+  }
+  if (mailStore.notice) {
+    out.push({ source: 'mail-notice', message: mailStore.notice, kind: 'success' });
   }
   if (!composeStore.isOpen && composeStore.error) {
     out.push({ source: 'compose', message: composeStore.error });
@@ -35,6 +39,10 @@ const entries = computed<ToastEntry[]>(() => {
 function dismiss(entry: ToastEntry) {
   if (entry.source === 'mail') {
     mailStore.error = null;
+    return;
+  }
+  if (entry.source === 'mail-notice') {
+    mailStore.notice = null;
     return;
   }
   if (entry.source === 'compose') {
@@ -59,6 +67,7 @@ function dismiss(entry: ToastEntry) {
       v-for="entry in entries"
       :key="entry.source"
       class="store-error-toast__item"
+      :class="{ 'store-error-toast__item--success': entry.kind === 'success' }"
     >
       <span class="store-error-toast__message">{{ entry.message }}</span>
       <button
@@ -100,6 +109,10 @@ function dismiss(entry: ToastEntry) {
   box-shadow: 0 12px 28px color-mix(in srgb, #000 35%, transparent);
   font-size: 13px;
   line-height: 1.4;
+}
+
+.store-error-toast__item--success {
+  background: var(--toast-success-bg, #2e9e63);
 }
 
 .store-error-toast__message {

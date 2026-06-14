@@ -47,6 +47,7 @@ import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
+import { createTrustedContactCard } from './contacts';
 import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
 
 export const MUTATION_TYPES = Object.freeze({
@@ -54,6 +55,7 @@ export const MUTATION_TYPES = Object.freeze({
   MOVE_TO_FOLDERS: 'moveToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  WHITELIST_SENDER: 'whitelistSender',
 });
 
 /**
@@ -120,6 +122,8 @@ export async function processMutationRow({
       return runDestroy({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.SEND:
       return runSend({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.WHITELIST_SENDER:
+      return runWhitelistSender({ transport, account, request, useWebSocket });
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
@@ -151,6 +155,27 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
     useWebSocket,
     update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
   });
+}
+
+/**
+ * Whitelist a sender: add the message's From address to the trusted-
+ * senders address book so Stalwart delivers future authenticated mail
+ * from that address to the Inbox (trustContacts / card_is_ham). The
+ * visible rescue of the current message (remove $junk / add $notjunk
+ * and move Junk → Inbox) is queued separately by the store as
+ * setKeywords + moveToFolders rows, so this row only owns the contact
+ * write. request shape: { email, name? }.
+ */
+async function runWhitelistSender({ transport, account, request, useWebSocket }) {
+  const result = await createTrustedContactCard({
+    transport,
+    account,
+    email: request?.email,
+    name: request?.name,
+    useWebSocket,
+  });
+  if (result.ok) return { ok: true };
+  return { ok: false, error: result.error ?? { type: 'serverFail' } };
 }
 
 async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {

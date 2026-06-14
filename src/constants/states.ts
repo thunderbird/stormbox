@@ -96,6 +96,7 @@ export const MUTATION_TYPE = {
   MOVE_TO_FOLDERS: 'moveToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  WHITELIST_SENDER: 'whitelistSender',
 } as const;
 export type MutationType = (typeof MUTATION_TYPE)[keyof typeof MUTATION_TYPE];
 
