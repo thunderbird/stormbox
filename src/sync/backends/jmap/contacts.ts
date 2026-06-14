@@ -240,6 +240,106 @@ async function persistContactCards({ account, cards, handlers }) {
   }
 }
 
+const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
+
+/**
+ * Find (or lazily create) the dedicated "Trusted senders" address book
+ * and return its remote id. Stalwart's contact trust (trustContacts /
+ * card_is_ham) is account-wide over ContactCard.Email regardless of
+ * which book a card lives in, so a dedicated book is purely
+ * organizational; if creation fails we fall back to the default book so
+ * the trust still takes effect.
+ */
+export async function ensureTrustedSendersBook({ transport, account, useWebSocket = false }) {
+  const got = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'AddressBook/get',
+      { accountId: account.remote_account_id, properties: ['id', 'name', 'isDefault'] },
+      'ab',
+    ]],
+    useWebSocket,
+  });
+  const list = pickResponse(got, 'AddressBook/get')?.list ?? [];
+  const existing = list.find(
+    (book) => (book.name ?? '').toLowerCase() === TRUSTED_SENDERS_BOOK_NAME.toLowerCase(),
+  );
+  if (existing) return existing.id;
+
+  const created = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'AddressBook/set',
+      { accountId: account.remote_account_id, create: { tb: { name: TRUSTED_SENDERS_BOOK_NAME } } },
+      'abset',
+    ]],
+    useWebSocket,
+  });
+  const createdId = pickResponse(created, 'AddressBook/set')?.created?.tb?.id;
+  if (createdId) return createdId;
+
+  const fallback = list.find((book) => book.isDefault) ?? list[0];
+  return fallback?.id ?? null;
+}
+
+/**
+ * Add a sender to the trusted-senders address book as a ContactCard so
+ * Stalwart delivers future authenticated mail from that address to the
+ * Inbox (trustContacts). Idempotent: skips the create when a card
+ * already exists for the address. Returns { ok, alreadyTrusted?, id?,
+ * error? }.
+ */
+export async function createTrustedContactCard({
+  transport, account, email, name, useWebSocket = false,
+}) {
+  const address = String(email ?? '').trim();
+  if (!address) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
+  }
+
+  // Idempotency: an existing card for this address means the sender is
+  // already trusted account-wide. A filter the server doesn't support
+  // simply yields an empty id list (pickResponse → null), so we fall
+  // through to create rather than failing.
+  const found = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/query',
+      { accountId: account.remote_account_id, filter: { email: address } },
+      'cq',
+    ]],
+    useWebSocket,
+  });
+  if ((pickResponse(found, 'ContactCard/query')?.ids ?? []).length > 0) {
+    return { ok: true, alreadyTrusted: true };
+  }
+
+  const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
+  const card = {
+    '@type': 'Card',
+    version: '1.0',
+    kind: 'individual',
+    name: { full: name || address },
+    emails: { e1: { '@type': 'EmailAddress', address } },
+    ...(bookId ? { addressBookIds: { [bookId]: true } } : {}),
+  };
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/set',
+      { accountId: account.remote_account_id, create: { c1: card } },
+      'cset',
+    ]],
+    useWebSocket,
+  });
+  const set = pickResponse(result, 'ContactCard/set');
+  if (!set) return { ok: false, error: { type: 'serverFail' } };
+  if (set.notCreated?.c1) return { ok: false, error: { type: 'notCreated', detail: set.notCreated.c1 } };
+  const id = set.created?.c1?.id;
+  if (id) return { ok: true, id };
+  return { ok: false, error: { type: 'noResponse' } };
+}
+
 function combineNameComponents(name) {
   if (!name) return null;
   const parts = [name.given, name.surname].filter(Boolean);

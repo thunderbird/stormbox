@@ -119,6 +119,18 @@ export const useMailStore = defineStore('mail', () => {
   const selectedIds = ref<Set<number>>(new Set());
   const isLoading = ref(false);
   const error = ref<string | null>(null);
+  // Transient success confirmation (e.g. "Whitelisted sender"). Cleared
+  // automatically after a few seconds; rendered by StoreErrorToast.
+  const notice = ref<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  function setNotice(message: string) {
+    notice.value = message;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      notice.value = null;
+      noticeTimer = null;
+    }, 5000);
+  }
 
   // Bulk move/destroy progress. Mutates as the chunked drain advances
   // so the BulkOperationOverlay can render a live progress bar. Reset
@@ -1322,6 +1334,87 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Parse a `"Display Name <user@host>"` (or bare `user@host`) From
+   * header into its display name and address. Returns null when no
+   * address can be recovered.
+   */
+  function parseSender(fromText: string | null | undefined): { name: string | null; email: string } | null {
+    const raw = String(fromText ?? '').trim();
+    if (!raw) return null;
+    const angle = raw.match(/^(.*?)\s*<([^>]+)>\s*$/);
+    if (angle) {
+      const name = angle[1].replace(/^"|"$/g, '').trim();
+      const email = angle[2].trim();
+      return email ? { name: name || null, email } : null;
+    }
+    if (/^\S+@\S+\.\S+$/.test(raw)) return { name: null, email: raw };
+    return null;
+  }
+
+  /**
+   * Whitelist the sender of a Junk message (Strategy C from
+   * whitelist-in-webmail-notes.md):
+   *
+   *   1. Trust the sender for future mail — queue a whitelistSender
+   *      mutation that adds a ContactCard in the "Trusted senders"
+   *      address book; Stalwart's trustContacts / card_is_ham then
+   *      delivers future authenticated mail from that address to the
+   *      Inbox.
+   *   2. Rescue the current message — remove $junk / add $notjunk
+   *      (optimistic + queued setKeywords) and move Junk → Inbox, since
+   *      contact trust only applies at ingest time for future mail.
+   *
+   * Only meaningful from the Junk folder; the UI gates the button on
+   * the junk role. Surfaces a transient success notice on completion.
+   */
+  async function whitelistSender(messageId: number) {
+    if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
+    const row = messages.value.find((m) => m?.id === messageId);
+    if (!row) return { succeeded: 0, failed: 0, skipped: 0 };
+    const sender = parseSender(row.from_text);
+    if (!sender) {
+      error.value = 'Could not determine the sender to whitelist.';
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    const target = inbox.value;
+    if (!target?.id) {
+      error.value = 'No Inbox folder is configured.';
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+
+    // 1) Trust the sender going forward (background contact write).
+    await repo.insertPendingMutation({
+      accountId: authStore.accountId,
+      mutationType: MUTATION_TYPE.WHITELIST_SENDER,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({ email: sender.email, name: sender.name }),
+    });
+
+    // 2a) Rescue the current message's spam keywords (optimistic + queued).
+    const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
+    delete keywordsJson.$junk;
+    keywordsJson.$notjunk = true;
+    await repo.replaceMessageKeywords(messageId, Object.keys(keywordsJson), JSON.stringify(keywordsJson));
+    await repo.insertPendingMutation({
+      accountId: authStore.accountId,
+      mutationType: MUTATION_TYPE.SET_KEYWORDS,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({ add: ['$notjunk'], remove: ['$junk'] }),
+    });
+
+    // 2b) Move it out of Junk into the Inbox (the visible effect).
+    const result = await moveMessages([messageId], target.id);
+    if (result.succeeded > 0) {
+      setNotice(
+        sender.name
+          ? `Whitelisted ${sender.name} — moved to Inbox`
+          : `Whitelisted ${sender.email} — moved to Inbox`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Delete one or more messages. Single-row delete from the open
    * message and multi-select bulk delete go through the same path,
    * each chunk being a one-row pending_mutations entry whose
@@ -2009,6 +2102,7 @@ export const useMailStore = defineStore('mail', () => {
     messageBody,
     isLoading,
     error,
+    notice,
     bulkOperation,
     $reset,
     attach,
@@ -2034,6 +2128,7 @@ export const useMailStore = defineStore('mail', () => {
     moveMessage,
     moveMessages,
     archiveMessages,
+    whitelistSender,
     canMoveToFolder,
     clearSelection,
     refresh,

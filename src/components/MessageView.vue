@@ -478,6 +478,23 @@ async function archive() {
   }
 }
 
+// Whitelisting only makes sense for messages currently in the Junk
+// folder; the toolbar button is gated on this.
+const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+const whitelisting = ref(false);
+
+async function whitelistSender() {
+  if (!message.value || whitelisting.value) return;
+  whitelisting.value = true;
+  try {
+    await mailStore.whitelistSender(message.value.id);
+  } catch (err) {
+    console.warn('[message-view] whitelist failed', err?.message ?? err);
+  } finally {
+    whitelisting.value = false;
+  }
+}
+
 async function destroy() {
   if (!message.value) return;
   try {
@@ -610,6 +627,20 @@ function closeMessageView() {
       <header class="message-view__header">
         <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" @click="closeMessageView" title="Back" aria-label="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+        </button>
+        <!-- Contextual: only in the Junk folder. Labeled and set apart at
+             the leading edge so it reads as a folder-specific action,
+             not one of the always-present icon buttons. -->
+        <button
+          v-if="isInJunkFolder"
+          class="message-view__action message-view__action--whitelist"
+          type="button"
+          :disabled="whitelisting"
+          @click="whitelistSender"
+          title="Whitelist sender and move to Inbox"
+          aria-label="Not junk — whitelist sender and move to Inbox"
+        >
+          <span class="message-view__whitelist-label">Not junk</span>
         </button>
         <button class="message-view__action" type="button" @click="archive" title="Archive (A)" aria-label="Archive">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
@@ -871,6 +902,49 @@ function closeMessageView() {
 }
 .message-view__action:hover { background: var(--rowHover); color: var(--text); }
 .message-view__action--danger:hover { background: rgba(255, 107, 107, 0.12); color: #ff6b6b; }
+/* Whitelist ("Not junk") is a contextual, Junk-only action. It leads
+   the action group at the toolbar's leading edge, set apart from the
+   always-present icon buttons by a trailing margin. Styled as a filled
+   accent button matching the New Message button so it reads as the
+   primary action for a junk message. */
+.message-view__action--whitelist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  padding: 0 12px;
+  margin-inline-end: 10px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
+}
+.message-view__action--whitelist:hover {
+  background: var(--accent);
+  color: #fff;
+  filter: brightness(1.04);
+  box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
+}
+.message-view__action--whitelist:disabled,
+.message-view__action--whitelist:disabled:hover {
+  opacity: 0.5;
+  filter: none;
+  background: var(--accent);
+  color: #fff;
+}
+.message-view__action:disabled,
+.message-view__action:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.35;
+  cursor: default;
+}
 .message-view__action--ghost { color: var(--muted); }
 .message-view__action--back { margin-right: 12px; }
 /* View option, not a mail action — sits at the trailing edge. */
