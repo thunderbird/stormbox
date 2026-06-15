@@ -8,6 +8,9 @@ import {
   syncAddressBooks,
   syncContacts,
   syncContactCardChanges,
+  createContactCard,
+  updateContactCard,
+  deleteContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
 import { MockTransport } from './_mock-transport';
 
@@ -154,6 +157,179 @@ describe('syncContacts', () => {
     expect(row.remote_id).toBe('d');
     expect(row.email).toBe('ada@example.com');
     expect(Number(row.is_preferred)).toBe(1);
+  });
+});
+
+describe('createContactCard', () => {
+  it('creates a card in the default book when no card exists for the email', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0 }));
+    transport.handle('AddressBook/get', () => ({
+      list: [
+        { id: 'book-default', name: 'Contacts', isDefault: true },
+        { id: 'book-trusted', name: 'Trusted senders', isDefault: false },
+      ],
+    }));
+    let created: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      created = params.create?.c1;
+      return { created: { c1: { id: 'new-1' } } };
+    });
+
+    const result = await createContactCard({
+      transport, account, emails: ['grace@example.com'], name: 'Grace Hopper',
+    });
+    expect(result).toEqual({ ok: true, id: 'new-1' });
+    expect(created.addressBookIds).toEqual({ 'book-default': true });
+    expect(created.emails.e1.address).toBe('grace@example.com');
+    expect(created.name.full).toBe('Grace Hopper');
+  });
+
+  it('builds a multi-email map from the address list', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0 }));
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+    }));
+    let created: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      created = params.create?.c1;
+      return { created: { c1: { id: 'new-2' } } };
+    });
+    const result = await createContactCard({
+      transport, account, emails: ['a@example.com', 'b@example.com'], name: 'Multi',
+    });
+    expect(result.ok).toBe(true);
+    expect(Object.values(created.emails).map((e: any) => e.address))
+      .toEqual(['a@example.com', 'b@example.com']);
+  });
+
+  it('is idempotent: reports alreadyExists without creating a duplicate', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: ['existing'], total: 1 }));
+    const result = await createContactCard({
+      transport, account, emails: ['dup@example.com'],
+    });
+    expect(result).toEqual({ ok: true, alreadyExists: true });
+    const didSet = transport.requests.some((r) =>
+      r.methodCalls.some(([m]) => m === 'ContactCard/set'));
+    expect(didSet).toBe(false);
+  });
+});
+
+describe('updateContactCard', () => {
+  // A card with extra fields the editor never shows, plus per-email
+  // metadata, to prove the merge never silently erases anything.
+  function cardWithExtras() {
+    return {
+      '@type': 'Card',
+      id: 'd',
+      name: { full: 'Old Name', given: 'Old', surname: 'Name' },
+      emails: {
+        e1: { '@type': 'EmailAddress', address: 'keep@example.com', contexts: { work: true }, pref: 1 },
+        e2: { '@type': 'EmailAddress', address: 'drop@example.com' },
+      },
+      phones: { p1: { '@type': 'Phone', number: '+15551234' } },
+      organizations: { o1: { name: 'ACME' } },
+      addressBookIds: { 'book-e': true },
+    };
+  }
+
+  function withCard(card: any) {
+    const transport = new MockTransport();
+    let update: any = null;
+    transport.handle('ContactCard/get', () => ({ list: [card] }));
+    transport.handle('ContactCard/set', (params) => {
+      update = params.update;
+      return { updated: { d: null } };
+    });
+    return { transport, getUpdate: () => update };
+  }
+
+  it('merges emails: keeps metadata for survivors, drops removed, adds new', async () => {
+    const { transport, getUpdate } = withCard(cardWithExtras());
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      emails: ['keep@example.com', 'fresh@example.com'],
+      name: 'Old Name',
+    });
+    expect(result).toEqual({ ok: true });
+
+    const emails = Object.values(getUpdate().d.emails) as any[];
+    const kept = emails.find((e) => e.address === 'keep@example.com');
+    expect(kept.contexts).toEqual({ work: true });
+    expect(kept.pref).toBe(1);
+    expect(emails.some((e) => e.address === 'fresh@example.com')).toBe(true);
+    expect(emails.some((e) => e.address === 'drop@example.com')).toBe(false);
+  });
+
+  it('never includes untouched fields in the patch (no silent erasure)', async () => {
+    const { transport, getUpdate } = withCard(cardWithExtras());
+    await updateContactCard({
+      transport, account, remoteId: 'd', emails: ['keep@example.com'], name: 'Old Name',
+    });
+    // PatchObject only carries `emails`; name is unchanged so it is
+    // omitted, and phones/organizations/addressBookIds are never sent,
+    // so the server leaves them intact.
+    expect(Object.keys(getUpdate().d)).toEqual(['emails']);
+  });
+
+  it('changes only name.full and preserves other name components', async () => {
+    const { transport, getUpdate } = withCard(cardWithExtras());
+    await updateContactCard({
+      transport, account, remoteId: 'd', emails: ['keep@example.com'], name: 'New Name',
+    });
+    expect(getUpdate().d.name).toEqual({ full: 'New Name', given: 'Old', surname: 'Name' });
+  });
+
+  it('reports notFound when the card no longer exists', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ list: [] }));
+    const result = await updateContactCard({
+      transport, account, remoteId: 'd', emails: ['x@example.com'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.type).toBe('notFound');
+  });
+
+  it('reports an error when the server refuses the update', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ list: [cardWithExtras()] }));
+    transport.handle('ContactCard/set', () => ({
+      updated: {},
+      notUpdated: { d: { type: 'forbidden' } },
+    }));
+    const result = await updateContactCard({
+      transport, account, remoteId: 'd', emails: ['x@example.com'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.type).toBe('notUpdated');
+  });
+});
+
+describe('deleteContactCard', () => {
+  it('destroys the card by remote id', async () => {
+    const transport = new MockTransport();
+    let destroyed: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      destroyed = params.destroy;
+      return { destroyed: params.destroy };
+    });
+    const result = await deleteContactCard({ transport, account, remoteId: 'd' });
+    expect(result).toEqual({ ok: true });
+    expect(destroyed).toEqual(['d']);
+  });
+
+  it('treats an already-gone card as success', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/set', () => ({
+      destroyed: [],
+      notDestroyed: { d: { type: 'notFound' } },
+    }));
+    const result = await deleteContactCard({ transport, account, remoteId: 'd' });
+    expect(result).toEqual({ ok: true });
   });
 });
 

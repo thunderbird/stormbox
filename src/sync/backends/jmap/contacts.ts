@@ -371,31 +371,287 @@ export async function createTrustedContactCard({
   if (!address) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
   }
+  if (await cardExistsForEmail({ transport, account, email: address, useWebSocket })) {
+    return { ok: true, alreadyTrusted: true };
+  }
+  const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
+  return submitContactCardCreate({ transport, account, emails: [address], name, bookId, useWebSocket });
+}
 
-  // Idempotency: an existing card for this address means the sender is
-  // already trusted account-wide. A filter the server doesn't support
-  // simply yields an empty id list (pickResponse → null), so we fall
-  // through to create rather than failing.
+/**
+ * Add a contact to the user's primary ("default") address book. Used by
+ * the contacts UI's "Add contact" action. Idempotent on email: if a
+ * card with this address already exists anywhere in the account we
+ * report `alreadyExists` rather than creating a duplicate. Returns
+ * { ok, alreadyExists?, id?, error? }.
+ */
+export async function createContactCard({
+  transport, account, emails, name = null, bookId = null, useWebSocket = false,
+}) {
+  const addresses = normalizeAddressList(emails);
+  if (addresses.length === 0) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'no email' } };
+  }
+  if (await cardExistsForEmail({ transport, account, email: addresses[0], useWebSocket })) {
+    return { ok: true, alreadyExists: true };
+  }
+  // Caller may pin a target book (the selected folder in the contacts
+  // UI); otherwise fall back to the account's default book.
+  const targetBook = bookId ?? await resolveDefaultBook({ transport, account, useWebSocket });
+  return submitContactCardCreate({
+    transport, account, emails: addresses, name, bookId: targetBook, useWebSocket,
+  });
+}
+
+/**
+ * Update a contact's name and email set by remote id.
+ *
+ * The editor only surfaces the display name and the list of email
+ * addresses, so this must never silently erase anything else. JMAP's
+ * `update` is a PatchObject, so any top-level property we omit (phones,
+ * organizations, addressBookIds, …) is left untouched by the server. To
+ * avoid clobbering data inside the two properties we do touch, we
+ * re-fetch the authoritative card and *merge*:
+ *
+ *   - emails: each surviving address keeps its original entry (and thus
+ *     its contexts / pref / @type); only addresses the user removed are
+ *     dropped and only ones they added are created.
+ *   - name: we change `full` only, preserving any structured name
+ *     components, and we skip the name patch entirely when unchanged.
+ *
+ * Returns { ok, error? }.
+ */
+export async function updateContactCard({
+  transport, account, remoteId, emails, name = null, useWebSocket = false,
+}) {
+  const id = String(remoteId ?? '').trim();
+  if (!id) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
+  }
+  const addresses = normalizeAddressList(emails);
+  if (addresses.length === 0) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'at least one email is required' } };
+  }
+
+  const got = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/get',
+      { accountId: account.remote_account_id, ids: [id] },
+      'cget',
+    ]],
+    useWebSocket,
+  });
+  const current = pickResponse(got, 'ContactCard/get')?.list?.[0];
+  if (!current) {
+    return { ok: false, error: { type: 'notFound' } };
+  }
+
+  const patch: Record<string, unknown> = { emails: mergeEmails(current.emails, addresses) };
+  // Only touch the name when the visible full name actually changed, and
+  // preserve any other name components the editor does not show.
+  if (name != null && name !== (current.name?.full ?? null)) {
+    patch.name = { ...(current.name ?? {}), full: name };
+  }
+
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/set',
+      { accountId: account.remote_account_id, update: { [id]: patch } },
+      'cupd',
+    ]],
+    useWebSocket,
+  });
+  const set = pickResponse(result, 'ContactCard/set');
+  if (!set) return { ok: false, error: { type: 'serverFail' } };
+  if (set.notUpdated?.[id]) return { ok: false, error: { type: 'notUpdated', detail: set.notUpdated[id] } };
+  // Stalwart returns the id key in `updated` (value may be null).
+  if (set.updated && id in set.updated) return { ok: true };
+  return { ok: false, error: { type: 'noResponse' } };
+}
+
+/**
+ * Build the JSContact `emails` map for an updated card by merging the
+ * user's address list against the card's current entries. Surviving
+ * addresses reuse their original entry (preserving metadata and key);
+ * removed addresses drop out; added addresses get a fresh entry. The
+ * user's typed address wins (so a case-only edit is honoured) while the
+ * rest of the entry is preserved.
+ */
+function mergeEmails(currentEmails, addresses) {
+  const pool = new Map();
+  const originalKeys = new Set();
+  const entries = (currentEmails && typeof currentEmails === 'object')
+    ? Object.entries(currentEmails as Record<string, any>)
+    : [];
+  for (const [key, entry] of entries) {
+    originalKeys.add(key);
+    const addr = String(entry?.address ?? '').trim().toLowerCase();
+    if (!addr) continue;
+    if (!pool.has(addr)) pool.set(addr, []);
+    pool.get(addr).push({ key, entry });
+  }
+  // Pass 1: claim a matching original entry for each address, in order.
+  const assignments = addresses.map((address) => {
+    const queue = pool.get(address.toLowerCase());
+    if (queue && queue.length > 0) {
+      const { key, entry } = queue.shift();
+      return { key, entry: { ...entry, address } };
+    }
+    return { key: null, entry: { '@type': 'EmailAddress', address } };
+  });
+  // Pass 2: reused entries keep their key; new entries get one that
+  // collides with neither a reused nor an already-assigned key.
+  const reusedKeys = new Set(assignments.filter((a) => a.key).map((a) => a.key));
+  const map = {};
+  let counter = 1;
+  for (const { key, entry } of assignments) {
+    let resolvedKey = key;
+    if (!resolvedKey) {
+      do { resolvedKey = `e${counter}`; counter += 1; }
+      while (reusedKeys.has(resolvedKey) || resolvedKey in map);
+    }
+    map[resolvedKey] = entry;
+  }
+  return map;
+}
+
+/**
+ * Trim, drop empties, and de-duplicate (case-insensitively, keeping the
+ * first spelling) an email list, accepting either an array or a single
+ * string.
+ */
+function normalizeAddressList(emails) {
+  const list = Array.isArray(emails) ? emails : (emails == null ? [] : [emails]);
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    const addr = String(raw ?? '').trim();
+    if (!addr) continue;
+    const lower = addr.toLowerCase();
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    out.push(addr);
+  }
+  return out;
+}
+
+/**
+ * Destroy a ContactCard by its remote id. Returns { ok, error? }. A
+ * card that no longer exists server-side is treated as success so a
+ * retry after a partial failure converges.
+ */
+export async function deleteContactCard({
+  transport, account, remoteId, useWebSocket = false,
+}) {
+  const id = String(remoteId ?? '').trim();
+  if (!id) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
+  }
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/set',
+      { accountId: account.remote_account_id, destroy: [id] },
+      'cdel',
+    ]],
+    useWebSocket,
+  });
+  const set = pickResponse(result, 'ContactCard/set');
+  if (!set) return { ok: false, error: { type: 'serverFail' } };
+  if ((set.destroyed ?? []).includes(id)) return { ok: true };
+  const reason = set.notDestroyed?.[id];
+  // notFound means it is already gone — converge to success.
+  if (reason && reason.type === 'notFound') return { ok: true };
+  if (reason) return { ok: false, error: { type: 'notDestroyed', detail: reason } };
+  return { ok: false, error: { type: 'noResponse' } };
+}
+
+/**
+ * Re-pull address books then contacts from the server so the local
+ * cache reflects a contact mutation that was just applied. A full
+ * `syncContacts` (rather than a delta) is used so a card filed in a
+ * book that was created in the same operation — e.g. "Trusted senders"
+ * — is not dropped by the unknown-book skip in `persistContactCards`.
+ */
+export async function reconcileContacts({ transport, account, handlers, useWebSocket = false }) {
+  await syncAddressBooks({ transport, account, handlers, useWebSocket });
+  return syncContacts({ transport, account, handlers, useWebSocket });
+}
+
+/**
+ * Resolve the remote id of the account's primary address book for new
+ * contacts: the one flagged `isDefault`, else the first book that is
+ * not the dedicated "Trusted senders" book, else the first book, else
+ * lazily create a "Contacts" book.
+ */
+async function resolveDefaultBook({ transport, account, useWebSocket = false }) {
+  const got = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'AddressBook/get',
+      { accountId: account.remote_account_id, properties: ['id', 'name', 'isDefault'] },
+      'ab',
+    ]],
+    useWebSocket,
+  });
+  const list = pickResponse(got, 'AddressBook/get')?.list ?? [];
+  const isTrusted = (book) =>
+    (book.name ?? '').toLowerCase() === TRUSTED_SENDERS_BOOK_NAME.toLowerCase();
+  const chosen = list.find((book) => book.isDefault)
+    ?? list.find((book) => !isTrusted(book))
+    ?? list[0];
+  if (chosen) return chosen.id;
+
+  const created = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'AddressBook/set',
+      { accountId: account.remote_account_id, create: { tb: { name: 'Contacts' } } },
+      'abset',
+    ]],
+    useWebSocket,
+  });
+  return pickResponse(created, 'AddressBook/set')?.created?.tb?.id ?? null;
+}
+
+/**
+ * True if any ContactCard in the account already carries this email.
+ * A filter the server does not support yields an empty id list, so the
+ * caller falls through to create rather than failing.
+ */
+async function cardExistsForEmail({ transport, account, email, useWebSocket }) {
   const found = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
       'ContactCard/query',
-      { accountId: account.remote_account_id, filter: { email: address } },
+      { accountId: account.remote_account_id, filter: { email } },
       'cq',
     ]],
     useWebSocket,
   });
-  if ((pickResponse(found, 'ContactCard/query')?.ids ?? []).length > 0) {
-    return { ok: true, alreadyTrusted: true };
-  }
+  return (pickResponse(found, 'ContactCard/query')?.ids ?? []).length > 0;
+}
 
-  const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
+/**
+ * Low-level ContactCard/set create shared by the whitelist and contacts
+ * UI paths. Builds the JSContact map shape Stalwart accepts. `emails` is
+ * an ordered, already-normalized list of addresses (at least one).
+ */
+async function submitContactCardCreate({
+  transport, account, emails, name, bookId, useWebSocket,
+}) {
+  const emailsMap = {};
+  emails.forEach((address, i) => {
+    emailsMap[`e${i + 1}`] = { '@type': 'EmailAddress', address };
+  });
   const card = {
     '@type': 'Card',
     version: '1.0',
     kind: 'individual',
-    name: { full: name || address },
-    emails: { e1: { '@type': 'EmailAddress', address } },
+    name: { full: name || emails[0] },
+    emails: emailsMap,
     ...(bookId ? { addressBookIds: { [bookId]: true } } : {}),
   };
   const result = await callJmap(transport, {

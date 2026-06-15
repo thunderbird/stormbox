@@ -47,7 +47,13 @@ import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
-import { createTrustedContactCard } from './contacts';
+import {
+  createTrustedContactCard,
+  createContactCard,
+  updateContactCard,
+  deleteContactCard,
+  reconcileContacts,
+} from './contacts';
 import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
 
 export const MUTATION_TYPES = Object.freeze({
@@ -56,6 +62,9 @@ export const MUTATION_TYPES = Object.freeze({
   DESTROY: 'destroy',
   SEND: 'send',
   WHITELIST_SENDER: 'whitelistSender',
+  CREATE_CONTACT: 'createContact',
+  UPDATE_CONTACT: 'updateContact',
+  DELETE_CONTACT: 'deleteContact',
 });
 
 /**
@@ -123,7 +132,13 @@ export async function processMutationRow({
     case MUTATION_TYPES.SEND:
       return runSend({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.WHITELIST_SENDER:
-      return runWhitelistSender({ transport, account, request, useWebSocket });
+      return runWhitelistSender({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.CREATE_CONTACT:
+      return runCreateContact({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.UPDATE_CONTACT:
+      return runUpdateContact({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.DELETE_CONTACT:
+      return runDeleteContact({ transport, account, handlers, request, useWebSocket });
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
@@ -166,7 +181,7 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
  * setKeywords + moveToFolders rows, so this row only owns the contact
  * write. request shape: { email, name? }.
  */
-async function runWhitelistSender({ transport, account, request, useWebSocket }) {
+async function runWhitelistSender({ transport, account, handlers, request, useWebSocket }) {
   const result = await createTrustedContactCard({
     transport,
     account,
@@ -174,8 +189,92 @@ async function runWhitelistSender({ transport, account, request, useWebSocket })
     name: request?.name,
     useWebSocket,
   });
-  if (result.ok) return { ok: true };
-  return { ok: false, error: result.error ?? { type: 'serverFail' } };
+  if (!result.ok) {
+    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+  }
+  // Pull the new card (and its book) into the local cache so it shows
+  // up in the contacts view without waiting for a StateChange push.
+  // Best-effort: the trust already took effect server-side, so a
+  // reconcile failure must not fail the mutation.
+  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  return { ok: true };
+}
+
+/**
+ * Add a contact to an address book (contacts UI). When the request
+ * carries a `bookRemoteId` the card is filed in that book (the selected
+ * folder); otherwise it lands in the account's default book. The
+ * handler owns the cache reconcile so the new row appears once the
+ * mutation resolves, matching the constitution's "cache matches server
+ * before the mutation returns" rule. request shape:
+ * { emails: string[], name?, bookRemoteId? }.
+ */
+async function runCreateContact({ transport, account, handlers, request, useWebSocket }) {
+  const result = await createContactCard({
+    transport,
+    account,
+    emails: request?.emails,
+    name: request?.name,
+    bookId: request?.bookRemoteId ?? null,
+    useWebSocket,
+  });
+  if (!result.ok) {
+    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+  }
+  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  return { ok: true };
+}
+
+/**
+ * Edit a contact's name/emails (contacts UI). The handler reconciles the
+ * cache so the edited row reflects the server once the mutation
+ * resolves. request shape: { remoteId, emails: string[], name? }.
+ */
+async function runUpdateContact({ transport, account, handlers, request, useWebSocket }) {
+  const result = await updateContactCard({
+    transport,
+    account,
+    remoteId: request?.remoteId,
+    emails: request?.emails,
+    name: request?.name,
+    useWebSocket,
+  });
+  if (!result.ok) {
+    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+  }
+  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  return { ok: true };
+}
+
+/**
+ * Remove a contact by its remote id (contacts UI). On success the card
+ * is soft-deleted locally so the row disappears immediately; a full
+ * reconcile would not remove it because the destroyed card is simply
+ * absent from the server list. request shape: { remoteId }.
+ */
+async function runDeleteContact({ transport, account, handlers, request, useWebSocket }) {
+  const result = await deleteContactCard({
+    transport,
+    account,
+    remoteId: request?.remoteId,
+    useWebSocket,
+  });
+  if (!result.ok) {
+    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+  }
+  await handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
+    accountId: account.id,
+    remoteId: request?.remoteId,
+  });
+  return { ok: true };
+}
+
+async function reconcileContactsQuietly({ transport, account, handlers, useWebSocket }) {
+  try {
+    await reconcileContacts({ transport, account, handlers, useWebSocket });
+  } catch {
+    // Cache will catch up on the next StateChange push or periodic sync.
+  }
 }
 
 async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {

@@ -128,6 +128,8 @@ export interface AddressbookRow {
 
 export interface ContactListRow {
   id: number;
+  remote_id: string | null;
+  addressbook_id: number | null;
   display_name: string | null;
   organization: string | null;
   email: string | null;

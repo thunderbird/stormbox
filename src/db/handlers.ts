@@ -2086,6 +2086,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = 500 }) =>
       engine.all(
         `SELECT c.id,
+                c.remote_id,
+                c.addressbook_id,
                 c.display_name,
                 c.organization,
                 (SELECT email FROM contact_emails ce
@@ -2098,6 +2100,26 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           LIMIT ?`,
         [accountId, limit],
       ),
+
+    /**
+     * Fetch a single contact plus its full ordered email list, for the
+     * edit form (which needs every address, not just the preferred one).
+     */
+    [DB_RPC.CONTACT_GET]: async ({ accountId, contactId }) => {
+      const row = await engine.get(
+        `SELECT id, remote_id, addressbook_id, display_name, full_name, organization
+           FROM contacts
+          WHERE id = ? AND account_id = ? AND is_deleted = 0`,
+        [contactId, accountId],
+      );
+      if (!row) return null;
+      const emails = await engine.all(
+        `SELECT email, label, is_preferred, position
+           FROM contact_emails WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      return { ...row, emails };
+    },
 
     [DB_RPC.CONTACT_UPSERT_MANY]: async ({ accountId, contacts }) => {
       if (!contacts?.length) {
@@ -2163,6 +2185,23 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       });
       broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { upserted: contacts.length };
+    },
+
+    /**
+     * Soft-delete a contact by its remote id after the server card has
+     * been destroyed. Soft delete (rather than a row delete) keeps the
+     * behaviour consistent with ContactCard/changes destroyed handling
+     * and lets the autocomplete / list queries filter on is_deleted.
+     */
+    [DB_RPC.CONTACT_DELETE_LOCAL]: async ({ accountId, remoteId }) => {
+      if (remoteId == null) return { deleted: 0 };
+      const result = await engine.run(
+        `UPDATE contacts SET is_deleted = 1, updated_at = ?
+           WHERE account_id = ? AND remote_id = ?`,
+        [now(), accountId, remoteId],
+      );
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { deleted: result?.changes ?? 0 };
     },
 
     [DB_RPC.CONTACT_AUTOCOMPLETE]: async ({ accountId, prefix, limit = 20 }) => {

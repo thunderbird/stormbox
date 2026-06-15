@@ -277,6 +277,10 @@ export class Repository {
     return this.call(DB_RPC.CONTACT_LIST, { accountId, ...options });
   }
 
+  getContact(accountId, contactId) {
+    return this.call(DB_RPC.CONTACT_GET, { accountId, contactId });
+  }
+
   autocompleteContacts(accountId, prefix, limit = 20) {
     return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit });
   }

@@ -97,6 +97,9 @@ export const MUTATION_TYPE = {
   DESTROY: 'destroy',
   SEND: 'send',
   WHITELIST_SENDER: 'whitelistSender',
+  CREATE_CONTACT: 'createContact',
+  UPDATE_CONTACT: 'updateContact',
+  DELETE_CONTACT: 'deleteContact',
 } as const;
 export type MutationType = (typeof MUTATION_TYPE)[keyof typeof MUTATION_TYPE];
 
