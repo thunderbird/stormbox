@@ -76,7 +76,9 @@ export const DB_RPC = Object.freeze({
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',
   CONTACT_LIST: 'contact.list',
+  CONTACT_GET: 'contact.get',
   CONTACT_UPSERT_MANY: 'contact.upsertMany',
+  CONTACT_DELETE_LOCAL: 'contact.deleteLocal',
   CONTACT_AUTOCOMPLETE: 'contact.autocomplete',
 
   SYNC_STATE_GET: 'syncState.get',
