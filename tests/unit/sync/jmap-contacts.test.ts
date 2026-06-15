@@ -116,6 +116,45 @@ describe('syncContacts', () => {
     const list = await engine.all('SELECT * FROM contacts WHERE account_id = ?', [account.id]);
     expect(list).toHaveLength(0);
   });
+
+  it('parses the JSContact map shape Stalwart serves (addressBookIds, emails map, name.full)', async () => {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'book-e', name: 'Trusted senders', isDefault: false }],
+    });
+
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: ['d'], total: 1, state: 'cc-map' }));
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        '@type': 'Card',
+        version: '1.0',
+        id: 'd',
+        kind: 'individual',
+        name: { full: 'Ada Lovelace' },
+        emails: { e1: { '@type': 'EmailAddress', address: 'ada@example.com', pref: 1 } },
+        organizations: { o1: { name: 'Analytical Engines' } },
+        addressBookIds: { 'book-e': true },
+      }],
+      state: 'cc-map',
+    }));
+
+    const result = await syncContacts({ transport, account, handlers });
+    expect(result.fetched).toBe(1);
+
+    const row = await engine.get(
+      `SELECT c.display_name, c.organization, c.remote_id, ce.email, ce.is_preferred
+         FROM contacts c JOIN contact_emails ce ON ce.contact_id = c.id
+        WHERE c.account_id = ?`,
+      [account.id],
+    );
+    expect(row.display_name).toBe('Ada Lovelace');
+    expect(row.organization).toBe('Analytical Engines');
+    expect(row.remote_id).toBe('d');
+    expect(row.email).toBe('ada@example.com');
+    expect(Number(row.is_preferred)).toBe(1);
+  });
 });
 
 describe('syncContactCardChanges', () => {

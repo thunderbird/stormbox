@@ -23,10 +23,13 @@ const ADDRESSBOOK_PROPERTIES = [
   'isDefault', 'isSubscribed', 'myRights',
 ];
 
+// JSContact (RFC 9553) property names as Stalwart serves them. The
+// older single-book `addressBookId` / flat `emails` array / `fullName`
+// shape is still accepted by `normalizeCard` below for backwards
+// compatibility, but we request the spec property names here.
 const CONTACT_PROPERTIES = [
-  'id', 'addressBookId', 'uid',
-  'name', 'fullName',
-  'emails', 'phones', 'organization',
+  'id', 'addressBookIds', 'uid',
+  'name', 'emails', 'phones', 'organizations',
 ];
 
 /**
@@ -183,9 +186,11 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
 }
 
 async function persistContactCards({ account, cards, handlers }) {
-  // Resolve addressbook remote ids -> local ids; cards reference an
-  // addressbook that we should already know about from syncAddressBooks.
-  const remoteAbIds = uniq(cards.map((c) => c.addressBookId).filter(Boolean));
+  const normalized = cards.map(normalizeCard);
+  // Resolve addressbook remote ids -> local ids. A JSContact card can
+  // belong to several books (addressBookIds map); we file the local row
+  // under the first one we already know about from syncAddressBooks.
+  const remoteAbIds = uniq(normalized.flatMap((c) => c.bookRemoteIds));
   const abMap = new Map();
   if (remoteAbIds.length > 0) {
     const placeholders = remoteAbIds.map(() => '?').join(',');
@@ -199,45 +204,115 @@ async function persistContactCards({ account, cards, handlers }) {
     }
   }
   const contacts = [];
-  for (const card of cards) {
-    const localAb = abMap.get(card.addressBookId);
+  for (const card of normalized) {
+    const localAb = firstKnownLocalBook(card.bookRemoteIds, abMap);
     if (!localAb) {
       // Skip cards for unknown addressbooks rather than failing the
       // batch; the next addressbook sync will catch up and a follow-up
       // ContactCard/changes will resync them.
       continue;
     }
-    const display = card.fullName
-      ?? combineNameComponents(card.name)
-      ?? card.emails?.[0]?.email
-      ?? '(no name)';
     contacts.push({
       addressbookId: localAb,
       remoteId: card.id,
       uid: card.uid ?? null,
       etag: null,
-      fullName: card.fullName ?? null,
-      displayName: display,
-      givenName: card.name?.given ?? null,
-      familyName: card.name?.surname ?? null,
-      organization: typeof card.organization === 'string'
-        ? card.organization
-        : (card.organization?.name ?? null),
+      fullName: card.fullName,
+      displayName: card.displayName,
+      givenName: card.givenName,
+      familyName: card.familyName,
+      organization: card.organization,
       vcardText: null,
       vcardVersion: null,
-      rawJson: JSON.stringify(card),
+      rawJson: JSON.stringify(card.raw),
       isDeleted: false,
-      emails: (card.emails ?? []).map((e, i) => ({
-        position: i,
-        email: typeof e === 'string' ? e : e.email,
-        label: typeof e === 'object' ? (e.label ?? e.kind ?? null) : null,
-        isPreferred: typeof e === 'object' ? !!e.isDefault : false,
-      })),
+      emails: card.emails,
     });
   }
   if (contacts.length > 0) {
     await handlers[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
   }
+}
+
+/**
+ * Normalize a ContactCard into the flat shape our DB layer expects,
+ * tolerating both the JSContact (RFC 9553) map shape Stalwart serves
+ * (`addressBookIds`, `emails` as a keyed map, `name.full`,
+ * `organizations`) and the older single-book / flat-array shape used by
+ * some servers and the unit tests (`addressBookId`, `emails: [...]`,
+ * `fullName`, `organization`).
+ */
+function normalizeCard(card) {
+  const bookRemoteIds = card.addressBookIds && typeof card.addressBookIds === 'object'
+    ? Object.keys(card.addressBookIds).filter((id) => card.addressBookIds[id])
+    : (card.addressBookId ? [card.addressBookId] : []);
+
+  const emails = normalizeEmails(card.emails);
+  const fullName = card.fullName
+    ?? (typeof card.name === 'object' ? card.name?.full : null)
+    ?? null;
+  const givenName = card.name?.given ?? null;
+  const familyName = card.name?.surname ?? card.name?.surnames ?? null;
+  const display = fullName
+    ?? combineNameComponents(card.name)
+    ?? emails[0]?.email
+    ?? '(no name)';
+
+  return {
+    id: card.id,
+    uid: card.uid ?? null,
+    bookRemoteIds,
+    fullName,
+    displayName: display,
+    givenName,
+    familyName,
+    organization: normalizeOrganization(card),
+    emails,
+    raw: card,
+  };
+}
+
+function normalizeEmails(emails) {
+  if (!emails) return [];
+  // JSContact map shape: { e1: { address, contexts, pref }, ... }
+  const entries = Array.isArray(emails) ? emails : Object.values(emails);
+  return entries
+    .map((e, i) => {
+      if (typeof e === 'string') {
+        return { position: i, email: e, label: null, isPreferred: false };
+      }
+      const email = e.address ?? e.email ?? null;
+      if (!email) return null;
+      const label = e.label
+        ?? e.kind
+        ?? (e.contexts ? Object.keys(e.contexts)[0] : null)
+        ?? null;
+      // `pref` (1 = most preferred) in JSContact, `isDefault` in the
+      // older shape.
+      const isPreferred = e.pref != null || !!e.isDefault;
+      return { position: i, email, label, isPreferred };
+    })
+    .filter(Boolean)
+    .map((e, i) => ({ ...e, position: i }));
+}
+
+function normalizeOrganization(card) {
+  if (typeof card.organization === 'string') return card.organization;
+  if (card.organization?.name) return card.organization.name;
+  // JSContact `organizations` map: { o1: { name, units }, ... }
+  if (card.organizations && typeof card.organizations === 'object') {
+    const first = Object.values(card.organizations)[0] as { name?: string } | undefined;
+    if (first?.name) return first.name;
+  }
+  return null;
+}
+
+function firstKnownLocalBook(bookRemoteIds, abMap) {
+  for (const remoteId of bookRemoteIds) {
+    const localId = abMap.get(remoteId);
+    if (localId) return localId;
+  }
+  return null;
 }
 
 const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
