@@ -55,8 +55,17 @@ Stormbox-specific backend.
   an asynchronous push is not sufficient.
 - Ordinary delete moves a message to Trash. Permanent destroy is
   reserved for messages already in Trash or explicit destroy flows.
-- Bulk applies shall batch SQL and coalesce per-row UI refreshes into
-  one paint.
+- Mail operations (triage and message actions) shall support both a
+  single message and a multi-selected batch; the single-message action
+  is the N=1 case of the batched path, not a separate implementation.
+- A batch shall be a real batch at every layer, not a per-item loop:
+  - Protocol: dispatch the chunk in as few calls as the server API
+    allows — a single multi-object request (e.g. JMAP `Email/set` /
+    `ContactCard/set` with multiple ids or a creation map, or query/get
+    back-references), resolving shared prerequisites once rather than
+    repeating the round trip per item.
+  - Storage: batch the chunk's SQL writes.
+  - UI: coalesce the per-row refreshes into a single paint.
 
 ### V. Incremental Sync
 
@@ -134,4 +143,12 @@ architectural constraints. Feature specs, plans, and tasks must call
 out any conflict before implementation begins. Amendments require an
 update to this file with a brief reason.
 
-**Version**: 1.1.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-05-22
+**Version**: 1.3.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-06-15
+
+<!-- 1.2.0: Mutation Pipeline (IV) now requires every mail operation to
+support both single and batched messages, with the single action as the
+N=1 case of the batched path.
+1.3.0: Mutation Pipeline (IV) now requires a batch to be a real batch at
+every layer — protocol (a single multi-object request per chunk, not a
+per-item loop), storage (batched SQL), and UI (coalesced into one
+paint) — folding in the former standalone bulk-SQL/UI bullet. -->
