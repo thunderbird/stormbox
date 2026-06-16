@@ -15,9 +15,17 @@ import { ref, watch } from 'vue';
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import { MUTATION_TYPE } from '../constants/states';
+import type { MutationType } from '../constants/states';
 import { TABLE_FAMILIES } from '../db/protocol';
 import type { AddressbookRow, ContactListRow } from '../types';
 import type { Repository } from '../db/repository';
+
+interface PendingMutationInsert {
+  accountId: number;
+  mutationType: MutationType;
+  targetMessageId: number | null;
+  requestJson: string;
+}
 
 export interface AutocompleteCandidate {
   name?: string | null;
@@ -177,6 +185,24 @@ export const useContactsStore = defineStore('contacts', () => {
   }
 
   /**
+   * Insert a pending mutation and run it, returning whether it actually
+   * applied. Mirrors mail-store's runChunkedMutation success criteria:
+   * a run that attempted nothing (e.g. the row never reached a runnable
+   * state) is treated as a failure, not a silent success — except for
+   * the already-succeeded race where runMutation reports
+   * `attempted: 0, succeeded: 1`.
+   */
+  async function queueAndRun(mutation: PendingMutationInsert): Promise<boolean> {
+    if (!repo || authStore.accountId == null) return false;
+    const inserted = await repo.insertPendingMutation(mutation);
+    const result = typeof repo.runMutation === 'function' && inserted?.id != null
+      ? await repo.runMutation(authStore.accountId, inserted.id)
+      : await repo.drainOutbox(authStore.accountId);
+    return (result?.failed ?? 0) === 0
+      && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0);
+  }
+
+  /**
    * Load a single contact plus its full email list for the edit form.
    */
   async function getContact(contactId: number): Promise<ContactDetail | null> {
@@ -216,16 +242,13 @@ export const useContactsStore = defineStore('contacts', () => {
       : (addressbooks.value.find((b) => b.id === input.addressbookId)?.remote_id ?? null);
     saving.value = true;
     try {
-      const mutation = await repo.insertPendingMutation({
+      const ok2 = await queueAndRun({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.CREATE_CONTACT,
         targetMessageId: null,
         requestJson: JSON.stringify({ emails: list, name, bookRemoteId }),
       });
-      const result = typeof repo.runMutation === 'function' && mutation?.id != null
-        ? await repo.runMutation(authStore.accountId, mutation.id)
-        : await repo.drainOutbox(authStore.accountId);
-      if (result.failed > 0) {
+      if (!ok2) {
         error.value = 'Could not add the contact. Please try again.';
         return false;
       }
@@ -269,16 +292,13 @@ export const useContactsStore = defineStore('contacts', () => {
     }
     saving.value = true;
     try {
-      const mutation = await repo.insertPendingMutation({
+      const ok2 = await queueAndRun({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.UPDATE_CONTACT,
         targetMessageId: null,
         requestJson: JSON.stringify({ remoteId: input.remoteId, emails: list, name }),
       });
-      const result = typeof repo.runMutation === 'function' && mutation?.id != null
-        ? await repo.runMutation(authStore.accountId, mutation.id)
-        : await repo.drainOutbox(authStore.accountId);
-      if (result.failed > 0) {
+      if (!ok2) {
         error.value = 'Could not save the contact. Please try again.';
         return false;
       }
@@ -312,16 +332,13 @@ export const useContactsStore = defineStore('contacts', () => {
     const previous = contacts.value;
     contacts.value = previous.filter((c) => c.id !== contact.id);
     try {
-      const mutation = await repo.insertPendingMutation({
+      const ok2 = await queueAndRun({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.DELETE_CONTACT,
         targetMessageId: null,
         requestJson: JSON.stringify({ remoteId: contact.remote_id }),
       });
-      const result = typeof repo.runMutation === 'function' && mutation?.id != null
-        ? await repo.runMutation(authStore.accountId, mutation.id)
-        : await repo.drainOutbox(authStore.accountId);
-      if (result.failed > 0) {
+      if (!ok2) {
         error.value = 'Could not remove the contact. Please try again.';
         await refreshContacts();
         return false;

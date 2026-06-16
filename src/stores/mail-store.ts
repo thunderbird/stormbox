@@ -25,6 +25,7 @@ import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
 import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-html';
+import { parseOneAddress } from '../utils/address-list';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
@@ -223,6 +224,11 @@ export const useMailStore = defineStore('mail', () => {
     folderState = null;
     isLoading.value = false;
     error.value = null;
+    notice.value = null;
+    if (noticeTimer) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
     resetBulkOperation();
     bodyPrefetch.clear();
     refreshLoadedPagesInflight = null;
@@ -1335,20 +1341,18 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Parse a `"Display Name <user@host>"` (or bare `user@host`) From
-   * header into its display name and address. Returns null when no
-   * address can be recovered.
+   * header into its display name and address. Reuses the shared
+   * address parser so the angle-bracket / quoted-name handling stays
+   * in one place. Returns null when no address can be recovered or the
+   * token does not look like an address (we only whitelist real
+   * addresses).
    */
   function parseSender(fromText: string | null | undefined): { name: string | null; email: string } | null {
-    const raw = String(fromText ?? '').trim();
-    if (!raw) return null;
-    const angle = raw.match(/^(.*?)\s*<([^>]+)>\s*$/);
-    if (angle) {
-      const name = angle[1].replace(/^"|"$/g, '').trim();
-      const email = angle[2].trim();
-      return email ? { name: name || null, email } : null;
-    }
-    if (/^\S+@\S+\.\S+$/.test(raw)) return { name: null, email: raw };
-    return null;
+    const parsed = parseOneAddress(String(fromText ?? ''));
+    if (!parsed) return null;
+    const email = parsed.email.trim();
+    if (!/^\S+@\S+\.\S+$/.test(email)) return null;
+    return { name: parsed.name?.trim() || null, email };
   }
 
   /**
@@ -1365,7 +1369,9 @@ export const useMailStore = defineStore('mail', () => {
    *      contact trust only applies at ingest time for future mail.
    *
    * Only meaningful from the Junk folder; the UI gates the button on
-   * the junk role. Surfaces a transient success notice on completion.
+   * the junk role. Surfaces a transient success notice when the sender
+   * was trusted and the message moved, or an error when the message
+   * moved but the trust write did not apply.
    */
   async function whitelistSender(messageId: number) {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
@@ -1382,13 +1388,24 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
 
-    // 1) Trust the sender going forward (background contact write).
-    await repo.insertPendingMutation({
+    // 1) Trust the sender going forward. Run the mutation (rather than
+    //    fire-and-forget) so the confirmation can reflect whether the
+    //    trust write actually applied — the whole point of the action is
+    //    that future mail is trusted, so we must not claim success when
+    //    only the message move happened.
+    const trustMutation = await repo.insertPendingMutation({
       accountId: authStore.accountId,
       mutationType: MUTATION_TYPE.WHITELIST_SENDER,
       targetMessageId: messageId,
       requestJson: JSON.stringify({ email: sender.email, name: sender.name }),
     });
+    const trustResult = typeof repo.runMutation === 'function' && trustMutation?.id != null
+      ? await repo.runMutation(authStore.accountId, trustMutation.id)
+      : await repo.drainOutbox(authStore.accountId);
+    // A run that attempted nothing (e.g. the row never reached a
+    // runnable state) is not a success; mirror runChunkedMutation.
+    const trusted = (trustResult?.failed ?? 0) === 0
+      && ((trustResult?.attempted ?? 0) > 0 || (trustResult?.succeeded ?? 0) > 0);
 
     // 2a) Rescue the current message's spam keywords (optimistic + queued).
     const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
@@ -1405,11 +1422,14 @@ export const useMailStore = defineStore('mail', () => {
     // 2b) Move it out of Junk into the Inbox (the visible effect).
     const result = await moveMessages([messageId], target.id);
     if (result.succeeded > 0) {
-      setNotice(
-        sender.name
-          ? `Whitelisted ${sender.name} — moved to Inbox`
-          : `Whitelisted ${sender.email} — moved to Inbox`,
-      );
+      const who = sender.name ?? sender.email;
+      if (trusted) {
+        setNotice(`Whitelisted ${who} — moved to Inbox`);
+      } else {
+        // The message still moved, but the trust write did not apply —
+        // don't tell the user the sender was whitelisted.
+        error.value = `Moved to Inbox, but ${who} could not be added to your trusted contacts — future mail from them may still be treated as junk.`;
+      }
     }
     return result;
   }

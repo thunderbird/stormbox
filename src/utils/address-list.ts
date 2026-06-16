@@ -15,17 +15,26 @@ export interface ParsedAddress {
   email: string;
 }
 
+/**
+ * Parse a single address token (one comma-separated entry) into a
+ * {name?, email} pair. Handles both shapes above; the display name keeps
+ * its inner text minus surrounding double quotes. Returns null for an
+ * empty token.
+ */
+export function parseOneAddress(part: string): ParsedAddress | null {
+  const trimmed = part.trim();
+  if (!trimmed) return null;
+  const m = trimmed.match(/^(.+?)\s*<(.+?)>$/);
+  if (m) {
+    return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
+  }
+  return { email: trimmed };
+}
+
 export function parseAddressList(input: string): ParsedAddress[] {
   if (!input) return [];
   return input
     .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const m = part.match(/^(.+?)\s*<(.+?)>$/);
-      if (m) {
-        return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
-      }
-      return { email: part };
-    });
+    .map(parseOneAddress)
+    .filter((a): a is ParsedAddress => a != null);
 }

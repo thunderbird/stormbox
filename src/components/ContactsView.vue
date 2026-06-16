@@ -12,8 +12,17 @@ const { contacts, addressbooks, saving, deletingIds } = storeToRefs(contactsStor
 const filter = ref('');
 const showForm = ref(false);
 const newName = ref('');
-// One entry per email input row; always at least one row.
-const newEmails = ref<string[]>(['']);
+// One entry per email input row; always at least one row. Each row
+// carries a stable id so v-for keys stay attached to the same input
+// when a middle row is removed (index keys would shift and reuse the
+// wrong input/focus state).
+interface EmailRow { id: number; value: string; }
+let emailRowSeq = 0;
+function makeEmailRow(value = ''): EmailRow {
+  emailRowSeq += 1;
+  return { id: emailRowSeq, value };
+}
+const newEmails = ref<EmailRow[]>([makeEmailRow()]);
 const formEl = ref<HTMLFormElement | null>(null);
 // When set, the form edits this contact instead of creating a new one.
 const editingContact = ref<ContactListRow | null>(null);
@@ -82,7 +91,7 @@ async function focusFirstEmail() {
 async function openAddForm() {
   editingContact.value = null;
   newName.value = '';
-  newEmails.value = [''];
+  newEmails.value = [makeEmailRow()];
   showForm.value = true;
   await focusFirstEmail();
 }
@@ -93,7 +102,9 @@ async function openEditForm(contact: ContactListRow) {
   const detail = await contactsStore.getContact(contact.id);
   newName.value = detail?.full_name || detail?.display_name || contact.display_name || '';
   const emails = (detail?.emails ?? []).map((e) => e.email).filter(Boolean);
-  newEmails.value = emails.length > 0 ? emails : [contact.email ?? ''];
+  newEmails.value = emails.length > 0
+    ? emails.map((e) => makeEmailRow(e))
+    : [makeEmailRow(contact.email ?? '')];
   showForm.value = true;
   await focusFirstEmail();
 }
@@ -102,31 +113,32 @@ function closeForm() {
   showForm.value = false;
   editingContact.value = null;
   newName.value = '';
-  newEmails.value = [''];
+  newEmails.value = [makeEmailRow()];
 }
 
 function addEmailRow() {
-  newEmails.value = [...newEmails.value, ''];
+  newEmails.value = [...newEmails.value, makeEmailRow()];
 }
 
 function removeEmailRow(index: number) {
   if (newEmails.value.length <= 1) {
-    newEmails.value = [''];
+    newEmails.value = [makeEmailRow()];
     return;
   }
   newEmails.value = newEmails.value.filter((_, i) => i !== index);
 }
 
 async function submitForm() {
+  const emails = newEmails.value.map((row) => row.value);
   const ok = editingContact.value
     ? await contactsStore.updateContact({
       remoteId: editingContact.value.remote_id,
       name: newName.value,
-      emails: newEmails.value,
+      emails,
     })
     : await contactsStore.createContact({
       name: newName.value,
-      emails: newEmails.value,
+      emails,
       addressbookId: selectedBookId.value,
     });
   if (ok) closeForm();
@@ -209,12 +221,12 @@ async function removeContact(contact: ContactListRow) {
         <div class="contacts__field">
           <span class="contacts__field-label">Email</span>
           <div
-            v-for="(_, index) in newEmails"
-            :key="index"
+            v-for="(row, index) in newEmails"
+            :key="row.id"
             class="contacts__email-row"
           >
             <input
-              v-model="newEmails[index]"
+              v-model="row.value"
               type="email"
               class="contacts__input"
               placeholder="name@example.com"

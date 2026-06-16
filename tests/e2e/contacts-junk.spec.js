@@ -2,6 +2,7 @@ import {
   cleanupEmail,
   connectJmap,
   createEmailInMailbox,
+  getEmailKeywords,
   getEmailMailboxIds,
   jmapRequest,
   listMailboxes,
@@ -23,15 +24,20 @@ import {
   clickFolder,
   expectRowSoon,
   openMessageBySubject,
+  readContactEmailsFromCache,
+  readContactsCache,
+  readViewCacheForFolderRole,
   waitForPendingMutations,
 } from './helpers/ui.js';
 
 /**
  * Contacts management + Junk "Not junk" whitelist flows (junk-whitelist
- * branch). Exercises the UI end-to-end and verifies the server side via
- * JMAP: a whitelist creates a trusted ContactCard and rescues the
- * message to the Inbox; contacts add/edit/delete round-trips through
- * ContactCard/set; multi-email and the address-book folder rail work.
+ * branch). Each mutation is verified on all three legs the constitution
+ * requires: the UI, the local cache via window.__repo, and the server
+ * via direct JMAP. A whitelist creates a trusted ContactCard, marks the
+ * message $notjunk, and rescues it to the Inbox; contacts add/edit/delete
+ * round-trips through ContactCard/set; multi-email and the address-book
+ * folder rail work.
  */
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
@@ -166,6 +172,32 @@ test.describe('Contacts + Junk whitelist e2e', () => {
         const cards = await listCards(jmap);
         return findCardByEmail(cards, senderEmail) != null;
       }, { timeout: 30_000, message: 'whitelisted sender should have a ContactCard' }).toBe(true);
+
+      // Server: the spam keywords were rescued ($junk cleared, $notjunk set).
+      await expect.poll(async () => {
+        const keywords = await getEmailKeywords(jmap, createdId);
+        if (!keywords) return 'missing';
+        if (keywords.$junk) return 'still-junk';
+        return keywords.$notjunk === true ? 'notjunk' : JSON.stringify(keywords);
+      }, { timeout: 30_000, message: 'server should mark the message $notjunk and clear $junk' }).toBe('notjunk');
+
+      // Local cache: the message left the Junk view and entered the Inbox
+      // view (window.__repo, not the worker read-through).
+      const junkCache = await readViewCacheForFolderRole(page, 'junk');
+      expect(junkCache, 'local Junk cache should be reachable via window.__repo').not.toBeNull();
+      expect(junkCache.remoteIds, 'remote id should be gone from the Junk cache').not.toContain(createdId);
+      await expect.poll(async () => {
+        const inboxCache = await readViewCacheForFolderRole(page, 'inbox');
+        return inboxCache?.remoteIds?.includes(createdId) ?? false;
+      }, { timeout: 30_000, message: 'whitelisted message should appear in the Inbox cache' }).toBe(true);
+
+      // Local cache: the trusted sender appears in the contacts cache.
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        return (cached ?? []).some(
+          (c) => (c.email ?? '').toLowerCase() === senderEmail.toLowerCase(),
+        );
+      }, { timeout: 30_000, message: 'trusted sender should land in the local contacts cache' }).toBe(true);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       await destroyTestCards(jmap);
@@ -207,6 +239,20 @@ test.describe('Contacts + Junk whitelist e2e', () => {
         return card ? cardEmails(card).length : 0;
       }, { timeout: 30_000, message: 'created card should carry two emails' }).toBe(2);
 
+      // Local cache: the new contact (with both emails) is reachable via
+      // window.__repo, not just rendered in the DOM.
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        return (cached ?? []).some((c) => c.display_name === name);
+      }, { timeout: 30_000, message: 'added contact should appear in the local contacts cache' }).toBe(true);
+      const addedRemoteId = (await readContactsCache(page))
+        .find((c) => c.display_name === name)?.remote_id ?? null;
+      expect(addedRemoteId, 'cached contact should carry a remote id').not.toBeNull();
+      await expect.poll(
+        async () => (await readContactEmailsFromCache(page, addedRemoteId))?.length ?? 0,
+        { timeout: 30_000, message: 'cache should hold both emails for the new contact' },
+      ).toBe(2);
+
       // --- Edit: rename + add a third email ---
       await row.getByRole('button', { name: /^Edit / }).click();
       const editForm = page.locator('.contacts__form');
@@ -228,6 +274,19 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       const editedCard = findCardByEmail(await listCards(jmap), email3);
       expect(editedCard?.name?.full).toBe(editedName);
 
+      // Local cache: the rename and the third email are reflected.
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        return (cached ?? []).some((c) => c.display_name === editedName);
+      }, { timeout: 30_000, message: 'edited contact name should appear in the local contacts cache' }).toBe(true);
+      const editedRemoteId = (await readContactsCache(page))
+        .find((c) => c.display_name === editedName)?.remote_id ?? null;
+      expect(editedRemoteId, 'cached edited contact should carry a remote id').not.toBeNull();
+      await expect.poll(
+        async () => (await readContactEmailsFromCache(page, editedRemoteId))?.length ?? 0,
+        { timeout: 30_000, message: 'cache should hold three emails after the edit' },
+      ).toBe(3);
+
       // --- Remove ---
       await editedRow.getByRole('button', { name: /^Remove / }).click();
       await expect(editedRow).toHaveCount(0, { timeout: 30_000 });
@@ -238,6 +297,12 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await expect.poll(async () => {
         return findCardByEmail(await listCards(jmap), email1) == null;
       }, { timeout: 30_000, message: 'removed contact should be destroyed server-side' }).toBe(true);
+
+      // Local cache: the contact is soft-deleted and no longer listed.
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        return (cached ?? []).some((c) => c.display_name === editedName);
+      }, { timeout: 30_000, message: 'removed contact should disappear from the local contacts cache' }).toBe(false);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       await destroyTestCards(jmap);

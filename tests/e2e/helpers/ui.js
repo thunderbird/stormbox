@@ -90,6 +90,45 @@ export async function readViewCacheForFolderRole(page, role) {
   }, role);
 }
 
+// Read the local contacts cache via window.__repo (the same RPC the
+// contacts store reads through). Returns one entry per non-deleted
+// contact with its remote id, display name, and preferred email.
+export async function readContactsCache(page) {
+  return page.evaluate(async () => {
+    if (!globalThis.__repo) return null;
+    const accounts = await globalThis.__repo.listAccounts();
+    const account = accounts?.[0];
+    if (!account) return null;
+    const rows = await globalThis.__repo.listContacts(account.id, { limit: 500 });
+    return rows.map((r) => ({
+      remote_id: r.remote_id,
+      display_name: r.display_name,
+      email: r.email,
+    }));
+  });
+}
+
+// Read the full ordered email list a contact carries in the local
+// cache, matched by remote id. Used to assert multi-email edits landed
+// in the cache, not just on the server.
+export async function readContactEmailsFromCache(page, remoteId) {
+  return page.evaluate(async (rid) => {
+    if (!globalThis.__repo) return null;
+    const accounts = await globalThis.__repo.listAccounts();
+    const account = accounts?.[0];
+    if (!account) return null;
+    const rows = await globalThis.__repo.call('db.query', {
+      sql: `SELECT ce.email
+              FROM contact_emails ce
+              JOIN contacts c ON c.id = ce.contact_id
+             WHERE c.account_id = ? AND c.remote_id = ? AND c.is_deleted = 0
+             ORDER BY ce.position`,
+      params: [account.id, rid],
+    });
+    return rows.map((r) => r.email);
+  }, remoteId);
+}
+
 export async function attachConsoleTail(testInfo, consoleLines, limit = 150) {
   await testInfo.attach('console-tail.txt', {
     body: consoleLines.slice(-limit).join('\n'),
