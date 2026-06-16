@@ -1356,82 +1356,144 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Whitelist the sender of a Junk message (Strategy C from
-   * whitelist-in-webmail-notes.md):
+   * Whitelist the senders of one or more Junk messages and rescue the
+   * messages (Strategy C from whitelist-in-webmail-notes.md):
    *
-   *   1. Trust the sender for future mail — queue a whitelistSender
-   *      mutation that adds a ContactCard in the "Trusted senders"
-   *      address book; Stalwart's trustContacts / card_is_ham then
-   *      delivers future authenticated mail from that address to the
-   *      Inbox.
-   *   2. Rescue the current message — remove $junk / add $notjunk
-   *      (optimistic + queued setKeywords) and move Junk → Inbox, since
-   *      contact trust only applies at ingest time for future mail.
+   *   1. Trust the senders for future mail — queue one whitelistSender
+   *      mutation carrying the unique sender addresses; the outbox adds a
+   *      ContactCard per address in the "Trusted senders" address book so
+   *      Stalwart's trustContacts / card_is_ham delivers future
+   *      authenticated mail from them to the Inbox, and reconciles the
+   *      contacts cache once.
+   *   2. Rescue the messages — remove $junk / add $notjunk (optimistic +
+   *      one queued setKeywords for the batch) and move Junk → Inbox,
+   *      since contact trust only applies at ingest time for future mail.
    *
-   * Only meaningful from the Junk folder; the UI gates the button on
-   * the junk role. Surfaces a transient success notice when the sender
-   * was trusted and the message moved, or an error when the message
-   * moved but the trust write did not apply.
+   * A message whose From header yields no address is still rescued; its
+   * sender is just skipped for trust. Only meaningful from the Junk
+   * folder; the UI gates the action on the junk role. Surfaces a
+   * transient success notice when the senders were trusted and the
+   * messages moved, or an error when the messages moved but the trust
+   * write did not apply.
    */
-  async function whitelistSender(messageId: number) {
+  async function whitelistSenders(ids: number[]): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
-    const row = messages.value.find((m) => m?.id === messageId);
-    if (!row) return { succeeded: 0, failed: 0, skipped: 0 };
-    const sender = parseSender(row.from_text);
-    if (!sender) {
-      error.value = 'Could not determine the sender to whitelist.';
-      return { succeeded: 0, failed: 0, skipped: 0 };
-    }
+    const messageIds = normalizeMessageIds(ids);
+    if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
     const target = inbox.value;
     if (!target?.id) {
       error.value = 'No Inbox folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
 
-    // 1) Trust the sender going forward. Run the mutation (rather than
-    //    fire-and-forget) so the confirmation can reflect whether the
-    //    trust write actually applied — the whole point of the action is
-    //    that future mail is trusted, so we must not claim success when
-    //    only the message move happened.
-    const trustMutation = await repo.insertPendingMutation({
-      accountId: authStore.accountId,
-      mutationType: MUTATION_TYPE.WHITELIST_SENDER,
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({ email: sender.email, name: sender.name }),
-    });
-    const trustResult = typeof repo.runMutation === 'function' && trustMutation?.id != null
-      ? await repo.runMutation(authStore.accountId, trustMutation.id)
-      : await repo.drainOutbox(authStore.accountId);
-    // A run that attempted nothing (e.g. the row never reached a
-    // runnable state) is not a success; mirror runChunkedMutation.
-    const trusted = (trustResult?.failed ?? 0) === 0
-      && ((trustResult?.attempted ?? 0) > 0 || (trustResult?.succeeded ?? 0) > 0);
+    // Gather the live rows and the unique senders to trust (deduped by
+    // address, case-insensitively). Rows with an unparseable From are
+    // still rescued below; they just contribute no trusted sender.
+    const rows: CachedRow[] = [];
+    const sendersByEmail = new Map<string, { name: string | null; email: string }>();
+    for (const id of messageIds) {
+      const row = messages.value.find((m) => m?.id === id);
+      if (!row) continue;
+      rows.push(row);
+      const sender = parseSender(row.from_text);
+      if (sender && !sendersByEmail.has(sender.email.toLowerCase())) {
+        sendersByEmail.set(sender.email.toLowerCase(), sender);
+      }
+    }
+    if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    const rescueIds = rows.map((r) => r.id);
+    const senders = [...sendersByEmail.values()];
 
-    // 2a) Rescue the current message's spam keywords (optimistic + queued).
-    const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
-    delete keywordsJson.$junk;
-    keywordsJson.$notjunk = true;
-    await repo.replaceMessageKeywords(messageId, Object.keys(keywordsJson), JSON.stringify(keywordsJson));
+    // 1) Trust every unique sender in a single mutation, run it, and
+    //    capture whether the trust write applied — the whole point of the
+    //    action is that future mail is trusted, so we must not claim
+    //    success when only the message move happened.
+    let trusted = true;
+    if (senders.length > 0) {
+      const trustMutation = await repo.insertPendingMutation({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.WHITELIST_SENDER,
+        targetMessageId: null,
+        requestJson: JSON.stringify({ senders }),
+      });
+      const trustResult = typeof repo.runMutation === 'function' && trustMutation?.id != null
+        ? await repo.runMutation(authStore.accountId, trustMutation.id)
+        : await repo.drainOutbox(authStore.accountId);
+      // A run that attempted nothing is not a success; mirror runChunkedMutation.
+      trusted = (trustResult?.failed ?? 0) === 0
+        && ((trustResult?.attempted ?? 0) > 0 || (trustResult?.succeeded ?? 0) > 0);
+    }
+
+    // 2a) Rescue the selected messages' spam keywords: one optimistic
+    //     transaction plus one queued setKeywords for the whole batch.
+    const optimisticItems = rows.map((row) => {
+      const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
+      delete keywordsJson.$junk;
+      keywordsJson.$notjunk = true;
+      return {
+        messageId: row.id,
+        keywords: Object.keys(keywordsJson),
+        keywordsJson: JSON.stringify(keywordsJson),
+      };
+    });
+    if (typeof repo.replaceMessageKeywordsMany === 'function') {
+      await repo.replaceMessageKeywordsMany(optimisticItems);
+    } else {
+      for (const item of optimisticItems) {
+        await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
+      }
+    }
     await repo.insertPendingMutation({
       accountId: authStore.accountId,
       mutationType: MUTATION_TYPE.SET_KEYWORDS,
-      targetMessageId: messageId,
-      requestJson: JSON.stringify({ add: ['$notjunk'], remove: ['$junk'] }),
+      targetMessageId: rescueIds.length === 1 ? rescueIds[0] : null,
+      requestJson: JSON.stringify({ messageIds: rescueIds, add: ['$notjunk'], remove: ['$junk'] }),
     });
 
-    // 2b) Move it out of Junk into the Inbox (the visible effect).
-    const result = await moveMessages([messageId], target.id);
+    // 2b) Move them all out of Junk into the Inbox (the visible effect).
+    const result = await moveMessages(rescueIds, target.id);
     if (result.succeeded > 0) {
-      const who = sender.name ?? sender.email;
-      if (trusted) {
-        setNotice(`Whitelisted ${who} — moved to Inbox`);
+      const movedPhrase = result.succeeded === 1
+        ? 'moved to Inbox'
+        : `moved ${result.succeeded} messages to Inbox`;
+      if (senders.length === 0) {
+        setNotice(`Moved ${result.succeeded} ${result.succeeded === 1 ? 'message' : 'messages'} to Inbox`);
+      } else if (trusted) {
+        const who = senders.length === 1
+          ? (senders[0].name ?? senders[0].email)
+          : `${senders.length} senders`;
+        setNotice(`Whitelisted ${who} — ${movedPhrase}`);
       } else {
-        // The message still moved, but the trust write did not apply —
-        // don't tell the user the sender was whitelisted.
-        error.value = `Moved to Inbox, but ${who} could not be added to your trusted contacts — future mail from them may still be treated as junk.`;
+        // Messages moved, but the trust write did not apply — don't claim
+        // the senders were whitelisted.
+        const what = result.succeeded === 1
+          ? 'Moved to Inbox'
+          : `Moved ${result.succeeded} messages to Inbox`;
+        const who = senders.length === 1
+          ? (senders[0].name ?? senders[0].email)
+          : 'the senders';
+        error.value = `${what}, but ${who} could not be added to your trusted contacts — future mail from them may still be treated as junk.`;
       }
     }
     return result;
+  }
+
+  /**
+   * Whitelist the sender of a single Junk message and rescue it to the
+   * Inbox. Strict about the sender: when the From header yields no
+   * address there is nothing to whitelist, so it reports that rather than
+   * silently moving the message. Shares the batch work with
+   * whitelistSenders.
+   */
+  async function whitelistSender(messageId: number): Promise<MoveResult> {
+    if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
+    const row = messages.value.find((m) => m?.id === messageId);
+    if (!row) return { succeeded: 0, failed: 0, skipped: 0 };
+    if (!parseSender(row.from_text)) {
+      error.value = 'Could not determine the sender to whitelist.';
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    return whitelistSenders([messageId]);
   }
 
   /**
@@ -2149,6 +2211,7 @@ export const useMailStore = defineStore('mail', () => {
     moveMessages,
     archiveMessages,
     whitelistSender,
+    whitelistSenders,
     canMoveToFolder,
     clearSelection,
     refresh,

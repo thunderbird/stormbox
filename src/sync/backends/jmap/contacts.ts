@@ -245,6 +245,8 @@ interface ContactWriteResult {
   ok: boolean;
   error?: ContactWriteError;
   id?: string;
+  ids?: string[];
+  created?: number;
   alreadyExists?: boolean;
   alreadyTrusted?: boolean;
 }
@@ -396,22 +398,77 @@ export async function ensureTrustedSendersBook({ transport, account, useWebSocke
 /**
  * Add a sender to the trusted-senders address book as a ContactCard so
  * Stalwart delivers future authenticated mail from that address to the
- * Inbox (trustContacts). Idempotent: skips the create when a card
- * already exists for the address. Returns { ok, alreadyTrusted?, id?,
- * error? }.
+ * Inbox (trustContacts). Single-sender convenience wrapper over
+ * createTrustedContactCards; idempotent (skips an address that already
+ * has a card).
  */
 export async function createTrustedContactCard({
   transport, account, email, name, useWebSocket = false,
 }): Promise<ContactWriteResult> {
-  const address = String(email ?? '').trim();
-  if (!address) {
+  return createTrustedContactCards({
+    transport, account, senders: [{ email, name }], useWebSocket,
+  });
+}
+
+/**
+ * Trust one or more senders in a constant number of round trips rather
+ * than one ContactCard/set per sender: a single existence query
+ * (ContactCard/query OR over the addresses + one ContactCard/get), a
+ * single trusted-senders book lookup, and a single multi-create
+ * ContactCard/set. Idempotent — addresses that already have a card
+ * anywhere in the account are skipped, so a retry after a partial failure
+ * converges. Returns { ok, created, alreadyTrusted?, ids?, error? }.
+ */
+export async function createTrustedContactCards({
+  transport, account, senders, useWebSocket = false,
+}): Promise<ContactWriteResult> {
+  // Dedupe by address (case-insensitive), keeping the first name seen.
+  const byEmail = new Map<string, { email: string; name: string | null }>();
+  for (const s of senders ?? []) {
+    const email = String(s?.email ?? '').trim();
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (!byEmail.has(key)) byEmail.set(key, { email, name: s?.name ?? null });
+  }
+  const unique = [...byEmail.values()];
+  if (unique.length === 0) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
   }
-  if (await cardExistsForEmail({ transport, account, email: address, useWebSocket })) {
-    return { ok: true, alreadyTrusted: true };
+
+  // 1) One existence query for every address; skip ones already carded.
+  const existing = await existingCardEmails({
+    transport, account, emails: unique.map((s) => s.email), useWebSocket,
+  });
+  const toCreate = unique.filter((s) => !existing.has(s.email.toLowerCase()));
+  if (toCreate.length === 0) {
+    return { ok: true, created: 0, alreadyTrusted: true };
   }
+
+  // 2) Resolve the trusted-senders book once for the whole batch.
   const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
-  return submitContactCardCreate({ transport, account, emails: [address], name, bookId, useWebSocket });
+
+  // 3) Create every missing card in a single ContactCard/set.
+  const create: Record<string, unknown> = {};
+  toCreate.forEach((s, i) => {
+    create[`c${i + 1}`] = buildContactCard({ name: s.name, emails: [s.email], bookId });
+  });
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/set',
+      { accountId: account.remote_account_id, create },
+      'cset',
+    ]],
+    useWebSocket,
+  });
+  const set = pickResponse(result, 'ContactCard/set');
+  if (!set) return { ok: false, error: { type: 'serverFail' } };
+  const notCreated = set.notCreated ? Object.values(set.notCreated) : [];
+  if (notCreated.length > 0) {
+    return { ok: false, error: { type: 'notCreated', detail: notCreated[0] } };
+  }
+  const ids = Object.values(set.created ?? {}).map((c: any) => c?.id).filter(Boolean);
+  return { ok: true, created: ids.length, ids };
 }
 
 /**
@@ -671,18 +728,64 @@ async function cardExistsForEmail({ transport, account, email, useWebSocket }): 
 }
 
 /**
- * Low-level ContactCard/set create shared by the whitelist and contacts
- * UI paths. Builds the JSContact map shape Stalwart accepts. `emails` is
- * an ordered, already-normalized list of addresses (at least one).
+ * Of the given addresses, return the set (lowercased) that already have a
+ * ContactCard anywhere in the account — in two calls regardless of count:
+ * one ContactCard/query (OR over the addresses) and one ContactCard/get.
+ * A filter the server does not support yields no ids, so callers fall
+ * through to create rather than failing.
  */
-async function submitContactCardCreate({
-  transport, account, emails, name, bookId, useWebSocket,
-}): Promise<ContactWriteResult> {
+async function existingCardEmails({ transport, account, emails, useWebSocket }): Promise<Set<string>> {
+  const present = new Set<string>();
+  if (!emails || emails.length === 0) return present;
+  const wanted = new Set(emails.map((e) => e.toLowerCase()));
+  const filter = emails.length === 1
+    ? { email: emails[0] }
+    : { operator: 'OR', conditions: emails.map((email) => ({ email })) };
+  const found = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/query',
+      { accountId: account.remote_account_id, filter },
+      'cq',
+    ]],
+    useWebSocket,
+  });
+  const ids = pickResponse(found, 'ContactCard/query')?.ids ?? [];
+  if (ids.length === 0) return present;
+  const got = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/get',
+      { accountId: account.remote_account_id, ids, properties: ['emails'] },
+      'cg',
+    ]],
+    useWebSocket,
+  });
+  const cards = pickResponse(got, 'ContactCard/get')?.list ?? [];
+  for (const card of cards) {
+    const map = card?.emails;
+    if (!map || typeof map !== 'object') continue;
+    for (const entry of Object.values(map) as any[]) {
+      const addr = String(entry?.address ?? '').trim().toLowerCase();
+      if (addr && wanted.has(addr)) present.add(addr);
+    }
+  }
+  return present;
+}
+
+/**
+ * Build the JSContact `Card` shape Stalwart accepts for a create, shared
+ * by the single-add and batched create paths. `emails` is an ordered,
+ * already-normalized list of addresses (at least one).
+ */
+function buildContactCard({
+  name, emails, bookId,
+}: { name?: string | null; emails: string[]; bookId?: string | null }): Record<string, unknown> {
   const emailsMap: Record<string, unknown> = {};
   emails.forEach((address, i) => {
     emailsMap[`e${i + 1}`] = { '@type': 'EmailAddress', address };
   });
-  const card = {
+  return {
     '@type': 'Card',
     version: '1.0',
     kind: 'individual',
@@ -690,6 +793,17 @@ async function submitContactCardCreate({
     emails: emailsMap,
     ...(bookId ? { addressBookIds: { [bookId]: true } } : {}),
   };
+}
+
+/**
+ * Low-level ContactCard/set create shared by the whitelist and contacts
+ * UI paths. Builds the JSContact map shape Stalwart accepts. `emails` is
+ * an ordered, already-normalized list of addresses (at least one).
+ */
+async function submitContactCardCreate({
+  transport, account, emails, name, bookId, useWebSocket,
+}): Promise<ContactWriteResult> {
+  const card = buildContactCard({ name, emails, bookId });
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[

@@ -25,6 +25,7 @@ import {
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository';
 import { TABLE_FAMILIES } from '../../../src/db/protocol';
+import { MUTATION_TYPE } from '../../../src/constants/states';
 
 function makeFolder(id, overrides = {}) {
   return {
@@ -1132,6 +1133,69 @@ describe('selectMessage marks unread as seen via the auto-drained outbox', () =>
       add: ['$seen'],
       remove: [],
     });
+  });
+});
+
+describe('whitelistSenders (bulk Not junk)', () => {
+  it('de-dupes senders into one trust mutation, batches the keyword rescue, and moves the batch', async () => {
+    const inbox = makeFolder(1, { role: 'inbox', may_add_items: 1 });
+    const junk = makeFolder(2, { role: 'junk', may_remove_items: 1, total_emails: 3 });
+    const rows = [
+      makeRow(10, { from_text: 'Alice <a@x.com>', keywords_json: '{"$junk":true}' }),
+      makeRow(11, { from_text: 'a@x.com', keywords_json: '{"$junk":true}' }),
+      makeRow(12, { from_text: 'Bob <b@y.com>', keywords_json: '{"$junk":true}' }),
+    ];
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, junk],
+      views: { 1: { rows: [], total: 0 }, 2: { rows, total: 3 } },
+    });
+    await flush();
+
+    mailStore.selectFolder(junk.id);
+    await flush();
+    expect(mailStore.currentFolder?.role).toBe('junk');
+
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+    let keywordBatch = null;
+    repo.replaceMessageKeywordsMany = async (items) => {
+      keywordBatch = items;
+      return { ok: true, applied: items.length };
+    };
+
+    const result = await mailStore.whitelistSenders([10, 11, 12]);
+    await flush();
+
+    expect(result.succeeded).toBe(3);
+
+    const byType = (type) => insertCalls.filter((c) => c.mutationType === type);
+
+    // One trust mutation carrying the two unique senders (deduped).
+    const trust = byType(MUTATION_TYPE.WHITELIST_SENDER);
+    expect(trust).toHaveLength(1);
+    expect(trust[0].targetMessageId).toBeNull();
+    expect(JSON.parse(trust[0].requestJson).senders.map((s) => s.email))
+      .toEqual(['a@x.com', 'b@y.com']);
+
+    // One batched keyword rescue across all three messages.
+    expect(keywordBatch).toHaveLength(3);
+    const setKw = byType(MUTATION_TYPE.SET_KEYWORDS);
+    expect(setKw).toHaveLength(1);
+    expect(JSON.parse(setKw[0].requestJson)).toMatchObject({
+      messageIds: [10, 11, 12],
+      add: ['$notjunk'],
+      remove: ['$junk'],
+    });
+
+    // One move into the Inbox.
+    expect(byType(MUTATION_TYPE.MOVE_TO_FOLDERS)).toHaveLength(1);
+
+    // Rows leave the Junk view and a success notice names the senders.
+    expect(mailStore.messages.map((r) => r?.id)).toEqual([]);
+    expect(mailStore.notice).toBe('Whitelisted 2 senders — moved 3 messages to Inbox');
   });
 });
 

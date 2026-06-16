@@ -181,15 +181,15 @@ test.describe('Contacts + Junk whitelist e2e', () => {
         return keywords.$notjunk === true ? 'notjunk' : JSON.stringify(keywords);
       }, { timeout: 30_000, message: 'server should mark the message $notjunk and clear $junk' }).toBe('notjunk');
 
-      // Local cache: the message left the Junk view and entered the Inbox
-      // view (window.__repo, not the worker read-through).
+      // Local cache: the message left the Junk view (window.__repo, not the
+      // worker read-through). The destination Inbox window is invalidated and
+      // re-fetched on open rather than proactively materialized while another
+      // folder is in view, so — like delete-message.spec / bulk-delete.spec —
+      // we assert removal from the source cache here and the destination on
+      // the server (above), not presence in the Inbox view cache.
       const junkCache = await readViewCacheForFolderRole(page, 'junk');
       expect(junkCache, 'local Junk cache should be reachable via window.__repo').not.toBeNull();
       expect(junkCache.remoteIds, 'remote id should be gone from the Junk cache').not.toContain(createdId);
-      await expect.poll(async () => {
-        const inboxCache = await readViewCacheForFolderRole(page, 'inbox');
-        return inboxCache?.remoteIds?.includes(createdId) ?? false;
-      }, { timeout: 30_000, message: 'whitelisted message should appear in the Inbox cache' }).toBe(true);
 
       // Local cache: the trusted sender appears in the contacts cache.
       await expect.poll(async () => {
@@ -202,6 +202,122 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       await destroyTestCards(jmap);
       if (createdId && trash) await cleanupEmail(jmap, createdId, trash.id).catch(() => {});
+    }
+  });
+
+  test('Junk multi-select "Not junk" whitelists every unique sender and moves the batch to the Inbox', async ({ sharedPage: page }, testInfo) => {
+    const jmap = await connectJmap();
+    const mailboxes = await listMailboxes(jmap);
+    const inbox = mailboxByRole(mailboxes, 'inbox');
+    const trash = mailboxByRole(mailboxes, 'trash');
+    const junk = await ensureJunkMailbox(jmap);
+
+    const ts = Date.now();
+    // Two distinct senders, one of them on two messages, so the bulk
+    // path's per-address de-duplication is exercised (3 messages → 2
+    // trusted cards).
+    const senderA = `bulk-a-${ts}@promo-e2e.example`;
+    const senderB = `bulk-b-${ts}@promo-e2e.example`;
+    const cases = [
+      { subject: `${JUNK_SUBJECT_PREFIX} bulk ${ts} a1`, sender: senderA },
+      { subject: `${JUNK_SUBJECT_PREFIX} bulk ${ts} a2`, sender: senderA },
+      { subject: `${JUNK_SUBJECT_PREFIX} bulk ${ts} b1`, sender: senderB },
+    ];
+    const createdIds = [];
+    try {
+      for (const { subject, sender } of cases) {
+        const id = await createEmailInMailbox(jmap, {
+          mailboxId: junk.id,
+          fromEmail: sender,
+          subject,
+          keywords: { $junk: true },
+        });
+        createdIds.push(id);
+      }
+
+      await clickFolder(page, 'Junk');
+      for (const { subject } of cases) {
+        await expectRowSoon(page, subject);
+      }
+
+      // Multi-select all three via the checkbox column (no preview open).
+      for (const { subject } of cases) {
+        await page.locator('.msg-list__items > li')
+          .filter({ hasText: subject })
+          .first()
+          .locator('.msg-list__check input')
+          .click();
+      }
+      await expect(page.locator('.msg-list__count'))
+        .toHaveText(/^3 selected/, { timeout: 5_000 });
+
+      // The bulk "Not junk" action is only present in the Junk folder.
+      await page.locator('.message-view__bulk-actions [title="Whitelist senders and move to Inbox"]').click();
+
+      // Success toast names the two unique senders.
+      await expect(page.locator('.store-error-toast__item--success'))
+        .toContainText(/whitelisted 2 senders/i, { timeout: 30_000 });
+
+      // Every selected message leaves the Junk list.
+      for (const { subject } of cases) {
+        await expect.poll(
+          async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
+          { timeout: 30_000, message: `whitelisted bulk row "${subject}" should leave Junk` },
+        ).toBe(0);
+      }
+
+      await waitForPendingMutations(page);
+
+      // Server: each message is now in the Inbox and marked $notjunk.
+      for (const id of createdIds) {
+        await expect.poll(async () => {
+          const ids = await getEmailMailboxIds(jmap, id);
+          if (!ids) return 'missing';
+          if (ids[inbox.id] === true && ids[junk.id] !== true) return 'inbox';
+          if (ids[junk.id] === true) return 'junk';
+          return JSON.stringify(ids);
+        }, { timeout: 30_000, message: `server should report ${id} in Inbox` }).toBe('inbox');
+        await expect.poll(async () => {
+          const keywords = await getEmailKeywords(jmap, id);
+          if (!keywords) return 'missing';
+          if (keywords.$junk) return 'still-junk';
+          return keywords.$notjunk === true ? 'notjunk' : JSON.stringify(keywords);
+        }, { timeout: 30_000, message: `server should mark ${id} $notjunk` }).toBe('notjunk');
+      }
+
+      // Server: both unique senders are trusted, and senderA — used by
+      // two messages — produced a single card (de-duplicated).
+      await expect.poll(async () => {
+        const cards = await listCards(jmap);
+        return findCardByEmail(cards, senderA) != null && findCardByEmail(cards, senderB) != null;
+      }, { timeout: 30_000, message: 'both bulk senders should have a trusted ContactCard' }).toBe(true);
+      const cardsForA = (await listCards(jmap))
+        .filter((c) => cardEmails(c).some((a) => a.toLowerCase() === senderA.toLowerCase()));
+      expect(cardsForA, 'the repeated sender should map to a single trusted card').toHaveLength(1);
+
+      // Local cache: the messages left the Junk view (window.__repo). As in
+      // the single-message test, the destination Inbox window is invalidated
+      // and re-fetched on open, so we assert source-cache removal here and
+      // the Inbox destination on the server (above), not presence in the
+      // Inbox view cache.
+      const junkCache = await readViewCacheForFolderRole(page, 'junk');
+      expect(junkCache, 'local Junk cache should be reachable via window.__repo').not.toBeNull();
+      for (const id of createdIds) {
+        expect(junkCache.remoteIds, `${id} should be gone from the Junk cache`).not.toContain(id);
+      }
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        const emails = new Set((cached ?? []).map((c) => (c.email ?? '').toLowerCase()));
+        return emails.has(senderA.toLowerCase()) && emails.has(senderB.toLowerCase());
+      }, { timeout: 30_000, message: 'both trusted senders should land in the contacts cache' }).toBe(true);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      await destroyTestCards(jmap);
+      if (trash) {
+        for (const id of createdIds) {
+          await cleanupEmail(jmap, id, trash.id).catch(() => {});
+        }
+      }
     }
   });
 

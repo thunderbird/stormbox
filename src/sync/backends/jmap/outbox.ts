@@ -48,7 +48,7 @@ import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
 import {
-  createTrustedContactCard,
+  createTrustedContactCards,
   createContactCard,
   updateContactCard,
   deleteContactCard,
@@ -173,29 +173,32 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
 }
 
 /**
- * Whitelist a sender: add the message's From address to the trusted-
+ * Whitelist one or more senders: add each From address to the trusted-
  * senders address book so Stalwart delivers future authenticated mail
- * from that address to the Inbox (trustContacts / card_is_ham). The
- * visible rescue of the current message (remove $junk / add $notjunk
- * and move Junk → Inbox) is queued separately by the store as
- * setKeywords + moveToFolders rows, so this row only owns the contact
- * write. request shape: { email, name? }.
+ * from those addresses to the Inbox (trustContacts / card_is_ham). The
+ * visible rescue of the messages (remove $junk / add $notjunk and move
+ * Junk → Inbox) is queued separately by the store as setKeywords +
+ * moveToFolders rows, so this row only owns the contact writes. request
+ * shape: { email, name? } for one sender, or { senders: [{ email, name? },
+ * ...] } for a bulk whitelist. createTrustedContactCards batches the
+ * trust writes (one existence query, one book lookup, one multi-create)
+ * and is idempotent per address, so a retry after a partial failure
+ * converges.
  */
 async function runWhitelistSender({ transport, account, handlers, request, useWebSocket }) {
-  const result = await createTrustedContactCard({
-    transport,
-    account,
-    email: request?.email,
-    name: request?.name,
-    useWebSocket,
+  const senders = Array.isArray(request?.senders)
+    ? request.senders
+    : [{ email: request?.email, name: request?.name }];
+  const result = await createTrustedContactCards({
+    transport, account, senders, useWebSocket,
   });
   if (!result.ok) {
     return { ok: false, error: result.error ?? { type: 'serverFail' } };
   }
-  // Pull the new card (and its book) into the local cache so it shows
-  // up in the contacts view without waiting for a StateChange push.
-  // Best-effort: the trust already took effect server-side, so a
-  // reconcile failure must not fail the mutation.
+  // Pull the new cards (and their book) into the local cache once, after
+  // all trusted cards exist, so they show up in the contacts view without
+  // waiting for a StateChange push. Best-effort: the trust already took
+  // effect server-side, so a reconcile failure must not fail the mutation.
   await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
   return { ok: true };
 }

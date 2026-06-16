@@ -9,10 +9,17 @@ import {
   syncContacts,
   syncContactCardChanges,
   createContactCard,
+  createTrustedContactCards,
   updateContactCard,
   deleteContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
 import { MockTransport } from './_mock-transport';
+
+function countMethod(transport, name) {
+  return transport.requests.filter(
+    (r) => r.methodCalls.some(([m]) => m === name),
+  ).length;
+}
 
 let engine;
 let handlers;
@@ -214,6 +221,95 @@ describe('createContactCard', () => {
     const didSet = transport.requests.some((r) =>
       r.methodCalls.some(([m]) => m === 'ContactCard/set'));
     expect(didSet).toBe(false);
+  });
+});
+
+describe('createTrustedContactCards', () => {
+  function setup({ existingIds = [], existingCards = [] } = {}) {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: existingIds, total: existingIds.length }));
+    transport.handle('ContactCard/get', () => ({ list: existingCards }));
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-trusted', name: 'Trusted senders', isDefault: false }],
+    }));
+    let created: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      created = params.create;
+      const out: Record<string, any> = {};
+      for (const key of Object.keys(params.create ?? {})) out[key] = { id: `new-${key}` };
+      return { created: out };
+    });
+    return { transport, getCreated: () => created };
+  }
+
+  it('trusts every unique sender in one ContactCard/set and de-dupes by address', async () => {
+    const { transport, getCreated } = setup();
+    const result = await createTrustedContactCards({
+      transport,
+      account,
+      senders: [
+        { email: 'a@x.com', name: 'Alice' },
+        { email: 'A@X.com', name: 'Alice dup' },
+        { email: 'b@y.com', name: 'Bob' },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.created).toBe(2);
+
+    const created = getCreated();
+    expect(Object.values(created).map((c: any) => c.emails.e1.address))
+      .toEqual(['a@x.com', 'b@y.com']);
+    Object.values(created).forEach((c: any) => {
+      expect(c.addressBookIds).toEqual({ 'book-trusted': true });
+    });
+
+    // Proper batch: one book lookup and one create regardless of N.
+    expect(countMethod(transport, 'AddressBook/get')).toBe(1);
+    expect(countMethod(transport, 'ContactCard/set')).toBe(1);
+    expect(countMethod(transport, 'ContactCard/query')).toBe(1);
+  });
+
+  it('skips addresses that already have a card and only creates the rest', async () => {
+    const { transport, getCreated } = setup({
+      existingIds: ['existing-1'],
+      existingCards: [{ id: 'existing-1', emails: { e1: { address: 'a@x.com' } } }],
+    });
+    const result = await createTrustedContactCards({
+      transport,
+      account,
+      senders: [{ email: 'a@x.com', name: 'Alice' }, { email: 'b@y.com', name: 'Bob' }],
+    });
+    expect(result.ok).toBe(true);
+    expect(result.created).toBe(1);
+    expect(Object.values(getCreated()).map((c: any) => c.emails.e1.address)).toEqual(['b@y.com']);
+  });
+
+  it('reports alreadyTrusted and issues no create when every sender exists', async () => {
+    const { transport } = setup({
+      existingIds: ['e1', 'e2'],
+      existingCards: [
+        { id: 'e1', emails: { e1: { address: 'a@x.com' } } },
+        { id: 'e2', emails: { e1: { address: 'b@y.com' } } },
+      ],
+    });
+    const result = await createTrustedContactCards({
+      transport,
+      account,
+      senders: [{ email: 'a@x.com' }, { email: 'b@y.com' }],
+    });
+    expect(result).toEqual({ ok: true, created: 0, alreadyTrusted: true });
+    expect(countMethod(transport, 'ContactCard/set')).toBe(0);
+    expect(countMethod(transport, 'AddressBook/get')).toBe(0);
+  });
+
+  it('fails without touching the server when no valid sender is provided', async () => {
+    const transport = new MockTransport();
+    const result = await createTrustedContactCards({
+      transport, account, senders: [{ email: '   ' }, { email: null }],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.type).toBe('invalidArguments');
+    expect(transport.requests).toHaveLength(0);
   });
 });
 

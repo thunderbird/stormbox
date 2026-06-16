@@ -537,6 +537,23 @@ async function bulkDelete() {
   }
 }
 
+// Bulk "Not junk": whitelist every selected message's sender and move
+// the batch to the Inbox. Junk-folder only, gated in the template.
+const bulkWhitelisting = ref(false);
+
+async function bulkWhitelist() {
+  const ids = [...mailStore.selectedIds];
+  if (ids.length === 0 || bulkWhitelisting.value) return;
+  bulkWhitelisting.value = true;
+  try {
+    await mailStore.whitelistSenders(ids);
+  } catch (err) {
+    console.warn('[message-view] bulk whitelist failed', err?.message ?? err);
+  } finally {
+    bulkWhitelisting.value = false;
+  }
+}
+
 function clearBulkSelection() {
   mailStore.clearSelection();
 }
@@ -563,6 +580,19 @@ function closeMessageView() {
           {{ selectionCount }} {{ selectionCount === 1 ? 'message' : 'messages' }} selected
         </h2>
         <div class="message-view__bulk-actions">
+          <!-- Contextual: only in the Junk folder. Leads the group as a
+               labeled accent button, set apart from the icon buttons. -->
+          <button
+            v-if="isInJunkFolder"
+            class="message-view__action message-view__action--whitelist"
+            type="button"
+            :disabled="bulkWhitelisting"
+            @click="bulkWhitelist"
+            title="Whitelist senders and move to Inbox"
+            aria-label="Not junk — whitelist senders and move the selected messages to Inbox"
+          >
+            <span class="message-view__whitelist-label">Not junk</span>
+          </button>
           <button class="message-view__action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </button>
