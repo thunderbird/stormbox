@@ -29,9 +29,9 @@ capability.
 |---|---|---|---|---|---|
 | 1 | Sign in and session lifecycle | 4 | — | 1 | Session-expired UX |
 | 2 | Read mail | 9 | 2 | 1 | Conversation UI, full mail search, browser navigation |
-| 3 | Triage | 14 | — | 1 | Undo/redo queue |
+| 3 | Triage | 15 | — | 1 | Undo/redo queue |
 | 4 | Compose and send | 7 | — | 1 | Cc/Bcc autocomplete |
-| 5 | Contacts | 4 | — | — | — |
+| 5 | Contacts | 6 | — | — | — |
 | 6 | Attachments | 1 | — | 1 | Download |
 | 7 | Account storage usage | 2 | — | — | — |
 | 8 | Application chrome and cross-product navigation | 5 | — | 1 | services-ui adoption |
@@ -86,6 +86,7 @@ capability.
 | R-3.13 🟧 Planned | The system shall provide an undo/redo queue for message triage operations including archive, move, delete (to Trash), and mark read/unread. The user shall be able to reverse the most recent action via Ctrl/Cmd+Z and reapply it via Ctrl/Cmd+Shift+Z (or Ctrl/Cmd+Y), matching Thunderbird-compatible behavior. The queue shall preserve a bounded history of recent operations within the active session, group bulk actions on multiple messages into a single undoable entry, and surface a transient confirmation (e.g. toast) after each action with an undo affordance. Permanent destroy (Shift+Delete and Trash purge) shall remain non-undoable. The queue shall be cleared on sign-out and is not required to survive page reloads. |
 | R-3.14 🟩 Done | When the user issues a move or delete (move-to-Trash or permanent destroy) covering more than a configurable batch size (default 200 messages), the system shall split the dispatch into sequential JMAP `Email/set` chunks no larger than that batch size, display a modal progress indicator that names the operation and shows messages-completed / total, and block other user input until the operation finishes. Each chunk shall be its own `pending_mutations` row so the outbox apply step still keeps the local cache authoritative per chunk. On a chunk failure the system shall stop further chunks, leave already-succeeded chunks applied, surface an error that distinguishes the partial outcome (e.g. "Could not move message (requestTooLarge) (400 of 536 succeeded).") derived from the JMAP method-level error type when the server returns one, and clear the progress indicator. The batch size shall be a single source-level constant so it can be tuned without schema or API changes. |
 | R-3.15 🟩 Done | The active row shall be tracked as a single stable message-id cursor shared by every navigation path — arrow keys on the focused list, the Thunderbird shortcuts of R-3.7, row clicks, and the automatic preview advance of R-3.11. The cursor shall coincide with the previewed message on plain navigation and clicks; during a Shift+Arrow range extension (R-3.6) the cursor shall advance to the range's leading edge while the previewed message stays put. When the cursor moves, the system shall scroll the virtualized message list (R-2.2) so the cursor row is brought into view with minimal movement (no scroll when it is already fully visible), because an off-screen row in the virtualized list is not present in the DOM and cannot be revealed by element-level scrolling. The message list shall expose listbox semantics for assistive technology: a listbox container, option rows carrying their selected state, and an active-descendant reference that tracks the cursor row kept in view. |
+| R-3.16 🟩 Done | When the user opens a message in the Junk folder, the system shall offer a "Not junk" action that whitelists the sender and rescues the message. Whitelisting shall add the sender's address to a dedicated "Trusted senders" address book as a `ContactCard` so the server's contact trust delivers future authenticated mail from that address to the Inbox; rescuing shall clear the `$junk` keyword, set `$notjunk`, and move the message from Junk to the Inbox. The action shall be offered only from the Junk folder. The system shall confirm success only when the sender was actually trusted; when the message moved but the trust write did not apply, the system shall surface that partial outcome rather than reporting that the sender was whitelisted. |
 
 ### 4. Compose and send
 
@@ -104,10 +105,12 @@ capability.
 
 | ID / Status | Requirement |
 |:--|:--|
-| R-5.1 🟩 Done | When the JMAP Contacts capability is advertised, the system shall sync contacts read-only. |
+| R-5.1 🟩 Done | When the JMAP Contacts capability is advertised, the system shall sync contacts into local storage. The sync shall ingest cards in the JSContact (RFC 9553) shape the server serves — an `addressBookIds` map, a keyed `emails` map, `name.full`, and an `organizations` map — and shall also tolerate the older single-book / flat-array shape (`addressBookId`, `emails: [...]`, `fullName`, `organization`), normalizing both to the local contact model. A card filed only in an address book the client does not yet know about shall be skipped rather than failing the batch, and picked up once that book syncs. |
 | R-5.2 🟩 Done | The system shall let the user browse and filter synced contacts in a dedicated contacts view. |
 | R-5.3 🟩 Done | The system shall offer recipient autocomplete in compose drawn from synced contacts and prior send history. |
 | R-5.4 🟩 Done | When contact sync is unavailable, compose shall remain usable. |
+| R-5.5 🟩 Done | The contacts view shall present an address-book rail that lists each synced address book with a per-book contact count plus an "All contacts" entry; selecting a book filters the contact list to that book and targets newly-created contacts to it. The account's default book shall be presented with a friendly label rather than its server name. Selecting "All contacts" shall target new contacts to the account's default book. |
+| R-5.6 🟩 Done | The system shall let the user add, edit, and remove contacts through standard JMAP `ContactCard/set`, with each contact able to carry multiple email addresses. New contacts shall be filed in the selected address book, or the account's default book when viewing "All contacts". Editing shall merge the user's changes against the authoritative server card so properties the editor does not surface — other structured name components, phones, organizations, address-book membership, and per-email metadata — are preserved, and only the display name and email addresses the user actually changed are written. Each create, edit, and remove shall flow through the mutation outbox so the local cache matches the server before the action resolves (per the constitution's Verified Consistency rule); removal shall update the list optimistically and restore it on failure. |
 
 ### 6. Attachments
 
@@ -171,7 +174,7 @@ The MVP excludes:
 - Calendar.
 - Automatic email categorization (e.g. social/promotions tabs).
 - Agent-based or advanced search and rules.
-- Editing contacts, or attaching files via a picker (inline images pasted into compose are supported per R-4.8).
+- Attaching files via a picker (inline images pasted into compose are supported per R-4.8).
 - Offline mode.
 - Mail rules and filters.
 - Multi-account unified inbox.
