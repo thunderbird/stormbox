@@ -557,21 +557,32 @@ describe('whitelist reconcile cost is independent of contact count', () => {
     );
   }
 
-  it('whitelisting a sender on a 1000-contact address book fetches only the new card', async () => {
-    await seedLocalContacts(1000);
-    expect((await countContacts()).n).toBe(1000);
+  it('batch-whitelisting 200 mails from 150 senders on a 1099-contact book fetches only the 150 new cards', async () => {
+    await seedLocalContacts(1099);
+    expect((await countContacts()).n).toBe(1099);
 
-    // The "server" holds 1000 cards, but the whitelist must never pull
-    // them: a full ContactCard/query (position/limit) would be the old
-    // O(contacts) reconcile; the existence check uses a {email} filter.
+    // 200 junk messages multi-selected, from 150 distinct senders (50
+    // repeats), as the store's whitelistSenders would hand them off.
+    const senders = Array.from({ length: 200 }, (_, i) => ({
+      email: `batch-${i % 150}@junk.invalid`,
+      name: `Sender ${i % 150}`,
+    }));
+    expect(new Set(senders.map((s) => s.email)).size).toBe(150);
+
+    // The "server" holds 1099 cards, but the batch whitelist must never
+    // pull them: a full ContactCard/query (position/limit) would be the
+    // old O(contacts) reconcile; the existence check uses a {email}
+    // (OR-of-emails) filter.
     const transport = new MockTransport();
     let fullListQueried = false;
+    let setCalls = 0;
+    let createdInOneCall = 0;
     transport.handle('ContactCard/query', (params) => {
       if (params.position != null || params.limit != null) {
         fullListQueried = true;
-        return { ids: Array.from({ length: 1000 }, (_, i) => `seed-${i}`), total: 1000, state: 's' };
+        return { ids: Array.from({ length: 1099 }, (_, i) => `seed-${i}`), total: 1099, state: 's' };
       }
-      return { ids: [], total: 0 }; // existence check: sender not yet carded
+      return { ids: [], total: 0 }; // existence check: none of the senders carded yet
     });
     transport.handle('AddressBook/get', () => ({
       list: [
@@ -580,8 +591,11 @@ describe('whitelist reconcile cost is independent of contact count', () => {
       ],
     }));
     transport.handle('ContactCard/set', (params) => {
+      setCalls += 1;
       const created = {};
-      for (const key of Object.keys(params.create ?? {})) created[key] = { id: 'trusted-new' };
+      const keys = Object.keys(params.create ?? {});
+      createdInOneCall = Math.max(createdInOneCall, keys.length);
+      for (const key of keys) created[key] = { id: key }; // distinct ids
       return { created };
     });
     transport.handle('ContactCard/get', (params) => ({
@@ -589,8 +603,8 @@ describe('whitelist reconcile cost is independent of contact count', () => {
         '@type': 'Card',
         id,
         kind: 'individual',
-        name: { full: 'Spammer' },
-        emails: { e1: { '@type': 'EmailAddress', address: 'spammer@junk.invalid' } },
+        name: { full: `Trusted ${id}` },
+        emails: { e1: { '@type': 'EmailAddress', address: `wl-${id}@junk.invalid` } },
         addressBookIds: { 'book-trusted': true },
       })),
     }));
@@ -601,19 +615,24 @@ describe('whitelist reconcile cost is independent of contact count', () => {
       handlers,
       row: {
         mutation_type: 'whitelistSender',
-        request_json: JSON.stringify({ email: 'spammer@junk.invalid', name: 'Spammer' }),
+        request_json: JSON.stringify({ senders }),
       },
     });
     expect(result.ok).toBe(true);
 
-    // The whole address book was never re-pulled...
+    // All 150 unique senders trusted in a single batched ContactCard/set
+    // (200 mails de-duped to 150 cards, one call, not a per-sender loop).
+    expect(setCalls).toBe(1);
+    expect(createdInOneCall).toBe(150);
+
+    // The 1099-contact book is never re-pulled...
     expect(fullListQueried).toBe(false);
-    // ...and only the single new trusted card was fetched.
+    // ...only the 150 new trusted cards are fetched.
     const idsFetched = jmapCalls(transport, 'ContactCard/get')
       .reduce((sum, p) => sum + (p.ids?.length ?? 0), 0);
-    expect(idsFetched).toBe(1);
+    expect(idsFetched).toBe(150);
 
-    // The 1000 existing contacts are untouched; exactly one was added.
-    expect((await countContacts()).n).toBe(1001);
+    // The 1099 existing contacts are untouched; exactly 150 were added.
+    expect((await countContacts()).n).toBe(1249);
   });
 });
