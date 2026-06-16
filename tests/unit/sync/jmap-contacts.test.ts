@@ -13,7 +13,18 @@ import {
   updateContactCard,
   deleteContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
+import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { MockTransport } from './_mock-transport';
+
+function jmapCalls(transport, method) {
+  const out = [];
+  for (const req of transport.requests) {
+    for (const [m, params] of req.methodCalls) {
+      if (m === method) out.push(params);
+    }
+  }
+  return out;
+}
 
 function countMethod(transport, name) {
   return transport.requests.filter(
@@ -505,5 +516,104 @@ describe('syncContactCardChanges', () => {
       [account.id, 'c-2'],
     );
     expect(Number(destroyed.is_deleted)).toBe(1);
+  });
+});
+
+describe('whitelist reconcile cost is independent of contact count', () => {
+  async function seedLocalContacts(n) {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [
+        { remoteId: 'book-default', name: 'Default', isDefault: true },
+        { remoteId: 'book-trusted', name: 'Trusted senders', isDefault: false },
+      ],
+    });
+    const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    const defaultLocal = books.find((b) => b.remote_id === 'book-default').id;
+    const contacts = Array.from({ length: n }, (_, i) => ({
+      addressbookId: defaultLocal,
+      remoteId: `seed-${i}`,
+      uid: null,
+      etag: null,
+      fullName: `Seed ${i}`,
+      displayName: `Seed ${i}`,
+      givenName: null,
+      familyName: null,
+      organization: null,
+      vcardText: null,
+      vcardVersion: null,
+      rawJson: '{}',
+      isDeleted: false,
+      emails: [{ position: 0, email: `seed-${i}@x.invalid`, label: null, isPreferred: true }],
+    }));
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
+  }
+
+  function countContacts() {
+    return engine.get(
+      'SELECT COUNT(*) AS n FROM contacts WHERE account_id = ? AND is_deleted = 0',
+      [account.id],
+    );
+  }
+
+  it('whitelisting a sender on a 1000-contact address book fetches only the new card', async () => {
+    await seedLocalContacts(1000);
+    expect((await countContacts()).n).toBe(1000);
+
+    // The "server" holds 1000 cards, but the whitelist must never pull
+    // them: a full ContactCard/query (position/limit) would be the old
+    // O(contacts) reconcile; the existence check uses a {email} filter.
+    const transport = new MockTransport();
+    let fullListQueried = false;
+    transport.handle('ContactCard/query', (params) => {
+      if (params.position != null || params.limit != null) {
+        fullListQueried = true;
+        return { ids: Array.from({ length: 1000 }, (_, i) => `seed-${i}`), total: 1000, state: 's' };
+      }
+      return { ids: [], total: 0 }; // existence check: sender not yet carded
+    });
+    transport.handle('AddressBook/get', () => ({
+      list: [
+        { id: 'book-default', name: 'Default', isDefault: true },
+        { id: 'book-trusted', name: 'Trusted senders', isDefault: false },
+      ],
+    }));
+    transport.handle('ContactCard/set', (params) => {
+      const created = {};
+      for (const key of Object.keys(params.create ?? {})) created[key] = { id: 'trusted-new' };
+      return { created };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: (params.ids ?? []).map((id) => ({
+        '@type': 'Card',
+        id,
+        kind: 'individual',
+        name: { full: 'Spammer' },
+        emails: { e1: { '@type': 'EmailAddress', address: 'spammer@junk.invalid' } },
+        addressBookIds: { 'book-trusted': true },
+      })),
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: 'whitelistSender',
+        request_json: JSON.stringify({ email: 'spammer@junk.invalid', name: 'Spammer' }),
+      },
+    });
+    expect(result.ok).toBe(true);
+
+    // The whole address book was never re-pulled...
+    expect(fullListQueried).toBe(false);
+    // ...and only the single new trusted card was fetched.
+    const idsFetched = jmapCalls(transport, 'ContactCard/get')
+      .reduce((sum, p) => sum + (p.ids?.length ?? 0), 0);
+    expect(idsFetched).toBe(1);
+
+    // The 1000 existing contacts are untouched; exactly one was added.
+    expect((await countContacts()).n).toBe(1001);
   });
 });
