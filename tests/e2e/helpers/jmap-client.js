@@ -650,6 +650,22 @@ export async function getEmailMailboxIds(jmap, emailId) {
   return row?.mailboxIds ?? null;
 }
 
+// Fetch a message's keyword map (e.g. { $seen: true, $notjunk: true }).
+// Returns null when the message no longer exists.
+export async function getEmailKeywords(jmap, emailId) {
+  const payload = await jmapRequest(jmap, [[
+    'Email/get',
+    {
+      accountId: jmap.accountId,
+      ids: [emailId],
+      properties: ['keywords'],
+    },
+    'gk',
+  ]]);
+  const row = pickResponse(payload, 'Email/get')?.list?.[0] ?? null;
+  return row?.keywords ?? null;
+}
+
 export async function destroyEmail(jmap, emailId) {
   const payload = await jmapRequest(jmap, [[
     'Email/set',

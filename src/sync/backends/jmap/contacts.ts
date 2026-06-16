@@ -234,6 +234,41 @@ async function persistContactCards({ account, cards, handlers }) {
   }
 }
 
+interface ContactWriteError {
+  type: string;
+  message?: string;
+  detail?: unknown;
+}
+
+/** Result of a ContactCard create/update/destroy write. */
+interface ContactWriteResult {
+  ok: boolean;
+  error?: ContactWriteError;
+  id?: string;
+  alreadyExists?: boolean;
+  alreadyTrusted?: boolean;
+}
+
+interface NormalizedEmail {
+  position: number;
+  email: string;
+  label: string | null;
+  isPreferred: boolean;
+}
+
+interface NormalizedCard {
+  id: string;
+  uid: string | null;
+  bookRemoteIds: string[];
+  fullName: string | null;
+  displayName: string;
+  givenName: string | null;
+  familyName: string | null;
+  organization: string | null;
+  emails: NormalizedEmail[];
+  raw: unknown;
+}
+
 /**
  * Normalize a ContactCard into the flat shape our DB layer expects,
  * tolerating both the JSContact (RFC 9553) map shape Stalwart serves
@@ -242,7 +277,7 @@ async function persistContactCards({ account, cards, handlers }) {
  * some servers and the unit tests (`addressBookId`, `emails: [...]`,
  * `fullName`, `organization`).
  */
-function normalizeCard(card) {
+function normalizeCard(card: any): NormalizedCard {
   const bookRemoteIds = card.addressBookIds && typeof card.addressBookIds === 'object'
     ? Object.keys(card.addressBookIds).filter((id) => card.addressBookIds[id])
     : (card.addressBookId ? [card.addressBookId] : []);
@@ -272,31 +307,32 @@ function normalizeCard(card) {
   };
 }
 
-function normalizeEmails(emails) {
+function normalizeEmails(emails: any): NormalizedEmail[] {
   if (!emails) return [];
   // JSContact map shape: { e1: { address, contexts, pref }, ... }
   const entries = Array.isArray(emails) ? emails : Object.values(emails);
-  return entries
-    .map((e, i) => {
-      if (typeof e === 'string') {
-        return { position: i, email: e, label: null, isPreferred: false };
-      }
-      const email = e.address ?? e.email ?? null;
-      if (!email) return null;
-      const label = e.label
-        ?? e.kind
-        ?? (e.contexts ? Object.keys(e.contexts)[0] : null)
-        ?? null;
-      // `pref` (1 = most preferred) in JSContact, `isDefault` in the
-      // older shape.
-      const isPreferred = e.pref != null || !!e.isDefault;
-      return { position: i, email, label, isPreferred };
-    })
-    .filter(Boolean)
-    .map((e, i) => ({ ...e, position: i }));
+  const out: NormalizedEmail[] = [];
+  for (const e of entries) {
+    if (typeof e === 'string') {
+      if (!e) continue;
+      out.push({ position: out.length, email: e, label: null, isPreferred: false });
+      continue;
+    }
+    const email = e?.address ?? e?.email ?? null;
+    if (!email) continue;
+    const label = e.label
+      ?? e.kind
+      ?? (e.contexts ? Object.keys(e.contexts)[0] : null)
+      ?? null;
+    // `pref` (1 = most preferred) in JSContact, `isDefault` in the
+    // older shape.
+    const isPreferred = e.pref != null || !!e.isDefault;
+    out.push({ position: out.length, email, label, isPreferred });
+  }
+  return out;
 }
 
-function normalizeOrganization(card) {
+function normalizeOrganization(card: any): string | null {
   if (typeof card.organization === 'string') return card.organization;
   if (card.organization?.name) return card.organization.name;
   // JSContact `organizations` map: { o1: { name, units }, ... }
@@ -307,7 +343,7 @@ function normalizeOrganization(card) {
   return null;
 }
 
-function firstKnownLocalBook(bookRemoteIds, abMap) {
+function firstKnownLocalBook(bookRemoteIds: string[], abMap: Map<string, number>): number | null {
   for (const remoteId of bookRemoteIds) {
     const localId = abMap.get(remoteId);
     if (localId) return localId;
@@ -325,7 +361,7 @@ const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
  * organizational; if creation fails we fall back to the default book so
  * the trust still takes effect.
  */
-export async function ensureTrustedSendersBook({ transport, account, useWebSocket = false }) {
+export async function ensureTrustedSendersBook({ transport, account, useWebSocket = false }): Promise<string | null> {
   const got = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
@@ -366,7 +402,7 @@ export async function ensureTrustedSendersBook({ transport, account, useWebSocke
  */
 export async function createTrustedContactCard({
   transport, account, email, name, useWebSocket = false,
-}) {
+}): Promise<ContactWriteResult> {
   const address = String(email ?? '').trim();
   if (!address) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
@@ -387,7 +423,7 @@ export async function createTrustedContactCard({
  */
 export async function createContactCard({
   transport, account, emails, name = null, bookId = null, useWebSocket = false,
-}) {
+}): Promise<ContactWriteResult> {
   const addresses = normalizeAddressList(emails);
   if (addresses.length === 0) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no email' } };
@@ -423,7 +459,7 @@ export async function createContactCard({
  */
 export async function updateContactCard({
   transport, account, remoteId, emails, name = null, useWebSocket = false,
-}) {
+}): Promise<ContactWriteResult> {
   const id = String(remoteId ?? '').trim();
   if (!id) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
@@ -479,9 +515,9 @@ export async function updateContactCard({
  * user's typed address wins (so a case-only edit is honoured) while the
  * rest of the entry is preserved.
  */
-function mergeEmails(currentEmails, addresses) {
-  const pool = new Map();
-  const originalKeys = new Set();
+function mergeEmails(currentEmails: any, addresses: string[]): Record<string, unknown> {
+  const pool = new Map<string, Array<{ key: string; entry: any }>>();
+  const originalKeys = new Set<string>();
   const entries = (currentEmails && typeof currentEmails === 'object')
     ? Object.entries(currentEmails as Record<string, any>)
     : [];
@@ -504,7 +540,7 @@ function mergeEmails(currentEmails, addresses) {
   // Pass 2: reused entries keep their key; new entries get one that
   // collides with neither a reused nor an already-assigned key.
   const reusedKeys = new Set(assignments.filter((a) => a.key).map((a) => a.key));
-  const map = {};
+  const map: Record<string, unknown> = {};
   let counter = 1;
   for (const { key, entry } of assignments) {
     let resolvedKey = key;
@@ -522,10 +558,10 @@ function mergeEmails(currentEmails, addresses) {
  * first spelling) an email list, accepting either an array or a single
  * string.
  */
-function normalizeAddressList(emails) {
+function normalizeAddressList(emails: any): string[] {
   const list = Array.isArray(emails) ? emails : (emails == null ? [] : [emails]);
-  const seen = new Set();
-  const out = [];
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const raw of list) {
     const addr = String(raw ?? '').trim();
     if (!addr) continue;
@@ -544,7 +580,7 @@ function normalizeAddressList(emails) {
  */
 export async function deleteContactCard({
   transport, account, remoteId, useWebSocket = false,
-}) {
+}): Promise<ContactWriteResult> {
   const id = String(remoteId ?? '').trim();
   if (!id) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
@@ -586,7 +622,7 @@ export async function reconcileContacts({ transport, account, handlers, useWebSo
  * not the dedicated "Trusted senders" book, else the first book, else
  * lazily create a "Contacts" book.
  */
-async function resolveDefaultBook({ transport, account, useWebSocket = false }) {
+async function resolveDefaultBook({ transport, account, useWebSocket = false }): Promise<string | null> {
   const got = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
@@ -621,7 +657,7 @@ async function resolveDefaultBook({ transport, account, useWebSocket = false }) 
  * A filter the server does not support yields an empty id list, so the
  * caller falls through to create rather than failing.
  */
-async function cardExistsForEmail({ transport, account, email, useWebSocket }) {
+async function cardExistsForEmail({ transport, account, email, useWebSocket }): Promise<boolean> {
   const found = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
@@ -641,8 +677,8 @@ async function cardExistsForEmail({ transport, account, email, useWebSocket }) {
  */
 async function submitContactCardCreate({
   transport, account, emails, name, bookId, useWebSocket,
-}) {
-  const emailsMap = {};
+}): Promise<ContactWriteResult> {
+  const emailsMap: Record<string, unknown> = {};
   emails.forEach((address, i) => {
     emailsMap[`e${i + 1}`] = { '@type': 'EmailAddress', address };
   });
