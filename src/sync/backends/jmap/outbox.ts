@@ -52,7 +52,7 @@ import {
   createContactCard,
   updateContactCard,
   deleteContactCard,
-  reconcileContacts,
+  reconcileContactCards,
 } from './contacts';
 import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
 
@@ -195,11 +195,12 @@ async function runWhitelistSender({ transport, account, handlers, request, useWe
   if (!result.ok) {
     return { ok: false, error: result.error ?? { type: 'serverFail' } };
   }
-  // Pull the new cards (and their book) into the local cache once, after
-  // all trusted cards exist, so they show up in the contacts view without
-  // waiting for a StateChange push. Best-effort: the trust already took
+  // Pull only the newly-trusted card(s) into the local cache so they show
+  // up in the contacts view without waiting for a StateChange push.
+  // Targeted (not a full address-book resync) so a whitelist stays fast
+  // regardless of contact count. Best-effort: the trust already took
   // effect server-side, so a reconcile failure must not fail the mutation.
-  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  await reconcileContactCardsQuietly({ transport, account, handlers, ids: result.ids, useWebSocket });
   return { ok: true };
 }
 
@@ -224,7 +225,9 @@ async function runCreateContact({ transport, account, handlers, request, useWebS
   if (!result.ok) {
     return { ok: false, error: result.error ?? { type: 'serverFail' } };
   }
-  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  await reconcileContactCardsQuietly({
+    transport, account, handlers, ids: result.id ? [result.id] : [], useWebSocket,
+  });
   return { ok: true };
 }
 
@@ -245,7 +248,9 @@ async function runUpdateContact({ transport, account, handlers, request, useWebS
   if (!result.ok) {
     return { ok: false, error: result.error ?? { type: 'serverFail' } };
   }
-  await reconcileContactsQuietly({ transport, account, handlers, useWebSocket });
+  await reconcileContactCardsQuietly({
+    transport, account, handlers, ids: request?.remoteId ? [request.remoteId] : [], useWebSocket,
+  });
   return { ok: true };
 }
 
@@ -272,9 +277,9 @@ async function runDeleteContact({ transport, account, handlers, request, useWebS
   return { ok: true };
 }
 
-async function reconcileContactsQuietly({ transport, account, handlers, useWebSocket }) {
+async function reconcileContactCardsQuietly({ transport, account, handlers, ids, useWebSocket }) {
   try {
-    await reconcileContacts({ transport, account, handlers, useWebSocket });
+    await reconcileContactCards({ transport, account, handlers, ids, useWebSocket });
   } catch {
     // Cache will catch up on the next StateChange push or periodic sync.
   }

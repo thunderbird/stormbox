@@ -13,7 +13,18 @@ import {
   updateContactCard,
   deleteContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
+import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { MockTransport } from './_mock-transport';
+
+function jmapCalls(transport, method) {
+  const out = [];
+  for (const req of transport.requests) {
+    for (const [m, params] of req.methodCalls) {
+      if (m === method) out.push(params);
+    }
+  }
+  return out;
+}
 
 function countMethod(transport, name) {
   return transport.requests.filter(
@@ -505,5 +516,123 @@ describe('syncContactCardChanges', () => {
       [account.id, 'c-2'],
     );
     expect(Number(destroyed.is_deleted)).toBe(1);
+  });
+});
+
+describe('whitelist reconcile cost is independent of contact count', () => {
+  async function seedLocalContacts(n) {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [
+        { remoteId: 'book-default', name: 'Default', isDefault: true },
+        { remoteId: 'book-trusted', name: 'Trusted senders', isDefault: false },
+      ],
+    });
+    const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    const defaultLocal = books.find((b) => b.remote_id === 'book-default').id;
+    const contacts = Array.from({ length: n }, (_, i) => ({
+      addressbookId: defaultLocal,
+      remoteId: `seed-${i}`,
+      uid: null,
+      etag: null,
+      fullName: `Seed ${i}`,
+      displayName: `Seed ${i}`,
+      givenName: null,
+      familyName: null,
+      organization: null,
+      vcardText: null,
+      vcardVersion: null,
+      rawJson: '{}',
+      isDeleted: false,
+      emails: [{ position: 0, email: `seed-${i}@x.invalid`, label: null, isPreferred: true }],
+    }));
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
+  }
+
+  function countContacts() {
+    return engine.get(
+      'SELECT COUNT(*) AS n FROM contacts WHERE account_id = ? AND is_deleted = 0',
+      [account.id],
+    );
+  }
+
+  it('batch-whitelisting 200 mails from 150 senders on a 1099-contact book fetches only the 150 new cards', async () => {
+    await seedLocalContacts(1099);
+    expect((await countContacts()).n).toBe(1099);
+
+    // 200 junk messages multi-selected, from 150 distinct senders (50
+    // repeats), as the store's whitelistSenders would hand them off.
+    const senders = Array.from({ length: 200 }, (_, i) => ({
+      email: `batch-${i % 150}@junk.invalid`,
+      name: `Sender ${i % 150}`,
+    }));
+    expect(new Set(senders.map((s) => s.email)).size).toBe(150);
+
+    // The "server" holds 1099 cards, but the batch whitelist must never
+    // pull them: a full ContactCard/query (position/limit) would be the
+    // old O(contacts) reconcile; the existence check uses a {email}
+    // (OR-of-emails) filter.
+    const transport = new MockTransport();
+    let fullListQueried = false;
+    let setCalls = 0;
+    let createdInOneCall = 0;
+    transport.handle('ContactCard/query', (params) => {
+      if (params.position != null || params.limit != null) {
+        fullListQueried = true;
+        return { ids: Array.from({ length: 1099 }, (_, i) => `seed-${i}`), total: 1099, state: 's' };
+      }
+      return { ids: [], total: 0 }; // existence check: none of the senders carded yet
+    });
+    transport.handle('AddressBook/get', () => ({
+      list: [
+        { id: 'book-default', name: 'Default', isDefault: true },
+        { id: 'book-trusted', name: 'Trusted senders', isDefault: false },
+      ],
+    }));
+    transport.handle('ContactCard/set', (params) => {
+      setCalls += 1;
+      const created = {};
+      const keys = Object.keys(params.create ?? {});
+      createdInOneCall = Math.max(createdInOneCall, keys.length);
+      for (const key of keys) created[key] = { id: key }; // distinct ids
+      return { created };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: (params.ids ?? []).map((id) => ({
+        '@type': 'Card',
+        id,
+        kind: 'individual',
+        name: { full: `Trusted ${id}` },
+        emails: { e1: { '@type': 'EmailAddress', address: `wl-${id}@junk.invalid` } },
+        addressBookIds: { 'book-trusted': true },
+      })),
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: 'whitelistSender',
+        request_json: JSON.stringify({ senders }),
+      },
+    });
+    expect(result.ok).toBe(true);
+
+    // All 150 unique senders trusted in a single batched ContactCard/set
+    // (200 mails de-duped to 150 cards, one call, not a per-sender loop).
+    expect(setCalls).toBe(1);
+    expect(createdInOneCall).toBe(150);
+
+    // The 1099-contact book is never re-pulled...
+    expect(fullListQueried).toBe(false);
+    // ...only the 150 new trusted cards are fetched.
+    const idsFetched = jmapCalls(transport, 'ContactCard/get')
+      .reduce((sum, p) => sum + (p.ids?.length ?? 0), 0);
+    expect(idsFetched).toBe(150);
+
+    // The 1099 existing contacts are untouched; exactly 150 were added.
+    expect((await countContacts()).n).toBe(1249);
   });
 });

@@ -674,6 +674,29 @@ export async function reconcileContacts({ transport, account, handlers, useWebSo
 }
 
 /**
+ * Reconcile the local cache for a small, known set of cards after a
+ * single-contact mutation (whitelist, add, edit), instead of re-pulling
+ * the entire address book the way `reconcileContacts` does. Cost is
+ * O(books) + O(ids) rather than O(all contacts), so a whitelist stays
+ * fast no matter how many contacts the account has.
+ *
+ * Address books are synced first (they are few) so a card filed in a
+ * book that was created in the same operation — e.g. "Trusted senders" —
+ * resolves locally; then only the named card ids are fetched + upserted.
+ */
+export async function reconcileContactCards({
+  transport, account, handlers, ids, useWebSocket = false,
+}) {
+  await syncAddressBooks({ transport, account, handlers, useWebSocket });
+  const list = (ids ?? []).filter(Boolean);
+  if (list.length === 0) return { fetched: 0 };
+  const fetched = await fetchAndPersistContactCards({
+    transport, account, handlers, ids: list, useWebSocket,
+  });
+  return { fetched };
+}
+
+/**
  * Resolve the remote id of the account's primary address book for new
  * contacts: the one flagged `isDefault`, else the first book that is
  * not the dedicated "Trusted senders" book, else the first book, else
