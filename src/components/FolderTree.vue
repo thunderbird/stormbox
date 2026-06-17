@@ -35,12 +35,21 @@ const tree = computed(() => {
   function build(folder, depth) {
     const childrenForFolder = children(folder.id);
     const presentation = folderPresentation(folder);
+    const builtChildren = childrenForFolder.map((c) => build(c, depth + 1));
+    // Roll the subtree's unread total up to each node so a collapsed
+    // folder can show the unread count of everything hidden beneath it.
+    const ownUnread = Number(folder.unread_emails) || 0;
+    const subtreeUnread = builtChildren.reduce(
+      (sum, child) => sum + (Number(child.subtree_unread) || 0),
+      ownUnread,
+    );
     return {
       ...folder,
       depth,
       icon: presentation.icon,
       tone: presentation.color,
-      children: childrenForFolder.map((c) => build(c, depth + 1)),
+      children: builtChildren,
+      subtree_unread: subtreeUnread,
     };
   }
   return (byParent.get('ROOT') ?? []).map((f) => build(f, 0));
