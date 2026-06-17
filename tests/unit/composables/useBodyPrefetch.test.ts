@@ -74,6 +74,17 @@ describe('useBodyPrefetch', () => {
     expect(prefetch.messageBody.value?.text).toBe('body');
   });
 
+  it('represents a missing/empty body as an empty body object once the load completes', async () => {
+    // A truly empty message reads back as null from the repo. The
+    // loader must still record a completed (empty) load so the UI can
+    // tell it apart from the still-loading null state.
+    repo.getMessageBodyForDisplay = vi.fn(async () => null);
+    selected = 7;
+    const token = prefetch.nextDisplayToken();
+    await prefetch.loadBodyForDisplay(7, token);
+    expect(prefetch.messageBody.value).toEqual({ text: '', html: '', attachments: [] });
+  });
+
   it('drops a stale Email/get when selection moved before the response landed', async () => {
     selected = 7;
     const stale = prefetch.nextDisplayToken();

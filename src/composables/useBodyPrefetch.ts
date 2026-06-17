@@ -167,7 +167,12 @@ export function useBodyPrefetch(deps: BodyPrefetchDeps) {
     try {
       const body = await repo.getMessageBodyForDisplay(accountId, messageId);
       if (token === bodyFetchToken && deps.isSelected(messageId)) {
-        messageBody.value = body;
+        // A message with no body parts and no attachments reads back as
+        // null. Represent that completed-but-empty load as an empty body
+        // object so the UI can distinguish "loaded, nothing to show" from
+        // "still loading" (which stays null) instead of showing a
+        // perpetual loading placeholder.
+        messageBody.value = body ?? { text: '', html: '', attachments: [] };
       }
     } catch (err) {
       console.warn('[body-prefetch] getMessageBodyForDisplay failed', err);
