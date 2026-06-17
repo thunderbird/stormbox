@@ -15,10 +15,17 @@ const props = defineProps({
 });
 
 const current = computed(() => props.currentFolderId === props.folder.id);
-const unread = computed(() => Number(props.folder.unread_emails) || 0);
 const iconSvg = computed(() => props.folder.icon);
 const hasChildren = computed(() => (props.folder.children?.length ?? 0) > 0);
 const collapsed = computed(() => hasChildren.value && props.isCollapsed(props.folder.id));
+// A collapsed parent shows the unread total of its whole subtree; an
+// expanded or leaf folder shows only its own unread count (children
+// surface their own counts when visible).
+const unread = computed(() => (
+  collapsed.value
+    ? Number(props.folder.subtree_unread) || 0
+    : Number(props.folder.unread_emails) || 0
+));
 const indent = computed(() => `${10 + (props.folder.depth ?? 0) * 16}px`);
 const style = computed(() => ({
   paddingLeft: indent.value,
