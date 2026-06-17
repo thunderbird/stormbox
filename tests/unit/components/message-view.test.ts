@@ -940,4 +940,36 @@ describe('MessageView HTML body rendering', () => {
     // alive only if something else references it.
     expect(document.querySelector('iframe.message-view__html-frame')).toBeNull();
   });
+
+  it('shows the loading placeholder only while the body has not loaded yet', async () => {
+    // messageBody is null between selecting a message and the body
+    // load resolving.
+    await makeSelectedMessage(null);
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    expect(wrapper.find('.message-view__placeholder').exists()).toBe(true);
+    expect(wrapper.text()).toContain('Loading message');
+
+    wrapper.unmount();
+  });
+
+  it('renders an empty body instead of a perpetual loading state when a loaded message has no content', async () => {
+    // A message with no body parts and no attachments loads as an empty
+    // body object; the view must drop the loading placeholder and show
+    // nothing rather than spinning forever.
+    await makeSelectedMessage({ text: '', html: '', attachments: [] });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    expect(wrapper.find('.message-view__placeholder').exists()).toBe(false);
+    expect(wrapper.find('iframe.message-view__html-frame').exists()).toBe(false);
+    expect(wrapper.find('.message-view__text').exists()).toBe(false);
+    // The article and its body container still render; the body is empty.
+    expect(wrapper.find('.message-view__body').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
 });

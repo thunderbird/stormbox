@@ -65,6 +65,10 @@ const bodyColorScheme = computed(() =>
     : effectiveColorScheme.value);
 
 const body = computed(() => mailStore.messageBody);
+// null while the body is still loading; a (possibly empty) object once the
+// load completes. Used to show the loading placeholder only while loading,
+// not for a message that has genuinely no body content.
+const bodyLoaded = computed(() => body.value != null);
 const referencedInlineContentIds = computed(() => referencedContentIds(body.value?.html ?? ''));
 
 // Render plaintext bodies the way Thunderbird Desktop does: keep the
@@ -737,7 +741,7 @@ function closeMessageView() {
           />
         </div>
         <div v-else-if="textHtml" class="message-view__text" v-html="textHtml" />
-        <p v-else class="message-view__placeholder">Loading message…</p>
+        <p v-else-if="!bodyLoaded" class="message-view__placeholder">Loading message…</p>
         <ul v-if="visibleAttachments.length" class="message-view__attachments">
           <li v-for="a in visibleAttachments" :key="a.part_id">
             <Paperclip :size="14" :stroke-width="1.75" class="message-view__att-icon" />
