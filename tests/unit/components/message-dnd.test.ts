@@ -698,8 +698,8 @@ describe('message drag and folder drop components', () => {
 
     const wrapper = mount(FolderTree);
     await nextTick();
-    const archive = wrapper.findAll('button.folder-node')
-      .find((button) => button.text().includes('Archive'));
+    const archive = wrapper.findAll('.folder-node')
+      .find((node) => node.text().includes('Archive'));
 
     await archive.trigger('dragover', { dataTransfer: transfer });
     await nextTick();

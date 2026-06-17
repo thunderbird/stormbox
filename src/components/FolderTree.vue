@@ -49,6 +49,24 @@ const tree = computed(() => {
 const mainFolders = computed(() => tree.value.filter(isMainFolder));
 const userFolders = computed(() => tree.value.filter((f) => !isMainFolder(f)));
 
+// Track explicitly-expanded folders; everything else defaults to
+// collapsed, so the tree starts fully closed.
+const expandedFolderIds = ref(new Set());
+
+function isFolderCollapsed(id) {
+  return !expandedFolderIds.value.has(id);
+}
+
+function toggleFolderCollapsed(id) {
+  const next = new Set(expandedFolderIds.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  expandedFolderIds.value = next;
+}
+
 function pickFolder(id) { mailStore.selectFolder(id); }
 
 function dropStateFor(folder) {
@@ -101,6 +119,8 @@ async function onFolderDrop(folder, event) {
       :folder="folder"
       :current-folder-id="mailStore.currentFolderId"
       :on-pick="pickFolder"
+      :is-collapsed="isFolderCollapsed"
+      :on-toggle="toggleFolderCollapsed"
       :drop-state="dropStateFor"
       :on-folder-drag-enter="onFolderDragEnter"
       :on-folder-drag-over="onFolderDragOver"
@@ -114,6 +134,8 @@ async function onFolderDrop(folder, event) {
       :folder="folder"
       :current-folder-id="mailStore.currentFolderId"
       :on-pick="pickFolder"
+      :is-collapsed="isFolderCollapsed"
+      :on-toggle="toggleFolderCollapsed"
       :drop-state="dropStateFor"
       :on-folder-drag-enter="onFolderDragEnter"
       :on-folder-drag-over="onFolderDragOver"
