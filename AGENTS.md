@@ -199,3 +199,89 @@ import { useMailStore } from '../stores/mail-store.ts';
 Package imports (e.g. `@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS`)
 follow the same rule — drop the runtime extension when the resolver can
 infer it.
+
+## Cursor Cloud specific instructions
+
+These notes apply to Cursor Cloud agents only. The "container only" rule
+above is for human dev machines (macOS/Windows host vs Linux container).
+A Cloud VM is already an isolated Linux box, so here we run `npm` / `node`
+/ `npx` / Playwright **directly on the VM**, and only the
+`thunderbird-accounts` stack (Keycloak + Stalwart) runs in Docker
+(docker-in-docker). Do **not** build or attach the `thundermail-dev`
+devcontainer in the Cloud VM. The startup update script only refreshes
+dependencies (submodule, `nvm install 24`, `npm ci`, Playwright browsers);
+everything below must be started by hand each session (snapshots don't
+keep processes running).
+
+Non-obvious gotchas:
+
+- **Node 24 / PATH:** the project needs Node 24 (`.node-version`), but
+  `/exec-daemon/node` (v22) shadows everything on `PATH`. The startup
+  update script installs Node 24 via `nvm` and makes it the default; in
+  each shell prepend its bin dir before running tooling, e.g.
+  `export PATH="$HOME/.nvm/versions/node/v24.16.0/bin:$PATH"`
+  (or `nvm use 24` won't win on its own because of the `/exec-daemon`
+  prefix — prepend the bin dir explicitly). If the installed minor
+  version differs, resolve it with
+  `export PATH="$(dirname "$(nvm which 24)"):$PATH"` after sourcing
+  `~/.nvm/nvm.sh`.
+- **Vite proxy env must be real env vars:** `vite.config.js` reads
+  `process.env.VITE_LOCAL_STACK` (and friends) directly. Vite does NOT
+  copy `.env.development` into `process.env` for the config file, so the
+  Keycloak/Stalwart/`/jmap/ws` proxies stay OFF unless you export them in
+  the shell before `npm run dev`:
+  `VITE_LOCAL_STACK=1`,
+  `VITE_JMAP_SERVER_URL=https://localhost:3000/stalwart-jmap`,
+  `VITE_OIDC_ISSUER=https://localhost:3000/realms/tbpro`,
+  `VITE_OIDC_CLIENT_ID=thunderbird-stormbox-test`,
+  `VITE_SENDER_AVATAR_PROXY_URL=https://localhost:3000/sender-avatar`.
+  (The Playwright `webServer` already injects these for `test:e2e:local`.)
+- **Stack host = `172.17.0.1`:** the VM has `/.dockerenv`, so the
+  `stackHost()` helpers resolve the stack to `172.17.0.1` instead of
+  `127.0.0.1`. That is fine — the stack containers publish on `0.0.0.0`,
+  so both addresses reach Keycloak `:8999` / Stalwart `:8081` / `:8080`
+  from the VM.
+- **Docker:** start the daemon once per session with
+  `sudo dockerd >/tmp/dockerd.log 2>&1 &` (uses `fuse-overlayfs` +
+  `iptables-legacy`; the daemon is Docker 29 with the
+  `containerd-snapshotter` feature disabled in `/etc/docker/daemon.json`
+  so `fuse-overlayfs` works). `sudo chmod 666 /var/run/docker.sock` lets
+  non-root use `docker` without `sudo`.
+- **Self-signed cert + SharedWorker:** Stormbox fetches the JMAP session
+  from inside a `SharedWorker`. A manually driven Chrome that only
+  "click-through"s the cert warning still fails that worker fetch with
+  `TypeError: Failed to fetch`. Launch Chrome/Chromium with
+  `--ignore-certificate-errors` (Playwright already does this for the
+  chromium lane) to exercise the app end-to-end in a real browser.
+- **First-login auth cache:** Stalwart caches OIDC introspection results
+  (`cache.ttl.negative = "10m"`). If you hit the JMAP session before
+  `npm run stack:configure` has provisioned the principal, the session
+  comes back with `accounts:{}` / `username:""` until the cache expires
+  (or the `stalwart` container is restarted). Always run
+  `stack:configure` before logging in.
+
+Bring-up sequence for the full mail stack (run from repo root, in order):
+
+```bash
+# 0. node on PATH + docker daemon (see above)
+docker compose -f thunderbird-accounts/docker-compose.yml up --build -d \
+  kcpostgres keycloak stalwart   # Stalwart needs mail/etc/config.toml
+npm run stack:configure          # provisions admin@example.org / e2e@example.org
+npm run stack:ws-proxy &         # /jmap/ws auth bridge on :8787
+npm run dev                      # with the VITE_* env exported above
+```
+
+`thunderbird-accounts/mail/etc/config.toml` must exist before Stalwart
+starts; create it once with
+`mkdir -p thunderbird-accounts/mail/etc && cp thunderbird-accounts/config.toml.example thunderbird-accounts/mail/etc/config.toml`
+(the Keycloak image also needs its theme static assets copied to
+`thunderbird-accounts/keycloak/themes/tbpro/static/` — see
+`scripts/local-stack-up.sh` `ensure_keycloak_theme_static`).
+
+- **Dev login:** `admin@example.org` / `admin` (OIDC via Keycloak). Seed
+  the dev inbox with `npm run stack:seed-dev`
+  (`SEED_ARCHIVE_COUNT=0 SEED_INBOX_COUNT=12` for a fast demo seed).
+- **e2e:** `LOCAL_STACK=1 INCLUDE_CHROMIUM=1 npx playwright test <spec> --project=chromium`
+  reuses an already-running dev server and does the full Keycloak login in
+  `auth.setup.js`. Standard lint/test/build commands are unchanged
+  (`npm run lint`, `npm run typecheck`, `npm test`, `npm run build`).
