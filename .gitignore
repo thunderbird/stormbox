@@ -16,6 +16,7 @@ dist-ssr/
 .env.local
 .env.production
 .env.*.local
+tests/browserstack/.env.browserstack
 
 # Editor directories and files
 .vscode/*
@@ -31,6 +32,7 @@ dist-ssr/
 # Logs
 logs/
 *.log
+tests/browserstack/log
 
 # OS files
 Thumbs.db

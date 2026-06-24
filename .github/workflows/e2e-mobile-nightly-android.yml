@@ -1,0 +1,56 @@
+name: e2e-mobile-nightly-android
+
+concurrency:
+  group: e2e-mobile-nightly-android
+  cancel-in-progress: true
+
+on:
+  schedule:
+    # run every day at 5:45am UTC
+    - cron:  '45 5 * * *'
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read    # This is required for actions/checkout
+
+jobs:
+  mobile-nightly-android:
+    name: prod-mobile-nightly-android
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      deployment: false
+    env:
+      ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
+      ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
+      PRIMARY_THUNDERMAIL_EMAIL: ${{ secrets.E2E_PRIMARY_THUNDERMAIL_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'tests/browserstack/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          cd ./tests/browserstack
+          npm install
+
+      - name: BrowserStack Env Setup
+        uses: browserstack/github-actions/setup-env@master
+        with:
+          username:  ${{ secrets.BROWSERSTACK_USERNAME }}
+          access-key: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          project-name: 'Stormbox'
+          build-name: 'Nightly Webmail E2E Tests (Android Chrome): BUILD_INFO'
+
+      - name: Prod E2E Tests on Android Chrome
+        # don't send GHA failure email if any of the E2E tests fail, can be annoying (I check the jobs each day in BrowserStack)
+        continue-on-error: true
+        run: |
+          cd ./tests/browserstack
+          cp .env.browserstack.prod.example .env.browserstack
+          npm run e2e:browserstack:mobile:android:chrome
