@@ -1,0 +1,31 @@
+{
+  "name": "stormbox-browserstack-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "UI-only Playwright and BrowserStack tests for deployed Stormbox.",
+  "scripts": {
+    "e2e:desktop:firefox:smoke": "playwright test --grep @stormbox-smoke-desktop --project=firefox --headed",
+    "e2e:desktop:chrome:smoke": "playwright test --grep @stormbox-smoke-desktop --project=chromium --headed",
+    "e2e:desktop:safari:smoke": "playwright test --grep @stormbox-smoke-desktop --project=safari --headed",
+    "e2e:mobile:google:pixel:viewport:smoke": "playwright test --grep @stormbox-smoke-mobile --project=Google-Pixel-7-View --headed",
+    "e2e:browserstack:desktop:firefox:smoke": "browserstack-node-sdk playwright test --grep @stormbox-smoke-desktop --project=Firefox-OSX --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail UI Smoke Test Firefox Desktop'",
+    "e2e:browserstack:desktop:chrome:smoke": "browserstack-node-sdk playwright test --grep @stormbox-smoke-desktop --project=Chromium-Win11 --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail UI Smoke Test Chromium Desktop'",
+    "e2e:browserstack:desktop:safari:smoke": "browserstack-node-sdk playwright test --grep @stormbox-smoke-desktop --project=Safari-OSX --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail UI Smoke Test Safari Desktop'",
+    "e2e:browserstack:mobile:android:chrome:smoke": "browserstack-node-sdk playwright test --grep @stormbox-smoke-mobile --project=android-chrome --browserstack.config browserstack-mobile.yml --browserstack.buildName 'Webmail UI Smoke Test Android Chrome'",
+    "e2e:desktop:firefox": "playwright test --grep @stormbox-desktop --project=firefox --headed",
+    "e2e:desktop:chrome": "playwright test --grep @stormbox-desktop --project=chromium --headed",
+    "e2e:desktop:safari": "playwright test --grep @stormbox-desktop --project=safari --headed",
+    "e2e:mobile:google:pixel:viewport": "playwright test --grep @stormbox-mobile --project=Google-Pixel-7-View --headed",
+    "e2e:browserstack:desktop:firefox": "browserstack-node-sdk playwright test --grep @stormbox-desktop --project=Firefox-OSX --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail E2E Tests Firefox Desktop'",
+    "e2e:browserstack:desktop:chrome": "browserstack-node-sdk playwright test --grep @stormbox-desktop --project=Chromium-Win11 --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail E2E Tests Chromium Desktop'",
+    "e2e:browserstack:desktop:safari": "browserstack-node-sdk playwright test --grep @stormbox-desktop --project=Safari-OSX --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail E2E Tests Safari Desktop'",
+    "e2e:browserstack:mobile:android:chrome": "browserstack-node-sdk playwright test --grep @stormbox-mobile --project=android-chrome --browserstack.config browserstack-mobile.yml --browserstack.buildName 'Webmail E2E Tests Android Chrome'"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "24.10.1",
+    "browserstack-node-sdk": "1.59.0",
+    "dotenv": "16.6.1",
+    "typescript": "5.9.3"
+  }
+}
