@@ -33,7 +33,7 @@ test('login gate renders and the SharedWorker SQLite boots', async ({ page }) =>
 
   await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
   await expect(
-    page.getByText('This is an Early Alpha and subject to (very) frequent change. Use at your own risk!'),
+    page.getByText('Webmail is in early alpha and subject to frequent changes and instability'),
   ).toBeVisible();
   await expect(page.locator('.login-card__signin')).toBeVisible();
 

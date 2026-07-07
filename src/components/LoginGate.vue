@@ -65,7 +65,7 @@ function togglePassword() {
     <div class="login-stack">
       <p class="login-warning" role="note">
         <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
-        <span>This is an Early Alpha and subject to (very) frequent change. Use at your own risk!</span>
+        <span>Webmail is in early alpha and subject to frequent changes and instability</span>
       </p>
 
       <div class="login-card">
