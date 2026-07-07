@@ -130,9 +130,11 @@ html.light,
   --accent: #1373d9;
   --rowHover: #eef2ff; /* soft accent-tint for hover */
   --rowActive: #e0e9ff; /* slightly stronger for selected */
-  --warn-bg: rgba(255, 193, 7, 0.1);
-  --warn-fg: #ffd166;
-  --warn-border: rgba(255, 193, 7, 0.38);
+  /* Amber-on-pale-yellow is unreadable in light mode (issue #46); deep amber
+     text on a solid pale-amber field. #664700 on #fdf4d0 ≈ 7.7:1. WCAG AAA. */
+  --warn-bg: #fdf4d0;
+  --warn-fg: #664700;
+  --warn-border: #e7c34d;
 }
 
 /* If user prefers light and no explicit theme chosen, use light */
@@ -147,9 +149,9 @@ html.light,
     --accent: #1373d9;
     --rowHover: #eef2ff;
     --rowActive: #e0e9ff;
-    --warn-bg: rgba(255, 193, 7, 0.1);
-    --warn-fg: #ffd166;
-    --warn-border: rgba(255, 193, 7, 0.38);
+    --warn-bg: #fdf4d0;
+    --warn-fg: #664700;
+    --warn-border: #e7c34d;
   }
 }
 
