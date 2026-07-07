@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { Mail, Users } from '@lucide/vue';
+import AppToggleButton from './AppToggleButton.vue';
 
 const props = defineProps({
   active: { type: String, default: 'mail' },
@@ -18,9 +19,9 @@ function pick(name) { emit('change', name); }
 
 <template>
   <nav class="app-spaces" aria-label="Spaces">
-    <button
+    <AppToggleButton
       class="app-spaces__item"
-      :class="{ 'is-active': props.active === 'mail' }"
+      :active="props.active === 'mail'"
       @click="pick('mail')"
       aria-label="Mail"
       title="Mail"
@@ -29,24 +30,22 @@ function pick(name) { emit('change', name); }
       <span v-if="props.unreadCount > 0" class="app-spaces__badge" aria-hidden="true">
         {{ props.unreadCount > 9999 ? '9999+' : props.unreadCount }}
       </span>
-    </button>
-    <button
+    </AppToggleButton>
+    <AppToggleButton
       class="app-spaces__item"
-      :class="{ 'is-active': props.active === 'contacts' }"
+      :active="props.active === 'contacts'"
       @click="pick('contacts')"
       aria-label="Contacts"
       title="Contacts"
     >
       <Users :size="20" :stroke-width="1.75" />
-    </button>
+    </AppToggleButton>
     <div v-if="props.showFolderListToggle" class="app-spaces__bottom-actions">
-      <button
+      <AppToggleButton
         class="app-spaces__item"
-        :class="{ 'is-active': !props.folderListHidden }"
-        type="button"
+        :active="!props.folderListHidden"
         :aria-label="folderListToggleLabel"
         :title="folderListToggleLabel"
-        :aria-pressed="!props.folderListHidden"
         @click="emit('toggle-folder-list')"
       >
         <span
@@ -56,7 +55,7 @@ function pick(name) { emit('change', name); }
         >
           <span />
         </span>
-      </button>
+      </AppToggleButton>
     </div>
   </nav>
 </template>
@@ -75,24 +74,7 @@ function pick(name) { emit('change', name); }
   height: 100%;
   border-right: 1px solid var(--border);
 }
-.app-spaces__item {
-  position: relative;
-  width: 40px;
-  height: 40px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.app-spaces__item:hover { background: var(--rowHover); color: var(--text); }
-.app-spaces__item.is-active {
-  background: var(--accent);
-  color: #fff;
-}
+/* Sizing, hover, and the active gradient all live in AppToggleButton. */
 .app-spaces__bottom-actions {
   margin-top: auto;
   display: flex;

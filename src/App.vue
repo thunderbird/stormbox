@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onClickOutside, useTitle } from '@vueuse/core';
 import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
+import AppButton from './components/AppButton.vue';
 
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
@@ -560,8 +561,13 @@ function getInitialTheme(): Theme {
 
 function applyTheme(nextTheme: Theme) {
   if (typeof document === 'undefined') return;
-  document.documentElement.dataset.theme = nextTheme;
-  document.documentElement.style.colorScheme = nextTheme;
+  // services-ui drives theming off a `dark` class on <html>; we add an
+  // explicit `light` class too so an explicit light choice can override
+  // a dark system preference. Our own tokens key off the same classes.
+  const root = document.documentElement;
+  root.classList.toggle('dark', nextTheme === 'dark');
+  root.classList.toggle('light', nextTheme === 'light');
+  root.style.colorScheme = nextTheme;
 }
 
 function saveTheme(nextTheme: Theme) {
@@ -710,15 +716,16 @@ function clamp(value: number, min: number, max: number) {
     >
       <aside class="sidebar">
         <header class="sidebar__header">
-          <button
+          <AppButton
             class="sidebar__compose"
             :class="{ 'sidebar__compose--spotlight': composeActionSpotlight }"
-            type="button"
             @click="startCompose"
           >
-            <Plus :size="16" :stroke-width="2" />
-            <span>New Message</span>
-          </button>
+            <template #iconLeft>
+              <Plus :size="16" :stroke-width="2" />
+            </template>
+            New Message
+          </AppButton>
         </header>
 
         <div class="sidebar__account">
@@ -807,8 +814,8 @@ function clamp(value: number, min: number, max: number) {
   --app-menu-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
 }
 
-:root[data-theme="light"],
-[data-theme="light"] {
+html.light,
+.light {
   --space-rail-bg: color-mix(in srgb, var(--panel2) 96%, #000);
   --folder-list-bg: color-mix(in srgb, var(--panel) 97%, #000);
   --app-menu-popover-bg: var(--panel2);
@@ -1232,47 +1239,12 @@ function clamp(value: number, min: number, max: number) {
   padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft);
 }
+/* New Message is our AppButton (services-ui PrimaryButton wrapper, which
+   owns the 34px height and bold label). Here we only stretch it to the
+   sidebar width; colour/hover stay owned by services-ui. */
 .sidebar__compose {
   width: 100%;
   max-width: 100%;
-  box-sizing: border-box;
-  min-width: 0;
-  margin: 0 auto;
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: var(--accent);
-  color: #fff;
-  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
-  border-radius: 6px;
-  padding: 0 10px;
-  appearance: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.25;
-  overflow: hidden;
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
-}
-.sidebar__compose svg {
-  display: block;
-  flex-shrink: 0;
-  transform: translateY(1px);
-}
-.sidebar__compose span {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sidebar__compose:hover {
-  filter: brightness(1.04);
-  box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
 }
 .sidebar__compose--spotlight {
   position: relative;

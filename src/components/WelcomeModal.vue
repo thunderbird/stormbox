@@ -20,6 +20,7 @@ import {
 } from 'vue';
 
 import { isMacPlatform } from '../utils/keyboard';
+import AppButton from './AppButton.vue';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const emit = defineEmits<{
@@ -426,9 +427,9 @@ onBeforeUnmount(() => {
       </div>
 
       <footer class="welcome__footer">
-        <button class="welcome__primary" type="button" @click="dismiss">
+        <AppButton size="default" class="welcome__primary" @click="dismiss">
           Get Started
-        </button>
+        </AppButton>
       </footer>
     </section>
   </div>
@@ -808,26 +809,12 @@ kbd {
   }
 }
 
-.welcome__primary {
-  appearance: none;
-  min-height: 44px;
+/* Get Started is an AppButton (services-ui default size); we only keep the
+   wide padding and CTA drop shadow here. Doubled up with .base to outrank
+   services-ui's own .base[data-v] padding rule regardless of CSS order. */
+.base.welcome__primary {
   padding: 0 32px;
-  border: 1px solid color-mix(in srgb, var(--accent) 78%, #000);
-  border-radius: 14px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  font: inherit;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0;
   box-shadow: 0 12px 26px color-mix(in srgb, var(--accent) 28%, transparent);
-}
-
-.welcome__primary:hover,
-.welcome__primary:focus-visible {
-  filter: brightness(1.05);
-  outline: none;
 }
 
 @media (max-width: 820px) {

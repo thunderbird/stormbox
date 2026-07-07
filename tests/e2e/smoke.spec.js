@@ -15,6 +15,10 @@ import { test, expect } from '@playwright/test';
  *    "Database failed to initialise" message instead of "Failed.")
  *  - no fatal console errors leak through
  */
+// This spec must see the logged-out LoginGate, so opt out of the shared
+// authenticated storageState the LOCAL_STACK projects preload.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test('login gate renders and the SharedWorker SQLite boots', async ({ page }) => {
   const consoleErrors = [];
   page.on('console', (msg) => {
@@ -23,22 +27,23 @@ test('login gate renders and the SharedWorker SQLite boots', async ({ page }) =>
     }
   });
 
-  await page.goto('/');
+  // The app-password entry point is hidden by default; opt in via the
+  // ?app-password URL flag (see LoginGate.vue).
+  await page.goto('/?app-password');
 
   await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
   await expect(
     page.getByText('This is an Early Alpha and subject to (very) frequent change. Use at your own risk!'),
   ).toBeVisible();
-  await expect(
-    page.getByRole('button', { name: /sign in with thunderbird/i }),
-  ).toBeVisible();
+  await expect(page.locator('.login-card__signin')).toBeVisible();
 
   // Reveal the app-password form, then submit bogus credentials. This is
   // the path that drives a real RPC into the SharedWorker.
   await page.getByRole('button', { name: /use app password instead/i }).click();
   await page.getByLabel('Username').fill('bogus');
   await page.getByLabel('App password').fill('bogus');
-  await page.getByRole('button', { name: /^sign in$/i }).click();
+  // Scope to the form: the OIDC "Sign In" button is also on the page.
+  await page.locator('.login-card__password button[type="submit"]').click();
 
   // The status leaves the idle "Not connected." state. Either
   // "Connecting…" (worker booted, JMAP call in flight) or "Failed."

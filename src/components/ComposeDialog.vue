@@ -29,6 +29,7 @@ import Squire from 'squire-rte';
 import { useComposeStore } from '../stores/compose-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
+import AppButton from './AppButton.vue';
 
 const composeStore = useComposeStore();
 const contactsStore = useContactsStore();
@@ -1093,10 +1094,10 @@ function selectFromIdentity(event: Event) {
       </div>
 
       <footer>
-        <button type="button" class="secondary" @click="composeStore.close()">Discard</button>
-        <button type="button" class="primary" :disabled="composeStore.status === COMPOSE_STATE.SENDING" @click="send">
+        <AppButton variant="outline" @click="composeStore.close()">Discard</AppButton>
+        <AppButton :disabled="composeStore.status === COMPOSE_STATE.SENDING" @click="send">
           {{ composeStore.status === COMPOSE_STATE.SENDING ? 'Sending…' : 'Send' }}
-        </button>
+        </AppButton>
       </footer>
 
       <p v-if="composeStore.error" class="compose-error">{{ composeStore.error }}</p>
@@ -1342,8 +1343,6 @@ footer {
   justify-content: flex-end;
   gap: 8px;
 }
-.primary { background: #2563eb; color: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
-.secondary { background: transparent; color: #555; border: 1px solid var(--border, #d6d9e2); padding: 8px 14px; border-radius: 8px; cursor: pointer; }
 .autocomplete {
   margin: 0 0 0 78px;
   padding: 0;
