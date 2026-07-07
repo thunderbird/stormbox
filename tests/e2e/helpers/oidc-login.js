@@ -44,7 +44,9 @@ export async function loginViaOidc(page) {
   // So we race "shell appeared" against "button became enabled"
   // and continue with whichever wins. Only the rare failure case
   // hits the form-fill flow below.
-  const signInBtn = page.getByRole('button', { name: /sign in with thunderbird/i });
+  // The LoginGate button is labelled just "Sign In"; scope by class so we
+  // never race against the Keycloak page's own "Sign In" button.
+  const signInBtn = page.locator('.login-card__signin');
   const shellLocator = page.locator('.shell');
   const winner = await Promise.race([
     shellLocator.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'shell'),

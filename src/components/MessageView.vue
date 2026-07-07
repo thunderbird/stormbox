@@ -215,8 +215,9 @@ function toggleBodyLightMode() {
 
 function getEffectiveColorScheme() {
   if (typeof document !== 'undefined') {
-    const theme = document.documentElement.getAttribute('data-theme');
-    if (theme === 'dark' || theme === 'light') return theme;
+    const root = document.documentElement;
+    if (root.classList.contains('dark')) return 'dark';
+    if (root.classList.contains('light')) return 'light';
   }
 
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
@@ -276,7 +277,7 @@ onMounted(() => {
     themeMutationObserver = new MutationObserver(updateEffectiveColorScheme);
     themeMutationObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ['class'],
     });
   }
 });

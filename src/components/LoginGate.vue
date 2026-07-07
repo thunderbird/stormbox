@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { Loader2 } from '@lucide/vue';
+import { NoticeWarningIcon } from '@thunderbirdops/services-ui';
+import AppButton from './AppButton.vue';
 
 import { useAuthStore } from '../stores/auth-store';
 import { AUTH_STATE } from '../constants/states';
@@ -11,6 +13,19 @@ const authStore = useAuthStore();
 const showPasswordForm = ref(false);
 const username = ref('');
 const password = ref('');
+
+// App-password sign-in stays available but is no longer surfaced by
+// default. It opts in via ?app-password in the URL or a persisted
+// localStorage flag, so power users / non-OIDC setups can still reach it.
+const appPasswordEnabled = computed(() => {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (new URLSearchParams(window.location.search).has('app-password')) return true;
+    return window.localStorage?.getItem('stormbox.appPassword') === '1';
+  } catch {
+    return false;
+  }
+});
 
 const isBusy = computed(() =>
   authStore.status === AUTH_STATE.OIDC_LOADING
@@ -49,13 +64,14 @@ function togglePassword() {
   <div class="login-gate">
     <div class="login-stack">
       <p class="login-warning" role="note">
-        This is an Early Alpha and subject to (very) frequent change. Use at your own risk!
+        <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
+        <span>This is an Early Alpha and subject to (very) frequent change. Use at your own risk!</span>
       </p>
 
       <div class="login-card">
         <ThundermailLogo :size="56" class="login-card__logo" />
         <h1 class="login-card__title">Thundermail</h1>
-        <p class="login-card__subtitle">Sign in with your Thunderbird account.</p>
+        <p class="login-card__subtitle">Sign in with your Thundermail account.</p>
 
         <div v-if="isBusy" class="login-card__busy" role="status" aria-live="polite">
           <Loader2 :size="32" :stroke-width="2" class="login-card__spinner" />
@@ -63,17 +79,21 @@ function togglePassword() {
         </div>
 
         <template v-else>
-          <button
-            class="login-card__primary"
-            type="button"
+          <AppButton
+            size="default"
+            class="login-card__signin"
             :disabled="!authStore.isOidcReady"
             @click="signInWithThunderbird"
           >
-            Sign in with Thunderbird
-          </button>
+            Sign In
+          </AppButton>
 
+          <!-- App-password sign-in is hidden by default now that OIDC is
+               the norm, but the flow is fully intact. Reveal the entry
+               point with ?app-password in the URL or by setting
+               localStorage['stormbox.appPassword']='1'. -->
           <button
-            v-if="!showPasswordForm"
+            v-if="!showPasswordForm && appPasswordEnabled"
             class="login-card__link"
             type="button"
             @click="togglePassword"
@@ -81,7 +101,7 @@ function togglePassword() {
             Use app password instead
           </button>
 
-          <form v-else class="login-card__password" @submit="submitPassword">
+          <form v-if="showPasswordForm" class="login-card__password" @submit="submitPassword">
             <label>
               <span>Username</span>
               <input
@@ -101,9 +121,9 @@ function togglePassword() {
               />
             </label>
             <div class="login-card__password-actions">
-              <button class="login-card__secondary" type="submit">
+              <AppButton form-action="submit">
                 Sign in
-              </button>
+              </AppButton>
               <button
                 class="login-card__link"
                 type="button"
@@ -141,17 +161,39 @@ function togglePassword() {
   gap: 12px;
 }
 
+/* Our own warning banner; only the warning glyph comes from services-ui.
+   Colours come from theme-aware --warn-* tokens (see assets/styles.css);
+   both themes meet WCAG AA (>=4.5:1) for this body text. */
 .login-warning {
   box-sizing: border-box;
+  /* Size to the copy so it stays on one line, floating wider than the
+     360px card; clamps to the viewport (minus the gate padding) and wraps
+     only on very narrow screens. */
+  width: max-content;
+  max-width: calc(100vw - 48px);
+  align-self: center;
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 193, 7, 0.38);
+  display: flex;
+  /* Anchor the icon to the first text line (not the box middle) so the
+     banner reads correctly when the copy wraps on narrow screens. */
+  align-items: flex-start;
+  text-align: left;
+  gap: 10px;
+  padding: 10px 16px;
+  border: 1px solid var(--warn-border);
   border-radius: 10px;
-  background: rgba(255, 193, 7, 0.1);
-  color: #ffd166;
-  font-size: 12px;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
-  text-align: center;
+}
+.login-warning__icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  /* The 18px icon box matches the first line box (13px x 1.4 ≈ 18.2px), so
+     flex-start alignment centers it on the first text line by itself. */
 }
 
 .login-card {
@@ -188,34 +230,12 @@ function togglePassword() {
   font-size: 13px;
 }
 
-.login-card__primary {
-  appearance: none;
-  background: var(--accent);
-  color: #fff;
-  border: 0;
-  border-radius: 10px;
-  padding: 11px 14px;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1.3;
-  cursor: pointer;
-  transition: filter 0.12s ease;
+/* Sign in uses our AppButton at services-ui's default height, centered
+   with a comfortable min-width rather than stretched across the card. */
+.login-card__signin {
+  align-self: center;
+  min-width: 160px;
 }
-.login-card__primary:hover:not(:disabled) { filter: brightness(1.05); }
-.login-card__primary:disabled { opacity: 0.6; cursor: not-allowed; }
-
-.login-card__secondary {
-  appearance: none;
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 9px 14px;
-  font-size: 13px;
-  line-height: 1.3;
-  cursor: pointer;
-}
-.login-card__secondary:hover:not(:disabled) { background: var(--panel2); }
 
 .login-card__link {
   appearance: none;

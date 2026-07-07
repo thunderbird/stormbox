@@ -760,14 +760,18 @@ describe('App mail layout', () => {
     const wrapper = mountApp();
     await nextTick();
 
-    expect(document.documentElement.dataset.theme).toBe('dark');
+    // Theme is applied as html.dark / html.light classes (services-ui's
+    // dark-mode convention), no longer as a data-theme attribute.
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
 
     await wrapper.get('.theme-toggle').trigger('click');
-    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(document.documentElement.classList.contains('light')).toBe(true);
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
     expect(window.localStorage.getItem('stormbox.theme.v1')).toBe('light');
 
     await wrapper.get('.theme-toggle').trigger('click');
-    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(document.documentElement.classList.contains('light')).toBe(false);
     expect(window.localStorage.getItem('stormbox.theme.v1')).toBe('dark');
   });
 });

@@ -185,7 +185,7 @@ function currentEnvironmentPrefersDark(): boolean {
   }
   // `prefers-color-scheme` is an OS/UA-level preference shared with the
   // sandboxed iframe, so the host window's value is what the email's own
-  // `@media` branch will see when it renders (the in-app `data-theme`
+  // `@media` branch will see when it renders (the in-app theme class
   // toggle is independent and does not affect it).
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }

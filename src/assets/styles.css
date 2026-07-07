@@ -63,6 +63,17 @@
 }
 
 :root {
+  /* The vertical gradient services-ui paints on filled primary buttons
+     (see .primary.filled in their style.css). Kept as a token so our own
+     accent-filled elements (e.g. the active spaces button) can render the
+     exact same surface. Theme-correct automatically: it is built from the
+     --colour-* tokens, which dark mode re-aliases to our palette. */
+  --primary-filled-gradient: linear-gradient(
+    180deg,
+    var(--colour-accent-blue) -31.82%,
+    var(--colour-primary-default) 8.74%,
+    var(--colour-primary-hover) 100%
+  );
   /* Default to dark; system light overrides below */
   --font-sans: "Inter", sans-serif;
   --font-display: "Metropolis", "Inter", sans-serif;
@@ -74,14 +85,23 @@
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
-  --rowHover: #14182a;
-  --rowActive: #182041;
+  /* Bright enough to read as a highlight on any dark surface (--panel
+     #11131a, --panel2, --bg); the old #14182a was nearly invisible.
+     Selected sits clearly above hover via a stronger blue cast without
+     jumping to the over-bright #263054 tried earlier. */
+  --rowHover: #1e2438;
+  --rowActive: #222c50;
+  /* Warning banner (default = dark theme): light amber on a translucent
+     amber wash; ~13:1 over the dark page. WCAG AA. */
+  --warn-bg: rgba(255, 193, 7, 0.1);
+  --warn-fg: #ffd166;
+  --warn-border: rgba(255, 193, 7, 0.38);
   color-scheme: dark light;
 }
 
-/* Explicit theme overrides via attribute on <html> */
-:root[data-theme="dark"],
-[data-theme="dark"] {
+/* Explicit theme overrides via the services-ui `dark`/`light` class on <html> */
+html.dark,
+.dark {
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
@@ -89,21 +109,30 @@
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
-  --rowHover: #14182a;
-  --rowActive: #182041;
+  --rowHover: #1e2438;
+  --rowActive: #222c50;
+  --warn-bg: rgba(255, 193, 7, 0.1);
+  --warn-fg: #ffd166;
+  --warn-border: rgba(255, 193, 7, 0.38);
 }
 
-:root[data-theme="light"],
-[data-theme="light"] {
+html.light,
+.light {
   --bg: #f6f8fc;
   --panel: #ffffff;
   --panel2: #f4f7fb;
   --border: #dbe1ea;
   --text: #111827;
   --muted: #6b7280;
-  --accent: #4f8cff;
+  /* Light mode adopts services-ui's primary blue (--colour-primary-default,
+     #1373d9) so our own accent-coloured elements match services-ui buttons.
+     Dark mode keeps our #4f8cff and aliases the services-ui tokens to it. */
+  --accent: #1373d9;
   --rowHover: #eef2ff; /* soft accent-tint for hover */
   --rowActive: #e0e9ff; /* slightly stronger for selected */
+  --warn-bg: rgba(255, 193, 7, 0.1);
+  --warn-fg: #ffd166;
+  --warn-border: rgba(255, 193, 7, 0.38);
 }
 
 /* If user prefers light and no explicit theme chosen, use light */
@@ -115,9 +144,74 @@
     --border: #dbe1ea;
     --text: #111827;
     --muted: #6b7280;
+    --accent: #1373d9;
     --rowHover: #eef2ff;
     --rowActive: #e0e9ff;
+    --warn-bg: rgba(255, 193, 7, 0.1);
+    --warn-fg: #ffd166;
+    --warn-border: rgba(255, 193, 7, 0.38);
   }
+}
+
+/* Light mode uses the services-ui palette as-is. Dark mode overrides the
+   services-ui --colour-* tokens with our own palette, because services-ui's
+   dark theme doesn't match our chrome. We import services-ui's style.css
+   first (see main.ts), so re-declaring these tokens here wins and cascades
+   into every services-ui component.
+
+   Intentionally NOT overridden (kept on services-ui defaults): the
+   `secondary` family, the decorative `accent-{teal,purple,orange,pink,gray}`
+   set, and other-product brand colours (`apmt-*`, `send-*`, `service-*`) —
+   we have no equivalents and nothing in webmail renders them. */
+html.dark {
+  /* Neutrals → our surfaces (aliased to our chrome tokens). */
+  --colour-neutral-base: var(--bg);
+  --colour-neutral-lower: #08090c;
+  --colour-neutral-raised: var(--panel);
+  --colour-neutral-subtle: var(--panel);
+  --colour-neutral-border: var(--border);
+  --colour-neutral-border-intense: #2a3142;
+
+  /* Primary → our accent blue. */
+  --colour-primary-soft: #16203a;
+  --colour-primary-default: var(--accent);
+  --colour-primary-hover: #5e97ff;
+  --colour-primary-pressed: #3c79e6;
+  --colour-accent-blue: var(--accent);
+
+  /* Text / icon. */
+  --colour-ti-base: var(--text);
+  --colour-ti-secondary: #c2c8d4;
+  --colour-ti-muted: var(--muted);
+  --colour-ti-highlight: var(--accent);
+  --colour-ti-warning: #ffd166;
+  --colour-ti-critical: #ff6b6b;
+  --colour-ti-success: #45c483;
+
+  /* Warning (amber): soft = dark tinted bg, default/hover/pressed = fg. */
+  --colour-warning-soft: #2a2206;
+  --colour-warning-default: #ffd166;
+  --colour-warning-hover: #ffdb85;
+  --colour-warning-pressed: #f5c23e;
+
+  /* Danger: derived from our error red #ff6b6b. */
+  --colour-danger-soft: #3a1418;
+  --colour-danger-default: #ff6b6b;
+  --colour-danger-hover: #ff8585;
+  --colour-danger-pressed: #e85555;
+
+  /* Success: derived from our success green #2e9e63. */
+  --colour-success-soft: #0d2a1a;
+  --colour-success-default: #57c98a;
+  --colour-success-hover: #6ed79b;
+  --colour-success-pressed: #2e9e63;
+}
+/* Token gotcha: the filled primary button takes its TEXT from
+   --colour-neutral-base (dark in dark mode), which assumes a light button.
+   Our blue needs white text, and that token can't be globally repurposed,
+   so this is the one component-level override required. */
+html.dark .base.primary.filled:not(:disabled) {
+  color: #fff;
 }
 
 * {

@@ -61,9 +61,16 @@ beforeEach(() => {
   setActivePinia(createPinia());
 });
 
+// The app applies the theme as html.dark / html.light classes (services-ui's
+// dark-mode convention), which MessageView reads to build the iframe srcdoc.
+function setDocumentTheme(theme: 'dark' | 'light') {
+  document.documentElement.classList.remove('dark', 'light');
+  document.documentElement.classList.add(theme);
+}
+
 afterEach(() => {
   __resetRepositoryForTests();
-  document.documentElement.removeAttribute('data-theme');
+  document.documentElement.classList.remove('dark', 'light');
   vi.unstubAllGlobals();
 });
 
@@ -414,7 +421,7 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('passes dark-mode defaults into simple HTML iframe bodies', async () => {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    setDocumentTheme('dark');
     await makeSelectedMessage({
       text: '',
       html: '<p>test</p>',
@@ -446,7 +453,7 @@ describe('MessageView HTML body rendering', () => {
     // In the dark theme the email's hard-coded white background and black
     // text must be stripped (per dark-email.ts) so the body falls back to
     // the dark canvas, rather than punching a white slab into the dark UI.
-    document.documentElement.setAttribute('data-theme', 'dark');
+    setDocumentTheme('dark');
     await makeSelectedMessage({
       text: '',
       html: '<div style="background:#ffffff;color:#000000">styled body</div>',
@@ -465,7 +472,7 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('does not adapt email colours in the light theme', async () => {
-    document.documentElement.setAttribute('data-theme', 'light');
+    setDocumentTheme('light');
     await makeSelectedMessage({
       text: '',
       html: '<div style="background:#ffffff;color:#000000">styled body</div>',
@@ -483,7 +490,7 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('offers a per-message light escape hatch in dark mode that bypasses the adapter', async () => {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    setDocumentTheme('dark');
     await makeSelectedMessage({
       text: '',
       html: '<div style="background:#ffffff;color:#000000">styled body</div>',
@@ -517,7 +524,7 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('resets the light escape hatch when a different message is opened', async () => {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    setDocumentTheme('dark');
     const mailStore = await makeSelectedMessage({
       text: '',
       html: '<div style="background:#ffffff;color:#000000">first</div>',
@@ -552,14 +559,14 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('hides the light escape hatch for plain-text bodies and in the light theme', async () => {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    setDocumentTheme('dark');
     await makeSelectedMessage({ text: 'just text', html: '', attachments: [] });
     const textWrapper = mount(MessageView, { attachTo: document.body });
     await nextTick();
     expect(textWrapper.find('.message-view__action--view-mode').exists()).toBe(false);
     textWrapper.unmount();
 
-    document.documentElement.setAttribute('data-theme', 'light');
+    setDocumentTheme('light');
     await makeSelectedMessage({
       text: '', html: '<div style="color:#000000">styled</div>', attachments: [],
     });

@@ -5,6 +5,7 @@ import { BookUser, Pencil, Plus, Trash2, Users, X } from '@lucide/vue';
 
 import { useContactsStore } from '../stores/contacts-store';
 import type { AddressbookRow, ContactListRow } from '../types';
+import AppButton from './AppButton.vue';
 
 const contactsStore = useContactsStore();
 const { contacts, addressbooks, saving, deletingIds } = storeToRefs(contactsStore);
@@ -194,10 +195,12 @@ async function removeContact(contact: ContactListRow) {
             class="contacts__filter"
             aria-label="Filter contacts"
           />
-          <button class="contacts__add" type="button" @click="openAddForm">
-            <Plus :size="16" :stroke-width="2" aria-hidden="true" />
-            <span>Add contact</span>
-          </button>
+          <AppButton class="contacts__add" @click="openAddForm">
+            <template #iconLeft>
+              <Plus :size="16" :stroke-width="2" aria-hidden="true" />
+            </template>
+            Add contact
+          </AppButton>
         </div>
       </header>
 
@@ -259,21 +262,12 @@ async function removeContact(contact: ContactListRow) {
             {{ isEditing ? 'Editing contact' : `Adding to ${addTargetLabel}` }}
           </span>
           <div class="contacts__form-actions">
-            <button
-              class="contacts__button contacts__button--ghost"
-              type="button"
-              :disabled="saving"
-              @click="closeForm"
-            >
+            <AppButton variant="outline" :disabled="saving" @click="closeForm">
               Cancel
-            </button>
-            <button
-              class="contacts__button contacts__button--primary"
-              type="submit"
-              :disabled="saving"
-            >
+            </AppButton>
+            <AppButton form-action="submit" :disabled="saving">
               {{ saving ? 'Saving…' : (isEditing ? 'Save changes' : 'Save contact') }}
-            </button>
+            </AppButton>
           </div>
         </div>
       </form>
@@ -419,30 +413,11 @@ async function removeContact(contact: ContactListRow) {
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 
-/* Accent button matching the folder list's New Message action. */
+/* Add contact is an AppButton; only keep it from wrapping. */
 .contacts__add {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  height: 32px;
-  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
   white-space: nowrap;
-  cursor: pointer;
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
-  transition: filter 0.12s ease, box-shadow 0.12s ease;
+  flex: none;
 }
-.contacts__add:hover {
-  filter: brightness(1.04);
-  box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
-}
-.contacts__add:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .contacts__form {
   display: flex;
@@ -538,30 +513,6 @@ async function removeContact(contact: ContactListRow) {
   gap: 8px;
   flex-shrink: 0;
 }
-.contacts__button {
-  height: 34px;
-  padding: 0 14px;
-  border-radius: 8px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: filter 0.12s ease, background 0.12s ease;
-}
-.contacts__button:disabled { opacity: 0.55; cursor: default; }
-.contacts__button--primary {
-  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
-  background: var(--accent);
-  color: #fff;
-}
-.contacts__button--primary:not(:disabled):hover { filter: brightness(1.04); }
-.contacts__button--ghost {
-  border: 1px solid var(--border, #d6d9e2);
-  background: transparent;
-  color: var(--text, #1a1d24);
-}
-.contacts__button--ghost:not(:disabled):hover { background: var(--rowHover, #f0f1f6); }
-
 .contacts__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
 .contacts__row {
   display: grid;
