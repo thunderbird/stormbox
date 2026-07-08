@@ -105,6 +105,7 @@ describe('MessageList bulk actions header', () => {
     const actions = wrapper.findAll('.msg-list__bulk-actions .msg-list__bulk-action');
     expect(actions.map((button) => button.attributes('title'))).toEqual([
       'Archive',
+      'Junk',
       'Delete',
       'Mark as read',
       'Mark as unread',
@@ -114,7 +115,7 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
-  it('leads with the Not junk action inside the Junk folder', async () => {
+  it('replaces Junk with the Not junk action inside the Junk folder', async () => {
     const { mailStore, wrapper } = mountList({
       folder: makeFolder(2, { name: 'Junk', role: 'junk' }),
     });
@@ -139,15 +140,18 @@ describe('MessageList bulk actions header', () => {
     await nextTick();
 
     const archiveSpy = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 2, failed: 0, skipped: 0 });
+    const junkSpy = vi.spyOn(mailStore, 'junkMessages').mockResolvedValue({ succeeded: 2, failed: 0, skipped: 0 });
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
     const seenSpy = vi.spyOn(mailStore, 'markManySeen').mockResolvedValue(2);
 
     await wrapper.find('.msg-list__bulk-actions [title="Archive"]').trigger('click');
+    await wrapper.find('.msg-list__bulk-actions [title="Junk"]').trigger('click');
     await wrapper.find('.msg-list__bulk-actions [title="Delete"]').trigger('click');
     await wrapper.find('.msg-list__bulk-actions [title="Mark as read"]').trigger('click');
     await wrapper.find('.msg-list__bulk-actions [title="Mark as unread"]').trigger('click');
 
     expect(archiveSpy).toHaveBeenCalledWith([1, 3]);
+    expect(junkSpy).toHaveBeenCalledWith([1, 3]);
     expect(destroySpy).toHaveBeenCalledWith([1, 3]);
     expect(seenSpy).toHaveBeenNthCalledWith(1, [1, 3], true);
     expect(seenSpy).toHaveBeenNthCalledWith(2, [1, 3], false);

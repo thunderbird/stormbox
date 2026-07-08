@@ -155,6 +155,7 @@ describe('MessageView with a sparse messages array', () => {
     expect(actions.map((button) => button.attributes('title'))).toEqual([
       'Back',
       'Archive (A)',
+      'Junk',
       'Delete (Del)',
       'Reply (Ctrl+R)',
       'Reply All (Ctrl+Shift+R)',
@@ -162,7 +163,7 @@ describe('MessageView with a sparse messages array', () => {
     ]);
     expect(
       actions.map((button) => button.attributes('aria-label')),
-    ).toEqual(['Back', 'Archive', 'Delete', 'Reply', 'Reply All', 'Forward']);
+    ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward']);
     expect(actions.every((button) => button.text() === '')).toBe(true);
     // Every action must render exactly one inline icon (Lucide svg or
     // tb-themed svg). We do not pin its dimensions.
@@ -195,6 +196,33 @@ describe('MessageView with a sparse messages array', () => {
 
     expect(mailStore.selectedMessageId).toBeNull();
     expect(mailStore.messageBody).toBeNull();
+  });
+
+  it('marks the open message as junk from the toolbar', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Spammy offer',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.messageBody = { text: 'body text', html: '', attachments: [] };
+    const junkSpy = vi.spyOn(mailStore, 'junkMessages')
+      .mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    await wrapper.find('.message-view__header [aria-label="Mark as junk"]').trigger('click');
+
+    expect(junkSpy).toHaveBeenCalledWith([42]);
   });
 
   it('replies to the selected message from the toolbar', async () => {

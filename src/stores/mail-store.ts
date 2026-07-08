@@ -1340,6 +1340,63 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Mark one or more messages as junk: flag them with $junk (dropping
+   * any $notjunk) and move them to the Junk folder. The inverse of
+   * whitelistSenders' rescue step, minus the sender trust — marking a
+   * message as junk deliberately does not touch contacts. The keyword
+   * write is optimistic locally plus one queued setKeywords for the
+   * batch; the visible effect is the move.
+   */
+  async function junkMessages(ids: number[]): Promise<MoveResult> {
+    if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
+    const messageIds = normalizeMessageIds(ids);
+    if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
+    const junk = folders.value.find((f) => f.role === 'junk');
+    if (!junk?.id) {
+      error.value = 'No junk folder is configured.';
+      return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+
+    const rows = messageIds
+      .map((id) => messages.value.find((m) => m?.id === id))
+      .filter((row): row is CachedRow => row != null);
+    if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    const junkIds = rows.map((r) => r.id);
+
+    const optimisticItems = rows.map((row) => {
+      const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
+      delete keywordsJson.$notjunk;
+      keywordsJson.$junk = true;
+      return {
+        messageId: row.id,
+        keywords: Object.keys(keywordsJson),
+        keywordsJson: JSON.stringify(keywordsJson),
+      };
+    });
+    if (typeof repo.replaceMessageKeywordsMany === 'function') {
+      await repo.replaceMessageKeywordsMany(optimisticItems);
+    } else {
+      for (const item of optimisticItems) {
+        await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
+      }
+    }
+    await repo.insertPendingMutation({
+      accountId: authStore.accountId,
+      mutationType: MUTATION_TYPE.SET_KEYWORDS,
+      targetMessageId: junkIds.length === 1 ? junkIds[0] : null,
+      requestJson: JSON.stringify({ messageIds: junkIds, add: ['$junk'], remove: ['$notjunk'] }),
+    });
+
+    const result = await moveMessages(junkIds, junk.id);
+    if (result.succeeded > 0) {
+      setNotice(result.succeeded === 1
+        ? 'Marked as junk'
+        : `Marked ${result.succeeded} messages as junk`);
+    }
+    return result;
+  }
+
+  /**
    * Parse a `"Display Name <user@host>"` (or bare `user@host`) From
    * header into its display name and address. Reuses the shared
    * address parser so the angle-bracket / quoted-name handling stays
@@ -2210,6 +2267,7 @@ export const useMailStore = defineStore('mail', () => {
     moveMessage,
     moveMessages,
     archiveMessages,
+    junkMessages,
     whitelistSender,
     whitelistSenders,
     canMoveToFolder,
