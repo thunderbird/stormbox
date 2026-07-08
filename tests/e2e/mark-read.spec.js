@@ -96,7 +96,7 @@ test.describe('Mark read/unread e2e', () => {
         await row.locator('.msg-list__check input').click();
       }
 
-      await page.locator('.message-view__bulk-actions [title="Mark as unread"]').click();
+      await page.locator('.msg-list__bulk-actions [title="Mark as unread"]').click();
 
       await waitForPendingMutations(page);
 

@@ -252,7 +252,7 @@ test.describe('Contacts + Junk whitelist e2e', () => {
         .toHaveText(/^3 selected/, { timeout: 5_000 });
 
       // The bulk "Not junk" action is only present in the Junk folder.
-      await page.locator('.message-view__bulk-actions [title="Whitelist senders and move to Inbox"]').click();
+      await page.locator('.msg-list__bulk-actions [title="Whitelist senders and move to Inbox"]').click();
 
       // Success toast names the two unique senders.
       await expect(page.locator('.store-error-toast__item--success'))

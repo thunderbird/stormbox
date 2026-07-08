@@ -469,12 +469,18 @@ describe('MessageList row click viewing', () => {
       makeRow(3, { subject: 'Read message', is_seen: 1 }),
     ];
     mailStore.totalForFolder = 3;
-    mailStore.selectedIds = new Set([1]);
 
     const wrapper = mount(MessageList);
     await nextTick();
 
+    // The filter must be toggled before selecting: multi-select hides
+    // the filter buttons. A selected row can still end up read under
+    // the Unread filter (e.g. marked read after being selected), which
+    // is the sticky case this test pins.
     await wrapper.find('.msg-list__filter').trigger('click');
+    await nextTick();
+
+    mailStore.selectedIds = new Set([1]);
     await nextTick();
 
     expect(wrapper.text()).toContain('Selected read message');
@@ -496,7 +502,6 @@ describe('MessageList row click viewing', () => {
     ];
     mailStore.totalForFolder = 2;
     mailStore.selectedMessageId = 1;
-    mailStore.selectedIds = new Set([2]);
 
     const wrapper = mount(MessageList);
     await nextTick();
@@ -505,7 +510,6 @@ describe('MessageList row click viewing', () => {
     await nextTick();
 
     expect(mailStore.selectedMessageId).toBeNull();
-    expect([...mailStore.selectedIds]).toEqual([2]);
     expect(wrapper.text()).not.toContain('Already read preview');
     expect(wrapper.text()).toContain('Still unread');
     expect(wrapper.findAll('.msg-list__item')).toHaveLength(1);

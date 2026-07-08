@@ -470,7 +470,7 @@ describe('App mail layout', () => {
     expect(wrapper.find('[aria-label="Resize message list"]').exists()).toBe(false);
   });
 
-  it('shows the message view for either a viewed message or bulk selection', async () => {
+  it('shows the message view for a viewed message but hides it during bulk selection', async () => {
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
 
@@ -482,12 +482,19 @@ describe('App mail layout', () => {
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
     expect(wrapper.find('[aria-label="Resize message list"]').exists()).toBe(true);
 
+    // Multi-select owns the list header; the reading pane goes away
+    // entirely — even while a message is still previewed.
+    mailStore.selectedIds = new Set([7]);
+    await nextTick();
+
+    expect(wrapper.find('.message-view').exists()).toBe(false);
+    expect(wrapper.find('.shell').classes()).toContain('shell--message-view-hidden');
+
     mailStore.selectedMessageId = null;
     mailStore.selectedIds = new Set([7]);
     await nextTick();
 
-    expect(wrapper.find('.message-view').exists()).toBe(true);
-    expect(wrapper.find('.shell').classes()).not.toContain('shell--message-view-hidden');
+    expect(wrapper.find('.message-view').exists()).toBe(false);
   });
 
   it('lets the spaces toolbar hide and restore the folder list', async () => {

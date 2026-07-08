@@ -5,7 +5,7 @@ import {
 import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
-  Paperclip, Star, RefreshCw,
+  Paperclip, Star, RefreshCw, MailOpen, Mail, Trash2, X,
 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
@@ -13,6 +13,7 @@ import { useListSelection } from '../composables/useListSelection';
 import { useMessageDragDrop } from '../composables/useMessageDragDrop';
 import { SENDER_AVATAR_PROXY_URL } from '../defines';
 import { senderAvatarFor, shortFrom } from '../utils/sender-avatar';
+import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 
 const mailStore = useMailStore();
 
@@ -412,6 +413,54 @@ function toggleSelectAll() {
   }
 }
 
+// Bulk actions for the checkbox selection. They live here (not in the
+// message view) because multi-selecting hides the reading pane
+// entirely; the list header is the only surface that is always
+// visible, including in single-column layouts.
+const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+const bulkWhitelisting = ref(false);
+
+async function bulkMarkRead() {
+  await mailStore.markManySeen([...selectedIds.value], true);
+}
+
+async function bulkMarkUnread() {
+  await mailStore.markManySeen([...selectedIds.value], false);
+}
+
+async function bulkArchive() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  try {
+    await mailStore.archiveMessages(ids);
+  } catch (err) {
+    console.warn('[message-list] bulk archive failed', err?.message ?? err);
+  }
+}
+
+async function bulkDelete() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  try {
+    await mailStore.destroyMessages(ids);
+  } catch (err) {
+    console.warn('[message-list] bulk delete failed', err?.message ?? err);
+  }
+}
+
+async function bulkWhitelist() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0 || bulkWhitelisting.value) return;
+  bulkWhitelisting.value = true;
+  try {
+    await mailStore.whitelistSenders(ids);
+  } catch (err) {
+    console.warn('[message-list] bulk whitelist failed', err?.message ?? err);
+  } finally {
+    bulkWhitelisting.value = false;
+  }
+}
+
 function toggleUnreadFilter() {
   mailStore.selectMessage(null);
   unreadOnly.value = !unreadOnly.value;
@@ -486,7 +535,43 @@ function normalizeFilterText(value) {
           @change="toggleSelectAll"
         />
       </label>
-      <div class="msg-list__filters" role="group" aria-label="Message filters">
+      <!-- Multi-select swaps the filter buttons for the bulk actions:
+           the filters make no sense mid-selection and must not be
+           toggled while one is active. -->
+      <div
+        v-if="hasSelection"
+        class="msg-list__bulk-actions"
+        role="group"
+        aria-label="Selection actions"
+      >
+        <button
+          v-if="isInJunkFolder"
+          class="msg-list__bulk-action msg-list__bulk-action--whitelist"
+          type="button"
+          :disabled="bulkWhitelisting"
+          @click="bulkWhitelist"
+          title="Whitelist senders and move to Inbox"
+          aria-label="Not junk — whitelist senders and move the selected messages to Inbox"
+        >
+          Not junk
+        </button>
+        <button class="msg-list__bulk-action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
+          <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+        </button>
+        <button class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
+          <Trash2 :size="18" :stroke-width="1.65" />
+        </button>
+        <button class="msg-list__bulk-action" type="button" @click="bulkMarkRead" title="Mark as read" aria-label="Mark as read">
+          <MailOpen :size="16" :stroke-width="1.75" />
+        </button>
+        <button class="msg-list__bulk-action" type="button" @click="bulkMarkUnread" title="Mark as unread" aria-label="Mark as unread">
+          <Mail :size="16" :stroke-width="1.75" />
+        </button>
+        <button class="msg-list__bulk-action msg-list__bulk-action--ghost" type="button" @click="selectNone" title="Clear selection" aria-label="Clear selection">
+          <X :size="16" :stroke-width="1.75" />
+        </button>
+      </div>
+      <div v-else class="msg-list__filters" role="group" aria-label="Message filters">
         <button
           class="msg-list__filter"
           :class="{ 'is-active': unreadOnly }"
@@ -724,6 +809,90 @@ function normalizeFilterText(value) {
   color: #fff;
   border-color: color-mix(in srgb, var(--accent) 80%, #000);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
+}
+.msg-list__bulk-actions {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  /* Sit next to the select-all checkbox, with a little breathing
+     room beyond the header's own gap. */
+  margin-inline-start: 8px;
+}
+.msg-list__bulk-action {
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  flex-shrink: 0;
+}
+.msg-list__bulk-action:hover {
+  background: var(--rowHover);
+  color: var(--text);
+}
+.msg-list__bulk-action--danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: #ff6b6b;
+}
+.msg-list__bulk-action--ghost { color: var(--muted); }
+/* "Not junk" is the contextual, Junk-only primary action; a filled
+   accent button set apart from the icon buttons, matching the same
+   action in the open-message toolbar. */
+.msg-list__bulk-action--whitelist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  padding: 0 12px;
+  margin-inline-end: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
+  transition: filter 0.12s ease, box-shadow 0.12s ease;
+}
+.msg-list__bulk-action--whitelist:hover {
+  background: var(--accent);
+  color: #fff;
+  filter: brightness(1.04);
+  box-shadow: 0 2px 5px color-mix(in srgb, #000 18%, transparent);
+}
+.msg-list__bulk-action--whitelist:disabled,
+.msg-list__bulk-action--whitelist:disabled:hover {
+  opacity: 0.5;
+  filter: none;
+  background: var(--accent);
+  color: #fff;
+}
+.msg-list__bulk-icon--folder {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+.msg-list__bulk-icon--folder :deep(svg) {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.msg-list__bulk-icon--folder :deep([fill="context-fill"]) {
+  fill: color-mix(in srgb, currentColor 20%, transparent);
+}
+.msg-list__bulk-icon--folder :deep([fill="context-stroke"]) {
+  fill: currentColor;
 }
 .msg-list__count {
   flex-shrink: 0;

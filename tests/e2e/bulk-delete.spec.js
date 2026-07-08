@@ -80,7 +80,7 @@ test.describe('Bulk delete e2e', () => {
       await expect(page.locator('.msg-list__count'))
         .toHaveText(/^3 selected/, { timeout: 5_000 });
 
-      await page.locator('.message-view__bulk-actions [title="Delete"]').click();
+      await page.locator('.msg-list__bulk-actions [title="Delete"]').click();
 
       for (const subject of subjects) {
         await expect.poll(
