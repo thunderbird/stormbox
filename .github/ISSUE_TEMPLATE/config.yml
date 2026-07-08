@@ -13,9 +13,3 @@ contact_links:
   - name: Bug Report (Mailstrom)
     url: https://github.com/thunderbird/mailstrom/issues/new
     about: A bug report for the mail server deployment of Thundermail
-  - name: Bug Report (Thunderbird Appointment)
-    url: https://github.com/thunderbird/appointment/issues/new
-    about: A bug report for Thunderbird Appointment (appointment.tb.pro)
-  - name: Bug Report (Thunderbird Send / Pro Add-on)
-    url: https://github.com/thunderbird/tbpro-add-on/issues/new
-    about: A bug report for Thunderbird Send and the Thunderbird Pro add-on (send.tb.pro)
