@@ -96,17 +96,16 @@ const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
 );
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
-const isSingleColumnMailWidth = computed(() =>
-  space.value === 'mail' && windowWidth.value < SINGLE_COLUMN_WIDTH,
-);
 const wantsMessageDetailView = computed(() =>
   mailStore.selectedMessageId != null
   || resizeLayoutSpotlight.value
   || composeActionSpotlight.value,
 );
+// Multi-select never opens the message view: the bulk actions live in
+// the message list header, so a checkbox selection hides the reading
+// pane entirely (and works the same in single-column layouts).
 const showMessageView = computed(() =>
-  wantsMessageDetailView.value
-  || (mailStore.selectedIds.size > 0 && !isSingleColumnMailWidth.value),
+  wantsMessageDetailView.value && mailStore.selectedIds.size === 0,
 );
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),

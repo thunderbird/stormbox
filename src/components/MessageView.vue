@@ -10,7 +10,7 @@ import {
 import DOMPurify from 'dompurify';
 import {
   Trash2, Paperclip,
-  MailOpen, Mail, X, ArrowLeft, Sun, Moon,
+  ArrowLeft, Sun, Moon,
 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
@@ -91,14 +91,6 @@ const message = computed(() =>
   mailStore.messages.find((m) => m?.id === mailStore.selectedMessageId) ?? null,
 );
 
-// Selection summary mode: clicking a row only opens it for reading
-// (Fastmail model — `selectedMessageId` is the viewer pointer). The
-// "selected" set is independent and driven only by the checkbox
-// column. The moment the user checks even one row, this pane swaps
-// from "read the focused message" to a scrollable list of every
-// checked row plus bulk actions.
-const selectionCount = computed(() => mailStore.selectedIds.size);
-const isMultiSelecting = computed(() => selectionCount.value >= 1);
 let resizeObserver = null;
 let iframeMeasurementCleanup = null;
 let themeMediaQuery = null;
@@ -106,19 +98,6 @@ let themeMutationObserver = null;
 // Monotonic guard so an async inline-image render can detect that a newer
 // body/scheme render has superseded it.
 let renderToken = 0;
-
-// Walk the folder list in display order so the summary matches the
-// message list top-to-bottom, not arbitrary Set iteration order.
-const selectedMessages = computed(() => {
-  if (!mailStore.selectedIds.size) return [];
-  const out = [];
-  for (const row of mailStore.messages) {
-    if (row?.id != null && mailStore.selectedIds.has(row.id)) {
-      out.push(row);
-    }
-  }
-  return out;
-});
 
 function isReferencedInlinePart(part) {
   const cid = normalizeContentId(part?.cid);
@@ -426,26 +405,6 @@ function fmtDate(ms) {
   return Number.isNaN(d.valueOf()) ? '' : d.toLocaleString();
 }
 
-function shortFrom(text) {
-  if (!text) return '(no sender)';
-  const m = text.match(/^(.+?)\s*<.+>$/);
-  return m ? m[1].replace(/^"|"$/g, '') : text;
-}
-
-function fmtListDate(ms) {
-  if (!ms) return '';
-  const d = new Date(Number(ms));
-  if (Number.isNaN(d.valueOf())) return '';
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  }
-  const sameYear = d.getFullYear() === now.getFullYear();
-  return d.toLocaleDateString(undefined, sameYear
-    ? { month: 'short', day: 'numeric' }
-    : { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
 // The stored body HTML references inline images by cid:, which only
 // resolve within the original message. For reply/forward, inline those
 // images as data: URLs in the quote so the compose send pipeline
@@ -514,55 +473,6 @@ async function destroy() {
   }
 }
 
-async function bulkMarkRead() {
-  await mailStore.markManySeen([...mailStore.selectedIds], true);
-}
-
-async function bulkMarkUnread() {
-  await mailStore.markManySeen([...mailStore.selectedIds], false);
-}
-
-async function bulkArchive() {
-  const ids = [...mailStore.selectedIds];
-  if (ids.length === 0) return;
-  try {
-    await mailStore.archiveMessages(ids);
-  } catch (err) {
-    console.warn('[message-view] bulk archive failed', err?.message ?? err);
-  }
-}
-
-async function bulkDelete() {
-  const ids = [...mailStore.selectedIds];
-  if (ids.length === 0) return;
-  try {
-    await mailStore.destroyMessages(ids);
-  } catch (err) {
-    console.warn('[message-view] bulk delete failed', err?.message ?? err);
-  }
-}
-
-// Bulk "Not junk": whitelist every selected message's sender and move
-// the batch to the Inbox. Junk-folder only, gated in the template.
-const bulkWhitelisting = ref(false);
-
-async function bulkWhitelist() {
-  const ids = [...mailStore.selectedIds];
-  if (ids.length === 0 || bulkWhitelisting.value) return;
-  bulkWhitelisting.value = true;
-  try {
-    await mailStore.whitelistSenders(ids);
-  } catch (err) {
-    console.warn('[message-view] bulk whitelist failed', err?.message ?? err);
-  } finally {
-    bulkWhitelisting.value = false;
-  }
-}
-
-function clearBulkSelection() {
-  mailStore.clearSelection();
-}
-
 function closeMessageView() {
   mailStore.selectMessage(null);
   mailStore.clearSelection();
@@ -575,62 +485,7 @@ function closeMessageView() {
     :class="{ 'message-view--spotlight-actions': spotlightActions }"
     aria-label="Message detail"
   >
-    <div
-      v-if="isMultiSelecting"
-      class="message-view__bulk"
-      aria-label="Selection summary"
-    >
-      <header class="message-view__bulk-header">
-        <h2 class="message-view__bulk-title">
-          {{ selectionCount }} {{ selectionCount === 1 ? 'message' : 'messages' }} selected
-        </h2>
-        <div class="message-view__bulk-actions">
-          <!-- Contextual: only in the Junk folder. Leads the group as a
-               labeled accent button, set apart from the icon buttons. -->
-          <button
-            v-if="isInJunkFolder"
-            class="message-view__action message-view__action--whitelist"
-            type="button"
-            :disabled="bulkWhitelisting"
-            @click="bulkWhitelist"
-            title="Whitelist senders and move to Inbox"
-            aria-label="Not junk — whitelist senders and move the selected messages to Inbox"
-          >
-            <span class="message-view__whitelist-label">Not junk</span>
-          </button>
-          <button class="message-view__action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
-            <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-          </button>
-          <button class="message-view__action" type="button" @click="bulkMarkRead" title="Mark as read" aria-label="Mark as read">
-            <MailOpen :size="16" :stroke-width="1.75" />
-          </button>
-          <button class="message-view__action" type="button" @click="bulkMarkUnread" title="Mark as unread" aria-label="Mark as unread">
-            <Mail :size="16" :stroke-width="1.75" />
-          </button>
-          <button class="message-view__action message-view__action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
-            <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-          </button>
-          <button class="message-view__action message-view__action--ghost" type="button" @click="clearBulkSelection" title="Clear selection" aria-label="Clear selection">
-            <X :size="16" :stroke-width="1.75" />
-          </button>
-        </div>
-      </header>
-      <ol class="message-view__bulk-list" role="list">
-        <li
-          v-for="row in selectedMessages"
-          :key="row.id"
-          class="message-view__bulk-item"
-        >
-          <div class="message-view__bulk-item-row1">
-            <span class="message-view__bulk-item-from">{{ shortFrom(row.from_text) }}</span>
-            <span class="message-view__bulk-item-date">{{ fmtListDate(row.received_at) }}</span>
-          </div>
-          <div class="message-view__bulk-item-subject">{{ row.subject || '(no subject)' }}</div>
-          <p v-if="row.preview" class="message-view__bulk-item-preview">{{ row.preview }}</p>
-        </li>
-      </ol>
-    </div>
-    <article v-else-if="spotlightActions" class="message-view__article">
+    <article v-if="spotlightActions" class="message-view__article">
       <header class="message-view__header">
         <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" title="Back" aria-label="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
@@ -789,88 +644,6 @@ function closeMessageView() {
   place-items: center;
   height: 100%;
   color: var(--muted);
-}
-.message-view__bulk {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  color: var(--text);
-}
-.message-view__bulk-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.message-view__bulk-title {
-  margin: 0;
-  flex: 1;
-  min-width: 0;
-  font-size: 20px;
-  font-weight: 600;
-  text-align: center;
-}
-.message-view__bulk-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.message-view__bulk-list {
-  margin: 0;
-  padding: 8px 0;
-  list-style: none;
-  overflow-y: auto;
-  min-height: 0;
-}
-.message-view__bulk-item {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.message-view__bulk-item:last-child {
-  border-bottom: none;
-}
-.message-view__bulk-item-row1 {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 2px;
-}
-.message-view__bulk-item-from {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.message-view__bulk-item-date {
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-}
-.message-view__bulk-item-subject {
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.message-view__bulk-item-preview {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  line-height: 1.45;
 }
 .message-view__header {
   display: flex;

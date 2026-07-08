@@ -35,11 +35,13 @@ async function listDiagnostics(page) {
       selectAllIndeterminate: document.querySelector('.msg-list__select-all input')?.indeterminate ?? false,
       headerCount: (document.querySelector('.msg-list__count')?.textContent ?? '').trim(),
       rightPaneMode: (() => {
-        if (document.querySelector('.message-view__bulk')) return 'bulk-summary';
         if (document.querySelector('.message-view__article')) return 'article';
         if (document.querySelector('.message-view__empty')) return 'empty';
         return 'unknown';
       })(),
+      // Multi-select hides the message view entirely; the bulk actions
+      // live in the message list header instead.
+      bulkActionsVisible: !!document.querySelector('.msg-list__bulk-actions'),
       shellMessageViewHidden: document.querySelector('.shell')?.classList
         .contains('shell--message-view-hidden') ?? false,
     };
@@ -105,12 +107,15 @@ test.describe('multi-select (Fastmail model)', () => {
     await realRows.nth(2).locator('.msg-list__check input').click();
     const afterCheckbox = await pollDiagnostics(
       page,
-      (d) => d.rightPaneMode === 'bulk-summary' && /\b1 selected\b/.test(d.headerCount),
-      { message: 'checkbox click should select exactly row 2 and switch to bulk pane' },
+      (d) => d.bulkActionsVisible && /\b1 selected\b/.test(d.headerCount),
+      { message: 'checkbox click should select exactly row 2 and show the bulk actions' },
     );
     expect(afterCheckbox.focusedIndexes,
       'checkbox click must not move the focused row').toEqual([0]);
     expect(afterCheckbox.selectedIndexes).toEqual([2]);
+    expect(afterCheckbox.rightPaneMode,
+      'multi-select must hide the message view entirely').toBe('unknown');
+    expect(afterCheckbox.shellMessageViewHidden).toBe(true);
 
     await realRows.nth(4).locator('.msg-list__check input').click({ modifiers: ['Shift'] });
     const afterShift = await pollDiagnostics(
@@ -128,7 +133,7 @@ test.describe('multi-select (Fastmail model)', () => {
     );
     expect(afterShrink.selectedIndexes).toEqual([2, 3]);
 
-    await page.locator('.message-view__bulk-actions .message-view__action--ghost').click();
+    await page.locator('.msg-list__bulk-actions [title="Clear selection"]').click();
     const afterClear = await pollDiagnostics(
       page,
       (d) => d.rightPaneMode === 'article' && !/\bselected\b/.test(d.headerCount),
@@ -177,7 +182,7 @@ test.describe('multi-select (Fastmail model)', () => {
     await realRows.nth(4).locator('.msg-list__content').click({ modifiers: ['Shift'] });
     const afterShiftBodyClick = await pollDiagnostics(
       page,
-      (d) => d.rightPaneMode === 'bulk-summary' && /\b4 selected\b/.test(d.headerCount),
+      (d) => d.bulkActionsVisible && /\b4 selected\b/.test(d.headerCount),
       { message: 'shift-clicking a row body should extend selection from the anchor' },
     );
     expect(afterShiftBodyClick.selectedIndexes).toEqual([1, 2, 3, 4]);
@@ -186,7 +191,7 @@ test.describe('multi-select (Fastmail model)', () => {
     await realRows.nth(2).locator('.msg-list__content').click({ modifiers: ['Control'] });
     const afterControlBodyClick = await pollDiagnostics(
       page,
-      (d) => d.rightPaneMode === 'bulk-summary' && /\b3 selected\b/.test(d.headerCount),
+      (d) => d.bulkActionsVisible && /\b3 selected\b/.test(d.headerCount),
       { message: 'control-clicking a row body should toggle that row in selection' },
     );
     expect(afterControlBodyClick.selectedIndexes).toEqual([1, 3, 4]);
@@ -215,7 +220,7 @@ test.describe('multi-select (Fastmail model)', () => {
     await realRows.nth(3).locator('.msg-list__check input').click({ modifiers: ['Shift'] });
     const afterUnanchoredShift = await pollDiagnostics(
       page,
-      (d) => d.rightPaneMode === 'bulk-summary' && /\b4 selected\b/.test(d.headerCount),
+      (d) => d.bulkActionsVisible && /\b4 selected\b/.test(d.headerCount),
       { message: 'unanchored shift-click should select from the visible top row' },
     );
     expect(afterUnanchoredShift.selectedIndexes).toEqual([0, 1, 2, 3]);

@@ -85,8 +85,11 @@ test('iframe height grows past 120 on first open and survives body refresh', asy
     const otherCheckbox = page.locator('.msg-list__item').filter({ hasNotText: subject }).nth(0)
       .locator('.msg-list__check input');
     await otherCheckbox.click();
-    await expect(page.locator('.message-view__bulk')).toBeVisible({ timeout: 5_000 });
-    await page.locator('.message-view__bulk-actions .message-view__action--ghost').click();
+    // Multi-select hides the message view entirely; the bulk actions
+    // appear in the list header instead.
+    await expect(page.locator('.msg-list__bulk-actions')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('.message-view')).toBeHidden({ timeout: 5_000 });
+    await page.locator('.msg-list__bulk-actions [title="Clear selection"]').click();
     await expect(page.locator('iframe.message-view__html-frame')).toBeVisible({ timeout: 5_000 });
     await expect.poll(
       async () => iframeHeight(page),

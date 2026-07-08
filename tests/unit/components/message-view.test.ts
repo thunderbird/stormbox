@@ -289,32 +289,6 @@ describe('MessageView with a sparse messages array', () => {
     );
   });
 
-  it('lists every checked row in the bulk summary, not the viewed message only', async () => {
-    const authStore = useAuthStore();
-    authStore.accountId = 1;
-    __setRepositoryForTests(makeRepo());
-
-    const mailStore = useMailStore() as any;
-    await mailStore.attach();
-
-    mailStore.messages = [
-      { id: 1, subject: 'First', from_text: 'a@example.com', received_at: 1 },
-      { id: 2, subject: 'Second', from_text: 'b@example.com', received_at: 2 },
-      { id: 3, subject: 'Third', from_text: 'c@example.com', received_at: 3 },
-    ];
-    mailStore.selectedMessageId = 1;
-    mailStore.selectedIds = new Set([1, 3]);
-
-    const wrapper = mount(MessageView);
-    await nextTick();
-
-    expect(wrapper.find('.message-view__bulk-title').text()).toBe('2 messages selected');
-    const items = wrapper.findAll('.message-view__bulk-item');
-    expect(items).toHaveLength(2);
-    expect(items[0].text()).toContain('First');
-    expect(items[1].text()).toContain('Third');
-    expect(wrapper.find('.message-view__article').exists()).toBe(false);
-  });
 });
 
 describe('MessageView HTML body rendering', () => {
