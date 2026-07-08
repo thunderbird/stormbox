@@ -28,6 +28,7 @@ import {
 import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
+import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
@@ -459,6 +460,15 @@ async function whitelistSender() {
   }
 }
 
+async function junk() {
+  if (!message.value) return;
+  try {
+    await mailStore.junkMessages([message.value.id]);
+  } catch (err) {
+    console.warn('[message-view] junk failed', err?.message ?? err);
+  }
+}
+
 async function destroy() {
   if (!message.value) return;
   try {
@@ -534,6 +544,9 @@ function closeMessageView() {
         </button>
         <button class="message-view__action" type="button" @click="archive" title="Archive (A)" aria-label="Archive">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+        </button>
+        <button v-if="!isInJunkFolder" class="message-view__action" type="button" @click="junk" title="Junk" aria-label="Mark as junk">
+          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
         </button>
         <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />

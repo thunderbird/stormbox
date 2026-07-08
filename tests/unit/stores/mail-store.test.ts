@@ -1199,6 +1199,79 @@ describe('whitelistSenders (bulk Not junk)', () => {
   });
 });
 
+describe('junkMessages (mark as junk)', () => {
+  it('batches the keyword flag and moves the batch to the Junk folder', async () => {
+    const inbox = makeFolder(1, { role: 'inbox', may_remove_items: 1, total_emails: 2 });
+    const junk = makeFolder(2, { role: 'junk', may_add_items: 1 });
+    const rows = [
+      makeRow(10, { keywords_json: '{"$notjunk":true}' }),
+      makeRow(11, { keywords_json: '{}' }),
+    ];
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, junk],
+      views: { 1: { rows, total: 2 }, 2: { rows: [], total: 0 } },
+    });
+    await flush();
+
+    mailStore.selectFolder(inbox.id);
+    await flush();
+
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+    let keywordBatch = null;
+    repo.replaceMessageKeywordsMany = async (items) => {
+      keywordBatch = items;
+      return { ok: true, applied: items.length };
+    };
+
+    const result = await mailStore.junkMessages([10, 11]);
+    await flush();
+
+    expect(result.succeeded).toBe(2);
+
+    const byType = (type) => insertCalls.filter((c) => c.mutationType === type);
+
+    // No sender trust is touched when marking as junk.
+    expect(byType(MUTATION_TYPE.WHITELIST_SENDER)).toHaveLength(0);
+
+    // One batched keyword flag across both messages, $notjunk dropped.
+    expect(keywordBatch).toHaveLength(2);
+    expect(keywordBatch[0].keywords).toContain('$junk');
+    expect(keywordBatch[0].keywords).not.toContain('$notjunk');
+    const setKw = byType(MUTATION_TYPE.SET_KEYWORDS);
+    expect(setKw).toHaveLength(1);
+    expect(JSON.parse(setKw[0].requestJson)).toMatchObject({
+      messageIds: [10, 11],
+      add: ['$junk'],
+      remove: ['$notjunk'],
+    });
+
+    // One move into the Junk folder.
+    expect(byType(MUTATION_TYPE.MOVE_TO_FOLDERS)).toHaveLength(1);
+
+    // Rows leave the current view and a success notice is shown.
+    expect(mailStore.messages.map((r) => r?.id)).toEqual([]);
+    expect(mailStore.notice).toBe('Marked 2 messages as junk');
+  });
+
+  it('surfaces an error when no junk folder is configured', async () => {
+    const inbox = makeFolder(1, { role: 'inbox', total_emails: 1 });
+    const { mailStore } = await setupStore({
+      folders: [inbox],
+      views: { 1: { rows: [makeRow(10)], total: 1 } },
+    });
+    await flush();
+
+    const result = await mailStore.junkMessages([10]);
+
+    expect(result).toEqual({ succeeded: 0, failed: 0, skipped: 0 });
+    expect(mailStore.error).toBe('No junk folder is configured.');
+  });
+});
+
 describe('successor selection after removal', () => {
   it('selects the next message after deleting the previewed row', async () => {
     const inbox = makeFolder(1, { total_emails: 3 });

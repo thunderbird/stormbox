@@ -14,6 +14,7 @@ import { useMessageDragDrop } from '../composables/useMessageDragDrop';
 import { SENDER_AVATAR_PROXY_URL } from '../defines';
 import { senderAvatarFor, shortFrom } from '../utils/sender-avatar';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
+import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
 
 const mailStore = useMailStore();
 
@@ -438,6 +439,16 @@ async function bulkArchive() {
   }
 }
 
+async function bulkJunk() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  try {
+    await mailStore.junkMessages(ids);
+  } catch (err) {
+    console.warn('[message-list] bulk junk failed', err?.message ?? err);
+  }
+}
+
 async function bulkDelete() {
   const ids = [...selectedIds.value];
   if (ids.length === 0) return;
@@ -557,6 +568,9 @@ function normalizeFilterText(value) {
         </button>
         <button class="msg-list__bulk-action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
           <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+        </button>
+        <button v-if="!isInJunkFolder" class="msg-list__bulk-action" type="button" @click="bulkJunk" title="Junk" aria-label="Mark as junk">
+          <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="junkIcon" />
         </button>
         <button class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
           <Trash2 :size="18" :stroke-width="1.65" />
