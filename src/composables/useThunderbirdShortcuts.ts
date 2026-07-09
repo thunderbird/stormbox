@@ -119,8 +119,15 @@ export function useThunderbirdShortcuts({
   const composeStore = useComposeStore();
 
   async function onKeyDown(event: KeyboardEvent) {
-    if (!enabled.value || space.value !== 'mail') return;
-    if (composeStore.isOpen) return;
+    if (!enabled.value) return;
+    if (composeStore.isOpen) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        composeStore.close();
+      }
+      return;
+    }
+    if (space.value !== 'mail') return;
 
     if (matchesShortcut(event, { key: 'k', mod: true })) {
       event.preventDefault();
