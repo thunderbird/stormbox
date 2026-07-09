@@ -18,7 +18,7 @@ const QUICK_FILTER_EXERCISE_TEXT = 'Thundermail is awesome';
 export class StormboxPage {
   readonly page: Page;
   readonly shell: Locator;
-  readonly signInWithThunderbird: Locator;
+  readonly signInButton: Locator;
   readonly thundermailMenu: Locator;
   readonly thundermailMenuButton: Locator;
   readonly appointmentMenuItem: Locator;
@@ -59,7 +59,7 @@ export class StormboxPage {
   constructor(page: Page) {
     this.page = page;
     this.shell = page.locator('.shell');
-    this.signInWithThunderbird = page.getByRole('button', { name: /sign in with thunderbird/i });
+    this.signInButton = page.locator('.login-card__signin');
     this.thundermailMenu = page.locator('.app-menu');
     this.thundermailMenuButton = page.locator('.app-menu__button[aria-label="Open Thundermail menu"]');
     this.appointmentMenuItem = page.locator('.app-menu__popover').getByRole('menuitem', { name: /^appointment$/i });
@@ -137,8 +137,8 @@ export class StormboxPage {
       return;
     }
 
-    await expect(this.signInWithThunderbird).toBeEnabled({ timeout: TIMEOUT_30_SECONDS });
-    await this.signInWithThunderbird.click({
+    await expect(this.signInButton).toBeEnabled({ timeout: TIMEOUT_30_SECONDS });
+    await this.signInButton.click({
       force: projectName.toLowerCase().includes('android'),
     });
     await this.signInToThunderbirdAccount(projectName);
@@ -395,7 +395,15 @@ export class StormboxPage {
   }
 
   private async currentTheme() {
-    const theme = await this.page.evaluate(() => document.documentElement.dataset.theme);
+    const theme = await this.page.evaluate(() => {
+      const root = document.documentElement;
+      if (root.classList.contains('dark')) return 'dark';
+      if (root.classList.contains('light')) return 'light';
+      if (root.style.colorScheme === 'dark' || root.style.colorScheme === 'light') {
+        return root.style.colorScheme;
+      }
+      return null;
+    });
     expect(theme, 'Stormbox theme should be set before checking the theme toggle').toMatch(/^(dark|light)$/);
     return theme as 'dark' | 'light';
   }
@@ -442,7 +450,7 @@ export class StormboxPage {
   private async isLoginGateOrAppUiVisible(timeout: number) {
     try {
       await Promise.race([
-        this.signInWithThunderbird.waitFor({ state: 'visible', timeout }),
+        this.signInButton.waitFor({ state: 'visible', timeout }),
         this.thundermailMenu.waitFor({ state: 'visible', timeout }),
       ]);
       return true;
