@@ -58,18 +58,38 @@ async function adminToken() {
   return (await res.json()).access_token;
 }
 
+// Lifetime of a "Keep me signed in" (remember-me) SSO session, in
+// seconds. Keycloak only honours the login-form checkbox when the
+// realm's remember-me idle/max lifespans are set; when they are 0 it
+// falls back to the standard SSO timeouts (30-minute idle, 10-hour
+// max), which also caps refresh tokens, so the checkbox has no
+// visible effect and every return visit lands back on the login form
+// (#62). Hosted realms need these same two values for webmail
+// sessions to survive browser restarts.
+export const REMEMBER_ME_SESSION_LIFETIME_SECONDS = 90 * 24 * 60 * 60;
+
+export function withRememberMeSessionLifetimes(realm) {
+  return {
+    ...realm,
+    rememberMe: true,
+    ssoSessionIdleTimeoutRememberMe: REMEMBER_ME_SESSION_LIFETIME_SECONDS,
+    ssoSessionMaxLifespanRememberMe: REMEMBER_ME_SESSION_LIFETIME_SECONDS,
+  };
+}
+
 async function configureRealm(token) {
   const realm = await request(`${KEYCLOAK_BASE}/admin/realms/${REALM}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  realm.attributes = {
-    ...(realm.attributes ?? {}),
+  const updated = withRememberMeSessionLifetimes(realm);
+  updated.attributes = {
+    ...(updated.attributes ?? {}),
     frontendUrl: PUBLIC_ORIGIN,
   };
   await request(`${KEYCLOAK_BASE}/admin/realms/${REALM}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify(realm),
+    body: JSON.stringify(updated),
   });
 }
 
