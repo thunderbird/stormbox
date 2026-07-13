@@ -1,0 +1,61 @@
+name: e2e-nightly-common
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        required: true
+        type: string
+      browserstack_build_name:
+        required: true
+        type: string
+      test_step_name:
+        required: true
+        type: string
+      npm_script:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  browserstack-e2e:
+    name: ${{ inputs.job_name }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      deployment: false
+    env:
+      ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
+      ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
+      PRIMARY_THUNDERMAIL_EMAIL: ${{ secrets.E2E_PRIMARY_THUNDERMAIL_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'tests/browserstack/package-lock.json'
+
+      - name: Install dependencies
+        run: |
+          cd ./tests/browserstack
+          npm install
+
+      - name: BrowserStack Env Setup
+        uses: browserstack/github-actions/setup-env@v1.0.4
+        with:
+          username: ${{ secrets.BROWSERSTACK_USERNAME }}
+          access-key: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          project-name: 'Stormbox'
+          build-name: ${{ inputs.browserstack_build_name }}
+
+      - name: ${{ inputs.test_step_name }}
+        # Don't send GHA failure email if any of the E2E tests fail; BrowserStack runs are checked there.
+        continue-on-error: true
+        run: |
+          cd ./tests/browserstack
+          cp .env.browserstack.prod.example .env.browserstack
+          npm run ${{ inputs.npm_script }}
