@@ -313,7 +313,12 @@ async function removeContact(contact: ContactListRow) {
 .contacts {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  /* Without a constrained row, the rail and main column grow to their
+     content and the shell (overflow: hidden) clips everything below
+     the first viewport — the list becomes unscrollable. */
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   background: var(--surface, #fff);
 }
 
@@ -376,6 +381,7 @@ async function removeContact(contact: ContactListRow) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 .contacts__header {
   display: flex;
@@ -513,7 +519,7 @@ async function removeContact(contact: ContactListRow) {
   gap: 8px;
   flex-shrink: 0;
 }
-.contacts__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+.contacts__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .contacts__row {
   display: grid;
   grid-template-columns: 1.6fr 2fr 1fr auto;
