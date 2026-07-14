@@ -120,6 +120,90 @@ describe('syncContacts', () => {
     expect(Number(rows[0].is_preferred)).toBe(1);
   });
 
+  it('pages through the query until every contact is fetched', async () => {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+
+    // 7 contacts, page size 3 -> pages of 3 + 3 + 1.
+    const total = 7;
+    const allIds = Array.from({ length: total }, (_, i) => `c-${i}`);
+    const transport = new MockTransport();
+    const positions: number[] = [];
+    transport.handle('ContactCard/query', (params) => {
+      positions.push(params.position);
+      return {
+        ids: allIds.slice(params.position, params.position + params.limit),
+        position: params.position,
+        total,
+        state: 'cc-paged',
+      };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Contact ${id}`,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+    }));
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 3 });
+    expect(result.fetched).toBe(total);
+    expect(result.total).toBe(total);
+    expect(result.state).toBe('cc-paged');
+    expect(positions).toEqual([0, 3, 6]);
+
+    const row = await engine.get(
+      'SELECT COUNT(*) AS n FROM contacts WHERE account_id = ? AND is_deleted = 0',
+      [account.id],
+    );
+    expect(row.n).toBe(total);
+
+    // Each page is one chained query+get round trip, not two requests.
+    expect(transport.requests).toHaveLength(3);
+    for (const req of transport.requests) {
+      expect(req.methodCalls.map(([m]) => m)).toEqual(['ContactCard/query', 'ContactCard/get']);
+    }
+  });
+
+  it('clamps the page size to the session maxObjectsInGet', async () => {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+
+    const transport = new MockTransport({
+      capabilities: { 'urn:ietf:params:jmap:core': { maxObjectsInGet: 2 } },
+    });
+    const limits: number[] = [];
+    const allIds = ['c-0', 'c-1', 'c-2'];
+    transport.handle('ContactCard/query', (params) => {
+      limits.push(params.limit);
+      return {
+        ids: allIds.slice(params.position, params.position + params.limit),
+        position: params.position,
+        total: allIds.length,
+        state: 'cc-clamped',
+      };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Contact ${id}`,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+    }));
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 500 });
+    expect(result.fetched).toBe(3);
+    expect(limits).toEqual([2, 2]);
+  });
+
   it('skips cards whose addressbook is not yet synced locally', async () => {
     const transport = new MockTransport();
     transport.handle('ContactCard/query', () => ({ ids: ['c-1'], total: 1, state: 'cc' }));
@@ -516,6 +600,79 @@ describe('syncContactCardChanges', () => {
       [account.id, 'c-2'],
     );
     expect(Number(destroyed.is_deleted)).toBe(1);
+  });
+
+  it('follows hasMoreChanges across pages and persists each page state', async () => {
+    const transport = new MockTransport();
+    const seenStates: string[] = [];
+    transport.handle('ContactCard/changes', (params) => {
+      seenStates.push(params.sinceState);
+      if (params.sinceState === 'cc-0') {
+        return {
+          oldState: 'cc-0',
+          newState: 'cc-1',
+          hasMoreChanges: true,
+          created: ['c-3'],
+          updated: [],
+          destroyed: [],
+        };
+      }
+      return {
+        oldState: 'cc-1',
+        newState: 'cc-2',
+        hasMoreChanges: false,
+        created: ['c-4'],
+        updated: ['c-1'],
+        destroyed: ['c-2'],
+      };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Person ${id}`,
+        emails: [{ email: `${id}@new.example.com` }],
+      })),
+    }));
+
+    const result = await syncContactCardChanges({
+      transport, account, handlers, sinceState: 'cc-0',
+    });
+    expect(result.needsFullSync).toBe(false);
+    expect(seenStates).toEqual(['cc-0', 'cc-1']);
+    expect(result.newState).toBe('cc-2');
+    expect(result.created).toEqual(['c-3', 'c-4']);
+    expect(result.updated).toEqual(['c-1']);
+    expect(result.destroyed).toEqual(['c-2']);
+
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(stateRow.state).toBe('cc-2');
+
+    const gone = await engine.get(
+      'SELECT is_deleted FROM contacts WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'c-2'],
+    );
+    expect(Number(gone.is_deleted)).toBe(1);
+  });
+
+  it('requests a full sync when the server reports more changes without advancing state', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/changes', () => ({
+      oldState: 'cc-stuck',
+      newState: 'cc-stuck',
+      hasMoreChanges: true,
+      created: [],
+      updated: [],
+      destroyed: [],
+    }));
+    const result = await syncContactCardChanges({
+      transport, account, handlers, sinceState: 'cc-stuck',
+    });
+    expect(result.needsFullSync).toBe(true);
+    expect(countMethod(transport, 'ContactCard/changes')).toBe(1);
   });
 });
 

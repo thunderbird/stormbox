@@ -72,51 +72,106 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
 
 /**
  * Pull every visible contact for the account, paging through
- * ContactCard/query and ContactCard/get. Suitable for the bootstrap
- * scenario; for steady-state use syncContactCardChanges instead.
+ * ContactCard/query and ContactCard/get until the server runs out of
+ * cards. Suitable for the bootstrap scenario; for steady-state use
+ * syncContactCardChanges instead.
  *
- * Defaults to a single page of 500 ids; callers can raise pageSize.
+ * Each page is a single chained round trip (ContactCard/query +
+ * ContactCard/get via an RFC 8620 §3.1.3 back-reference), so network
+ * and SQLite batch shapes match. `pageSize` is clamped against the
+ * server-advertised jmap-core maxObjectsInGet so the chained get never
+ * asks for more objects than the server will return.
  */
 export async function syncContacts({
   transport, account, handlers,
   pageSize = 500,
   useWebSocket = false,
 }) {
-  const queryResult = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/query',
-      {
-        accountId: account.remote_account_id,
-        position: 0,
-        limit: pageSize,
-        calculateTotal: true,
-      },
-      'cq1',
-    ]],
-    useWebSocket,
-  });
-  const query = pickResponse(queryResult, 'ContactCard/query');
-  const ids = query?.ids ?? [];
+  const limit = clampToMaxObjectsInGet(transport, pageSize);
+  let position = 0;
   let fetched = 0;
-  if (ids.length > 0) {
-    fetched = await fetchAndPersistContactCards({
-      transport, account, handlers, ids, useWebSocket,
+  let total = null;
+  let state = null;
+  for (;;) {
+    const result = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [
+        [
+          'ContactCard/query',
+          {
+            accountId: account.remote_account_id,
+            position,
+            limit,
+            calculateTotal: true,
+          },
+          'cq1',
+        ],
+        [
+          'ContactCard/get',
+          {
+            accountId: account.remote_account_id,
+            '#ids': {
+              resultOf: 'cq1',
+              name: 'ContactCard/query',
+              path: '/ids',
+            },
+            properties: CONTACT_PROPERTIES,
+          },
+          'cg1',
+        ],
+      ],
+      useWebSocket,
     });
+    const query = pickResponse(result, 'ContactCard/query');
+    const ids = query?.ids ?? [];
+    if (query?.state) state = query.state;
+    if (Number.isFinite(query?.total)) total = query.total;
+
+    const cards = pickResponse(result, 'ContactCard/get')?.list ?? [];
+    if (cards.length > 0) {
+      await persistContactCards({ account, cards, handlers });
+      fetched += cards.length;
+    }
+
+    // The server may clamp/adjust the requested position (RFC 8620
+    // §5.5); trust its echo when present so we advance from where the
+    // page actually started.
+    const pageStart = Number.isFinite(query?.position) ? Number(query.position) : position;
+    position = pageStart + ids.length;
+    // A short (or empty) page means the query is exhausted. The total
+    // check also stops a server that keeps echoing full pages without
+    // advancing past its own reported count.
+    if (ids.length < limit || (total != null && position >= total)) break;
   }
-  if (query?.state) {
+  if (state) {
     await handlers[DB_RPC.SYNC_STATE_SET]({
       accountId: account.id,
       objectType: 'ContactCard',
-      state: query.state,
+      state,
     });
   }
-  return { fetched, total: query?.total ?? ids.length, state: query?.state ?? null };
+  return { fetched, total: total ?? fetched, state };
 }
 
 /**
- * Apply ContactCard/changes since `sinceState`. Created/updated cards are
- * fetched via ContactCard/get; destroyed ids are soft-deleted locally.
+ * Clamp a requested page size against the jmap-core maxObjectsInGet
+ * capability advertised on the transport's session (RFC 8620 §2), so a
+ * chained query+get never trips a requestTooLarge error. Falls back to
+ * the requested size when the session or capability is unavailable.
+ */
+function clampToMaxObjectsInGet(transport, pageSize: number): number {
+  const raw = Number(transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInGet);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(pageSize, raw) : pageSize;
+}
+
+/**
+ * Apply ContactCard/changes since `sinceState`, following
+ * `hasMoreChanges` pages until the server reports the delta is
+ * complete. Created/updated cards are fetched via ContactCard/get;
+ * destroyed ids are soft-deleted locally. Each page's changes are
+ * applied and its `newState` persisted before the next page is
+ * requested, so an interruption resumes from the last applied page
+ * rather than replaying the whole delta.
  */
 export async function syncContactCardChanges({
   transport, account, handlers,
@@ -124,42 +179,58 @@ export async function syncContactCardChanges({
   maxChanges = 500,
   useWebSocket = false,
 }) {
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/changes',
-      { accountId: account.remote_account_id, sinceState, maxChanges },
-      'cc1',
-    ]],
-    useWebSocket,
-  });
-  const change = pickResponse(result, 'ContactCard/changes');
-  if (!change || !change.newState) {
-    return { needsFullSync: true };
-  }
-  const ids = [...(change.created ?? []), ...(change.updated ?? [])];
-  if (ids.length > 0) {
-    await fetchAndPersistContactCards({ transport, account, handlers, ids, useWebSocket });
-  }
-  if (change.destroyed?.length) {
-    const placeholders = change.destroyed.map(() => '?').join(',');
-    await handlers[DB_RPC.QUERY]({
-      sql: `UPDATE contacts SET is_deleted = 1, updated_at = ?
-              WHERE account_id = ? AND remote_id IN (${placeholders})`,
-      params: [Date.now(), account.id, ...change.destroyed],
+  let state = sinceState;
+  const created = [];
+  const updated = [];
+  const destroyed = [];
+  for (;;) {
+    const result = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/changes',
+        { accountId: account.remote_account_id, sinceState: state, maxChanges },
+        'cc1',
+      ]],
+      useWebSocket,
     });
+    const change = pickResponse(result, 'ContactCard/changes');
+    if (!change || !change.newState) {
+      return { needsFullSync: true };
+    }
+    const ids = [...(change.created ?? []), ...(change.updated ?? [])];
+    if (ids.length > 0) {
+      await fetchAndPersistContactCards({ transport, account, handlers, ids, useWebSocket });
+    }
+    if (change.destroyed?.length) {
+      const placeholders = change.destroyed.map(() => '?').join(',');
+      await handlers[DB_RPC.QUERY]({
+        sql: `UPDATE contacts SET is_deleted = 1, updated_at = ?
+                WHERE account_id = ? AND remote_id IN (${placeholders})`,
+        params: [Date.now(), account.id, ...change.destroyed],
+      });
+    }
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+      state: change.newState,
+    });
+    created.push(...(change.created ?? []));
+    updated.push(...(change.updated ?? []));
+    destroyed.push(...(change.destroyed ?? []));
+    // A server that reports more changes without advancing its state
+    // would loop forever; treat that as a broken delta and rebuild.
+    if (change.hasMoreChanges && change.newState === state) {
+      return { needsFullSync: true };
+    }
+    state = change.newState;
+    if (!change.hasMoreChanges) break;
   }
-  await handlers[DB_RPC.SYNC_STATE_SET]({
-    accountId: account.id,
-    objectType: 'ContactCard',
-    state: change.newState,
-  });
   return {
     needsFullSync: false,
-    created: change.created ?? [],
-    updated: change.updated ?? [],
-    destroyed: change.destroyed ?? [],
-    newState: change.newState,
+    created,
+    updated,
+    destroyed,
+    newState: state,
   };
 }
 

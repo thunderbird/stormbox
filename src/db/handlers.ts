@@ -2082,8 +2082,10 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * List contacts joined with their preferred (or first) email,
      * suitable for the contact-book view. Returns a flat row shape so
      * the caller does not have to JOIN `contact_emails` itself.
+     * Unbounded by default so the contact book shows the whole account;
+     * callers that want a window pass an explicit `limit`.
      */
-    [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = 500 }) =>
+    [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = null }) =>
       engine.all(
         `SELECT c.id,
                 c.remote_id,
@@ -2098,7 +2100,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           WHERE c.account_id = ? AND c.is_deleted = 0
           ORDER BY c.display_name COLLATE NOCASE
           LIMIT ?`,
-        [accountId, limit],
+        [accountId, Number.isFinite(limit) && limit > 0 ? limit : -1],
       ),
 
     /**
