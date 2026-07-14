@@ -1,0 +1,25 @@
+name: e2e-desktop-nightly-safari
+
+concurrency:
+  group: e2e-desktop-nightly-safari
+  cancel-in-progress: true
+
+on:
+  schedule:
+    # run every day at 5:30am UTC
+    - cron:  '30 5 * * *'
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read    # This is required for actions/checkout
+
+jobs:
+  desktop-nightly-safari:
+    uses: ./.github/workflows/e2e-nightly-common.yml
+    with:
+      job_name: prod-desktop-nightly-safari
+      browserstack_build_name: 'Nightly Webmail E2E Tests (Desktop Safari): BUILD_INFO'
+      test_step_name: Prod E2E Tests on Desktop Safari
+      npm_script: e2e:browserstack:desktop:safari
+    secrets: inherit

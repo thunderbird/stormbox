@@ -1,0 +1,25 @@
+name: e2e-mobile-nightly-android
+
+concurrency:
+  group: e2e-mobile-nightly-android
+  cancel-in-progress: true
+
+on:
+  schedule:
+    # run every day at 5:45am UTC
+    - cron:  '45 5 * * *'
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read    # This is required for actions/checkout
+
+jobs:
+  mobile-nightly-android:
+    uses: ./.github/workflows/e2e-nightly-common.yml
+    with:
+      job_name: prod-mobile-nightly-android
+      browserstack_build_name: 'Nightly Webmail E2E Tests (Android Chrome): BUILD_INFO'
+      test_step_name: Prod E2E Tests on Android Chrome
+      npm_script: e2e:browserstack:mobile:android:chrome
+    secrets: inherit

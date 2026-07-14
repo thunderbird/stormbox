@@ -1,0 +1,113 @@
+import { defineConfig, devices } from '@playwright/test';
+
+/**
+ * Read environment variables from file.
+ * https://github.com/motdotla/dotenv
+ */
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '.env.browserstack') });
+
+const ciFirefoxLaunchOptions = process.env.CI ? {
+  firefoxUserPrefs: {
+    'network.dns.disableIPv6': true,
+    'network.dns.native-is-localhost': true,
+  },
+} : undefined;
+
+/**
+ * See https://playwright.dev/docs/test-configuration.
+ */
+export default defineConfig({
+  testDir: './tests',
+  /* Run tests in files in parallel */
+  fullyParallel: true,
+  /* Fail the build on CI if you accidentally left test.only in the source code. */
+  forbidOnly: !!process.env.CI,
+  /* Retry on CI only */
+  retries: process.env.CI ? 1 : 0,
+  /* Opt out of parallel tests on CI. */
+  workers: process.env.CI ? 1 : 1, // actualy don't run in parallel locally either, for now
+  // Global timeout: Playwright will timeout if the entire session (includes all test runs) exceeds this.
+  // Must take into account running on mulitple browsers (and BrowserStack is much slower too!). Odds are the
+  // tests will time out at the locator/test level first anyway; but there is no default so best to specify
+  globalTimeout: 10 * 60 * 1000,
+  // Individual test timeout - a single test will time out if it is still running after this time (ms)
+  timeout: 150 * 1000, // 2.5 minutes
+  /* Reporter to use. See https://playwright.dev/docs/test-reporters */
+  reporter: [['html']],
+  /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
+  use: {
+    /* Base URL to use in actions like `await page.goto('/')`. */
+    // baseURL: 'http://127.0.0.1:3000',
+    trace: 'off', // traces can contain sensitive info so only do this manually locally if need be
+    screenshot: 'only-on-failure',
+    // Maximum time (ms) each action such as `click()` can take. Defaults to 0 (no limit)
+    actionTimeout: 10_000,
+    // Maximum time given for browser page navigation
+    navigationTimeout: 30_000,
+  },
+  expect: {
+    // set default timeout for all expects that have a {timeout} option i.e. if locators are not found,
+    // timeout after 10 seconds instead of waiting for the entire test timeout set above
+    timeout: 10_000,
+  },
+
+  /* Configure projects for major browsers */
+  projects: [
+    // Setup browsers - signs into TB Accounts once for all the tests and saves auth
+    { name: 'desktop-setup',
+      testMatch: /auth\.desktop\.ts/,
+      use: {
+        ...devices['Desktop Firefox'],
+        launchOptions: ciFirefoxLaunchOptions,
+        screenshot: 'only-on-failure',
+       },
+    },
+
+    // Main tests; each browser runs the setup above and saves auth state which is loaded for each test in the suite
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        screenshot: 'only-on-failure',
+        // Use prepared auth state
+        storageState: 'test-results/.auth/user.json',
+       },
+      dependencies: ['desktop-setup'],
+    },
+
+    {
+      name: 'firefox',
+      use: {
+        ...devices['Desktop Firefox'],
+        launchOptions: ciFirefoxLaunchOptions,
+        screenshot: 'only-on-failure',
+        // Use prepared auth state
+        storageState: 'test-results/.auth/user.json',
+       },
+      dependencies: ['desktop-setup'],
+    },
+
+    {
+      name: 'safari',
+      use: {
+        ...devices['Desktop Safari'],
+        screenshot: 'only-on-failure',
+        // Use prepared auth state
+        storageState: 'test-results/.auth/user.json',
+      },
+      dependencies: ['desktop-setup'],
+    },
+  
+      /* Test against mobile viewports. */
+    {
+      name: 'Google-Pixel-7-View',
+      use: {
+        ...devices['Pixel 7'],
+        screenshot: 'only-on-failure',
+       },
+    },
+    // no dependency as mobile browsers don't support loading auth state so must sign-in for each test
+  ],
+});
