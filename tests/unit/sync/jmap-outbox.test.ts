@@ -694,3 +694,105 @@ describe('drainOutbox', () => {
     expect(JSON.parse(row.error_json).type).toBe('unknownIdentity');
   });
 });
+
+describe('setMailboxSubscription', () => {
+  it('issues Mailbox/set against the folder-owning account and mirrors the flag locally', async () => {
+    // The folder belongs to a shared account (RFC 9670), so the JMAP
+    // accountId must come from that account's row, not the mutation's.
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'other@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'mb-team', name: 'Team', isSubscribed: false }],
+    });
+    const folder = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [shared.id, 'mb-team'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: folder.id, isSubscribed: true }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { updated: { 'mb-team': null }, newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.accountId).toBe('acct-shared');
+    expect(setParams.update).toEqual({ 'mb-team': { isSubscribed: true } });
+
+    const after = await engine.get(
+      'SELECT is_subscribed FROM folders WHERE id = ?',
+      [folder.id],
+    );
+    expect(Number(after.is_subscribed)).toBe(1);
+  });
+
+  it('marks the row failed and leaves the local flag unchanged on notUpdated', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-locked', name: 'Locked', isSubscribed: true }],
+    });
+    const folder = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-locked'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: folder.id, isSubscribed: false }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({
+      notUpdated: {
+        'mb-locked': { type: 'forbidden', description: 'You are not allowed to modify this mailbox.' },
+      },
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('notUpdated');
+
+    const after = await engine.get(
+      'SELECT is_subscribed FROM folders WHERE id = ?',
+      [folder.id],
+    );
+    expect(Number(after.is_subscribed)).toBe(1);
+  });
+
+  it('fails with unknownFolder when the folder id does not resolve', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: 999999, isSubscribed: true }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => {
+      throw new Error('Mailbox/set must not be called for an unknown folder');
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+  });
+});

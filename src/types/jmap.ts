@@ -49,6 +49,7 @@ export interface JmapMailbox {
   totalThreads?: number;
   unreadThreads?: number;
   myRights?: Record<string, boolean>;
+  isSubscribed?: boolean;
 }
 
 // ---------------------------------------------------------------------

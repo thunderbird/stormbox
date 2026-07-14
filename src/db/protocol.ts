@@ -72,6 +72,7 @@ export const DB_RPC = Object.freeze({
   OUTBOX_APPLY_MOVE_BATCH: 'outbox.applyMoveBatch',
   OUTBOX_APPLY_DESTROY: 'outbox.applyDestroy',
   OUTBOX_APPLY_DESTROY_BATCH: 'outbox.applyDestroyBatch',
+  OUTBOX_APPLY_FOLDER_SUBSCRIPTION: 'outbox.applyFolderSubscription',
 
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',

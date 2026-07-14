@@ -65,6 +65,7 @@ export const MUTATION_TYPES = Object.freeze({
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
 });
 
 /**
@@ -120,11 +121,11 @@ export async function drainOutbox({
  */
 export async function processMutationRow({
   transport, account, handlers, row, useWebSocket = false,
-}) {
+}): Promise<{ ok: boolean; error?: any; response?: any }> {
   const request = JSON.parse(row.request_json);
   switch (row.mutation_type) {
     case MUTATION_TYPES.SET_KEYWORDS:
-      return runSetKeywords({ transport, account, handlers, row, request, useWebSocket });
+      return runSetKeywords({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.MOVE_TO_FOLDERS:
       return runMoveToFolders({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DESTROY:
@@ -139,22 +140,77 @@ export async function processMutationRow({
       return runUpdateContact({ transport, account, handlers, request, useWebSocket });
     case MUTATION_TYPES.DELETE_CONTACT:
       return runDeleteContact({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
+      return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
+}
+
+/**
+ * Toggle a Mailbox's per-user isSubscribed flag (RFC 8621 §2). request
+ * shape: { folderId: <local folders.id>, isSubscribed: boolean }.
+ *
+ * The folder may belong to a shared account (RFC 9670), so the JMAP
+ * accountId is resolved from the folder's own accounts row rather
+ * than the mutation row's account. Note Stalwart requires the Modify
+ * ACL to change any property of a shared mailbox, including
+ * isSubscribed; a "forbidden" SetError surfaces as a terminal
+ * notUpdated error the store can show to the user.
+ */
+async function runSetMailboxSubscription({ transport, handlers, request, useWebSocket }) {
+  const folderId = Number(request?.folderId);
+  if (!Number.isFinite(folderId)) {
+    return { ok: false, error: { type: 'unknownFolder' } };
+  }
+  const isSubscribed = request?.isSubscribed === true;
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT f.id, f.remote_id, a.remote_account_id
+            FROM folders f
+            JOIN accounts a ON a.id = f.account_id
+           WHERE f.id = ?`,
+    params: [folderId],
+  });
+  const folder = rows[0];
+  if (!folder?.remote_id || !folder.remote_account_id) {
+    return { ok: false, error: { type: 'unknownFolder' } };
+  }
+  const raw = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [['Mailbox/set', {
+      accountId: folder.remote_account_id,
+      update: { [folder.remote_id]: { isSubscribed } },
+    }, 's1']],
+    useWebSocket,
+  });
+  const response = pickResponse(raw, 'Mailbox/set');
+  if (!response) {
+    return { ok: false, error: extractMethodError(raw) };
+  }
+  const notUpdated = response.notUpdated?.[folder.remote_id];
+  if (notUpdated) {
+    return { ok: false, error: { type: 'notUpdated', detail: notUpdated } };
+  }
+  // Mirror the confirmed flag locally before resolving (constitution:
+  // cache must match server before the mutation RPC returns).
+  await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTION]({ folderId, isSubscribed });
+  return { ok: true, response: raw };
 }
 
 async function runOne(args) {
   return processMutationRow(args);
 }
 
-async function runSetKeywords({ transport, account, handlers, row, request, useWebSocket }) {
+async function runSetKeywords({ transport, handlers, row, request, useWebSocket }) {
   const messageIds = collectMessageIds(row, request);
   if (messageIds.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
-  if (resolved.length === 0) {
+  // Keyword flips (e.g. $seen on open) can target messages living in a
+  // shared account's folders, so resolve each message's own account and
+  // issue one Email/set per remote account.
+  const resolvedByAccount = await resolveRemoteMessageIdsByAccount(handlers, messageIds);
+  if (resolvedByAccount.size === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   const update = {};
@@ -164,12 +220,16 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
   for (const k of request.remove ?? []) {
     update[`keywords/${k}`] = null;
   }
-  return submitEmailSet({
-    transport,
-    account,
-    useWebSocket,
-    update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
-  });
+  for (const [remoteAccountId, resolved] of resolvedByAccount) {
+    const result = await submitEmailSet({
+      transport,
+      account: { remote_account_id: remoteAccountId },
+      useWebSocket,
+      update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
+    });
+    if (!result.ok) return result;
+  }
+  return { ok: true };
 }
 
 /**
@@ -879,6 +939,31 @@ async function submitEmailSet({ transport, account, useWebSocket, update, destro
  * destroyed the row before the outbox got to it). Returns
  * [{ localId, remoteId }, ...] in no guaranteed order.
  */
+/**
+ * Account-aware variant of resolveRemoteMessageIds. Groups local
+ * message ids by the JMAP remote account id that owns them so callers
+ * can issue one set call per account. Returns
+ * Map<remoteAccountId, [{ localId, remoteId }]>.
+ */
+async function resolveRemoteMessageIdsByAccount(handlers, messageIds) {
+  const out = new Map();
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return out;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT m.id, m.remote_id, a.remote_account_id
+            FROM messages m
+            JOIN accounts a ON a.id = m.account_id
+           WHERE m.id IN (${placeholders})`,
+    params: messageIds,
+  });
+  for (const row of rows) {
+    if (row.remote_id == null || row.remote_account_id == null) continue;
+    if (!out.has(row.remote_account_id)) out.set(row.remote_account_id, []);
+    out.get(row.remote_account_id).push({ localId: Number(row.id), remoteId: row.remote_id });
+  }
+  return out;
+}
+
 async function resolveRemoteMessageIds(handlers, account, messageIds) {
   if (!Array.isArray(messageIds) || messageIds.length === 0) return [];
   const placeholders = messageIds.map(() => '?').join(',');

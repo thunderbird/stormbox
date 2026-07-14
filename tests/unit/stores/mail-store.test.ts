@@ -113,6 +113,12 @@ function makeRepo(): any {
       return () => listeners.delete(listener);
     },
 
+    async listAccounts() {
+      // Single primary account matching authStore.accountId = 1 in
+      // attachStore; multi-account tests override this stub.
+      return [{ id: 1, is_primary: 1, is_personal: 1, server_origin: 'https://mail.example.com' }];
+    },
+
     async listFolders() {
       return folders;
     },
@@ -1913,5 +1919,112 @@ describe('refreshLoadedPages after a remote shrink', () => {
 
     expect(mailStore.totalForFolder).toBe(2);
     expect(mailStore.messages.map((m) => m.id)).toEqual([99, 1]);
+  });
+});
+
+describe('shared accounts and folder subscriptions', () => {
+  function makeSharedRepo(repo) {
+    repo.listAccounts = async () => [
+      { id: 1, is_primary: 1, is_personal: 1, display_name: 'me@example.org', server_origin: 'https://mail.example.com' },
+      { id: 2, is_primary: 0, is_personal: 0, display_name: 'other@example.org', server_origin: 'https://mail.example.com' },
+    ];
+    const primaryFolders = [makeFolder(1, { role: 'inbox', name: 'Inbox' })];
+    const sharedFolders = [
+      makeFolder(30, { account_id: 2, name: 'Team', is_subscribed: 1 }),
+      makeFolder(31, { account_id: 2, name: 'Private', is_subscribed: 0 }),
+    ];
+    repo.listFolders = async (accountId) =>
+      (Number(accountId) === 2 ? sharedFolders : primaryFolders);
+  }
+
+  it('loads shared accounts and their folders alongside the primary account', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    expect(mailStore.accounts.map((a) => a.id)).toEqual([1, 2]);
+    expect(mailStore.sharedAccounts.map((a) => a.id)).toEqual([2]);
+    expect(mailStore.primaryFolders.map((f) => f.name)).toEqual(['Inbox']);
+    expect(mailStore.folders.map((f) => f.name)).toEqual(['Inbox', 'Team', 'Private']);
+  });
+
+  it('groups only subscribed shared folders into sharedFolderGroups', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    expect(mailStore.sharedFolderGroups).toHaveLength(1);
+    const group = mailStore.sharedFolderGroups[0];
+    expect(group.account.id).toBe(2);
+    expect(group.folders.map((f) => f.name)).toEqual(['Team']);
+  });
+
+  it('setFolderSubscription enqueues the mutation and runs it immediately', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 7 };
+    };
+    let ranMutationId;
+    repo.runMutation = async (_accountId, mutationId) => {
+      ranMutationId = mutationId;
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    const ok = await mailStore.setFolderSubscription(31, true);
+    expect(ok).toBe(true);
+    expect(inserted.mutationType).toBe('setMailboxSubscription');
+    expect(JSON.parse(inserted.requestJson)).toEqual({ folderId: 31, isSubscribed: true });
+    expect(ranMutationId).toBe(7);
+    expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
+  });
+
+  it('setFolderSubscription reports failure and surfaces the store error', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    repo.runMutation = async () => ({ attempted: 1, succeeded: 0, failed: 1 });
+    repo.getPendingMutationError = async () => ({
+      type: 'notUpdated',
+      detail: { type: 'forbidden', description: 'You are not allowed to modify this mailbox.' },
+    });
+
+    const ok = await mailStore.setFolderSubscription(31, true);
+    expect(ok).toBe(false);
+    expect(mailStore.error).toBeTruthy();
+    expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
+  });
+
+  it('rejects a second toggle while one is already in flight for the folder', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    let release;
+    repo.runMutation = () => new Promise((resolve) => {
+      release = () => resolve({ attempted: 1, succeeded: 1, failed: 0 });
+    });
+
+    const first = mailStore.setFolderSubscription(31, true);
+    await flush(1);
+    expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(true);
+    // The dialog disables the checkbox while pending; the store also
+    // refuses a concurrent toggle so two rapid clicks cannot race.
+    const second = await mailStore.setFolderSubscription(31, false);
+    expect(second).toBe(false);
+
+    release();
+    expect(await first).toBe(true);
+    expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
   });
 });

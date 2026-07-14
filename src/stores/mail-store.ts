@@ -29,7 +29,7 @@ import { parseOneAddress } from '../utils/address-list';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
-import type { FolderRow, MessageRow, QueryViewProgress } from '../types';
+import type { AccountRow, FolderRow, MessageRow, QueryViewProgress } from '../types';
 import type { Repository } from '../db/repository';
 import type { CachedRow, FolderCache } from './mail-store-types';
 
@@ -201,9 +201,50 @@ export const useMailStore = defineStore('mail', () => {
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
   );
 
-  const inbox = computed(
-    () => folders.value.find((f) => f.role === 'inbox') ?? null,
+  // Accounts visible in this session: the signed-in (primary) account
+  // plus any shared accounts (RFC 9670) the server advertised. Loaded
+  // alongside folders so the sidebar can group shared folders by owner.
+  const accounts = ref<AccountRow[]>([]);
+
+  const sharedAccounts = computed(
+    () => accounts.value.filter((a) => a.id !== authStore.accountId),
   );
+
+  // Folders belonging to the signed-in account. Role-based lookups and
+  // the main sidebar tree must not match folders from shared accounts.
+  const primaryFolders = computed(
+    () => folders.value.filter((f) => f.account_id === authStore.accountId),
+  );
+
+  /**
+   * Shared folders grouped per owning account for the sidebar. Only
+   * subscribed folders are listed (RFC 8621 §2: clients may display
+   * just the subscribed subset of shared mailboxes and offer a
+   * separate UI to manage the full set — that UI is the folder
+   * subscriptions dialog, which reads `folders` unfiltered).
+   */
+  const sharedFolderGroups = computed(() => sharedAccounts.value
+    .map((account) => ({
+      account,
+      folders: folders.value.filter(
+        (f) => f.account_id === account.id && Number(f.is_subscribed) === 1,
+      ),
+    }))
+    .filter((group) => group.folders.length > 0));
+
+  const inbox = computed(
+    () => primaryFolders.value.find((f) => f.role === 'inbox') ?? null,
+  );
+
+  /**
+   * Account that owns a folder, for repository calls that scope query
+   * views by account. Folders from shared accounts carry that
+   * account's local id; fall back to the signed-in account.
+   */
+  function accountIdForFolder(folderId: number | null | undefined): number | null {
+    const folder = folders.value.find((f) => Number(f.id) === Number(folderId));
+    return folder?.account_id ?? authStore.accountId ?? null;
+  }
 
   /**
    * Drop every piece of session-scoped state. Safe to call without a
@@ -213,6 +254,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   function $reset() {
     folders.value = [];
+    accounts.value = [];
     messages.value = [];
     currentFolderId.value = null;
     totalForFolder.value = 0;
@@ -309,10 +351,24 @@ export const useMailStore = defineStore('mail', () => {
   async function refreshFolders() {
     if (!repo || authStore.accountId == null) {
       folders.value = [];
+      accounts.value = [];
       return;
     }
     try {
-      folders.value = await repo.listFolders(authStore.accountId);
+      // Load the primary account's folders plus any shared accounts'
+      // folders. Accounts are ordered primary-first by the handler, so
+      // the concatenated folder list keeps the user's own folders at
+      // the top.
+      const allAccounts: AccountRow[] = await repo.listAccounts();
+      const primary = allAccounts.find((a) => a.id === authStore.accountId) ?? null;
+      const visibleAccounts = primary
+        ? allAccounts.filter((a) => a.id === primary.id || a.server_origin === primary.server_origin)
+        : allAccounts;
+      const folderLists = await Promise.all(
+        visibleAccounts.map((a) => repo!.listFolders(a.id)),
+      );
+      accounts.value = visibleAccounts;
+      folders.value = folderLists.flat();
       await refreshFolderProgress();
     } catch (err) {
       error.value = err?.message ?? String(err);
@@ -371,7 +427,7 @@ export const useMailStore = defineStore('mail', () => {
         return;
       }
       const progress = await repo.queryViewProgress({
-        accountId: authStore.accountId,
+        accountId: folder.account_id ?? authStore.accountId,
         folderId: folder.id,
         sort: _sortPropFor(folder),
       });
@@ -518,7 +574,7 @@ export const useMailStore = defineStore('mail', () => {
     state.driftCheckInflight = (async () => {
       try {
         const consistency = await repo.checkFolderViewConsistency({
-          accountId: authStore.accountId,
+          accountId: accountIdForFolder(state.folderId),
           folderId: state.folderId,
           sort: state.sortProp,
         });
@@ -551,7 +607,7 @@ export const useMailStore = defineStore('mail', () => {
           membershipUnread,
         });
         try {
-          await repo.resetViewForFolder(authStore.accountId, state.folderId);
+          await repo.resetViewForFolder(accountIdForFolder(state.folderId), state.folderId);
         } catch (err) {
           console.warn('[mail-store] resetViewForFolder during drift repair failed', err);
         }
@@ -652,7 +708,7 @@ export const useMailStore = defineStore('mail', () => {
     // have changed.
     if (!state.needsFreshWindow) {
       const cached = await repo.listMessagesForView({
-        accountId: authStore.accountId,
+        accountId: accountIdForFolder(state.folderId),
         folderId: state.folderId,
         sort: state.sortProp,
         offset,
@@ -680,7 +736,7 @@ export const useMailStore = defineStore('mail', () => {
     // positionally. ensureFolderWindow writes both query_view_items
     // and messages, so the second read is the one that produces UI
     // rows.
-    const result = await repo.ensureFolderWindow(authStore.accountId, state.folderId, {
+    const result = await repo.ensureFolderWindow(accountIdForFolder(state.folderId), state.folderId, {
       offset,
       limit,
     });
@@ -692,7 +748,7 @@ export const useMailStore = defineStore('mail', () => {
       totalForFolder.value = state.total;
     }
     const rows = await repo.listMessagesForView({
-      accountId: authStore.accountId,
+      accountId: accountIdForFolder(state.folderId),
       folderId: state.folderId,
       sort: state.sortProp,
       offset,
@@ -818,7 +874,7 @@ export const useMailStore = defineStore('mail', () => {
 
     try {
       const progress = await repo.queryViewProgress({
-        accountId: authStore.accountId,
+        accountId: accountIdForFolder(state.folderId),
         folderId: state.folderId,
         sort: state.sortProp,
       });
@@ -843,7 +899,7 @@ export const useMailStore = defineStore('mail', () => {
       const offset = range.start;
       const limit = range.end - range.start;
       const rows = await repo.listMessagesForView({
-        accountId: authStore.accountId,
+        accountId: accountIdForFolder(state.folderId),
         folderId: state.folderId,
         sort: state.sortProp,
         offset,
@@ -974,7 +1030,7 @@ export const useMailStore = defineStore('mail', () => {
     state.expandInflight = (async () => {
       try {
         const rows = await repo.listMessagesForView({
-          accountId: authStore.accountId,
+          accountId: accountIdForFolder(state.folderId),
           folderId: state.folderId,
           sort: state.sortProp,
           offset: 0,
@@ -1020,7 +1076,7 @@ export const useMailStore = defineStore('mail', () => {
       );
       if (limit > 0) {
         const cachedRows = await repo.listMessagesForView({
-          accountId: authStore.accountId,
+          accountId: accountIdForFolder(state.folderId),
           folderId: state.folderId,
           sort: state.sortProp,
           offset: 0,
@@ -1075,7 +1131,7 @@ export const useMailStore = defineStore('mail', () => {
     if (state.needsFreshWindow) return;
     try {
       const progress = await repo.queryViewProgress({
-        accountId: authStore.accountId,
+        accountId: accountIdForFolder(state.folderId),
         folderId: state.folderId,
         sort: state.sortProp,
       });
@@ -1331,7 +1387,7 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   async function archiveMessages(ids: number[]) {
-    const archive = folders.value.find((f) => f.role === 'archive');
+    const archive = primaryFolders.value.find((f) => f.role === 'archive');
     if (!archive?.id) {
       error.value = 'No archive folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
@@ -1351,7 +1407,7 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
-    const junk = folders.value.find((f) => f.role === 'junk');
+    const junk = primaryFolders.value.find((f) => f.role === 'junk');
     if (!junk?.id) {
       error.value = 'No junk folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
@@ -1594,7 +1650,7 @@ export const useMailStore = defineStore('mail', () => {
       clearSelectionFor(ids);
       return;
     }
-    const trashTarget = permanent ? null : folders.value.find((f) => f.role === 'trash') ?? null;
+    const trashTarget = permanent ? null : primaryFolders.value.find((f) => f.role === 'trash') ?? null;
     const overlayLabel = permanent
       ? 'Deleting messages permanently'
       : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
@@ -1998,7 +2054,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   function buildDeleteMutation(messageIds: number | number[]): PendingMutationInsert {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
-    const trash = folders.value.find((f) => f.role === 'trash');
+    const trash = primaryFolders.value.find((f) => f.role === 'trash');
     const current = currentFolder.value;
     const target = ids.length === 1 ? ids[0] : null;
     if (trash && current?.id != null && current.id !== trash.id) {
@@ -2117,7 +2173,7 @@ export const useMailStore = defineStore('mail', () => {
     let anchorResult: any;
     try {
       anchorResult = await repo.ensureFolderWindow(
-        authStore.accountId,
+        accountIdForFolder(state.folderId),
         state.folderId,
         {
           anchor: snapshot.remoteId,
@@ -2189,7 +2245,7 @@ export const useMailStore = defineStore('mail', () => {
     try {
       await repo.ensureFolderTree(authStore.accountId);
 
-      await repo.resetViewForFolder(authStore.accountId, state.folderId);
+      await repo.resetViewForFolder(accountIdForFolder(state.folderId), state.folderId);
       state.rows = [];
       state.paintedRanges = [];
       state.total = 0;
@@ -2201,7 +2257,7 @@ export const useMailStore = defineStore('mail', () => {
       }
 
       const result = await repo.ensureFolderWindow(
-        authStore.accountId,
+        accountIdForFolder(state.folderId),
         state.folderId,
         { offset: 0, limit: PAGE_SIZE },
       );
@@ -2228,8 +2284,64 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
+  // Folder ids with an in-flight subscription mutation. The dialog
+  // disables the toggle while pending: the OutboxRunner serialises
+  // rows by target_message_id only, so two rapid toggles on the same
+  // folder would otherwise race each other on the server.
+  const subscriptionPendingFolderIds = ref<Set<number>>(new Set());
+
+  /**
+   * Toggle a folder's subscription (JMAP Mailbox isSubscribed).
+   * Enqueued through pending_mutations and run immediately; the local
+   * folder row is updated by the outbox's post-success apply, so the
+   * FOLDERS broadcast repaints the sidebar once the server confirmed.
+   * Returns true when the server accepted the change.
+   */
+  async function setFolderSubscription(folderId: number, isSubscribed: boolean): Promise<boolean> {
+    if (!repo || authStore.accountId == null) return false;
+    const id = Number(folderId);
+    if (!Number.isFinite(id) || subscriptionPendingFolderIds.value.has(id)) return false;
+    subscriptionPendingFolderIds.value = new Set([...subscriptionPendingFolderIds.value, id]);
+    try {
+      const mutation = await repo.insertPendingMutation({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
+        targetMessageId: null,
+        requestJson: JSON.stringify({ folderId: id, isSubscribed }),
+      });
+      const result = typeof repo.runMutation === 'function' && mutation?.id != null
+        ? await repo.runMutation(authStore.accountId, mutation.id)
+        : await repo.drainOutbox(authStore.accountId);
+      if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
+        const detail = mutation?.id != null && typeof repo.getPendingMutationError === 'function'
+          ? await repo.getPendingMutationError(mutation.id)
+          : null;
+        error.value = describeMutationFailure(
+          result,
+          detail,
+          isSubscribed ? 'subscribe to' : 'unsubscribe from',
+        ).replace('message', 'folder');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      error.value = err?.message ?? String(err);
+      return false;
+    } finally {
+      const next = new Set(subscriptionPendingFolderIds.value);
+      next.delete(id);
+      subscriptionPendingFolderIds.value = next;
+    }
+  }
+
   return {
     folders,
+    accounts,
+    sharedAccounts,
+    primaryFolders,
+    sharedFolderGroups,
+    subscriptionPendingFolderIds,
+    setFolderSubscription,
     currentFolderId,
     currentFolder,
     inbox,

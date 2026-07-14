@@ -97,7 +97,7 @@ describe('syncMailboxes (full sync)', () => {
     });
     transport.handle('Mailbox/set', (params) => {
       expect(params.update).toEqual({
-        'mb-archives': { role: 'archive' },
+        'mb-archives': { role: 'archive', isSubscribed: true },
       });
       return { updated: { 'mb-archives': null }, newState: 'mb-state-set' };
     });
@@ -131,7 +131,7 @@ describe('syncMailboxes (full sync)', () => {
     });
     transport.handle('Mailbox/set', (params) => {
       expect(params.update).toEqual({
-        'mb-archive': { role: 'archive' },
+        'mb-archive': { role: 'archive', isSubscribed: true },
       });
       return { updated: { 'mb-archive': null }, newState: 'mb-state-set' };
     });
@@ -164,7 +164,7 @@ describe('syncMailboxes (full sync)', () => {
     });
     transport.handle('Mailbox/set', (params) => {
       expect(params.create).toEqual({
-        archive: { name: 'Archives', role: 'archive' },
+        archive: { name: 'Archives', role: 'archive', isSubscribed: true },
       });
       return { created: { archive: { id: 'mb-new-archives' } }, newState: 'mb-state-set' };
     });
@@ -200,6 +200,76 @@ describe('syncMailboxes (full sync)', () => {
       [account.id, archive.id],
     );
     expect(children.map((c) => c.remote_id).sort()).toEqual(['mb-2023', 'mb-2024']);
+  });
+
+  it('persists isSubscribed and preserves it when a later sync omits the property', async () => {
+    const transport = new MockTransport();
+    transport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox', isSubscribed: true },
+        { id: 'mb-archives', name: 'Archives', role: 'archive', isSubscribed: true },
+        { id: 'mb-shared', name: 'Shared', isSubscribed: false },
+      ],
+      state: 'mb-sub-1',
+    }));
+    await syncMailboxes({ transport, account, handlers });
+
+    let rows = await engine.all(
+      'SELECT remote_id, is_subscribed FROM folders WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    expect(rows).toEqual([
+      { remote_id: 'mb-archives', is_subscribed: 1 },
+      { remote_id: 'mb-inbox', is_subscribed: 1 },
+      { remote_id: 'mb-shared', is_subscribed: 0 },
+    ]);
+
+    // A payload without isSubscribed (e.g. from a server that omits the
+    // property) must not clobber the stored flag: the upsert COALESCEs
+    // NULL onto the existing value.
+    transport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+        { id: 'mb-archives', name: 'Archives', role: 'archive' },
+        { id: 'mb-shared', name: 'Shared' },
+      ],
+      state: 'mb-sub-2',
+    }));
+    await syncMailboxes({ transport, account, handlers });
+
+    rows = await engine.all(
+      'SELECT remote_id, is_subscribed FROM folders WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    expect(rows).toEqual([
+      { remote_id: 'mb-archives', is_subscribed: 1 },
+      { remote_id: 'mb-inbox', is_subscribed: 1 },
+      { remote_id: 'mb-shared', is_subscribed: 0 },
+    ]);
+  });
+
+  it('skips archive repair when repairArchive is false (shared accounts)', async () => {
+    const transport = new MockTransport();
+    transport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+        { id: 'mb-docs', name: 'Documents' },
+      ],
+      state: 'mb-noarch',
+    }));
+    let setCalls = 0;
+    transport.handle('Mailbox/set', () => {
+      setCalls += 1;
+      throw new Error('Mailbox/set must not run for shared accounts');
+    });
+
+    const result = await syncMailboxes({
+      transport, account, handlers, repairArchive: false,
+    });
+
+    expect(setCalls).toBe(0);
+    expect(result.count).toBe(2);
+    expect(result.state).toBe('mb-noarch');
   });
 });
 

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { Settings2 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
 import { useMessageDragDrop } from '../composables/useMessageDragDrop';
 import FolderNode from './FolderNode.vue';
+import FolderSubscriptionsDialog from './FolderSubscriptionsDialog.vue';
 import {
   folderPresentation,
   folderSortKey,
@@ -12,6 +14,7 @@ import {
 
 const mailStore = useMailStore();
 const dragOverFolderId = ref(null);
+const showSubscriptionsDialog = ref(false);
 const {
   isDragging,
   hasMessageDrag,
@@ -20,11 +23,19 @@ const {
   endMessageDrag,
 } = useMessageDragDrop();
 
-const tree = computed(() => {
+function buildTree(folderRows) {
   const byParent = new Map();
-  for (const folder of mailStore.folders) {
+  // A folder whose parent is not in the rendered set (e.g. a subscribed
+  // shared folder under an unsubscribed parent) is promoted to a root
+  // so it stays reachable.
+  const visibleIds = new Set(
+    folderRows.filter((f) => Number(f.is_deleted) !== 1).map((f) => f.id),
+  );
+  for (const folder of folderRows) {
     if (Number(folder.is_deleted) === 1) continue;
-    const key = folder.parent_id ?? 'ROOT';
+    const key = folder.parent_id != null && visibleIds.has(folder.parent_id)
+      ? folder.parent_id
+      : 'ROOT';
     if (!byParent.has(key)) byParent.set(key, []);
     byParent.get(key).push(folder);
   }
@@ -53,10 +64,21 @@ const tree = computed(() => {
     };
   }
   return (byParent.get('ROOT') ?? []).map((f) => build(f, 0));
-});
+}
+
+const tree = computed(() => buildTree(mailStore.primaryFolders));
 
 const mainFolders = computed(() => tree.value.filter(isMainFolder));
 const userFolders = computed(() => tree.value.filter((f) => !isMainFolder(f)));
+
+// Shared accounts (folders shared with the user by other principals),
+// one section per owning account. Only subscribed folders show in the
+// sidebar; the subscriptions dialog manages the full set.
+const sharedSections = computed(() => mailStore.sharedFolderGroups.map((group) => ({
+  account: group.account,
+  label: group.account.display_name ?? group.account.primary_email ?? 'Shared',
+  tree: buildTree(group.folders),
+})));
 
 // Track explicitly-expanded folders; everything else defaults to
 // collapsed, so the tree starts fully closed.
@@ -151,7 +173,40 @@ async function onFolderDrop(folder, event) {
       :on-folder-drag-leave="onFolderDragLeave"
       :on-folder-drop="onFolderDrop"
     />
+
+    <template v-for="section in sharedSections" :key="section.account.id">
+      <h3 class="folder-tree__heading folder-tree__heading--shared" :title="section.label">
+        {{ section.label }}
+      </h3>
+      <FolderNode
+        v-for="folder in section.tree"
+        :key="folder.id"
+        :folder="folder"
+        :current-folder-id="mailStore.currentFolderId"
+        :on-pick="pickFolder"
+        :is-collapsed="isFolderCollapsed"
+        :on-toggle="toggleFolderCollapsed"
+        :drop-state="dropStateFor"
+        :on-folder-drag-enter="onFolderDragEnter"
+        :on-folder-drag-over="onFolderDragOver"
+        :on-folder-drag-leave="onFolderDragLeave"
+        :on-folder-drop="onFolderDrop"
+      />
+    </template>
+
+    <button
+      type="button"
+      class="folder-tree__manage"
+      @click="showSubscriptionsDialog = true"
+    >
+      <Settings2 :size="14" :stroke-width="1.75" aria-hidden="true" />
+      <span>Manage folders</span>
+    </button>
   </nav>
+  <FolderSubscriptionsDialog
+    v-if="showSubscriptionsDialog"
+    @close="showSubscriptionsDialog = false"
+  />
 </template>
 
 <style scoped>
@@ -169,5 +224,33 @@ async function onFolderDrop(folder, event) {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+.folder-tree__heading--shared {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+.folder-tree__manage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 4px 6px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.folder-tree__manage:hover,
+.folder-tree__manage:focus-visible {
+  background: var(--rowHover);
+  color: var(--text);
+  outline: none;
 }
 </style>

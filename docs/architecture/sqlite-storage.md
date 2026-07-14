@@ -78,6 +78,7 @@ CREATE TABLE accounts (
   remote_account_id TEXT NOT NULL,      -- JMAP accountId for now; CardDAV principal id, etc., later
   server_kind TEXT,                     -- optional vendor tag, e.g. 'stalwart'
   is_primary INTEGER NOT NULL DEFAULT 0,
+  is_personal INTEGER NOT NULL DEFAULT 1, -- JMAP Account isPersonal: 0 for accounts shared by other principals (RFC 8620 §1.6.2)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   last_opened_at INTEGER,
@@ -142,6 +143,7 @@ CREATE TABLE folders (
   may_remove_items INTEGER,
   rights_json TEXT,
   raw_json TEXT,
+  is_subscribed INTEGER,                -- JMAP Mailbox isSubscribed (RFC 8621 §2); NULL = server never reported it
   is_deleted INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
   UNIQUE(account_id, remote_id),

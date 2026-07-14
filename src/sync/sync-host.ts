@@ -101,6 +101,13 @@ export function makeSyncRpcHandlers({
       if (backend.services.some((s) => s.serviceKind === SERVICE_KIND.JMAP_CONTACTS)) {
         syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_CONTACTS, backend);
       }
+      // Shared accounts ride on the same backend/transport; register
+      // their local ids too so folder-scoped sync RPCs (e.g.
+      // ensureFolderWindow for a shared folder) route to it.
+      for (const shared of backend.sharedAccounts ?? []) {
+        backends.set(shared.id, backend);
+        syncClient.registerBackend(shared.id, SERVICE_KIND.JMAP_MAIL, backend);
+      }
       wlog.info('sync-host', `startAccount complete; accountId=${backend.account.id}, services=${backend.services.map((s) => s.serviceKind).join(',')}`);
       return { accountId: backend.account.id };
     },
@@ -109,8 +116,13 @@ export function makeSyncRpcHandlers({
       const backend = backends.get(accountId);
       if (!backend) return;
       await backend.stop();
-      backends.delete(accountId);
-      syncClient.unregisterAccount(accountId);
+      // Drop every registration pointing at this backend, including
+      // the shared-account aliases added at start.
+      for (const [id, b] of [...backends]) {
+        if (b !== backend) continue;
+        backends.delete(id);
+        syncClient.unregisterAccount(id);
+      }
     },
 
     [DB_RPC.SYNC_ENSURE_FOLDER_TREE]: async ({ accountId }) =>

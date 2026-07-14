@@ -91,13 +91,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const result = await engine.run(
         `INSERT INTO accounts(
             display_name, primary_email, server_origin, remote_account_id,
-            server_kind, is_primary, created_at, updated_at, last_opened_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            server_kind, is_primary, is_personal, created_at, updated_at, last_opened_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(server_origin, remote_account_id) DO UPDATE SET
             display_name = excluded.display_name,
             primary_email = excluded.primary_email,
             server_kind = excluded.server_kind,
             is_primary = excluded.is_primary,
+            is_personal = excluded.is_personal,
             updated_at = excluded.updated_at,
             last_opened_at = COALESCE(excluded.last_opened_at, last_opened_at)`,
         [
@@ -107,6 +108,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           input.remoteAccountId,
           input.serverKind ?? null,
           input.isPrimary ? 1 : 0,
+          input.isPersonal === false ? 0 : 1,
           input.createdAt ?? ts,
           ts,
           input.lastOpenedAt ?? null,
@@ -204,8 +206,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 account_id, remote_id, parent_id, name, role, sort_order,
                 total_emails, unread_emails, total_threads, unread_threads,
                 may_read_items, may_add_items, may_remove_items,
-                rights_json, raw_json, is_deleted, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rights_json, raw_json, is_subscribed, is_deleted, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id, remote_id) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 name = excluded.name,
@@ -220,6 +222,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 may_remove_items = excluded.may_remove_items,
                 rights_json = excluded.rights_json,
                 raw_json = excluded.raw_json,
+                is_subscribed = COALESCE(excluded.is_subscribed, is_subscribed),
                 is_deleted = excluded.is_deleted,
                 updated_at = excluded.updated_at`,
             [
@@ -238,6 +241,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               f.mayRemoveItems == null ? null : (f.mayRemoveItems ? 1 : 0),
               f.rightsJson ?? null,
               f.rawJson ?? null,
+              f.isSubscribed == null ? null : (f.isSubscribed ? 1 : 0),
               f.isDeleted ? 1 : 0,
               ts,
             ],
@@ -1990,6 +1994,20 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       broadcaster.touch(TABLE_FAMILIES.FOLDERS);
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
       return batchResult(applied);
+    },
+
+    /**
+     * Post-success cache effect for the setMailboxSubscription
+     * mutation: mirror the server-confirmed Mailbox isSubscribed flag
+     * on the local folder row before the mutation RPC resolves.
+     */
+    [DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTION]: async ({ folderId, isSubscribed }) => {
+      const result = await engine.run(
+        `UPDATE folders SET is_subscribed = ?, updated_at = ? WHERE id = ?`,
+        [isSubscribed ? 1 : 0, now(), folderId],
+      );
+      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+      return { applied: result.changes ?? 0 };
     },
 
     [DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]: async ({ accountId, replacements }) => {

@@ -24,8 +24,12 @@ const MAILBOX_PROPERTIES = [
 /**
  * Pull the full mailbox set and persist it. Used on first connect and
  * whenever the locally-tracked Mailbox state token is missing.
+ *
+ * repairArchive should be false for shared accounts: the user usually
+ * lacks the rights to create or re-role mailboxes there, and a shared
+ * account is not required to have an Archive at all.
  */
-export async function syncMailboxes({ transport, account, handlers, useWebSocket = false }) {
+export async function syncMailboxes({ transport, account, handlers, useWebSocket = false, repairArchive = true }) {
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[
@@ -36,13 +40,15 @@ export async function syncMailboxes({ transport, account, handlers, useWebSocket
     useWebSocket,
   });
   const response = pickResponse(result, 'Mailbox/get');
-  const repaired = await ensureArchiveMailbox({
-    transport,
-    account,
-    mailboxes: response.list ?? [],
-    state: response.state,
-    useWebSocket,
-  });
+  const repaired = repairArchive
+    ? await ensureArchiveMailbox({
+      transport,
+      account,
+      mailboxes: response.list ?? [],
+      state: response.state,
+      useWebSocket,
+    })
+    : { mailboxes: response.list ?? [], state: response.state };
   const list = repaired.mailboxes;
   await persistMailboxes({ account, mailboxes: list, handlers });
   await handlers[DB_RPC.SYNC_STATE_SET]({
@@ -126,13 +132,17 @@ async function ensureArchiveMailbox({
   }
 
   const target = selectArchiveRoleTarget(mailboxes);
+  // isSubscribed: true keeps the repaired/created Archive visible in
+  // clients that filter on subscriptions (RFC 8621 §2 recommends new
+  // user-created mailboxes default to subscribed, but Stalwart leaves
+  // Mailbox/set creates unsubscribed unless told otherwise).
   const methodCalls = target
     ? [[
         'Mailbox/set',
         {
           accountId: account.remote_account_id,
           update: {
-            [target.id]: { role: 'archive' },
+            [target.id]: { role: 'archive', isSubscribed: true },
           },
         },
         's1',
@@ -142,7 +152,7 @@ async function ensureArchiveMailbox({
         {
           accountId: account.remote_account_id,
           create: {
-            archive: { name: 'Archives', role: 'archive' },
+            archive: { name: 'Archives', role: 'archive', isSubscribed: true },
           },
         },
         's1',
@@ -221,6 +231,7 @@ async function persistMailboxes({ account, mailboxes, handlers }) {
     mayRemoveItems: m.myRights?.mayRemoveItems ?? null,
     rightsJson: m.myRights ? JSON.stringify(m.myRights) : null,
     rawJson: JSON.stringify(m),
+    isSubscribed: typeof m.isSubscribed === 'boolean' ? m.isSubscribed : null,
     isDeleted: false,
   }));
   await handlers[DB_RPC.FOLDER_UPSERT_MANY]({ accountId: account.id, folders });

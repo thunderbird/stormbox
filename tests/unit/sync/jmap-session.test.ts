@@ -140,4 +140,61 @@ describe('ingestSession', () => {
       handlers,
     })).rejects.toThrow(/primary mail account/);
   });
+
+  describe('shared accounts (RFC 8620 §1.6.2 / RFC 9670)', () => {
+    const SHARED_SESSION = {
+      ...SESSION_TEMPLATE,
+      accounts: {
+        ...SESSION_TEMPLATE.accounts,
+        'acct-shared': {
+          name: 'other@example.com',
+          isPersonal: false,
+          isReadOnly: false,
+          accountCapabilities: { [JMAP_CAPS.MAIL]: {} },
+        },
+        'acct-nomail': {
+          name: 'calendar-only',
+          isPersonal: false,
+          isReadOnly: false,
+          accountCapabilities: { 'urn:ietf:params:jmap:calendars': {} },
+        },
+      },
+    };
+
+    it('upserts every other mail-capable account as a non-primary row', async () => {
+      const { account, sharedAccounts } = await ingestSession({
+        session: SHARED_SESSION,
+        serverOrigin: 'https://mail.example.com',
+        handlers,
+      });
+      expect(Number(account.is_primary)).toBe(1);
+      expect(Number(account.is_personal)).toBe(1);
+
+      expect(sharedAccounts).toHaveLength(1);
+      const shared = sharedAccounts[0];
+      expect(shared.remote_account_id).toBe('acct-shared');
+      expect(shared.display_name).toBe('other@example.com');
+      expect(Number(shared.is_primary)).toBe(0);
+      expect(Number(shared.is_personal)).toBe(0);
+
+      const rows = await engine.all('SELECT remote_account_id FROM accounts ORDER BY id');
+      expect(rows.map((r) => r.remote_account_id)).toEqual(['acct-1', 'acct-shared']);
+    });
+
+    it('skips non-mail accounts entirely', async () => {
+      const { sharedAccounts } = await ingestSession({
+        session: SHARED_SESSION,
+        serverOrigin: 'https://mail.example.com',
+        handlers,
+      });
+      expect(sharedAccounts.map((a) => a.remote_account_id)).not.toContain('acct-nomail');
+    });
+
+    it('is idempotent: re-ingesting does not duplicate shared account rows', async () => {
+      await ingestSession({ session: SHARED_SESSION, serverOrigin: 'https://mail.example.com', handlers });
+      await ingestSession({ session: SHARED_SESSION, serverOrigin: 'https://mail.example.com', handlers });
+      const rows = await engine.all('SELECT COUNT(*) AS n FROM accounts');
+      expect(Number(rows[0].n)).toBe(2);
+    });
+  });
 });

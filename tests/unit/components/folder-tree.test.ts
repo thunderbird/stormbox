@@ -13,6 +13,7 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import FolderTree from '../../../src/components/FolderTree.vue';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 
 function makeFolder(id, overrides = {}) {
@@ -36,6 +37,9 @@ function makeFolder(id, overrides = {}) {
 // Inbox (leaf, role) + a Projects > Alpha > Gamma user-folder chain
 // and a leaf Reports folder. Distinct names avoid substring clashes.
 function seedFolders(mailStore) {
+  // The sidebar tree renders primaryFolders, which scopes rows to the
+  // signed-in account; the seeded rows all use account_id 1.
+  useAuthStore().accountId = 1;
   mailStore.folders = [
     makeFolder(1, { name: 'Inbox', role: 'inbox' }),
     makeFolder(10, { name: 'Projects' }),
@@ -164,6 +168,7 @@ describe('FolderTree collapsed unread totals', () => {
   // Projects(0) > Alpha(2) > Gamma(3), plus Projects > Beta(5).
   // Projects subtree unread = 0 + 2 + 3 + 5 = 10.
   function seedUnread(mailStore) {
+    useAuthStore().accountId = 1;
     mailStore.folders = [
       makeFolder(1, { name: 'Inbox', role: 'inbox', unread_emails: 1 }),
       makeFolder(10, { name: 'Projects', unread_emails: 0 }),
@@ -208,5 +213,78 @@ describe('FolderTree collapsed unread totals', () => {
     // Expanded Alpha now shows only its own 2; Gamma shows its own 3.
     expect(nodeByName(wrapper, 'Alpha').find('.folder-node__count').text()).toBe('2');
     expect(nodeByName(wrapper, 'Gamma').find('.folder-node__count').text()).toBe('3');
+  });
+});
+
+describe('FolderTree shared account sections', () => {
+  function seedShared(mailStore) {
+    useAuthStore().accountId = 1;
+    mailStore.accounts = [
+      { id: 1, is_primary: 1, is_personal: 1, display_name: 'me@example.org', server_origin: 'o' },
+      { id: 2, is_primary: 0, is_personal: 0, display_name: 'other@example.org', server_origin: 'o' },
+    ];
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox', role: 'inbox' }),
+      // Shared account folders: only subscribed ones belong in the sidebar.
+      makeFolder(30, { account_id: 2, name: 'Team', is_subscribed: 1 }),
+      makeFolder(31, { account_id: 2, name: 'Private', is_subscribed: 0 }),
+      makeFolder(32, { account_id: 2, name: 'Nested', parent_id: 31, is_subscribed: 1 }),
+    ];
+  }
+
+  it('renders a section per shared account with only subscribed folders', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('.folder-tree__heading--shared').text()).toBe('other@example.org');
+    expect(wrapper.text()).toContain('Team');
+    expect(wrapper.text()).not.toContain('Private');
+  });
+
+  it('promotes a subscribed folder under an unsubscribed parent to a section root', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    // Nested's parent (Private) is unsubscribed and hidden; Nested must
+    // still be reachable rather than silently dropped.
+    expect(wrapper.text()).toContain('Nested');
+  });
+
+  it('shows no shared section when no shared folder is subscribed', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+    mailStore.folders = mailStore.folders.map((f) =>
+      f.account_id === 2 ? { ...f, is_subscribed: 0 } : f);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('.folder-tree__heading--shared').exists()).toBe(false);
+  });
+
+  it('opens the folder subscriptions dialog from the manage button', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    await wrapper.find('.folder-tree__manage').trigger('click');
+    await nextTick();
+
+    const dialog = wrapper.find('[role="dialog"]');
+    expect(dialog.exists()).toBe(true);
+    // The dialog lists every folder (subscribed or not) grouped by
+    // account, including the unsubscribed shared folder hidden from
+    // the sidebar.
+    expect(dialog.text()).toContain('Private');
+    expect(dialog.text()).toContain('shared');
   });
 });

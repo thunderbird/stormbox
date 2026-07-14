@@ -70,6 +70,9 @@ export class JmapBackend {
   useWebSocket: boolean;
   account: any;
   services: any[];
+  sharedAccounts: any[];
+  _accountsByLocalId: Map<number, any>;
+  _accountsByRemoteId: Map<string, any>;
   _unsubStateChange: (() => void) | null;
   _started: boolean;
   _indexerTimer: any;
@@ -104,6 +107,13 @@ export class JmapBackend {
     this.useWebSocket = options.useWebSocket ?? true;
     this.account = null;
     this.services = [];
+    // Shared accounts (RFC 9670) advertised by the same session. Their
+    // mailboxes sync through this backend over the same transport;
+    // folder-scoped operations resolve the owning account row through
+    // _accountForFolder.
+    this.sharedAccounts = [];
+    this._accountsByLocalId = new Map();
+    this._accountsByRemoteId = new Map();
     this._unsubStateChange = null;
     this._started = false;
     this._indexerTimer = null;
@@ -208,7 +218,14 @@ export class JmapBackend {
     });
     this.account = ingest.account;
     this.services = ingest.services;
-    wlog.info('jmap-backend', `account ingested id=${this.account.id} remote=${this.account.remote_account_id} services=${this.services.map((s) => s.serviceKind).join(',')}`);
+    this.sharedAccounts = ingest.sharedAccounts ?? [];
+    this._accountsByLocalId = new Map(
+      [this.account, ...this.sharedAccounts].map((a) => [Number(a.id), a]),
+    );
+    this._accountsByRemoteId = new Map(
+      [this.account, ...this.sharedAccounts].map((a) => [a.remote_account_id, a]),
+    );
+    wlog.info('jmap-backend', `account ingested id=${this.account.id} remote=${this.account.remote_account_id} services=${this.services.map((s) => s.serviceKind).join(',')} shared=${this.sharedAccounts.length}`);
 
     // Build the runner once the account row exists. processRow gets
     // the current transport / useWebSocket at call time so the
@@ -252,6 +269,23 @@ export class JmapBackend {
       handlers: this.handlers,
     });
     wlog.info('jmap-backend', `syncMailboxes -> ${mbResult.count} folders, state=${mbResult.state}`);
+
+    // Shared accounts: pull their mailbox trees too so shared folders
+    // are visible in the sidebar / subscription manager. Best effort —
+    // a failing shared account must not block the user's own mail.
+    for (const shared of this.sharedAccounts) {
+      try {
+        const sharedResult = await syncMailboxes({
+          transport: this.transport,
+          account: shared,
+          handlers: this.handlers,
+          repairArchive: false,
+        });
+        wlog.info('jmap-backend', `syncMailboxes shared account ${shared.remote_account_id} -> ${sharedResult.count} folders`);
+      } catch (err) {
+        wlog.warn('jmap-backend', `shared account ${shared.remote_account_id} mailbox sync failed`, err);
+      }
+    }
 
     this._started = true;
 
@@ -383,12 +417,26 @@ export class JmapBackend {
   // ----- SyncClient.Backend surface -----------------------------------
 
   async ensureFolderTree() {
-    return syncMailboxes({
+    const result = await syncMailboxes({
       transport: this.transport,
       account: this.account,
       handlers: this.handlers,
       useWebSocket: this._wsReady(),
     });
+    for (const shared of this.sharedAccounts) {
+      try {
+        await syncMailboxes({
+          transport: this.transport,
+          account: shared,
+          handlers: this.handlers,
+          useWebSocket: this._wsReady(),
+          repairArchive: false,
+        });
+      } catch (err) {
+        wlog.warn('jmap-backend', `shared account ${shared.remote_account_id} folder tree refresh failed`, err);
+      }
+    }
+    return result;
   }
 
   async ensureFolderWindow(folderId: number, range: any = {}) {
@@ -397,7 +445,7 @@ export class JmapBackend {
       const folder = await this._loadFolder(folderId);
       const r = await syncFolderWindow({
         transport: this.transport,
-        account: this.account,
+        account: this._accountForFolder(folder),
         folder,
         handlers: this.handlers,
         sortProp: range.sortProp ?? this._defaultSortPropFor(folder),
@@ -512,25 +560,41 @@ export class JmapBackend {
   async _fetchBodiesForLocalIds(ids) {
     const placeholders = ids.map(() => '?').join(',');
     const rows = await this.handlers[DB_RPC.QUERY]({
-      sql: `SELECT remote_id
+      sql: `SELECT remote_id, account_id
               FROM messages
              WHERE id IN (${placeholders})
                AND body_fetched_at IS NULL`,
       params: ids,
     });
-    const remoteIds = rows.map((row) => row.remote_id).filter(Boolean);
-    if (remoteIds.length === 0) return { fetched: 0 };
-    return fetchEmailBodies({
-      transport: this.transport,
-      account: this.account,
-      handlers: this.handlers,
-      remoteIds,
-      useWebSocket: this._wsReady(),
-    });
+    // Group by owning account so bodies in shared-account folders are
+    // fetched with the right JMAP accountId and persisted under the
+    // right local account row.
+    const byAccount = new Map();
+    for (const row of rows) {
+      if (!row.remote_id) continue;
+      const accountId = Number(row.account_id);
+      if (!byAccount.has(accountId)) byAccount.set(accountId, []);
+      byAccount.get(accountId).push(row.remote_id);
+    }
+    if (byAccount.size === 0) return { fetched: 0 };
+    let fetched = 0;
+    for (const [accountId, remoteIds] of byAccount) {
+      const account = this._accountsByLocalId.get(accountId) ?? this.account;
+      const result = await fetchEmailBodies({
+        transport: this.transport,
+        account,
+        handlers: this.handlers,
+        remoteIds,
+        useWebSocket: this._wsReady(),
+      });
+      fetched += Number(result?.fetched ?? 0);
+    }
+    return { fetched };
   }
 
   async ensureFolderIndex(folderId: number, options: any = {}) {
     const folder = await this._loadFolder(folderId);
+    const folderAccount = this._accountForFolder(folder);
     const sortProp = options.sortProp ?? this._defaultSortPropFor(folder);
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500));
     const maxChunks = Math.max(1, Number(options.maxChunks ?? 1));
@@ -556,7 +620,7 @@ export class JmapBackend {
       if (!gap) break;
       const result = await syncFolderWindow({
         transport: this.transport,
-        account: this.account,
+        account: folderAccount,
         folder,
         handlers: this.handlers,
         sortProp,
@@ -707,7 +771,7 @@ export class JmapBackend {
                AND filter_json = ?
                AND sort_json = ?
                AND collapse_threads = 0`,
-      params: [this.account.id, folder.id, filterJson, sortJson],
+      params: [this._accountForFolder(folder).id, folder.id, filterJson, sortJson],
     });
     const view = views[0];
     if (!view) {
@@ -953,6 +1017,44 @@ export class JmapBackend {
     // without having to add an explicit reconnect callback to the
     // transport layer.
     this.outboxRunner?.notify();
+
+    // Shared-account pushes: reconcile mailbox trees for any shared
+    // account that reported a Mailbox state change. Email-level deltas
+    // for shared accounts are picked up when the user next opens the
+    // folder (the mailbox-window sync is per-folder and account-aware);
+    // only the folder tree needs eager reconciliation here.
+    for (const shared of this.sharedAccounts) {
+      const sharedTypes = changed?.[shared.remote_account_id];
+      if (!sharedTypes?.Mailbox) continue;
+      try {
+        const sync = await this.handlers[DB_RPC.SYNC_STATE_GET]({
+          accountId: shared.id,
+          objectType: 'Mailbox',
+          scope: '',
+        });
+        const result = sync?.state
+          ? await syncMailboxChanges({
+            transport: this.transport,
+            account: shared,
+            handlers: this.handlers,
+            sinceState: sync.state,
+            useWebSocket: this._wsReady(),
+          })
+          : { needsFullSync: true };
+        if (result.needsFullSync) {
+          await syncMailboxes({
+            transport: this.transport,
+            account: shared,
+            handlers: this.handlers,
+            useWebSocket: this._wsReady(),
+            repairArchive: false,
+          });
+        }
+      } catch (err) {
+        wlog.warn('jmap-backend', `shared account ${shared.remote_account_id} Mailbox change sync failed`, err);
+      }
+    }
+
     const types = changed?.[this.account.remote_account_id];
     if (!types) return;
 
@@ -1189,6 +1291,16 @@ export class JmapBackend {
     return 'receivedAt';
   }
 
+  /**
+   * Resolve the account row that owns a folder. Folders synced from
+   * shared accounts carry that account's local id; anything else
+   * (including folders predating shared-account support) falls back
+   * to the primary account.
+   */
+  _accountForFolder(folder) {
+    return this._accountsByLocalId.get(Number(folder?.account_id)) ?? this.account;
+  }
+
   async _loadFolder(folderId) {
     const rows = await this.handlers[DB_RPC.QUERY]({
       sql: 'SELECT * FROM folders WHERE id = ?',
@@ -1239,7 +1351,7 @@ export class JmapBackend {
                AND filter_json = ?
                AND sort_json = ?
                AND collapse_threads = 0`,
-      params: [this.account.id, folder.id, filterJson, sortJson],
+      params: [this._accountForFolder(folder).id, folder.id, filterJson, sortJson],
     });
     const view = views[0] ?? null;
     const effectiveTotal = Number(view?.total ?? total ?? 0);
