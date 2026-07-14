@@ -17,7 +17,7 @@ This document is the operational guide for agents and contributors.
 
 # Commit messages
 
-Keep commit messages concise, a single sentence when possible. 2-3 additional sentences after the first primary message is acceptable for more complex commits. Do not include opinions and detailed research, stick to the precise facts of what was implemented in the commit.
+The first line of a commit message is one single, short sentence (200 characters max). For more complex commits, add 1-2 explanatory sentences as a body below, separated by a blank line. Do not include opinions and detailed research, stick to the precise facts of what was implemented in the commit.
 
 Use a commit style similar to the other commits in the repository, don't randomly introduce conventional commit or any other types of tags.
 
@@ -37,6 +37,21 @@ setup and stay ignored.
 uvx --from git+https://github.com/github/spec-kit.git@v0.4.4 \
   specify init --here --force --ai cursor-agent --ai-skills --offline
 ```
+
+## Planning features and bug fixes
+
+When implementing something new or fixing a bug, always search and review related literature.
+For example if the implementation would touch JMAP code, review the JMAP spec and Stalwart's
+code, as Stalwart is our reference implementation of JMAP.
+
+Ensure to look for libraries that can supply functionality you need for the implementation.
+This is especially important when performing calculations or interacting with complex data structures.
+For example, writing our own HTML sanitizer doesn't make sense when DOMPurify exists.
+
+Additionally, review implementations in other open source mail clients such as
+Thunderbird desktop (comm-central), Roundcube, NextCloud webmail, Bulwark, Rainloop, etc.
+
+Search for followup issues, regressions, and CVEs as well if you find a similar implementation.
 
 ## Development environment (container only)
 
