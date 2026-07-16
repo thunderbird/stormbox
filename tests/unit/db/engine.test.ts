@@ -6,7 +6,7 @@ describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
     const row = await engine.get('PRAGMA user_version');
-    expect(Number(row?.user_version)).toBe(4);
+    expect(Number(row?.user_version)).toBe(5);
     await engine.close();
   });
 
@@ -82,7 +82,7 @@ describe('Engine migrations', () => {
     await engine.runMigrations();
     await engine.runMigrations();
     const row = await engine.get('PRAGMA user_version');
-    expect(Number(row?.user_version)).toBe(4);
+    expect(Number(row?.user_version)).toBe(5);
     await engine.close();
   });
 });

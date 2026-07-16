@@ -44,6 +44,8 @@ export interface FolderRow {
   rights_json: string | null;
   raw_json: string | null;
   is_subscribed: 0 | 1 | null;
+  /** Client-local "pin to top of the folder list"; never synced to JMAP. */
+  is_starred: 0 | 1;
   is_deleted: 0 | 1;
   updated_at: number;
   // populated by the mail-store after queryViewProgress lands

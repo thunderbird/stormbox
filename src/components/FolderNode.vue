@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { Star } from '@lucide/vue';
 
 const props = defineProps({
   folder: { type: Object, required: true },
@@ -78,7 +79,16 @@ function toggle() {
       class="folder-node__button"
       @click="onPick(folder.id)"
     >
-      <span class="folder-node__icon" aria-hidden="true" v-html="iconSvg" />
+      <span class="folder-node__icon-wrap">
+        <span class="folder-node__icon" aria-hidden="true" v-html="iconSvg" />
+        <Star
+          v-if="Number(folder.is_starred) === 1"
+          class="folder-node__star"
+          :size="10"
+          :stroke-width="2"
+          aria-label="Starred folder"
+        />
+      </span>
       <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
       <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
       <span v-if="unread > 0" class="folder-node__count">{{ unread > 99999 ? '99999+' : unread }}</span>
@@ -134,7 +144,7 @@ export default { name: 'FolderNode' };
   flex-shrink: 0;
   width: 18px;
   height: 18px;
-  margin: 7px 0;
+  margin: 4px 0;
   padding: 0;
   background: transparent;
   border: 0;
@@ -159,7 +169,7 @@ export default { name: 'FolderNode' };
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 0;
+  padding: 4px 0;
   background: transparent;
   border: 0;
   outline: 0;
@@ -175,9 +185,15 @@ export default { name: 'FolderNode' };
 }
 .folder-node__button:focus-visible { box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; }
 .folder-node.is-current .folder-node__button { font-weight: 500; }
-.folder-node__icon {
+.folder-node__icon-wrap {
+  position: relative;
   display: block;
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+.folder-node__icon {
+  display: block;
   width: 18px;
   height: 18px;
   color: var(--muted);
@@ -205,6 +221,18 @@ export default { name: 'FolderNode' };
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+/* Starred marker: a small gold badge overlapping the folder icon's
+   corner, so every row's icon/name columns stay aligned whether or
+   not it is starred. Same gold as the manager dialog's star toggle. */
+.folder-node__star {
+  position: absolute;
+  left: -4px;
+  bottom: -3px;
+  color: #f9ab00;
+  fill: currentColor;
+  /* Halo so the star reads over the icon on hover/active rows. */
+  filter: drop-shadow(0 0 1.5px var(--panel));
 }
 .folder-node__count {
   margin-left: auto;

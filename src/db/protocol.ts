@@ -30,6 +30,10 @@ export const DB_RPC = Object.freeze({
   FOLDER_LIST: 'folder.list',
   FOLDER_UPSERT_MANY: 'folder.upsertMany',
   FOLDER_BY_ROLE: 'folder.byRole',
+  /** Client-local star flag; no JMAP mutation involved. */
+  FOLDER_SET_STARRED: 'folder.setStarred',
+  /** Plural favorite update; the singular Repository API wraps this. */
+  FOLDER_SET_STARRED_MANY: 'folder.setStarredMany',
 
   IDENTITY_LIST: 'identity.list',
   IDENTITY_UPSERT_MANY: 'identity.upsertMany',
@@ -73,6 +77,13 @@ export const DB_RPC = Object.freeze({
   OUTBOX_APPLY_DESTROY: 'outbox.applyDestroy',
   OUTBOX_APPLY_DESTROY_BATCH: 'outbox.applyDestroyBatch',
   OUTBOX_APPLY_FOLDER_SUBSCRIPTION: 'outbox.applyFolderSubscription',
+  OUTBOX_APPLY_FOLDER_SUBSCRIPTIONS: 'outbox.applyFolderSubscriptions',
+  OUTBOX_APPLY_FOLDER_CREATE: 'outbox.applyFolderCreate',
+  OUTBOX_APPLY_FOLDER_CREATES: 'outbox.applyFolderCreates',
+  OUTBOX_APPLY_FOLDER_UPDATE: 'outbox.applyFolderUpdate',
+  OUTBOX_APPLY_FOLDER_UPDATES: 'outbox.applyFolderUpdates',
+  OUTBOX_APPLY_FOLDER_DESTROY: 'outbox.applyFolderDestroy',
+  OUTBOX_APPLY_FOLDER_DESTROYS: 'outbox.applyFolderDestroys',
 
   ADDRESSBOOK_LIST: 'addressbook.list',
   ADDRESSBOOK_UPSERT_MANY: 'addressbook.upsertMany',

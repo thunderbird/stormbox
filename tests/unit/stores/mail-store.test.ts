@@ -24,8 +24,11 @@ import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository';
-import { TABLE_FAMILIES } from '../../../src/db/protocol';
+import { DB_RPC, TABLE_FAMILIES } from '../../../src/db/protocol';
 import { MUTATION_TYPE } from '../../../src/constants/states';
+import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers } from '../../../src/db/handlers';
+import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner';
 
 function makeFolder(id, overrides = {}) {
   return {
@@ -1981,7 +1984,9 @@ describe('shared accounts and folder subscriptions', () => {
     const ok = await mailStore.setFolderSubscription(31, true);
     expect(ok).toBe(true);
     expect(inserted.mutationType).toBe('setMailboxSubscription');
-    expect(JSON.parse(inserted.requestJson)).toEqual({ folderId: 31, isSubscribed: true });
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      operations: [{ folderId: 31, isSubscribed: true }],
+    });
     expect(ranMutationId).toBe(7);
     expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
   });
@@ -2002,6 +2007,142 @@ describe('shared accounts and folder subscriptions', () => {
     expect(ok).toBe(false);
     expect(mailStore.error).toBeTruthy();
     expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
+  });
+
+  it('batches subscriptions once and restores subscription plus star only for failed ids', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    mailStore.folders = mailStore.folders.map((folder) => (
+      folder.id === 30 || folder.id === 31
+        ? { ...folder, is_subscribed: 1, is_starred: 1 }
+        : folder
+    ));
+    const inserts = [];
+    repo.insertPendingMutation = async (input) => {
+      inserts.push(input);
+      return { id: 77 };
+    };
+    repo.runMutation = async () => ({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      result: {
+        succeededIds: [30],
+        errors: { 31: { type: 'notUpdated', detail: { type: 'forbidden' } } },
+      },
+    });
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({ type: 'notUpdated', detail: { type: 'forbidden' } }),
+    });
+
+    expect(await mailStore.setFolderSubscriptions([30, 31], false)).toBe(false);
+    expect(inserts).toHaveLength(1);
+    expect(JSON.parse(inserts[0].requestJson)).toEqual({
+      operations: [
+        { folderId: 30, isSubscribed: false },
+        { folderId: 31, isSubscribed: false },
+      ],
+    });
+    expect(mailStore.folders.find((folder) => folder.id === 30))
+      .toMatchObject({ is_subscribed: 0, is_starred: 0 });
+    expect(mailStore.folders.find((folder) => folder.id === 31))
+      .toMatchObject({ is_subscribed: 1, is_starred: 1 });
+  });
+
+  it('setFolderStarred applies optimistically and persists via the repo', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    const calls: any[] = [];
+    repo.setFoldersStarred = async (folderIds, isStarred) => {
+      calls.push({ folderIds, isStarred });
+      return { applied: 1 };
+    };
+
+    const ok = await mailStore.setFolderStarred(30, true);
+    expect(ok).toBe(true);
+    expect(calls).toEqual([{ folderIds: [30], isStarred: true }]);
+    expect(mailStore.folders.find((f) => f.id === 30)?.is_starred).toBe(1);
+  });
+
+  it('setFolderStarred rolls back the optimistic flag when the write fails', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+
+    repo.setFoldersStarred = async () => {
+      throw new Error('disk full');
+    };
+
+    const ok = await mailStore.setFolderStarred(30, true);
+    expect(ok).toBe(false);
+    expect(mailStore.folders.find((f) => f.id === 30)?.is_starred ?? 0).toBeFalsy();
+    expect(mailStore.error).toContain('disk full');
+  });
+
+  it('sets several stars with one Repository call and skips unsubscribed folders', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    const calls = [];
+    repo.setFoldersStarred = async (folderIds, isStarred) => {
+      calls.push({ folderIds, isStarred });
+      return { applied: folderIds.length };
+    };
+
+    expect(await mailStore.setFoldersStarred([30, 31], true)).toBe(true);
+    expect(calls).toEqual([{ folderIds: [30], isStarred: true }]);
+    expect(mailStore.folders.find((folder) => folder.id === 30)?.is_starred).toBe(1);
+    expect(mailStore.folders.find((folder) => folder.id === 31)?.is_starred ?? 0).toBe(0);
+  });
+
+  it('blocks cross-account drops and unsafe shared destructive actions', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    let inserts = 0;
+    repo.insertPendingMutation = async () => {
+      inserts += 1;
+      return { id: inserts };
+    };
+
+    mailStore.currentFolderId = 1;
+    expect(mailStore.canMoveToFolder(30)).toBe(false);
+    await expect(mailStore.moveMessages([7], 30))
+      .rejects.toThrow('Cross-account message drops require copy support');
+
+    mailStore.currentFolderId = 30;
+    expect(mailStore.canMoveToFolder(1)).toBe(false);
+    await mailStore.destroyMessages([7]);
+    expect(mailStore.error).toContain('Delete is unavailable for shared-account messages');
+    expect(await mailStore.archiveMessages([7]))
+      .toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+    const junk = await mailStore.junkMessages([7]);
+    expect(junk).toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+    expect(inserts).toBe(0);
+  });
+
+  it('reports a missing current folder separately from shared-account guards', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    mailStore.currentFolderId = 999_999;
+
+    expect(await mailStore.archiveMessages([7]))
+      .toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+    expect(mailStore.error).toContain('current folder is no longer available');
+    expect(mailStore.error).not.toContain('shared-account');
+    await mailStore.destroyMessages([7]);
+    expect(mailStore.error).toContain('current folder is no longer available');
+    expect(mailStore.error).not.toContain('shared-account');
   });
 
   it('rejects a second toggle while one is already in flight for the folder', async () => {
@@ -2026,5 +2167,361 @@ describe('shared accounts and folder subscriptions', () => {
     release();
     expect(await first).toBe(true);
     expect(mailStore.subscriptionPendingFolderIds.has(31)).toBe(false);
+  });
+
+  it('returns false when a mixed subscription request omits an already-pending id', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    mailStore.subscriptionPendingFolderIds = new Set([31]);
+    let requested;
+    repo.insertPendingMutation = async (input) => {
+      requested = JSON.parse(input.requestJson);
+      return { id: 88 };
+    };
+    repo.runMutation = async () => ({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { succeededIds: [30], errors: {} },
+    });
+
+    expect(await mailStore.setFolderSubscriptions([30, 31], false)).toBe(false);
+    expect(requested).toEqual({
+      operations: [{ folderId: 30, isSubscribed: false }],
+    });
+    expect(mailStore.error).toContain('already have a subscription change in progress');
+  });
+});
+
+describe('folder create/rename/delete actions', () => {
+  // Inbox (role) + Projects > Alpha chain + leaf Reports, all on the
+  // signed-in account.
+  function makeCrudRepo(repo) {
+    repo.setFolders([
+      makeFolder(1, { role: 'inbox', name: 'Inbox' }),
+      makeFolder(10, { name: 'Projects', parent_id: null }),
+      makeFolder(11, { name: 'Alpha', parent_id: 10 }),
+      makeFolder(20, { name: 'Reports', parent_id: null }),
+    ]);
+  }
+
+  async function setupCrudStore() {
+    const { mailStore, repo } = await setupStore();
+    makeCrudRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    return { mailStore, repo };
+  }
+
+  it('createFolder queues a createMailbox mutation and runs it immediately', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 5 };
+    };
+    let ranMutationId;
+    repo.runMutation = async (_accountId, mutationId) => {
+      ranMutationId = mutationId;
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    const result = await mailStore.createFolder({ name: '  Receipts  ', parentFolderId: 10 });
+    expect(result).toEqual({ ok: true });
+    expect(inserted.mutationType).toBe('createMailbox');
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      operations: [{ clientId: 'c1', name: 'Receipts', parentFolderId: 10 }],
+    });
+    expect(ranMutationId).toBe(5);
+    expect(mailStore.folderCreatePending).toBe(false);
+  });
+
+  it('createFolder rejects a duplicate sibling name without queueing', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let inserts = 0;
+    repo.insertPendingMutation = async () => {
+      inserts += 1;
+      return { id: 1 };
+    };
+
+    // Case-insensitive: "alpha" collides with the existing "Alpha"
+    // under the same parent.
+    const result = await mailStore.createFolder({ name: 'alpha', parentFolderId: 10 });
+    expect(result).toEqual({ ok: false, reason: 'duplicateName' });
+    expect(inserts).toBe(0);
+    expect(mailStore.error).toContain('already exists');
+  });
+
+  it('updateFolder refuses system folders and parent loops client-side', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let inserts = 0;
+    repo.insertPendingMutation = async () => {
+      inserts += 1;
+      return { id: 1 };
+    };
+
+    expect(await mailStore.updateFolder(1, { name: 'Mailbox' }))
+      .toEqual({ ok: false, reason: 'systemFolder' });
+    // Moving Projects under its own child Alpha would orphan the chain.
+    expect(await mailStore.updateFolder(10, { parentFolderId: 11 }))
+      .toEqual({ ok: false, reason: 'parentLoop' });
+    expect(inserts).toBe(0);
+  });
+
+  it('updateFolder queues only the fields that actually changed', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 6 };
+    };
+    repo.runMutation = async () => ({ attempted: 1, succeeded: 1, failed: 0 });
+
+    // Same name, new parent: the request must carry the move but not a
+    // no-op rename.
+    const result = await mailStore.updateFolder(20, { name: 'Reports', parentFolderId: 10 });
+    expect(result).toEqual({ ok: true });
+    expect(inserted.mutationType).toBe('updateMailbox');
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      operations: [{ folderId: 20, parentFolderId: 10 }],
+    });
+  });
+
+  it('deleteFolder blocks folders that still have children', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let inserts = 0;
+    repo.insertPendingMutation = async () => {
+      inserts += 1;
+      return { id: 1 };
+    };
+
+    const result = await mailStore.deleteFolder(10);
+    expect(result).toEqual({ ok: false, reason: 'mailboxHasChild' });
+    expect(inserts).toBe(0);
+  });
+
+  it('deleteFolder surfaces mailboxHasEmail so the dialog can escalate', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    let requested;
+    repo.insertPendingMutation = async (input) => {
+      requested = JSON.parse(input.requestJson);
+      return { id: 9 };
+    };
+    repo.runMutation = async () => ({ attempted: 1, succeeded: 0, failed: 1 });
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({ type: 'notDestroyed', detail: { type: 'mailboxHasEmail' } }),
+    });
+
+    const result = await mailStore.deleteFolder(20);
+    expect(result).toEqual({ ok: false, reason: 'mailboxHasEmail' });
+    expect(requested).toEqual({
+      operations: [{ folderId: 20, onDestroyRemoveEmails: false }],
+    });
+    // The escalation is expected flow, not an error toast.
+    expect(mailStore.error).toBeNull();
+    expect(mailStore.folderEditPendingIds.has(20)).toBe(false);
+  });
+
+  it('deleteFolder retries with onDestroyRemoveEmails and reselects the inbox', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    mailStore.currentFolderId = 20;
+    let requested;
+    repo.insertPendingMutation = async (input) => {
+      requested = JSON.parse(input.requestJson);
+      return { id: 10 };
+    };
+    let runs = 0;
+    repo.runMutation = async () => {
+      runs += 1;
+      return runs === 1
+        ? { attempted: 1, succeeded: 0, failed: 1 }
+        : { attempted: 1, succeeded: 1, failed: 0 };
+    };
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({
+        type: 'notDestroyed',
+        detail: { type: 'mailboxHasEmail' },
+      }),
+    });
+
+    expect(await mailStore.deleteFolder(20))
+      .toEqual({ ok: false, reason: 'mailboxHasEmail' });
+    const result = await mailStore.deleteFolder(20, { removeEmails: true });
+    expect(result).toEqual({ ok: true });
+    expect(requested).toEqual({
+      operations: [{ folderId: 20, onDestroyRemoveEmails: true }],
+    });
+    expect(mailStore.currentFolderId).toBe(1);
+  });
+
+  it('deletes one depth layer per plural mutation and prunes ancestors after child failure', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    const requests = [];
+    repo.insertPendingMutation = async (input) => {
+      requests.push(JSON.parse(input.requestJson));
+      return { id: requests.length };
+    };
+    repo.runMutation = async () => {
+      if (requests.length === 1) {
+        return {
+          attempted: 1,
+          succeeded: 0,
+          failed: 1,
+          result: {
+            succeededIds: [],
+            errors: {
+              11: { type: 'notDestroyed', detail: { type: 'mailboxHasEmail' } },
+            },
+          },
+        };
+      }
+      return {
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          succeededIds: [20],
+          errors: {},
+        },
+      };
+    };
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({
+        type: 'notDestroyed',
+        detail: { type: 'mailboxHasEmail' },
+      }),
+    });
+
+    const result = await mailStore.deleteFolders([10, 11, 20], {
+      skipChildCheck: true,
+    });
+    expect(requests).toEqual([
+      {
+        operations: [{ folderId: 11, onDestroyRemoveEmails: false }],
+      },
+      {
+        operations: [{ folderId: 20, onDestroyRemoveEmails: false }],
+      },
+    ]);
+    expect(result.succeededIds).toEqual([20]);
+    expect(result.errors?.['11']?.detail?.type).toBe('mailboxHasEmail');
+    expect(result.errors?.['10']?.type).toBe('childFailed');
+  });
+
+  it('uses destructive retry only after each depth reports mailboxHasEmail', async () => {
+    const { mailStore, repo } = await setupCrudStore();
+    const requests = [];
+    repo.insertPendingMutation = async (input) => {
+      requests.push(JSON.parse(input.requestJson));
+      return { id: requests.length };
+    };
+    repo.runMutation = async () => {
+      const operation = requests.at(-1).operations[0];
+      if (operation.onDestroyRemoveEmails) {
+        return {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          result: { succeededIds: [operation.folderId], errors: {} },
+        };
+      }
+      return {
+        attempted: 1,
+        succeeded: 0,
+        failed: 1,
+        result: {
+          succeededIds: [],
+          errors: {
+            [operation.folderId]: {
+              type: 'notDestroyed',
+              detail: { type: 'mailboxHasEmail' },
+            },
+          },
+        },
+      };
+    };
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({
+        type: 'notDestroyed',
+        detail: { type: 'mailboxHasEmail' },
+      }),
+    });
+
+    expect((await mailStore.deleteFolders([10, 11], { skipChildCheck: true })).ok).toBe(false);
+    expect((await mailStore.deleteFolders([10, 11], {
+      removeEmails: true,
+      skipChildCheck: true,
+    })).ok).toBe(true);
+    expect(requests.map((request) => request.operations[0])).toEqual([
+      { folderId: 11, onDestroyRemoveEmails: false },
+      { folderId: 11, onDestroyRemoveEmails: true },
+      { folderId: 10, onDestroyRemoveEmails: false },
+      { folderId: 10, onDestroyRemoveEmails: true },
+    ]);
+  });
+
+  it('carries a partial folder result through the real OutboxRunner into delete semantics', async () => {
+    const engine = await bootTestEngine();
+    const handlers = makeHandlers(engine);
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Runner',
+      primaryEmail: 'runner@example.org',
+      serverOrigin: 'https://mail.example.org',
+      remoteAccountId: 'acct-runner',
+      isPrimary: true,
+    })).row;
+    const perId = {
+      succeededIds: [20],
+      errors: {
+        11: { type: 'notDestroyed', detail: { type: 'mailboxHasEmail' } },
+        21: { type: 'notDestroyed', detail: { type: 'forbidden' } },
+      },
+    };
+    // Keep one actual success in the result while also returning a
+    // differently ordered mixed error map. The store must preserve the
+    // ids/errors and choose the actionable non-escalation reason.
+    const runner = new OutboxRunner({
+      accountId: account.id,
+      handlers,
+      processRow: async () => ({
+        ok: false,
+        error: { type: 'notDestroyed', terminal: true, result: perId },
+        result: perId,
+      }),
+      options: { notifyDelayMs: 0 },
+    });
+    try {
+      const { mailStore, repo } = await setupCrudStore();
+      const template = mailStore.folders.find((folder) => folder.id === 20)!;
+      mailStore.folders = [
+        ...mailStore.folders,
+        {
+          ...template,
+          id: 21,
+          remote_id: 'mb-21',
+          name: 'Other',
+        },
+      ];
+      repo.insertPendingMutation = (input) =>
+        handlers[DB_RPC.PENDING_MUTATION_INSERT](input);
+      repo.runMutation = (_accountId, mutationId) => runner.runMutation(mutationId);
+      repo.getPendingMutationError = (mutationId) =>
+        handlers[DB_RPC.PENDING_MUTATION_GET_ERROR]({ mutationId });
+
+      const result = await mailStore.deleteFolders([11, 20, 21], {
+        skipChildCheck: true,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.succeededIds).toEqual([20]);
+      expect(result.errors?.['11']?.detail?.type).toBe('mailboxHasEmail');
+      expect(result.errors?.['21']?.detail?.type).toBe('forbidden');
+      expect(result.reason).toBe('forbidden');
+      expect(mailStore.error).toBe('Could not delete folder (forbidden).');
+    } finally {
+      await runner.stop();
+      await engine.close();
+    }
   });
 });

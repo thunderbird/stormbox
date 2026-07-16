@@ -62,6 +62,7 @@ export const DEFAULT_FOLDER_COLOR = '#e4b85c';
 export interface FolderPresentationInput {
   name?: string | null;
   role?: MailboxRole | null;
+  is_starred?: 0 | 1 | null;
 }
 
 export function defaultFolderKey(name: string | null | undefined): string {
@@ -105,4 +106,22 @@ export function folderSortKey(folder: FolderPresentationInput): number {
  */
 export function isMainFolder(folder: FolderPresentationInput): boolean {
   return folder.role != null && ROLE_ICON[folder.role] != null;
+}
+
+/**
+ * Sidebar sibling comparator: role order first (system folders keep
+ * their fixed positions), then starred — the client-local priority
+ * pin — then locale-aware name. Sidebar-only by design: the manager
+ * and create dialogs stay in structural order so toggling a star
+ * never reorders the list being managed.
+ */
+export function folderCompare(
+  a: FolderPresentationInput,
+  b: FolderPresentationInput,
+): number {
+  return (
+    folderSortKey(a) - folderSortKey(b)
+    || Number(b.is_starred ?? 0) - Number(a.is_starred ?? 0)
+    || String(a.name ?? '').localeCompare(String(b.name ?? ''))
+  );
 }

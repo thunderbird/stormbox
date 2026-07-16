@@ -505,6 +505,33 @@ describe('OutboxRunner runMutation', () => {
     await runner.stop();
   });
 
+  it('returns durable per-id folder outcomes to the Repository caller', async () => {
+    const localMsg = await seedMessage('e-results');
+    const perId = {
+      succeededIds: [10],
+      errors: { 11: { type: 'notUpdated', detail: { type: 'forbidden' } } },
+    };
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({
+        ok: false,
+        error: { type: 'notUpdated', terminal: true, result: perId },
+        result: perId,
+      }),
+      options: { notifyDelayMs: 0 },
+    });
+    const mutationId = await insertSetKeywords({ targetMessageId: localMsg });
+
+    expect(await runner.runMutation(mutationId)).toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      result: perId,
+    });
+    await runner.stop();
+  });
+
   it('returns succeeded=1 for an id that is already deleted (a prior pass already pushed it)', async () => {
     const runner = new OutboxRunner({
       accountId,

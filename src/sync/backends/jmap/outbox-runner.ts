@@ -42,10 +42,18 @@ import { wlog } from '../../../db/worker-log';
 // SetError types that cannot succeed by retrying: no amount of waiting
 // will turn 'forbidden' into 'success'. Anything else (serverFail,
 // stateMismatch, transport, noResponse) gets the backoff treatment.
+// Runners can also flag any error `terminal: true` for cases where the
+// type alone is ambiguous (e.g. a Mailbox/set mailboxHasEmail rejection
+// must resolve the awaiting runMutation immediately so the UI can ask
+// the user about onDestroyRemoveEmails, not sit in backoff).
 const TERMINAL_ERROR_TYPES = new Set([
   'forbidden',
   'notFound',
   'unknownMessage',
+  'unknownFolder',
+  'unknownIdentity',
+  'invalidName',
+  'emptyUpdate',
   'unsupportedMutation',
 ]);
 
@@ -58,7 +66,7 @@ const DRAIN_BATCH_SIZE = 50;
 export class OutboxRunner {
   _accountId: number;
   _handlers: Record<string, (p: any) => Promise<any>>;
-  _processRow: (row: any) => Promise<{ ok: boolean; error?: any }>;
+  _processRow: (row: any) => Promise<{ ok: boolean; error?: any; result?: any }>;
   _maxAttempts: number;
   _notifyDelayMs: number;
   _backoffBaseMs: number;
@@ -85,7 +93,7 @@ export class OutboxRunner {
   }: {
     accountId: number;
     handlers: Record<string, (p: any) => Promise<any>>;
-    processRow: (row: any) => Promise<{ ok: boolean; error?: any }>;
+    processRow: (row: any) => Promise<{ ok: boolean; error?: any; result?: any }>;
     options?: any;
   }) {
     if (accountId == null) throw new Error('OutboxRunner requires accountId');
@@ -201,7 +209,7 @@ export class OutboxRunner {
       params: [this._now(), this._accountId, mutationId],
     });
 
-    const outcomePromise = new Promise<{ ok: boolean }>((resolve) => {
+    const outcomePromise = new Promise<{ ok: boolean; error?: any; result?: any }>((resolve) => {
       const list = this._awaiters.get(mutationId) ?? [];
       list.push({ resolve });
       this._awaiters.set(mutationId, list);
@@ -231,11 +239,14 @@ export class OutboxRunner {
     }
     this.notify({ immediate: true });
     const outcome = await outcomePromise;
-    return {
+    const summary: any = {
       attempted: 1,
       succeeded: outcome.ok ? 1 : 0,
       failed: outcome.ok ? 0 : 1,
     };
+    const detail = outcome.result ?? outcome.error?.result;
+    if (detail != null) summary.result = detail;
+    return summary;
   }
 
   /**
@@ -409,17 +420,26 @@ export class OutboxRunner {
     }
     if (result?.ok) {
       await this._deleteRow(row.id);
-      this._resolveAwaiters(row.id, { ok: true });
-      this._fireTally(row.id, { ok: true });
+      this._resolveAwaiters(row.id, { ok: true, result: result.result });
+      this._fireTally(row.id, { ok: true, result: result.result });
       return;
     }
     const errorType = result?.error?.type ?? 'unknown';
-    const terminal = TERMINAL_ERROR_TYPES.has(errorType)
+    const terminal = result?.error?.terminal === true
+      || TERMINAL_ERROR_TYPES.has(errorType)
       || attemptNumber >= this._maxAttempts;
     if (terminal) {
       await this._markConflicted(row.id, result?.error);
-      this._resolveAwaiters(row.id, { ok: false, error: result?.error });
-      this._fireTally(row.id, { ok: false, error: result?.error });
+      this._resolveAwaiters(row.id, {
+        ok: false,
+        error: result?.error,
+        result: result?.result ?? result?.error?.result,
+      });
+      this._fireTally(row.id, {
+        ok: false,
+        error: result?.error,
+        result: result?.result ?? result?.error?.result,
+      });
       return;
     }
     const delay = Math.min(

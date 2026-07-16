@@ -101,6 +101,9 @@ export const MUTATION_TYPE = {
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
   SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
+  CREATE_MAILBOX: 'createMailbox',
+  UPDATE_MAILBOX: 'updateMailbox',
+  DESTROY_MAILBOX: 'destroyMailbox',
 } as const;
 export type MutationType = (typeof MUTATION_TYPE)[keyof typeof MUTATION_TYPE];
 

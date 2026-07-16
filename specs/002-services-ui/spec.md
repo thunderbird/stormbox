@@ -6,12 +6,14 @@ This document describes what Stormbox uses from
 
 ## Imports
 
-services-ui enters the app through three files:
+services-ui enters the app through four files:
 
 - `src/main.ts` — imports `@thunderbirdops/services-ui/style.css`
   (before `assets/styles.css`, so our token overrides win).
 - `src/components/AppButton.vue` — imports `PrimaryButton`.
 - `src/components/LoginGate.vue` — imports `NoticeWarningIcon`.
+- `src/components/FolderManagerDialog.vue` — imports `SwitchToggle`
+  for row and bulk folder-subscription controls.
 
 No other component imports from the library directly.
 
@@ -49,6 +51,16 @@ fills with `--primary-filled-gradient` (below) so it matches the
 
 Rendered at 18×18 in the login-gate alpha warning banner. The banner
 itself is our own element styled with the `--warn-*` tokens.
+
+### SwitchToggle
+
+The Manage Folders dialog uses the same controlled `SwitchToggle`
+component for each row's JMAP `Mailbox.isSubscribed` setting and for
+the modal bulk subscription action. Stormbox reduces the track from
+the stock settings-page size to 32×20 px and the handle to 14×14 px so
+the control fits dense folder rows; state, disabled behavior, and
+events remain those of the services-ui component. The folder-management
+contract and rationale live in `specs/003-folder-management/spec.md`.
 
 ## Theme mechanism
 
@@ -126,7 +138,8 @@ equivalent component:
   menus).
 - Message-list filter chips.
 - The alpha warning banner container (uses `--warn-*` tokens).
-- Avatars, folder list, bulk-operation progress overlay.
+- Avatars, folder list (apart from its subscription switches), and
+  bulk-operation progress overlay.
 
 These draw their colors from the shared theme tokens above, so they
 stay consistent with services-ui components in both modes.

@@ -20,6 +20,48 @@ import {
 } from './batch-helpers';
 import { DB_RPC, TABLE_FAMILIES } from './protocol';
 
+async function destroyMessagesByRemoteIdsInTransaction(
+  tx: any,
+  accountId: number,
+  remoteIds: string[],
+  ts: number,
+) {
+  const ids = [...new Set(remoteIds.filter(Boolean))];
+  if (ids.length === 0) return { removed: 0, views: 0 };
+  const placeholders = placeholdersFor(ids);
+  const rows = await tx.all(
+    `SELECT qv.id AS view_id, qi.position
+       FROM query_views qv
+       JOIN query_view_items qi ON qi.view_id = qv.id
+      WHERE qv.account_id = ?
+        AND qi.remote_id IN (${placeholders})`,
+    [accountId, ...ids],
+  );
+  const byView = new Map<number, number[]>();
+  for (const row of rows) {
+    const viewId = Number(row.view_id);
+    const positions = byView.get(viewId) ?? [];
+    positions.push(Number(row.position));
+    byView.set(viewId, positions);
+  }
+  let removed = 0;
+  for (const [viewId, positions] of byView) {
+    await tx.run(
+      `DELETE FROM query_view_items
+        WHERE view_id = ? AND remote_id IN (${placeholders})`,
+      [viewId, ...ids],
+    );
+    const result = await compactViewAfterDeletingPositions(tx, viewId, positions, ts);
+    removed += result.removed;
+  }
+  await tx.run(
+    `DELETE FROM messages
+      WHERE account_id = ? AND remote_id IN (${placeholders})`,
+    [accountId, ...ids],
+  );
+  return { removed, views: byView.size };
+}
+
 /**
  * Build the handler map for a given engine. Broadcaster is optional in
  * tests; pass a no-op when you don't care about cross-tab invalidation.
@@ -37,6 +79,176 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     ? hooks.onMutationInserted
     : () => {};
   const now = () => Date.now();
+
+  async function applyFolderStars(folderIds: number[], isStarred: boolean) {
+    const ids = numericUnique(folderIds);
+    if (ids.length === 0) return batchResult(0);
+    let applied = 0;
+    await engine.transaction(async (tx) => {
+      for (const folderId of ids) {
+        const result = await tx.run(
+          `UPDATE folders
+              SET is_starred = ?
+            WHERE id = ?
+              AND (? = 0 OR is_subscribed IS NULL OR is_subscribed != 0)`,
+          [isStarred ? 1 : 0, folderId, isStarred ? 1 : 0],
+        );
+        applied += result.changes ?? 0;
+      }
+    });
+    broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+    return batchResult(applied);
+  }
+
+  async function applyFolderSubscriptions(
+    updates: Array<{ folderId: number; isSubscribed: boolean }>,
+  ) {
+    if (updates.length === 0) return batchResult(0);
+    let applied = 0;
+    const ts = now();
+    await engine.transaction(async (tx) => {
+      for (const update of updates) {
+        const result = await tx.run(
+          `UPDATE folders
+              SET is_subscribed = ?,
+                  is_starred = CASE WHEN ? = 0 THEN 0 ELSE is_starred END,
+                  updated_at = ?
+            WHERE id = ?`,
+          [
+            update.isSubscribed ? 1 : 0,
+            update.isSubscribed ? 1 : 0,
+            ts,
+            update.folderId,
+          ],
+        );
+        applied += result.changes ?? 0;
+      }
+    });
+    broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+    return batchResult(applied);
+  }
+
+  async function applyFolderCreates(creates: any[]) {
+    if (creates.length === 0) return { applied: 0, folderIds: {} };
+    const ts = now();
+    const folderIds: Record<string, number | null> = {};
+    await engine.transaction(async (tx) => {
+      for (const create of creates) {
+        await tx.run(
+          `INSERT INTO folders(
+              account_id, remote_id, parent_id, name, role, sort_order,
+              total_emails, unread_emails, rights_json, raw_json,
+              is_subscribed, is_deleted, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, ?, 0, 0, ?, ?, 1, 0, ?)
+           ON CONFLICT(account_id, remote_id) DO UPDATE SET
+              parent_id = excluded.parent_id,
+              name = excluded.name,
+              rights_json = COALESCE(excluded.rights_json, rights_json),
+              raw_json = COALESCE(excluded.raw_json, raw_json),
+              is_subscribed = 1,
+              is_deleted = 0,
+              updated_at = excluded.updated_at`,
+          [
+            create.accountId,
+            create.remoteId,
+            create.parentFolderId ?? null,
+            create.name,
+            create.sortOrder ?? 0,
+            create.rightsJson ?? null,
+            create.rawJson ?? null,
+            ts,
+          ],
+        );
+        const row = await tx.get(
+          `SELECT id FROM folders WHERE account_id = ? AND remote_id = ?`,
+          [create.accountId, create.remoteId],
+        );
+        folderIds[String(create.clientId)] = row?.id ?? null;
+      }
+    });
+    broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+    return { applied: creates.length, folderIds };
+  }
+
+  async function applyFolderUpdates(updates: any[]) {
+    if (updates.length === 0) return batchResult(0);
+    let applied = 0;
+    const ts = now();
+    await engine.transaction(async (tx) => {
+      for (const update of updates) {
+        const sets = ['updated_at = ?'];
+        const params: any[] = [ts];
+        if (update.name != null) {
+          sets.push('name = ?');
+          params.push(update.name);
+        }
+        if (update.parentProvided) {
+          sets.push('parent_id = ?');
+          params.push(update.parentFolderId ?? null);
+        }
+        const result = await tx.run(
+          `UPDATE folders SET ${sets.join(', ')} WHERE id = ?`,
+          [...params, update.folderId],
+        );
+        applied += result.changes ?? 0;
+      }
+    });
+    broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+    return batchResult(applied);
+  }
+
+  async function applyFolderDestroys(destroys: any[]) {
+    if (destroys.length === 0) return batchResult(0, { destroyedMessageIds: [] });
+    const ts = now();
+    const candidatesByAccount = new Map<number, Map<number, string>>();
+    const destroyedMessageIds: number[] = [];
+    await engine.transaction(async (tx) => {
+      for (const destroy of destroys) {
+        const folder = await tx.get(
+          `SELECT id, account_id FROM folders WHERE id = ? AND account_id = ?`,
+          [destroy.folderId, destroy.accountId],
+        );
+        if (!folder) continue;
+        if (destroy.onDestroyRemoveEmails) {
+          const linked = await tx.all(
+            `SELECT m.id, m.remote_id
+               FROM folder_messages fm
+               JOIN messages m ON m.id = fm.message_id
+              WHERE fm.folder_id = ? AND m.account_id = ?`,
+            [destroy.folderId, destroy.accountId],
+          );
+          const candidates = candidatesByAccount.get(destroy.accountId) ?? new Map();
+          for (const message of linked) {
+            candidates.set(Number(message.id), String(message.remote_id));
+          }
+          candidatesByAccount.set(destroy.accountId, candidates);
+        }
+        await tx.run(`DELETE FROM folder_messages WHERE folder_id = ?`, [destroy.folderId]);
+        await tx.run(`DELETE FROM query_views WHERE folder_id = ?`, [destroy.folderId]);
+        await tx.run(
+          `UPDATE folders SET is_deleted = 1, updated_at = ? WHERE id = ?`,
+          [ts, destroy.folderId],
+        );
+      }
+      for (const [accountId, candidates] of candidatesByAccount) {
+        const orphanRemoteIds: string[] = [];
+        for (const [messageId, remoteId] of candidates) {
+          const remaining = await tx.get(
+            `SELECT 1 FROM folder_messages WHERE message_id = ? LIMIT 1`,
+            [messageId],
+          );
+          if (!remaining) {
+            orphanRemoteIds.push(remoteId);
+            destroyedMessageIds.push(messageId);
+          }
+        }
+        await destroyMessagesByRemoteIdsInTransaction(tx, accountId, orphanRemoteIds, ts);
+      }
+    });
+    broadcaster.touch(TABLE_FAMILIES.FOLDERS);
+    broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+    return batchResult(destroys.length, { destroyedMessageIds });
+  }
 
   /** @type {Record<string, (params: any) => Promise<any>>} */
   const h = {
@@ -192,6 +404,18 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         `SELECT * FROM folders WHERE account_id = ? AND role = ? AND is_deleted = 0`,
         [accountId, role],
       ),
+
+    /**
+     * Client-local star flag (priority pin in the sidebar). Purely a
+     * UI preference: no outbox mutation, nothing goes to the server,
+     * and folder sync never writes this column so it survives
+     * FOLDER_UPSERT_MANY refreshes.
+     */
+    [DB_RPC.FOLDER_SET_STARRED]: async ({ folderId, isStarred }) =>
+      applyFolderStars([folderId], isStarred),
+
+    [DB_RPC.FOLDER_SET_STARRED_MANY]: async ({ folderIds = [], isStarred }) =>
+      applyFolderStars(folderIds, isStarred),
 
     [DB_RPC.FOLDER_UPSERT_MANY]: async ({ accountId, folders }) => {
       if (!folders?.length) {
@@ -1048,42 +1272,12 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const ids = [...new Set((Array.isArray(remoteIds) ? remoteIds : []).filter(Boolean))];
       if (ids.length === 0) return batchResult(0, { views: 0 });
       const ts = now();
-      let removed = 0;
-      let views = 0;
+      let result = { removed: 0, views: 0 };
       await engine.transaction(async (tx) => {
-        const rows = await tx.all(
-          `SELECT qv.id AS view_id, qi.position
-             FROM query_views qv
-             JOIN query_view_items qi ON qi.view_id = qv.id
-            WHERE qv.account_id = ?
-              AND qi.remote_id IN (${placeholdersFor(ids)})`,
-          [accountId, ...ids],
-        );
-        const byView = new Map();
-        for (const row of rows) {
-          const viewId = Number(row.view_id);
-          const positions = byView.get(viewId) ?? [];
-          positions.push(Number(row.position));
-          byView.set(viewId, positions);
-        }
-        for (const [viewId, positions] of byView) {
-          await tx.run(
-            `DELETE FROM query_view_items
-              WHERE view_id = ? AND remote_id IN (${placeholdersFor(ids)})`,
-            [viewId, ...ids],
-          );
-          const result = await compactViewAfterDeletingPositions(tx, viewId, positions, ts);
-          removed += result.removed;
-          views += 1;
-        }
-        await tx.run(
-          `DELETE FROM messages
-            WHERE account_id = ? AND remote_id IN (${placeholdersFor(ids)})`,
-          [accountId, ...ids],
-        );
+        result = await destroyMessagesByRemoteIdsInTransaction(tx, accountId, ids, ts);
       });
       broadcaster.touch(TABLE_FAMILIES.MESSAGES);
-      return batchResult(removed, { views });
+      return batchResult(result.removed, { views: result.views });
     },
 
     /**
@@ -2001,14 +2195,62 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * mutation: mirror the server-confirmed Mailbox isSubscribed flag
      * on the local folder row before the mutation RPC resolves.
      */
-    [DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTION]: async ({ folderId, isSubscribed }) => {
-      const result = await engine.run(
-        `UPDATE folders SET is_subscribed = ?, updated_at = ? WHERE id = ?`,
-        [isSubscribed ? 1 : 0, now(), folderId],
-      );
-      broadcaster.touch(TABLE_FAMILIES.FOLDERS);
-      return { applied: result.changes ?? 0 };
+    [DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTION]: async ({ folderId, isSubscribed }) =>
+      applyFolderSubscriptions([{ folderId, isSubscribed }]),
+
+    [DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTIONS]: async ({ updates = [] }) =>
+      applyFolderSubscriptions(updates),
+
+    /**
+     * Post-success cache effect for createMailbox: insert the server-
+     * confirmed folder row so the sidebar shows it before any
+     * StateChange push. Upsert keyed on (account_id, remote_id) — a
+     * concurrent Mailbox/changes sync may have ingested the row first.
+     */
+    [DB_RPC.OUTBOX_APPLY_FOLDER_CREATE]: async (create) => {
+      const result = await applyFolderCreates([{ ...create, clientId: 'single' }]);
+      return { folderId: result.folderIds.single ?? null };
     },
+
+    [DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]: async ({ creates = [] }) =>
+      applyFolderCreates(creates),
+
+    /**
+     * Post-success cache effect for updateMailbox (rename and/or move).
+     * `parentProvided` distinguishes "move to root" (parentFolderId
+     * null) from "parent untouched" — JSON round-trips drop undefined.
+     */
+    [DB_RPC.OUTBOX_APPLY_FOLDER_UPDATE]: async (update) =>
+      applyFolderUpdates([update]),
+
+    [DB_RPC.OUTBOX_APPLY_FOLDER_UPDATES]: async ({ updates = [] }) =>
+      applyFolderUpdates(updates),
+
+    /**
+     * Post-success cache effect for destroyMailbox: soft-delete the
+     * folder row and drop its memberships and cached query views in one
+     * transaction. Messages that lived only in this folder are cleaned
+     * up by the next Email/changes sync (the server already destroyed
+     * them when onDestroyRemoveEmails was true); rows in other folders
+     * keep their remaining memberships.
+     */
+    [DB_RPC.OUTBOX_APPLY_FOLDER_DESTROY]: async ({
+      folderId, accountId, onDestroyRemoveEmails = false,
+    }) => {
+      let ownerAccountId = accountId;
+      if (ownerAccountId == null) {
+        const folder = await engine.get(`SELECT account_id FROM folders WHERE id = ?`, [folderId]);
+        ownerAccountId = folder?.account_id;
+      }
+      return applyFolderDestroys([{
+        folderId,
+        accountId: ownerAccountId,
+        onDestroyRemoveEmails,
+      }]);
+    },
+
+    [DB_RPC.OUTBOX_APPLY_FOLDER_DESTROYS]: async ({ destroys = [] }) =>
+      applyFolderDestroys(destroys),
 
     [DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]: async ({ accountId, replacements }) => {
       const items = (replacements ?? []).filter((r) => r?.messageId != null);

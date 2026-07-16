@@ -37,6 +37,12 @@ interface MutationOutcome {
   attempted: number;
   succeeded: number;
   failed: number;
+  error?: any;
+  result?: {
+    succeededIds?: Array<number | string>;
+    errors?: Record<string, any>;
+    created?: Record<string, { remoteId: string; folderId?: number | null }>;
+  };
 }
 
 interface MoveResult { succeeded: number; failed: number; skipped: number }
@@ -217,6 +223,20 @@ export const useMailStore = defineStore('mail', () => {
   );
 
   /**
+   * Primary-account folders the sidebar should render. Role (system)
+   * folders always show — hiding your own Inbox would strand you — but
+   * unsubscribing a user folder hides it, matching Thunderbird's and
+   * Roundcube's folder-pane behaviour. NULL is_subscribed (server never
+   * reported the property) is treated as subscribed so folders never
+   * vanish just because the flag is unknown.
+   */
+  const sidebarPrimaryFolders = computed(
+    () => primaryFolders.value.filter(
+      (f) => f.role != null || Number(f.is_subscribed ?? 1) !== 0,
+    ),
+  );
+
+  /**
    * Shared folders grouped per owning account for the sidebar. Only
    * subscribed folders are listed (RFC 8621 §2: clients may display
    * just the subscribed subset of shared mailboxes and offer a
@@ -278,6 +298,7 @@ export const useMailStore = defineStore('mail', () => {
     refreshFolderProgressInflight = null;
     refreshFolderProgressDirty = false;
     staleFolderIds.clear();
+    folderDeleteMailboxHasEmailIds.clear();
     manualRefreshFolderId = null;
   }
 
@@ -348,6 +369,13 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
+  // Optimistic isSubscribed values for folders whose mutation is still
+  // in flight. refreshFolders re-applies these on top of DB reads so a
+  // FOLDERS broadcast from an earlier mutation in the same batch can't
+  // momentarily resurrect the old value of a later one (which made
+  // cascaded unsubscribes flash every child through the sidebar).
+  const optimisticSubscriptions = new Map<number, 0 | 1>();
+
   async function refreshFolders() {
     if (!repo || authStore.accountId == null) {
       folders.value = [];
@@ -368,7 +396,17 @@ export const useMailStore = defineStore('mail', () => {
         visibleAccounts.map((a) => repo!.listFolders(a.id)),
       );
       accounts.value = visibleAccounts;
-      folders.value = folderLists.flat();
+      const rows = folderLists.flat();
+      // Keep in-flight optimistic subscription flips on top of the DB
+      // read: a broadcast from one batch member must not resurrect the
+      // stale value of another still waiting on the server.
+      if (optimisticSubscriptions.size > 0) {
+        for (const row of rows) {
+          const pending = optimisticSubscriptions.get(row.id);
+          if (pending != null) row.is_subscribed = pending;
+        }
+      }
+      folders.value = rows;
       await refreshFolderProgress();
     } catch (err) {
       error.value = err?.message ?? String(err);
@@ -1387,6 +1425,16 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   async function archiveMessages(ids: number[]) {
+    const messageIds = normalizeMessageIds(ids);
+    const source = currentFolder.value;
+    if (!source) {
+      error.value = 'Cannot archive messages because the current folder is no longer available.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    if (source.account_id !== authStore.accountId) {
+      error.value = 'Archive is unavailable for shared-account messages until account-aware moves are supported.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
     const archive = primaryFolders.value.find((f) => f.role === 'archive');
     if (!archive?.id) {
       error.value = 'No archive folder is configured.';
@@ -1407,6 +1455,15 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
+    const source = currentFolder.value;
+    if (!source) {
+      error.value = 'Cannot mark messages as junk because the current folder is no longer available.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    if (source.account_id !== authStore.accountId) {
+      error.value = 'Junk is unavailable for shared-account messages until account-aware moves are supported.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
     const junk = primaryFolders.value.find((f) => f.role === 'junk');
     if (!junk?.id) {
       error.value = 'No junk folder is configured.';
@@ -1493,6 +1550,15 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
+    const source = currentFolder.value;
+    if (!source) {
+      error.value = 'Cannot move these messages because the current folder is no longer available.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    if (source.account_id !== authStore.accountId) {
+      error.value = 'This action is unavailable for shared-account messages until account-aware moves are supported.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
     const target = inbox.value;
     if (!target?.id) {
       error.value = 'No Inbox folder is configured.';
@@ -1639,6 +1705,15 @@ export const useMailStore = defineStore('mail', () => {
   async function destroyMessages(ids: number[], { permanent = false }: { permanent?: boolean } = {}) {
     if (!repo || authStore.accountId == null) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
+    const source = currentFolder.value;
+    if (!source) {
+      error.value = 'Cannot delete messages because the current folder is no longer available.';
+      return;
+    }
+    if (source.account_id !== authStore.accountId) {
+      error.value = 'Delete is unavailable for shared-account messages until account-aware deletion is supported.';
+      return;
+    }
     // Drop ids that no longer exist in messages (e.g. a previous
     // delete attempt already wiped them but the UI still shows them
     // because the user clicked before the row re-rendered). The
@@ -2126,6 +2201,12 @@ export const useMailStore = defineStore('mail', () => {
     if (Number(source.id) === Number(target.id)) {
       return;
     }
+    if (source.account_id !== authStore.accountId) {
+      throwMoveError('Moving shared-account messages is unavailable until account-aware moves are supported.');
+    }
+    if (source.account_id !== target.account_id) {
+      throwMoveError('Cross-account message drops require copy support and are not available yet.');
+    }
     if (source.may_remove_items != null && Number(source.may_remove_items) === 0) {
       throwMoveError('Cannot move messages out of this folder.');
     }
@@ -2291,47 +2372,504 @@ export const useMailStore = defineStore('mail', () => {
   const subscriptionPendingFolderIds = ref<Set<number>>(new Set());
 
   /**
-   * Toggle a folder's subscription (JMAP Mailbox isSubscribed).
-   * Enqueued through pending_mutations and run immediately; the local
-   * folder row is updated by the outbox's post-success apply, so the
-   * FOLDERS broadcast repaints the sidebar once the server confirmed.
-   * Returns true when the server accepted the change.
+   * Set the subscription (JMAP Mailbox isSubscribed) of one or more
+   * folders. All affected rows flip optimistically in a single
+   * reactive pass, so the sidebar repaints once — straight to the
+   * final state — instead of stepping through every intermediate
+   * combination while the per-mailbox mutations land sequentially.
+   * Returns true when the server accepted every change; on any
+   * failure the folder list is reloaded from the DB to reconcile.
    */
-  async function setFolderSubscription(folderId: number, isSubscribed: boolean): Promise<boolean> {
+  async function setFolderSubscriptions(
+    folderIds: number[],
+    isSubscribed: boolean,
+  ): Promise<boolean> {
     if (!repo || authStore.accountId == null) return false;
-    const id = Number(folderId);
-    if (!Number.isFinite(id) || subscriptionPendingFolderIds.value.has(id)) return false;
-    subscriptionPendingFolderIds.value = new Set([...subscriptionPendingFolderIds.value, id]);
+    const requestedIds = [...new Set(folderIds.map(Number))].filter(Number.isFinite);
+    const omittedPendingIds = requestedIds.filter(
+      (id) => subscriptionPendingFolderIds.value.has(id),
+    );
+    const ids = requestedIds.filter(
+      (id) => !subscriptionPendingFolderIds.value.has(id),
+    );
+    if (ids.length === 0) return false;
+    const target: 0 | 1 = isSubscribed ? 1 : 0;
+    const previous = new Map<number, { subscribed: 0 | 1 | null; starred: 0 | 1 }>();
+    for (const id of ids) {
+      optimisticSubscriptions.set(id, target);
+      const row = folders.value.find((f) => f.id === id);
+      if (row) {
+        previous.set(id, {
+          subscribed: row.is_subscribed,
+          starred: row.is_starred,
+        });
+        row.is_subscribed = target;
+        if (!isSubscribed) row.is_starred = 0;
+      }
+    }
+    subscriptionPendingFolderIds.value = new Set([
+      ...subscriptionPendingFolderIds.value,
+      ...ids,
+    ]);
     try {
       const mutation = await repo.insertPendingMutation({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
         targetMessageId: null,
-        requestJson: JSON.stringify({ folderId: id, isSubscribed }),
+        requestJson: JSON.stringify({
+          operations: ids.map((folderId) => ({ folderId, isSubscribed })),
+        }),
       });
-      const result = typeof repo.runMutation === 'function' && mutation?.id != null
+      const result: MutationOutcome = typeof repo.runMutation === 'function' && mutation?.id != null
         ? await repo.runMutation(authStore.accountId, mutation.id)
         : await repo.drainOutbox(authStore.accountId);
-      if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
-        const detail = mutation?.id != null && typeof repo.getPendingMutationError === 'function'
-          ? await repo.getPendingMutationError(mutation.id)
-          : null;
-        error.value = describeMutationFailure(
-          result,
-          detail,
-          isSubscribed ? 'subscribe to' : 'unsubscribe from',
-        ).replace('message', 'folder');
-        return false;
+      const succeeded = new Set(
+        (result?.result?.succeededIds ?? (
+          (result?.failed ?? 0) === 0 && (result?.succeeded ?? 0) > 0 ? ids : []
+        )).map(Number),
+      );
+      for (const id of ids) {
+        if (succeeded.has(id)) continue;
+        const snapshot = previous.get(id);
+        const row = folders.value.find((folder) => folder.id === id);
+        if (snapshot && row) {
+          row.is_subscribed = snapshot.subscribed;
+          row.is_starred = snapshot.starred;
+        }
       }
-      return true;
+      const allOk = omittedPendingIds.length === 0 && succeeded.size === ids.length;
+      if (!allOk) {
+        if (omittedPendingIds.length > 0 && succeeded.size === ids.length) {
+          error.value = 'Some folders already have a subscription change in progress.';
+        } else {
+          const detail = mutation?.id != null ? await loadMutationError(mutation.id) : null;
+          error.value = describeMutationFailure(
+            result,
+            detail,
+            isSubscribed ? 'subscribe to' : 'unsubscribe from',
+          ).replace('message', 'folder');
+        }
+      }
+      return allOk;
     } catch (err) {
+      for (const [id, snapshot] of previous) {
+        const row = folders.value.find((folder) => folder.id === id);
+        if (row) {
+          row.is_subscribed = snapshot.subscribed;
+          row.is_starred = snapshot.starred;
+        }
+      }
       error.value = err?.message ?? String(err);
       return false;
     } finally {
+      for (const id of ids) optimisticSubscriptions.delete(id);
       const next = new Set(subscriptionPendingFolderIds.value);
-      next.delete(id);
+      for (const id of ids) next.delete(id);
       subscriptionPendingFolderIds.value = next;
     }
+  }
+
+  /** Single-folder convenience wrapper around setFolderSubscriptions. */
+  function setFolderSubscription(folderId: number, isSubscribed: boolean): Promise<boolean> {
+    return setFolderSubscriptions([folderId], isSubscribed);
+  }
+
+  /**
+   * Toggle a folder's client-local star (priority pin at the top of
+   * the folder list). Purely a SQLite preference — no JMAP mutation —
+   * so it applies optimistically and the FOLDERS broadcast reconciles
+   * other tabs.
+   */
+  async function setFoldersStarred(folderIds: number[], isStarred: boolean): Promise<boolean> {
+    if (!repo) return false;
+    const target = isStarred ? 1 : 0;
+    const rows = [...new Set(folderIds.map(Number))]
+      .map((id) => folders.value.find((folder) => folder.id === id))
+      .filter((folder): folder is FolderRow => (
+        folder != null
+        && folder.role == null
+        && (!isStarred || Number(folder.is_subscribed ?? 1) !== 0)
+      ));
+    if (rows.length === 0) return false;
+    const previous = new Map(rows.map((folder) => [folder.id, folder.is_starred]));
+    for (const folder of rows) folder.is_starred = target;
+    try {
+      await repo.setFoldersStarred(rows.map((folder) => folder.id), isStarred);
+      return true;
+    } catch (err) {
+      for (const folder of rows) folder.is_starred = previous.get(folder.id) ?? 0;
+      error.value = err?.message ?? String(err);
+      return false;
+    }
+  }
+
+  async function setFolderStarred(folderId: number, isStarred: boolean): Promise<boolean> {
+    return setFoldersStarred([folderId], isStarred);
+  }
+
+  // ----- folder create / rename / move / delete ------------------------
+
+  /** Folder ids with an in-flight rename/move/delete mutation. */
+  const folderEditPendingIds = ref<Set<number>>(new Set());
+  // A destructive retry is legal only after the server rejected this
+  // exact folder with mailboxHasEmail. Ancestors pruned for dependency
+  // safety still receive their own non-destructive probe first.
+  const folderDeleteMailboxHasEmailIds = new Set<number>();
+  /** True while a createFolder mutation is in flight. */
+  const folderCreatePending = ref(false);
+
+  interface FolderOpResult {
+    ok: boolean;
+    /** Machine-readable failure cause for flows the UI branches on. */
+    reason?: string;
+    succeededIds?: Array<number | string>;
+    errors?: Record<string, any>;
+  }
+
+  function folderOpFailure(detail: { error_json?: string | null } | null, fallback: string): FolderOpResult {
+    let reason = fallback;
+    if (detail?.error_json) {
+      try {
+        const parsed = JSON.parse(detail.error_json);
+        // notUpdated/notCreated/notDestroyed wrap the JMAP SetError;
+        // surface the inner type (e.g. mailboxHasEmail, forbidden) so
+        // the dialog can branch on it.
+        reason = parsed?.detail?.type ?? parsed?.type ?? fallback;
+        // The server reports a nesting-depth violation as a generic
+        // invalidProperties on parentId; the description is the only
+        // way to tell it apart from other bad-property rejections.
+        const description = String(parsed?.detail?.description ?? '');
+        if (reason === 'invalidProperties' && /too deep/i.test(description)) {
+          reason = 'tooDeep';
+        }
+      } catch {
+        // fall through
+      }
+    }
+    return { ok: false, reason };
+  }
+
+  async function runFolderMutation(
+    mutationType: MutationType,
+    request: Record<string, unknown>,
+    action: string,
+  ): Promise<FolderOpResult> {
+    if (!repo || authStore.accountId == null) {
+      return { ok: false, reason: 'noBackend' };
+    }
+    const mutation = await repo.insertPendingMutation({
+      accountId: authStore.accountId,
+      mutationType,
+      targetMessageId: null,
+      requestJson: JSON.stringify(request),
+    });
+    const result: MutationOutcome = typeof repo.runMutation === 'function' && mutation?.id != null
+      ? await repo.runMutation(authStore.accountId, mutation.id)
+      : await repo.drainOutbox(authStore.accountId);
+    if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
+      const detail = mutation?.id != null ? await loadMutationError(mutation.id) : null;
+      const failure = folderOpFailure(detail, 'serverFail');
+      error.value = describeMutationFailure(result, detail, action).replace('message', 'folder');
+      return {
+        ...failure,
+        succeededIds: result.result?.succeededIds ?? [],
+        errors: result.result?.errors ?? result.error?.result?.errors ?? {},
+      };
+    }
+    const success: FolderOpResult = { ok: true };
+    if (result.result?.succeededIds) success.succeededIds = result.result.succeededIds;
+    if (result.result?.errors) success.errors = result.result.errors;
+    return success;
+  }
+
+  function siblingNameTaken(accountId: number, parentFolderId: number | null, name: string, excludeFolderId?: number): boolean {
+    const target = name.trim().toLowerCase();
+    return folders.value.some((f) =>
+      f.account_id === accountId
+      && Number(f.is_deleted) !== 1
+      && f.id !== excludeFolderId
+      && (f.parent_id ?? null) === (parentFolderId ?? null)
+      && f.name?.trim().toLowerCase() === target);
+  }
+
+  /**
+   * Create a mailbox, top-level (parentFolderId null: always on the
+   * signed-in account) or as a child of any folder the user may create
+   * under (own folders, or shared folders granting mayCreateChild).
+   */
+  async function createFolder({ name, parentFolderId = null }: { name: string; parentFolderId?: number | null }): Promise<FolderOpResult> {
+    const trimmed = (name ?? '').trim();
+    if (!trimmed) return { ok: false, reason: 'invalidName' };
+    if (folderCreatePending.value) return { ok: false, reason: 'pending' };
+    const parent = parentFolderId != null
+      ? folders.value.find((f) => f.id === parentFolderId) ?? null
+      : null;
+    if (parentFolderId != null && !parent) return { ok: false, reason: 'unknownFolder' };
+    const targetAccountId = parent?.account_id ?? authStore.accountId;
+    if (targetAccountId != null && siblingNameTaken(targetAccountId, parent?.id ?? null, trimmed)) {
+      error.value = `A folder named “${trimmed}” already exists here.`;
+      return { ok: false, reason: 'duplicateName' };
+    }
+    folderCreatePending.value = true;
+    try {
+      return await runFolderMutation(
+        MUTATION_TYPE.CREATE_MAILBOX,
+        { operations: [{ clientId: 'c1', name: trimmed, parentFolderId }] },
+        'create',
+      );
+    } catch (err) {
+      error.value = err?.message ?? String(err);
+      return { ok: false, reason: 'serverFail' };
+    } finally {
+      folderCreatePending.value = false;
+    }
+  }
+
+  /**
+   * Rename and/or move a folder. Pass `parentFolderId` (possibly null
+   * for top level) only when the parent should change.
+   */
+  async function updateFolder(
+    folderId: number,
+    changes: { name?: string; parentFolderId?: number | null },
+  ): Promise<FolderOpResult> {
+    const id = Number(folderId);
+    const folder = folders.value.find((f) => f.id === id);
+    if (!folder) return { ok: false, reason: 'unknownFolder' };
+    if (folder.role != null) return { ok: false, reason: 'systemFolder' };
+    if (folderEditPendingIds.value.has(id)) return { ok: false, reason: 'pending' };
+
+    const parentProvided = Object.prototype.hasOwnProperty.call(changes, 'parentFolderId');
+    const request: Record<string, unknown> = { folderId: id };
+    const nextName = changes.name?.trim();
+    if (nextName && nextName !== folder.name) request.name = nextName;
+    if (parentProvided && (changes.parentFolderId ?? null) !== (folder.parent_id ?? null)) {
+      const nextParentId = changes.parentFolderId ?? null;
+      if (nextParentId != null) {
+        // Walk up from the destination: moving under yourself or a
+        // descendant would detach the subtree into a cycle.
+        let cursor = folders.value.find((f) => f.id === nextParentId) ?? null;
+        while (cursor) {
+          if (cursor.id === id) return { ok: false, reason: 'parentLoop' };
+          cursor = folders.value.find((f) => f.id === cursor!.parent_id) ?? null;
+        }
+        const parent = folders.value.find((f) => f.id === nextParentId);
+        if (!parent || parent.account_id !== folder.account_id) {
+          return { ok: false, reason: 'unknownFolder' };
+        }
+      }
+      request.parentFolderId = nextParentId;
+    }
+    if (request.name == null && !('parentFolderId' in request)) {
+      return { ok: true };
+    }
+    const finalName = (request.name as string | undefined) ?? folder.name;
+    const finalParent = 'parentFolderId' in request
+      ? (request.parentFolderId as number | null)
+      : (folder.parent_id ?? null);
+    if (siblingNameTaken(folder.account_id, finalParent, finalName, id)) {
+      error.value = `A folder named “${finalName}” already exists here.`;
+      return { ok: false, reason: 'duplicateName' };
+    }
+
+    folderEditPendingIds.value = new Set([...folderEditPendingIds.value, id]);
+    try {
+      return await runFolderMutation(
+        MUTATION_TYPE.UPDATE_MAILBOX,
+        { operations: [request] },
+        'rename',
+      );
+    } catch (err) {
+      error.value = err?.message ?? String(err);
+      return { ok: false, reason: 'serverFail' };
+    } finally {
+      const next = new Set(folderEditPendingIds.value);
+      next.delete(id);
+      folderEditPendingIds.value = next;
+    }
+  }
+
+  /**
+   * Delete a folder. First attempt always sends
+   * onDestroyRemoveEmails: false; a mailboxHasEmail rejection is
+   * returned as { ok: false, reason: 'mailboxHasEmail' } so the dialog
+   * can show the escalated warning and call again with
+   * removeEmails: true after explicit confirmation (RFC 8621 §2.5).
+   *
+   * skipChildCheck is for the bulk-delete path: the dialog deletes a
+   * fully-selected subtree deepest-first, and the local folders ref may
+   * not have refreshed between the sequential deletes, so the client-
+   * side "has children" guard would false-positive on the parent. The
+   * server still enforces mailboxHasChild, so this only skips the
+   * local pre-check, not the real constraint.
+   */
+  async function deleteFolders(
+    folderIds: number[],
+    { removeEmails = false, skipChildCheck = false }: {
+      removeEmails?: boolean;
+      skipChildCheck?: boolean;
+    } = {},
+  ): Promise<FolderOpResult> {
+    const ids = [...new Set(folderIds.map(Number).filter(Number.isFinite))];
+    if (ids.length === 0) return { ok: false, reason: 'unknownFolder' };
+    const selected = new Set(ids);
+    const rows = new Map(ids.map((id) => [
+      id,
+      folders.value.find((folder) => folder.id === id) ?? null,
+    ]));
+    for (const [id, folder] of rows) {
+      if (!folder) return { ok: false, reason: 'unknownFolder' };
+      if (folder.role != null) return { ok: false, reason: 'systemFolder' };
+      if (folderEditPendingIds.value.has(id)) return { ok: false, reason: 'pending' };
+      if (!skipChildCheck && folders.value.some(
+        (candidate) => candidate.parent_id === id
+          && Number(candidate.is_deleted) !== 1
+          && !selected.has(candidate.id),
+      )) {
+        error.value = 'Move or delete its subfolders first.';
+        return { ok: false, reason: 'mailboxHasChild' };
+      }
+    }
+
+    const depthMemo = new Map<number, number>();
+    const depthOf = (id: number): number => {
+      const cached = depthMemo.get(id);
+      if (cached != null) return cached;
+      const parentId = rows.get(id)?.parent_id;
+      const depth = parentId != null && selected.has(parentId) ? depthOf(parentId) + 1 : 0;
+      depthMemo.set(id, depth);
+      return depth;
+    };
+    const byDepth = new Map<number, number[]>();
+    for (const id of ids) {
+      const depth = depthOf(id);
+      const layer = byDepth.get(depth) ?? [];
+      layer.push(id);
+      byDepth.set(depth, layer);
+    }
+
+    folderEditPendingIds.value = new Set([...folderEditPendingIds.value, ...ids]);
+    const succeededIds: number[] = [];
+    const errors: Record<string, any> = {};
+    const blocked = new Set<number>();
+    const blockAncestors = (id: number) => {
+      let parentId = rows.get(id)?.parent_id ?? null;
+      while (parentId != null && selected.has(parentId)) {
+        blocked.add(parentId);
+        parentId = rows.get(parentId)?.parent_id ?? null;
+      }
+    };
+    try {
+      const depths = [...byDepth.keys()].sort((a, b) => b - a);
+      for (const depth of depths) {
+        const layer = (byDepth.get(depth) ?? []).filter((id) => !blocked.has(id));
+        for (const id of byDepth.get(depth) ?? []) {
+          if (blocked.has(id)) errors[String(id)] = { type: 'childFailed' };
+        }
+        if (layer.length === 0) continue;
+        let result = await runFolderMutation(
+          MUTATION_TYPE.DESTROY_MAILBOX,
+          {
+            operations: layer.map((folderId) => ({
+              folderId,
+              onDestroyRemoveEmails: removeEmails
+                && folderDeleteMailboxHasEmailIds.has(folderId),
+            })),
+          },
+          'delete',
+        );
+        let confirmed = new Set(
+          (result.succeededIds ?? (result.ok ? layer : [])).map(Number),
+        );
+        const layerErrors: Record<string, any> = { ...(result.errors ?? {}) };
+        if (!result.ok && Object.keys(layerErrors).length === 0) {
+          for (const id of layer) {
+            if (!confirmed.has(id)) layerErrors[String(id)] = { type: result.reason ?? 'serverFail' };
+          }
+        }
+        const newlyDestructive = removeEmails
+          ? layer.filter((id) => {
+            const failure = layerErrors[String(id)];
+            const reason = failure?.detail?.type ?? failure?.type;
+            return reason === 'mailboxHasEmail'
+              && !folderDeleteMailboxHasEmailIds.has(id);
+          })
+          : [];
+        if (newlyDestructive.length > 0) {
+          for (const id of newlyDestructive) folderDeleteMailboxHasEmailIds.add(id);
+          const retry = await runFolderMutation(
+            MUTATION_TYPE.DESTROY_MAILBOX,
+            {
+              operations: newlyDestructive.map((folderId) => ({
+                folderId,
+                onDestroyRemoveEmails: true,
+              })),
+            },
+            'delete',
+          );
+          for (const id of newlyDestructive) delete layerErrors[String(id)];
+          const retried = new Set(
+            (retry.succeededIds ?? (retry.ok ? newlyDestructive : [])).map(Number),
+          );
+          confirmed = new Set([...confirmed, ...retried]);
+          for (const id of newlyDestructive) {
+            if (!retried.has(id)) {
+              layerErrors[String(id)] = retry.errors?.[String(id)]
+                ?? { type: retry.reason ?? 'serverFail' };
+            }
+          }
+          result = retry;
+        }
+        succeededIds.push(...layer.filter((id) => confirmed.has(id)));
+        for (const id of confirmed) folderDeleteMailboxHasEmailIds.delete(id);
+        for (const id of layer) {
+          if (confirmed.has(id)) continue;
+          const failure = layerErrors[String(id)] ?? { type: result.reason ?? 'serverFail' };
+          errors[String(id)] = failure;
+          const reason = failure?.detail?.type ?? failure?.type;
+          if (reason === 'mailboxHasEmail') folderDeleteMailboxHasEmailIds.add(id);
+          blockAncestors(id);
+        }
+      }
+      if (succeededIds.includes(currentFolderId.value ?? -1)) {
+        const fallback = inbox.value?.id ?? null;
+        if (fallback != null) selectFolder(fallback);
+      }
+      const failures = Object.values(errors) as any[];
+      if (failures.length === 0) {
+        error.value = null;
+        return { ok: true, succeededIds };
+      }
+      const reasons = failures.map((failure) =>
+        failure?.detail?.type ?? failure?.type ?? 'serverFail');
+      const actionableReasons = reasons.filter((reason) => reason !== 'childFailed');
+      const reason = actionableReasons.find((value) => value !== 'mailboxHasEmail')
+        ?? actionableReasons[0]
+        ?? reasons[0];
+      const escalationOnly = actionableReasons.length > 0
+        && actionableReasons.every((value) => value === 'mailboxHasEmail');
+      error.value = escalationOnly
+        ? null
+        : `Could not delete folder (${reason}).`;
+      return { ok: false, reason, succeededIds, errors };
+    } catch (err) {
+      error.value = err?.message ?? String(err);
+      return { ok: false, reason: 'serverFail', succeededIds, errors };
+    } finally {
+      const next = new Set(folderEditPendingIds.value);
+      for (const id of ids) next.delete(id);
+      folderEditPendingIds.value = next;
+    }
+  }
+
+  async function deleteFolder(
+    folderId: number,
+    options: { removeEmails?: boolean; skipChildCheck?: boolean } = {},
+  ): Promise<FolderOpResult> {
+    const result = await deleteFolders([folderId], options);
+    return result.ok
+      ? { ok: true }
+      : { ok: false, reason: result.reason };
   }
 
   return {
@@ -2339,9 +2877,19 @@ export const useMailStore = defineStore('mail', () => {
     accounts,
     sharedAccounts,
     primaryFolders,
+    sidebarPrimaryFolders,
     sharedFolderGroups,
     subscriptionPendingFolderIds,
     setFolderSubscription,
+    setFolderSubscriptions,
+    setFolderStarred,
+    setFoldersStarred,
+    folderEditPendingIds,
+    folderCreatePending,
+    createFolder,
+    updateFolder,
+    deleteFolder,
+    deleteFolders,
     currentFolderId,
     currentFolder,
     inbox,

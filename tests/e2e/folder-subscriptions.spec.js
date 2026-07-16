@@ -20,12 +20,12 @@ import { waitForPendingMutations } from './helpers/ui.js';
 /**
  * Folder subscriptions — Verified Consistency triple.
  *
- * Toggling a folder in the "Manage folders" dialog enqueues a
- * SET_MAILBOX_SUBSCRIPTION mutation that issues a JMAP Mailbox/set
- * updating isSubscribed (RFC 8621 §2). This spec asserts the dialog
- * checkbox state (UI), the folders.is_subscribed column via
- * window.__repo (cache), and the Mailbox isSubscribed property via
- * direct JMAP (server), in both directions.
+ * Toggling a folder's subscription switch in the "Manage Folders"
+ * dialog enqueues a SET_MAILBOX_SUBSCRIPTION mutation that issues a
+ * JMAP Mailbox/set updating isSubscribed (RFC 8621 §2). This spec
+ * asserts the switch's checked state (UI), the folders.is_subscribed
+ * column via window.__repo (cache), and the Mailbox isSubscribed
+ * property via direct JMAP (server), in both directions.
  */
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
@@ -80,7 +80,7 @@ test.describe('Folder subscriptions e2e', () => {
     await resetSharedSession(sharedPage);
   });
 
-  test('Manage folders checkbox round-trips isSubscribed through UI, cache, and server', async ({ sharedPage: page }, testInfo) => {
+  test('Manage Folders switch round-trips isSubscribed through UI, cache, and server', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailbox = await ensureMailbox(jmap, { name: TEST_FOLDER_NAME });
     // Known baseline: subscribed. Stalwart leaves Mailbox/set creates
@@ -88,26 +88,32 @@ test.describe('Folder subscriptions e2e', () => {
     await setServerSubscription(jmap, mailbox.id, true);
 
     try {
-      // The folder is on the signed-in account, so it renders in the
-      // sidebar regardless of subscription state; wait for the sync.
-      await expect(
-        page.locator('.folder-node').filter({ hasText: TEST_FOLDER_NAME }).first(),
-      ).toBeVisible({ timeout: 30_000 });
+      // Subscribed baseline, so the folder renders in the sidebar once
+      // the sync lands.
+      const sidebarNode = page.locator('.folder-node').filter({ hasText: TEST_FOLDER_NAME }).first();
+      await expect(sidebarNode).toBeVisible({ timeout: 30_000 });
 
       await page.locator('.folder-tree__manage').click();
-      const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Folder subscriptions' });
+      const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
       await expect(dialog).toBeVisible({ timeout: 10_000 });
 
-      const checkbox = dialog.locator(`input[data-folder-name="${TEST_FOLDER_NAME}"]`);
+      // The dialog list is virtualized; filter by name so the target
+      // row is guaranteed to be mounted regardless of folder count.
+      await dialog.locator('.folder-subs__search-input').fill(TEST_FOLDER_NAME);
+
+      // services-ui SwitchToggle: click the component root, read state
+      // from its (hidden) checkbox input.
+      const subSwitch = dialog.locator(`[data-folder-name="${TEST_FOLDER_NAME}"]`);
+      const subInput = subSwitch.locator('input[type="checkbox"]');
       // The direct JMAP baseline set may reach the client via push a
       // moment after the sidebar rendered; poll until it lands.
-      await expect(checkbox).toBeChecked({ timeout: 30_000 });
+      await expect(subInput).toBeChecked({ timeout: 30_000 });
 
       // Unsubscribe.
-      await checkbox.click();
+      await subSwitch.click();
       await waitForPendingMutations(page);
-      await expect(checkbox).not.toBeChecked({ timeout: 10_000 });
-      await expect(checkbox).toBeEnabled({ timeout: 10_000 });
+      await expect(subInput).not.toBeChecked({ timeout: 10_000 });
+      await expect(subInput).toBeEnabled({ timeout: 10_000 });
 
       await expect.poll(
         async () => readCachedSubscription(page, mailbox.id),
@@ -117,11 +123,13 @@ test.describe('Folder subscriptions e2e', () => {
         async () => getServerSubscription(jmap, mailbox.id),
         { timeout: 10_000, message: 'server should report isSubscribed false' },
       ).toBe(false);
+      // Unsubscribed own user folders disappear from the sidebar.
+      await expect(sidebarNode).toBeHidden({ timeout: 10_000 });
 
       // Subscribe again.
-      await checkbox.click();
+      await subSwitch.click();
       await waitForPendingMutations(page);
-      await expect(checkbox).toBeChecked({ timeout: 10_000 });
+      await expect(subInput).toBeChecked({ timeout: 10_000 });
 
       await expect.poll(
         async () => readCachedSubscription(page, mailbox.id),
@@ -131,6 +139,7 @@ test.describe('Folder subscriptions e2e', () => {
         async () => getServerSubscription(jmap, mailbox.id),
         { timeout: 10_000, message: 'server should report isSubscribed true' },
       ).toBe(true);
+      await expect(sidebarNode).toBeVisible({ timeout: 10_000 });
 
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: 5_000 });

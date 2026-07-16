@@ -5,11 +5,30 @@ import {
 } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { nextTick } from 'vue';
+import { computed, nextTick } from 'vue';
 
 vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
+}));
+
+// The manage-folders dialog virtualizes its list; happy-dom has no
+// layout, so materialize every item like the MessageList tests do.
+vi.mock('@tanstack/vue-virtual', () => ({
+  useVirtualizer: (optionsRef) => computed(() => {
+    const count = Number(optionsRef.value.count ?? 0);
+    return {
+      getTotalSize: () => count * 33,
+      getVirtualItems: () => Array.from({ length: count }, (_, index) => ({
+        index,
+        key: optionsRef.value.getItemKey?.(index) ?? index,
+        start: index * 33,
+        size: 33,
+      })),
+      measureElement: () => {},
+      measure: () => {},
+    };
+  }),
 }));
 
 import FolderTree from '../../../src/components/FolderTree.vue';
@@ -216,6 +235,147 @@ describe('FolderTree collapsed unread totals', () => {
   });
 });
 
+describe('FolderTree starred folders', () => {
+  it('floats starred user folders to the top of the FOLDERS section', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.id === 20 ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    // Reports (starred) precedes Projects; the role-anchored Inbox
+    // group is untouched above them.
+    const names = wrapper.findAll('.folder-node').map((n) => n.text());
+    const inboxIdx = names.findIndex((t) => t.includes('Inbox'));
+    const reportsIdx = names.findIndex((t) => t.includes('Reports'));
+    const projectsIdx = names.findIndex((t) => t.includes('Projects'));
+    expect(inboxIdx).toBeLessThan(reportsIdx);
+    expect(reportsIdx).toBeLessThan(projectsIdx);
+
+    // The leading gold star is the only group marker: the starred row
+    // carries it, others don't, and there is no labeled divider.
+    expect(nodeByName(wrapper, 'Reports').find('.folder-node__star').exists()).toBe(true);
+    expect(nodeByName(wrapper, 'Projects').find('.folder-node__star').exists()).toBe(false);
+  });
+
+  it('renders no star markers when nothing is starred', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('.folder-node__star').exists()).toBe(false);
+  });
+
+  it('pulls a starred subfolder out of its unstarred parent into the starred group', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    // Alpha is nested under Projects; starring it promotes it to a root.
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.id === 11 ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    // Alpha renders immediately (a root now) even though the tree
+    // starts collapsed, sitting between Inbox and the divider.
+    const names = wrapper.findAll('.folder-node').map((n) => n.text());
+    const alphaIdx = names.findIndex((t) => t.includes('Alpha'));
+    expect(alphaIdx).toBeGreaterThan(names.findIndex((t) => t.includes('Inbox')));
+    expect(alphaIdx).toBeLessThan(names.findIndex((t) => t.includes('Projects')));
+    expect(nodeByName(wrapper, 'Alpha').find('.folder-node__star').exists()).toBe(true);
+
+    // Its own child (Gamma) came along: expanding Alpha reveals it,
+    // while expanding Projects no longer shows Alpha.
+    await nodeByName(wrapper, 'Alpha').find('button.folder-node__toggle').trigger('click');
+    await nextTick();
+    expect(wrapper.text()).toContain('Gamma');
+    expect(nodeByName(wrapper, 'Projects').find('button.folder-node__toggle').exists()).toBe(false);
+  });
+
+  it('promotes a starred child to its own root even when the parent is starred too', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.id === 10 || f.id === 11 ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    // Both Projects and Alpha are top-level favorites; starring is
+    // never a latent no-op. Alpha's own subtree (Gamma) came with it.
+    expect(wrapper.text()).toContain('Alpha');
+    expect(nodeByName(wrapper, 'Projects').find('.folder-node__star').exists()).toBe(true);
+    expect(nodeByName(wrapper, 'Alpha').find('.folder-node__star').exists()).toBe(true);
+
+    // Projects no longer has Alpha nested (its only child), so it has
+    // no disclosure toggle; expanding Alpha reveals Gamma.
+    expect(nodeByName(wrapper, 'Projects').find('button.folder-node__toggle').exists()).toBe(false);
+    await nodeByName(wrapper, 'Alpha').find('button.folder-node__toggle').trigger('click');
+    await nextTick();
+    expect(wrapper.text()).toContain('Gamma');
+  });
+
+  it('keeps the FOLDERS heading and manage button when every folder is starred', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.role == null && f.parent_id == null ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('.folder-tree__manage').exists()).toBe(true);
+    expect(wrapper.findAll('.folder-node__star').length).toBeGreaterThan(0);
+  });
+});
+
+describe('FolderTree own-folder subscription filtering', () => {
+  it('hides unsubscribed user folders but always shows role folders', async () => {
+    const mailStore = useMailStore();
+    useAuthStore().accountId = 1;
+    mailStore.folders = [
+      // Role folder explicitly unsubscribed on the server: still shown.
+      makeFolder(1, { name: 'Inbox', role: 'inbox', is_subscribed: 0 }),
+      makeFolder(10, { name: 'Projects', is_subscribed: 1 }),
+      makeFolder(20, { name: 'Hidden', is_subscribed: 0 }),
+      // NULL = server never reported the property: treated as visible.
+      makeFolder(30, { name: 'Legacy', is_subscribed: null }),
+    ];
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.text()).toContain('Inbox');
+    expect(wrapper.text()).toContain('Projects');
+    expect(wrapper.text()).toContain('Legacy');
+    expect(wrapper.text()).not.toContain('Hidden');
+  });
+
+  it('promotes a subscribed child of an unsubscribed user folder to a root', async () => {
+    const mailStore = useMailStore();
+    useAuthStore().accountId = 1;
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox', role: 'inbox' }),
+      makeFolder(10, { name: 'Parent', is_subscribed: 0 }),
+      makeFolder(11, { name: 'Child', parent_id: 10, is_subscribed: 1 }),
+    ];
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.text()).not.toContain('Parent');
+    expect(wrapper.text()).toContain('Child');
+  });
+});
+
 describe('FolderTree shared account sections', () => {
   function seedShared(mailStore) {
     useAuthStore().accountId = 1;
@@ -268,11 +428,50 @@ describe('FolderTree shared account sections', () => {
     expect(wrapper.find('.folder-tree__heading--shared').exists()).toBe(false);
   });
 
+  it('moves a starred shared folder into the favorites group at the top', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.id === 30 ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    // Team leaves the shared section and renders in the favorites
+    // group above it, with the star marker; the section keeps its
+    // remaining folder (Nested).
+    expect(nodeByName(wrapper, 'Team').find('.folder-node__star').exists()).toBe(true);
+    const html = wrapper.html();
+    expect(html.indexOf('Team')).toBeLessThan(html.indexOf('folder-tree__heading--shared'));
+    const shared = wrapper.find('.folder-tree__heading--shared');
+    expect(shared.exists()).toBe(true);
+    expect(wrapper.text()).toContain('Nested');
+  });
+
+  it('drops the shared section heading when all its folders are starred', async () => {
+    const mailStore = useMailStore();
+    seedShared(mailStore);
+    // Star both sidebar-visible shared folders (Team and Nested).
+    mailStore.folders = mailStore.folders.map((f) => (
+      f.id === 30 || f.id === 32 ? { ...f, is_starred: 1 } : f
+    ));
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('.folder-tree__heading--shared').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Team');
+    expect(wrapper.text()).toContain('Nested');
+  });
+
   it('opens the folder subscriptions dialog from the manage button', async () => {
     const mailStore = useMailStore();
     seedShared(mailStore);
 
-    const wrapper = mount(FolderTree);
+    // The dialog teleports to <body>; stub the teleport so it renders
+    // inside the wrapper and stays queryable.
+    const wrapper = mount(FolderTree, { global: { stubs: { teleport: true } } });
     await nextTick();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
