@@ -440,9 +440,10 @@ describe('MessageView HTML body rendering', () => {
     const srcdoc = iframe.attributes('srcdoc') ?? '';
 
     expect(srcdoc).toContain('color-scheme: dark');
-    expect(srcdoc).toContain('background: #11131a;');
+    expect(srcdoc).toContain('background: transparent;');
     expect(srcdoc).toContain('color: #e6e8ef;');
     expect(srcdoc).toContain('<p>test</p>');
+    expect(iframe.attributes('style')).toContain('background-color: #11131a');
 
     // This is intentionally not a full color-inversion engine.
     expect(srcdoc).not.toMatch(/\bfilter:\s*invert/);
@@ -487,6 +488,34 @@ describe('MessageView HTML body rendering', () => {
     const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
     expect(srcdoc).toMatch(/#ffffff/i);
     expect(srcdoc).toMatch(/#000000/i);
+
+    wrapper.unmount();
+  });
+
+  it('preserves complete-email head styles and body presentation in the light theme', async () => {
+    setDocumentTheme('light');
+    await makeSelectedMessage({
+      text: '',
+      html: '<html class="email-root"><head>'
+        + '<style>.content{background:#ddeeff}.footer{background:#eef1f6}</style>'
+        + '</head><body class="email-body" bgcolor="#fafafa">'
+        + '<div class="content">body</div><div class="footer">footer</div>'
+        + '</body></html>',
+      attachments: [],
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    const doc = new DOMParser().parseFromString(srcdoc, 'text/html');
+    expect(doc.querySelector('head > style:last-of-type')?.textContent)
+      .toContain('.footer{background:#eef1f6}');
+    expect(doc.documentElement.classList.contains('email-root')).toBe(true);
+    expect(doc.body.classList.contains('email-body')).toBe(true);
+    expect(doc.body.getAttribute('bgcolor')).toBe('#fafafa');
+    expect(doc.querySelector('.content')?.textContent).toBe('body');
+    expect(doc.querySelector('.footer')?.textContent).toBe('footer');
 
     wrapper.unmount();
   });

@@ -18,11 +18,13 @@ import { useComposeStore } from '../stores/compose-store';
 import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
 import {
   ALLOWED_URI_REGEXP,
+  BODY_THEME_COLORS,
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
   isInlineImageType,
   normalizeContentId,
   referencedContentIds,
+  sanitizeMessageDocument,
   sanitizeMessageHtml,
 } from '../utils/message-html';
 import { adaptHtmlForDarkMode } from '../utils/dark-email';
@@ -64,6 +66,8 @@ const bodyColorScheme = computed(() =>
   (effectiveColorScheme.value === 'dark' && forceLightBody.value)
     ? 'light'
     : effectiveColorScheme.value);
+const iframeBackground = computed(() =>
+  BODY_THEME_COLORS[bodyColorScheme.value === 'dark' ? 'dark' : 'light'].background);
 
 const body = computed(() => mailStore.messageBody);
 // null while the body is still loading; a (possibly empty) object once the
@@ -171,7 +175,7 @@ async function renderHtmlBody(next, colorScheme) {
   if (myToken !== renderToken) return;
   // Adapt for dark before building the srcdoc, so the first paint is already
   // dark-correct and never flashes the un-themed email (see dark-email.ts).
-  const safeHtml = sanitizeMessageHtml(next.html, cidUrls);
+  const safeHtml = sanitizeMessageDocument(next.html, cidUrls);
   const themedHtml = colorScheme === 'dark' ? adaptHtmlForDarkMode(safeHtml) : safeHtml;
   applyHtmlSrcDoc(themedHtml, colorScheme);
 }
@@ -604,7 +608,10 @@ function closeMessageView() {
             class="message-view__html-frame"
             :srcdoc="iframeSrcDoc"
             :sandbox="IFRAME_SANDBOX"
-            :style="{ height: `${iframeHeight}px` }"
+            :style="{
+              height: `${iframeHeight}px`,
+              backgroundColor: iframeBackground,
+            }"
             title="Message body"
             @load="onIframeLoad"
           />

@@ -182,6 +182,50 @@ describe('adaptHtmlForDarkMode', () => {
     expect(doc.querySelector('td')!.getAttribute('style') ?? '').not.toMatch(/#000000/i);
   });
 
+  it('adapts preserved body presentation and head styles in a complete document', () => {
+    const out = adaptHtmlForDarkMode(
+      '<html class="email-root"><head>'
+      + '<style>.footer{background:#eeeeee;color:#111111}</style>'
+      + '</head><body class="email-body" bgcolor="#ffffff" text="#000000" '
+      + 'style="background:#ffffff;color:#000000;font-size:14px">'
+      + '<div class="footer">footer</div></body></html>',
+    );
+    const doc = parse(out);
+    const bodyStyle = doc.body.getAttribute('style') ?? '';
+    const css = doc.querySelector('head > style')?.textContent ?? '';
+
+    expect(doc.documentElement.classList.contains('email-root')).toBe(true);
+    expect(doc.body.classList.contains('email-body')).toBe(true);
+    expect(doc.body.hasAttribute('bgcolor')).toBe(false);
+    expect(doc.body.hasAttribute('text')).toBe(false);
+    expect(bodyStyle).toContain('font-size: 14px');
+    expect(bodyStyle).not.toMatch(/#ffffff|#000000/i);
+    expect(css).not.toMatch(/#eeeeee|#111111/i);
+    expect(doc.body.textContent).toContain('footer');
+  });
+
+  it('leaves a complete email untouched when its active head CSS supports dark mode', () => {
+    const html =
+      '<html><head><style>@media (prefers-color-scheme: dark)'
+      + '{body{background:#000;color:#fff}}</style></head>'
+      + '<body style="background:#ffffff;color:#000000">x</body></html>';
+    const out = withPrefersDarkMatch(true, () => adaptHtmlForDarkMode(html));
+
+    expect(out).toBe(html);
+  });
+
+  it.each([
+    'filter:invert(1)',
+    'color-scheme:dark',
+  ])('leaves a complete email untouched when its body wrapper declares %s', (wrapperStyle) => {
+    const html =
+      '<html><head></head><body>'
+      + `<div style="${wrapperStyle}"><span style="color:#000000">x</span></div>`
+      + '</body></html>';
+
+    expect(adaptHtmlForDarkMode(html)).toBe(html);
+  });
+
   it('preserves a saturated brand colour (Netflix red) as a readable red, not white', () => {
     const out = adaptHtmlForDarkMode('<span style="color:#E50914">NETFLIX</span>');
     const style = parse(out).querySelector('span')!.getAttribute('style') ?? '';

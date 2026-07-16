@@ -62,6 +62,7 @@ const INLINE_IMAGE_TYPES = new Set([
   'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
   'image/bmp', 'image/avif', 'image/x-icon', 'image/vnd.microsoft.icon',
 ]);
+const LEGACY_BODY_COLOR_ATTRIBUTES = new Set(['text', 'link', 'vlink', 'alink']);
 const BASE64_ONLY = /^[A-Za-z0-9+/]*={0,2}$/;
 const CID_URL_RE = /cid:\s*(?:<([^>]+)>|([^"'\s)>]+))/gi;
 
@@ -203,6 +204,35 @@ export function sanitizeMessageHtml(
   cidUrls: Map<string, string> | null = null,
 ): string {
   if (!html) return '';
+  return sanitizeMessageMarkup(html, cidUrls, false);
+}
+
+/**
+ * Sanitise a complete HTML email while retaining its document presentation.
+ *
+ * DOMPurify normally returns only `body.innerHTML`, which silently discards
+ * styles in `<head>` plus attributes on `<html>` and `<body>`. Those are
+ * common in email and often carry the canvas/footer backgrounds. DOMPurify
+ * intentionally permits CSS rather than sanitising it; the iframe's
+ * no-scripts sandbox and restrictive CSP keep that author CSS isolated from
+ * the host application under the same trust boundary used for body styles.
+ *
+ * Active head metadata is not presentation and is forbidden explicitly:
+ * in whole-document mode DOMPurify otherwise retains `<meta http-equiv>`.
+ */
+export function sanitizeMessageDocument(
+  html: string,
+  cidUrls: Map<string, string> | null = null,
+): string {
+  if (!html) return '';
+  return sanitizeMessageMarkup(html, cidUrls, true);
+}
+
+function sanitizeMessageMarkup(
+  html: string,
+  cidUrls: Map<string, string> | null,
+  wholeDocument: boolean,
+): string {
   const cidMap = cidUrls;
   const hook = (node: any) => {
     if (!node || node.nodeType !== 1 || typeof node.getAttribute !== 'function') return;
@@ -225,7 +255,18 @@ export function sanitizeMessageHtml(
   };
   DOMPurify.addHook('afterSanitizeAttributes', hook);
   try {
-    return DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP });
+    return DOMPurify.sanitize(html, {
+      ALLOWED_URI_REGEXP,
+      ...(wholeDocument
+        ? {
+            WHOLE_DOCUMENT: true,
+            FORBID_TAGS: ['base', 'link', 'meta'],
+            ADD_ATTR: (attributeName: string, tagName: string) =>
+              tagName.toLowerCase() === 'body'
+              && LEGACY_BODY_COLOR_ATTRIBUTES.has(attributeName.toLowerCase()),
+          }
+        : {}),
+    });
   } finally {
     DOMPurify.removeHook('afterSanitizeAttributes');
   }
@@ -264,10 +305,10 @@ export const IFRAME_CSP = [
  *    set their own font-family in inline styles, so this default only
  *    matters for the "received as text/html but contains no styling"
  *    edge case.
- *  - We set default background/text colors on html/body. This is enough
- *    to fix simple HTML bodies like "<p>test</p>" in dark mode without
- *    adding the kind of global inversion/filter rules that break real
- *    marketing email designs.
+ *  - We set the default text color on html, but leave its background
+ *    transparent. Authored body backgrounds can then propagate to the iframe
+ *    canvas and cover short messages; the iframe element supplies the themed
+ *    fallback when the email has no background of its own.
  *  - We constrain replaced elements and common fixed-width containers
  *    to the iframe width so message bodies never require horizontal
  *    scrolling in the reading pane. We intentionally avoid colour,
@@ -289,10 +330,10 @@ export function buildBodyCss(colorScheme = 'light') {
     ? BODY_THEME_COLORS[colorScheme]
     : BODY_THEME_COLORS.light;
   return `
-  html, body {
+  html {
     margin: 0;
     padding: 0;
-    background: ${colors.background};
+    background: transparent;
     color: ${colors.color};
     /* The host (.message-view__body) is the sole scroll container for
      * the open message. The iframe document must never grow its own
@@ -303,8 +344,12 @@ export function buildBodyCss(colorScheme = 'light') {
     overflow: hidden;
   }
   body {
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overflow-wrap: anywhere;
+    overflow: hidden;
   }
   img, video, canvas, svg {
     max-width: 100%;
@@ -335,6 +380,32 @@ export function buildMessageSrcDoc(sanitizedHtml: string, opts: { colorScheme?: 
   const colorScheme = opts.colorScheme === 'dark' ? 'dark' : 'light';
   const body = sanitizedHtml || '';
   const bodyCss = buildBodyCss(colorScheme);
+
+  // Whole-document sanitisation preserves the email's head styles and its
+  // html/body presentation attributes. Inject our policy/defaults into that
+  // document instead of nesting it inside a second <body>.
+  if (/^\s*<html(?:\s|>)/i.test(body) && typeof DOMParser === 'function') {
+    const doc = new DOMParser().parseFromString(body, 'text/html');
+    const head = doc.head;
+
+    const charset = doc.createElement('meta');
+    charset.setAttribute('charset', 'utf-8');
+    const viewport = doc.createElement('meta');
+    viewport.setAttribute('name', 'viewport');
+    viewport.setAttribute('content', 'width=device-width, initial-scale=1');
+    const csp = doc.createElement('meta');
+    csp.setAttribute('http-equiv', 'Content-Security-Policy');
+    csp.setAttribute('content', IFRAME_CSP);
+    const defaults = doc.createElement('style');
+    defaults.textContent = bodyCss;
+
+    const policyFragment = doc.createDocumentFragment();
+    policyFragment.append(charset, viewport, csp, defaults);
+    head.insertBefore(policyFragment, head.firstChild);
+    doc.documentElement.style.colorScheme = colorScheme;
+
+    return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+  }
 
   return `<!DOCTYPE html>
 <html style="color-scheme: ${colorScheme};">

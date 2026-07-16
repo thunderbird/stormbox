@@ -195,7 +195,9 @@ function currentEnvironmentPrefersDark(): boolean {
  * alone: an active @media prefers-color-scheme: dark branch, a meta/inline
  * color-scheme with `dark`, or filter: invert on the outermost wrapper.
  */
-function emailDeclaresDarkSupport(root: DocumentFragment, rawHtml: string): boolean {
+type SanitizableRoot = Document | DocumentFragment;
+
+function emailDeclaresDarkSupport(root: SanitizableRoot, rawHtml: string): boolean {
   if (PREFERS_DARK_RE.test(rawHtml) && currentEnvironmentPrefersDark()) return true;
 
   for (const meta of root.querySelectorAll('meta[name]')) {
@@ -203,14 +205,59 @@ function emailDeclaresDarkSupport(root: DocumentFragment, rawHtml: string): bool
     if ((meta.getAttribute('content') ?? '').toLowerCase().includes('dark')) return true;
   }
 
-  // No <html>/<body> in a fragment, so check the outermost wrapper(s).
-  for (const el of Array.from(root.children)) {
+  // For a complete email check the preserved document/body wrappers; for a
+  // fragment, check its outermost wrappers as before.
+  const doc = root.nodeType === 9 ? root as Document : null;
+  const outerElements = doc
+    ? [doc.documentElement, doc.body, ...Array.from(doc.body.children)]
+    : Array.from(root.children);
+  for (const el of outerElements) {
+    if (!el) continue;
     const style = el.getAttribute('style') ?? '';
     if (COLOR_SCHEME_DARK_RE.test(style) || FILTER_INVERT_RE.test(style)) {
       return true;
     }
   }
   return false;
+}
+
+function adaptColorMarkup(
+  root: SanitizableRoot,
+  rawHtml: string,
+  body: HTMLElement | null = null,
+): boolean {
+  if (emailDeclaresDarkSupport(root, rawHtml)) return false;
+
+  // Whole-document rendering now preserves body presentation attributes.
+  // Remove the legacy light-canvas variants in dark mode; inline body styles
+  // and CSS rules go through the same contrast-aware pass as descendants.
+  if (body) {
+    for (const attr of ['background', 'bgcolor', 'text', 'link', 'vlink', 'alink']) {
+      body.removeAttribute(attr);
+    }
+  }
+
+  for (const node of root.querySelectorAll(COLOR_SELECTOR)) {
+    node.removeAttribute('bgcolor');
+    node.removeAttribute('color');
+    if (!node.hasAttribute('style')) continue;
+    sanitizeStyleDeclaration((node as HTMLElement).style);
+  }
+
+  for (const node of root.querySelectorAll('text[fill]')) {
+    const fill = node.getAttribute('fill');
+    if (isValidColor(fill) && luminance(fill) <= LUMINANCE_THRESHOLD) {
+      node.setAttribute('fill', 'currentColor');
+    }
+  }
+
+  for (const styleEl of root.querySelectorAll('style')) {
+    const css = styleEl.textContent ?? '';
+    const adapted = adaptCssText(css);
+    if (adapted !== css) styleEl.textContent = adapted;
+  }
+
+  return true;
 }
 
 /**
@@ -223,6 +270,14 @@ export function adaptHtmlForDarkMode(html: string): string {
   if (!html || typeof document === 'undefined') return html;
 
   try {
+    if (/^\s*<html(?:\s|>)/i.test(html) && typeof DOMParser === 'function') {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      if (!adaptColorMarkup(doc, html, doc.body)) {
+        return html;
+      }
+      return doc.documentElement.outerHTML;
+    }
+
     // Parse inertly in a <template>: keeps <style> inline (a full parse
     // hoists a top-level <style> to <head>), loads nothing, never touches
     // the host. This re-parse/re-serialize round-trips already-sanitized
@@ -232,33 +287,7 @@ export function adaptHtmlForDarkMode(html: string): string {
     template.innerHTML = html;
     const content = template.content;
 
-    if (emailDeclaresDarkSupport(content, html)) return html;
-
-    // Note: there is no <body> to special-case here — `sanitizeMessageHtml`
-    // (DOMPurify) strips the document wrapper and its bgcolor/text attributes
-    // before we ever run, and <template> parsing would discard a <body> anyway.
-    // Body-level colours declared in an embedded <style> are handled by the
-    // <style> pass below.
-    for (const node of content.querySelectorAll(COLOR_SELECTOR)) {
-      node.removeAttribute('bgcolor');
-      node.removeAttribute('color');
-      if (!node.hasAttribute('style')) continue;
-      sanitizeStyleDeclaration((node as HTMLElement).style);
-    }
-
-    for (const node of content.querySelectorAll('text[fill]')) {
-      const fill = node.getAttribute('fill');
-      if (isValidColor(fill) && luminance(fill) <= LUMINANCE_THRESHOLD) {
-        node.setAttribute('fill', 'currentColor');
-      }
-    }
-
-    for (const styleEl of content.querySelectorAll('style')) {
-      const css = styleEl.textContent ?? '';
-      const adapted = adaptCssText(css);
-      if (adapted !== css) styleEl.textContent = adapted;
-    }
-
+    if (!adaptColorMarkup(content, html)) return html;
     return template.innerHTML;
   } catch {
     return html;
