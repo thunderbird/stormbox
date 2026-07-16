@@ -30,6 +30,7 @@ import {
   isInlineImageType,
   normalizeContentId,
   referencedContentIds,
+  sanitizeMessageDocument,
   sanitizeMessageHtml,
 } from '../../../src/utils/message-html';
 
@@ -81,13 +82,15 @@ describe('buildMessageSrcDoc', () => {
 
     // We DO reset the user-agent's 8-px body margin, otherwise a
     // strip of host background bleeds through at every iframe edge.
-    expect(css).toMatch(/html,\s*body\s*\{[^}]*margin:\s*0/);
+    expect(css).toMatch(/html\s*\{[^}]*margin:\s*0/);
+    expect(css).toMatch(/body\s*\{[^}]*margin:\s*0/);
 
-    // We DO set the iframe document's default canvas and text colors.
-    // This fixes simple text/html bodies without rewriting styled
-    // email content deeper in the tree.
-    expect(css).toContain(`background: ${BODY_THEME_COLORS.light.background};`);
+    // The document canvas stays transparent so authored body backgrounds
+    // propagate across the full iframe. The iframe element owns the themed
+    // fallback for messages without their own background.
+    expect(css).toMatch(/html\s*\{[^}]*background:\s*transparent/);
     expect(css).toContain(`color: ${BODY_THEME_COLORS.light.color};`);
+    expect(css).toMatch(/body\s*\{[^}]*min-height:\s*100vh/);
 
     // We DO ship a sans-serif default for unstyled bodies. Almost all
     // marketing emails set their own font-family inline so this only
@@ -116,6 +119,32 @@ describe('buildMessageSrcDoc', () => {
     expect(para).not.toBeNull();
     expect(para.textContent).toBe('hello world');
     expect(para.querySelector('b')?.textContent).toBe('world');
+  });
+
+  it('preserves a sanitized document head and body presentation without nesting wrappers', () => {
+    const email = [
+      '<html class="email-root">',
+      '<head><style>.content { background: #ddeeff; }</style></head>',
+      '<body class="email-body" bgcolor="#f0f0f0" style="font-size:14px">',
+      '<div class="content">hello</div>',
+      '</body></html>',
+    ].join('');
+    const out = buildMessageSrcDoc(email);
+    const doc = parseSrcDoc(out);
+
+    expect(doc.querySelectorAll('html')).toHaveLength(1);
+    expect(doc.querySelectorAll('head')).toHaveLength(1);
+    expect(doc.querySelectorAll('body')).toHaveLength(1);
+    expect(doc.documentElement.classList.contains('email-root')).toBe(true);
+    expect(doc.body.classList.contains('email-body')).toBe(true);
+    expect(doc.body.getAttribute('bgcolor')).toBe('#f0f0f0');
+    expect(doc.body.getAttribute('style')).toContain('font-size:14px');
+
+    const styles = doc.querySelectorAll('head > style');
+    expect(styles).toHaveLength(2);
+    expect(styles[0].textContent).toBe(buildBodyCss('light'));
+    expect(styles[1].textContent).toContain('.content { background: #ddeeff; }');
+    expect(doc.querySelector('meta[http-equiv="Content-Security-Policy"]')).not.toBeNull();
   });
 
   it('does NOT re-sanitize: trusts the caller to have sanitized first', () => {
@@ -155,7 +184,7 @@ describe('buildMessageSrcDoc', () => {
 
     expect(doc.documentElement.getAttribute('style')).toContain('color-scheme: dark');
     expect(css).toBe(buildBodyCss('dark'));
-    expect(css).toContain(`background: ${BODY_THEME_COLORS.dark.background};`);
+    expect(css).toMatch(/html\s*\{[^}]*background:\s*transparent/);
     expect(css).toContain(`color: ${BODY_THEME_COLORS.dark.color};`);
     expect(doc.querySelector('body > p')?.textContent).toBe('test');
   });
@@ -261,7 +290,8 @@ describe('integration: a real-world wide marketing email', () => {
     // host scrollbar as visual noise (and worse, can layer a horizontal
     // scrollbar inside the iframe when our zoom fit is even one pixel
     // off).
-    expect(css).toMatch(/html,\s*body\s*\{[\s\S]*?overflow:\s*hidden/);
+    expect(css).toMatch(/html\s*\{[\s\S]*?overflow:\s*hidden/);
+    expect(css).toMatch(/body\s*\{[\s\S]*?overflow:\s*hidden/);
   });
 
   it('does NOT pair the email with broad override CSS beyond overflow prevention', () => {
@@ -384,5 +414,43 @@ describe('sanitizeMessageHtml', () => {
     const out = sanitizeMessageHtml('<p>hi</p><script>alert(1)</script>');
     expect(out).not.toMatch(/<script/i);
     expect(out).toContain('hi');
+  });
+});
+
+describe('sanitizeMessageDocument', () => {
+  it('preserves head styles and html/body presentation attributes', () => {
+    const out = sanitizeMessageDocument(
+      '<!doctype html><html class="email-root">'
+      + '<head><style>.content{background:#ddeeff}.footer{background:#eef1f6}</style></head>'
+      + '<body class="email-body" bgcolor="#ffffff" style="font-size:14px">'
+      + '<div class="content">body</div><div class="footer">footer</div>'
+      + '</body></html>',
+    );
+    const doc = parseSrcDoc(out);
+
+    expect(doc.querySelector('head > style')?.textContent).toContain('.footer{background:#eef1f6}');
+    expect(doc.documentElement.classList.contains('email-root')).toBe(true);
+    expect(doc.body.classList.contains('email-body')).toBe(true);
+    expect(doc.body.getAttribute('bgcolor')).toBe('#ffffff');
+    expect(doc.body.getAttribute('style')).toContain('font-size:14px');
+  });
+
+  it('retains the fragment contract for reply and forward sanitization', () => {
+    const fragment = sanitizeMessageHtml(
+      '<html><head><style>.x{color:red}</style></head><body class="mail"><p>x</p></body></html>',
+    );
+
+    expect(fragment).not.toMatch(/<html|<head|<body/i);
+    expect(fragment).toContain('<p>x</p>');
+  });
+
+  it('resolves inline cid images in whole-document mode', () => {
+    const dataUrl = `data:image/png;base64,${PNG_B64}`;
+    const out = sanitizeMessageDocument(
+      '<html><body><img src="cid:logo@x"></body></html>',
+      new Map([['logo@x', dataUrl]]),
+    );
+
+    expect(parseSrcDoc(out).querySelector('img')?.getAttribute('src')).toBe(dataUrl);
   });
 });
