@@ -1084,7 +1084,7 @@ function normalizeFilterText(value) {
 
 .msg-list__summary {
   display: grid;
-  grid-template-columns: minmax(86px, 28%) minmax(0, 1fr) auto auto;
+  grid-template-columns: clamp(86px, 28%, 200px) minmax(0, 1fr) auto auto;
   grid-template-areas: "from subject icons date";
   align-items: baseline;
   column-gap: 8px;
@@ -1110,6 +1110,7 @@ function normalizeFilterText(value) {
   min-width: 0;
   font-size: 13px;
   color: var(--text);
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
