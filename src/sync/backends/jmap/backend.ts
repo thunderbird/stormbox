@@ -381,9 +381,15 @@ export class JmapBackend {
     // destroys or moves done elsewhere. Running queryChanges per
     // active view here makes the first repaint authoritative without
     // waiting for the user to refresh.
-    await this._refreshActiveQueryViews().catch((err) => {
-      wlog.warn('jmap-backend', 'startup view catch-up failed', err);
-    });
+    for (const account of this._sessionAccounts()) {
+      await this._refreshActiveQueryViews(account).catch((err) => {
+        wlog.warn(
+          'jmap-backend',
+          `startup view catch-up failed for ${account.remote_account_id}`,
+          err,
+        );
+      });
+    }
     this._scheduleMetadataIndexer(1_000);
   }
 
@@ -579,7 +585,12 @@ export class JmapBackend {
     if (byAccount.size === 0) return { fetched: 0 };
     let fetched = 0;
     for (const [accountId, remoteIds] of byAccount) {
-      const account = this._accountsByLocalId.get(accountId) ?? this.account;
+      const account = this._accountsByLocalId.get(accountId)
+        ?? (Number(this.account?.id) === accountId ? this.account : null);
+      if (!account) {
+        wlog.warn('jmap-backend', `body fetch skipped for unknown local account ${accountId}`);
+        continue;
+      }
       const result = await fetchEmailBodies({
         transport: this.transport,
         account,
@@ -936,9 +947,15 @@ export class JmapBackend {
     // catch up on any state changes the server may have buffered.
     // Mirrors the startup catch-up path.
     this.outboxRunner?.notify();
-    await this._refreshActiveQueryViews().catch((err) => {
-      wlog.warn('jmap-backend', 'reconnect view refresh failed', err);
-    });
+    for (const account of this._sessionAccounts()) {
+      await this._refreshActiveQueryViews(account).catch((err) => {
+        wlog.warn(
+          'jmap-backend',
+          `reconnect view refresh failed for ${account.remote_account_id}`,
+          err,
+        );
+      });
+    }
   }
 
   // ----- StateChange dispatch -----------------------------------------
@@ -1018,163 +1035,113 @@ export class JmapBackend {
     // transport layer.
     this.outboxRunner?.notify();
 
-    // Shared-account pushes: reconcile mailbox trees for any shared
-    // account that reported a Mailbox state change. Email-level deltas
-    // for shared accounts are picked up when the user next opens the
-    // folder (the mailbox-window sync is per-folder and account-aware);
-    // only the folder tree needs eager reconciliation here.
-    for (const shared of this.sharedAccounts) {
-      const sharedTypes = changed?.[shared.remote_account_id];
-      if (!sharedTypes?.Mailbox) continue;
+    for (const account of this._sessionAccounts()) {
+      const types = changed?.[account.remote_account_id];
+      if (!types) continue;
       try {
-        const sync = await this.handlers[DB_RPC.SYNC_STATE_GET]({
-          accountId: shared.id,
-          objectType: 'Mailbox',
-          scope: '',
-        });
-        const result = sync?.state
-          ? await syncMailboxChanges({
-            transport: this.transport,
-            account: shared,
-            handlers: this.handlers,
-            sinceState: sync.state,
-            useWebSocket: this._wsReady(),
-          })
-          : { needsFullSync: true };
-        if (result.needsFullSync) {
-          await syncMailboxes({
-            transport: this.transport,
-            account: shared,
-            handlers: this.handlers,
-            useWebSocket: this._wsReady(),
-            repairArchive: false,
-          });
-        }
-      } catch (err) {
-        wlog.warn('jmap-backend', `shared account ${shared.remote_account_id} Mailbox change sync failed`, err);
+        await this._syncAccountStateChange(account, types);
+      } catch (error) {
+        wlog.warn(
+          'jmap-backend',
+          `StateChange sync failed for ${account.remote_account_id}; continuing`,
+          error,
+        );
       }
     }
+  }
 
-    const types = changed?.[this.account.remote_account_id];
-    if (!types) return;
-
-    // Any Email or EmailDelivery state change can reorder, add, or
-    // remove rows from active mailbox windows (created, destroyed,
-    // moved between folders, or a flag flip that the server re-sorts
-    // on). Email/changes only refreshes message rows the client
-    // already knows about; it never updates query_view_items, which
-    // is what the UI's message list reads from. We collect a flag
-    // here and run a single _refreshActiveQueryViews pass after the
-    // type loop so multiple types arriving together (Email +
-    // EmailDelivery is the common case for a new delivery) only
-    // trigger one queryChanges round per active view.
+  async _syncAccountStateChange(account, types) {
     let needViewRefresh = false;
-
-    for (const [type, _state] of Object.entries(types)) {
+    for (const type of Object.keys(types)) {
       switch (type) {
         case 'Mailbox': {
-          const sync = await this._loadSyncState('Mailbox');
-          if (!sync?.state) {
-            await this.ensureFolderTree();
-            break;
-          }
-          const result = await syncMailboxChanges({
-            transport: this.transport,
-            account: this.account,
-            handlers: this.handlers,
-            sinceState: sync.state,
-            useWebSocket: this._wsReady(),
-          });
+          const sync = await this._loadSyncStateFor(account, 'Mailbox');
+          const result = sync?.state
+            ? await syncMailboxChanges({
+              transport: this.transport,
+              account,
+              handlers: this.handlers,
+              sinceState: sync.state,
+              useWebSocket: this._wsReady(),
+            })
+            : { needsFullSync: true };
           if (result.needsFullSync) {
-            await this.ensureFolderTree();
+            await syncMailboxes({
+              transport: this.transport,
+              account,
+              handlers: this.handlers,
+              useWebSocket: this._wsReady(),
+              repairArchive: account.id === this.account.id,
+            });
           }
           break;
         }
         case 'Email': {
-          const sync = await this._loadSyncState('Email');
+          const sync = await this._loadSyncStateFor(account, 'Email');
           if (sync?.state) {
-            // Refresh metadata for message rows the client already
-            // knows about (e.g. $seen/$flagged flips, subject edits).
-            // Per-view membership is reconciled below via
-            // queryChanges; this is just the row-data side.
             await syncEmailChanges({
               transport: this.transport,
-              account: this.account,
+              account,
               handlers: this.handlers,
               sinceState: sync.state,
               useWebSocket: this._wsReady(),
             }).catch((err) => {
-              wlog.warn('jmap-backend', 'syncEmailChanges failed', err);
+              wlog.warn(
+                'jmap-backend',
+                `syncEmailChanges failed for ${account.remote_account_id}`,
+                err,
+              );
             });
           }
-          // Always refresh active views: created/destroyed/moved
-          // emails only show up in the UI once query_view_items is
-          // reconciled. Unchanged views still emit a cheap empty
-          // queryChanges response, which is bounded to 5 views.
+          // With no account-wide baseline, reconcile bounded active views
+          // only. Do not invent an Email state token from a query response.
           needViewRefresh = true;
           break;
         }
-        case 'EmailDelivery': {
-          // EmailDelivery is push-only and fires only when new mail
-          // has arrived. The view always needs to be refreshed so
-          // the new rows show up in the open folder.
+        case 'EmailDelivery':
           needViewRefresh = true;
           break;
-        }
-        case 'Identity': {
-          await this.ensureIdentities();
+        case 'Identity':
+          if (account.id === this.account.id) await this.ensureIdentities();
           break;
-        }
-        case 'AddressBook': {
-          await this.ensureAddressbooks();
+        case 'AddressBook':
+          if (account.id === this.account.id) await this.ensureAddressbooks();
           break;
-        }
         case 'ContactCard': {
-          const sync = await this._loadSyncState('ContactCard');
+          if (account.id !== this.account.id) break;
+          const sync = await this._loadSyncStateFor(account, 'ContactCard');
           if (!sync?.state) {
             await this.ensureContacts();
             break;
           }
           const result = await syncContactCardChanges({
             transport: this.transport,
-            account: this.account,
+            account,
             handlers: this.handlers,
             sinceState: sync.state,
             useWebSocket: this._wsReady(),
           });
-          if (result.needsFullSync) {
-            await this.ensureContacts();
-          }
+          if (result.needsFullSync) await this.ensureContacts();
           break;
         }
         default:
-          // Unknown JMAP type: ignore. We only care about the types we
-          // explicitly subscribed to via WebSocketPushEnable.
           break;
       }
     }
-
-    if (needViewRefresh) {
-      await this._refreshActiveQueryViews();
-    }
+    if (needViewRefresh) await this._refreshActiveQueryViews(account);
   }
 
-  async _refreshActiveQueryViews() {
-    // Reconcile the N most-recently-accessed mailbox windows AND the
-    // inbox window, unioned and de-duplicated. The inbox is forced in
-    // regardless of its recency rank because it is the folder the UI
-    // auto-opens on login: if a user's previous session ended deep in
-    // other folders, a plain "top N by last_accessed_at" window would
-    // push the inbox out and leave newly-delivered mail invisible
-    // until a push frame or a manual refresh arrived.
+  async _refreshActiveQueryViews(account = this.account) {
+    if (!account) return;
+    const forceInbox = account.id === this.account.id ? 1 : 0;
     const views = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT * FROM query_views
              WHERE account_id = ? AND view_type = 'mailbox-window'
                AND (
-                 folder_id IN (
+                 (? = 1 AND folder_id IN (
                    SELECT id FROM folders
                    WHERE account_id = ? AND role = 'inbox'
-                 )
+                 ))
                  OR id IN (
                    SELECT id FROM query_views
                    WHERE account_id = ? AND view_type = 'mailbox-window'
@@ -1184,9 +1151,10 @@ export class JmapBackend {
                )
              ORDER BY last_accessed_at DESC`,
       params: [
-        this.account.id,
-        this.account.id,
-        this.account.id,
+        account.id,
+        forceInbox,
+        account.id,
+        account.id,
         ACTIVE_VIEW_REFRESH_LIMIT,
       ],
     });
@@ -1203,20 +1171,22 @@ export class JmapBackend {
       if (!folder) continue;
       const sortJson = JSON.parse(view.sort_json);
       const sortProp = sortJson?.[0]?.property ?? 'receivedAt';
-      const result = await syncFolderWindowChanges({
-        transport: this.transport,
-        account: this.account,
-        folder,
-        handlers: this.handlers,
-        sinceQueryState: view.query_state,
-        sortProp,
-        collapseThreads: !!view.collapse_threads,
-        useWebSocket: this._wsReady(),
-      });
+      const result = view.query_state
+        ? await syncFolderWindowChanges({
+          transport: this.transport,
+          account,
+          folder,
+          handlers: this.handlers,
+          sinceQueryState: view.query_state,
+          sortProp,
+          collapseThreads: !!view.collapse_threads,
+          useWebSocket: this._wsReady(),
+        })
+        : { needsFullSync: true };
       if (result.needsFullSync) {
         await syncFolderWindow({
           transport: this.transport,
-          account: this.account,
+          account,
           folder,
           handlers: this.handlers,
           sortProp,
@@ -1230,7 +1200,7 @@ export class JmapBackend {
       }
     }
     if (newlyAdded.length > 0) {
-      await this._prefetchBodiesForNewlyDelivered(newlyAdded);
+      await this._prefetchBodiesForNewlyDelivered(account, newlyAdded);
     }
   }
 
@@ -1242,7 +1212,7 @@ export class JmapBackend {
    * lowest-index entries (most recent) since those are the ones
    * the user is most likely to click.
    */
-  async _prefetchBodiesForNewlyDelivered(additions) {
+  async _prefetchBodiesForNewlyDelivered(account, additions) {
     if (!Array.isArray(additions) || additions.length === 0) return;
     const ordered = [...additions]
       .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
@@ -1255,7 +1225,7 @@ export class JmapBackend {
       sql: `SELECT id FROM messages
              WHERE account_id = ?
                AND remote_id IN (${placeholders})`,
-      params: [this.account.id, ...ordered],
+      params: [account.id, ...ordered],
     });
     const localIds = rows
       .map((r) => Number(r.id))
@@ -1292,13 +1262,22 @@ export class JmapBackend {
   }
 
   /**
-   * Resolve the account row that owns a folder. Folders synced from
-   * shared accounts carry that account's local id; anything else
-   * (including folders predating shared-account support) falls back
-   * to the primary account.
+   * Resolve the current Session account that owns a folder. Primary
+   * folders may use the primary row directly in narrow tests before the
+   * account map is initialized. A folder belonging to a removed or
+   * otherwise unavailable shared account throws instead of being sent
+   * through the primary JMAP account.
    */
   _accountForFolder(folder) {
-    return this._accountsByLocalId.get(Number(folder?.account_id)) ?? this.account;
+    const localAccountId = Number(folder?.account_id);
+    const mapped = this._accountsByLocalId.get(localAccountId);
+    if (mapped) return mapped;
+    if (Number(this.account?.id) === localAccountId) return this.account;
+    throw new Error(`Folder ${folder?.id ?? '(unknown)'} belongs to an unavailable account`);
+  }
+
+  _sessionAccounts() {
+    return [this.account, ...this.sharedAccounts].filter(Boolean);
   }
 
   async _loadFolder(folderId) {
@@ -1312,9 +1291,9 @@ export class JmapBackend {
     return rows[0];
   }
 
-  async _loadSyncState(objectType, scope = '') {
+  async _loadSyncStateFor(account, objectType, scope = '') {
     return this.handlers[DB_RPC.SYNC_STATE_GET]({
-      accountId: this.account.id,
+      accountId: account.id,
       objectType,
       scope,
     });

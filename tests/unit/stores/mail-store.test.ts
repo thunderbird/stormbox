@@ -1495,6 +1495,42 @@ describe('moveMessages', () => {
     expect(mailStore.selectedMessageId).toBeNull();
   });
 
+  it('queues cross-account drops as copies and preserves source selection', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_read_items: 1 });
+    const shared = makeFolder(30, {
+      account_id: 2,
+      name: 'Shared Team',
+      rights_json: JSON.stringify({ mayAddItems: true }),
+    });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, shared],
+      views: { 1: { rows: [makeRow(7)], total: 1 } },
+    });
+    await flush();
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 51 };
+    };
+    repo.runMutation = async () => ({ attempted: 1, succeeded: 1, failed: 0 });
+    mailStore.selectedIds = new Set([7]);
+    mailStore.selectMessage(7);
+
+    expect(mailStore.transferModeForFolder(30)).toBe('copy');
+    const result = await mailStore.moveMessages([7], 30);
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(inserted.accountId).toBe(1);
+    expect(inserted.mutationType).toBe(MUTATION_TYPE.COPY_TO_FOLDERS);
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      messageIds: [7],
+      addFolderIds: [30],
+    });
+    expect(mailStore.messages.map((message) => message?.id)).toEqual([7]);
+    expect(mailStore.selectedIds.has(7)).toBe(true);
+    expect(mailStore.selectedMessageId).toBe(7);
+  });
+
   it('skips drops onto the current folder without enqueueing a mutation', async () => {
     const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1, may_add_items: 1 });
     const { mailStore, repo } = await setupStore({
@@ -1932,9 +1968,20 @@ describe('shared accounts and folder subscriptions', () => {
       { id: 2, is_primary: 0, is_personal: 0, display_name: 'other@example.org', server_origin: 'https://mail.example.com' },
     ];
     const primaryFolders = [makeFolder(1, { role: 'inbox', name: 'Inbox' })];
+    const subscriptionRights = JSON.stringify({ mayRename: true });
     const sharedFolders = [
-      makeFolder(30, { account_id: 2, name: 'Team', is_subscribed: 1 }),
-      makeFolder(31, { account_id: 2, name: 'Private', is_subscribed: 0 }),
+      makeFolder(30, {
+        account_id: 2,
+        name: 'Team',
+        is_subscribed: 1,
+        rights_json: subscriptionRights,
+      }),
+      makeFolder(31, {
+        account_id: 2,
+        name: 'Private',
+        is_subscribed: 0,
+        rights_json: subscriptionRights,
+      }),
     ];
     repo.listFolders = async (accountId) =>
       (Number(accountId) === 2 ? sharedFolders : primaryFolders);
@@ -2102,7 +2149,7 @@ describe('shared accounts and folder subscriptions', () => {
     expect(mailStore.folders.find((folder) => folder.id === 31)?.is_starred ?? 0).toBe(0);
   });
 
-  it('blocks cross-account drops and unsafe shared destructive actions', async () => {
+  it('blocks cross-account drops and shared destructive actions without item rights', async () => {
     const { mailStore, repo } = await setupStore();
     makeSharedRepo(repo);
     await mailStore.refreshFolders();
@@ -2116,16 +2163,16 @@ describe('shared accounts and folder subscriptions', () => {
     mailStore.currentFolderId = 1;
     expect(mailStore.canMoveToFolder(30)).toBe(false);
     await expect(mailStore.moveMessages([7], 30))
-      .rejects.toThrow('Cross-account message drops require copy support');
+      .rejects.toThrow('Cannot copy messages into that folder');
 
     mailStore.currentFolderId = 30;
     expect(mailStore.canMoveToFolder(1)).toBe(false);
     await mailStore.destroyMessages([7]);
-    expect(mailStore.error).toContain('Delete is unavailable for shared-account messages');
+    expect(mailStore.error).toContain('permission to remove messages');
     expect(await mailStore.archiveMessages([7]))
-      .toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+      .toEqual({ succeeded: 0, failed: 0, skipped: 0 });
     const junk = await mailStore.junkMessages([7]);
-    expect(junk).toEqual({ succeeded: 0, failed: 1, skipped: 0 });
+    expect(junk).toEqual({ succeeded: 0, failed: 0, skipped: 0 });
     expect(inserts).toBe(0);
   });
 
@@ -2192,6 +2239,43 @@ describe('shared accounts and folder subscriptions', () => {
       operations: [{ folderId: 30, isSubscribed: false }],
     });
     expect(mailStore.error).toContain('already have a subscription change in progress');
+  });
+
+  it('uses shared-account role targets while queueing under the primary runner', async () => {
+    const { mailStore, repo } = await setupStore();
+    makeSharedRepo(repo);
+    await mailStore.refreshFolders();
+    await flush();
+    const itemRights = JSON.stringify({
+      mayReadItems: true,
+      mayAddItems: true,
+      mayRemoveItems: true,
+    });
+    mailStore.folders = mailStore.folders.map((folder) =>
+      folder.id === 30 ? { ...folder, rights_json: itemRights } : folder);
+    mailStore.folders.push(makeFolder(32, {
+      account_id: 2,
+      name: 'Shared Archive',
+      role: 'archive',
+      rights_json: itemRights,
+    }) as any);
+    mailStore.currentFolderId = 30;
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 101 };
+    };
+    repo.runMutation = async () => ({ attempted: 1, succeeded: 1, failed: 0 });
+
+    expect(await mailStore.archiveMessages([7]))
+      .toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(inserted.accountId).toBe(1);
+    expect(inserted.mutationType).toBe(MUTATION_TYPE.MOVE_TO_FOLDERS);
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      messageIds: [7],
+      addFolderIds: [32],
+      removeFolderIds: [30],
+    });
   });
 });
 

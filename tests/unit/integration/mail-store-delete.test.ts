@@ -272,6 +272,65 @@ function makeRepo() {
 }
 
 describe('mail-store.destroyMessage end-to-end through OutboxRunner', () => {
+  it('feeds the store-built cross-account copy through processMutationRow', async () => {
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Shared',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{
+        remoteId: 'shared-team',
+        name: 'Shared Team',
+        isSubscribed: true,
+        rightsJson: JSON.stringify({ mayAddItems: true }),
+      }],
+    });
+    const destination = await engine.get(
+      `SELECT * FROM folders WHERE account_id = ? AND remote_id = 'shared-team'`,
+      [shared.id],
+    );
+    let copyParams;
+    transport.handle('Email/copy', (params) => {
+      copyParams = params;
+      return { created: { [`copy-${messageId}`]: { id: 'shared-copy-1' } } };
+    });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture(id, {
+        mailboxIds: { 'shared-team': true },
+      })),
+      state: 'shared-es1',
+    }));
+
+    const mailStore = useMailStore();
+    await mailStore.refreshFolders();
+    mailStore.selectFolder(inbox.id);
+    await flush(20);
+    const result = await mailStore.moveMessages([messageId], destination.id);
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(copyParams).toMatchObject({
+      fromAccountId: 'acct-1',
+      accountId: 'acct-shared',
+      onSuccessDestroyOriginal: false,
+    });
+    expect(copyParams.create[`copy-${messageId}`]).toEqual({
+      id: 'e-1',
+      mailboxIds: { 'shared-team': true },
+    });
+    expect(await engine.get(
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'e-1'`,
+      [account.id],
+    )).toBeTruthy();
+    expect(await engine.get(
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'shared-copy-1'`,
+      [shared.id],
+    )).toBeTruthy();
+  });
+
   it('moves a message from Inbox to Archive through moveToFolders and updates the rendered Inbox', async () => {
     let setCallCount = 0;
     transport.handle('Email/set', (params) => {

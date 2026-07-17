@@ -26,6 +26,7 @@ import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
 import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-html';
 import { parseOneAddress } from '../utils/address-list';
+import { folderCapabilities } from '../utils/folder-capabilities';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
@@ -73,7 +74,7 @@ interface RefreshSelectionSnapshot {
  */
 export interface BulkOperationState {
   active: boolean;
-  kind: 'move' | 'destroy' | null;
+  kind: 'move' | 'copy' | 'destroy' | null;
   label: string;
   total: number;
   completed: number;
@@ -1431,11 +1432,9 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'Cannot archive messages because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
-    if (source.account_id !== authStore.accountId) {
-      error.value = 'Archive is unavailable for shared-account messages until account-aware moves are supported.';
-      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
-    }
-    const archive = primaryFolders.value.find((f) => f.role === 'archive');
+    const archive = folders.value.find(
+      (folder) => folder.account_id === source.account_id && folder.role === 'archive',
+    );
     if (!archive?.id) {
       error.value = 'No archive folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
@@ -1460,14 +1459,17 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'Cannot mark messages as junk because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
-    if (source.account_id !== authStore.accountId) {
-      error.value = 'Junk is unavailable for shared-account messages until account-aware moves are supported.';
-      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
-    }
-    const junk = primaryFolders.value.find((f) => f.role === 'junk');
+    const junk = folders.value.find(
+      (folder) => folder.account_id === source.account_id && folder.role === 'junk',
+    );
     if (!junk?.id) {
       error.value = 'No junk folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    try {
+      assertCanMoveToFolder(source, junk);
+    } catch {
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
 
     const rows = messageIds
@@ -1555,14 +1557,17 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'Cannot move these messages because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
-    if (source.account_id !== authStore.accountId) {
-      error.value = 'This action is unavailable for shared-account messages until account-aware moves are supported.';
-      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
-    }
-    const target = inbox.value;
+    const target = folders.value.find(
+      (folder) => folder.account_id === source.account_id && folder.role === 'inbox',
+    );
     if (!target?.id) {
       error.value = 'No Inbox folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
+    }
+    try {
+      assertCanMoveToFolder(source, target);
+    } catch {
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
 
     // Gather the live rows and the unique senders to trust (deduped by
@@ -1710,8 +1715,9 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'Cannot delete messages because the current folder is no longer available.';
       return;
     }
-    if (source.account_id !== authStore.accountId) {
-      error.value = 'Delete is unavailable for shared-account messages until account-aware deletion is supported.';
+    const sourceCapabilities = folderCapabilities(source, authStore.accountId);
+    if (!sourceCapabilities.mayRemoveItems) {
+      error.value = 'You do not have permission to remove messages from this folder.';
       return;
     }
     // Drop ids that no longer exist in messages (e.g. a previous
@@ -1720,12 +1726,28 @@ export const useMailStore = defineStore('mail', () => {
     // PENDING_MUTATION_INSERT FK check would null the target out,
     // but skipping them here keeps the pending row clean and avoids
     // an extra outbox dispatch for nothing.
-    const liveIds = await filterExistingMessageIds(ids);
+    const liveIds = await filterExistingMessageIds(ids, source.account_id);
     if (liveIds.length === 0) {
       clearSelectionFor(ids);
       return;
     }
-    const trashTarget = permanent ? null : primaryFolders.value.find((f) => f.role === 'trash') ?? null;
+    const trashTarget = permanent
+      ? null
+      : folders.value.find(
+        (folder) => folder.account_id === source.account_id && folder.role === 'trash',
+      ) ?? null;
+    if (!permanent && source.role !== 'trash' && !trashTarget) {
+      error.value = 'No Trash folder is configured for this account.';
+      return;
+    }
+    if (
+      trashTarget
+      && trashTarget.id !== source.id
+      && !folderCapabilities(trashTarget, authStore.accountId).mayAddItems
+    ) {
+      error.value = 'You do not have permission to move messages to this account’s Trash folder.';
+      return;
+    }
     const overlayLabel = permanent
       ? 'Deleting messages permanently'
       : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
@@ -1904,29 +1926,43 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
 
-    const liveIds = await filterExistingMessageIds(messageIds);
+    const liveIds = await filterExistingMessageIds(messageIds, source.account_id);
     if (liveIds.length === 0) {
       clearSelectionFor(messageIds);
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
 
-    const succeededIds = await runChunkedMutation({
-      liveIds,
-      kind: 'move',
-      label: target.name ? `Moving messages to ${target.name}` : 'Moving messages',
-      buildMutation: (chunkIds) => buildMoveMutation(chunkIds, target.id, source.id),
-      failureAction: 'move',
-    });
+    const mode = source.account_id === target.account_id ? 'move' : 'copy';
+    let succeededIds: number[];
+    try {
+      succeededIds = await runChunkedMutation({
+        liveIds,
+        kind: mode,
+        label: target.name
+          ? `${mode === 'copy' ? 'Copying' : 'Moving'} messages to ${target.name}`
+          : `${mode === 'copy' ? 'Copying' : 'Moving'} messages`,
+        buildMutation: (chunkIds) => buildMoveMutation(chunkIds, target.id, source.id),
+        failureAction: mode,
+      });
+    } catch (err: any) {
+      if (mode !== 'copy') throw err;
+      const partial = normalizeMessageIds(err?.succeededIds ?? []);
+      return {
+        succeeded: partial.length,
+        failed: Math.max(0, liveIds.length - partial.length),
+        skipped: messageIds.length - liveIds.length,
+      };
+    }
 
     if (succeededIds.length === 0) {
       return { succeeded: 0, failed: 0, skipped: messageIds.length - liveIds.length };
     }
 
-    const nextPreviewId = nextPreviewIdAfterRemoval(succeededIds);
-    spliceMessagesOut(succeededIds);
+    const nextPreviewId = mode === 'move' ? nextPreviewIdAfterRemoval(succeededIds) : undefined;
+    if (mode === 'move') spliceMessagesOut(succeededIds);
     await refreshFolders();
     invalidateFolderStateForFreshWindow(target.id);
-    clearSelectionFor(succeededIds);
+    if (mode === 'move') clearSelectionFor(succeededIds);
     applyPreviewAfterRemoval(nextPreviewId);
     return {
       succeeded: succeededIds.length,
@@ -1941,21 +1977,29 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   function canMoveToFolder(targetFolderId: number): boolean {
+    return transferModeForFolder(targetFolderId) != null;
+  }
+
+  function transferModeForFolder(targetFolderId: number): 'move' | 'copy' | null {
     const source = currentFolder.value;
     const target = findFolder(targetFolderId);
     try {
       assertCanMoveToFolder(source, target);
     } catch {
-      return false;
+      return null;
     }
-    return Number(source.id) !== Number(target.id);
+    if (Number(source.id) === Number(target.id)) return null;
+    return source.account_id === target.account_id ? 'move' : 'copy';
   }
 
-  async function filterExistingMessageIds(ids: number[]): Promise<number[]> {
+  async function filterExistingMessageIds(
+    ids: number[],
+    accountId: number = authStore.accountId!,
+  ): Promise<number[]> {
     if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
     const numeric = normalizeMessageIds(ids);
     if (numeric.length === 0) return [];
-    return repo.filterExistingMessageIds(authStore.accountId, numeric);
+    return repo.filterExistingMessageIds(accountId, numeric);
   }
 
   function clearSelectionFor(ids: number | number[]) {
@@ -2010,10 +2054,10 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function runChunkedMutation(args: {
     liveIds: number[];
-    kind: 'move' | 'destroy';
+    kind: 'move' | 'copy' | 'destroy';
     label: string;
     buildMutation: (chunkIds: number[]) => PendingMutationInsert;
-    failureAction: 'delete' | 'move';
+    failureAction: 'delete' | 'move' | 'copy';
   }): Promise<number[]> {
     const { liveIds, kind, label, buildMutation, failureAction } = args;
     const useOverlay = liveIds.length > BULK_OPERATION_BATCH_SIZE;
@@ -2035,6 +2079,9 @@ export const useMailStore = defineStore('mail', () => {
           ? await repo!.runMutation(authStore.accountId!, mutation.id)
           : await repo!.drainOutbox(authStore.accountId!);
         if ((result?.failed ?? 0) > 0 || (result?.attempted ?? 0) === 0) {
+          const partialIds = normalizeMessageIds(result?.result?.succeededIds ?? [])
+            .filter((id) => chunkIds.includes(id) && !succeededIds.includes(id));
+          succeededIds.push(...partialIds);
           const detail = await loadMutationError(mutation.id);
           const message = describeChunkedFailure({
             result,
@@ -2046,6 +2093,7 @@ export const useMailStore = defineStore('mail', () => {
           const err = new Error(message) as Error & { result?: any; detail?: any };
           err.result = result;
           err.detail = detail;
+          (err as Error & { succeededIds?: number[] }).succeededIds = [...succeededIds];
           error.value = message;
           console.warn(`[mail-store] ${kind}Messages failed`, {
             ids: chunkIds,
@@ -2129,8 +2177,12 @@ export const useMailStore = defineStore('mail', () => {
    */
   function buildDeleteMutation(messageIds: number | number[]): PendingMutationInsert {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
-    const trash = primaryFolders.value.find((f) => f.role === 'trash');
     const current = currentFolder.value;
+    const trash = current == null
+      ? null
+      : folders.value.find(
+        (folder) => folder.account_id === current.account_id && folder.role === 'trash',
+      );
     const target = ids.length === 1 ? ids[0] : null;
     if (trash && current?.id != null && current.id !== trash.id) {
       return {
@@ -2165,15 +2217,26 @@ export const useMailStore = defineStore('mail', () => {
 
   function buildMoveMutation(messageIds: number[], targetFolderId: number, sourceFolderId: number): PendingMutationInsert {
     const ids = normalizeMessageIds(messageIds);
-    return {
-      accountId: authStore.accountId!,
-      mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
-      targetMessageId: ids.length === 1 ? ids[0] : null,
-      requestJson: JSON.stringify({
+    const source = findFolder(sourceFolderId);
+    const target = findFolder(targetFolderId);
+    const crossAccount = source != null && target != null && source.account_id !== target.account_id;
+    const request = crossAccount
+      ? {
+        messageIds: ids,
+        addFolderIds: [Number(targetFolderId)],
+      }
+      : {
         messageIds: ids,
         addFolderIds: [Number(targetFolderId)],
         removeFolderIds: [Number(sourceFolderId)],
-      }),
+      };
+    return {
+      accountId: authStore.accountId!,
+      mutationType: crossAccount
+        ? MUTATION_TYPE.COPY_TO_FOLDERS
+        : MUTATION_TYPE.MOVE_TO_FOLDERS,
+      targetMessageId: ids.length === 1 ? ids[0] : null,
+      requestJson: JSON.stringify(request),
     };
   }
 
@@ -2201,17 +2264,16 @@ export const useMailStore = defineStore('mail', () => {
     if (Number(source.id) === Number(target.id)) {
       return;
     }
-    if (source.account_id !== authStore.accountId) {
-      throwMoveError('Moving shared-account messages is unavailable until account-aware moves are supported.');
-    }
-    if (source.account_id !== target.account_id) {
-      throwMoveError('Cross-account message drops require copy support and are not available yet.');
-    }
-    if (source.may_remove_items != null && Number(source.may_remove_items) === 0) {
+    const sourceCapabilities = folderCapabilities(source, authStore.accountId);
+    const targetCapabilities = folderCapabilities(target, authStore.accountId);
+    if (source.account_id === target.account_id && !sourceCapabilities.mayRemoveItems) {
       throwMoveError('Cannot move messages out of this folder.');
     }
-    if (target.may_add_items != null && Number(target.may_add_items) === 0) {
-      throwMoveError('Cannot move messages into that folder.');
+    if (source.account_id !== target.account_id && !sourceCapabilities.mayReadItems) {
+      throwMoveError('Cannot copy messages from this folder.');
+    }
+    if (!targetCapabilities.mayAddItems) {
+      throwMoveError(`Cannot ${source.account_id === target.account_id ? 'move' : 'copy'} messages into that folder.`);
     }
   }
 
@@ -2385,7 +2447,13 @@ export const useMailStore = defineStore('mail', () => {
     isSubscribed: boolean,
   ): Promise<boolean> {
     if (!repo || authStore.accountId == null) return false;
-    const requestedIds = [...new Set(folderIds.map(Number))].filter(Number.isFinite);
+    const requestedIds = [...new Set(folderIds.map(Number))]
+      .filter(Number.isFinite)
+      .filter((id) => {
+        const folder = folders.value.find((candidate) => candidate.id === id);
+        return folder != null
+          && folderCapabilities(folder, authStore.accountId).maySubscribe;
+      });
     const omittedPendingIds = requestedIds.filter(
       (id) => subscriptionPendingFolderIds.value.has(id),
     );
@@ -2487,8 +2555,8 @@ export const useMailStore = defineStore('mail', () => {
       .map((id) => folders.value.find((folder) => folder.id === id))
       .filter((folder): folder is FolderRow => (
         folder != null
-        && folder.role == null
-        && (!isStarred || Number(folder.is_subscribed ?? 1) !== 0)
+        && !folderCapabilities(folder, authStore.accountId).isSystemProtected
+        && (!isStarred || folderCapabilities(folder, authStore.accountId).mayStar)
       ));
     if (rows.length === 0) return false;
     const previous = new Map(rows.map((folder) => [folder.id, folder.is_starred]));
@@ -2605,6 +2673,12 @@ export const useMailStore = defineStore('mail', () => {
       ? folders.value.find((f) => f.id === parentFolderId) ?? null
       : null;
     if (parentFolderId != null && !parent) return { ok: false, reason: 'unknownFolder' };
+    if (
+      parent != null
+      && !folderCapabilities(parent, authStore.accountId).mayCreateChild
+    ) {
+      return { ok: false, reason: 'forbidden' };
+    }
     const targetAccountId = parent?.account_id ?? authStore.accountId;
     if (targetAccountId != null && siblingNameTaken(targetAccountId, parent?.id ?? null, trimmed)) {
       error.value = `A folder named “${trimmed}” already exists here.`;
@@ -2636,7 +2710,9 @@ export const useMailStore = defineStore('mail', () => {
     const id = Number(folderId);
     const folder = folders.value.find((f) => f.id === id);
     if (!folder) return { ok: false, reason: 'unknownFolder' };
-    if (folder.role != null) return { ok: false, reason: 'systemFolder' };
+    const capabilities = folderCapabilities(folder, authStore.accountId);
+    if (capabilities.isSystemProtected) return { ok: false, reason: 'systemFolder' };
+    if (!capabilities.mayRename) return { ok: false, reason: 'forbidden' };
     if (folderEditPendingIds.value.has(id)) return { ok: false, reason: 'pending' };
 
     const parentProvided = Object.prototype.hasOwnProperty.call(changes, 'parentFolderId');
@@ -2657,6 +2733,11 @@ export const useMailStore = defineStore('mail', () => {
         if (!parent || parent.account_id !== folder.account_id) {
           return { ok: false, reason: 'unknownFolder' };
         }
+        if (!folderCapabilities(parent, authStore.accountId).mayCreateChild) {
+          return { ok: false, reason: 'forbidden' };
+        }
+      } else if (folder.account_id !== authStore.accountId) {
+        return { ok: false, reason: 'forbidden' };
       }
       request.parentFolderId = nextParentId;
     }
@@ -2719,7 +2800,16 @@ export const useMailStore = defineStore('mail', () => {
     ]));
     for (const [id, folder] of rows) {
       if (!folder) return { ok: false, reason: 'unknownFolder' };
-      if (folder.role != null) return { ok: false, reason: 'systemFolder' };
+      const capabilities = folderCapabilities(folder, authStore.accountId);
+      if (capabilities.isSystemProtected) return { ok: false, reason: 'systemFolder' };
+      if (!capabilities.mayDelete) return { ok: false, reason: 'forbidden' };
+      if (
+        removeEmails
+        && folderDeleteMailboxHasEmailIds.has(id)
+        && !capabilities.mayDeleteWithMail
+      ) {
+        return { ok: false, reason: 'forbidden' };
+      }
       if (folderEditPendingIds.value.has(id)) return { ok: false, reason: 'pending' };
       if (!skipChildCheck && folders.value.some(
         (candidate) => candidate.parent_id === id
@@ -2931,6 +3021,7 @@ export const useMailStore = defineStore('mail', () => {
     whitelistSender,
     whitelistSenders,
     canMoveToFolder,
+    transferModeForFolder,
     clearSelection,
     refresh,
   };

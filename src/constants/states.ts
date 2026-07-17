@@ -94,6 +94,7 @@ export type ServiceKind = (typeof SERVICE_KIND)[keyof typeof SERVICE_KIND];
 export const MUTATION_TYPE = {
   SET_KEYWORDS: 'setKeywords',
   MOVE_TO_FOLDERS: 'moveToFolders',
+  COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
   WHITELIST_SENDER: 'whitelistSender',

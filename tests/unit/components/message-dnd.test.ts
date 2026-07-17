@@ -681,7 +681,7 @@ describe('message drag and folder drop components', () => {
     const transfer = makeDataTransfer();
     await wrapper.findAll('.msg-list__item')[1].trigger('dragstart', { dataTransfer: transfer });
 
-    expect(transfer.effectAllowed).toBe('move');
+    expect(transfer.effectAllowed).toBe('copyMove');
     expect(JSON.parse(transfer.getData(MESSAGE_DRAG_MIME))).toEqual({
       ids: [1, 2],
       sourceFolderId: 1,
@@ -716,5 +716,44 @@ describe('message drag and folder drop components', () => {
     await archive.trigger('drop', { dataTransfer: transfer });
 
     expect(moveSpy).toHaveBeenCalledWith([1, 2], 2);
+  });
+
+  it('shows copy feedback and copy dropEffect for a cross-account target', async () => {
+    const mailStore = useMailStore();
+    mailStore.accounts = [
+      { id: 1, display_name: 'Primary', is_primary: 1 },
+      { id: 2, display_name: 'Shared', is_primary: 0 },
+    ] as any;
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox', role: 'inbox', may_read_items: 1 }),
+      makeFolder(30, {
+        account_id: 2,
+        name: 'Shared Team',
+        is_subscribed: 1,
+        rights_json: JSON.stringify({ mayAddItems: true }),
+      }),
+    ];
+    mailStore.currentFolderId = 1;
+    const copySpy = vi.spyOn(mailStore, 'moveMessages')
+      .mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+    const transfer = makeDataTransfer();
+    useMessageDragDrop().startMessageDrag(
+      { dataTransfer: transfer },
+      { messageId: 1, selectedIds: new Set([1]), sourceFolderId: 1 },
+    );
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+    const target = wrapper.findAll('.folder-node')
+      .find((node) => node.text().includes('Shared Team'));
+    expect(target).toBeTruthy();
+
+    await target!.trigger('dragover', { dataTransfer: transfer });
+    await nextTick();
+    expect(target!.classes()).toContain('is-drop-copy');
+    expect(transfer.dropEffect).toBe('copy');
+
+    await target!.trigger('drop', { dataTransfer: transfer });
+    expect(copySpy).toHaveBeenCalledWith([1], 30);
   });
 });
