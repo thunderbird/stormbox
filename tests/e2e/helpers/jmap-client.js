@@ -586,24 +586,45 @@ export async function destroyEmails(jmap, ids, {
   await runWithConcurrency(tasks, concurrency);
 }
 
+// Idempotently ensure a top-level mailbox exists AND is subscribed.
+// Stalwart leaves Mailbox/set creates unsubscribed (and a leftover
+// folder from an aborted run may have been unsubscribed by a test),
+// while Stormbox's sidebar hides unsubscribed user folders — so a
+// bare create would produce a mailbox the UI never renders.
 export async function ensureMailbox(jmap, { name }) {
   const fullPayload = await jmapRequest(jmap, [[
     'Mailbox/get',
     {
       accountId: jmap.accountId,
-      properties: ['id', 'name', 'role', 'parentId'],
+      properties: ['id', 'name', 'role', 'parentId', 'isSubscribed'],
     },
     'mbFull',
   ]]);
   const existing = pickResponse(fullPayload, 'Mailbox/get')?.list
     ?.find((m) => (m.name ?? '').toLowerCase() === name.toLowerCase() && !m.parentId);
-  if (existing) return existing;
+  if (existing) {
+    if (existing.isSubscribed !== true) {
+      const subPayload = await jmapRequest(jmap, [[
+        'Mailbox/set',
+        {
+          accountId: jmap.accountId,
+          update: { [existing.id]: { isSubscribed: true } },
+        },
+        'mbSub',
+      ]]);
+      const subSet = pickResponse(subPayload, 'Mailbox/set');
+      if (subSet?.notUpdated?.[existing.id]) {
+        throw new Error(`Could not subscribe mailbox "${name}": ${JSON.stringify(subSet.notUpdated[existing.id])}`);
+      }
+    }
+    return existing;
+  }
 
   const createPayload = await jmapRequest(jmap, [[
     'Mailbox/set',
     {
       accountId: jmap.accountId,
-      create: { mb1: { name } },
+      create: { mb1: { name, isSubscribed: true } },
     },
     'mbSet',
   ]]);

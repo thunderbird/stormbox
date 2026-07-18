@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   DEFAULT_FOLDER_COLOR,
+  folderCompare,
   folderPresentation,
   folderSortKey,
   isMainFolder,
@@ -41,6 +42,45 @@ describe('folderSortKey', () => {
   it('puts non-role folders after every role folder', () => {
     const userFolderKey = folderSortKey({ role: null });
     expect(userFolderKey).toBeGreaterThan(folderSortKey({ role: 'trash' }));
+  });
+});
+
+describe('folderCompare', () => {
+  it('floats starred folders above unstarred peers', () => {
+    const rows = [
+      { role: null, name: 'Alpha', is_starred: 0 as const },
+      { role: null, name: 'Zulu', is_starred: 1 as const },
+      { role: null, name: 'Mike', is_starred: 0 as const },
+    ];
+    rows.sort(folderCompare);
+    expect(rows.map((r) => r.name)).toEqual(['Zulu', 'Alpha', 'Mike']);
+  });
+
+  it('sorts starred folders amongst themselves by the normal name order', () => {
+    const rows = [
+      { role: null, name: 'Zulu', is_starred: 1 as const },
+      { role: null, name: 'Alpha', is_starred: 1 as const },
+    ];
+    rows.sort(folderCompare);
+    expect(rows.map((r) => r.name)).toEqual(['Alpha', 'Zulu']);
+  });
+
+  it('never lets a star outrank role ordering', () => {
+    const rows = [
+      { role: null, name: 'Starred user folder', is_starred: 1 as const },
+      { role: 'inbox' as const, name: 'Inbox', is_starred: 0 as const },
+    ];
+    rows.sort(folderCompare);
+    expect(rows[0].name).toBe('Inbox');
+  });
+
+  it('treats a missing is_starred as unstarred', () => {
+    const rows = [
+      { role: null, name: 'Legacy' },
+      { role: null, name: 'Pinned', is_starred: 1 as const },
+    ];
+    rows.sort(folderCompare);
+    expect(rows[0].name).toBe('Pinned');
   });
 });
 

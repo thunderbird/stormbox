@@ -227,6 +227,9 @@ function makeRepo() {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    async listAccounts() {
+      return handlers[DB_RPC.ACCOUNT_LIST]();
+    },
     async listFolders(accountId) {
       return handlers[DB_RPC.FOLDER_LIST]({ accountId });
     },

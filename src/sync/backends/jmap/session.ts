@@ -31,11 +31,17 @@ function serviceKindFor(capability) {
  * row (post-upsert). serverOrigin must be the server's https origin
  * (e.g. https://mail.example.com).
  *
+ * In addition to the primary mail account, every other mail-capable
+ * account in the session `accounts` map is upserted as a non-primary
+ * account row. Per RFC 8620 §1.6.2 / RFC 9670 these are accounts other
+ * principals shared with the user (isPersonal=false); their mailboxes
+ * are what the UI surfaces as shared folders.
+ *
  * @param {object} args
  * @param {object} args.session  the parsed JMAP session document
  * @param {string} args.serverOrigin
  * @param {Record<string, (params: any) => Promise<any>>} args.handlers  RPC handler map
- * @returns {Promise<{account: any, services: Array<{serviceKind: string, remoteAccountId: string}>}>}
+ * @returns {Promise<{account: any, services: Array<{serviceKind: string, remoteAccountId: string}>, sharedAccounts: any[]}>}
  */
 export async function ingestSession({ session, serverOrigin, handlers }) {
   if (!session) {
@@ -55,8 +61,28 @@ export async function ingestSession({ session, serverOrigin, handlers }) {
     serverOrigin,
     remoteAccountId,
     isPrimary: true,
+    isPersonal: accountInfo.isPersonal !== false,
   });
   const account = upserted.row;
+
+  // Non-primary mail-capable accounts: shared accounts (RFC 9670) or
+  // secondary personal accounts. Upsert a row per account so mailbox
+  // sync can attach folders to them.
+  const sharedAccounts = [];
+  const accountsMap: Record<string, any> = session.accounts ?? {};
+  for (const [otherRemoteId, otherInfo] of Object.entries(accountsMap)) {
+    if (otherRemoteId === remoteAccountId) continue;
+    if (!(otherInfo?.accountCapabilities ?? {})[JMAP_CAPS.MAIL]) continue;
+    const otherUpserted = await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: otherInfo.name ?? null,
+      primaryEmail: otherInfo.name ?? null,
+      serverOrigin,
+      remoteAccountId: otherRemoteId,
+      isPrimary: false,
+      isPersonal: otherInfo.isPersonal !== false,
+    });
+    sharedAccounts.push(otherUpserted.row);
+  }
 
   const wsCap = session.capabilities?.[JMAP_CAPS.WEBSOCKET];
   const websocketUrl = wsCap?.url ?? null;
@@ -103,5 +129,5 @@ export async function ingestSession({ session, serverOrigin, handlers }) {
     });
   }
 
-  return { account, services };
+  return { account, services, sharedAccounts };
 }

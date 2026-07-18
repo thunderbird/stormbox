@@ -128,6 +128,14 @@ export class Repository {
     return this.call(DB_RPC.FOLDER_BY_ROLE, { accountId, role });
   }
 
+  setFolderStarred(folderId, isStarred) {
+    return this.setFoldersStarred([folderId], isStarred);
+  }
+
+  setFoldersStarred(folderIds, isStarred) {
+    return this.call(DB_RPC.FOLDER_SET_STARRED_MANY, { folderIds, isStarred });
+  }
+
   // Identities ---------------------------------------------------------
 
   listIdentities(accountId) {

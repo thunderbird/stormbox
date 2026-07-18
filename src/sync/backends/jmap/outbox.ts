@@ -16,6 +16,9 @@
  *   'send'             Email/set create + EmailSubmission/set with
  *                      onSuccessUpdateEmail moving the email out of
  *                      drafts/outbox into sent
+ *   'setMailboxSubscription' / 'createMailbox' / 'updateMailbox' /
+ *   'destroyMailbox'   Mailbox/set subscription toggle, create,
+ *                      rename/move, and destroy (RFC 8621 §2.5)
  *
  * Move and destroy delegate the cache effect to the protocol-neutral
  * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
@@ -65,7 +68,54 @@ export const MUTATION_TYPES = Object.freeze({
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
+  CREATE_MAILBOX: 'createMailbox',
+  UPDATE_MAILBOX: 'updateMailbox',
+  DESTROY_MAILBOX: 'destroyMailbox',
 });
+
+type FolderId = number;
+
+interface FolderContext {
+  id: number;
+  remote_id: string;
+  account_id: number;
+  remote_account_id: string;
+}
+
+interface FolderBatchResult {
+  succeededIds: Array<number | string>;
+  errors: Record<string, any>;
+  created?: Record<string, { remoteId: string; folderId?: number | null }>;
+}
+
+interface FolderProcessResult {
+  ok: boolean;
+  error?: any;
+  response?: any;
+  result: FolderBatchResult;
+}
+
+interface FolderMutationHandlerArgs {
+  transport: any;
+  account?: { id: number; remote_account_id: string };
+  handlers: Record<string, (params: any) => Promise<any>>;
+  request: any;
+  useWebSocket: boolean;
+}
+
+// Session capabilities should always provide this value. Keep a
+// conservative fallback for malformed/offline test sessions rather than
+// assuming Stalwart's much larger default.
+const DEFAULT_MAX_OBJECTS_IN_SET = 100;
+const RETRYABLE_FOLDER_ERROR_TYPES = new Set([
+  'transport',
+  'serverUnavailable',
+  'serverFail',
+  'noResponse',
+  'stateMismatch',
+]);
+const SET_ERROR_WRAPPERS = new Set(['notCreated', 'notUpdated', 'notDestroyed']);
 
 /**
  * Drain pending mutations for the given account. When mutationId is
@@ -120,11 +170,11 @@ export async function drainOutbox({
  */
 export async function processMutationRow({
   transport, account, handlers, row, useWebSocket = false,
-}) {
+}): Promise<{ ok: boolean; error?: any; response?: any; result?: any }> {
   const request = JSON.parse(row.request_json);
   switch (row.mutation_type) {
     case MUTATION_TYPES.SET_KEYWORDS:
-      return runSetKeywords({ transport, account, handlers, row, request, useWebSocket });
+      return runSetKeywords({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.MOVE_TO_FOLDERS:
       return runMoveToFolders({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DESTROY:
@@ -139,22 +189,578 @@ export async function processMutationRow({
       return runUpdateContact({ transport, account, handlers, request, useWebSocket });
     case MUTATION_TYPES.DELETE_CONTACT:
       return runDeleteContact({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
+      return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
+    case MUTATION_TYPES.CREATE_MAILBOX:
+      return runCreateMailbox({ transport, account, handlers, request, useWebSocket });
+    case MUTATION_TYPES.UPDATE_MAILBOX:
+      return runUpdateMailbox({ transport, handlers, request, useWebSocket });
+    case MUTATION_TYPES.DESTROY_MAILBOX:
+      return runDestroyMailbox({ transport, handlers, request, useWebSocket });
     default:
       return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
   }
+}
+
+/**
+ * Toggle a Mailbox's per-user isSubscribed flag (RFC 8621 §2). request
+ * shape: { folderId: <local folders.id>, isSubscribed: boolean }.
+ *
+ * The folder may belong to a shared account (RFC 9670), so the JMAP
+ * accountId is resolved from the folder's own accounts row rather
+ * than the mutation row's account. Note Stalwart requires the Modify
+ * ACL to change any property of a shared mailbox, including
+ * isSubscribed; a "forbidden" SetError surfaces as a terminal
+ * notUpdated error the store can show to the user.
+ */
+async function runSetMailboxSubscription({
+  transport, handlers, request, useWebSocket,
+}: FolderMutationHandlerArgs): Promise<FolderProcessResult> {
+  const operations = Array.isArray(request?.operations)
+    ? request.operations
+    : [{ folderId: request?.folderId, isSubscribed: request?.isSubscribed }];
+  // Last operation wins for duplicate folder ids. This makes malformed
+  // payloads deterministic without emitting duplicate remote ids in the
+  // Mailbox/set update map.
+  const normalizedById = new Map<number, { folderId: number; isSubscribed: boolean }>();
+  for (const operation of operations) {
+    const normalized = {
+      folderId: Number(operation?.folderId),
+      isSubscribed: operation?.isSubscribed === true,
+    };
+    if (Number.isFinite(normalized.folderId)) {
+      normalizedById.set(normalized.folderId, normalized);
+    }
+  }
+  const normalized = [...normalizedById.values()];
+  const contexts = await resolveFolderContexts(
+    handlers,
+    normalized.map((operation) => operation.folderId),
+  );
+  const errors: Record<string, any> = {};
+  const groups = new Map<string, Array<{ folder: FolderContext; isSubscribed: boolean }>>();
+  for (const operation of normalized) {
+    const folder = contexts.get(operation.folderId);
+    if (!folder) {
+      errors[String(operation.folderId)] = { type: 'unknownFolder' };
+      continue;
+    }
+    const group = groups.get(folder.remote_account_id) ?? [];
+    group.push({ folder, isSubscribed: operation.isSubscribed });
+    groups.set(folder.remote_account_id, group);
+  }
+  const confirmed: Array<{ folderId: number; isSubscribed: boolean }> = [];
+  let lastResponse;
+  const cap = maxObjectsInSet(transport);
+  for (const [remoteAccountId, items] of groups) {
+    for (const chunk of chunks(items, cap)) {
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Mailbox/set', {
+            accountId: remoteAccountId,
+            update: Object.fromEntries(chunk.map((item) => [
+              item.folder.remote_id,
+              { isSubscribed: item.isSubscribed },
+            ])),
+          }, 's1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = transportFolderError(error);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Mailbox/set');
+      if (!response) {
+        const failure = extractMethodError(raw);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      const chunkConfirmed: Array<{ folderId: number; isSubscribed: boolean }> = [];
+      for (const item of chunk) {
+        const failure = response.notUpdated?.[item.folder.remote_id];
+        if (failure) {
+          errors[String(item.folder.id)] = { type: 'notUpdated', detail: failure };
+        } else {
+          chunkConfirmed.push({ folderId: item.folder.id, isSubscribed: item.isSubscribed });
+        }
+      }
+      if (chunkConfirmed.length > 0) {
+        await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_SUBSCRIPTIONS]({ updates: chunkConfirmed });
+        confirmed.push(...chunkConfirmed);
+      }
+    }
+  }
+  return finishFolderBatch(
+    confirmed.map((item) => item.folderId),
+    errors,
+    lastResponse,
+  );
+}
+
+/**
+ * Create a mailbox (RFC 8621 §2.5). request shape:
+ *   { name: string, parentFolderId?: <local folders.id> | null }
+ *
+ * A child of a shared folder must be created in the owning account
+ * (RFC 9670: needs myRights.mayCreateChild on the parent), so the JMAP
+ * accountId comes from the parent folder when one is given and from
+ * the mutation row's account otherwise. isSubscribed is set explicitly
+ * because Stalwart leaves Mailbox/set creates unsubscribed, which
+ * would hide the new folder from our own sidebar.
+ */
+async function runCreateMailbox({
+  transport, account, handlers, request, useWebSocket,
+}: FolderMutationHandlerArgs): Promise<FolderProcessResult> {
+  if (!account) {
+    return finishFolderBatch([], { create: { type: 'unknownAccount' } });
+  }
+  const operations = Array.isArray(request?.operations)
+    ? request.operations
+    : [{ clientId: 'c1', name: request?.name, parentFolderId: request?.parentFolderId }];
+  const parentIds = operations
+    .map((operation) => Number(operation?.parentFolderId))
+    .filter((id) => Number.isFinite(id));
+  const parents = await resolveFolderContexts(handlers, parentIds);
+  const errors: Record<string, any> = {};
+  const groups = new Map<string, any[]>();
+  operations.forEach((operation, index) => {
+    const clientId = String(operation?.clientId ?? `c${index + 1}`);
+    const name = typeof operation?.name === 'string' ? operation.name.trim() : '';
+    if (!name) {
+      errors[clientId] = { type: 'invalidName' };
+      return;
+    }
+    const parentId = operation?.parentFolderId == null
+      ? null
+      : Number(operation.parentFolderId);
+    const parent = parentId == null ? null : parents.get(parentId);
+    if (parentId != null && !parent) {
+      errors[clientId] = { type: 'unknownFolder' };
+      return;
+    }
+    const remoteAccountId = parent?.remote_account_id ?? account.remote_account_id;
+    const group = groups.get(remoteAccountId) ?? [];
+    group.push({
+      clientId,
+      name,
+      localAccountId: parent?.account_id ?? account.id,
+      localParentId: parent?.id ?? null,
+      remoteParentId: parent?.remote_id ?? null,
+    });
+    groups.set(remoteAccountId, group);
+  });
+  const cacheCreates: any[] = [];
+  const createdResult: Record<string, { remoteId: string; folderId?: number | null }> = {};
+  let lastResponse;
+  const cap = maxObjectsInSet(transport);
+  for (const [remoteAccountId, items] of groups) {
+    for (const chunk of chunks(items, cap)) {
+      const raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Mailbox/set', {
+          accountId: remoteAccountId,
+          create: Object.fromEntries(chunk.map((item) => [
+            item.clientId,
+            { name: item.name, parentId: item.remoteParentId, isSubscribed: true },
+          ])),
+        }, 's1']],
+        useWebSocket,
+      });
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Mailbox/set');
+      if (!response) {
+        const failure = extractMethodError(raw);
+        for (const item of chunk) errors[item.clientId] = failure;
+        continue;
+      }
+      for (const item of chunk) {
+        const created = response.created?.[item.clientId];
+        if (!created?.id) {
+          errors[item.clientId] = {
+            type: 'notCreated',
+            detail: response.notCreated?.[item.clientId] ?? null,
+          };
+          continue;
+        }
+        cacheCreates.push({
+          clientId: item.clientId,
+          accountId: item.localAccountId,
+          remoteId: created.id,
+          name: item.name,
+          parentFolderId: item.localParentId,
+          sortOrder: created.sortOrder ?? 0,
+          rightsJson: created.myRights ? JSON.stringify(created.myRights) : null,
+          rawJson: JSON.stringify({ ...created, name: item.name, parentId: item.remoteParentId }),
+        });
+        createdResult[item.clientId] = { remoteId: created.id };
+      }
+    }
+  }
+  if (cacheCreates.length > 0) {
+    const applied = await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]({ creates: cacheCreates });
+    for (const [clientId, folderId] of Object.entries(applied.folderIds ?? {})) {
+      if (createdResult[clientId]) createdResult[clientId].folderId = folderId as number | null;
+    }
+  }
+  const result = finishFolderBatch(Object.keys(createdResult), errors, lastResponse);
+  result.result.created = createdResult;
+  return result;
+}
+
+/**
+ * Rename and/or move a mailbox (RFC 8621 §2.5 update of name/parentId).
+ * request shape:
+ *   { folderId: <local folders.id>, name?: string,
+ *     parentFolderId?: <local folders.id> | null }
+ *
+ * `parentFolderId` present-and-null means "move to top level"; absent
+ * means "leave the parent alone". Requires myRights.mayRename on
+ * shared mailboxes (Stalwart maps its Modify ACL to mayRename).
+ */
+async function runUpdateMailbox({
+  transport, handlers, request, useWebSocket,
+}: FolderMutationHandlerArgs): Promise<FolderProcessResult> {
+  const operations = Array.isArray(request?.operations) ? request.operations : [request];
+  const ids = operations.flatMap((operation) => [
+    Number(operation?.folderId),
+    Number(operation?.parentFolderId),
+  ]).filter((id) => Number.isFinite(id));
+  const contexts = await resolveFolderContexts(handlers, ids);
+  const errors: Record<string, any> = {};
+  const groups = new Map<string, any[]>();
+  for (const operation of operations) {
+    const folderId = Number(operation?.folderId);
+    const folder = contexts.get(folderId);
+    if (!folder) {
+      errors[String(folderId)] = { type: 'unknownFolder' };
+      continue;
+    }
+    const parentProvided = Object.prototype.hasOwnProperty.call(operation, 'parentFolderId');
+    const patch: any = {};
+    if (typeof operation?.name === 'string' && operation.name.trim()) {
+      patch.name = operation.name.trim();
+    }
+    let localParentId = null;
+    if (parentProvided) {
+      if (operation.parentFolderId == null) {
+        patch.parentId = null;
+      } else {
+        const parent = contexts.get(Number(operation.parentFolderId));
+        if (!parent || parent.account_id !== folder.account_id) {
+          errors[String(folderId)] = { type: 'unknownFolder' };
+          continue;
+        }
+        patch.parentId = parent.remote_id;
+        localParentId = parent.id;
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      errors[String(folderId)] = { type: 'emptyUpdate' };
+      continue;
+    }
+    const group = groups.get(folder.remote_account_id) ?? [];
+    group.push({
+      folder,
+      patch,
+      cache: {
+        folderId,
+        name: patch.name ?? null,
+        parentProvided,
+        parentFolderId: localParentId,
+      },
+    });
+    groups.set(folder.remote_account_id, group);
+  }
+  const confirmed: any[] = [];
+  let lastResponse;
+  const cap = maxObjectsInSet(transport);
+  for (const [remoteAccountId, items] of groups) {
+    for (const chunk of chunks(items, cap)) {
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Mailbox/set', {
+            accountId: remoteAccountId,
+            update: Object.fromEntries(chunk.map((item) => [item.folder.remote_id, item.patch])),
+          }, 's1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = transportFolderError(error);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Mailbox/set');
+      if (!response) {
+        const failure = extractMethodError(raw);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      const chunkConfirmed: any[] = [];
+      for (const item of chunk) {
+        const failure = response.notUpdated?.[item.folder.remote_id];
+        if (failure) {
+          errors[String(item.folder.id)] = { type: 'notUpdated', detail: failure };
+        } else {
+          chunkConfirmed.push(item.cache);
+        }
+      }
+      if (chunkConfirmed.length > 0) {
+        await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_UPDATES]({ updates: chunkConfirmed });
+        confirmed.push(...chunkConfirmed);
+      }
+    }
+  }
+  return finishFolderBatch(
+    confirmed.map((item) => item.folderId),
+    errors,
+    lastResponse,
+  );
+}
+
+/**
+ * Destroy a mailbox (RFC 8621 §2.5). request shape:
+ *   { folderId: <local folders.id>, onDestroyRemoveEmails?: boolean }
+ *
+ * With onDestroyRemoveEmails false (the default and the store's first
+ * attempt), a mailbox that still contains mail is rejected with a
+ * mailboxHasEmail SetError; the store escalates to an explicit user
+ * confirmation before retrying with true. mailboxHasChild is always
+ * terminal — children must be moved or deleted first. Shared mailboxes
+ * additionally need myRights.mayDelete (and mayRemoveItems when
+ * removing emails) on Stalwart.
+ */
+async function runDestroyMailbox({
+  transport, handlers, request, useWebSocket,
+}: FolderMutationHandlerArgs): Promise<FolderProcessResult> {
+  const operations = Array.isArray(request?.operations) ? request.operations : [request];
+  const normalizedById = new Map<number, {
+    folderId: number;
+    onDestroyRemoveEmails: boolean;
+  }>();
+  for (const operation of operations) {
+    const normalized = {
+      folderId: Number(operation?.folderId),
+      onDestroyRemoveEmails: operation?.onDestroyRemoveEmails === true,
+    };
+    if (Number.isFinite(normalized.folderId)) {
+      normalizedById.set(normalized.folderId, normalized);
+    }
+  }
+  const normalized = [...normalizedById.values()];
+  const contexts = await resolveFolderContexts(
+    handlers,
+    normalized.map((operation) => operation.folderId),
+  );
+  const alreadyDestroyed = await resolveLocallyDestroyedFolderIds(
+    handlers,
+    normalized
+      .map((operation) => operation.folderId)
+      .filter((folderId) => !contexts.has(folderId)),
+  );
+  const errors: Record<string, any> = {};
+  const groups = new Map<string, any[]>();
+  for (const operation of normalized) {
+    const folder = contexts.get(operation.folderId);
+    if (!folder) {
+      if (!alreadyDestroyed.has(operation.folderId)) {
+        errors[String(operation.folderId)] = { type: 'unknownFolder' };
+      }
+      continue;
+    }
+    const key = `${folder.remote_account_id}\u0000${operation.onDestroyRemoveEmails ? '1' : '0'}`;
+    const group = groups.get(key) ?? [];
+    group.push({ folder, onDestroyRemoveEmails: operation.onDestroyRemoveEmails });
+    groups.set(key, group);
+  }
+  const confirmed: any[] = [...alreadyDestroyed].map((folderId) => ({ folderId }));
+  let lastResponse;
+  const cap = maxObjectsInSet(transport);
+  for (const items of groups.values()) {
+    const remoteAccountId = items[0].folder.remote_account_id;
+    const onDestroyRemoveEmails = items[0].onDestroyRemoveEmails;
+    for (const chunk of chunks(items, cap)) {
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Mailbox/set', {
+            accountId: remoteAccountId,
+            destroy: chunk.map((item) => item.folder.remote_id),
+            onDestroyRemoveEmails,
+          }, 's1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = transportFolderError(error);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Mailbox/set');
+      if (!response) {
+        const failure = extractMethodError(raw);
+        for (const item of chunk) errors[String(item.folder.id)] = failure;
+        return finishFolderBatch(
+          confirmed.map((item) => item.folderId),
+          errors,
+          lastResponse,
+        );
+      }
+      const chunkConfirmed: any[] = [];
+      for (const item of chunk) {
+        const failure = response.notDestroyed?.[item.folder.remote_id];
+        if (failure) {
+          errors[String(item.folder.id)] = { type: 'notDestroyed', detail: failure };
+        } else {
+          chunkConfirmed.push({
+            folderId: item.folder.id,
+            accountId: item.folder.account_id,
+            onDestroyRemoveEmails: item.onDestroyRemoveEmails,
+          });
+        }
+      }
+      if (chunkConfirmed.length > 0) {
+        await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_DESTROYS]({ destroys: chunkConfirmed });
+        confirmed.push(...chunkConfirmed);
+      }
+    }
+  }
+  return finishFolderBatch(
+    confirmed.map((item) => item.folderId),
+    errors,
+    lastResponse,
+  );
+}
+
+function maxObjectsInSet(transport: any): number {
+  const raw = Number(
+    transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInSet,
+  );
+  return Number.isFinite(raw) && raw > 0
+    ? Math.max(1, Math.floor(raw))
+    : DEFAULT_MAX_OBJECTS_IN_SET;
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    result.push(items.slice(index, index + size));
+  }
+  return result;
+}
+
+async function resolveFolderContexts(
+  handlers: Record<string, (params: any) => Promise<any>>,
+  folderIds: FolderId[],
+): Promise<Map<number, FolderContext>> {
+  const ids = [...new Set(folderIds.map(Number).filter(Number.isFinite))];
+  if (ids.length === 0) return new Map();
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT f.id, f.remote_id, f.account_id, a.remote_account_id
+            FROM folders f
+            JOIN accounts a ON a.id = f.account_id
+           WHERE f.id IN (${ids.map(() => '?').join(',')})
+             AND f.is_deleted = 0`,
+    params: ids,
+  });
+  return new Map(rows
+    .filter((folder) => folder?.remote_id && folder?.remote_account_id)
+    .map((folder) => [Number(folder.id), folder]));
+}
+
+async function resolveLocallyDestroyedFolderIds(
+  handlers: Record<string, (params: any) => Promise<any>>,
+  folderIds: FolderId[],
+): Promise<Set<number>> {
+  const ids = [...new Set(folderIds.map(Number).filter(Number.isFinite))];
+  if (ids.length === 0) return new Set();
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id FROM folders
+           WHERE id IN (${ids.map(() => '?').join(',')})
+             AND is_deleted = 1`,
+    params: ids,
+  });
+  return new Set(rows.map((row) => Number(row.id)));
+}
+
+function transportFolderError(error: any) {
+  return {
+    type: 'transport',
+    message: error?.message ?? String(error),
+  };
+}
+
+function isTerminalPerObjectFolderError(error: any): boolean {
+  if (!SET_ERROR_WRAPPERS.has(error?.type)) return false;
+  const detailType = error?.detail?.type;
+  return !RETRYABLE_FOLDER_ERROR_TYPES.has(detailType);
+}
+
+function finishFolderBatch(
+  succeededIds: Array<number | string>,
+  errors: Record<string, any>,
+  response?: any,
+): FolderProcessResult {
+  const result: FolderBatchResult = { succeededIds, errors };
+  const errorList = Object.values(errors) as any[];
+  const firstError = errorList[0];
+  if (firstError) {
+    const terminal = errorList.every(isTerminalPerObjectFolderError);
+    return {
+      ok: false,
+      error: {
+        ...firstError,
+        ...(terminal ? { terminal: true } : {}),
+        result,
+      },
+      response,
+      result,
+    };
+  }
+  return { ok: true, response, result };
 }
 
 async function runOne(args) {
   return processMutationRow(args);
 }
 
-async function runSetKeywords({ transport, account, handlers, row, request, useWebSocket }) {
+async function runSetKeywords({ transport, handlers, row, request, useWebSocket }) {
   const messageIds = collectMessageIds(row, request);
   if (messageIds.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
-  if (resolved.length === 0) {
+  // Keyword flips (e.g. $seen on open) can target messages living in a
+  // shared account's folders, so resolve each message's own account and
+  // issue one Email/set per remote account.
+  const resolvedByAccount = await resolveRemoteMessageIdsByAccount(handlers, messageIds);
+  if (resolvedByAccount.size === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   const update = {};
@@ -164,12 +770,16 @@ async function runSetKeywords({ transport, account, handlers, row, request, useW
   for (const k of request.remove ?? []) {
     update[`keywords/${k}`] = null;
   }
-  return submitEmailSet({
-    transport,
-    account,
-    useWebSocket,
-    update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
-  });
+  for (const [remoteAccountId, resolved] of resolvedByAccount) {
+    const result = await submitEmailSet({
+      transport,
+      account: { remote_account_id: remoteAccountId },
+      useWebSocket,
+      update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
+    });
+    if (!result.ok) return result;
+  }
+  return { ok: true };
 }
 
 /**
@@ -879,6 +1489,31 @@ async function submitEmailSet({ transport, account, useWebSocket, update, destro
  * destroyed the row before the outbox got to it). Returns
  * [{ localId, remoteId }, ...] in no guaranteed order.
  */
+/**
+ * Account-aware variant of resolveRemoteMessageIds. Groups local
+ * message ids by the JMAP remote account id that owns them so callers
+ * can issue one set call per account. Returns
+ * Map<remoteAccountId, [{ localId, remoteId }]>.
+ */
+async function resolveRemoteMessageIdsByAccount(handlers, messageIds) {
+  const out = new Map();
+  if (!Array.isArray(messageIds) || messageIds.length === 0) return out;
+  const placeholders = messageIds.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT m.id, m.remote_id, a.remote_account_id
+            FROM messages m
+            JOIN accounts a ON a.id = m.account_id
+           WHERE m.id IN (${placeholders})`,
+    params: messageIds,
+  });
+  for (const row of rows) {
+    if (row.remote_id == null || row.remote_account_id == null) continue;
+    if (!out.has(row.remote_account_id)) out.set(row.remote_account_id, []);
+    out.get(row.remote_account_id).push({ localId: Number(row.id), remoteId: row.remote_id });
+  }
+  return out;
+}
+
 async function resolveRemoteMessageIds(handlers, account, messageIds) {
   if (!Array.isArray(messageIds) || messageIds.length === 0) return [];
   const placeholders = messageIds.map(() => '?').join(',');

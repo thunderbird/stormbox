@@ -8,6 +8,9 @@ This document is the operational guide for agents and contributors.
 
 - Product surface and capability requirements:
   `specs/001-mvp-scope/spec.md`.
+- Folder hierarchy, shared accounts, subscriptions, CRUD, favorites,
+  large-tree behavior, and folder-management UX:
+  `specs/003-folder-management/spec.md`.
 - Project-wide product and architectural invariants (layer
   boundaries, cache-first reads, mutation pipeline, sync rules,
   browser baseline, safe rendering): `.specify/memory/constitution.md`.

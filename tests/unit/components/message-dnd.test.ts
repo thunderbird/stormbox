@@ -44,6 +44,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 
 import MessageList from '../../../src/components/MessageList.vue';
 import FolderTree from '../../../src/components/FolderTree.vue';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 import {
   MESSAGE_DRAG_MIME,
@@ -106,6 +107,9 @@ beforeEach(() => {
   virtualizerWindow.start = 0;
   virtualizerWindow.count = null;
   setActivePinia(createPinia());
+  // FolderTree renders primaryFolders, scoped to the signed-in
+  // account; the seeded folder rows all use account_id 1.
+  useAuthStore().accountId = 1;
 });
 
 afterEach(() => {

@@ -3,7 +3,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
-import { drainOutbox, MUTATION_TYPES } from '../../../src/sync/backends/jmap/outbox';
+import {
+  drainOutbox,
+  MUTATION_TYPES,
+  processMutationRow,
+} from '../../../src/sync/backends/jmap/outbox';
 import { syncMailboxes } from '../../../src/sync/backends/jmap/mailboxes';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
 import { MockTransport } from './_mock-transport';
@@ -692,5 +696,732 @@ describe('drainOutbox', () => {
     );
     expect(row.local_status).toBe('conflicted');
     expect(JSON.parse(row.error_json).type).toBe('unknownIdentity');
+  });
+});
+
+describe('setMailboxSubscription', () => {
+  it('issues Mailbox/set against the folder-owning account and mirrors the flag locally', async () => {
+    // The folder belongs to a shared account (RFC 9670), so the JMAP
+    // accountId must come from that account's row, not the mutation's.
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'other@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'mb-team', name: 'Team', isSubscribed: false }],
+    });
+    const folder = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [shared.id, 'mb-team'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: folder.id, isSubscribed: true }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { updated: { 'mb-team': null }, newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.accountId).toBe('acct-shared');
+    expect(setParams.update).toEqual({ 'mb-team': { isSubscribed: true } });
+
+    const after = await engine.get(
+      'SELECT is_subscribed FROM folders WHERE id = ?',
+      [folder.id],
+    );
+    expect(Number(after.is_subscribed)).toBe(1);
+  });
+
+  it('marks the row failed and leaves the local flag unchanged on notUpdated', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-locked', name: 'Locked', isSubscribed: true }],
+    });
+    const folder = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-locked'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: folder.id, isSubscribed: false }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({
+      notUpdated: {
+        'mb-locked': { type: 'forbidden', description: 'You are not allowed to modify this mailbox.' },
+      },
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('notUpdated');
+
+    const after = await engine.get(
+      'SELECT is_subscribed FROM folders WHERE id = ?',
+      [folder.id],
+    );
+    expect(Number(after.is_subscribed)).toBe(1);
+  });
+
+  it('fails with unknownFolder when the folder id does not resolve', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({ folderId: 999999, isSubscribed: true }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => {
+      throw new Error('Mailbox/set must not be called for an unknown folder');
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+  });
+
+  it('groups, chunks, and applies only confirmed subscription ids in one plural row', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-p1', name: 'P1', isSubscribed: true },
+        { remoteId: 'mb-p2', name: 'P2', isSubscribed: true },
+        { remoteId: 'mb-p3', name: 'P3', isSubscribed: true },
+      ],
+    });
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'shared@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'mb-s1', name: 'S1', isSubscribed: true }],
+    });
+    const folders = await engine.all(
+      `SELECT id, remote_id FROM folders WHERE remote_id IN ('mb-p1','mb-p2','mb-p3','mb-s1')`,
+    );
+    const byRemote = Object.fromEntries(folders.map((folder) => [folder.remote_id, folder.id]));
+    await handlers[DB_RPC.FOLDER_SET_STARRED_MANY]({
+      folderIds: Object.values(byRemote),
+      isStarred: true,
+    });
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      requestJson: JSON.stringify({
+        operations: Object.values(byRemote).map((folderId) => ({
+          folderId,
+          isSubscribed: false,
+        })),
+      }),
+    });
+
+    const transport = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': { maxObjectsInSet: 2 },
+      },
+    });
+    const calls = [];
+    transport.handle('Mailbox/set', (params) => {
+      calls.push(params);
+      const updated = {};
+      const notUpdated = {};
+      for (const remoteId of Object.keys(params.update)) {
+        if (remoteId === 'mb-p3') notUpdated[remoteId] = { type: 'forbidden' };
+        else updated[remoteId] = null;
+      }
+      return { updated, notUpdated };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => call.accountId).sort()).toEqual([
+      'acct-1',
+      'acct-1',
+      'acct-shared',
+    ]);
+    expect(calls.every((call) => Object.keys(call.update).length <= 2)).toBe(true);
+
+    const after = await engine.all(
+      `SELECT remote_id, is_subscribed, is_starred
+         FROM folders WHERE remote_id IN ('mb-p1','mb-p2','mb-p3','mb-s1')`,
+    );
+    const state = Object.fromEntries(after.map((folder) => [folder.remote_id, {
+      subscribed: Number(folder.is_subscribed),
+      starred: Number(folder.is_starred),
+    }]));
+    expect(state['mb-p1']).toEqual({ subscribed: 0, starred: 0 });
+    expect(state['mb-p2']).toEqual({ subscribed: 0, starred: 0 });
+    expect(state['mb-s1']).toEqual({ subscribed: 0, starred: 0 });
+    expect(state['mb-p3']).toEqual({ subscribed: 1, starred: 1 });
+  });
+
+  it('applies an earlier subscription chunk before a later transport failure', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-a', name: 'A', isSubscribed: true },
+        { remoteId: 'mb-b', name: 'B', isSubscribed: true },
+        { remoteId: 'mb-c', name: 'C', isSubscribed: true },
+      ],
+    });
+    const folders = await engine.all(
+      `SELECT id, remote_id FROM folders WHERE remote_id IN ('mb-a','mb-b','mb-c') ORDER BY remote_id`,
+    );
+    const transport = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': { maxObjectsInSet: 2 },
+      },
+    });
+    let calls = 0;
+    transport.handle('Mailbox/set', (params) => {
+      calls += 1;
+      if (calls === 2) throw new Error('socket closed');
+      return {
+        updated: Object.fromEntries(Object.keys(params.update).map((remoteId) => [remoteId, null])),
+      };
+    });
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+        request_json: JSON.stringify({
+          operations: folders.map((folder) => ({
+            folderId: folder.id,
+            isSubscribed: false,
+          })),
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error.type).toBe('transport');
+    expect(result.error.terminal).toBeUndefined();
+    expect(result.result.succeededIds).toEqual(folders.slice(0, 2).map((folder) => folder.id));
+    expect(result.result.errors[String(folders[2].id)].type).toBe('transport');
+    const after = await engine.all(
+      `SELECT remote_id, is_subscribed FROM folders
+        WHERE remote_id IN ('mb-a','mb-b','mb-c') ORDER BY remote_id`,
+    );
+    expect(after.map((folder) => Number(folder.is_subscribed))).toEqual([0, 0, 1]);
+  });
+
+  it('uses deterministic last-wins semantics for duplicate subscription targets', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-duplicate', name: 'Duplicate', isSubscribed: false }],
+    });
+    const folder = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-duplicate'`,
+      [account.id],
+    );
+    const transport = new MockTransport();
+    let update;
+    transport.handle('Mailbox/set', (params) => {
+      update = params.update;
+      return { updated: { 'mb-duplicate': null } };
+    });
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+        request_json: JSON.stringify({
+          operations: [
+            { folderId: folder.id, isSubscribed: false },
+            { folderId: folder.id, isSubscribed: true },
+          ],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(update).toEqual({ 'mb-duplicate': { isSubscribed: true } });
+    expect(result.result.succeededIds).toEqual([folder.id]);
+  });
+
+  it('keeps method-level and transient per-object failures retryable', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-retry', name: 'Retry', isSubscribed: true }],
+    });
+    const folder = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-retry'`,
+      [account.id],
+    );
+    const row = {
+      mutation_type: MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION,
+      request_json: JSON.stringify({
+        operations: [{ folderId: folder.id, isSubscribed: false }],
+      }),
+    };
+    const setErrorTransport = new MockTransport();
+    setErrorTransport.handle('Mailbox/set', () => ({
+      notUpdated: { 'mb-retry': { type: 'serverFail' } },
+    }));
+    const setErrorResult = await processMutationRow({
+      transport: setErrorTransport,
+      account,
+      handlers,
+      row,
+    });
+    expect(setErrorResult.error.terminal).toBeUndefined();
+
+    const methodErrorTransport = {
+      request: async () => ({
+        methodResponses: [['error', { type: 'serverUnavailable' }, 's1']],
+      }),
+    };
+    const methodErrorResult = await processMutationRow({
+      transport: methodErrorTransport,
+      account,
+      handlers,
+      row,
+    });
+    expect(methodErrorResult.error.type).toBe('serverUnavailable');
+    expect(methodErrorResult.error.terminal).toBeUndefined();
+  });
+});
+
+describe('createMailbox', () => {
+  it('creates a top-level mailbox on the mutation account and inserts the local row subscribed', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.CREATE_MAILBOX,
+      requestJson: JSON.stringify({ name: 'Receipts', parentFolderId: null }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return {
+        created: { c1: { id: 'mb-new', sortOrder: 10, myRights: { mayRename: true } } },
+        newState: 'mb-s2',
+      };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.accountId).toBe('acct-1');
+    expect(setParams.create.c1).toEqual({
+      name: 'Receipts', parentId: null, isSubscribed: true,
+    });
+
+    const row = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-new'],
+    );
+    expect(row.name).toBe('Receipts');
+    expect(row.parent_id).toBeNull();
+    expect(Number(row.is_subscribed)).toBe(1);
+    expect(Number(row.is_deleted)).toBe(0);
+  });
+
+  it('creates a child under a shared folder in the owning account', async () => {
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'other@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'mb-team', name: 'Team', isSubscribed: true }],
+    });
+    const parent = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [shared.id, 'mb-team'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.CREATE_MAILBOX,
+      requestJson: JSON.stringify({ name: 'Minutes', parentFolderId: parent.id }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { created: { c1: { id: 'mb-minutes' } }, newState: 'mb-s3' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.accountId).toBe('acct-shared');
+    expect(setParams.create.c1.parentId).toBe('mb-team');
+
+    const row = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [shared.id, 'mb-minutes'],
+    );
+    expect(row.parent_id).toBe(parent.id);
+  });
+
+  it('marks the row failed on notCreated and inserts nothing locally', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.CREATE_MAILBOX,
+      requestJson: JSON.stringify({ name: 'Nope', parentFolderId: null }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({
+      notCreated: { c1: { type: 'forbidden' } },
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT error_json FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.CREATE_MAILBOX],
+    );
+    const error = JSON.parse(row.error_json);
+    expect(error.type).toBe('notCreated');
+    expect(error.detail.type).toBe('forbidden');
+
+    const created = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND name = 'Nope'`,
+      [account.id],
+    );
+    expect(created).toBeFalsy();
+  });
+});
+
+describe('updateMailbox', () => {
+  let folderId;
+
+  beforeEach(async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-projects', name: 'Projects', isSubscribed: true },
+        { remoteId: 'mb-reports', name: 'Reports', isSubscribed: true },
+      ],
+    });
+    const row = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-reports'],
+    );
+    folderId = row.id;
+  });
+
+  it('renames a mailbox and mirrors the name locally', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.UPDATE_MAILBOX,
+      requestJson: JSON.stringify({ folderId, name: 'Quarterly Reports' }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { updated: { 'mb-reports': null }, newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    // A rename-only update must not touch parentId (a patch with
+    // parentId: null would move the mailbox to the top level).
+    expect(setParams.update['mb-reports']).toEqual({ name: 'Quarterly Reports' });
+
+    const after = await engine.get('SELECT name, parent_id FROM folders WHERE id = ?', [folderId]);
+    expect(after.name).toBe('Quarterly Reports');
+    expect(after.parent_id).toBeNull();
+  });
+
+  it('moves a mailbox under a new parent and mirrors parent_id locally', async () => {
+    const parent = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-projects'],
+    );
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.UPDATE_MAILBOX,
+      requestJson: JSON.stringify({ folderId, parentFolderId: parent.id }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { updated: { 'mb-reports': null }, newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.update['mb-reports']).toEqual({ parentId: 'mb-projects' });
+
+    const after = await engine.get('SELECT name, parent_id FROM folders WHERE id = ?', [folderId]);
+    expect(after.parent_id).toBe(parent.id);
+    expect(after.name).toBe('Reports');
+  });
+
+  it('marks the row failed and leaves the local row unchanged on notUpdated', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.UPDATE_MAILBOX,
+      requestJson: JSON.stringify({ folderId, name: 'Elsewhere' }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({
+      notUpdated: { 'mb-reports': { type: 'forbidden' } },
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT local_status, error_json FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.UPDATE_MAILBOX],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('notUpdated');
+
+    const after = await engine.get('SELECT name FROM folders WHERE id = ?', [folderId]);
+    expect(after.name).toBe('Reports');
+  });
+});
+
+describe('destroyMailbox', () => {
+  it('destroys an empty mailbox and soft-deletes the local row', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-old', name: 'Old', isSubscribed: true }],
+    });
+    const folder = await engine.get(
+      'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-old'],
+    );
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson: JSON.stringify({ folderId: folder.id, onDestroyRemoveEmails: false }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { destroyed: ['mb-old'], newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.destroy).toEqual(['mb-old']);
+    expect(setParams.onDestroyRemoveEmails).toBe(false);
+
+    const after = await engine.get('SELECT is_deleted FROM folders WHERE id = ?', [folder.id]);
+    expect(Number(after.is_deleted)).toBe(1);
+  });
+
+  it('treats an already locally destroyed folder as successful on retry', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-retried', name: 'Retried', isSubscribed: true }],
+    });
+    const folder = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-retried'`,
+      [account.id],
+    );
+    const requestJson = JSON.stringify({
+      operations: [{
+        folderId: folder.id,
+        onDestroyRemoveEmails: false,
+      }],
+    });
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson,
+    });
+    const firstTransport = new MockTransport();
+    firstTransport.handle('Mailbox/set', () => ({ destroyed: ['mb-retried'] }));
+    expect(await drainOutbox({ transport: firstTransport, account, handlers }))
+      .toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson,
+    });
+    const retryTransport = new MockTransport();
+    retryTransport.handle('Mailbox/set', () => {
+      throw new Error('already-destroyed folder must not be sent again');
+    });
+    expect(await drainOutbox({ transport: retryTransport, account, handlers }))
+      .toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(retryTransport.requests).toHaveLength(0);
+  });
+
+  it('surfaces mailboxHasEmail as a typed notDestroyed error for the escalation path', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson: JSON.stringify({ folderId: inbox.id, onDestroyRemoveEmails: false }),
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({
+      notDestroyed: { 'mb-inbox': { type: 'mailboxHasEmail' } },
+    }));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await engine.get(
+      `SELECT error_json FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.DESTROY_MAILBOX],
+    );
+    const error = JSON.parse(row.error_json);
+    expect(error.type).toBe('notDestroyed');
+    expect(error.detail.type).toBe('mailboxHasEmail');
+
+    const after = await engine.get('SELECT is_deleted FROM folders WHERE id = ?', [inbox.id]);
+    expect(Number(after.is_deleted)).toBe(0);
+  });
+
+  it('does not infer Email destruction from a non-destructive folder success', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson: JSON.stringify({
+        operations: [{
+          folderId: inbox.id,
+          onDestroyRemoveEmails: false,
+        }],
+      }),
+    });
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({ destroyed: ['mb-inbox'] }));
+
+    expect(await drainOutbox({ transport, account, handlers }))
+      .toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    const message = await engine.get(
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'e-1'`,
+      [account.id],
+    );
+    expect(message?.id).toBe(messageId);
+    expect(await engine.all(
+      `SELECT * FROM folder_messages WHERE message_id = ?`,
+      [messageId],
+    )).toHaveLength(0);
+  });
+
+  it('clears folder memberships and query views when the destroy removes emails', async () => {
+    // The seeded inbox has one message and one mailbox-window view.
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson: JSON.stringify({ folderId: inbox.id, onDestroyRemoveEmails: true }),
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Mailbox/set', (params) => {
+      setParams = params;
+      return { destroyed: ['mb-inbox'], newState: 'mb-s2' };
+    });
+
+    const summary = await drainOutbox({ transport, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(setParams.onDestroyRemoveEmails).toBe(true);
+
+    const memberships = await engine.all(
+      'SELECT * FROM folder_messages WHERE folder_id = ?',
+      [inbox.id],
+    );
+    expect(memberships).toHaveLength(0);
+    const views = await engine.all(
+      'SELECT * FROM query_views WHERE folder_id = ?',
+      [inbox.id],
+    );
+    expect(views).toHaveLength(0);
+    const message = await engine.get(
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'e-1'`,
+      [account.id],
+    );
+    expect(message).toBeFalsy();
+  });
+
+  it('preserves a multi-filed message when one destructive folder delete succeeds', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-keep', name: 'Keep', isSubscribed: true }],
+    });
+    const keep = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-keep'`,
+      [account.id],
+    );
+    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [{
+        messageId,
+        memberships: [
+          { folderId: inbox.id, remoteMembershipId: 'mb-inbox' },
+          { folderId: keep.id, remoteMembershipId: 'mb-keep' },
+        ],
+      }],
+    });
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DESTROY_MAILBOX,
+      requestJson: JSON.stringify({
+        operations: [{
+          folderId: inbox.id,
+          onDestroyRemoveEmails: true,
+        }],
+      }),
+    });
+    const transport = new MockTransport();
+    transport.handle('Mailbox/set', () => ({ destroyed: ['mb-inbox'] }));
+
+    expect(await drainOutbox({ transport, account, handlers }))
+      .toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    const message = await engine.get(
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'e-1'`,
+      [account.id],
+    );
+    expect(message?.id).toBe(messageId);
+    const remaining = await engine.all(
+      `SELECT folder_id FROM folder_messages WHERE message_id = ?`,
+      [messageId],
+    );
+    expect(remaining.map((row) => row.folder_id)).toEqual([keep.id]);
   });
 });

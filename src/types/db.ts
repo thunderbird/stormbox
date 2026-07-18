@@ -17,6 +17,7 @@ export interface AccountRow {
   remote_account_id: string;
   server_kind: string | null;
   is_primary: 0 | 1;
+  is_personal: 0 | 1;
   created_at: number;
   updated_at: number;
   last_opened_at: number | null;
@@ -42,6 +43,9 @@ export interface FolderRow {
   may_remove_items: 0 | 1 | null;
   rights_json: string | null;
   raw_json: string | null;
+  is_subscribed: 0 | 1 | null;
+  /** Client-local "pin to top of the folder list"; never synced to JMAP. */
+  is_starred: 0 | 1;
   is_deleted: 0 | 1;
   updated_at: number;
   // populated by the mail-store after queryViewProgress lands
@@ -194,5 +198,6 @@ export interface FolderUpsertInput {
   mayRemoveItems?: boolean | null;
   rightsJson?: string | null;
   rawJson?: string | null;
+  isSubscribed?: boolean | null;
   isDeleted?: boolean;
 }
