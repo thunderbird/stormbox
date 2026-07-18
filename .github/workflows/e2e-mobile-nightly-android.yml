@@ -22,4 +22,9 @@ jobs:
       browserstack_build_name: 'Nightly Webmail E2E Tests (Android Chrome): BUILD_INFO'
       test_step_name: Prod E2E Tests on Android Chrome
       npm_script: e2e:browserstack:mobile:android:chrome
-    secrets: inherit
+    secrets:
+      E2E_ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
+      E2E_ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
+      E2E_PRIMARY_THUNDERMAIL_EMAIL: ${{ secrets.E2E_PRIMARY_THUNDERMAIL_EMAIL }}
+      BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+      BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
