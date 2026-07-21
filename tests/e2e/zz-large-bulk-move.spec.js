@@ -143,11 +143,11 @@ test.describe('Large bulk move e2e', () => {
       });
       mark('ui-bulk-move');
       console.log(`[large-bulk-move progress] ${JSON.stringify(progressSeen)}`);
-      // Assert the modal engaged with the correct total. Intermediate
-      // ticks aren't asserted — Vue coalesces them for a tens-of-ms move —
-      // so the source/destination counts below prove the move progressed.
+      // The backend owns wire chunking, so the overlay is intentionally
+      // indeterminate. Assert that it engaged for the complete semantic
+      // target set; source/destination counts below prove completion.
       expect(
-        progressSeen.some((t) => t.startsWith(`0 of ${MOVE_COUNT.toLocaleString()} messages`)),
+        progressSeen.some((t) => t.includes(`${MOVE_COUNT.toLocaleString()} messages`)),
         `expected the bulk-progress overlay to engage with the full total; saw ${JSON.stringify(progressSeen)}`,
       ).toBe(true);
       await waitForPendingMutations(page, { timeout: 120_000 });
