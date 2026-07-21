@@ -113,6 +113,20 @@ describe('ingestSession', () => {
     expect(caps.length).toBe(before);
   });
 
+  it('does not persist live JMAP Core request limits in SQLite', async () => {
+    const { account } = await ingestSession({
+      session: SESSION_TEMPLATE,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+    });
+    const coreRows = await engine.all(
+      `SELECT capability FROM account_capabilities
+        WHERE account_id = ? AND capability = ?`,
+      [account.id, JMAP_CAPS.CORE],
+    );
+    expect(coreRows).toEqual([]);
+  });
+
   it('skips contacts service when the server does not advertise it', async () => {
     const session = {
       ...SESSION_TEMPLATE,
@@ -195,6 +209,52 @@ describe('ingestSession', () => {
       await ingestSession({ session: SHARED_SESSION, serverOrigin: 'https://mail.example.com', handlers });
       const rows = await engine.all('SELECT COUNT(*) AS n FROM accounts');
       expect(Number(rows[0].n)).toBe(2);
+    });
+
+    it('removes revoked shared accounts and conflicts their pending mutations', async () => {
+      const first = await ingestSession({
+        session: SHARED_SESSION,
+        serverOrigin: 'https://mail.example.com',
+        handlers,
+      });
+      const shared = first.sharedAccounts[0];
+      await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+        accountId: shared.id,
+        folders: [{ remoteId: 'shared-gone', name: 'Gone' }],
+      });
+      const folder = await engine.get(
+        `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'shared-gone'`,
+        [shared.id],
+      );
+      await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+        accountId: first.account.id,
+        mutationType: 'setMailboxSubscription',
+        requestJson: JSON.stringify({
+          operations: [{ folderId: folder.id, isSubscribed: true }],
+        }),
+      });
+
+      await ingestSession({
+        session: SESSION_TEMPLATE,
+        serverOrigin: 'https://mail.example.com',
+        handlers,
+      });
+
+      const accounts = await engine.all(
+        'SELECT remote_account_id FROM accounts ORDER BY id',
+      );
+      expect(accounts.map((row) => row.remote_account_id)).toEqual(['acct-1']);
+      expect(await engine.get(
+        `SELECT id FROM folders WHERE remote_id = 'shared-gone'`,
+      )).toBeFalsy();
+      const pending = await engine.get(
+        `SELECT local_status, error_json FROM pending_mutations
+          WHERE mutation_type = 'setMailboxSubscription'`,
+      );
+      expect(pending.local_status).toBe('conflicted');
+      expect(JSON.parse(pending.error_json)).toMatchObject({
+        type: 'accountUnavailable',
+      });
     });
   });
 });

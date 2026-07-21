@@ -14,6 +14,7 @@ import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
+import { maxObjectsInGet } from './limits';
 
 const MAILBOX_PROPERTIES = [
   'id', 'name', 'parentId', 'role', 'sortOrder',
@@ -21,30 +22,9 @@ const MAILBOX_PROPERTIES = [
   'myRights', 'isSubscribed',
 ];
 
-// Fallback when the server does not advertise maxObjectsInGet. Matches
-// Stalwart's default jmap.protocol.get.max-objects, which silently
-// truncates unpaged Mailbox/get responses.
-const DEFAULT_GET_CAP = 500;
 // Upper bound on Mailbox/changes round-trips before giving up and
 // falling back to a full sync.
 const MAX_CHANGES_PAGES = 20;
-
-/** Read the server-advertised jmap-core maxObjectsInGet, if any. */
-async function readMaxObjectsInGet(handlers, accountId) {
-  try {
-    const rows = await handlers[DB_RPC.QUERY]({
-      sql: `SELECT payload_json FROM account_capabilities
-              WHERE account_id = ? AND capability = ?
-              LIMIT 1`,
-      params: [accountId, 'urn:ietf:params:jmap:core'],
-    });
-    const payload = rows?.[0]?.payload_json ? JSON.parse(rows[0].payload_json) : null;
-    const raw = Number(payload?.maxObjectsInGet);
-    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GET_CAP;
-  } catch {
-    return DEFAULT_GET_CAP;
-  }
-}
 
 /**
  * Fetch the complete mailbox list. Servers cap an unpaged Mailbox/get
@@ -53,7 +33,7 @@ async function readMaxObjectsInGet(handlers, accountId) {
  * Mailbox/query and fetch the remainder in id-chunks. The common case
  * (fewer mailboxes than the cap) stays a single round-trip.
  */
-async function fetchAllMailboxes({ transport, account, handlers, useWebSocket }) {
+async function fetchAllMailboxes({ transport, account, useWebSocket }) {
   const first = pickResponse(await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[
@@ -65,7 +45,7 @@ async function fetchAllMailboxes({ transport, account, handlers, useWebSocket })
   }), 'Mailbox/get');
   let list = first?.list ?? [];
   let state = first?.state;
-  const cap = await readMaxObjectsInGet(handlers, account.id);
+  const cap = maxObjectsInGet(transport);
   if (list.length < cap) {
     return { list, state };
   }
@@ -119,7 +99,7 @@ async function fetchAllMailboxes({ transport, account, handlers, useWebSocket })
  * account is not required to have an Archive at all.
  */
 export async function syncMailboxes({ transport, account, handlers, useWebSocket = false, repairArchive = true }) {
-  const response = await fetchAllMailboxes({ transport, account, handlers, useWebSocket });
+  const response = await fetchAllMailboxes({ transport, account, useWebSocket });
   const repaired = repairArchive
     ? await ensureArchiveMailbox({
       transport,
@@ -213,7 +193,7 @@ export async function syncMailboxChanges({ transport, account, handlers, sinceSt
   const ids = [...new Set([...created, ...updated])];
   let upserted = [];
   if (ids.length > 0) {
-    const cap = await readMaxObjectsInGet(handlers, account.id);
+    const cap = maxObjectsInGet(transport);
     for (let i = 0; i < ids.length; i += cap) {
       const getResult = await callJmap(transport, {
         using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],

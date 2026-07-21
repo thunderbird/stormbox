@@ -134,7 +134,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
           || capabilities.maySubscribe
           || capabilities.mayDelete
         ),
-        canCreateChild: capabilities.mayCreateChild && !capabilities.isSystemProtected,
+        canCreateChild: capabilities.mayCreateChild,
         starred: Number(folder.is_starred) === 1,
         hasChildren: byParent.has(folder.id),
         path,

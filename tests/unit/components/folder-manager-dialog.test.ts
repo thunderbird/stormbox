@@ -221,6 +221,23 @@ describe('FolderManagerDialog cascading subscription toggles', () => {
     expect(subSwitch(wrapper, 'Inbox').exists()).toBe(false);
     expect(wrapper.text()).toContain('always shown');
   });
+
+  it('allows primary system folders to host child folders', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+
+    const wrapper = mountDialog();
+    await nextTick();
+    await expandDefaults(wrapper);
+
+    expect(wrapper.find('[data-folder-add="Inbox"]').exists()).toBe(true);
+    await editButton(wrapper, 'Reports').trigger('click');
+    await nextTick();
+    const parents = wrapper.find('[data-folder-move-select]')
+      .findAll('option')
+      .map((option) => option.text().trim());
+    expect(parents).toContain('Inbox');
+  });
 });
 
 describe('FolderManagerDialog collapse/expand', () => {

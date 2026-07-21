@@ -83,6 +83,12 @@ export async function ingestSession({ session, serverOrigin, handlers }) {
     });
     sharedAccounts.push(otherUpserted.row);
   }
+  await handlers[DB_RPC.ACCOUNT_RECONCILE_SESSION]({
+    serverOrigin,
+    remoteAccountIds: [remoteAccountId, ...sharedAccounts.map(
+      (shared) => shared.remote_account_id,
+    )],
+  });
 
   const wsCap = session.capabilities?.[JMAP_CAPS.WEBSOCKET];
   const websocketUrl = wsCap?.url ?? null;
@@ -117,9 +123,14 @@ export async function ingestSession({ session, serverOrigin, handlers }) {
   for (const { serviceKind } of services) {
     const merged = {};
     for (const [cap, payload] of Object.entries(session.capabilities ?? {})) {
+      // Core request limits belong to the active transport Session.
+      // Persisting them creates a stale, account-scoped second source
+      // of truth for values that govern only live JMAP wire requests.
+      if (cap === JMAP_CAPS.CORE) continue;
       merged[cap] = payload;
     }
     for (const [cap, payload] of Object.entries(accountCaps)) {
+      if (cap === JMAP_CAPS.CORE) continue;
       merged[cap] = payload;
     }
     await handlers[DB_RPC.ACCOUNT_CAPABILITIES_REPLACE]({

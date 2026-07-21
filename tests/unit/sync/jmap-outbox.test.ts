@@ -636,6 +636,14 @@ describe('drainOutbox', () => {
     });
 
     const transport = {
+      session: {
+        capabilities: {
+          'urn:ietf:params:jmap:core': {
+            maxObjectsInGet: 500,
+            maxObjectsInSet: 500,
+          },
+        },
+      },
       async request(_using: any, methodCalls: any) {
         const callId = methodCalls?.[0]?.[2] ?? 's1';
         return {
@@ -841,7 +849,10 @@ describe('setMailboxSubscription', () => {
 
     const transport = new MockTransport({
       capabilities: {
-        'urn:ietf:params:jmap:core': { maxObjectsInSet: 2 },
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 2,
+        },
       },
     });
     const calls = [];
@@ -894,7 +905,10 @@ describe('setMailboxSubscription', () => {
     );
     const transport = new MockTransport({
       capabilities: {
-        'urn:ietf:params:jmap:core': { maxObjectsInSet: 2 },
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 2,
+        },
       },
     });
     let calls = 0;
@@ -997,6 +1011,14 @@ describe('setMailboxSubscription', () => {
     expect(setErrorResult.error.terminal).toBeUndefined();
 
     const methodErrorTransport = {
+      session: {
+        capabilities: {
+          'urn:ietf:params:jmap:core': {
+            maxObjectsInGet: 500,
+            maxObjectsInSet: 500,
+          },
+        },
+      },
       request: async () => ({
         methodResponses: [['error', { type: 'serverUnavailable' }, 's1']],
       }),
@@ -1045,6 +1067,50 @@ describe('createMailbox', () => {
     expect(row.parent_id).toBeNull();
     expect(Number(row.is_subscribed)).toBe(1);
     expect(Number(row.is_deleted)).toBe(0);
+  });
+
+  it('persists an earlier create chunk before a later transport failure', async () => {
+    const transport = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 1,
+        },
+      },
+    });
+    let calls = 0;
+    transport.handle('Mailbox/set', (params) => {
+      calls += 1;
+      if (calls === 2) throw new Error('later chunk failed');
+      const clientId = Object.keys(params.create)[0];
+      return {
+        created: { [clientId]: { id: 'mb-created-first' } },
+        newState: 'mb-create-1',
+      };
+    });
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.CREATE_MAILBOX,
+        request_json: JSON.stringify({
+          operations: [
+            { clientId: 'first', name: 'First', parentFolderId: null },
+            { clientId: 'second', name: 'Second', parentFolderId: null },
+          ],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.result.succeededIds).toEqual(['first']);
+    expect(result.result.errors.second).toMatchObject({ type: 'transport' });
+    expect(await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-created-first'`,
+      [account.id],
+    )).toBeTruthy();
   });
 
   it('creates a child under a shared folder in the owning account', async () => {
@@ -1544,9 +1610,11 @@ describe('account-aware message mutations', () => {
     );
     const transport = new MockTransport();
     let copyRequest;
+    let copyCalls = 0;
     transport.handle('Email/copy', (params) => {
+      copyCalls += 1;
       copyRequest = params;
-      return { created: { [`copy-${messageId}`]: { id: 'shared-copy-1' } } };
+      return { created: { 'e-1': { id: 'shared-copy-1' } } };
     });
     transport.handle('Email/get', (params) => ({
       list: params.ids.map((id) => ({
@@ -1557,6 +1625,23 @@ describe('account-aware message mutations', () => {
       })),
       state: 'shared-es2',
     }));
+    transport.handle('Mailbox/get', (params) => {
+      expect(params).toMatchObject({
+        accountId: 'acct-shared',
+        ids: ['shared-team'],
+      });
+      return {
+        list: [{
+          id: 'shared-team',
+          name: 'Team',
+          totalEmails: 7,
+          unreadEmails: 3,
+          totalThreads: 6,
+          unreadThreads: 2,
+        }],
+        state: 'shared-mb2',
+      };
+    });
 
     const result = await processMutationRow({
       transport,
@@ -1573,12 +1658,13 @@ describe('account-aware message mutations', () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(copyCalls).toBe(1);
     expect(copyRequest).toMatchObject({
       fromAccountId: 'acct-1',
       accountId: 'acct-shared',
       onSuccessDestroyOriginal: false,
     });
-    const create = copyRequest.create[`copy-${messageId}`];
+    const create = copyRequest.create['e-1'];
     expect(create).toEqual({
       id: 'e-1',
       mailboxIds: { 'shared-team': true },
@@ -1600,13 +1686,87 @@ describe('account-aware message mutations', () => {
       'SELECT folder_id FROM folder_messages WHERE message_id = ?',
       [copied.id],
     )).toEqual({ folder_id: destination.id });
+    expect(await engine.get(
+      `SELECT total_emails, unread_emails, total_threads, unread_threads
+         FROM folders WHERE id = ?`,
+      [destination.id],
+    )).toEqual({
+      total_emails: 7,
+      unread_emails: 3,
+      total_threads: 6,
+      unread_threads: 2,
+    });
   });
 
-  it('reconciles alreadyExists and reports per-source copy failures', async () => {
+  it('uses the Stalwart 0.15 copy shape only after explicit id rejection', async () => {
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Shared',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'shared-team', name: 'Team' }],
+    });
+    const destination = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'shared-team'`,
+      [shared.id],
+    );
+    const transport = new MockTransport();
+    const copyRequests = [];
+    transport.handle('Email/copy', (params) => {
+      copyRequests.push(params);
+      if (copyRequests.length === 1) {
+        return {
+          notCreated: {
+            'e-1': {
+              type: 'invalidProperties',
+              properties: ['id'],
+            },
+          },
+        };
+      }
+      return { created: { 'e-1': { id: 'legacy-copy-1' } } };
+    });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        ...emailFixture(id),
+        mailboxIds: { 'shared-team': true },
+      })),
+      state: 'legacy-copy-state',
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.COPY_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [destination.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(copyRequests).toHaveLength(2);
+    expect(copyRequests[0].create['e-1']).toEqual({
+      id: 'e-1',
+      mailboxIds: { 'shared-team': true },
+    });
+    expect(copyRequests[1].create['e-1']).toEqual({
+      mailboxIds: { 'shared-team': true },
+    });
+  });
+
+  it('reconciles shared alreadyExists ids and reports per-source copy failures', async () => {
     const secondTransport = new MockTransport();
     secondTransport.handle('Email/query', () => ({
-      ids: ['e-1', 'e-2'],
-      total: 2,
+      ids: ['e-1', 'e-2', 'e-3'],
+      total: 3,
       queryState: 'q2',
       canCalculateChanges: true,
       position: 0,
@@ -1623,7 +1783,7 @@ describe('account-aware message mutations', () => {
     });
     const sourceRows = await engine.all(
       `SELECT id, remote_id FROM messages
-        WHERE account_id = ? AND remote_id IN ('e-1','e-2') ORDER BY remote_id`,
+        WHERE account_id = ? AND remote_id IN ('e-1','e-2','e-3') ORDER BY remote_id`,
       [account.id],
     );
     const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
@@ -1643,25 +1803,47 @@ describe('account-aware message mutations', () => {
     );
     const transport = new MockTransport({
       capabilities: {
-        'urn:ietf:params:jmap:core': { maxObjectsInSet: 1 },
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 1,
+        },
       },
     });
     transport.handle('Email/copy', () => ({
       notCreated: {
-        [`copy-${sourceRows[0].id}`]: {
+        [sourceRows[0].remote_id]: {
           type: 'alreadyExists',
           existingId: 'existing-copy',
         },
-        [`copy-${sourceRows[1].id}`]: { type: 'forbidden' },
+        [sourceRows[1].remote_id]: {
+          type: 'alreadyExists',
+          existingId: 'existing-copy',
+        },
+        [sourceRows[2].remote_id]: { type: 'forbidden' },
       },
     }));
+    let membershipAdded = false;
     transport.handle('Email/get', (params) => ({
       list: params.ids.map((id) => ({
         ...emailFixture(id),
-        mailboxIds: { 'shared-team': true },
+        mailboxIds: membershipAdded
+          ? { 'shared-team': true }
+          : { 'shared-elsewhere': true },
       })),
       state: 'shared-es3',
     }));
+    transport.handle('Email/set', (params) => {
+      expect(params).toEqual({
+        accountId: 'acct-shared',
+        update: {
+          'existing-copy': {
+            'mailboxIds/shared-team': true,
+          },
+        },
+      });
+      membershipAdded = true;
+      return { updated: { 'existing-copy': null }, newState: 'shared-es3a' };
+    });
 
     const result = await processMutationRow({
       transport,
@@ -1677,20 +1859,25 @@ describe('account-aware message mutations', () => {
     });
     expect(result.ok).toBe(false);
     expect(transport.requests.filter((request) =>
-      request.methodCalls[0]?.[0] === 'Email/copy')).toHaveLength(2);
-    expect(result.result.succeededIds).toEqual([sourceRows[0].id]);
-    expect(result.result.errors[String(sourceRows[1].id)]).toMatchObject({
+      request.methodCalls[0]?.[0] === 'Email/copy')).toHaveLength(3);
+    expect(result.result.succeededIds).toEqual([
+      sourceRows[0].id,
+      sourceRows[1].id,
+    ]);
+    expect(result.result.errors[String(sourceRows[2].id)]).toMatchObject({
       type: 'notCreated',
       detail: { type: 'forbidden' },
     });
+    expect(transport.requests.filter((request) =>
+      request.methodCalls[0]?.[0] === 'Email/set')).toHaveLength(1);
     expect(await engine.get(
       `SELECT id FROM messages WHERE account_id = ? AND remote_id = 'existing-copy'`,
       [shared.id],
     )).toBeTruthy();
     expect(await engine.all(
-      `SELECT id FROM messages WHERE account_id = ? AND remote_id IN ('e-1','e-2')`,
+      `SELECT id FROM messages WHERE account_id = ? AND remote_id IN ('e-1','e-2','e-3')`,
       [account.id],
-    )).toHaveLength(2);
+    )).toHaveLength(3);
   });
 
   it('does not retry a completed copy when destination Email/get is incomplete', async () => {
@@ -1713,7 +1900,7 @@ describe('account-aware message mutations', () => {
     let copyCalls = 0;
     transport.handle('Email/copy', () => {
       copyCalls += 1;
-      return { created: { [`copy-${messageId}`]: { id: 'copied-but-not-readable-yet' } } };
+      return { created: { 'e-1': { id: 'copied-but-not-readable-yet' } } };
     });
     transport.handle('Email/get', () => ({
       list: [],
@@ -1791,7 +1978,10 @@ describe('account-aware message mutations', () => {
     const transport = {
       session: {
         capabilities: {
-          'urn:ietf:params:jmap:core': { maxObjectsInSet: 1 },
+          'urn:ietf:params:jmap:core': {
+            maxObjectsInGet: 500,
+            maxObjectsInSet: 1,
+          },
         },
       },
       async request(_using, methodCalls) {
@@ -1821,6 +2011,24 @@ describe('account-aware message mutations', () => {
                   mailboxIds: { 'shared-team': true },
                 })),
                 state: 'shared-es5',
+              },
+              callId,
+            ]],
+          };
+        }
+        if (method === 'Mailbox/get') {
+          return {
+            methodResponses: [[
+              'Mailbox/get',
+              {
+                list: params.ids.map((id) => ({
+                  id,
+                  totalEmails: 1,
+                  unreadEmails: 1,
+                  totalThreads: 1,
+                  unreadThreads: 1,
+                })),
+                state: 'shared-mb5',
               },
               callId,
             ]],
@@ -1877,6 +2085,14 @@ describe('account-aware message mutations', () => {
         [shared.id],
       );
       const transport = {
+        session: {
+          capabilities: {
+            'urn:ietf:params:jmap:core': {
+              maxObjectsInGet: 500,
+              maxObjectsInSet: 500,
+            },
+          },
+        },
         async request(_using, methodCalls) {
           return {
             methodResponses: [['error', { type: errorType }, methodCalls[0][2]]],

@@ -49,6 +49,7 @@
 import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
+import { maxObjectsInGet, maxObjectsInSet } from './limits';
 import {
   persistEmails,
   EMAIL_LIST_PROPERTIES,
@@ -111,10 +112,6 @@ interface FolderMutationHandlerArgs {
   useWebSocket: boolean;
 }
 
-// Session capabilities should always provide this value. Keep a
-// conservative fallback for malformed/offline test sessions rather than
-// assuming Stalwart's much larger default.
-const DEFAULT_MAX_OBJECTS_IN_SET = 100;
 const RETRYABLE_FOLDER_ERROR_TYPES = new Set([
   'transport',
   'serverUnavailable',
@@ -141,6 +138,7 @@ const TERMINAL_MESSAGE_ERROR_TYPES = new Set([
   'requestTooLarge',
   'copyReconcileFailed',
   'copyViewReconcileFailed',
+  'copyCounterReconcileFailed',
 ]);
 
 /**
@@ -389,23 +387,32 @@ async function runCreateMailbox({
     });
     groups.set(remoteAccountId, group);
   });
-  const cacheCreates: any[] = [];
   const createdResult: Record<string, { remoteId: string; folderId?: number | null }> = {};
   let lastResponse;
   const cap = maxObjectsInSet(transport);
   for (const [remoteAccountId, items] of groups) {
     for (const chunk of chunks(items, cap)) {
-      const raw = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [['Mailbox/set', {
-          accountId: remoteAccountId,
-          create: Object.fromEntries(chunk.map((item) => [
-            item.clientId,
-            { name: item.name, parentId: item.remoteParentId, isSubscribed: true },
-          ])),
-        }, 's1']],
-        useWebSocket,
-      });
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Mailbox/set', {
+            accountId: remoteAccountId,
+            create: Object.fromEntries(chunk.map((item) => [
+              item.clientId,
+              { name: item.name, parentId: item.remoteParentId, isSubscribed: true },
+            ])),
+          }, 's1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = {
+          type: 'transport',
+          message: error?.message ?? String(error),
+        };
+        for (const item of chunk) errors[item.clientId] = failure;
+        continue;
+      }
       lastResponse = raw;
       const response = pickResponse(raw, 'Mailbox/set');
       if (!response) {
@@ -413,6 +420,7 @@ async function runCreateMailbox({
         for (const item of chunk) errors[item.clientId] = failure;
         continue;
       }
+      const chunkCreates: any[] = [];
       for (const item of chunk) {
         const created = response.created?.[item.clientId];
         if (!created?.id) {
@@ -422,7 +430,7 @@ async function runCreateMailbox({
           };
           continue;
         }
-        cacheCreates.push({
+        chunkCreates.push({
           clientId: item.clientId,
           accountId: item.localAccountId,
           remoteId: created.id,
@@ -434,12 +442,16 @@ async function runCreateMailbox({
         });
         createdResult[item.clientId] = { remoteId: created.id };
       }
-    }
-  }
-  if (cacheCreates.length > 0) {
-    const applied = await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]({ creates: cacheCreates });
-    for (const [clientId, folderId] of Object.entries(applied.folderIds ?? {})) {
-      if (createdResult[clientId]) createdResult[clientId].folderId = folderId as number | null;
+      if (chunkCreates.length > 0) {
+        const applied = await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]({
+          creates: chunkCreates,
+        });
+        for (const [clientId, folderId] of Object.entries(applied.folderIds ?? {})) {
+          if (createdResult[clientId]) {
+            createdResult[clientId].folderId = folderId as number | null;
+          }
+        }
+      }
     }
   }
   const result = finishFolderBatch(Object.keys(createdResult), errors, lastResponse);
@@ -687,24 +699,6 @@ async function runDestroyMailbox({
   );
 }
 
-function maxObjectsInSet(transport: any): number {
-  const raw = Number(
-    transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInSet,
-  );
-  return Number.isFinite(raw) && raw > 0
-    ? Math.max(1, Math.floor(raw))
-    : DEFAULT_MAX_OBJECTS_IN_SET;
-}
-
-function maxObjectsInGet(transport: any): number {
-  const raw = Number(
-    transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInGet,
-  );
-  return Number.isFinite(raw) && raw > 0
-    ? Math.max(1, Math.floor(raw))
-    : 500;
-}
-
 function chunks<T>(items: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -863,13 +857,17 @@ async function runSetKeywords({ transport, handlers, row, request, useWebSocket 
     update[`keywords/${k}`] = null;
   }
   for (const [remoteAccountId, resolved] of resolvedByAccount) {
-    const result = await submitEmailSet({
-      transport,
-      account: { remote_account_id: remoteAccountId },
-      useWebSocket,
-      update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
-    });
-    if (!result.ok) return result;
+    for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {
+      const result = await submitEmailSet({
+        transport,
+        account: { remote_account_id: remoteAccountId },
+        useWebSocket,
+        update: Object.fromEntries(
+          chunk.map(({ remoteId }) => [remoteId, update]),
+        ),
+      });
+      if (!result.ok) return result;
+    }
   }
   return { ok: true };
 }
@@ -1118,6 +1116,7 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
   const errors: Record<string, any> = {};
   const copied: Record<string, { remoteId: string; sourceId: number }> = {};
   const copiedRemoteIds: string[] = [];
+  const existingCopies: Array<{ remoteId: string; sourceId: number }> = [];
   let lastResponse;
 
   for (const messages of bySourceAccount.values()) {
@@ -1132,7 +1131,11 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
       const creationToMessage = new Map<string, any>();
       const create: Record<string, any> = {};
       for (const message of chunk) {
-        const creationId = `copy-${message.localId}`;
+        // RFC 8620 permits any unique creation id. Using the source
+        // Email id also interoperates with Stalwart 0.15, whose copy
+        // implementation incorrectly resolves the source from the
+        // creation-map key rather than the object's `id` property.
+        const creationId = message.remoteId;
         creationToMessage.set(creationId, message);
         // Intentionally omit keywords and receivedAt. RFC 8621 Email/copy
         // inherits omitted properties from the authoritative source Email.
@@ -1162,11 +1165,40 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
         continue;
       }
       lastResponse = raw;
-      const response = pickResponse(raw, 'Email/copy');
+      let response = pickResponse(raw, 'Email/copy');
       if (!response) {
         const failure = extractMethodError(raw, { count: chunk.length });
         for (const message of chunk) errors[String(message.localId)] = failure;
         continue;
+      }
+      // Stalwart 0.15 incorrectly resolves the source Email from the
+      // creation-map key and rejects the RFC-required `id` property.
+      // Retry its legacy shape only after an explicit all-object
+      // invalidProperties(id) response, which proves nothing copied.
+      if (requiresLegacyEmailCopyShape(response, [...creationToMessage.keys()])) {
+        const legacyCreate = Object.fromEntries(
+          [...creationToMessage.keys()].map((creationId) => [
+            creationId,
+            { mailboxIds: destinationMailboxIds },
+          ]),
+        );
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Email/copy', {
+            fromAccountId: sourceAccount.remote_account_id,
+            accountId: destinationAccount.remote_account_id,
+            create: legacyCreate,
+            onSuccessDestroyOriginal: false,
+          }, 'c1-legacy']],
+          useWebSocket,
+        });
+        lastResponse = raw;
+        response = pickResponse(raw, 'Email/copy');
+        if (!response) {
+          const failure = extractMethodError(raw, { count: chunk.length });
+          for (const message of chunk) errors[String(message.localId)] = failure;
+          continue;
+        }
       }
 
       for (const [creationId, message] of creationToMessage) {
@@ -1177,7 +1209,17 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
           : null;
         const destinationRemoteId = createdId ?? existingId;
         if (!destinationRemoteId) {
-          errors[String(message.localId)] = { type: 'notCreated', detail: failure ?? null };
+          errors[String(message.localId)] = {
+            type: 'notCreated',
+            detail: failure ?? { response },
+          };
+          continue;
+        }
+        if (existingId) {
+          existingCopies.push({
+            remoteId: existingId,
+            sourceId: message.localId,
+          });
           continue;
         }
         copiedRemoteIds.push(destinationRemoteId);
@@ -1188,6 +1230,25 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
         };
       }
     }
+  }
+
+  if (existingCopies.length > 0) {
+    const reconciled = await ensureExistingCopiesInDestination({
+      transport,
+      account: destinationAccount,
+      copies: existingCopies,
+      destinationMailboxIds: Object.keys(destinationMailboxIds),
+      useWebSocket,
+    });
+    for (const copy of reconciled.confirmed) {
+      copiedRemoteIds.push(copy.remoteId);
+      succeededIds.push(copy.sourceId);
+      copied[String(copy.sourceId)] = {
+        remoteId: copy.remoteId,
+        sourceId: copy.sourceId,
+      };
+    }
+    Object.assign(errors, reconciled.errors);
   }
 
   if (copiedRemoteIds.length > 0) {
@@ -1226,6 +1287,23 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
         };
       }
     }
+    try {
+      await refreshCopiedDestinationCounters({
+        transport,
+        account: destinationAccount,
+        handlers,
+        destinationMailboxIds: Object.keys(destinationMailboxIds),
+        useWebSocket,
+      });
+    } catch (error) {
+      for (const sourceId of succeededIds) {
+        if (errors[String(sourceId)]) continue;
+        errors[String(sourceId)] = {
+          type: 'copyCounterReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+      }
+    }
   }
 
   const result = finishMessageBatch(
@@ -1236,6 +1314,151 @@ async function runCopyToFolders({ transport, handlers, row, request, useWebSocke
   );
   result.result.copied = copied;
   return result;
+}
+
+function requiresLegacyEmailCopyShape(
+  response: any,
+  creationIds: string[],
+): boolean {
+  if (creationIds.length === 0 || Object.keys(response.created ?? {}).length > 0) {
+    return false;
+  }
+  return creationIds.every((creationId) => {
+    const failure = response.notCreated?.[creationId];
+    return failure?.type === 'invalidProperties'
+      && Array.isArray(failure.properties)
+      && failure.properties.includes('id');
+  });
+}
+
+async function ensureExistingCopiesInDestination({
+  transport,
+  account,
+  copies,
+  destinationMailboxIds,
+  useWebSocket,
+}: {
+  transport: any;
+  account: { id: number; remote_account_id: string };
+  copies: Array<{ remoteId: string; sourceId: number }>;
+  destinationMailboxIds: string[];
+  useWebSocket: boolean;
+}) {
+  const confirmed: Array<{ remoteId: string; sourceId: number }> = [];
+  const errors: Record<string, any> = {};
+  const copiesByRemoteId = new Map<
+    string,
+    Array<{ remoteId: string; sourceId: number }>
+  >();
+  for (const copy of copies) {
+    const grouped = copiesByRemoteId.get(copy.remoteId) ?? [];
+    grouped.push(copy);
+    copiesByRemoteId.set(copy.remoteId, grouped);
+  }
+  const confirmCopies = (remoteId: string) => {
+    confirmed.push(...(copiesByRemoteId.get(remoteId) ?? []));
+  };
+  const failCopies = (remoteId: string, failure: any) => {
+    for (const copy of copiesByRemoteId.get(remoteId) ?? []) {
+      errors[String(copy.sourceId)] = failure;
+    }
+  };
+
+  for (const ids of chunks([...copiesByRemoteId.keys()], maxObjectsInGet(transport))) {
+    let raw;
+    try {
+      raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Email/get', {
+          accountId: account.remote_account_id,
+          ids,
+          properties: ['id', 'mailboxIds'],
+        }, 'g-existing-copy']],
+        useWebSocket,
+      });
+    } catch (error) {
+      const failure = {
+        type: 'alreadyExistsReconcileFailed',
+        message: error?.message ?? String(error),
+      };
+      for (const id of ids) failCopies(id, failure);
+      continue;
+    }
+    const response = pickResponse(raw, 'Email/get');
+    if (!response) {
+      const failure = extractMethodError(raw, { count: ids.length });
+      for (const id of ids) failCopies(id, failure);
+      continue;
+    }
+
+    const returned = new Map<
+      string,
+      { id: string; mailboxIds?: Record<string, boolean> }
+    >(
+      (response.list ?? []).map((email) => [email.id, email]),
+    );
+    const update: Record<string, Record<string, true>> = {};
+    for (const id of ids) {
+      const email = returned.get(id);
+      if (!email) {
+        failCopies(id, {
+          type: 'alreadyExistsReconcileFailed',
+          detail: { type: 'notFound' },
+        });
+        continue;
+      }
+      const patch: Record<string, true> = {};
+      for (const mailboxId of destinationMailboxIds) {
+        if (email.mailboxIds?.[mailboxId] !== true) {
+          patch[`mailboxIds/${mailboxId}`] = true;
+        }
+      }
+      if (Object.keys(patch).length > 0) update[id] = patch;
+      else confirmCopies(id);
+    }
+
+    for (const updateIds of chunks(Object.keys(update), maxObjectsInSet(transport))) {
+      const chunkUpdate = Object.fromEntries(
+        updateIds.map((id) => [id, update[id]]),
+      );
+      let setRaw;
+      try {
+        setRaw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Email/set', {
+            accountId: account.remote_account_id,
+            update: chunkUpdate,
+          }, 's-existing-copy']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = {
+          type: 'alreadyExistsReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+        for (const id of updateIds) failCopies(id, failure);
+        continue;
+      }
+      const setResponse = pickResponse(setRaw, 'Email/set');
+      if (!setResponse) {
+        const failure = extractMethodError(setRaw, { count: updateIds.length });
+        for (const id of updateIds) failCopies(id, failure);
+        continue;
+      }
+      for (const id of updateIds) {
+        if (Object.prototype.hasOwnProperty.call(setResponse.updated ?? {}, id)) {
+          confirmCopies(id);
+        } else {
+          failCopies(id, {
+            type: 'notUpdated',
+            detail: setResponse.notUpdated?.[id] ?? null,
+          });
+        }
+      }
+    }
+  }
+
+  return { confirmed, errors };
 }
 
 async function fetchAndPersistCopiedEmails({
@@ -1337,6 +1560,53 @@ async function reconcileCopiedDestinationViews({
         useWebSocket,
       });
     }
+  }
+}
+
+async function refreshCopiedDestinationCounters({
+  transport,
+  account,
+  handlers,
+  destinationMailboxIds,
+  useWebSocket,
+}) {
+  for (const ids of chunks(
+    [...new Set(destinationMailboxIds)],
+    maxObjectsInGet(transport),
+  )) {
+    const raw = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [['Mailbox/get', {
+        accountId: account.remote_account_id,
+        ids,
+        properties: [
+          'id',
+          'totalEmails',
+          'unreadEmails',
+          'totalThreads',
+          'unreadThreads',
+        ],
+      }, 'g-copy-mailboxes']],
+      useWebSocket,
+    });
+    const response = pickResponse(raw, 'Mailbox/get');
+    if (!response) {
+      throw new Error('Mailbox/get failed while refreshing copy destination');
+    }
+    const returned = new Set((response.list ?? []).map((folder) => folder.id));
+    if (ids.some((id) => !returned.has(id))) {
+      throw new Error('Mailbox/get omitted a copied destination folder');
+    }
+    await handlers[DB_RPC.FOLDER_UPDATE_COUNTS_MANY]({
+      accountId: account.id,
+      folders: (response.list ?? []).map((folder) => ({
+        remoteId: folder.id,
+        totalEmails: folder.totalEmails,
+        unreadEmails: folder.unreadEmails,
+        totalThreads: folder.totalThreads,
+        unreadThreads: folder.unreadThreads,
+      })),
+    });
   }
 }
 

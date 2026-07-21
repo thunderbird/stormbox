@@ -296,7 +296,7 @@ describe('mail-store.destroyMessage end-to-end through OutboxRunner', () => {
     let copyParams;
     transport.handle('Email/copy', (params) => {
       copyParams = params;
-      return { created: { [`copy-${messageId}`]: { id: 'shared-copy-1' } } };
+      return { created: { 'e-1': { id: 'shared-copy-1' } } };
     });
     transport.handle('Email/get', (params) => ({
       list: params.ids.map((id) => emailFixture(id, {
@@ -317,7 +317,7 @@ describe('mail-store.destroyMessage end-to-end through OutboxRunner', () => {
       accountId: 'acct-shared',
       onSuccessDestroyOriginal: false,
     });
-    expect(copyParams.create[`copy-${messageId}`]).toEqual({
+    expect(copyParams.create['e-1']).toEqual({
       id: 'e-1',
       mailboxIds: { 'shared-team': true },
     });

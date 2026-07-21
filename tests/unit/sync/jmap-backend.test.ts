@@ -34,7 +34,11 @@ const SESSION = {
     [JMAP_CAPS.CONTACTS]: 'acct-1',
   },
   capabilities: {
-    [JMAP_CAPS.CORE]: { maxConcurrentRequests: 4 },
+    [JMAP_CAPS.CORE]: {
+      maxConcurrentRequests: 4,
+      maxObjectsInGet: 500,
+      maxObjectsInSet: 500,
+    },
     [JMAP_CAPS.MAIL]: {},
     [JMAP_CAPS.WEBSOCKET]: {
       url: 'wss://mail.example.com/jmap/ws/',
@@ -1856,6 +1860,41 @@ describe('JmapBackend startup catch-up resilience', () => {
 });
 
 describe('JmapBackend shared-account reconciliation', () => {
+  it('acknowledges push state only after all account work succeeds', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._persistPushState = vi.fn(async () => {});
+    backend._scheduleStateChangeRetry = vi.fn();
+    backend._syncAccountStateChange = vi.fn()
+      .mockRejectedValueOnce(new Error('primary failed'))
+      .mockResolvedValueOnce({});
+
+    await backend._doStateChange({
+      changed: {
+        'acct-1': { Mailbox: 'mb-primary-2' },
+        'acct-shared': { EmailDelivery: 'delivery-shared-2' },
+      },
+      pushState: 'push-next',
+    });
+
+    expect(backend._syncAccountStateChange).toHaveBeenCalledTimes(2);
+    expect(backend._persistPushState).not.toHaveBeenCalled();
+    expect(backend._scheduleStateChangeRetry).toHaveBeenCalledWith({
+      changed: {
+        'acct-1': { Mailbox: 'mb-primary-2' },
+      },
+      pushState: 'push-next',
+    });
+  });
+
   it('continues with later Session accounts after one account sync fails', async () => {
     const primary = { id: 1, remote_account_id: 'acct-1' };
     const shared = { id: 2, remote_account_id: 'acct-shared' };

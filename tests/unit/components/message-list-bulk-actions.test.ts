@@ -31,6 +31,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 }));
 
 import MessageList from '../../../src/components/MessageList.vue';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 
 function makeFolder(id, overrides = {}) {
@@ -78,6 +79,7 @@ function mountList({ folder = makeFolder(1, { name: 'Inbox' }) } = {}) {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  useAuthStore().accountId = 1;
 });
 
 afterEach(() => {
@@ -131,6 +133,25 @@ describe('MessageList bulk actions header', () => {
       'Mark as unread',
       'Clear selection',
     ]);
+    wrapper.unmount();
+  });
+
+  it('shows neither Junk nor Not junk actions in a shared Junk folder', async () => {
+    const { mailStore, wrapper } = mountList({
+      folder: makeFolder(2, {
+        account_id: 2,
+        name: 'Shared Junk',
+        role: 'junk',
+      }),
+    });
+    mailStore.selectedIds = new Set([1]);
+    await nextTick();
+
+    const titles = wrapper
+      .findAll('.msg-list__bulk-actions .msg-list__bulk-action')
+      .map((button) => button.attributes('title'));
+    expect(titles).not.toContain('Junk');
+    expect(titles).not.toContain('Whitelist senders and move to Inbox');
     wrapper.unmount();
   });
 

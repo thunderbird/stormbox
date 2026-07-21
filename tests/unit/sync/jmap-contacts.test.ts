@@ -735,7 +735,7 @@ describe('whitelist reconcile cost is independent of contact count', () => {
     let setCalls = 0;
     let createdInOneCall = 0;
     transport.handle('ContactCard/query', (params) => {
-      if (params.position != null || params.limit != null) {
+      if (!params.filter) {
         fullListQueried = true;
         return { ids: Array.from({ length: 1099 }, (_, i) => `seed-${i}`), total: 1099, state: 's' };
       }

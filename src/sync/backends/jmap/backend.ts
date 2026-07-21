@@ -44,6 +44,7 @@ import {
 } from './contacts';
 import { processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
+import { maxObjectsInGet } from './limits';
 import { bytesToBase64 } from '../../../utils/inline-images';
 
 const SUBSCRIBED_TYPES = [
@@ -83,12 +84,14 @@ export class JmapBackend {
   _eagerBodyPrefetchCap: number;
   _indexerTickDelayMs: number;
   _indexerChunksPerTick: number;
-  _maxObjectsInGetCap: number | null;
   outboxRunner: any;
   _outboxRunnerOptions: any;
   _bootstrappedPromise: Promise<void> | null;
   _stateChangeInflight: Promise<void> | null;
   _stateChangePending: { changed: Record<string, Record<string, string>>; pushState: string | null } | null;
+  _stateChangeRetryPending: { changed: Record<string, Record<string, string>>; pushState: string | null } | null;
+  _stateChangeRetryTimer: any;
+  _stateChangeRetryDelayMs: number;
   _unsubClose: (() => void) | null;
   _reconnectTimer: any;
   _reconnectAttempts: number;
@@ -155,10 +158,6 @@ export class JmapBackend {
     // more records than the server is willing to return.
     this._indexerTickDelayMs = options.indexerTickDelayMs ?? 250;
     this._indexerChunksPerTick = options.indexerChunksPerTick ?? 5;
-    /** @type {number | null} cached urn:ietf:params:jmap:core
-     *  maxObjectsInGet; loaded lazily on the first indexer tick so we
-     *  don't slow down start() with an extra query. */
-    this._maxObjectsInGetCap = null;
     // Created in start() once we know our local account.id. Owns the
     // pending_mutations drain loop: auto-draining on insert (via the
     // makeHandlers hook), on StateChange (any push that signals the
@@ -184,6 +183,9 @@ export class JmapBackend {
     // trailing iteration then runs once with the union.
     this._stateChangeInflight = null;
     this._stateChangePending = null;
+    this._stateChangeRetryPending = null;
+    this._stateChangeRetryTimer = null;
+    this._stateChangeRetryDelayMs = options.stateChangeRetryDelayMs ?? 1_000;
     // Reconnect supervisor. The transport rejects pending requests
     // on close but does not reopen the socket itself; without this
     // a single network blip leaves push notifications dead until
@@ -394,6 +396,11 @@ export class JmapBackend {
   }
 
   async stop() {
+    if (this._stateChangeRetryTimer) {
+      clearTimeout(this._stateChangeRetryTimer);
+      this._stateChangeRetryTimer = null;
+    }
+    this._stateChangeRetryPending = null;
     if (!this._started) return;
     // Flip _started first so the reconnect supervisor's onClose
     // listener (which we are about to fire via closeWebSocket)
@@ -741,32 +748,8 @@ export class JmapBackend {
     return Math.max(1, Math.min(target, cap));
   }
 
-  /**
-   * Read maxObjectsInGet out of the cached jmap-core capability.
-   * Cached on first call; never refreshed because the value only
-   * changes when the server pushes a session-state update, which is
-   * a re-login event for our purposes.
-   */
   async _loadMaxObjectsInGetCap() {
-    if (this._maxObjectsInGetCap != null) return this._maxObjectsInGetCap;
-    if (!this.account) return null;
-    try {
-      const rows = await this.handlers[DB_RPC.QUERY]({
-        sql: `SELECT payload_json FROM account_capabilities
-                WHERE account_id = ? AND capability = ?
-                LIMIT 1`,
-        params: [this.account.id, 'urn:ietf:params:jmap:core'],
-      });
-      const payload = rows?.[0]?.payload_json
-        ? JSON.parse(rows[0].payload_json)
-        : null;
-      const raw = Number(payload?.maxObjectsInGet);
-      this._maxObjectsInGetCap = Number.isFinite(raw) && raw > 0 ? raw : null;
-    } catch (err) {
-      wlog.warn('jmap-backend', 'failed to read maxObjectsInGet capability', err);
-      this._maxObjectsInGetCap = null;
-    }
-    return this._maxObjectsInGetCap;
+    return maxObjectsInGet(this.transport);
   }
 
   async _queryViewProgress(folder) {
@@ -976,6 +959,14 @@ export class JmapBackend {
    */
   _onStateChange(change) {
     if (!this.account) return;
+    if (this._stateChangeRetryPending) {
+      change = mergeStateChange(this._stateChangeRetryPending, change);
+      this._stateChangeRetryPending = null;
+      if (this._stateChangeRetryTimer) {
+        clearTimeout(this._stateChangeRetryTimer);
+        this._stateChangeRetryTimer = null;
+      }
+    }
     this._stateChangePending = mergeStateChange(this._stateChangePending, change);
     if (this._stateChangeInflight) {
       // A pass is already running; it will see the updated pending
@@ -1024,9 +1015,6 @@ export class JmapBackend {
 
   async _doStateChange({ changed, pushState }) {
     if (!this.account) return;
-    if (pushState) {
-      await this._persistPushState(pushState);
-    }
     // Any push frame, regardless of which JMAP type it carries, is
     // also a strong signal that the WebSocket is alive end-to-end.
     // Wake the outbox runner so anything queued during a transient
@@ -1035,100 +1023,142 @@ export class JmapBackend {
     // transport layer.
     this.outboxRunner?.notify();
 
+    const failedChanged: Record<string, Record<string, string>> = {};
     for (const account of this._sessionAccounts()) {
       const types = changed?.[account.remote_account_id];
       if (!types) continue;
+      let failedTypes;
       try {
-        await this._syncAccountStateChange(account, types);
+        failedTypes = await this._syncAccountStateChange(account, types);
       } catch (error) {
+        failedTypes = { ...types };
         wlog.warn(
           'jmap-backend',
           `StateChange sync failed for ${account.remote_account_id}; continuing`,
           error,
         );
       }
+      if (Object.keys(failedTypes).length > 0) {
+        failedChanged[account.remote_account_id] = failedTypes;
+      }
     }
+    if (Object.keys(failedChanged).length > 0) {
+      this._scheduleStateChangeRetry({ changed: failedChanged, pushState });
+      return;
+    }
+    if (pushState) await this._persistPushState(pushState);
   }
 
   async _syncAccountStateChange(account, types) {
     let needViewRefresh = false;
+    const viewRefreshTypes: string[] = [];
+    const failedTypes: Record<string, string> = {};
     for (const type of Object.keys(types)) {
-      switch (type) {
-        case 'Mailbox': {
-          const sync = await this._loadSyncStateFor(account, 'Mailbox');
-          const result = sync?.state
-            ? await syncMailboxChanges({
-              transport: this.transport,
-              account,
-              handlers: this.handlers,
-              sinceState: sync.state,
-              useWebSocket: this._wsReady(),
-            })
-            : { needsFullSync: true };
-          if (result.needsFullSync) {
-            await syncMailboxes({
-              transport: this.transport,
-              account,
-              handlers: this.handlers,
-              useWebSocket: this._wsReady(),
-              repairArchive: account.id === this.account.id,
-            });
-          }
-          break;
-        }
-        case 'Email': {
-          const sync = await this._loadSyncStateFor(account, 'Email');
-          if (sync?.state) {
-            await syncEmailChanges({
-              transport: this.transport,
-              account,
-              handlers: this.handlers,
-              sinceState: sync.state,
-              useWebSocket: this._wsReady(),
-            }).catch((err) => {
-              wlog.warn(
-                'jmap-backend',
-                `syncEmailChanges failed for ${account.remote_account_id}`,
-                err,
-              );
-            });
-          }
-          // With no account-wide baseline, reconcile bounded active views
-          // only. Do not invent an Email state token from a query response.
-          needViewRefresh = true;
-          break;
-        }
-        case 'EmailDelivery':
-          needViewRefresh = true;
-          break;
-        case 'Identity':
-          if (account.id === this.account.id) await this.ensureIdentities();
-          break;
-        case 'AddressBook':
-          if (account.id === this.account.id) await this.ensureAddressbooks();
-          break;
-        case 'ContactCard': {
-          if (account.id !== this.account.id) break;
-          const sync = await this._loadSyncStateFor(account, 'ContactCard');
-          if (!sync?.state) {
-            await this.ensureContacts();
+      try {
+        switch (type) {
+          case 'Mailbox': {
+            const sync = await this._loadSyncStateFor(account, 'Mailbox');
+            const result = sync?.state
+              ? await syncMailboxChanges({
+                transport: this.transport,
+                account,
+                handlers: this.handlers,
+                sinceState: sync.state,
+                useWebSocket: this._wsReady(),
+              })
+              : { needsFullSync: true };
+            if (result.needsFullSync) {
+              await syncMailboxes({
+                transport: this.transport,
+                account,
+                handlers: this.handlers,
+                useWebSocket: this._wsReady(),
+                repairArchive: account.id === this.account.id,
+              });
+            }
             break;
           }
-          const result = await syncContactCardChanges({
-            transport: this.transport,
-            account,
-            handlers: this.handlers,
-            sinceState: sync.state,
-            useWebSocket: this._wsReady(),
-          });
-          if (result.needsFullSync) await this.ensureContacts();
-          break;
+          case 'Email': {
+            const sync = await this._loadSyncStateFor(account, 'Email');
+            if (sync?.state) {
+              await syncEmailChanges({
+                transport: this.transport,
+                account,
+                handlers: this.handlers,
+                sinceState: sync.state,
+                useWebSocket: this._wsReady(),
+              });
+            }
+            needViewRefresh = true;
+            viewRefreshTypes.push(type);
+            break;
+          }
+          case 'EmailDelivery':
+            needViewRefresh = true;
+            viewRefreshTypes.push(type);
+            break;
+          case 'Identity':
+            if (account.id === this.account.id) await this.ensureIdentities();
+            break;
+          case 'AddressBook':
+            if (account.id === this.account.id) await this.ensureAddressbooks();
+            break;
+          case 'ContactCard': {
+            if (account.id !== this.account.id) break;
+            const sync = await this._loadSyncStateFor(account, 'ContactCard');
+            if (!sync?.state) {
+              await this.ensureContacts();
+              break;
+            }
+            const result = await syncContactCardChanges({
+              transport: this.transport,
+              account,
+              handlers: this.handlers,
+              sinceState: sync.state,
+              useWebSocket: this._wsReady(),
+            });
+            if (result.needsFullSync) await this.ensureContacts();
+            break;
+          }
+          default:
+            break;
         }
-        default:
-          break;
+      } catch (error) {
+        failedTypes[type] = types[type];
+        wlog.warn(
+          'jmap-backend',
+          `StateChange ${type} sync failed for ${account.remote_account_id}`,
+          error,
+        );
       }
     }
-    if (needViewRefresh) await this._refreshActiveQueryViews(account);
+    if (needViewRefresh) {
+      try {
+        await this._refreshActiveQueryViews(account);
+      } catch (error) {
+        for (const type of viewRefreshTypes) failedTypes[type] = types[type];
+        wlog.warn(
+          'jmap-backend',
+          `StateChange view refresh failed for ${account.remote_account_id}`,
+          error,
+        );
+      }
+    }
+    return failedTypes;
+  }
+
+  _scheduleStateChangeRetry(change) {
+    this._stateChangeRetryPending = mergeStateChange(
+      this._stateChangeRetryPending,
+      change,
+    );
+    if (this._stateChangeRetryTimer != null || !this._started) return;
+    this._stateChangeRetryTimer = setTimeout(() => {
+      this._stateChangeRetryTimer = null;
+      const pending = this._stateChangeRetryPending;
+      this._stateChangeRetryPending = null;
+      if (pending && this._started) this._onStateChange(pending);
+    }, this._stateChangeRetryDelayMs);
   }
 
   async _refreshActiveQueryViews(account = this.account) {
