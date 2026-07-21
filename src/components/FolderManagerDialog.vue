@@ -16,6 +16,7 @@ import { SwitchToggle } from '@thunderbirdops/services-ui';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { AccountRow, FolderRow } from '../types';
+import { folderCapabilities } from '../utils/folder-capabilities';
 import { folderSortKey } from '../utils/folder-presentation';
 import FolderCreateDialog from './FolderCreateDialog.vue';
 
@@ -48,6 +49,8 @@ interface DialogFolderRow {
   isSystem: boolean;
   canRename: boolean;
   canDelete: boolean;
+  canDeleteWithMail: boolean;
+  canSelect: boolean;
   /** May host a new child folder (RFC 9670 mayCreateChild for shared). */
   canCreateChild: boolean;
   /** Client-local priority pin; sorts the folder to the top of its peers. */
@@ -81,15 +84,6 @@ type ManagerItem =
       indent: number;
     };
 
-function parseRights(folder: FolderRow): Record<string, boolean> | null {
-  if (!folder.rights_json) return null;
-  try {
-    return JSON.parse(folder.rights_json);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Depth-first flattening of one account's folder tree, mirroring the
  * sidebar's ordering (role folders first, then alphabetical).
@@ -113,7 +107,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
   function walk(parentKey: number | 'ROOT', depth: number, path: string[]) {
     for (const folder of byParent.get(parentKey) ?? []) {
       const isSystem = isOwn && folder.role != null;
-      const rights = parseRights(folder);
+      const capabilities = folderCapabilities(folder, authStore.accountId);
       // The open eye mirrors the effective subscription, which is also
       // what the sidebar renders: system folders always show; own user
       // folders count as subscribed unless explicitly unsubscribed
@@ -130,14 +124,17 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
         subscribed,
         pending: mailStore.subscriptionPendingFolderIds.has(folder.id)
           || mailStore.folderEditPendingIds.has(folder.id),
-        editable: !isSystem && canEditSubscription(rights, isOwn),
+        editable: capabilities.maySubscribe,
         isSystem,
-        // Stalwart maps its Modify ACL to mayRename and requires
-        // mayDelete to destroy a shared mailbox; role folders are
-        // conservatively locked regardless of reported rights.
-        canRename: folder.role == null && (rights?.mayRename !== false),
-        canDelete: folder.role == null && (rights?.mayDelete !== false),
-        canCreateChild: isOwn || rights?.mayCreateChild === true,
+        canRename: capabilities.mayRename && !capabilities.isSystemProtected,
+        canDelete: capabilities.mayDelete && !capabilities.isSystemProtected,
+        canDeleteWithMail: capabilities.mayDeleteWithMail,
+        canSelect: !capabilities.isSystemProtected && (
+          capabilities.mayStar
+          || capabilities.maySubscribe
+          || capabilities.mayDelete
+        ),
+        canCreateChild: capabilities.mayCreateChild,
         starred: Number(folder.is_starred) === 1,
         hasChildren: byParent.has(folder.id),
         path,
@@ -147,18 +144,6 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
   }
   walk('ROOT', 0, []);
   return out;
-}
-
-/**
- * Whether the server would accept an isSubscribed update for this
- * folder. Own mailboxes are always editable. For shared mailboxes,
- * Stalwart requires the Modify ACL (surfaced as myRights.mayRename)
- * to change any Mailbox property, including isSubscribed.
- */
-function canEditSubscription(rights: Record<string, boolean> | null, isOwn: boolean): boolean {
-  if (isOwn) return true;
-  if (!rights) return true;
-  return rights.mayRename !== false;
 }
 
 const sections = computed<DialogAccountSection[]>(() => mailStore.accounts.map((account) => {
@@ -369,11 +354,11 @@ watch(sections, (secs) => {
  * implies its subtree, and the bulk pass deletes deepest-first.
  */
 function toggleSelect(section: DialogAccountSection, row: DialogFolderRow) {
-  if (!row.canDelete) return;
+  if (!row.canSelect) return;
   const target = !selectedIds.value.has(row.folder.id);
   const next = new Set(selectedIds.value);
   const apply = (r: DialogFolderRow) => {
-    if (!r.canDelete) return;
+    if (!r.canSelect) return;
     if (target) next.add(r.folder.id);
     else next.delete(r.folder.id);
   };
@@ -397,7 +382,7 @@ const selectionAnchorId = ref<number | null>(null);
 function selectableItems(): Array<{ section: DialogAccountSection; row: DialogFolderRow }> {
   const out: Array<{ section: DialogAccountSection; row: DialogFolderRow }> = [];
   for (const item of items.value) {
-    if (item.kind === 'row' && item.row.canDelete) {
+    if (item.kind === 'row' && item.row.canSelect) {
       out.push({ section: item.section, row: item.row });
     }
   }
@@ -453,7 +438,7 @@ function onRowModifierClick(
   event: MouseEvent,
 ) {
   if (!(event.ctrlKey || event.metaKey || event.shiftKey)) return;
-  if (!row.canDelete || bulkBusy.value) return;
+  if (!row.canSelect || bulkBusy.value) return;
   const target = event.target as HTMLElement | null;
   // Interactive controls keep their own modifier-click behaviour.
   if (target?.closest('button, input, select, .folder-subs__switch')) return;
@@ -501,6 +486,11 @@ function findSelectionGap(): string | null {
 }
 
 function requestBulkDelete() {
+  if (!selectedRows().every((row) => row.canDelete)) {
+    bulkError.value = 'Every selected folder must allow deletion.';
+    bulkStage.value = null;
+    return;
+  }
   const gap = findSelectionGap();
   if (gap) {
     bulkError.value = gap;
@@ -579,6 +569,9 @@ const bulkStarDisabled = computed<boolean>(
 const bulkSubscribeAction = computed<boolean>(
   () => !selectedRows().some((row) => row.editable && row.subscribed),
 );
+const bulkDeleteDisabled = computed<boolean>(
+  () => !selectedRows().every((row) => row.canDelete) || findSelectionGap() != null,
+);
 
 /** Star or unstar every selected non-system folder (client-local). */
 async function bulkToggleStarred() {
@@ -646,7 +639,7 @@ function canDropOnRow(target: DialogFolderRow): boolean {
   if (dragged.account_id !== target.folder.account_id) return false;
   if ((dragged.parent_id ?? null) === target.folder.id) return false;
   if (isDescendantOf(target.folder.id, dragId)) return false;
-  if (!target.isOwn && parseRights(target.folder)?.mayCreateChild !== true) return false;
+  if (!folderCapabilities(target.folder, authStore.accountId).mayCreateChild) return false;
   return true;
 }
 
@@ -765,6 +758,7 @@ const editorParentOptions = computed<ParentOption[]>(() => {
   const options: ParentOption[] = section.isOwn ? [{ id: null, label: 'Top Level' }] : [];
   for (const row of section.rows) {
     if (excluded.has(row.folder.id)) continue;
+    if (!row.canCreateChild) continue;
     options.push({
       id: row.folder.id,
       label: `${'\u00a0'.repeat(row.depth * 3)}${row.folder.name || '(unnamed)'}`,
@@ -1021,7 +1015,7 @@ onBeforeUnmount(() => {
                 </button>
                 <span v-else class="folder-subs__collapse-spacer" aria-hidden="true" />
                 <label
-                  v-if="item.row.canDelete"
+                  v-if="item.row.canSelect"
                   class="folder-subs__label"
                 >
                   <input
@@ -1263,7 +1257,7 @@ onBeforeUnmount(() => {
             class="folder-subs__switch"
             name="folder-bulk-subscribe"
             :model-value="!bulkSubscribeAction"
-            :disabled="bulkBusy"
+            :disabled="bulkBusy || !selectedRows().some((row) => row.editable)"
             data-bulk-subscribe
             :title="bulkSubscribeAction
               ? 'Subscribe to selected folders'
@@ -1273,7 +1267,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="folder-subs__edit folder-subs__edit--danger"
-            :disabled="bulkBusy"
+            :disabled="bulkBusy || bulkDeleteDisabled"
             data-folder-bulk-delete
             aria-label="Delete selected folders"
             title="Delete selected folders"

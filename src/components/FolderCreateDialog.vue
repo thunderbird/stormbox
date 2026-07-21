@@ -5,6 +5,7 @@ import { X } from '@lucide/vue';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { FolderRow } from '../types';
+import { folderCapabilities } from '../utils/folder-capabilities';
 import { folderSortKey } from '../utils/folder-presentation';
 
 const props = withDefaults(
@@ -44,7 +45,8 @@ const parentOptions = computed<ParentOption[]>(() => {
       : `${account.display_name ?? account.primary_email ?? 'Shared account'} (shared)`;
     const rows = flatten(
       mailStore.folders.filter((f) => f.account_id === account.id),
-    ).filter((entry) => isOwn || mayCreateChild(entry.folder));
+    ).filter((entry) =>
+      folderCapabilities(entry.folder, authStore.accountId).mayCreateChild);
     if (isOwn) {
       options.push({ id: null, label: 'Top Level', group });
     }
@@ -67,15 +69,6 @@ const groups = computed(() => {
   }
   return [...byGroup.entries()].map(([label, options]) => ({ label, options }));
 });
-
-function mayCreateChild(folder: FolderRow): boolean {
-  if (!folder.rights_json) return false;
-  try {
-    return JSON.parse(folder.rights_json)?.mayCreateChild === true;
-  } catch {
-    return false;
-  }
-}
 
 function flatten(accountFolders: FolderRow[]): Array<{ folder: FolderRow; depth: number }> {
   const byParent = new Map<number | 'ROOT', FolderRow[]>();

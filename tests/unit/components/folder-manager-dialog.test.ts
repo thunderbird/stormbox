@@ -221,6 +221,23 @@ describe('FolderManagerDialog cascading subscription toggles', () => {
     expect(subSwitch(wrapper, 'Inbox').exists()).toBe(false);
     expect(wrapper.text()).toContain('always shown');
   });
+
+  it('allows primary system folders to host child folders', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+
+    const wrapper = mountDialog();
+    await nextTick();
+    await expandDefaults(wrapper);
+
+    expect(wrapper.find('[data-folder-add="Inbox"]').exists()).toBe(true);
+    await editButton(wrapper, 'Reports').trigger('click');
+    await nextTick();
+    const parents = wrapper.find('[data-folder-move-select]')
+      .findAll('option')
+      .map((option) => option.text().trim());
+    expect(parents).toContain('Inbox');
+  });
 });
 
 describe('FolderManagerDialog collapse/expand', () => {
@@ -426,7 +443,7 @@ describe('FolderManagerDialog multi-select + bulk delete', () => {
     expect(wrapper.find('[data-folder-bulkbar]').exists()).toBe(false);
   });
 
-  it('blocks bulk delete when a selected folder keeps an unselected child', async () => {
+  it('disables bulk delete when a selected folder keeps an unselected child', async () => {
     const mailStore = useMailStore();
     seed(mailStore);
     mailStore.deleteFolders = vi.fn(async () => ({ ok: true, succeededIds: [] }));
@@ -441,12 +458,9 @@ describe('FolderManagerDialog multi-select + bulk delete', () => {
     await selectBox(wrapper, 'Alpha').trigger('click');
     await nextTick();
 
-    await wrapper.find('[data-folder-bulk-delete]').trigger('click');
-    await nextTick();
-
+    expect(wrapper.find('[data-folder-bulk-delete]').attributes('disabled')).toBeDefined();
     expect(mailStore.deleteFolders).not.toHaveBeenCalled();
     expect(wrapper.find('[data-folder-bulk-confirm]').exists()).toBe(false);
-    expect(wrapper.find('[data-folder-bulkbar]').text()).toContain('Select the whole subtree');
   });
 
   it('shift-click selects the visual range between the anchor and the target', async () => {

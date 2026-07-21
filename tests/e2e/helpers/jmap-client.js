@@ -43,21 +43,24 @@ async function fetchWithTls(url, options = {}) {
   return response;
 }
 
-let cachedToken = null;
-let cachedTokenExpiresAt = 0;
+const cachedTokens = new Map();
 
-export async function getAccessToken() {
+export async function getAccessToken({
+  username = TEST_OIDC_EMAIL,
+  password = TEST_OIDC_PASSWORD,
+} = {}) {
   const now = Date.now();
-  if (cachedToken && cachedTokenExpiresAt > now + 30_000) {
-    return cachedToken;
+  const cached = cachedTokens.get(username);
+  if (cached?.token && cached.expiresAt > now + 30_000) {
+    return cached.token;
   }
 
   const tokenUrl = `${OIDC_ISSUER.replace(/\/$/, '')}/protocol/openid-connect/token`;
   const body = new URLSearchParams({
     grant_type: 'password',
     client_id: OIDC_CLIENT_ID,
-    username: TEST_OIDC_EMAIL,
-    password: TEST_OIDC_PASSWORD,
+    username,
+    password,
   });
 
   const response = await fetch(tokenUrl, {
@@ -73,13 +76,15 @@ export async function getAccessToken() {
   if (!payload.access_token) {
     throw new Error(`Token response missing access_token: ${JSON.stringify(payload)}`);
   }
-  cachedToken = payload.access_token;
-  cachedTokenExpiresAt = now + (payload.expires_in ?? 300) * 1000;
-  return cachedToken;
+  cachedTokens.set(username, {
+    token: payload.access_token,
+    expiresAt: now + (payload.expires_in ?? 300) * 1000,
+  });
+  return payload.access_token;
 }
 
-export async function connectJmap() {
-  const token = await getAccessToken();
+export async function connectJmap(credentials = {}) {
+  const token = await getAccessToken(credentials);
   const authHeader = `Bearer ${token}`;
   const jmapBase = JMAP_BASE_URL.replace(/\/$/, '');
   const sessionResponse = await fetchWithTls(
@@ -115,6 +120,7 @@ export async function connectJmap() {
     accountId: mailAccountId,
     authHeader,
     downloadUrlTemplate,
+    session,
   };
 }
 

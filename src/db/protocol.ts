@@ -24,11 +24,13 @@ export const DB_RPC = Object.freeze({
   ACCOUNT_QUOTA_UPSERT: 'account.quotaUpsert',
   /** Worker-internal: read accounts row by id. */
   ACCOUNT_GET: 'account.get',
+  ACCOUNT_RECONCILE_SESSION: 'account.reconcileSession',
   ACCOUNT_SERVICE_UPSERT: 'accountService.upsert',
   ACCOUNT_CAPABILITIES_REPLACE: 'accountCapabilities.replace',
 
   FOLDER_LIST: 'folder.list',
   FOLDER_UPSERT_MANY: 'folder.upsertMany',
+  FOLDER_UPDATE_COUNTS_MANY: 'folder.updateCountsMany',
   FOLDER_BY_ROLE: 'folder.byRole',
   /** Client-local star flag; no JMAP mutation involved. */
   FOLDER_SET_STARRED: 'folder.setStarred',
@@ -59,6 +61,7 @@ export const DB_RPC = Object.freeze({
   QUERY_VIEW_APPLY_CHANGES: 'queryView.applyChanges',
   QUERY_VIEW_DROP_REMOTE_IDS: 'queryView.dropRemoteIds',
   FOLDER_WINDOW_PERSIST_BATCH: 'folderWindow.persistBatch',
+  FOLDER_WINDOW_APPLY_CHANGES_BATCH: 'folderWindow.applyChangesBatch',
   QUERY_VIEW_RESET_FOR_FOLDER: 'queryView.resetForFolder',
   /**
    * Diagnostic-only consistency snapshot for the open folder. Returns

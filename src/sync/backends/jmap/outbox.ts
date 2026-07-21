@@ -49,7 +49,13 @@
 import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
-import { persistEmails, EMAIL_LIST_PROPERTIES } from './messages';
+import { maxObjectsInGet, maxObjectsInSet } from './limits';
+import {
+  persistEmails,
+  EMAIL_LIST_PROPERTIES,
+  syncFolderWindow,
+  syncFolderWindowChanges,
+} from './messages';
 import {
   createTrustedContactCards,
   createContactCard,
@@ -62,6 +68,7 @@ import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-image
 export const MUTATION_TYPES = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
   MOVE_TO_FOLDERS: 'moveToFolders',
+  COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
   WHITELIST_SENDER: 'whitelistSender',
@@ -87,6 +94,7 @@ interface FolderBatchResult {
   succeededIds: Array<number | string>;
   errors: Record<string, any>;
   created?: Record<string, { remoteId: string; folderId?: number | null }>;
+  copied?: Record<string, { remoteId: string; sourceId: number }>;
 }
 
 interface FolderProcessResult {
@@ -104,18 +112,34 @@ interface FolderMutationHandlerArgs {
   useWebSocket: boolean;
 }
 
-// Session capabilities should always provide this value. Keep a
-// conservative fallback for malformed/offline test sessions rather than
-// assuming Stalwart's much larger default.
-const DEFAULT_MAX_OBJECTS_IN_SET = 100;
 const RETRYABLE_FOLDER_ERROR_TYPES = new Set([
   'transport',
   'serverUnavailable',
   'serverFail',
+  'serverPartialFail',
   'noResponse',
   'stateMismatch',
 ]);
 const SET_ERROR_WRAPPERS = new Set(['notCreated', 'notUpdated', 'notDestroyed']);
+const TERMINAL_MESSAGE_ERROR_TYPES = new Set([
+  'unknownMessage',
+  'unknownFolder',
+  'unknownAccount',
+  'invalidCopyDestination',
+  'mixedDestinationAccounts',
+  'sameAccountCopy',
+  'crossAccountMove',
+  'forbidden',
+  'notFound',
+  'invalidArguments',
+  'invalidProperties',
+  'overQuota',
+  'tooManyObjectsInSet',
+  'requestTooLarge',
+  'copyReconcileFailed',
+  'copyViewReconcileFailed',
+  'copyCounterReconcileFailed',
+]);
 
 /**
  * Drain pending mutations for the given account. When mutationId is
@@ -176,9 +200,11 @@ export async function processMutationRow({
     case MUTATION_TYPES.SET_KEYWORDS:
       return runSetKeywords({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.MOVE_TO_FOLDERS:
-      return runMoveToFolders({ transport, account, handlers, row, request, useWebSocket });
+      return runMoveToFolders({ transport, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.COPY_TO_FOLDERS:
+      return runCopyToFolders({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DESTROY:
-      return runDestroy({ transport, account, handlers, row, request, useWebSocket });
+      return runDestroy({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.SEND:
       return runSend({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.WHITELIST_SENDER:
@@ -361,23 +387,32 @@ async function runCreateMailbox({
     });
     groups.set(remoteAccountId, group);
   });
-  const cacheCreates: any[] = [];
   const createdResult: Record<string, { remoteId: string; folderId?: number | null }> = {};
   let lastResponse;
   const cap = maxObjectsInSet(transport);
   for (const [remoteAccountId, items] of groups) {
     for (const chunk of chunks(items, cap)) {
-      const raw = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [['Mailbox/set', {
-          accountId: remoteAccountId,
-          create: Object.fromEntries(chunk.map((item) => [
-            item.clientId,
-            { name: item.name, parentId: item.remoteParentId, isSubscribed: true },
-          ])),
-        }, 's1']],
-        useWebSocket,
-      });
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Mailbox/set', {
+            accountId: remoteAccountId,
+            create: Object.fromEntries(chunk.map((item) => [
+              item.clientId,
+              { name: item.name, parentId: item.remoteParentId, isSubscribed: true },
+            ])),
+          }, 's1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = {
+          type: 'transport',
+          message: error?.message ?? String(error),
+        };
+        for (const item of chunk) errors[item.clientId] = failure;
+        continue;
+      }
       lastResponse = raw;
       const response = pickResponse(raw, 'Mailbox/set');
       if (!response) {
@@ -385,6 +420,7 @@ async function runCreateMailbox({
         for (const item of chunk) errors[item.clientId] = failure;
         continue;
       }
+      const chunkCreates: any[] = [];
       for (const item of chunk) {
         const created = response.created?.[item.clientId];
         if (!created?.id) {
@@ -394,7 +430,7 @@ async function runCreateMailbox({
           };
           continue;
         }
-        cacheCreates.push({
+        chunkCreates.push({
           clientId: item.clientId,
           accountId: item.localAccountId,
           remoteId: created.id,
@@ -406,12 +442,16 @@ async function runCreateMailbox({
         });
         createdResult[item.clientId] = { remoteId: created.id };
       }
-    }
-  }
-  if (cacheCreates.length > 0) {
-    const applied = await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]({ creates: cacheCreates });
-    for (const [clientId, folderId] of Object.entries(applied.folderIds ?? {})) {
-      if (createdResult[clientId]) createdResult[clientId].folderId = folderId as number | null;
+      if (chunkCreates.length > 0) {
+        const applied = await handlers[DB_RPC.OUTBOX_APPLY_FOLDER_CREATES]({
+          creates: chunkCreates,
+        });
+        for (const [clientId, folderId] of Object.entries(applied.folderIds ?? {})) {
+          if (createdResult[clientId]) {
+            createdResult[clientId].folderId = folderId as number | null;
+          }
+        }
+      }
     }
   }
   const result = finishFolderBatch(Object.keys(createdResult), errors, lastResponse);
@@ -659,15 +699,6 @@ async function runDestroyMailbox({
   );
 }
 
-function maxObjectsInSet(transport: any): number {
-  const raw = Number(
-    transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInSet,
-  );
-  return Number.isFinite(raw) && raw > 0
-    ? Math.max(1, Math.floor(raw))
-    : DEFAULT_MAX_OBJECTS_IN_SET;
-}
-
 function chunks<T>(items: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -747,6 +778,61 @@ function finishFolderBatch(
   return { ok: true, response, result };
 }
 
+function finishMessageBatch(
+  succeededIds: number[],
+  errors: Record<string, any>,
+  response?: any,
+  { preventRetryAfterSuccess = false } = {},
+): FolderProcessResult {
+  const result: FolderBatchResult = {
+    succeededIds: [...new Set(succeededIds)],
+    errors,
+  };
+  const errorList = Object.values(errors) as any[];
+  if (errorList.length === 0) return { ok: true, response, result };
+  const first = errorList[0];
+  const retryable = errorList.some(isRetryableMessageError);
+  if (preventRetryAfterSuccess && result.succeededIds.length > 0 && retryable) {
+    return {
+      ok: false,
+      error: {
+        type: 'copyPartialSuccess',
+        terminal: true,
+        detail: first,
+        result,
+      },
+      response,
+      result,
+    };
+  }
+  return {
+    ok: false,
+    error: {
+      ...first,
+      ...(!retryable ? { terminal: true } : {}),
+      result,
+    },
+    response,
+    result,
+  };
+}
+
+function isRetryableMessageError(failure: any): boolean {
+  const type = failure?.type;
+  const detailType = failure?.detail?.type;
+  if (
+    RETRYABLE_FOLDER_ERROR_TYPES.has(type)
+    || RETRYABLE_FOLDER_ERROR_TYPES.has(detailType)
+  ) {
+    return true;
+  }
+  if (SET_ERROR_WRAPPERS.has(type)) return false;
+  if (TERMINAL_MESSAGE_ERROR_TYPES.has(type)) return false;
+  // Unknown method/transport failures default to retryable. Only explicit
+  // policy and per-object outcomes are safe to classify as terminal.
+  return true;
+}
+
 async function runOne(args) {
   return processMutationRow(args);
 }
@@ -771,13 +857,17 @@ async function runSetKeywords({ transport, handlers, row, request, useWebSocket 
     update[`keywords/${k}`] = null;
   }
   for (const [remoteAccountId, resolved] of resolvedByAccount) {
-    const result = await submitEmailSet({
-      transport,
-      account: { remote_account_id: remoteAccountId },
-      useWebSocket,
-      update: Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, update])),
-    });
-    if (!result.ok) return result;
+    for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {
+      const result = await submitEmailSet({
+        transport,
+        account: { remote_account_id: remoteAccountId },
+        useWebSocket,
+        update: Object.fromEntries(
+          chunk.map(({ remoteId }) => [remoteId, update]),
+        ),
+      });
+      if (!result.ok) return result;
+    }
   }
   return { ok: true };
 }
@@ -895,137 +985,693 @@ async function reconcileContactCardsQuietly({ transport, account, handlers, ids,
   }
 }
 
-async function runMoveToFolders({ transport, account, handlers, row, request, useWebSocket }) {
+async function runMoveToFolders({ transport, handlers, row, request, useWebSocket }) {
   const messageIds = collectMessageIds(row, request);
   if (messageIds.length === 0) {
-    return { ok: false, error: { type: 'unknownMessage' } };
-  }
-  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
-  if (resolved.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
   const addLocalIds = (request.addFolderIds ?? []).map(Number).filter(Number.isFinite);
   const removeLocalIds = (request.removeFolderIds ?? []).map(Number).filter(Number.isFinite);
-  const addRemote = await resolveRemoteFolderIds(handlers, addLocalIds);
-  const removeRemote = await resolveRemoteFolderIds(handlers, removeLocalIds);
-  const patch = {};
-  for (const id of addRemote) patch[`mailboxIds/${id}`] = true;
-  for (const id of removeRemote) patch[`mailboxIds/${id}`] = null;
-  // One Email/set with N entries in `update` instead of N separate
-  // mutations; whether the user clicked Delete on one row or
-  // multi-selected fifty, the JMAP round trip count is always one.
-  const update = Object.fromEntries(resolved.map(({ remoteId }) => [remoteId, patch]));
-  const raw = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [['Email/set', { accountId: account.remote_account_id, update }, 's1']],
-    useWebSocket,
-  });
-  const response = pickResponse(raw, 'Email/set');
-  if (!response) {
-    return { ok: false, error: extractMethodError(raw, { count: resolved.length }) };
-  }
-  const updatedRemoteIds = new Set(
-    Object.keys(response.updated ?? {}),
+  const folderContexts = await resolveFolderContexts(
+    handlers,
+    [...addLocalIds, ...removeLocalIds],
   );
-  const notUpdated = response.notUpdated ?? {};
-
-  // Apply the local cache update once for the exact set of ids the
-  // server confirmed in this Email/set chunk. The DB handler does the
-  // folder_messages swap, view compaction, and stale-marking inside a
-  // single engine transaction; combining the steps is what keeps
-  // delete snappy under indexer contention (see docs/architecture/
-  // performance.md > Batched persistence).
-  await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
-    accountId: account.id,
-    messageIds: resolved
-      .filter(({ remoteId }) => updatedRemoteIds.has(remoteId))
-      .map(({ localId }) => localId),
-    addFolderIds: addLocalIds,
-    removeFolderIds: removeLocalIds,
-  });
-
-  // For each id the server refused, fall back to per-id reconcile so
-  // a stale local cache (the message is already gone or already in
-  // the destination) does not turn a no-op into a hard error.
-  let unresolved = 0;
-  for (const remoteId of Object.keys(notUpdated)) {
-    const entry = resolved.find((r) => r.remoteId === remoteId);
-    if (!entry) continue;
-    const reconciled = await reconcileMessageFromServer({
-      transport, account, handlers, useWebSocket,
-      messageId: entry.localId, remoteId,
-      removeRemoteFolderIds: removeRemote,
-    });
-    if (reconciled.gone) continue;
-    if (reconciled.email && removeRemote.length > 0) {
-      const stillInSource = removeRemote.some(
-        (rid) => reconciled.email.mailboxIds?.[rid] === true,
-      );
-      if (!stillInSource) continue;
+  if (folderContexts.size !== new Set([...addLocalIds, ...removeLocalIds]).size) {
+    return { ok: false, error: { type: 'unknownFolder', terminal: true } };
+  }
+  const folderAccounts = new Set(
+    [...folderContexts.values()].map((folder) => folder.account_id),
+  );
+  if (folderAccounts.size !== 1) {
+    return { ok: false, error: { type: 'mixedDestinationAccounts', terminal: true } };
+  }
+  const resolvedByAccount = await resolveMessageContextsByAccount(handlers, messageIds);
+  if (resolvedByAccount.size === 0) {
+    return { ok: false, error: { type: 'unknownMessage', terminal: true } };
+  }
+  const succeededIds: number[] = [];
+  const errors: Record<string, any> = {};
+  let lastResponse;
+  for (const resolved of resolvedByAccount.values()) {
+    const owner = resolved[0]?.account;
+    if (!owner || !folderAccounts.has(owner.id)) {
+      for (const message of resolved) {
+        errors[String(message.localId)] = { type: 'crossAccountMove' };
+      }
+      continue;
     }
-    unresolved += 1;
+    const addRemote = addLocalIds.map((id) => folderContexts.get(id)!.remote_id);
+    const removeRemote = removeLocalIds.map((id) => folderContexts.get(id)!.remote_id);
+    const patch: Record<string, boolean | null> = {};
+    for (const id of addRemote) patch[`mailboxIds/${id}`] = true;
+    for (const id of removeRemote) patch[`mailboxIds/${id}`] = null;
+    for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {
+      const raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Email/set', {
+          accountId: owner.remote_account_id,
+          update: Object.fromEntries(chunk.map((message) => [message.remoteId, patch])),
+        }, 's1']],
+        useWebSocket,
+      });
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Email/set');
+      if (!response) {
+        const failure = extractMethodError(raw, { count: chunk.length });
+        for (const message of chunk) errors[String(message.localId)] = failure;
+        continue;
+      }
+      const confirmed = chunk.filter((message) =>
+        Object.prototype.hasOwnProperty.call(response.updated ?? {}, message.remoteId));
+      if (confirmed.length > 0) {
+        await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+          accountId: owner.id,
+          messageIds: confirmed.map((message) => message.localId),
+          addFolderIds: addLocalIds,
+          removeFolderIds: removeLocalIds,
+        });
+        succeededIds.push(...confirmed.map((message) => message.localId));
+      }
+      for (const message of chunk) {
+        const failure = response.notUpdated?.[message.remoteId];
+        if (!failure) {
+          if (!Object.prototype.hasOwnProperty.call(response.updated ?? {}, message.remoteId)) {
+            errors[String(message.localId)] = { type: 'notUpdated', detail: null };
+          }
+          continue;
+        }
+        const reconciled = await reconcileMessageFromServer({
+          transport,
+          account: owner,
+          handlers,
+          useWebSocket,
+          messageId: message.localId,
+          remoteId: message.remoteId,
+          removeRemoteFolderIds: removeRemote,
+        });
+        const moved = reconciled.gone || (
+          reconciled.email
+          && !removeRemote.some((id) => reconciled.email.mailboxIds?.[id] === true)
+        );
+        if (moved) succeededIds.push(message.localId);
+        else errors[String(message.localId)] = { type: 'notUpdated', detail: failure };
+      }
+    }
   }
-  if (unresolved > 0) {
-    return { ok: false, error: { type: 'notUpdated', detail: notUpdated } };
-  }
-  return { ok: true, response: raw };
+  return finishMessageBatch(succeededIds, errors, lastResponse);
 }
 
-async function runDestroy({ transport, account, handlers, row, request, useWebSocket }) {
+async function runCopyToFolders({ transport, handlers, row, request, useWebSocket }) {
+  const messageIds = collectMessageIds(row, request);
+  const addLocalIds = (request.addFolderIds ?? []).map(Number).filter(Number.isFinite);
+  if (messageIds.length === 0) {
+    return { ok: false, error: { type: 'unknownMessage', terminal: true } };
+  }
+  if (addLocalIds.length === 0 || (request.removeFolderIds ?? []).length > 0) {
+    return { ok: false, error: { type: 'invalidCopyDestination', terminal: true } };
+  }
+  const destinations = await resolveFolderContexts(handlers, addLocalIds);
+  if (destinations.size !== new Set(addLocalIds).size) {
+    return { ok: false, error: { type: 'unknownFolder', terminal: true } };
+  }
+  const destinationAccounts = new Set(
+    [...destinations.values()].map((folder) => folder.account_id),
+  );
+  if (destinationAccounts.size !== 1) {
+    return { ok: false, error: { type: 'mixedDestinationAccounts', terminal: true } };
+  }
+  const destination = [...destinations.values()][0];
+  const destinationAccount = {
+    id: destination.account_id,
+    remote_account_id: destination.remote_account_id,
+  };
+  const destinationMailboxIds = Object.fromEntries(
+    addLocalIds.map((id) => [destinations.get(id)!.remote_id, true]),
+  );
+  const bySourceAccount = await resolveMessageContextsByAccount(handlers, messageIds);
+  if (bySourceAccount.size === 0) {
+    return { ok: false, error: { type: 'unknownMessage', terminal: true } };
+  }
+  const succeededIds: number[] = [];
+  const errors: Record<string, any> = {};
+  const copied: Record<string, { remoteId: string; sourceId: number }> = {};
+  const copiedRemoteIds: string[] = [];
+  const existingCopies: Array<{ remoteId: string; sourceId: number }> = [];
+  let lastResponse;
+
+  for (const messages of bySourceAccount.values()) {
+    const sourceAccount = messages[0]?.account;
+    if (!sourceAccount || sourceAccount.id === destinationAccount.id) {
+      for (const message of messages) {
+        errors[String(message.localId)] = { type: 'sameAccountCopy' };
+      }
+      continue;
+    }
+    for (const chunk of chunks(messages, maxObjectsInSet(transport))) {
+      const creationToMessage = new Map<string, any>();
+      const create: Record<string, any> = {};
+      for (const message of chunk) {
+        // RFC 8620 permits any unique creation id. Using the source
+        // Email id also interoperates with Stalwart 0.15, whose copy
+        // implementation incorrectly resolves the source from the
+        // creation-map key rather than the object's `id` property.
+        const creationId = message.remoteId;
+        creationToMessage.set(creationId, message);
+        // Intentionally omit keywords and receivedAt. RFC 8621 Email/copy
+        // inherits omitted properties from the authoritative source Email.
+        create[creationId] = {
+          id: message.remoteId,
+          mailboxIds: destinationMailboxIds,
+        };
+      }
+      let raw;
+      try {
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Email/copy', {
+            fromAccountId: sourceAccount.remote_account_id,
+            accountId: destinationAccount.remote_account_id,
+            create,
+            onSuccessDestroyOriginal: false,
+          }, 'c1']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = {
+          type: 'transport',
+          message: error?.message ?? String(error),
+        };
+        for (const message of chunk) errors[String(message.localId)] = failure;
+        continue;
+      }
+      lastResponse = raw;
+      let response = pickResponse(raw, 'Email/copy');
+      if (!response) {
+        const failure = extractMethodError(raw, { count: chunk.length });
+        for (const message of chunk) errors[String(message.localId)] = failure;
+        continue;
+      }
+      // Stalwart 0.15 incorrectly resolves the source Email from the
+      // creation-map key and rejects the RFC-required `id` property.
+      // Retry its legacy shape only after an explicit all-object
+      // invalidProperties(id) response, which proves nothing copied.
+      if (requiresLegacyEmailCopyShape(response, [...creationToMessage.keys()])) {
+        const legacyCreate = Object.fromEntries(
+          [...creationToMessage.keys()].map((creationId) => [
+            creationId,
+            { mailboxIds: destinationMailboxIds },
+          ]),
+        );
+        raw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Email/copy', {
+            fromAccountId: sourceAccount.remote_account_id,
+            accountId: destinationAccount.remote_account_id,
+            create: legacyCreate,
+            onSuccessDestroyOriginal: false,
+          }, 'c1-legacy']],
+          useWebSocket,
+        });
+        lastResponse = raw;
+        response = pickResponse(raw, 'Email/copy');
+        if (!response) {
+          const failure = extractMethodError(raw, { count: chunk.length });
+          for (const message of chunk) errors[String(message.localId)] = failure;
+          continue;
+        }
+      }
+
+      for (const [creationId, message] of creationToMessage) {
+        const createdId = response.created?.[creationId]?.id;
+        const failure = response.notCreated?.[creationId];
+        const existingId = failure?.type === 'alreadyExists'
+          ? failure.existingId
+          : null;
+        const destinationRemoteId = createdId ?? existingId;
+        if (!destinationRemoteId) {
+          errors[String(message.localId)] = {
+            type: 'notCreated',
+            detail: failure ?? { response },
+          };
+          continue;
+        }
+        if (existingId) {
+          existingCopies.push({
+            remoteId: existingId,
+            sourceId: message.localId,
+          });
+          continue;
+        }
+        copiedRemoteIds.push(destinationRemoteId);
+        succeededIds.push(message.localId);
+        copied[String(message.localId)] = {
+          remoteId: destinationRemoteId,
+          sourceId: message.localId,
+        };
+      }
+    }
+  }
+
+  if (existingCopies.length > 0) {
+    const reconciled = await ensureExistingCopiesInDestination({
+      transport,
+      account: destinationAccount,
+      copies: existingCopies,
+      destinationMailboxIds: Object.keys(destinationMailboxIds),
+      useWebSocket,
+    });
+    for (const copy of reconciled.confirmed) {
+      copiedRemoteIds.push(copy.remoteId);
+      succeededIds.push(copy.sourceId);
+      copied[String(copy.sourceId)] = {
+        remoteId: copy.remoteId,
+        sourceId: copy.sourceId,
+      };
+    }
+    Object.assign(errors, reconciled.errors);
+  }
+
+  if (copiedRemoteIds.length > 0) {
+    const reconciliation = await fetchAndPersistCopiedEmails({
+      transport,
+      account: destinationAccount,
+      handlers,
+      remoteIds: copiedRemoteIds,
+      useWebSocket,
+    });
+    const sourceIdsByRemoteId = new Map<string, number[]>();
+    for (const entry of Object.values(copied)) {
+      const sourceIds = sourceIdsByRemoteId.get(entry.remoteId) ?? [];
+      sourceIds.push(entry.sourceId);
+      sourceIdsByRemoteId.set(entry.remoteId, sourceIds);
+    }
+    for (const [remoteId, failure] of Object.entries(reconciliation.errors)) {
+      for (const sourceId of sourceIdsByRemoteId.get(remoteId) ?? []) {
+        errors[String(sourceId)] = failure;
+      }
+    }
+    try {
+      await reconcileCopiedDestinationViews({
+        transport,
+        account: destinationAccount,
+        handlers,
+        destinationFolderIds: addLocalIds,
+        useWebSocket,
+      });
+    } catch (error) {
+      for (const sourceId of succeededIds) {
+        if (errors[String(sourceId)]) continue;
+        errors[String(sourceId)] = {
+          type: 'copyViewReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+      }
+    }
+    try {
+      await refreshCopiedDestinationCounters({
+        transport,
+        account: destinationAccount,
+        handlers,
+        destinationMailboxIds: Object.keys(destinationMailboxIds),
+        useWebSocket,
+      });
+    } catch (error) {
+      for (const sourceId of succeededIds) {
+        if (errors[String(sourceId)]) continue;
+        errors[String(sourceId)] = {
+          type: 'copyCounterReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+      }
+    }
+  }
+
+  const result = finishMessageBatch(
+    succeededIds,
+    errors,
+    lastResponse,
+    { preventRetryAfterSuccess: true },
+  );
+  result.result.copied = copied;
+  return result;
+}
+
+function requiresLegacyEmailCopyShape(
+  response: any,
+  creationIds: string[],
+): boolean {
+  if (creationIds.length === 0 || Object.keys(response.created ?? {}).length > 0) {
+    return false;
+  }
+  return creationIds.every((creationId) => {
+    const failure = response.notCreated?.[creationId];
+    return failure?.type === 'invalidProperties'
+      && Array.isArray(failure.properties)
+      && failure.properties.includes('id');
+  });
+}
+
+async function ensureExistingCopiesInDestination({
+  transport,
+  account,
+  copies,
+  destinationMailboxIds,
+  useWebSocket,
+}: {
+  transport: any;
+  account: { id: number; remote_account_id: string };
+  copies: Array<{ remoteId: string; sourceId: number }>;
+  destinationMailboxIds: string[];
+  useWebSocket: boolean;
+}) {
+  const confirmed: Array<{ remoteId: string; sourceId: number }> = [];
+  const errors: Record<string, any> = {};
+  const copiesByRemoteId = new Map<
+    string,
+    Array<{ remoteId: string; sourceId: number }>
+  >();
+  for (const copy of copies) {
+    const grouped = copiesByRemoteId.get(copy.remoteId) ?? [];
+    grouped.push(copy);
+    copiesByRemoteId.set(copy.remoteId, grouped);
+  }
+  const confirmCopies = (remoteId: string) => {
+    confirmed.push(...(copiesByRemoteId.get(remoteId) ?? []));
+  };
+  const failCopies = (remoteId: string, failure: any) => {
+    for (const copy of copiesByRemoteId.get(remoteId) ?? []) {
+      errors[String(copy.sourceId)] = failure;
+    }
+  };
+
+  for (const ids of chunks([...copiesByRemoteId.keys()], maxObjectsInGet(transport))) {
+    let raw;
+    try {
+      raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Email/get', {
+          accountId: account.remote_account_id,
+          ids,
+          properties: ['id', 'mailboxIds'],
+        }, 'g-existing-copy']],
+        useWebSocket,
+      });
+    } catch (error) {
+      const failure = {
+        type: 'alreadyExistsReconcileFailed',
+        message: error?.message ?? String(error),
+      };
+      for (const id of ids) failCopies(id, failure);
+      continue;
+    }
+    const response = pickResponse(raw, 'Email/get');
+    if (!response) {
+      const failure = extractMethodError(raw, { count: ids.length });
+      for (const id of ids) failCopies(id, failure);
+      continue;
+    }
+
+    const returned = new Map<
+      string,
+      { id: string; mailboxIds?: Record<string, boolean> }
+    >(
+      (response.list ?? []).map((email) => [email.id, email]),
+    );
+    const update: Record<string, Record<string, true>> = {};
+    for (const id of ids) {
+      const email = returned.get(id);
+      if (!email) {
+        failCopies(id, {
+          type: 'alreadyExistsReconcileFailed',
+          detail: { type: 'notFound' },
+        });
+        continue;
+      }
+      const patch: Record<string, true> = {};
+      for (const mailboxId of destinationMailboxIds) {
+        if (email.mailboxIds?.[mailboxId] !== true) {
+          patch[`mailboxIds/${mailboxId}`] = true;
+        }
+      }
+      if (Object.keys(patch).length > 0) update[id] = patch;
+      else confirmCopies(id);
+    }
+
+    for (const updateIds of chunks(Object.keys(update), maxObjectsInSet(transport))) {
+      const chunkUpdate = Object.fromEntries(
+        updateIds.map((id) => [id, update[id]]),
+      );
+      let setRaw;
+      try {
+        setRaw = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [['Email/set', {
+            accountId: account.remote_account_id,
+            update: chunkUpdate,
+          }, 's-existing-copy']],
+          useWebSocket,
+        });
+      } catch (error) {
+        const failure = {
+          type: 'alreadyExistsReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+        for (const id of updateIds) failCopies(id, failure);
+        continue;
+      }
+      const setResponse = pickResponse(setRaw, 'Email/set');
+      if (!setResponse) {
+        const failure = extractMethodError(setRaw, { count: updateIds.length });
+        for (const id of updateIds) failCopies(id, failure);
+        continue;
+      }
+      for (const id of updateIds) {
+        if (Object.prototype.hasOwnProperty.call(setResponse.updated ?? {}, id)) {
+          confirmCopies(id);
+        } else {
+          failCopies(id, {
+            type: 'notUpdated',
+            detail: setResponse.notUpdated?.[id] ?? null,
+          });
+        }
+      }
+    }
+  }
+
+  return { confirmed, errors };
+}
+
+async function fetchAndPersistCopiedEmails({
+  transport,
+  account,
+  handlers,
+  remoteIds,
+  useWebSocket,
+}: {
+  transport: any;
+  account: { id: number; remote_account_id: string };
+  handlers: Record<string, (params: any) => Promise<any>>;
+  remoteIds: string[];
+  useWebSocket: boolean;
+}) {
+  const errors: Record<string, any> = {};
+  for (const ids of chunks([...new Set(remoteIds)], maxObjectsInGet(transport))) {
+    try {
+      const raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Email/get', {
+          accountId: account.remote_account_id,
+          ids,
+          properties: EMAIL_LIST_PROPERTIES,
+        }, 'g-copy']],
+        useWebSocket,
+      });
+      const response = pickResponse(raw, 'Email/get');
+      const emails = response?.list ?? [];
+      if (emails.length > 0) {
+        await persistEmails({ account, emails, handlers });
+      }
+      const returned = new Set(emails.map((email) => email.id));
+      for (const id of ids) {
+        if (returned.has(id)) continue;
+        errors[id] = {
+          type: 'copyReconcileFailed',
+          detail: response?.notFound?.includes(id) ? { type: 'notFound' } : null,
+        };
+      }
+    } catch (error) {
+      for (const id of ids) {
+        errors[id] = {
+          type: 'copyReconcileFailed',
+          message: error?.message ?? String(error),
+        };
+      }
+    }
+  }
+  return { errors };
+}
+
+async function reconcileCopiedDestinationViews({
+  transport,
+  account,
+  handlers,
+  destinationFolderIds,
+  useWebSocket,
+}) {
+  if (destinationFolderIds.length === 0) return;
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT qv.*, f.remote_id, f.account_id
+            FROM query_views qv
+            JOIN folders f ON f.id = qv.folder_id
+           WHERE qv.account_id = ?
+             AND qv.folder_id IN (${destinationFolderIds.map(() => '?').join(',')})
+             AND qv.view_type = 'mailbox-window'`,
+    params: [account.id, ...destinationFolderIds],
+  });
+  for (const view of rows) {
+    const sortProp = JSON.parse(view.sort_json ?? '[]')?.[0]?.property ?? 'receivedAt';
+    const folder = {
+      id: Number(view.folder_id),
+      account_id: Number(view.account_id),
+      remote_id: view.remote_id,
+    };
+    const delta = view.query_state
+      ? await syncFolderWindowChanges({
+        transport,
+        account,
+        folder,
+        handlers,
+        sinceQueryState: view.query_state,
+        sortProp,
+        collapseThreads: !!view.collapse_threads,
+        useWebSocket,
+      })
+      : { needsFullSync: true };
+    if (delta.needsFullSync) {
+      await syncFolderWindow({
+        transport,
+        account,
+        folder,
+        handlers,
+        sortProp,
+        position: 0,
+        limit: 100,
+        collapseThreads: !!view.collapse_threads,
+        useWebSocket,
+      });
+    }
+  }
+}
+
+async function refreshCopiedDestinationCounters({
+  transport,
+  account,
+  handlers,
+  destinationMailboxIds,
+  useWebSocket,
+}) {
+  for (const ids of chunks(
+    [...new Set(destinationMailboxIds)],
+    maxObjectsInGet(transport),
+  )) {
+    const raw = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [['Mailbox/get', {
+        accountId: account.remote_account_id,
+        ids,
+        properties: [
+          'id',
+          'totalEmails',
+          'unreadEmails',
+          'totalThreads',
+          'unreadThreads',
+        ],
+      }, 'g-copy-mailboxes']],
+      useWebSocket,
+    });
+    const response = pickResponse(raw, 'Mailbox/get');
+    if (!response) {
+      throw new Error('Mailbox/get failed while refreshing copy destination');
+    }
+    const returned = new Set((response.list ?? []).map((folder) => folder.id));
+    if (ids.some((id) => !returned.has(id))) {
+      throw new Error('Mailbox/get omitted a copied destination folder');
+    }
+    await handlers[DB_RPC.FOLDER_UPDATE_COUNTS_MANY]({
+      accountId: account.id,
+      folders: (response.list ?? []).map((folder) => ({
+        remoteId: folder.id,
+        totalEmails: folder.totalEmails,
+        unreadEmails: folder.unreadEmails,
+        totalThreads: folder.totalThreads,
+        unreadThreads: folder.unreadThreads,
+      })),
+    });
+  }
+}
+
+async function runDestroy({ transport, handlers, row, request, useWebSocket }) {
   const messageIds = collectMessageIds(row, request);
   if (messageIds.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  const resolved = await resolveRemoteMessageIds(handlers, account, messageIds);
-  if (resolved.length === 0) {
+  const resolvedByAccount = await resolveMessageContextsByAccount(handlers, messageIds);
+  if (resolvedByAccount.size === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
-  // Single Email/set destroy with the full id array. Stalwart and
-  // every other RFC-8621 server accepts a batch here.
-  const raw = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [['Email/set', {
-      accountId: account.remote_account_id,
-      destroy: resolved.map((r) => r.remoteId),
-    }, 's1']],
-    useWebSocket,
-  });
-  const response = pickResponse(raw, 'Email/set');
-  if (!response) {
-    return { ok: false, error: extractMethodError(raw, { count: resolved.length }) };
+  const succeededIds: number[] = [];
+  const errors: Record<string, any> = {};
+  let lastResponse;
+  for (const resolved of resolvedByAccount.values()) {
+    const owner = resolved[0].account;
+    for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {
+      const raw = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [['Email/set', {
+          accountId: owner.remote_account_id,
+          destroy: chunk.map((message) => message.remoteId),
+        }, 's1']],
+        useWebSocket,
+      });
+      lastResponse = raw;
+      const response = pickResponse(raw, 'Email/set');
+      if (!response) {
+        const failure = extractMethodError(raw, { count: chunk.length });
+        for (const message of chunk) errors[String(message.localId)] = failure;
+        continue;
+      }
+      const destroyed = new Set(response.destroyed ?? []);
+      const confirmed = chunk.filter((message) => destroyed.has(message.remoteId));
+      if (confirmed.length > 0) {
+        await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
+          accountId: owner.id,
+          messageIds: confirmed.map((message) => message.localId),
+        });
+        succeededIds.push(...confirmed.map((message) => message.localId));
+      }
+      for (const message of chunk) {
+        const failure = response.notDestroyed?.[message.remoteId];
+        if (!failure) {
+          if (!destroyed.has(message.remoteId)) {
+            errors[String(message.localId)] = { type: 'notDestroyed', detail: null };
+          }
+          continue;
+        }
+        const reconciled = await reconcileMessageFromServer({
+          transport,
+          account: owner,
+          handlers,
+          useWebSocket,
+          messageId: message.localId,
+          remoteId: message.remoteId,
+          removeRemoteFolderIds: [],
+        });
+        if (reconciled.gone) succeededIds.push(message.localId);
+        else errors[String(message.localId)] = { type: 'notDestroyed', detail: failure };
+      }
+    }
   }
-  const destroyedRemoteIds = new Set(
-    Array.isArray(response.destroyed) ? response.destroyed : [],
-  );
-  const notDestroyed = response.notDestroyed ?? {};
-
-  // Mirror the server-confirmed destroy id set in one transaction:
-  // DELETE FROM messages cascades to folder_messages, and each
-  // affected query_view is compacted and its total decremented
-  // before the handler returns.
-  await handlers[DB_RPC.OUTBOX_APPLY_DESTROY_BATCH]({
-    accountId: account.id,
-    messageIds: resolved
-      .filter(({ remoteId }) => destroyedRemoteIds.has(remoteId))
-      .map(({ localId }) => localId),
-  });
-
-  let unresolved = 0;
-  for (const remoteId of Object.keys(notDestroyed)) {
-    const entry = resolved.find((r) => r.remoteId === remoteId);
-    if (!entry) continue;
-    const reconciled = await reconcileMessageFromServer({
-      transport, account, handlers, useWebSocket,
-      messageId: entry.localId, remoteId,
-      removeRemoteFolderIds: [],
-    });
-    if (reconciled.gone) continue;
-    unresolved += 1;
-  }
-  if (unresolved > 0) {
-    return { ok: false, error: { type: 'notDestroyed', detail: notDestroyed } };
-  }
-  return { ok: true, response: raw };
+  return finishMessageBatch(succeededIds, errors, lastResponse);
 }
 
 /**
@@ -1497,44 +2143,49 @@ async function submitEmailSet({ transport, account, useWebSocket, update, destro
  */
 async function resolveRemoteMessageIdsByAccount(handlers, messageIds) {
   const out = new Map();
+  const contexts = await resolveMessageContextsByAccount(handlers, messageIds);
+  for (const rows of contexts.values()) {
+    const remoteAccountId = rows[0]?.account?.remote_account_id;
+    if (!remoteAccountId) continue;
+    out.set(remoteAccountId, rows.map((row) => ({
+      localId: row.localId,
+      remoteId: row.remoteId,
+    })));
+  }
+  return out;
+}
+
+async function resolveMessageContextsByAccount(handlers, messageIds) {
+  const out = new Map<number, any[]>();
   if (!Array.isArray(messageIds) || messageIds.length === 0) return out;
   const placeholders = messageIds.map(() => '?').join(',');
   const rows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT m.id, m.remote_id, a.remote_account_id
+    sql: `SELECT m.id, m.remote_id, m.account_id, a.remote_account_id
             FROM messages m
             JOIN accounts a ON a.id = m.account_id
            WHERE m.id IN (${placeholders})`,
     params: messageIds,
   });
-  for (const row of rows) {
-    if (row.remote_id == null || row.remote_account_id == null) continue;
-    if (!out.has(row.remote_account_id)) out.set(row.remote_account_id, []);
-    out.get(row.remote_account_id).push({ localId: Number(row.id), remoteId: row.remote_id });
+  const rowsById = new Map<number, any>(
+    rows.map((row: any) => [Number(row.id), row]),
+  );
+  for (const messageId of messageIds) {
+    const row = rowsById.get(Number(messageId));
+    if (!row) continue;
+    if (!row.remote_id || !row.remote_account_id) continue;
+    const accountId = Number(row.account_id);
+    const group = out.get(accountId) ?? [];
+    group.push({
+      localId: Number(row.id),
+      remoteId: row.remote_id,
+      account: {
+        id: accountId,
+        remote_account_id: row.remote_account_id,
+      },
+    });
+    out.set(accountId, group);
   }
   return out;
-}
-
-async function resolveRemoteMessageIds(handlers, account, messageIds) {
-  if (!Array.isArray(messageIds) || messageIds.length === 0) return [];
-  const placeholders = messageIds.map(() => '?').join(',');
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id, remote_id FROM messages
-            WHERE account_id = ? AND id IN (${placeholders})`,
-    params: [account.id, ...messageIds],
-  });
-  return rows
-    .filter((r) => r.remote_id != null)
-    .map((r) => ({ localId: Number(r.id), remoteId: r.remote_id }));
-}
-
-async function resolveRemoteFolderIds(handlers, localIds) {
-  if (localIds.length === 0) return [];
-  const placeholders = localIds.map(() => '?').join(',');
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT remote_id FROM folders WHERE id IN (${placeholders})`,
-    params: localIds,
-  });
-  return rows.map((r) => r.remote_id);
 }
 
 /**

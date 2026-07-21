@@ -4,11 +4,9 @@ import { computed } from 'vue';
 import { useMailStore } from '../stores/mail-store';
 
 /**
- * Modal progress overlay for bulk move/destroy. Shown by the mail
- * store's `runChunkedMutation` whenever the number of messages
- * exceeds BULK_OPERATION_BATCH_SIZE: in that case the dispatch is
- * split into multiple Email/set chunks and the overlay ticks a
- * progress bar between chunks. The backdrop intentionally blocks
+ * Modal progress overlay for large semantic move/destroy operations.
+ * Protocol backends own wire-level chunking; this UI reports target
+ * progress. The backdrop intentionally blocks
  * pointer events so the user does not stack a second triage action
  * (or a folder switch that would invalidate the mid-flight cache
  * apply) on top of the in-flight bulk operation.
@@ -23,15 +21,10 @@ import { useMailStore } from '../stores/mail-store';
 const mailStore = useMailStore();
 
 const state = computed(() => mailStore.bulkOperation);
-const percent = computed(() => {
-  const total = state.value.total || 0;
-  if (total <= 0) return 0;
-  return Math.min(100, Math.round((state.value.completed / total) * 100));
-});
 const subText = computed(() => {
-  const { completed, total } = state.value;
+  const { total } = state.value;
   if (total <= 0) return '';
-  return `${completed.toLocaleString()} of ${total.toLocaleString()} messages`;
+  return `${total.toLocaleString()} messages`;
 });
 </script>
 
@@ -50,16 +43,12 @@ const subText = computed(() => {
         <div
           class="bulk-overlay__progress"
           role="progressbar"
-          :aria-valuenow="percent"
-          aria-valuemin="0"
-          aria-valuemax="100"
           :aria-valuetext="subText"
         >
-          <div class="bulk-overlay__progress-fill" :style="{ width: `${percent}%` }" />
+          <div class="bulk-overlay__progress-fill" />
         </div>
         <div class="bulk-overlay__sub">
           <span>{{ subText }}</span>
-          <span>{{ percent }}%</span>
         </div>
       </div>
     </div>
@@ -106,10 +95,24 @@ const subText = computed(() => {
 }
 
 .bulk-overlay__progress-fill {
+  width: 40%;
   height: 100%;
   background: var(--accent);
   border-radius: inherit;
-  transition: width 120ms ease-out;
+  animation: bulk-progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes bulk-progress-indeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(260%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bulk-overlay__progress-fill {
+    width: 100%;
+    animation: none;
+    opacity: 0.65;
+  }
 }
 
 .bulk-overlay__sub {

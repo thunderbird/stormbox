@@ -130,19 +130,19 @@ function pickFolder(id) { mailStore.selectFolder(id); }
 
 function dropStateFor(folder) {
   if (!isDragging.value || dragOverFolderId.value !== folder.id) return null;
-  return mailStore.canMoveToFolder(folder.id) ? 'valid' : 'invalid';
+  return mailStore.transferModeForFolder(folder.id) ?? 'invalid';
 }
 
 function onFolderDragEnter(folder, event) {
   if (!hasMessageDrag(event)) return;
   dragOverFolderId.value = folder.id;
-  setDropEffect(event, mailStore.canMoveToFolder(folder.id));
+  setDropEffect(event, mailStore.transferModeForFolder(folder.id));
 }
 
 function onFolderDragOver(folder, event) {
   if (!hasMessageDrag(event)) return;
   dragOverFolderId.value = folder.id;
-  setDropEffect(event, mailStore.canMoveToFolder(folder.id));
+  setDropEffect(event, mailStore.transferModeForFolder(folder.id));
 }
 
 function onFolderDragLeave(folder, event) {
@@ -156,10 +156,10 @@ async function onFolderDrop(folder, event) {
   if (!hasMessageDrag(event)) return;
   event.preventDefault();
   const payload = readMessageDrop(event);
-  const canMove = mailStore.canMoveToFolder(folder.id);
+  const mode = mailStore.transferModeForFolder(folder.id);
   dragOverFolderId.value = null;
   try {
-    if (payload?.ids?.length && canMove) {
+    if (payload?.ids?.length && mode) {
       await mailStore.moveMessages(payload.ids, folder.id);
     }
   } catch (err) {

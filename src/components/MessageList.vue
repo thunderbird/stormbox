@@ -419,6 +419,11 @@ function toggleSelectAll() {
 // entirely; the list header is the only surface that is always
 // visible, including in single-column layouts.
 const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+const canWhitelistInJunk = computed(() => {
+  const current = mailStore.currentFolder;
+  return current?.role === 'junk'
+    && mailStore.primaryFolders.some((folder) => folder.id === current.id);
+});
 const bulkWhitelisting = ref(false);
 
 async function bulkMarkRead() {
@@ -556,7 +561,7 @@ function normalizeFilterText(value) {
         aria-label="Selection actions"
       >
         <button
-          v-if="isInJunkFolder"
+          v-if="canWhitelistInJunk"
           class="msg-list__bulk-action msg-list__bulk-action--whitelist"
           type="button"
           :disabled="bulkWhitelisting"

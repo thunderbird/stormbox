@@ -17,6 +17,7 @@ import { DB_RPC } from '../../../db/protocol';
 import { SERVICE_KIND } from '../../../constants/states';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
+import { maxObjectsInGet } from './limits';
 
 const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
@@ -160,8 +161,7 @@ export async function syncContacts({
  * the requested size when the session or capability is unavailable.
  */
 function clampToMaxObjectsInGet(transport, pageSize: number): number {
-  const raw = Number(transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.maxObjectsInGet);
-  return Number.isFinite(raw) && raw > 0 ? Math.min(pageSize, raw) : pageSize;
+  return Math.min(pageSize, maxObjectsInGet(transport));
 }
 
 /**
@@ -235,25 +235,28 @@ export async function syncContactCardChanges({
 }
 
 async function fetchAndPersistContactCards({ transport, account, handlers, ids, useWebSocket }) {
-  const got = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/get',
-      {
-        accountId: account.remote_account_id,
-        ids,
-        properties: CONTACT_PROPERTIES,
-      },
-      'cg1',
-    ]],
-    useWebSocket,
-  });
-  const list = pickResponse(got, 'ContactCard/get')?.list ?? [];
-  if (list.length === 0) {
-    return 0;
+  const cap = maxObjectsInGet(transport);
+  let fetched = 0;
+  for (let index = 0; index < ids.length; index += cap) {
+    const got = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/get',
+        {
+          accountId: account.remote_account_id,
+          ids: ids.slice(index, index + cap),
+          properties: CONTACT_PROPERTIES,
+        },
+        'cg1',
+      ]],
+      useWebSocket,
+    });
+    const list = pickResponse(got, 'ContactCard/get')?.list ?? [];
+    if (list.length === 0) continue;
+    await persistContactCards({ account, cards: list, handlers });
+    fetched += list.length;
   }
-  await persistContactCards({ account, cards: list, handlers });
-  return list.length;
+  return fetched;
 }
 
 async function persistContactCards({ account, cards, handlers }) {
@@ -823,8 +826,8 @@ async function cardExistsForEmail({ transport, account, email, useWebSocket }): 
 
 /**
  * Of the given addresses, return the set (lowercased) that already have a
- * ContactCard anywhere in the account — in two calls regardless of count:
- * one ContactCard/query (OR over the addresses) and one ContactCard/get.
+ * ContactCard anywhere in the account. Query pages and follow-up gets
+ * are bounded to the live JMAP Session's object limit.
  * A filter the server does not support yields no ids, so callers fall
  * through to create rather than failing.
  */
@@ -835,34 +838,52 @@ async function existingCardEmails({ transport, account, emails, useWebSocket }):
   const filter = emails.length === 1
     ? { email: emails[0] }
     : { operator: 'OR', conditions: emails.map((email) => ({ email })) };
-  const found = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/query',
-      { accountId: account.remote_account_id, filter },
-      'cq',
-    ]],
-    useWebSocket,
-  });
-  const ids = pickResponse(found, 'ContactCard/query')?.ids ?? [];
-  if (ids.length === 0) return present;
-  const got = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/get',
-      { accountId: account.remote_account_id, ids, properties: ['emails'] },
-      'cg',
-    ]],
-    useWebSocket,
-  });
-  const cards = pickResponse(got, 'ContactCard/get')?.list ?? [];
-  for (const card of cards) {
-    const map = card?.emails;
-    if (!map || typeof map !== 'object') continue;
-    for (const entry of Object.values(map) as any[]) {
-      const addr = String(entry?.address ?? '').trim().toLowerCase();
-      if (addr && wanted.has(addr)) present.add(addr);
+  const cap = maxObjectsInGet(transport);
+  for (let position = 0; ;) {
+    const found = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/query',
+        {
+          accountId: account.remote_account_id,
+          filter,
+          position,
+          limit: cap,
+          calculateTotal: true,
+        },
+        'cq',
+      ]],
+      useWebSocket,
+    });
+    const query = pickResponse(found, 'ContactCard/query');
+    const ids = query?.ids ?? [];
+    for (let index = 0; index < ids.length; index += cap) {
+      const got = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+        methodCalls: [[
+          'ContactCard/get',
+          {
+            accountId: account.remote_account_id,
+            ids: ids.slice(index, index + cap),
+            properties: ['emails'],
+          },
+          'cg',
+        ]],
+        useWebSocket,
+      });
+      for (const card of pickResponse(got, 'ContactCard/get')?.list ?? []) {
+        const map = card?.emails;
+        if (!map || typeof map !== 'object') continue;
+        for (const entry of Object.values(map) as any[]) {
+          const addr = String(entry?.address ?? '').trim().toLowerCase();
+          if (addr && wanted.has(addr)) present.add(addr);
+        }
+      }
     }
+    position += ids.length;
+    const total = Number(query?.total);
+    if (ids.length === 0 || ids.length < cap
+      || (Number.isFinite(total) && position >= total)) break;
   }
   return present;
 }

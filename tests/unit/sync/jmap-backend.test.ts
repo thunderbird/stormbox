@@ -6,6 +6,7 @@ import { DB_RPC } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
 import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
 import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
 import { FakeWebSocket } from './_fake-ws';
 import { MockTransport, resolveResultRefs } from './_mock-transport';
 
@@ -33,7 +34,11 @@ const SESSION = {
     [JMAP_CAPS.CONTACTS]: 'acct-1',
   },
   capabilities: {
-    [JMAP_CAPS.CORE]: { maxConcurrentRequests: 4 },
+    [JMAP_CAPS.CORE]: {
+      maxConcurrentRequests: 4,
+      maxObjectsInGet: 500,
+      maxObjectsInSet: 500,
+    },
     [JMAP_CAPS.MAIL]: {},
     [JMAP_CAPS.WEBSOCKET]: {
       url: 'wss://mail.example.com/jmap/ws/',
@@ -1851,5 +1856,233 @@ describe('JmapBackend startup catch-up resilience', () => {
     expect(items.map((i) => i.remote_id)).toEqual(['e-1']);
 
     await backend.stop();
+  });
+});
+
+describe('JmapBackend shared-account reconciliation', () => {
+  it('acknowledges push state only after all account work succeeds', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._persistPushState = vi.fn(async () => {});
+    backend._scheduleStateChangeRetry = vi.fn();
+    backend._syncAccountStateChange = vi.fn()
+      .mockRejectedValueOnce(new Error('primary failed'))
+      .mockResolvedValueOnce({});
+
+    await backend._doStateChange({
+      changed: {
+        'acct-1': { Mailbox: 'mb-primary-2' },
+        'acct-shared': { EmailDelivery: 'delivery-shared-2' },
+      },
+      pushState: 'push-next',
+    });
+
+    expect(backend._syncAccountStateChange).toHaveBeenCalledTimes(2);
+    expect(backend._persistPushState).not.toHaveBeenCalled();
+    expect(backend._scheduleStateChangeRetry).toHaveBeenCalledWith({
+      changed: {
+        'acct-1': { Mailbox: 'mb-primary-2' },
+      },
+      pushState: 'push-next',
+    });
+  });
+
+  it('continues with later Session accounts after one account sync fails', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const transport = new MockTransport();
+    transport.handle('Mailbox/changes', () => {
+      throw new Error('primary mailbox sync failed');
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._loadSyncStateFor = vi.fn(async () => ({ state: 'mb-primary-1' }));
+    backend._refreshActiveQueryViews = vi.fn(async () => {});
+
+    await backend._doStateChange({
+      changed: {
+        'acct-1': { Mailbox: 'mb-primary-2' },
+        'acct-shared': { EmailDelivery: 'delivery-shared-2' },
+      },
+      pushState: null,
+    });
+
+    expect(transport.requests[0].methodCalls[0][0]).toBe('Mailbox/changes');
+    expect(backend._refreshActiveQueryViews).toHaveBeenCalledWith(shared);
+  });
+
+  it('refreshes primary and shared active views after reconnect', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const transport = new MockTransport() as any;
+    transport.lastPushState = 'push-latest';
+    transport.openWebSocket = vi.fn(async () => {});
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: true },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._started = true;
+    backend._refreshActiveQueryViews = vi.fn(async () => {});
+
+    await backend._reconnect();
+
+    expect(transport.openWebSocket).toHaveBeenCalledWith(
+      expect.arrayContaining(['Email', 'EmailDelivery']),
+      'push-latest',
+    );
+    expect(backend._refreshActiveQueryViews).toHaveBeenNthCalledWith(1, primary);
+    expect(backend._refreshActiveQueryViews).toHaveBeenNthCalledWith(2, shared);
+  });
+
+  it('rejects folders whose shared account is no longer in the Session', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend._accountsByLocalId = new Map([[primary.id, primary]]);
+
+    expect(() => backend._accountForFolder({ id: 30, account_id: 2 }))
+      .toThrow('belongs to an unavailable account');
+  });
+
+  it('handles shared EmailDelivery push with scoped query refresh and body prefetch', async () => {
+    const primary = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Primary',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Shared',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'shared-inbox', name: 'Shared Inbox', role: 'inbox' }],
+    });
+    const folder = await engine.get(
+      `SELECT * FROM folders WHERE account_id = ? AND remote_id = 'shared-inbox'`,
+      [shared.id],
+    );
+    const metadata = (id) => ({
+      id,
+      blobId: `blob-${id}`,
+      threadId: `thread-${id}`,
+      mailboxIds: { 'shared-inbox': true },
+      keywords: {},
+      size: 10,
+      receivedAt: '2026-07-01T12:00:00Z',
+      sentAt: '2026-07-01T12:00:00Z',
+      messageId: [`<${id}@example.com>`],
+      from: [{ email: 'sender@example.com' }],
+      to: [{ email: 'recipient@example.com' }],
+      subject: id,
+      preview: id,
+      hasAttachment: false,
+    });
+    const transport = new MockTransport();
+    transport.handle('Email/query', () => ({
+      ids: ['shared-old'],
+      total: 1,
+      queryState: 'shared-q1',
+      canCalculateChanges: true,
+      position: 0,
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: (params.ids ?? []).map(metadata),
+      state: 'shared-es1',
+    }));
+    await syncFolderWindow({ transport, account: shared, folder, handlers });
+
+    let queryAccountId;
+    let bodyAccountId;
+    transport.handle('Email/queryChanges', (params) => {
+      queryAccountId = params.accountId;
+      return {
+        oldQueryState: 'shared-q1',
+        newQueryState: 'shared-q2',
+        total: 2,
+        removed: [],
+        added: [{ id: 'shared-new', index: 0 }],
+      };
+    });
+    transport.handle('Email/get', (params) => {
+      if (params.fetchTextBodyValues === true) bodyAccountId = params.accountId;
+      return {
+        list: (params.ids ?? []).map((id) => ({
+          ...metadata(id),
+          ...(params.fetchTextBodyValues === true
+            ? {
+              bodyStructure: { partId: 'p1', type: 'text/plain', size: 4 },
+              textBody: [{ partId: 'p1' }],
+              htmlBody: [],
+              attachments: [],
+              bodyValues: { p1: { value: 'body', isTruncated: false } },
+            }
+            : {}),
+        })),
+        state: 'shared-es2',
+      };
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._accountsByLocalId = new Map([
+      [primary.id, primary],
+      [shared.id, shared],
+    ]);
+    backend._accountsByRemoteId = new Map([
+      [primary.remote_account_id, primary],
+      [shared.remote_account_id, shared],
+    ]);
+
+    await backend._doStateChange({
+      changed: { 'acct-shared': { EmailDelivery: 'delivery-2' } },
+      pushState: null,
+    });
+
+    expect(queryAccountId).toBe('acct-shared');
+    expect(bodyAccountId).toBe('acct-shared');
+    const copied = await engine.get(
+      `SELECT id, body_fetched_at FROM messages
+        WHERE account_id = ? AND remote_id = 'shared-new'`,
+      [shared.id],
+    );
+    expect(copied?.body_fetched_at).not.toBeNull();
+    expect(await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: shared.id,
+      objectType: 'Email',
+      scope: '',
+    })).toBeNull();
   });
 });
