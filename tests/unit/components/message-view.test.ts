@@ -172,6 +172,39 @@ describe('MessageView with a sparse messages array', () => {
     ).toBe(true);
   });
 
+  it('shows neither Junk nor Not junk in a shared Junk folder', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+    mailStore.folders = [{
+      id: 2,
+      account_id: 2,
+      remote_id: 'shared-junk',
+      name: 'Shared Junk',
+      role: 'junk',
+      is_deleted: 0,
+    }];
+    mailStore.currentFolderId = 2;
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Shared junk',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+    const titles = wrapper
+      .findAll('.message-view__header .message-view__action')
+      .map((button) => button.attributes('title'));
+    expect(titles).not.toContain('Junk');
+    expect(titles).not.toContain('Whitelist sender and move to Inbox');
+  });
+
   it('closes the message view from the back toolbar action', async () => {
     const authStore = useAuthStore();
     authStore.accountId = 1;

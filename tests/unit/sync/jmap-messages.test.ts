@@ -443,6 +443,43 @@ describe('syncFolderWindowChanges', () => {
     });
     expect(result.needsFullSync).toBe(true);
   });
+
+  it('does not advance query state when added Email metadata is incomplete', async () => {
+    await bootstrap();
+    const transport = new MockTransport();
+    transport.handle('Email/queryChanges', () => ({
+      oldQueryState: 'qs-1',
+      newQueryState: 'qs-2',
+      total: 4,
+      removed: [],
+      added: [{ id: 'e-missing', index: 0 }],
+    }));
+    transport.handle('Email/get', () => ({
+      list: [],
+      notFound: ['e-missing'],
+      state: 'es-2',
+    }));
+
+    const result = await syncFolderWindowChanges({
+      transport,
+      account,
+      folder: inbox,
+      handlers,
+      sinceQueryState: 'qs-1',
+    });
+
+    expect(result.needsFullSync).toBe(true);
+    const view = await engine.get(
+      'SELECT id, query_state, total FROM query_views WHERE account_id = ? AND folder_id = ?',
+      [account.id, inbox.id],
+    );
+    expect(view.query_state).toBe('qs-1');
+    expect(Number(view.total)).toBe(3);
+    expect(await engine.get(
+      'SELECT position FROM query_view_items WHERE view_id = ? AND remote_id = ?',
+      [view.id, 'e-missing'],
+    )).toBeFalsy();
+  });
 });
 
 describe('syncEmailChanges', () => {

@@ -44,7 +44,7 @@ function startMessageDrag(event: any, {
   });
   const transfer = event?.dataTransfer;
   if (transfer) {
-    transfer.effectAllowed = 'move';
+    transfer.effectAllowed = 'copyMove';
     transfer.setData(MESSAGE_DRAG_MIME, payload);
     transfer.setData('text/plain', `${ids.length} ${ids.length === 1 ? 'message' : 'messages'}`);
     setDragImage(transfer, ids.length);
@@ -90,11 +90,11 @@ function readMessageDrop(event) {
   return { ids, sourceFolderId: sourceFolderId.value };
 }
 
-function setDropEffect(event, allowed) {
+function setDropEffect(event, mode: 'move' | 'copy' | null) {
   if (!hasMessageDrag(event)) return false;
   event?.preventDefault?.();
   if (event?.dataTransfer) {
-    event.dataTransfer.dropEffect = allowed ? 'move' : 'none';
+    event.dataTransfer.dropEffect = mode ?? 'none';
   }
   return true;
 }

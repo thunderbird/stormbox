@@ -51,7 +51,8 @@ function toggle() {
     :class="{
       'is-current': current,
       'has-tone': folder.tone,
-      'is-drop-valid': dropStateValue === 'valid',
+      'is-drop-valid': dropStateValue === 'move',
+      'is-drop-copy': dropStateValue === 'copy',
       'is-drop-invalid': dropStateValue === 'invalid',
     }"
     :style="style"
@@ -131,6 +132,10 @@ export default { name: 'FolderNode' };
 .folder-node.is-drop-valid {
   background: color-mix(in srgb, var(--accent) 14%, var(--panel));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.folder-node.is-drop-copy {
+  background: color-mix(in srgb, #188038 14%, var(--panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #188038 60%, transparent);
 }
 .folder-node.is-drop-invalid {
   background: color-mix(in srgb, #d93025 12%, var(--panel));

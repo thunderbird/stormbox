@@ -249,12 +249,6 @@ describe('syncMailboxes (full sync)', () => {
   });
 
   it('pages past the server get cap when the first response fills it', async () => {
-    // Advertise a tiny maxObjectsInGet so the paging path triggers.
-    await engine.run(
-      `INSERT INTO account_capabilities(account_id, service_kind, capability, payload_json)
-       VALUES (?, 'jmap', 'urn:ietf:params:jmap:core', ?)`,
-      [account.id, JSON.stringify({ maxObjectsInGet: 2 })],
-    );
     const all = [
       { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
       { id: 'mb-archives', name: 'Archives', role: 'archive' },
@@ -262,7 +256,11 @@ describe('syncMailboxes (full sync)', () => {
       { id: 'mb-b', name: 'Beta' },
       { id: 'mb-c', name: 'Gamma' },
     ];
-    const transport = new MockTransport();
+    const transport = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': { maxObjectsInGet: 2 },
+      },
+    });
     transport.handle('Mailbox/get', (params) => {
       // Server truncates an unpaged get at the cap, like Stalwart does.
       const list = params.ids == null

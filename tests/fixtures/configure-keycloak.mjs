@@ -3,6 +3,8 @@ import fs from 'node:fs';
 
 import {
   OIDC_CLIENT_ID,
+  SHARED_TEST_OIDC_EMAIL,
+  SHARED_TEST_OIDC_PASSWORD,
   TEST_OIDC_EMAIL,
   TEST_OIDC_PASSWORD,
 } from '../e2e/helpers/stack-env.js';
@@ -198,6 +200,13 @@ export async function configureKeycloak() {
     firstName: 'Stormbox',
     lastName: 'E2E',
     password: TEST_OIDC_PASSWORD,
+  });
+  await ensureUser(token, {
+    username: SHARED_TEST_OIDC_EMAIL,
+    email: SHARED_TEST_OIDC_EMAIL,
+    firstName: 'Stormbox',
+    lastName: 'Shared E2E',
+    password: SHARED_TEST_OIDC_PASSWORD,
   });
   // Keep the local developer login deterministic too. Existing
   // Keycloak volumes can otherwise preserve an unknown imported

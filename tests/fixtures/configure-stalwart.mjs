@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {
+  SHARED_TEST_OIDC_EMAIL,
   STACK_STALWART_API_AUTH,
   STACK_STALWART_API_URL,
   STACK_STALWART_PRINCIPAL,
@@ -27,6 +28,11 @@ const LOCAL_ACCOUNTS = [
   {
     id: DEV_STALWART_PRINCIPAL,
     description: 'Stormbox developer account',
+  },
+  {
+    id: SHARED_TEST_OIDC_EMAIL,
+    description: 'Stormbox shared-folder e2e owner',
+    permissions: ['unlimited-requests'],
   },
 ];
 

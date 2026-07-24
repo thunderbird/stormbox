@@ -41,6 +41,12 @@ export const TEST_OIDC_EMAIL =
 export const TEST_OIDC_PASSWORD =
   process.env.TEST_OIDC_PASSWORD ?? 'e2e';
 
+export const SHARED_TEST_OIDC_EMAIL =
+  process.env.SHARED_TEST_OIDC_EMAIL ?? 'shared-e2e@example.org';
+
+export const SHARED_TEST_OIDC_PASSWORD =
+  process.env.SHARED_TEST_OIDC_PASSWORD ?? 'shared-e2e';
+
 /** Provisioned primary Thundermail / JMAP From address for fixtures and JMAP helpers. */
 export const TEST_THUNDERMAIL =
   process.env.TEST_THUNDERMAIL ?? TEST_OIDC_EMAIL;

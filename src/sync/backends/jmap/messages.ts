@@ -21,6 +21,7 @@
 import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
+import { maxObjectsInGet } from './limits';
 
 /**
  * The "fast properties" list from docs/architecture/sqlite-storage.md >
@@ -59,7 +60,7 @@ export async function syncFolderWindow({
     accountId: account.remote_account_id,
     filter,
     sort,
-    limit,
+    limit: Math.min(limit, maxObjectsInGet(transport)),
     calculateTotal: true,
     collapseThreads,
     ...(anchor ? { anchor, anchorOffset } : { position }),
@@ -145,6 +146,7 @@ export async function syncFolderWindowChanges({
 }) {
   const filter = { inMailbox: folder.remote_id };
   const sort = [{ property: sortProp, isAscending: false }];
+  const effectiveMaxChanges = Math.min(maxChanges, maxObjectsInGet(transport));
 
   // Email/queryChanges + Email/get for the newly-added ids in a single
   // round trip via back reference. The server resolves
@@ -159,7 +161,7 @@ export async function syncFolderWindowChanges({
           filter,
           sort,
           sinceQueryState,
-          maxChanges,
+          maxChanges: effectiveMaxChanges,
           calculateTotal: true,
           collapseThreads,
         },
@@ -186,39 +188,28 @@ export async function syncFolderWindowChanges({
     return { needsFullSync: true };
   }
 
-  const viewId = await upsertQueryView({
-    handlers,
-    account,
-    folder,
+  const additions = change.added ?? [];
+  const removedIds = change.removed ?? [];
+  const got = pickResponse(result, 'Email/get');
+  if (!got) return { needsFullSync: true };
+  const list = got?.list ?? [];
+  const returnedIds = new Set(list.map((email) => email.id));
+  if (additions.some((addition) => !returnedIds.has(addition.id))) {
+    return { needsFullSync: true };
+  }
+
+  await handlers[DB_RPC.FOLDER_WINDOW_APPLY_CHANGES_BATCH]({
+    accountId: account.id,
+    folderId: folder.id,
+    folderRemoteId: folder.remote_id,
     sortProp,
     collapseThreads,
     queryState: change.newQueryState,
-    canCalculateChanges: 1,
     total: change.total ?? null,
+    removed: removedIds,
+    added: additions,
+    messages: list.map((email) => emailToRecord(email)),
   });
-
-  const additions = change.added ?? [];
-  const removedIds = change.removed ?? [];
-  // Single transactional pass that applies the RFC 8620 §5.5
-  // queryChanges algorithm: remove + compact, then add + shift. The
-  // handler also broadcasts MESSAGES so remove-only deltas (e.g. a
-  // peer device moved a message out of this folder) still trigger a
-  // message-list refresh in the UI.
-  if (removedIds.length > 0 || additions.length > 0) {
-    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
-      viewId,
-      removed: removedIds,
-      added: additions,
-    });
-  }
-
-  let fetched = 0;
-  const got = pickResponse(result, 'Email/get');
-  const list = got?.list ?? [];
-  if (list.length > 0) {
-    await persistEmails({ account, emails: list, handlers });
-    fetched = list.length;
-  }
 
   return {
     needsFullSync: false,
@@ -226,7 +217,7 @@ export async function syncFolderWindowChanges({
     added: additions,
     removed: removedIds,
     total: change.total ?? null,
-    fetched,
+    fetched: list.length,
   };
 }
 
@@ -255,14 +246,15 @@ export async function syncEmailChanges({
     return { needsFullSync: true };
   }
   const ids = [...(change.created ?? []), ...(change.updated ?? [])];
-  if (ids.length > 0) {
+  for (let index = 0; index < ids.length; index += maxObjectsInGet(transport)) {
+    const chunk = ids.slice(index, index + maxObjectsInGet(transport));
     const got = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
       methodCalls: [[
         'Email/get',
         {
           accountId: account.remote_account_id,
-          ids,
+          ids: chunk,
           properties: EMAIL_LIST_PROPERTIES,
         },
         'g1',
@@ -398,53 +390,6 @@ export async function persistEmails({ account, emails, handlers }) {
       replacements,
     });
   }
-}
-
-async function upsertQueryView({
-  handlers, account, folder, sortProp, collapseThreads,
-  queryState, canCalculateChanges, total,
-}) {
-  const ts = Date.now();
-  const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
-  const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
-  const params = [
-    account.id,
-    'mailbox-window',
-    folder.id,
-    filterJson,
-    sortJson,
-    collapseThreads ? 1 : 0,
-    queryState,
-    canCalculateChanges == null ? null : (canCalculateChanges ? 1 : 0),
-    total,
-    0,
-    ts,
-    ts,
-    ts,
-  ];
-  await handlers[DB_RPC.QUERY]({
-    sql: `INSERT INTO query_views(
-            account_id, view_type, folder_id, filter_json, sort_json,
-            collapse_threads, query_state, can_calculate_changes, total, stale,
-            created_at, updated_at, last_accessed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(account_id, view_type, folder_id, filter_json, sort_json, collapse_threads)
-          DO UPDATE SET
-            query_state = excluded.query_state,
-            can_calculate_changes = excluded.can_calculate_changes,
-            total = excluded.total,
-            stale = excluded.stale,
-            updated_at = excluded.updated_at,
-            last_accessed_at = excluded.last_accessed_at`,
-    params,
-  });
-  const row = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id FROM query_views
-           WHERE account_id = ? AND view_type = ? AND folder_id = ?
-             AND filter_json = ? AND sort_json = ? AND collapse_threads = ?`,
-    params: [account.id, 'mailbox-window', folder.id, filterJson, sortJson, collapseThreads ? 1 : 0],
-  });
-  return row[0]?.id;
 }
 
 function addressesFromEmail(email) {

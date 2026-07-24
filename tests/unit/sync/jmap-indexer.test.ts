@@ -316,12 +316,8 @@ describe('metadata indexer: chunk-size selection', () => {
     expect(backend._selectIndexerChunkSize(800, 999_999)).toBe(100);
   });
 
-  it('reads maxObjectsInGet out of account_capabilities', async () => {
-    // Seed the jmap-core capability with a small cap. _loadMaxObjectsInGetCap
-    // should cache the value on first read.
-    await handlers[DB_RPC.ACCOUNT_CAPABILITIES_REPLACE]({
-      accountId: account.id,
-      serviceKind: 'jmap-mail',
+  it('reads maxObjectsInGet from the live JMAP Session, not SQLite', async () => {
+    transport.session = {
       capabilities: {
         'urn:ietf:params:jmap:core': {
           maxObjectsInGet: 75,
@@ -329,12 +325,21 @@ describe('metadata indexer: chunk-size selection', () => {
           maxConcurrentRequests: 4,
         },
       },
+    };
+    // A contradictory persisted value must not affect wire chunking.
+    await handlers[DB_RPC.ACCOUNT_CAPABILITIES_REPLACE]({
+      accountId: account.id,
+      serviceKind: 'jmap-mail',
+      capabilities: {
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 999,
+          maxObjectsInSet: 100,
+          maxConcurrentRequests: 4,
+        },
+      },
     });
     const cap = await backend._loadMaxObjectsInGetCap();
     expect(cap).toBe(75);
-    // Cached: a second call returns the same value without reading
-    // account_capabilities again. Hard to assert directly; cover by
-    // dropping the row and re-querying — the cached value must win.
     await engine.run(
       `DELETE FROM account_capabilities WHERE account_id = ?`,
       [account.id],
@@ -342,11 +347,15 @@ describe('metadata indexer: chunk-size selection', () => {
     expect(await backend._loadMaxObjectsInGetCap()).toBe(75);
   });
 
-  it('returns null cap when the server did not advertise one', async () => {
-    // No core capability registered for this account. The indexer
-    // falls back to the tier's target without clamping.
-    expect(await backend._loadMaxObjectsInGetCap()).toBeNull();
-    expect(backend._selectIndexerChunkSize(10_000, null)).toBe(100);
+  it('rejects a malformed JMAP Session without maxObjectsInGet', async () => {
+    transport.session = {
+      capabilities: {
+        'urn:ietf:params:jmap:core': {},
+      },
+    };
+    await expect(backend._loadMaxObjectsInGetCap()).rejects.toThrow(
+      /maxObjectsInGet/,
+    );
   });
 });
 

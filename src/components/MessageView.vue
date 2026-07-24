@@ -450,6 +450,11 @@ async function archive() {
 // Whitelisting only makes sense for messages currently in the Junk
 // folder; the toolbar button is gated on this.
 const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+const canWhitelistInJunk = computed(() => {
+  const current = mailStore.currentFolder;
+  return current?.role === 'junk'
+    && mailStore.primaryFolders.some((folder) => folder.id === current.id);
+});
 const whitelisting = ref(false);
 
 async function whitelistSender() {
@@ -536,7 +541,7 @@ function closeMessageView() {
              the leading edge so it reads as a folder-specific action,
              not one of the always-present icon buttons. -->
         <button
-          v-if="isInJunkFolder"
+          v-if="canWhitelistInJunk"
           class="message-view__action message-view__action--whitelist"
           type="button"
           :disabled="whitelisting"

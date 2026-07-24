@@ -29,16 +29,16 @@ Mail against Stalwart, including JMAP shared accounts.
 
 | Area | 🟩 Implemented | 🟨 Partial | 🟥 Upstream blocked |
 |:--|--:|--:|--:|
-| Discovery, storage, and synchronization | 6 | 4 | — |
-| Sidebar hierarchy and presentation | 9 | 2 | — |
+| Discovery, storage, and synchronization | 8 | 2 | — |
+| Sidebar hierarchy and presentation | 11 | 0 | — |
 | Favorites | 6 | 0 | — |
 | Manage Folders dialog shell | 7 | 3 | — |
 | Manager row layout and visual rules | 5 | 1 | — |
 | Subscription behavior | 7 | 2 | 1 |
-| Creation, rename, move, and deletion | 6 | 4 | — |
-| Selection and bulk actions | 3 | 7 | — |
+| Creation, rename, move, and deletion | 8 | 2 | — |
+| Selection and bulk actions | 6 | 4 | — |
 | Mutation, cache, and error invariants | 3 | 3 | — |
-| **Total** | **52** | **26** | **1** |
+| **Total** | **61** | **17** | **1** |
 
 ## Terminology and model
 
@@ -117,16 +117,16 @@ A **favorite** is a client-local Stormbox priority pin stored as
 
 | ID / Status | Requirement |
 |:--|:--|
-| FM-1.1 🟨 Partial | The current JMAP Session shall be the sole authority for which account scopes Stormbox renders for the active user. During ingest, the system shall upsert its primary Mail account and every other mail-capable account in `session.accounts`, persist `isPersonal`, mark only the current primary account as primary, distinguish non-primary personal accounts from shared scopes, and remove or deactivate a previously cached shared scope after the server removes it from that user's Session. This is local cache hygiene only; Stormbox cannot change which accounts the server advertises. Ingestion exists, but `refreshFolders()` currently also loads SQLite account rows merely because they share the same server origin. |
+| FM-1.1 🟨 Partial | The current JMAP Session shall be authoritative for account scopes rendered for the active user. Ingest shall upsert its mail-capable accounts and transactionally remove cached non-primary accounts absent from the Session, including pending mutations that target their data. Revoked-share cleanup is implemented; distinguishing secondary personal accounts from shared scopes remains incomplete. Cross-login database isolation is tracked separately in issue #81. |
 | FM-1.2 🟩 Implemented | The system shall sync each shared account's Mailboxes over the primary backend and transport, register each shared local account id for folder-scoped sync, and remove all primary/shared registrations when that backend stops. Failure to sync one shared account shall not block the primary account. |
 | FM-1.3 🟩 Implemented | Archive repair shall run only for the primary account. The system shall not create, re-role, or repair Archive in a shared account. |
-| FM-1.4 🟨 Partial | Role lookups for archive, junk, Trash, and related message actions shall use the message's owning account. Primary messages shall use only primary role folders; shared messages shall use role folders in that shared account when advertised and permitted. Missing shared role targets shall disable/fail the action clearly, and Archive repair shall remain primary-only. Current message actions always use primary role folders. |
+| FM-1.4 🟩 Implemented | Role lookups for archive, junk, Trash, and related message actions shall use the message's owning account. Primary messages shall use only primary role folders; shared messages shall use role folders in that shared account when advertised and permitted. Missing shared role targets shall disable/fail the action clearly, and Archive repair shall remain primary-only. |
 | FM-1.5 🟩 Implemented | `Mailbox/get` shall request `id`, `name`, `parentId`, `role`, `sortOrder`, counts, `myRights`, and `isSubscribed`, then persist hot fields plus the raw response. `NULL is_subscribed` means the server has not reported the property, not “unsubscribed.” |
-| FM-1.6 🟩 Implemented | A full Mailbox sync shall not trust an unpaged `Mailbox/get` when the result reaches `maxObjectsInGet`. It shall collect the complete id set with paged `Mailbox/query`, fetch missing Mailboxes in chunks no larger than the advertised cap (falling back to 500), and persist the complete hierarchy. |
+| FM-1.6 🟩 Implemented | A full Mailbox sync shall not trust an unpaged `Mailbox/get` when the result reaches the live Session's `maxObjectsInGet`. JMAP wire limits shall never be persisted or exposed above the JMAP backend; stores queue one semantic target set and the backend performs all protocol chunking. Missing/invalid Core limits are Session errors. |
 | FM-1.7 🟩 Implemented | A full Mailbox sync shall be authoritative. A live local folder row absent from the complete server response shall be soft-deleted so stale rows cannot remain actionable or produce `notUpdated` mutations. |
 | FM-1.8 🟩 Implemented | Incremental Mailbox sync shall follow `Mailbox/changes.hasMoreChanges`, carry each `newState` into the next call, combine and de-duplicate created/updated ids, chunk follow-up `Mailbox/get` calls, and persist the terminal state only after all pages apply. After 20 pages it shall fall back to a full sync rather than treating a partial delta as current. |
 | FM-1.9 🟨 Partial | With at least 1,267 user folders, at least 100 top-level roots, and nesting up to eight levels, sync shall return the complete hierarchy; the collapsed sidebar shall mount only visible branches; Manage Folders shall mount only its virtualized window plus overscan; and search, expansion, selection, and subscription controls shall remain interactive without mounting the complete list. This scenario has been exercised manually and sync paging has unit coverage, but an automated browser benchmark and explicit latency/memory budgets remain to be defined. |
-| FM-1.10 🟨 Partial | Reconnect and push reconciliation shall keep an open shared-folder message window current, including shared-account `Email` and `EmailDelivery` changes. Active-view refresh, query/full-sync fallback, newly-added-id lookup, and body prefetch shall all receive the owning account and its account-scoped state tokens. Shared Mailbox tree changes sync today, but shared message windows and body prefetch remain primary-account hard-coded. |
+| FM-1.10 🟩 Implemented | Reconnect and push reconciliation shall keep open shared-folder views current with owning-account state tokens. StateChange processing isolates account/type failures, retries failed work through the existing coalescing path, and persists `pushState` only after all advertised work succeeds. |
 
 ### 2. Sidebar hierarchy and presentation
 
@@ -141,8 +141,8 @@ A **favorite** is a client-local Stormbox priority pin stored as
 | FM-2.7 🟩 Implemented | A collapsed folder's unread badge shall sum its own unread count and the counts of its hidden subtree. An expanded folder shall show only its own unread count while visible descendants show theirs. |
 | FM-2.8 🟩 Implemented | A folder that has children shall have a separate disclosure button with `aria-expanded`; a leaf shall reserve the same alignment space without exposing a no-op button. The disclosure icon, folder icon, name, progress, and unread columns shall remain vertically aligned. |
 | FM-2.9 🟩 Implemented | Sidebar rows shall use 4 px vertical folder-button padding with a 1 px list gap. A favorite marker shall overlap the lower-left corner of the folder icon so starred and unstarred rows use identical icon/name columns. |
-| FM-2.10 🟨 Partial | A message drag over a folder shall show distinct valid/invalid drop treatment. Within one JMAP account, the drop shall move the batched selection with one `Email/set` mailbox-membership update. Across account scopes — including personal-to-shared and shared-to-personal — it shall copy with standard `Email/copy`: `fromAccountId`, destination `accountId`, a creation map containing each source Email id and destination `mailboxIds`, and `onSuccessDestroyOriginal: false`. Omitted properties inherit their current source values, so Stormbox shall not overwrite `keywords` or `receivedAt` from stale local data. Copy results shall map creation ids to new destination Email ids, apply successful copies to destination cache/views before resolving, preserve sources, reconcile `alreadyExists`, report per-id failures, respect `maxObjectsInSet`, indicate copy versus move, and enforce source-read/destination-add rights. Same-account move exists; cross-account copy does not. |
-| FM-2.11 🟨 Partial | Every message action performed while viewing a shared folder — read/unread, keyword changes, delete, archive, junk, move, copy, and refresh — shall resolve the message's owning JMAP account and issue/apply the operation in that scope. Pending rows shall remain queued under the primary local account whose single `OutboxRunner` drains the session, while payloads and typed handlers carry/group the true data-owning account. Current keyword handling is account-aware, but move, destroy, role-target actions, and parts of cache apply still assume primary. |
+| FM-2.10 🟩 Implemented | Same-account drops move with `Email/set`; cross-account drops copy with `Email/copy` and preserve sources. Confirmed copies reconcile destination metadata, memberships, views, and authoritative Mailbox counters before resolving. `alreadyExists(existingId)` is accepted only after requested memberships are verified/added. The RFC request runs first; Stalwart 0.15's legacy no-`id` shape is retried only after every object explicitly rejects `id`. Ambiguous copy retries remain deferred in issue #88. |
+| FM-2.11 🟩 Implemented | Every message action performed while viewing a shared folder — read/unread, keyword changes, delete, archive, junk, move, copy, and refresh — shall resolve the message's owning JMAP account and issue/apply the operation in that scope. Pending rows shall remain queued under the primary local account whose single `OutboxRunner` drains the session, while payloads and typed handlers carry/group the true data-owning account. |
 
 ### 3. Favorites
 
@@ -204,8 +204,8 @@ A **favorite** is a client-local Stormbox priority pin stored as
 | FM-7.2 🟩 Implemented | The creation dialog shall be titled exactly `New folder`, collect `Name` and `Parent`, require a non-empty trimmed name, explicitly create with `isSubscribed: true`, and close only after the mutation succeeds. The parent picker shall include `Top Level` and all primary folders, plus shared folders that grant `mayCreateChild`. |
 | FM-7.3 🟩 Implemented | The system shall reject a case-insensitive duplicate sibling name locally and surface `A folder with that name already exists here.` Server rejections remain authoritative. |
 | FM-7.4 🟨 Partial | The pencil shall open an inline editor labeled `Name` and `Parent` (never `Location`). Saving may rename, re-parent, or do both in one `Mailbox/set`. A no-op save shall close the editor, but clearing a previously non-empty name shall show validation rather than silently becoming a no-op or move-only update. Blank-rename validation is not yet implemented. |
-| FM-7.5 🟨 Partial | A folder may be moved by choosing a parent or by dragging it onto another folder. Dropping on `Top Level` shall move it to the primary account's root. A parent must belong to the same account; the folder itself and its descendants shall be excluded; the current parent shall be a no-op; and every shared destination, including one selected in the inline parent picker, shall grant `mayCreateChild`. Drag validation implements the right check, but the parent picker does not. |
-| FM-7.6 🟨 Partial | System folders shall remain protected independently of reported rights. Shared rights shall fail closed when absent/malformed, while primary non-system folders may remain manageable when `rights_json` is absent. Capabilities shall distinguish `mayCreateChild` (folder creation/re-parent destination), `mayAddItems` (message destination), `mayRemoveItems` (message source/destructive mail removal), `mayRename` (folder rename/re-parent), and `mayDelete` (folder itself). Stalwart's `mayRename` subscription proxy shall remain explicitly server-specific. Current logic fails open for several shared actions and conflates/omits checks. |
+| FM-7.5 🟩 Implemented | A folder may be moved by choosing a parent or by dragging it onto another folder. Dropping on `Top Level` shall move it to the primary account's root. A parent must belong to the same account; the folder itself and its descendants shall be excluded; the current parent shall be a no-op; and every shared destination, including one selected in the inline parent picker, shall grant `mayCreateChild`. |
+| FM-7.6 🟩 Implemented | System folders remain protected but may host children when permitted. Shared rights fail closed and distinguish hierarchy from item rights. The combined Not junk/Whitelist action is intentionally primary-Junk-only; shared Junk exposes neither Not junk nor redundant Junk actions. |
 | FM-7.7 🟩 Implemented | A folder with children shall not be deleted unless its complete subtree is selected for deepest-first bulk deletion. The UI shall explain whether the user must select the whole subtree or move the retained child. |
 | FM-7.8 🟩 Implemented | Deletion shall first call `Mailbox/set` with `onDestroyRemoveEmails: false`. A `mailboxHasEmail` response shall trigger a second, explicit permanent-deletion warning before retrying with `true`. The warning shall state that only messages not filed in another folder are permanently deleted. |
 | FM-7.9 🟩 Implemented | Folder-destroy cache apply shall receive the owning account and whether `onDestroyRemoveEmails` was true. In one transaction it shall capture only messages linked to the target folder, remove memberships/views, soft-delete the folder, and reuse batched message-destroy/view-compaction logic. On the destructive path it shall delete captured messages with no remaining membership and preserve multi-filed messages. A successful non-destructive delete shall not infer Email destruction from incomplete cache; unexpected stale memberships shall be reconciled. |
@@ -215,16 +215,16 @@ A **favorite** is a client-local Stormbox priority pin stored as
 
 | ID / Status | Requirement |
 |:--|:--|
-| FM-8.1 🟨 Partial | A non-system folder eligible for at least one bulk action shall have a general-purpose selection checkbox independent of its subscription switch and delete permission. Checking or unchecking a parent directly shall apply that selection state to selectable descendants, including collapsed descendants. The current checkbox is limited to deletable folders. |
+| FM-8.1 🟩 Implemented | A non-system folder eligible for at least one bulk action shall have a general-purpose selection checkbox independent of its subscription switch and delete permission. Checking or unchecking a parent directly shall apply that selection state to selectable descendants, including collapsed descendants. |
 | FM-8.2 🟩 Implemented | Shift-click shall apply the clicked row's new selected state to the inclusive range between the anchor and target in current visual order. A range selection shall not add an implicit descendant cascade. Ctrl-click or Command-click on a non-interactive part of a row shall toggle that row; modifier-clicks on buttons, inputs, selects, or switches shall retain the control's own behavior. |
 | FM-8.3 🟩 Implemented | The selection anchor shall be the last checkbox or modifier-row toggle. Selection ids shall be pruned if folders disappear during sync or deletion. |
-| FM-8.4 🟨 Partial | When selection is non-empty, the footer shall show the selected count followed by: modal star/unstar icon; the same `SwitchToggle` used in rows; red trash icon; then clear `X` at the far right of the action cluster. Clear must remain to the right of trash. Each action shall expose its own enabled state; delete shall be disabled unless the complete selection is deletable. The layout exists, but independent enabled states do not. |
+| FM-8.4 🟩 Implemented | When selection is non-empty, the footer shall show the selected count followed by: modal star/unstar icon; the same `SwitchToggle` used in rows; red trash icon; then clear `X` at the far right of the action cluster. Clear must remain to the right of trash. Each action shall expose its own enabled state; delete shall be disabled unless the complete selection is deletable. |
 | FM-8.5 🟨 Partial | Bulk star and subscription actions are modal: if any applicable selected row has the state, activating the control clears it from every applicable selected row; otherwise it sets the state on every applicable selected row. An action shall be disabled when no selected row is eligible, and shall clearly apply only to eligible selected rows rather than silently implying it affected the rest. Modal behavior exists, but no-eligible/mixed-permission UX is incomplete. |
 | FM-8.6 🟩 Implemented | Bulk deletion shall reject a selection that keeps an unselected descendant of a selected folder. A valid selection shall be destroyed deepest-first so each parent becomes a leaf before its turn. |
 | FM-8.7 🟨 Partial | Bulk deletion shall first confirm only the folder count (`Delete 1 folder?` or `Delete N folders?`) and shall not display an aggregate message count. If any remaining folder contains mail, it shall escalate once to the permanent-deletion warning and retry only the remainder. The current confirmation still displays `It contains`/`They contain` message totals. |
 | FM-8.8 🟨 Partial | Bulk confirmation shall omit the aggregate message count because summing each selected folder's `totalEmails` double-counts an Email filed in multiple selected folders. The destructive escalation shall continue to explain that mail is present and that messages not filed elsewhere may be permanently deleted. |
 | FM-8.9 🟨 Partial | Bulk star and folder-delete paths shall use the same plural-capable handlers as N=1 operations, never per-folder await loops. Stars shall update all targets in one SQLite transaction/broadcast. Folder deletes shall batch each dependency-safe depth layer into `maxObjectsInSet`-bounded `Mailbox/set` requests, deepest first. If a child fails, its ancestors shall be pruned from later layers rather than sent to guaranteed `mailboxHasChild` failure; the destructive retry shall include only the `mailboxHasEmail` remainder. The plural star path and dependency-safe delete orchestration are implemented and unit-covered; live multi-depth, over-cap, and partial-transport browser verification remains outstanding. |
-| FM-8.10 🟨 Partial | Eligibility for bulk star, subscription, and deletion shall be evaluated independently. Star shall act on selected subscribed non-system folders; subscription shall act on selected subscription-editable folders; delete shall be enabled only when every selected folder is deletable and the subtree rules are satisfied. The current selection checkbox is gated by `canDelete`, preventing valid star/subscription-only selections. |
+| FM-8.10 🟩 Implemented | Eligibility for bulk star, subscription, and deletion shall be evaluated independently. Star shall act on selected subscribed non-system folders; subscription shall act on selected subscription-editable folders; delete shall be enabled only when every selected folder is deletable and the subtree rules are satisfied. |
 
 ### 9. Mutation, cache, and error invariants
 
@@ -409,19 +409,35 @@ Current automated coverage includes:
 - `tests/unit/sync/jmap-outbox.test.ts`
   - subscription/create/update/destroy request shapes, owning-account
     resolution, grouping/chunking, partial outcomes, immediate cache
-    effects, terminal/retryable errors, and destructive semantics.
+    effects, terminal/retryable errors, destructive semantics,
+    owner-account message move/destroy, and cross-account `Email/copy`
+    request/cache/partial/`alreadyExists` behavior, including
+    post-copy reconciliation failures that cannot duplicate copies.
+- `tests/unit/integration/mail-store-delete.test.ts`
+  - store-built cross-account copy payload through the real
+    `OutboxRunner`/`processMutationRow` path into destination cache.
+- `tests/unit/utils/folder-capabilities.test.ts`
+  - primary fallback, system protection, malformed shared-rights
+    fail-closed behavior, independent item/hierarchy rights, and stars.
+- `tests/unit/sync/jmap-backend.test.ts`
+  - account-scoped shared `EmailDelivery` active-view reconciliation
+    and newly-added body prefetch without inventing `Email/changes`
+    state, per-account push failure isolation, and shared reconnect
+    catch-up.
+- `tests/e2e/shared-folder-copy.spec.js`
+  - deterministic two-principal personal-to-shared drag copy on Chromium
+    and Firefox, asserting source preservation, destination JMAP and
+    SQLite membership, and authoritative folder counters.
 
 Coverage still required before treating the feature as complete:
 
 - an automated 1,267+-folder browser performance/regression scenario;
 - direct E2E coverage of shared-account rendering, permitted shared
-  mutations, session cleanup, and per-user cache isolation;
+  mutations beyond copy, and session cleanup;
 - direct coverage that `mayRename: false` disables a shared
   subscription control and that missing rights fail closed;
 - shared-folder open-window reconciliation on push and reconnect;
-- batched personal↔shared `Email/copy`, including UI copy feedback,
-  destination cache insertion, unchanged source state, rights failures,
-  and direct JMAP verification;
+- shared-copy rights-failure E2E coverage;
 - shared-folder message actions using the shared owning account rather
   than the primary account;
 - successful parent-picker and drag-and-drop folder moves through UI,

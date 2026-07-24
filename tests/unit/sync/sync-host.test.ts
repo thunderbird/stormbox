@@ -31,7 +31,10 @@ const SESSION = {
     [JMAP_CAPS.CONTACTS]: 'acct-1',
   },
   capabilities: {
-    [JMAP_CAPS.CORE]: {},
+    [JMAP_CAPS.CORE]: {
+      maxObjectsInGet: 500,
+      maxObjectsInSet: 500,
+    },
     [JMAP_CAPS.MAIL]: {},
     [JMAP_CAPS.WEBSOCKET]: {
       url: 'wss://mail.example.com/jmap/ws/',

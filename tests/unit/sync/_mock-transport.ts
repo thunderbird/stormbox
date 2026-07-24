@@ -16,8 +16,26 @@ export class MockTransport {
   _uploadHandler: ((args: { accountId: string; type: string; body: any }) => any) | null;
 
   constructor(session: any = null) {
-    this._session = session;
+    this._session = session ?? {
+      capabilities: {
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 500,
+        },
+      },
+    };
     this._handlers = new Map();
+    this._handlers.set('Mailbox/get', (params) => ({
+      list: (params.ids ?? []).map((id) => ({
+        id,
+        name: id,
+        totalEmails: 0,
+        unreadEmails: 0,
+        totalThreads: 0,
+        unreadThreads: 0,
+      })),
+      state: 'mock-mailbox-state',
+    }));
     this.requests = [];
     this.uploads = [];
     this._uploadHandler = null;
