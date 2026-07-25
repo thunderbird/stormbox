@@ -24,6 +24,16 @@
  *                   a rejection indistinguishable from a successful
  *                   empty result. Throwing keeps a rejected call from
  *                   being read as "the server has no data".
+ *
+ *   pickResponseById()  Same, but keyed on the method call id as well.
+ *                   Needed whenever one envelope can contain two
+ *                   responses for the same method name. Send is the
+ *                   case that matters: RFC 8621 §7.5 has
+ *                   onSuccessUpdateEmail generate a second, implicit
+ *                   Email/set response tagged with the
+ *                   EmailSubmission/set call id, so pickResponse()
+ *                   would always return the explicit create and never
+ *                   the implicit update.
  */
 
 export async function callJmap(transport, { using, methodCalls, useWebSocket }) {
@@ -33,9 +43,19 @@ export async function callJmap(transport, { using, methodCalls, useWebSocket }) 
   return transport.request(using, methodCalls);
 }
 
+/**
+ * An envelope that is not shaped like one has no response to pick, which
+ * is the same answer callers already handle for a method the server did
+ * not report. Throwing instead would surface a malformed frame as a
+ * failure of whatever operation happened to be reading it.
+ */
+function methodResponsesOf(result) {
+  const responses = result?.methodResponses;
+  return Array.isArray(responses) ? responses : [];
+}
+
 export function pickResponse(result, methodName) {
-  const responses = result?.methodResponses ?? [];
-  const found = responses.find((r) => r[0] === methodName);
+  const found = methodResponsesOf(result).find((r) => r?.[0] === methodName);
   return found?.[1] ?? null;
 }
 
@@ -47,4 +67,10 @@ export function requireResponse(result, methodName) {
     ? `${failure.type}${failure.description ? `: ${failure.description}` : ''}`
     : 'noResponse';
   throw new Error(`JMAP ${methodName} returned no payload (${detail})`);
+}
+
+export function pickResponseById(result, methodName, callId) {
+  const found = methodResponsesOf(result)
+    .find((r) => r?.[0] === methodName && r?.[2] === callId);
+  return found?.[1] ?? null;
 }

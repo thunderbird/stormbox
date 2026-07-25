@@ -2,6 +2,7 @@ import fs from 'node:fs';
 
 import { configureKeycloak } from '../fixtures/configure-keycloak.mjs';
 import { configureStalwart } from '../fixtures/configure-stalwart.mjs';
+import { STATUS_PATH } from '../fixtures/ws-proxy/inject.mjs';
 
 function stackHost() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -45,6 +46,18 @@ export default async function globalSetup() {
   if (wsRes.status !== 426) {
     throw new Error(
       `WS proxy at ${WS_PROXY} returned ${wsRes.status}, expected 426 — run: npm run stack:ws-proxy`,
+    );
+  }
+  // The proxy outlives any one run, so a long-lived one can predate the
+  // code in the tree. That matters more than it sounds: the fault
+  // injection specs depend on it, and an old proxy does not fail them — it
+  // forwards everything untouched, so the send under test succeeds and the
+  // case reports the client's correct behaviour as a defect.
+  const statusRes = await fetch(`${WS_PROXY}${STATUS_PATH}`, { signal: AbortSignal.timeout(5_000) });
+  if (!statusRes.ok) {
+    throw new Error(
+      `WS proxy at ${WS_PROXY} does not serve ${STATUS_PATH}, so it is running older `
+      + 'code than this tree. Restart it: npm run stack:ws-proxy',
     );
   }
 }

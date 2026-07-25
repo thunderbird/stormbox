@@ -146,9 +146,14 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await expect(notJunk).toBeVisible({ timeout: 30_000 });
       await notJunk.click();
 
-      // Success toast confirms the action.
-      await expect(page.locator('.store-error-toast__item--success'))
-        .toContainText(/whitelisted/i, { timeout: 30_000 });
+      // Success toast confirms the action. Filtered rather than matched
+      // whole: an unrelated success notice from earlier in the session can
+      // still be on screen, and either one satisfying a bare locator is
+      // not what this asserts.
+      await expect(
+        page.locator('.store-error-toast__item--success')
+          .filter({ hasText: /whitelisted/i }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // The message leaves the Junk list.
       await expect.poll(
@@ -255,8 +260,10 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await page.locator('.msg-list__bulk-actions [title="Whitelist senders and move to Inbox"]').click();
 
       // Success toast names the two unique senders.
-      await expect(page.locator('.store-error-toast__item--success'))
-        .toContainText(/whitelisted 2 senders/i, { timeout: 30_000 });
+      await expect(
+        page.locator('.store-error-toast__item--success')
+          .filter({ hasText: /whitelisted 2 senders/i }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // Every selected message leaves the Junk list.
       for (const { subject } of cases) {

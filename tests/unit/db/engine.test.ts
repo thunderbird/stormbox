@@ -1,13 +1,27 @@
 import { describe, it, expect } from 'vitest';
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { MIGRATION_VERSIONS } from '../../../src/db/engine';
+
+const LATEST_VERSION = MIGRATION_VERSIONS[MIGRATION_VERSIONS.length - 1];
 
 describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
     const row = await engine.get('PRAGMA user_version');
-    expect(Number(row?.user_version)).toBe(5);
+    expect(Number(row?.user_version)).toBe(LATEST_VERSION);
     await engine.close();
+  });
+
+  it('numbers migrations contiguously from 1', async () => {
+    // runMigrations skips every version at or below the stored
+    // user_version, so a gap or an out-of-order number means an existing
+    // database can silently skip a migration forever: it would jump
+    // straight past the missing version and never come back for it.
+    expect(MIGRATION_VERSIONS.length).toBeGreaterThan(0);
+    expect(MIGRATION_VERSIONS).toEqual(
+      MIGRATION_VERSIONS.map((_, index) => index + 1),
+    );
   });
 
   it('creates every expected table with the right indexes', async () => {
@@ -82,7 +96,7 @@ describe('Engine migrations', () => {
     await engine.runMigrations();
     await engine.runMigrations();
     const row = await engine.get('PRAGMA user_version');
-    expect(Number(row?.user_version)).toBe(5);
+    expect(Number(row?.user_version)).toBe(LATEST_VERSION);
     await engine.close();
   });
 });

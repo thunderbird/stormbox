@@ -7,7 +7,7 @@ import { useComposeStore } from '../stores/compose-store';
 import { useContactsStore } from '../stores/contacts-store';
 
 interface ToastEntry {
-  source: 'mail' | 'compose' | 'contacts' | 'mail-notice';
+  source: 'mail' | 'compose' | 'contacts' | 'mail-notice' | 'compose-notice';
   message: string;
   kind?: 'error' | 'success';
 }
@@ -30,6 +30,9 @@ const entries = computed<ToastEntry[]>(() => {
   if (!composeStore.isOpen && composeStore.error) {
     out.push({ source: 'compose', message: composeStore.error });
   }
+  if (composeStore.notice) {
+    out.push({ source: 'compose-notice', message: composeStore.notice, kind: 'success' });
+  }
   if (contactsStore.error) {
     out.push({ source: 'contacts', message: contactsStore.error });
   }
@@ -47,6 +50,10 @@ function dismiss(entry: ToastEntry) {
   }
   if (entry.source === 'compose') {
     composeStore.error = null;
+    return;
+  }
+  if (entry.source === 'compose-notice') {
+    composeStore.clearNotice();
     return;
   }
   if (entry.source === 'contacts') {

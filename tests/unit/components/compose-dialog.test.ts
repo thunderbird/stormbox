@@ -232,3 +232,25 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(wrapper.get('.toolbar-more__menu').text()).toContain('Bulleted list');
   });
 });
+
+describe('ComposeDialog send control', () => {
+  const footerButtons = (wrapper: any) => wrapper.findAll('footer button').map((b: any) => b.text());
+
+  it('offers Send while the outcome of the draft is still open', async () => {
+    const { wrapper } = await mountOpenCompose();
+    expect(footerButtons(wrapper)).toContain('Send');
+  });
+
+  it('withdraws Send once a send has ended with an unknown outcome', async () => {
+    // Re-sending would build a new message with a new Message-ID, which
+    // the duplicate guard cannot match against the one that may already
+    // be out. The only safe controls left are Discard and looking in
+    // Sent (CS-1.9).
+    const { wrapper, composeStore } = await mountOpenCompose();
+    composeStore.outcomeUnknown = true;
+    await nextTick();
+
+    expect(footerButtons(wrapper)).not.toContain('Send');
+    expect(footerButtons(wrapper)).toContain('Discard');
+  });
+});

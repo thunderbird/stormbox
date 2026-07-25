@@ -350,6 +350,34 @@ describe('MessageView with a sparse messages array', () => {
     );
   });
 
+  it('hides the onboarding spotlight toolbar from assistive tech and the tab order', async () => {
+    // The spotlight branch renders a decorative copy of the toolbar so
+    // the welcome tour has something to point at. Those buttons have no
+    // handlers, so exposing them as "Reply", "Archive" and "Delete"
+    // would offer a screen-reader user six controls that do nothing.
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+
+    const wrapper = mount(MessageView, { props: { spotlightActions: true } });
+    await nextTick();
+
+    const header = wrapper.find('.message-view__header');
+    expect(header.exists()).toBe(true);
+    expect(header.attributes('aria-hidden')).toBe('true');
+
+    const buttons = wrapper.findAll('.message-view__header button');
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.attributes('tabindex')).toBe('-1');
+      // No accessible name either: the decorative copy must not look
+      // like a real action to the accessibility tree.
+      expect(button.attributes('aria-label')).toBeUndefined();
+    }
+  });
+
 });
 
 describe('MessageView HTML body rendering', () => {

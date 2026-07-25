@@ -34,10 +34,17 @@ CREATE INDEX pending_mutations_ready
 
 -- Crash recovery: any row that was in_flight when the worker died is
 -- now orphaned (no live runner is tracking the network call). Reset
--- those back to pending so the new runner picks them up. Doing this
--- inside the migration means it happens exactly once per worker boot,
--- before any new RPC traffic can land — i.e. before the OutboxRunner
--- even has a chance to see the stale rows.
+-- those back to pending so the new runner picks them up.
+--
+-- This runs once, when a v1 database is upgraded — not on every worker
+-- boot, because runMigrations skips versions at or below user_version.
+-- OutboxRunner.recoverStranded() is what covers later crashes.
+--
+-- Sends are excluded. A send that was in flight may already have been
+-- accepted by the server, so resetting it to pending would hand it back
+-- for an automatic replay and risk delivering a second copy. Leaving it
+-- in_flight preserves the evidence for recoverStranded(), which conflicts
+-- it for the user instead.
 --
 -- We deliberately keep `attempts` as-is rather than reset it: a row
 -- that got partway through several retries before the crash should
@@ -46,4 +53,5 @@ UPDATE pending_mutations
    SET local_status = 'pending',
        not_before = NULL,
        updated_at = strftime('%s','now') * 1000
- WHERE local_status = 'in_flight';
+ WHERE local_status = 'in_flight'
+   AND mutation_type <> 'send';

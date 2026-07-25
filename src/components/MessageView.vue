@@ -505,23 +505,28 @@ function closeMessageView() {
     aria-label="Message detail"
   >
     <article v-if="spotlightActions" class="message-view__article">
-      <header class="message-view__header">
-        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" title="Back" aria-label="Back">
+      <!-- Decorative stand-in so the onboarding spotlight has a toolbar
+           to highlight while no message is open. These buttons carry no
+           handlers, so they are hidden from assistive technology and
+           removed from the tab order rather than announced as six
+           working actions that do nothing. -->
+      <header class="message-view__header" aria-hidden="true">
+        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" tabindex="-1" title="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <button class="message-view__action" type="button" title="Archive (A)" aria-label="Archive">
+        <button class="message-view__action" type="button" tabindex="-1" title="Archive (A)">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
         </button>
-        <button class="message-view__action message-view__action--danger" type="button" title="Delete (Del)" aria-label="Delete">
+        <button class="message-view__action message-view__action--danger" type="button" tabindex="-1" title="Delete (Del)">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Reply (Ctrl+R)" aria-label="Reply">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Reply (Ctrl+R)">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Reply All (Ctrl+Shift+R)">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" title="Forward (Ctrl+L)" aria-label="Forward">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Forward (Ctrl+L)">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </button>
       </header>

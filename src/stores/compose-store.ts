@@ -90,7 +90,23 @@ export const useComposeStore = defineStore('compose', () => {
 
   const status = ref<ComposeState>(COMPOSE_STATE.IDLE);
   const error = ref<string | null>(null);
+  // Transient send confirmation, rendered by StoreErrorToast after the
+  // dialog has closed. Cleared on a timer the same way mail-store's
+  // notice is, so it never lingers over a later screen.
+  const notice = ref<string | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Set when a send ended without the server telling us whether the
+  // message went out. Send is withheld while it is set: pressing it again
+  // queues a new operation with a new Message-ID, so the checkpoint that
+  // protects against duplicate delivery could not recognise the second
+  // attempt (CS-1.9).
+  const outcomeUnknown = ref(false);
   const isOpen = ref(false);
+  // Bumped by every open() and $reset(). send() captures it and drops its
+  // own result if it no longer matches, so a slow send settling after a
+  // logout or after the user opened a new message cannot write status,
+  // error, or close over the composer that replaced it.
+  let composeGeneration = 0;
   const identities = ref<IdentityRow[]>([]);
   const accountPrimaryEmail = ref<string | null>(null);
   const draft = reactive<Draft>({ ...EMPTY_DRAFT });
@@ -139,12 +155,32 @@ export const useComposeStore = defineStore('compose', () => {
    * $reset for explicit callers (tests, account switching).
    */
   function $reset(): void {
+    composeGeneration += 1;
     identities.value = [];
     accountPrimaryEmail.value = null;
     Object.assign(draft, EMPTY_DRAFT);
     isOpen.value = false;
     status.value = COMPOSE_STATE.IDLE;
     error.value = null;
+    outcomeUnknown.value = false;
+    clearNotice();
+  }
+
+  function setNotice(message: string): void {
+    notice.value = message;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      notice.value = null;
+      noticeTimer = null;
+    }, 6000);
+  }
+
+  function clearNotice(): void {
+    notice.value = null;
+    if (noticeTimer) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
   }
 
   function onTablesTouched(tables: string[]): void {
@@ -200,6 +236,7 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   function open(prefill: Partial<Draft> = {}): void {
+    composeGeneration += 1;
     Object.assign(draft, EMPTY_DRAFT, prefill);
     if (!Object.prototype.hasOwnProperty.call(prefill, 'fromIdx')) {
       draft.fromIdx = defaultFromIdx();
@@ -207,13 +244,27 @@ export const useComposeStore = defineStore('compose', () => {
     isOpen.value = true;
     status.value = COMPOSE_STATE.EDITING;
     error.value = null;
+    outcomeUnknown.value = false;
+    clearNotice();
   }
 
-  function close(): void {
+  /**
+   * Discard the composer and its draft.
+   *
+   * Refused while a send is in flight. The queued mutation keeps running
+   * in the worker after the dialog closes, and its request payload is
+   * the only durable copy of the message, so wiping the draft here would
+   * leave the user with nothing to recover if the send then failed.
+   * Returns false when the request was refused.
+   */
+  function close(): boolean {
+    if (status.value === COMPOSE_STATE.SENDING) return false;
     isOpen.value = false;
     status.value = COMPOSE_STATE.IDLE;
     Object.assign(draft, EMPTY_DRAFT);
     error.value = null;
+    outcomeUnknown.value = false;
+    return true;
   }
 
   function selectFromIndex(value: number | string): void {
@@ -317,6 +368,29 @@ export const useComposeStore = defineStore('compose', () => {
     return false;
   }
 
+  /**
+   * Did this mutation end without the server saying whether the message
+   * went out?
+   *
+   * Read from the row when the outcome itself did not say so, which covers
+   * a send parked by a pass the caller was not waiting on — the crash
+   * recovery at startup, or an earlier attempt. Every path that parks a
+   * send records the same `outcomeUnknown` type, with the underlying
+   * transport or server diagnostic in `reason`.
+   */
+  async function endedUnknown(mutationId: number | null | undefined): Promise<boolean> {
+    if (!repo || mutationId == null) return false;
+    try {
+      const row = await repo.getPendingMutationError(mutationId);
+      if (!row?.error_json) return false;
+      return JSON.parse(row.error_json)?.type === 'outcomeUnknown';
+    } catch {
+      // No readable error means nothing to warn about; the generic
+      // failure message below is still correct.
+      return false;
+    }
+  }
+
   async function send(): Promise<boolean> {
     if (!repo || authStore.accountId == null) return failSend('Not connected.');
     const identity = fromIdentity.value;
@@ -338,6 +412,12 @@ export const useComposeStore = defineStore('compose', () => {
 
     status.value = COMPOSE_STATE.SENDING;
     error.value = null;
+    // The composer this send belongs to. Logout ($reset) and opening
+    // another message both bump the counter, and neither waits for an
+    // in-flight send, so the result below has to prove it is still
+    // relevant before touching shared state.
+    const generation = composeGeneration;
+    const stillCurrent = () => generation === composeGeneration;
     try {
       // Mutation payload carries local row ids only; the JMAP outbox
       // resolves identity and folder remote ids at dispatch time, the
@@ -374,13 +454,45 @@ export const useComposeStore = defineStore('compose', () => {
       const result = typeof repo.runMutation === 'function' && mutation?.id != null
         ? await repo.runMutation(authStore.accountId, mutation.id)
         : await repo.drainOutbox(authStore.accountId);
-      if (result.failed > 0) {
+      // A mutation can fail after the server accepted the message: local
+      // filing into Sent is repair work that runs past the point of no
+      // return. Calling that a failed send would invite a second press of
+      // Send, and a second press is a second delivery.
+      // Positive evidence only. A zero-count outcome means the runner
+      // never reached the row — it was stopped, or the row was in a state
+      // it will not process — and reading "nothing failed" as success
+      // there would confirm a send that never happened.
+      const submitted = (result.succeeded > 0 && result.failed === 0)
+        || result.result?.submitted === true;
+      if (!submitted) {
+        // An unknown outcome is not a failure the user can safely act on
+        // by pressing Send again, so say what is actually known and
+        // withhold the control (CS-1.9). The outcome reports it directly
+        // when the runner knows; otherwise the row's own error does.
+        const unknown = result.errorType === 'outcomeUnknown'
+          || await endedUnknown(mutation?.id);
+        if (!stillCurrent()) return false;
+        if (unknown) {
+          outcomeUnknown.value = true;
+          return failSend(
+            'This message may already have been sent. Check your Sent folder '
+            + 'before sending it again.',
+          );
+        }
         return failSend('Send failed; the message stays in your outbox.');
       }
+      if (!stillCurrent()) return true;
       status.value = COMPOSE_STATE.SENT;
       close();
+      // Confirmation is deliberately about acceptance, not arrival: the
+      // server has taken the message, and nothing the client can observe
+      // proves it reached the recipient (CS-1.13).
+      setNotice(result.result?.filed === false
+        ? 'Message accepted for delivery. Your Sent folder will show it shortly.'
+        : 'Message accepted for delivery.');
       return true;
     } catch (err: any) {
+      if (!stillCurrent()) return false;
       return failSend(err?.message ?? String(err));
     }
   }
@@ -388,6 +500,9 @@ export const useComposeStore = defineStore('compose', () => {
   return {
     status,
     error,
+    notice,
+    clearNotice,
+    outcomeUnknown,
     isOpen,
     identities,
     draft,

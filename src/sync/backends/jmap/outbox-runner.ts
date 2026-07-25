@@ -79,8 +79,11 @@ export class OutboxRunner {
   _kickPending: boolean;
   _notifyTimer: any;
   _wakeTimer: any;
+  _unsafeToReplayTypes: Set<string>;
+  _replayablePhases: Set<string>;
+  _completedPhases: Set<string>;
   _targetLocks: Map<string, Promise<void>>;
-  _awaiters: Map<number, Array<{ resolve: (v: any) => void }>>;
+  _awaiters: Map<number, Array<{ resolve: (v: any) => void; mutationType: string }>>;
   _tallyListeners: Set<(id: number, outcome: any) => void>;
 
   _onForegroundChange: ((delta: number) => void) | null;
@@ -105,6 +108,16 @@ export class OutboxRunner {
     this._handlers = handlers;
     this._processRow = processRow;
 
+    // Mutation types whose outcome cannot be inferred from a failure,
+    // because the server may already have acted on them irreversibly.
+    // These are never replayed automatically — not after a crash, and
+    // not after a transport error. The runner stays protocol-neutral:
+    // the backend supplies the policy.
+    this._unsafeToReplayTypes = new Set(options.unsafeToReplayTypes ?? []);
+    // Phase names are opaque here: the backend decides which recorded
+    // phases are safe to resume and which mean the server already acted.
+    this._replayablePhases = new Set(options.replayablePhases ?? []);
+    this._completedPhases = new Set(options.completedPhases ?? []);
     this._maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     this._notifyDelayMs = options.notifyDelayMs ?? DEFAULT_NOTIFY_DELAY_MS;
     this._backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
@@ -169,6 +182,89 @@ export class OutboxRunner {
   }
 
   /**
+   * Reclaim rows left `in_flight` by a worker that died mid-call. No
+   * live runner is tracking their network call, and `_loadReadyRows`
+   * only selects 'pending' and 'retry', so without this they are
+   * stranded forever.
+   *
+   * Migration 002 does the same reset for non-send rows, but migrations
+   * run once per database version (see engine.runMigrations), so it only
+   * ever covered the boot that applied it. Any later crash needs this.
+   *
+   * Rows whose mutation type is listed in `unsafeToReplayTypes` are
+   * treated according to the progress their `phase` records, because for
+   * those types a blind replay can deliver a second copy:
+   *
+   *   - past the point of no return (`completedPhases`): the server
+   *     already acted, so the row must not be reported as a failure. It
+   *     is returned to the queue, where the checkpoint makes it skip
+   *     straight to filing the local copy and the row then retires
+   *     normally. Deleting it here instead would drop the record of the
+   *     reconciliation it still owes.
+   *   - before that point (`replayablePhases`): nothing irreversible
+   *     happened, and the checkpoint says exactly what to skip, so the
+   *     row is replayable.
+   *   - anything else, including no phase at all: the outcome is
+   *     unknowable, so it becomes conflicted for the user to decide —
+   *     the same choice Thunderbird and Roundcube make for an ambiguous
+   *     send. This covers a crash while the submission was in flight,
+   *     which is indistinguishable from a delivered message.
+   *
+   * `attempts` is deliberately preserved so a row that already burned
+   * retries keeps aging toward the cap instead of starting over.
+   */
+  async recoverStranded() {
+    const guarded = [...this._unsafeToReplayTypes];
+    if (guarded.length > 0) {
+      const types = guarded.map(() => '?').join(',');
+      // Resumable in either direction: before the irreversible step, or
+      // after it with only local filing left to do.
+      const resumable = [...this._replayablePhases, ...this._completedPhases];
+      await this._handlers[DB_RPC.QUERY]({
+        sql: `UPDATE pending_mutations
+                 SET local_status = 'conflicted',
+                     error_json = ?,
+                     updated_at = ?
+               WHERE account_id = ?
+                 AND local_status = 'in_flight'
+                 AND mutation_type IN (${types})
+                 ${resumable.length > 0
+                    ? `AND (phase IS NULL OR phase NOT IN (${resumable.map(() => '?').join(',')}))`
+                    : ''}`,
+        params: [
+          // `outcomeUnknown` is the type every park path records, here and
+          // in the backend's own processing, so a consumer has one string
+          // to recognise. The row keeps the phase it was interrupted at
+          // rather than being overwritten: that column says how far the
+          // send got, which is worth having, and the error already says
+          // the outcome is unknowable.
+          JSON.stringify({
+            type: 'outcomeUnknown',
+            terminal: true,
+            reason: 'interrupted',
+            description: 'Interrupted while sending; the outcome is unknown.',
+          }),
+          this._now(),
+          this._accountId,
+          ...guarded,
+          ...resumable,
+        ],
+      });
+    }
+
+    const result = await this._handlers[DB_RPC.QUERY]({
+      sql: `UPDATE pending_mutations
+               SET local_status = 'pending',
+                   not_before = NULL,
+                   updated_at = ?
+             WHERE account_id = ?
+               AND local_status = 'in_flight'`,
+      params: [this._now(), this._accountId],
+    });
+    return result;
+  }
+
+  /**
    * Run a single mutation now and resolve when it reaches a terminal
    * state (success, conflicted, or attempt cap). Clears the row's
    * backoff so it is immediately eligible; subsequent failures still
@@ -177,7 +273,10 @@ export class OutboxRunner {
    *
    * Returns { attempted, succeeded, failed } so the existing
    * Repository.runMutation contract (used by compose-store and
-   * destroyMessage) keeps working.
+   * destroyMessage) keeps working, plus `errorType` on a failure: for a
+   * send the difference between "did not go out" and "may have gone out"
+   * decides what the composer is allowed to offer, and the row is gone by
+   * the time a caller could read it on the paths that succeed.
    */
   async runMutation(mutationId) {
     if (this._stopped) {
@@ -211,7 +310,9 @@ export class OutboxRunner {
 
     const outcomePromise = new Promise<{ ok: boolean; error?: any; result?: any }>((resolve) => {
       const list = this._awaiters.get(mutationId) ?? [];
-      list.push({ resolve });
+      // The type rides along so stop() can answer without a database
+      // read, which is not available to it during teardown.
+      list.push({ resolve, mutationType: row.mutation_type });
       this._awaiters.set(mutationId, list);
     });
     // PENDING_MUTATION_INSERT also auto-notifies the runner via the
@@ -246,6 +347,7 @@ export class OutboxRunner {
     };
     const detail = outcome.result ?? outcome.error?.result;
     if (detail != null) summary.result = detail;
+    if (!outcome.ok && outcome.error?.type) summary.errorType = outcome.error.type;
     return summary;
   }
 
@@ -304,13 +406,23 @@ export class OutboxRunner {
       await this._drainInflight.catch(() => {});
     }
     for (const list of this._awaiters.values()) {
-      for (const { resolve } of list) {
-        // Resolve with a synthetic "stopped" outcome so awaited
-        // callers (compose-store, destroyMessage) don't hang
-        // forever when the backend tears down. They treat ok=false
-        // as a failure that surfaces an error to the user.
+      for (const { resolve, mutationType } of list) {
+        // Resolve with a synthetic outcome so awaited callers
+        // (compose-store, destroyMessage) don't hang forever when the
+        // backend tears down. They treat ok=false as a failure that
+        // surfaces an error to the user.
+        //
+        // For a type that must never be replayed, that failure has to say
+        // the outcome is unknown rather than that nothing happened: the
+        // row was checked out to a worker that is going away, and for a
+        // send it could have been anywhere from queued to already
+        // delivered. Telling the user it failed invites the second press
+        // that delivers twice.
+        const error = this._unsafeToReplayTypes.has(mutationType)
+          ? { type: 'outcomeUnknown', terminal: true, reason: 'stopped' }
+          : { type: 'stopped' };
         try {
-          resolve({ ok: false, error: { type: 'stopped' } });
+          resolve({ ok: false, error });
         } catch {
           // ignore
         }
@@ -410,9 +522,23 @@ export class OutboxRunner {
       try {
         result = await this._processRow(row);
       } catch (err) {
+        // A throw means the request never produced a response, so for
+        // most mutations a retry is both safe and desirable. For a send
+        // it is neither: the socket may have died after the server
+        // accepted the submission, and replaying would deliver a second
+        // copy. Fail those to the user with the draft intact instead of
+        // guessing. Positive reconciliation (matching the operation's
+        // Message-ID against the server) is what will let these resume
+        // automatically.
         result = {
           ok: false,
-          error: { type: 'transport', message: err?.message ?? String(err) },
+          error: {
+            type: 'transport',
+            message: err?.message ?? String(err),
+            ...(this._unsafeToReplayTypes.has(row.mutation_type)
+              ? { terminal: true }
+              : {}),
+          },
         };
       }
     } finally {

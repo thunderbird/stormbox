@@ -60,6 +60,13 @@ const MIGRATIONS: Migration[] = (() => {
 })();
 
 /**
+ * Applied-migration versions in order. Exported so tests can assert the
+ * schema version and the shape of the sequence without hardcoding a
+ * number that every new migration would have to update.
+ */
+export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.version);
+
+/**
  * @param {object} args
  * @param {object} args.sqlite3 wa-sqlite Factory output
  * @param {number} args.db opaque sqlite3 db pointer (already opened by caller)

@@ -47,8 +47,17 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
+import { wlog } from '../../../db/worker-log';
 import { JMAP_CAPS } from './transport';
-import { callJmap, pickResponse } from './invoke';
+import { callJmap, pickResponse, pickResponseById } from './invoke';
+import {
+  newCheckpoint,
+  readCheckpoint,
+  readPhase,
+  saveCheckpoint,
+} from './send-checkpoint';
+import { findEmailByMessageId, findSubmissionEvidence } from './send-reconcile';
+import { SEND_PHASE } from '../../../constants/states';
 import { maxObjectsInGet, maxObjectsInSet } from './limits';
 import {
   persistEmails,
@@ -121,6 +130,48 @@ const RETRYABLE_FOLDER_ERROR_TYPES = new Set([
   'stateMismatch',
 ]);
 const SET_ERROR_WRAPPERS = new Set(['notCreated', 'notUpdated', 'notDestroyed']);
+// Sending is the one mutation where a wrong retry decision can deliver a
+// second copy of a message, so the classification is an allowlist rather
+// than a denylist: only these rejections are retried, and every other
+// one (including a type this client has never seen) is terminal.
+//
+// The list is this short on purpose. None of the SetError types RFC 8621
+// §7.5 defines for EmailSubmission/set is transient — invalidEmail,
+// noRecipients, tooManyRecipients, forbiddenFrom, forbiddenMailFrom and
+// forbiddenToSend all describe a message or account that will be
+// rejected again. `overQuota` needs the user to free space, not a
+// 60-second backoff. That leaves rate limiting, where waiting is exactly
+// the right response. Note serverFail / serverPartialFail /
+// serverUnavailable are method-level errors under RFC 8620 §3.6.1 rather
+// than SetError values, and RFC 8620 explicitly says a serverFail retry
+// is expected to fail again while serverPartialFail requires
+// resynchronisation, so neither belongs here.
+const RETRYABLE_SUBMISSION_ERROR_TYPES = new Set(['rateLimit']);
+// The same allowlist reasoning applied to method-level errors
+// (RFC 8620 §3.6.1) on a send. Retrying the create phase is safe — the
+// operation's Message-ID makes an already-created Email findable, so a
+// replay cannot orphan a second draft — but it is not free: the runner
+// spends up to eight attempts across roughly two minutes of backoff
+// while compose-store waits for a terminal outcome to leave its sending
+// state. Only a type where waiting is the right response earns that.
+const RETRYABLE_METHOD_ERROR_TYPES = new Set(['serverUnavailable', 'rateLimit']);
+// What the transport raises when a request never reached the server, or
+// its answer never arrived (see transport.ts). Distinct from every
+// server-reported error in that it carries no information about what the
+// server did.
+const TRANSPORT_FAILURE_TYPES = new Set([
+  'httpRequestTimeout',
+  'wsRequestTimeout',
+  'transportAborted',
+]);
+// How many times a send may retry local filing after its submission was
+// accepted. Small on purpose: the composer is still waiting, the work is
+// idempotent but cheap to abandon, and the fallback — flagging the Sent
+// view for rebuild — repairs the same disagreement without holding the
+// row open. Three covers a filing that failed on a momentarily
+// unreachable server without letting the row age toward the runner's own
+// attempt cap, which would conflict a message that was already sent.
+const CACHE_RECONCILE_MAX_ATTEMPTS = 3;
 const TERMINAL_MESSAGE_ERROR_TYPES = new Set([
   'unknownMessage',
   'unknownFolder',
@@ -1719,11 +1770,70 @@ function collectMessageIds(row, request) {
  *     draftsFolderId?, sentFolderId?, outboxFolderId?,
  *   }
  */
-async function runSend({ transport, account, handlers, row: _row, request, useWebSocket }) {
+async function runSend({ transport, account, handlers, row, request, useWebSocket }) {
+  // ---- phase 0: checkpoint ------------------------------------------
+  //
+  // Read before doing any work: a row parked as unknown must refuse
+  // immediately, a resuming row must not repeat the blob uploads that
+  // phase 1 needs, and a row past submission must not be failed over
+  // preparation work its message no longer depends on — the identity
+  // lookup below included.
+  const rowId = row?.id ?? null;
+  const resumePhase = readPhase(row);
+  let checkpoint = readCheckpoint(row);
+  if (resumePhase === SEND_PHASE.UNKNOWN) {
+    // A previous attempt could not determine whether the message was
+    // sent. Guessing here is exactly what must not happen.
+    return {
+      ok: false,
+      error: {
+        type: 'outcomeUnknown',
+        terminal: true,
+        reason: 'alreadyParked',
+        description: 'A previous attempt left the outcome of this send unknown.',
+      },
+    };
+  }
+  if (resumePhase && !checkpoint) {
+    // The phase says work happened but the checkpoint is unreadable, so
+    // there is no way to know what to skip. Starting over could submit a
+    // second time; stop instead.
+    return {
+      ok: false,
+      error: {
+        type: 'outcomeUnknown',
+        terminal: true,
+        reason: 'unreadableCheckpoint',
+        description: 'This send recorded progress but its checkpoint is unreadable.',
+      },
+    };
+  }
+
+  // ---- resume that owes only local filing ---------------------------
+  //
+  // The server has accepted this message; the one thing still missing is
+  // the local Sent copy. Retrying anything else would be wrong twice
+  // over: re-entering submission could deliver a second copy, and
+  // failing on create-phase preparation (a since-deleted identity, a
+  // stalled inline-image upload) would report a message already in
+  // transit as a failed send.
+  if (resumePhase === SEND_PHASE.SUBMITTED || resumePhase === SEND_PHASE.CACHE_PENDING) {
+    return resumeCacheReconciliation({
+      transport,
+      account,
+      handlers,
+      useWebSocket,
+      rowId,
+      checkpoint,
+      sentFolderId: request.sentFolderId,
+    });
+  }
+
   const identity = await resolveIdentity(handlers, account, request.identityId);
   if (!identity) {
     return { ok: false, error: { type: 'unknownIdentity' } };
   }
+
   const folderRemoteIds = await resolveFolderRemoteIds(handlers, [
     request.draftsFolderId,
     request.sentFolderId,
@@ -1746,7 +1856,23 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
   try {
     inlineAttachments = await uploadInlineImages({ transport, account, images: extracted.images });
   } catch (err: any) {
-    return { ok: false, error: { type: 'uploadFailed', message: err?.message ?? String(err) } };
+    // A stalled or aborted upload is terminal. Retrying it is safe —
+    // nothing has been submitted, and a re-uploaded blob is just
+    // another blob — but not worth waiting for: the blob deadline is
+    // generous by design, and eight of those plus backoff would hold
+    // the composer in its sending state, with Close and Discard
+    // disabled, for a quarter of an hour. The draft is intact, so
+    // failing now lets the user decide. A server that reported a
+    // reason keeps the retry.
+    const terminal = TRANSPORT_FAILURE_TYPES.has(err?.type);
+    return {
+      ok: false,
+      error: {
+        type: 'uploadFailed',
+        message: err?.message ?? String(err),
+        ...(terminal ? { terminal: true } : {}),
+      },
+    };
   }
 
   let bodyFields;
@@ -1823,45 +1949,536 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
     'keywords/$seen': true,
   };
 
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
-    methodCalls: [
-      ['Email/set', { accountId: account.remote_account_id, create: { c1: emailCreate } }, 'c1'],
-      [
-        'EmailSubmission/set',
+  // Creation and submission are separate round trips with a durable
+  // checkpoint between them. One chained call is cheaper, but it leaves
+  // no way to distinguish "nothing happened" from "already delivered"
+  // when a response is lost, which is the difference between retrying
+  // safely and mailing someone twice. R-4.4 was amended to allow the
+  // extra round trip for exactly this reason.
+  if (!checkpoint) {
+    // The Message-ID is fixed here, before anything is sent, so every
+    // retry of this operation carries the same one.
+    checkpoint = await saveCheckpoint(
+      handlers,
+      rowId,
+      newCheckpoint(identity.email),
+      SEND_PHASE.QUEUED,
+    );
+  }
+
+  // A resume that got as far as issuing the submission cannot tell from
+  // the checkpoint alone whether the server accepted it. Ask the server
+  // before deciding: proof that it was submitted lets the row finish
+  // normally, and only genuine absence of evidence parks it.
+  if (resumePhase === SEND_PHASE.SUBMITTING && !checkpoint.submissionRemoteId) {
+    const evidence = await findSubmissionEvidence({
+      transport,
+      account,
+      emailRemoteId: checkpoint.emailRemoteId,
+      sentRemoteId,
+      useWebSocket,
+    });
+    if (evidence.outcome === 'submitted') {
+      const recorded = await recordAcceptedSubmission({
+        handlers,
+        rowId,
+        checkpoint,
+        submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
+      });
+      if (recorded.err) {
+        return postSubmissionFailure({
+          handlers,
+          account,
+          rowId,
+          checkpoint,
+          createdRemoteId: checkpoint.emailRemoteId,
+          submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
+          sentRemoteId,
+          response: null,
+          err: recorded.err,
+        });
+      }
+      checkpoint = recorded.checkpoint;
+    } else {
+      await parkUnknown(handlers, rowId, checkpoint);
+      return {
+        ok: false,
+        error: {
+          type: 'outcomeUnknown',
+          terminal: true,
+          reason: 'noEvidence',
+          description: 'Interrupted while submitting, and the server shows no evidence either way.',
+        },
+      };
+    }
+  }
+
+  // ---- phase 1: create the Email ------------------------------------
+  //
+  // A previous attempt may have created the Email and lost the response.
+  // The Message-ID it stamped is the only handle on it, and finding it
+  // avoids leaving an orphaned draft behind on every retry. Only a
+  // resume needs to look: the phase is written before the create, so a
+  // row that has never carried one cannot have an Email on the server.
+  if (!checkpoint.emailRemoteId && resumePhase) {
+    const probe = await findEmailByMessageId({
+      transport,
+      account,
+      mailboxId: targetBox,
+      messageId: checkpoint.messageId,
+      useWebSocket,
+    });
+    if (probe.outcome === 'inconclusive') {
+      // The scan did not run, so it has not ruled out a draft from an
+      // earlier attempt. Creating on that basis would put a second copy
+      // in the mailbox — the orphan the scan exists to prevent. Stop
+      // instead: nothing has been sent, the row and its Message-ID
+      // survive, and a later attempt can scan again.
+      return {
+        ok: false,
+        error: {
+          type: 'createProbeFailed',
+          terminal: true,
+          description: 'Could not check whether an earlier attempt already '
+            + 'created this message.',
+          detail: { reason: probe.reason, ...probe.detail },
+        },
+      };
+    }
+    if (probe.outcome === 'found') {
+      checkpoint = await saveCheckpoint(
+        handlers,
+        rowId,
+        { ...checkpoint, emailRemoteId: probe.emailRemoteId },
+        SEND_PHASE.CREATED,
+      );
+    }
+  }
+
+  if (!checkpoint.emailRemoteId) {
+    const createResult = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [[
+        'Email/set',
         {
           accountId: account.remote_account_id,
           create: {
-            s1: {
-              identityId: identity.remote_id,
-              emailId: '#c1',
-              envelope: {
-                mailFrom: { email: identity.email },
-                rcptTo: (request.to ?? []).map((a) => ({ email: a.email })),
-              },
+            c1: {
+              ...emailCreate,
+              // Supplying the id makes the created Email findable by it
+              // later; RFC 8621 §4.6 has the server generate one only
+              // when the client omits it.
+              messageId: [checkpoint.messageId.replace(/^<|>$/g, '')],
             },
           },
-          onSuccessUpdateEmail: { '#s1': onSuccessUpdate },
         },
-        's1',
-      ],
-    ],
-    useWebSocket,
-  });
-
-  const submission = pickResponse(result, 'EmailSubmission/set');
-  if (submission?.notCreated && Object.values(submission.notCreated).length > 0) {
-    return { ok: false, error: { type: 'notSubmitted', detail: submission.notCreated } };
+        'c1',
+      ]],
+      useWebSocket,
+    });
+    const emailSet = pickResponseById(createResult, 'Email/set', 'c1');
+    if (!emailSet) {
+      // Nothing was submitted in this request, so a retry cannot
+      // duplicate delivery. It can leave an orphaned draft: the
+      // Message-ID is recorded so a future reconciliation pass (CS-1.8,
+      // not yet implemented) can recognise one instead of creating a
+      // second.
+      return { ok: false, error: extractMethodErrorById(createResult, 'c1') };
+    }
+    const createdId = emailSet.created?.c1?.id ?? null;
+    if (!createdId) {
+      return { ok: false, error: submissionError('notCreated', emailSet.notCreated?.c1 ?? null) };
+    }
+    checkpoint = await saveCheckpoint(
+      handlers,
+      rowId,
+      { ...checkpoint, emailRemoteId: createdId },
+      SEND_PHASE.CREATED,
+    );
   }
+
+  // ---- phase 2: submit ----------------------------------------------
+  let result = null;
+  if (!checkpoint.submissionRemoteId) {
+    // Recorded before the call, not after. Everything irreversible
+    // happens inside the round trip below, so a worker that dies while it
+    // is in flight must come back to a phase that says "this may already
+    // have been accepted" — never to one that looks resumable.
+    await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.SUBMITTING);
+    // A throw from this call — a dead socket, a deadline — leaves exactly
+    // the ambiguity the phase above was written for, so it is handled
+    // like a response that omitted the submission's slot rather than
+    // being allowed to escape. Letting it propagate would reach the
+    // runner as a generic transport failure with no phase on it, and the
+    // composer would tell the user the send failed when the server may
+    // have accepted it.
+    let submitFailure: { type: string; message: string } | null = null;
+    try {
+      result = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
+        methodCalls: [[
+          'EmailSubmission/set',
+          {
+            accountId: account.remote_account_id,
+            create: {
+              s1: {
+                identityId: identity.remote_id,
+                emailId: checkpoint.emailRemoteId,
+                // No envelope: RFC 8621 §7 has the server derive rcptTo
+                // from the Email's To + Cc + Bcc and strip Bcc on delivery.
+                // Verified against Stalwart v0.15.4 for a separately stored
+                // Email, including the Bcc-only case, so splitting creation
+                // from submission does not change this.
+                //
+                // Deriving server-side also keeps the server's own
+                // noRecipients check: an explicit `rcptTo: []` is accepted
+                // and files the message into Sent while delivering to
+                // nobody, which is a silent-loss path the client would then
+                // have to guard itself.
+              },
+            },
+            onSuccessUpdateEmail: { '#s1': onSuccessUpdate },
+          },
+          's1',
+        ]],
+        useWebSocket,
+      });
+    } catch (err: any) {
+      submitFailure = {
+        type: err?.type ?? 'transport',
+        message: err?.message ?? String(err),
+      };
+      result = null;
+    }
+
+    const submission = pickResponseById(result, 'EmailSubmission/set', 's1');
+    let accepted: string;
+    if (!submission) {
+      // Either the server answered without reporting this call, or there
+      // was no answer at all. Ask it what happened rather than assuming:
+      // the Email id is known, so both the submission record and the
+      // message's own mailbox placement are available as evidence.
+      const evidence = await findSubmissionEvidence({
+        transport,
+        account,
+        emailRemoteId: checkpoint.emailRemoteId,
+        sentRemoteId,
+        useWebSocket,
+      });
+      if (evidence.outcome !== 'submitted') {
+        await parkUnknown(handlers, rowId, checkpoint);
+        // Parked, so `type` says so: one string classifies every send
+        // whose outcome nobody can establish, wherever it was parked from,
+        // which is what the composer keys its warning off. Whatever the
+        // server or the transport managed to say lands in `reason` — the
+        // only diagnostic left of a response nobody saw.
+        const { type: reason, ...diagnostic } = submitFailure
+          ?? extractMethodErrorById(result, 's1');
+        return {
+          ok: false,
+          error: {
+            ...diagnostic,
+            type: 'outcomeUnknown',
+            terminal: true,
+            reason,
+          },
+        };
+      }
+      accepted = evidence.submissionRemoteId ?? 'reconciled';
+    } else {
+      const created = submission.created?.s1?.id ?? null;
+      if (!created) {
+        const detail = submission.notCreated?.s1
+          ?? Object.values(submission.notCreated ?? {})[0]
+          ?? null;
+        return { ok: false, error: submissionError('notSubmitted', detail) };
+      }
+      accepted = created;
+    }
+    // The message is out. From here a local write that fails is a filing
+    // problem, never a failed send — including this one, which is the
+    // write that tells a resume not to submit again.
+    const recorded = await recordAcceptedSubmission({
+      handlers, rowId, checkpoint, submissionRemoteId: accepted,
+    });
+    if (recorded.err) {
+      return postSubmissionFailure({
+        handlers,
+        account,
+        rowId,
+        checkpoint,
+        createdRemoteId: checkpoint.emailRemoteId,
+        submissionRemoteId: accepted,
+        sentRemoteId,
+        response: result,
+        err: recorded.err,
+      });
+    }
+    checkpoint = recorded.checkpoint;
+  }
+  const submissionRemoteId = checkpoint.submissionRemoteId;
+
+  // ---- phase 3: reconcile the local cache ---------------------------
+  //
+  // Past this point the message has been accepted for submission and may
+  // already be in transit. Everything below is repairable filing work,
+  // and none of it may report a failure that sends the row back through
+  // submission.
+  const createdRemoteId = checkpoint.emailRemoteId;
+  return reconcileSentLocally({
+    transport,
+    account,
+    handlers,
+    useWebSocket,
+    rowId,
+    checkpoint,
+    result,
+    createdRemoteId,
+    submissionRemoteId,
+    sentRemoteId,
+  });
+}
+
+/**
+ * Resume a row whose recorded phase proves the submission was accepted.
+ * Runs phase 3 and nothing else.
+ *
+ * The two remote ids are what make that possible, so a post-submission
+ * phase without them is parked rather than restarted: the alternative is
+ * re-entering submission on a row that may already have delivered, which
+ * is the one outcome CS-1.10 rules out unconditionally. It takes a
+ * partially written checkpoint to get here, so parking is a guard rather
+ * than an expected path.
+ */
+async function resumeCacheReconciliation({
+  transport, account, handlers, useWebSocket, rowId, checkpoint, sentFolderId,
+}) {
+  if (!checkpoint.emailRemoteId || !checkpoint.submissionRemoteId) {
+    await parkUnknown(handlers, rowId, checkpoint);
+    return {
+      ok: false,
+      error: {
+        type: 'outcomeUnknown',
+        terminal: true,
+        reason: 'incompleteCheckpoint',
+        description: 'This send was submitted but its record of what was sent is incomplete.',
+      },
+    };
+  }
+  const createdRemoteId = checkpoint.emailRemoteId;
+  const submissionRemoteId = checkpoint.submissionRemoteId;
+  try {
+    const sentRemoteId = (await resolveFolderRemoteIds(handlers, [sentFolderId]))[0];
+    return await reconcileSentLocally({
+      transport,
+      account,
+      handlers,
+      useWebSocket,
+      rowId,
+      checkpoint,
+      // No submission call was issued on this attempt, so there is no
+      // implicit Email/set response to read; applySendLocally's own
+      // Email/get decides where the server put the message.
+      result: null,
+      createdRemoteId,
+      submissionRemoteId,
+      sentRemoteId,
+    });
+  } catch (err: any) {
+    // Resolving the folder is local bookkeeping, but it is bookkeeping
+    // for a message that has already gone out, so a failure here is
+    // subject to the same rule as the filing itself.
+    return postSubmissionFailure({
+      handlers,
+      account,
+      rowId,
+      checkpoint,
+      createdRemoteId,
+      submissionRemoteId,
+      sentRemoteId: null,
+      response: null,
+      err,
+    });
+  }
+}
+
+/**
+ * Phase 3: make the local cache match the server after a confirmed
+ * submission.
+ *
+ * Wrapped so no failure in here can escape as a send failure — the
+ * checkpoint write included, since that is what a resume reads. The
+ * message is already in transit; reporting it as failed would tell the
+ * user to press Send again, and a second press builds a new mutation row
+ * with a new operation id, so the checkpoint could not stop the second
+ * delivery.
+ *
+ * CACHE_PENDING is written before reconciling rather than after, so a
+ * worker that dies mid-reconciliation leaves a row whose phase proves the
+ * message was already submitted. Startup recovery reads that and finishes
+ * the row instead of replaying it.
+ */
+async function reconcileSentLocally(args) {
+  const {
+    handlers, account, rowId, checkpoint, result, createdRemoteId, submissionRemoteId, sentRemoteId,
+  } = args;
+  try {
+    const saved = rowId != null && checkpoint
+      ? await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CACHE_PENDING)
+      : checkpoint;
+    return await fileSentCopy({ ...args, checkpoint: saved });
+  } catch (err: any) {
+    return postSubmissionFailure({
+      handlers,
+      account,
+      rowId,
+      checkpoint,
+      createdRemoteId,
+      submissionRemoteId,
+      sentRemoteId,
+      response: result,
+      err,
+    });
+  }
+}
+
+/**
+ * Mark a send whose outcome nobody can establish, and do not let the
+ * marking itself change the answer.
+ *
+ * The error the caller returns is what makes the composer warn instead of
+ * inviting a second press, so a failed write here must not be allowed to
+ * replace it with an ordinary transport failure. What the write buys is a
+ * shorter path on the next boot: without it the row comes back at
+ * `submitting`, which recovery resolves by asking the server again rather
+ * than by resubmitting.
+ */
+async function parkUnknown(handlers, rowId, checkpoint) {
+  try {
+    await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.UNKNOWN);
+  } catch (err: any) {
+    wlog.warn(
+      'jmap-outbox',
+      `could not park a send with an unknown outcome: ${err?.message ?? err}`,
+    );
+  }
+}
+
+/**
+ * Record that the server accepted the submission.
+ *
+ * This is the write that stops a resume from submitting a second time, so
+ * it is made as soon as acceptance is known. It is also the last write
+ * that could still be mistaken for part of the send itself: it happens
+ * after the point of no return, so the caller hands a failure here to
+ * `postSubmissionFailure` rather than letting it reach the runner, which
+ * would classify it as an ordinary transport failure and have the
+ * composer invite a second delivery.
+ */
+async function recordAcceptedSubmission({
+  handlers, rowId, checkpoint, submissionRemoteId,
+}): Promise<{ checkpoint?: any; err?: any }> {
+  try {
+    return {
+      checkpoint: await saveCheckpoint(
+        handlers,
+        rowId,
+        { ...checkpoint, submissionRemoteId },
+        SEND_PHASE.SUBMITTED,
+      ),
+    };
+  } catch (err: any) {
+    return { err };
+  }
+}
+
+/**
+ * Answer for a send that the server has accepted but whose local repair
+ * work failed.
+ *
+ * A first failure keeps the row, at `cache_pending` with both remote ids
+ * recorded — the checkpoint state that makes the next attempt skip create
+ * and submit and retry the filing alone. The error carries
+ * `submitted: true` so the composer reports a send rather than a failure
+ * however the row eventually retires.
+ *
+ * Once the repair budget is spent the row succeeds anyway, with the Sent
+ * view flagged for rebuild, because a message that went out must not end
+ * up as a conflicted row asking the user to intervene. The same applies
+ * when the checkpoint cannot be written: without a durable record of the
+ * attempt count a retry would never terminate, so the row retires here
+ * instead.
+ */
+async function postSubmissionFailure({
+  handlers, account, rowId, checkpoint, createdRemoteId, submissionRemoteId, sentRemoteId,
+  response, err,
+}) {
+  wlog.warn(
+    'jmap-outbox',
+    `send succeeded but local filing failed: ${err?.message ?? err}`,
+  );
+  const cacheAttempts = (checkpoint?.cacheAttempts ?? 0) + 1;
+  if (rowId != null && checkpoint && cacheAttempts < CACHE_RECONCILE_MAX_ATTEMPTS) {
+    let recorded = true;
+    try {
+      await saveCheckpoint(
+        handlers,
+        rowId,
+        { ...checkpoint, cacheAttempts },
+        SEND_PHASE.CACHE_PENDING,
+      );
+    } catch (saveErr: any) {
+      wlog.warn(
+        'jmap-outbox',
+        `could not record the filing attempt: ${saveErr?.message ?? saveErr}`,
+      );
+      recorded = false;
+    }
+    if (recorded) {
+      return {
+        ok: false,
+        error: {
+          type: 'cacheReconcileFailed',
+          message: err?.message ?? String(err),
+          result: {
+            createdRemoteId,
+            submissionRemoteId,
+            filed: false,
+            submitted: true,
+          },
+        },
+      };
+    }
+  }
+  await markFolderViewsStale(handlers, account.id, sentRemoteId).catch(() => {});
+  return {
+    ok: true,
+    response,
+    result: { createdRemoteId, submissionRemoteId, filed: false },
+  };
+}
+
+async function fileSentCopy({
+  transport, account, handlers, useWebSocket,
+  result, createdRemoteId, submissionRemoteId, sentRemoteId,
+}) {
+  // onSuccessUpdateEmail generates a second, implicit Email/set response
+  // under the submission's call id (RFC 8621 §7.5). When that patch
+  // fails the message stayed in Drafts/Outbox on the server, so the
+  // local cache must not claim it is filed in Sent either. On a resume
+  // this attempt issued no submission call, so there is no such response
+  // to read and applySendLocally's own Email/get decides.
+  const implicitUpdate = result ? pickResponseById(result, 'Email/set', 's1') : null;
+  const filingRejected = Boolean(
+    createdRemoteId && implicitUpdate?.notUpdated?.[createdRemoteId],
+  );
 
   // Mirror the server-side onSuccessUpdateEmail in the local cache
   // before resolving so listMessagesForView reads of Sent see the new
   // row immediately. Skipping this would leave the row visible only
   // after the JMAP push channel delivers the StateChange and
   // syncEmailChanges runs, which the constitution forbids.
-  const emailSet = pickResponse(result, 'Email/set');
-  const createdRemoteId = emailSet?.created?.c1?.id ?? null;
-  await applySendLocally({
+  const applied = await applySendLocally({
     transport,
     account,
     handlers,
@@ -1870,7 +2487,61 @@ async function runSend({ transport, account, handlers, row: _row, request, useWe
     sentRemoteId,
   });
 
-  return { ok: true, response: result };
+  if (!applied.filed || filingRejected) {
+    // The message went out but the local Sent view does not reflect it.
+    // Mark the view stale so the next read rebuilds from the server
+    // rather than leaving the user with a cache that silently disagrees.
+    await markFolderViewsStale(handlers, account.id, sentRemoteId);
+  }
+
+  return {
+    ok: true,
+    response: result,
+    result: {
+      createdRemoteId,
+      submissionRemoteId,
+      // Filing is reported separately from sending so a caller can tell
+      // "delivered but not yet in Sent" from "delivered and filed".
+      filed: applied.filed && !filingRejected,
+    },
+  };
+}
+
+/**
+ * Flag every open mailbox-window view for a folder as stale so the next
+ * read rebuilds it from the server. Used when a send succeeded but its
+ * local filing did not, which is the one case where the cache is known
+ * to disagree with the server and cannot be repaired in place.
+ */
+async function markFolderViewsStale(handlers, accountId, folderRemoteId) {
+  if (!folderRemoteId) return;
+  await handlers[DB_RPC.QUERY]({
+    sql: `UPDATE query_views
+             SET stale = 1, updated_at = ?
+           WHERE account_id = ?
+             AND view_type = 'mailbox-window'
+             AND folder_id IN (
+               SELECT id FROM folders WHERE account_id = ? AND remote_id = ?
+             )`,
+    params: [Date.now(), accountId, accountId, folderRemoteId],
+  });
+}
+
+/**
+ * Shape a send rejection for the outbox runner. Only the transient
+ * server-side types are left retryable; anything else is flagged
+ * terminal so the runner stops instead of re-running create-and-submit,
+ * which would orphan one draft per attempt and risk a second delivery.
+ */
+function submissionError(type: string, detail: any) {
+  const detailType = detail?.type;
+  const retryable = typeof detailType === 'string'
+    && RETRYABLE_SUBMISSION_ERROR_TYPES.has(detailType);
+  return {
+    type,
+    detail,
+    ...(retryable ? {} : { terminal: true }),
+  };
 }
 
 /**
@@ -1923,9 +2594,19 @@ async function uploadInlineImages({ transport, account, images }) {
  * in any open Sent mailbox-window query_view so a subsequent
  * listMessagesForView read returns the row immediately.
  *
+ * The query_view insert is gated on the server actually reporting the
+ * message in Sent. Inserting on the strength of the *requested* target
+ * is how a message that never left can appear in the user's Sent list —
+ * the same defect as Thunderbird bug 1656240, where an SMTP timeout
+ * still produced a Sent copy and left the user unable to tell what had
+ * gone out.
+ *
  * sentRemoteId is the JMAP mailbox id of Sent. With no sentRemoteId
  * we still persist the message but skip the query_view update; the
  * next folder visit will rebuild the window from the server.
+ *
+ * Returns { filed } so the caller can distinguish "sent and filed in
+ * Sent" from "sent, filing still pending".
  *
  * Exported so the unit test in tests/unit/sync/outbox-apply.test.ts
  * can drive it directly without spinning up a full SEND row.
@@ -1933,8 +2614,8 @@ async function uploadInlineImages({ transport, account, images }) {
 export async function applySendLocally({
   transport, account, handlers, useWebSocket = false,
   createdRemoteId, sentRemoteId,
-}) {
-  if (!createdRemoteId) return;
+}): Promise<{ filed: boolean }> {
+  if (!createdRemoteId) return { filed: false };
   const payload = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[
@@ -1950,17 +2631,21 @@ export async function applySendLocally({
   });
   const got = pickResponse(payload, 'Email/get');
   const email = got?.list?.[0];
-  if (!email) return;
+  if (!email) return { filed: false };
 
   await persistEmails({ account, emails: [email], handlers });
 
-  if (!sentRemoteId) return;
+  if (!sentRemoteId) return { filed: false };
+  // Trust the server's mailboxIds, not the target we asked for.
+  if (email.mailboxIds?.[sentRemoteId] !== true) {
+    return { filed: false };
+  }
   const folderRows = await handlers[DB_RPC.QUERY]({
     sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
     params: [account.id, sentRemoteId],
   });
   const sentFolderId = folderRows[0]?.id;
-  if (sentFolderId == null) return;
+  if (sentFolderId == null) return { filed: false };
 
   // Prepend the new remote_id at position 0 of every open Sent
   // mailbox-window query_view and bump total. Sent is sorted newest
@@ -1989,6 +2674,7 @@ export async function applySendLocally({
       });
     }
   }
+  return { filed: true };
 }
 
 /**
@@ -2268,6 +2954,30 @@ async function deleteRow(handlers, id) {
  * `hint.count` is included on requestTooLarge / limit so the store
  * can suggest a smaller batch in the toast if it ever wants to.
  */
+/**
+ * Same as extractMethodError, but only accepts the error slot belonging
+ * to one method call id. A send envelope carries two calls, so the
+ * name-blind version can attribute Email/set's error to the submission
+ * or the reverse, which sends the user a misleading reason.
+ *
+ * A reported type is classified for retryability here; an absent slot is
+ * left retryable, because "no response for this call" says nothing about
+ * the request and the create phase is safe to repeat.
+ */
+function extractMethodErrorById(raw: any, callId: string) {
+  const responses = raw?.methodResponses ?? [];
+  const errorSlot = responses.find((r: any) => r?.[0] === 'error' && r?.[2] === callId);
+  if (!errorSlot) return { type: 'noResponse' };
+  const detail = errorSlot[1] ?? {};
+  const type = detail.type ?? 'methodError';
+  return {
+    type,
+    description: detail.description,
+    detail,
+    ...(RETRYABLE_METHOD_ERROR_TYPES.has(type) ? {} : { terminal: true }),
+  };
+}
+
 function extractMethodError(raw: any, hint: { count?: number } = {}) {
   const responses = raw?.methodResponses ?? [];
   const errorSlot = responses.find((r: any) => r?.[0] === 'error');

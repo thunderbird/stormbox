@@ -8,11 +8,33 @@ import zlib from "node:zlib";
  * Stormbox must stay on HTTPS (self-signed via @vitejs/plugin-basic-ssl) so
  * OPFS / SharedWorker / SubtleCrypto work. Keycloak and Stalwart speak plain
  * HTTP on the docker host, so we reverse-proxy them through the Vite origin
- * and rewrite Keycloak's advertised URLs to https://localhost:3000.
+ * and rewrite Keycloak's advertised URLs to this worktree's own public
+ * origin, which is `VITE_LOCAL_PUBLIC_ORIGIN` and defaults to
+ * https://localhost:3000.
  */
 
 const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? "https://localhost:3000";
+// The shared Keycloak realm pins `frontendUrl` to one origin, and Keycloak
+// honours that over X-Forwarded-* headers, so every worktree that is not
+// served on that origin receives a discovery document pointing at another
+// worktree's port. Rewriting it here — per worktree, in this proxy — lets
+// several dev instances share one realm without any of them mutating
+// realm-wide state that the others depend on.
+const KEYCLOAK_FRONTEND_ORIGIN = process.env.KEYCLOAK_FRONTEND_ORIGIN ?? "https://localhost:3000";
 const EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
+
+function publicOriginParts() {
+  try {
+    const url = new URL(PUBLIC_ORIGIN);
+    return {
+      host: url.host,
+      port: url.port || (url.protocol === "https:" ? "443" : "80"),
+      proto: url.protocol.replace(":", ""),
+    };
+  } catch {
+    return { host: "localhost:3000", port: "3000", proto: "https" };
+  }
+}
 
 export function localStackHost() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -24,10 +46,21 @@ export function localStackHttpTarget(port) {
   return `http://${localStackHost()}:${port}`;
 }
 
-function rewriteKeycloakBody(body) {
-  return body
+export function rewriteKeycloakBody(body) {
+  const rewritten = body
     .replaceAll("http://keycloak:8999", PUBLIC_ORIGIN)
     .replaceAll("http://localhost:8999", PUBLIC_ORIGIN);
+  if (KEYCLOAK_FRONTEND_ORIGIN === PUBLIC_ORIGIN) return rewritten;
+  // A plain replaceAll would corrupt an origin that merely starts with
+  // the pinned one: rewriting :3000 inside a worktree served on :30001
+  // turns "https://localhost:30001/x" into "https://localhost:300011/x".
+  // Requiring a non-digit next keeps the match to a whole port.
+  const pattern = new RegExp(`${escapeForRegExp(KEYCLOAK_FRONTEND_ORIGIN)}(?![0-9])`, "g");
+  return rewritten.replace(pattern, PUBLIC_ORIGIN);
+}
+
+function escapeForRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function rewriteKeycloakHeaders(headers) {
@@ -151,9 +184,9 @@ export function keycloakDevProxy(target) {
     selfHandleResponse: true,
     headers: {
       "Accept-Encoding": "identity",
-      "X-Forwarded-Proto": "https",
-      "X-Forwarded-Host": "localhost:3000",
-      "X-Forwarded-Port": "3000",
+      "X-Forwarded-Proto": publicOriginParts().proto,
+      "X-Forwarded-Host": publicOriginParts().host,
+      "X-Forwarded-Port": publicOriginParts().port,
     },
     configure(proxy) {
       proxy.on("proxyReq", (proxyReq) => {
