@@ -1767,6 +1767,7 @@ function collectMessageIds(row, request) {
  *     to: [{ name?, email }, ...],
  *     cc, bcc, replyTo, subject,
  *     textBody?, htmlBody?,
+ *     inReplyTo: [<bare msg-id>, ...], references: [...],
  *     draftsFolderId?, sentFolderId?, outboxFolderId?,
  *   }
  */
@@ -1938,6 +1939,11 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
     ...(request.cc?.length ? { cc: request.cc } : {}),
     ...(request.bcc?.length ? { bcc: request.bcc } : {}),
     ...(request.replyTo?.length ? { replyTo: request.replyTo } : {}),
+    // Bare msg-ids, as RFC 8621 §4.1.3 defines these properties and as the
+    // cache holds them. Set here rather than at create time so a resumed
+    // row rebuilds the same message it first tried to send.
+    ...(request.inReplyTo?.length ? { inReplyTo: request.inReplyTo } : {}),
+    ...(request.references?.length ? { references: request.references } : {}),
     subject: request.subject ?? '',
     ...bodyFields,
   };

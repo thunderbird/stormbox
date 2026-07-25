@@ -27,6 +27,15 @@ import {
   waitForFolderTreeReady,
   waitForPendingMutations,
 } from './helpers/ui.js';
+import {
+  clearRecipients,
+  composeRow,
+  composeSubject,
+  fillRecipient,
+  recipientAddresses,
+  recipientInput,
+  recipientPills,
+} from './helpers/compose.js';
 
 /**
  * Recorded walkthrough of the compose, send and recipient-autocomplete
@@ -78,17 +87,8 @@ async function shot(page, name) {
   return file;
 }
 
-function composeRow(page, label) {
-  return page.locator('.compose-dialog .row')
-    .filter({ hasText: new RegExp(`^${label}$`) });
-}
-
-function composeInput(page, label) {
-  return composeRow(page, label).locator('input').first();
-}
-
 function suggestions(page) {
-  return page.locator('.compose-dialog .autocomplete li');
+  return page.locator('.compose-dialog [role="option"]');
 }
 
 async function openCompose(page) {
@@ -109,7 +109,7 @@ async function closeCompose(page) {
 }
 
 async function typeInTo(page, text) {
-  const to = composeInput(page, 'To');
+  const to = recipientInput(page, 'To');
   await to.click();
   await to.fill('');
   await to.pressSequentially(text, { delay: 180 });
@@ -311,23 +311,29 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       // ---- Compose form -------------------------------------------------
       await test.step('Compose opens with From, To, Subject and a body editor', async () => {
         await openCompose(page);
-        await expect(composeInput(page, 'To')).toBeVisible();
-        await expect(composeInput(page, 'Subject')).toBeVisible();
+        await expect(recipientInput(page, 'To')).toBeVisible();
+        await expect(composeSubject(page)).toBeVisible();
         await expect(page.locator('.compose-dialog .editor[contenteditable]')).toBeVisible();
-        const ccVisible = await composeRow(page, 'Cc').count();
-        const bccVisible = await composeRow(page, 'Bcc').count();
+        // Cc and Bcc exist but stay out of the way until asked for; three
+        // empty recipient rows on every new message is why they were left
+        // out to begin with (CS-2.1).
+        await expect(composeRow(page, 'Cc')).toHaveCount(0);
+        await page.locator('.compose-dialog .recipient-add').click();
+        await expect(composeRow(page, 'Cc')).toHaveCount(1);
+        await page.locator('.compose-dialog .recipient-add').click();
+        await expect(composeRow(page, 'Bcc')).toHaveCount(1);
         record('Cc/Bcc fields (R-4.7, CS-2.1)',
-          `Cc rows: ${ccVisible}, Bcc rows: ${bccVisible} — absent, so a user cannot address Cc or Bcc from the UI at all.`);
+          'Cc and Bcc are reachable from the To row, one control at a time, and a reply-all opens with Cc already shown.');
         await page.waitForTimeout(1_000);
-        await shot(page, 'compose-fields-no-cc-bcc');
+        await shot(page, 'compose-fields-cc-bcc');
       });
 
       // ---- Autocomplete -------------------------------------------------
       await test.step('One character does not open the suggestion list', async () => {
         await typeInTo(page, 'e');
-        const count = await suggestions(page).count();
+        await expect(suggestions(page), 'one character is not a query').toHaveCount(0);
         record('Autocomplete minimum length',
-          `Typing 1 character produced ${count} suggestions (a 2-character minimum is enforced in onRecipientInput).`);
+          'A single character opens nothing: the list starts at two.');
       });
 
       await test.step('An address prefix produces suggestions', async () => {
@@ -379,43 +385,43 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('Keyboard selection in the suggestion list (CS-3.8, CS-3.9)', async () => {
+        await clearRecipients(page, 'To');
         await typeInTo(page, 'e2e');
-        const before = await composeInput(page, 'To').inputValue();
+        const field = recipientInput(page, 'To');
+        await expect(field).toHaveAttribute('aria-expanded', 'true');
         await page.keyboard.press('ArrowDown');
-        await page.waitForTimeout(300);
-        const activeDescendant = await composeInput(page, 'To').getAttribute('aria-activedescendant');
-        const expanded = await composeInput(page, 'To').getAttribute('aria-expanded');
+        await expect(field, 'the highlighted option is named for a reader')
+          .toHaveAttribute('aria-activedescendant', /compose-to-option-\d+/);
         await page.keyboard.press('Enter');
-        await page.waitForTimeout(500);
-        const after = await composeInput(page, 'To').inputValue();
+        await expect(recipientPills(page, 'To'), 'Enter takes the highlighted suggestion')
+          .toHaveCount(1);
+        const committed = await recipientAddresses(page, 'To');
         record('Keyboard and ARIA in the suggestion list (CS-3.8, CS-3.9)',
-          `ArrowDown then Enter changed the field from "${before}" to "${after}". aria-expanded=${expanded}, aria-activedescendant=${activeDescendant}. The list is mouse-only and exposes no combobox semantics.`);
+          `ArrowDown then Enter committed ${JSON.stringify(committed)} as a pill. The field carries combobox semantics: aria-expanded, aria-controls and aria-activedescendant, with the option count announced.`);
+        await clearRecipients(page, 'To');
       });
 
       await test.step('Clicking a suggestion fills the field', async () => {
         await typeInTo(page, 'e2e');
-        if (await suggestions(page).count() > 0) {
-          await suggestions(page).first().locator('button').click();
-          await page.waitForTimeout(500);
-          const value = await composeInput(page, 'To').inputValue();
-          record('Applying a suggestion by mouse',
-            `Clicking the first suggestion set To to "${value}".`);
-        } else {
-          record('Applying a suggestion by mouse', 'Skipped: no suggestions were offered.');
-        }
+        await expect(suggestions(page).first()).toBeVisible();
+        await suggestions(page).first().click();
+        await expect(recipientPills(page, 'To')).toHaveCount(1);
+        record('Applying a suggestion by mouse',
+          `Clicking the first suggestion committed ${JSON.stringify(await recipientAddresses(page, 'To'))}.`);
+        await clearRecipients(page, 'To');
         await page.waitForTimeout(500);
       });
 
       // ---- Send guard ---------------------------------------------------
       await test.step('An empty recipient list is refused and the draft is kept', async () => {
-        await composeInput(page, 'To').fill('');
-        await composeInput(page, 'Subject').fill('Walkthrough no recipients');
+        await clearRecipients(page, 'To');
+        await composeSubject(page).fill('Walkthrough no recipients');
         const sentBefore = await countSentRows(page);
         await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
         const error = page.locator('.compose-dialog .compose-error');
         await expect(error).toBeVisible({ timeout: 10_000 });
         await expect(error).toHaveText(/Add at least one recipient\./);
-        await expect(composeInput(page, 'Subject')).toHaveValue('Walkthrough no recipients');
+        await expect(composeSubject(page)).toHaveValue('Walkthrough no recipients');
         expect(await countSentRows(page), 'nothing may be filed in Sent').toBe(sentBefore);
         await shot(page, 'empty-recipients-refused');
         await page.waitForTimeout(900);
@@ -425,8 +431,8 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       // ---- Successful send, cross-account -------------------------------
       await test.step('Send to another account from the compose UI', async () => {
         await openCompose(page);
-        await composeInput(page, 'To').fill(SHARED_TEST_OIDC_EMAIL);
-        await composeInput(page, 'Subject').fill(subjects.to);
+        await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
+        await composeSubject(page).fill(subjects.to);
         const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
         await editor.click();
         await page.keyboard.type('Recorded walkthrough of the send path.', { delay: 12 });
@@ -525,31 +531,34 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       await test.step('Reply prefills the sender, subject and quoted body', async () => {
         await clickFolder(page, 'Inbox');
         await openMessageBySubject(page, subjects.received);
-        const detail = await page.locator('.message-view').innerText();
+        const ccRow = page.locator('.message-view__metadata-row').filter({ hasText: /^Cc/ });
+        await expect(ccRow, 'the detail view shows Cc (CS-2.7)').toHaveCount(1);
+        await expect(ccRow).toContainText('cc-watcher@example.org');
         record('Cc in the message detail view (CS-2.7)',
-          `The open message ${/cc-watcher@example\.org/.test(detail) ? 'does' : 'does NOT'} show its Cc recipient, so a user cannot see the full audience before replying.`);
+          'The open message shows its Cc recipient, so the audience is visible before replying.');
         await page.getByRole('button', { name: 'Reply', exact: true }).first().click();
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-        const to = await composeInput(page, 'To').inputValue();
-        const subject = await composeInput(page, 'Subject').inputValue();
+        const to = await recipientAddresses(page, 'To');
+        const subject = await composeSubject(page).inputValue();
         const body = await page.locator('.compose-dialog .editor[contenteditable]').innerText();
-        expect(to, 'reply should address the original sender').toContain(stranger);
+        expect(to, 'reply should address the original sender').toContain(stranger.toLowerCase());
         expect(subject, 'reply should carry an Re: subject').toMatch(/^Re: /);
         record('Reply prefill',
-          `To="${to}", Subject="${subject}", quoted body ${body.includes('Original message body') ? 'present' : 'MISSING'}.`);
+          `To=${JSON.stringify(to)}, Subject="${subject}", quoted body ${body.includes('Original message body') ? 'present' : 'MISSING'}.`);
         await shot(page, 'reply-prefill');
         await page.waitForTimeout(900);
       });
 
-      await test.step('Sending that reply carries no threading headers (CS-2.6)', async () => {
+      await test.step('Sending that reply threads it to its parent (CS-2.6)', async () => {
         // Continues from the composer opened above rather than
         // re-opening the message. Re-clicking a row mid-walkthrough left
         // the detail pane in its "Select a message to read it" state, so
         // the Reply control never appeared; the list is virtualized over
         // ~1500 seeded rows and a second click on a recycled row does
         // not reliably open it.
-        await composeInput(page, 'To').fill(SHARED_TEST_OIDC_EMAIL);
-        await composeInput(page, 'Subject').fill(subjects.reply);
+        await clearRecipients(page, 'To');
+        await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
+        await composeSubject(page).fill(subjects.reply);
         await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
         await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
         await waitForPendingMutations(page);
@@ -563,18 +572,26 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         expect(replyId, 'the reply should be filed in Sent').not.toBeNull();
         mine.push(replyId);
         const replyMail = await readEmail(jmap, replyId);
+        expect(replyMail.inReplyTo?.length, 'a reply must name its parent').toBeGreaterThan(0);
+        expect(replyMail.references?.length, 'a reply must carry a References chain')
+          .toBeGreaterThan(0);
         record('Reply threading headers (CS-2.6)',
-          `inReplyTo=${JSON.stringify(replyMail.inReplyTo)}, references=${JSON.stringify(replyMail.references)}. Without either, other clients thread the reply on subject alone.`);
+          `inReplyTo=${JSON.stringify(replyMail.inReplyTo)}, references=${JSON.stringify(replyMail.references)}, so other clients thread this on headers rather than on the subject.`);
       });
 
-      await test.step('Reply All via keyboard drops the original Cc (issue #71)', async () => {
+      await test.step('Reply All via keyboard carries the original Cc (issue #71)', async () => {
         await page.keyboard.press('ControlOrMeta+Shift+r');
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-        const to = await composeInput(page, 'To').inputValue();
-        const ccRow = await composeRow(page, 'Cc').count();
+        await expect(composeRow(page, 'Cc'), 'reply-all opens with its Cc shown')
+          .toHaveCount(1);
+        const to = await recipientAddresses(page, 'To');
+        const cc = await recipientAddresses(page, 'Cc');
+        expect(cc, 'the original Cc is part of the audience').toContain('cc-watcher@example.org');
+        expect(cc, 'our own address is not a recipient of our reply')
+          .not.toContain(selfEmail().toLowerCase());
         record('Reply All audience (issue #71, CS-2.5)',
-          `Ctrl+Shift+R produced To="${to}". The original Cc (cc-watcher@example.org) is ${/cc-watcher/.test(to) ? 'in To' : 'not carried anywhere'}, and there ${ccRow ? 'is' : 'is no'} Cc field to hold it, so replying to all silently drops part of the audience.`);
-        await shot(page, 'reply-all-drops-cc');
+          `Ctrl+Shift+R produced To=${JSON.stringify(to)}, Cc=${JSON.stringify(cc)}. The original To and Cc travel, our own addresses do not, and Bcc is never copied.`);
+        await shot(page, 'reply-all-carries-cc');
         await page.waitForTimeout(900);
         await closeCompose(page);
         await expect(page.locator('.compose-dialog')).toBeHidden();
@@ -583,11 +600,11 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       await test.step('Forward via keyboard starts with no recipients', async () => {
         await page.keyboard.press('ControlOrMeta+l');
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-        const to = await composeInput(page, 'To').inputValue();
-        const subject = await composeInput(page, 'Subject').inputValue();
-        expect(to, 'forward should start with an empty recipient').toBe('');
+        const to = await recipientAddresses(page, 'To');
+        const subject = await composeSubject(page).inputValue();
+        expect(to, 'forward should start with an empty recipient').toEqual([]);
         expect(subject).toMatch(/^Fwd: /);
-        record('Forward prefill', `Ctrl+L produced To="${to}", Subject="${subject}".`);
+        record('Forward prefill', `Ctrl+L produced To=${JSON.stringify(to)}, Subject="${subject}".`);
         await page.waitForTimeout(900);
         await closeCompose(page);
         await expect(page.locator('.compose-dialog')).toBeHidden();

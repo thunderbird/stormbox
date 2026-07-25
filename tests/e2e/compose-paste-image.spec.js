@@ -23,6 +23,11 @@ import {
   clickFolder,
   waitForPendingMutations,
 } from './helpers/ui.js';
+import {
+  composeSubject,
+  fillRecipient,
+  recipientAddresses,
+} from './helpers/compose.js';
 
 /**
  * Compose paste-image (#30) — Verified Consistency triple.
@@ -42,13 +47,6 @@ test.skip(!localStackEnabled, skipLocalStackMessage);
 
 // 1x1 transparent PNG.
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-
-function composeInput(page, label) {
-  return page.locator('.compose-dialog .row')
-    .filter({ hasText: new RegExp(`^${label}$`) })
-    .locator('input')
-    .first();
-}
 
 async function findSentMessageBySubject(jmap, sentMailbox, subject) {
   const payload = await jmapRequest(jmap, [[
@@ -178,8 +176,8 @@ test.describe('Compose paste image e2e', () => {
         { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
       ).toBeGreaterThan(0);
 
-      await composeInput(page, 'To').fill(recipient);
-      await composeInput(page, 'Subject').fill(subject);
+      await fillRecipient(page, 'To', recipient);
+      await composeSubject(page).fill(subject);
 
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();

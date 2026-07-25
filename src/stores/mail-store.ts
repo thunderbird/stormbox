@@ -26,6 +26,7 @@ import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
 import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-html';
 import { parseOneAddress } from '../utils/address-list';
+import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
@@ -153,6 +154,28 @@ export const useMailStore = defineStore('mail', () => {
     isSelected: (messageId) => selectedMessageId.value === messageId,
   });
   const messageBody = bodyPrefetch.messageBody;
+  /**
+   * The open message's addresses, one row per address.
+   *
+   * The list row carries `from_text` and `to_text` for display, and there
+   * is no column for Cc at all — so the detail view cannot show the
+   * audience without these (CS-2.7). Loaded alongside the body and guarded
+   * by the same selection check, since a fast cursor can leave a slow read
+   * describing a message the user has already moved off.
+   */
+  const selectedMessageAddresses = ref<MessageAddress[]>([]);
+
+  async function loadSelectedMessageAddresses(messageId: number): Promise<void> {
+    selectedMessageAddresses.value = [];
+    if (!repo || typeof repo.listMessageAddresses !== 'function') return;
+    try {
+      const rows = await repo.listMessageAddresses(messageId);
+      if (selectedMessageId.value !== messageId) return;
+      selectedMessageAddresses.value = Array.isArray(rows) ? rows : [];
+    } catch (err) {
+      console.warn('[mail-store] could not read message addresses', err);
+    }
+  }
 
   /**
    * Per-folder cache. Keys live as long as the store does (i.e. as
@@ -520,6 +543,7 @@ export const useMailStore = defineStore('mail', () => {
     focusedMessageId.value = null;
     selectedIds.value = new Set();
     messageBody.value = null;
+    selectedMessageAddresses.value = [];
     if (folderId == null) {
       folderState = null;
       messages.value = [];
@@ -1229,12 +1253,14 @@ export const useMailStore = defineStore('mail', () => {
     focusedMessageId.value = messageId;
     if (messageId == null || authStore.accountId == null) {
       bodyPrefetch.messageBody.value = null;
+      selectedMessageAddresses.value = [];
       return;
     }
 
     const token = bodyPrefetch.nextDisplayToken();
     bodyPrefetch.messageBody.value = null;
     void bodyPrefetch.loadBodyForDisplay(messageId, token);
+    void loadSelectedMessageAddresses(messageId);
 
     if (!_isSeenInList(messageId)) {
       markRead(messageId).catch((err) => {
@@ -2001,6 +2027,7 @@ export const useMailStore = defineStore('mail', () => {
     if (selectedMessageId.value != null && set.has(Number(selectedMessageId.value))) {
       selectedMessageId.value = null;
       messageBody.value = null;
+      selectedMessageAddresses.value = [];
     }
     if (focusedMessageId.value != null && set.has(Number(focusedMessageId.value))) {
       focusedMessageId.value = null;
@@ -2975,6 +3002,7 @@ export const useMailStore = defineStore('mail', () => {
     focusedMessageId,
     selectedIds,
     messageBody,
+    selectedMessageAddresses,
     isLoading,
     error,
     notice,

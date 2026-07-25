@@ -45,12 +45,25 @@ async function fetchWithTls(url, options = {}) {
 
 const cachedTokens = new Map();
 
+/**
+ * A token for one account.
+ *
+ * `email` is accepted as an alias for `username` because that is what the
+ * account is called everywhere else in these tests, and getting it wrong
+ * used to be silent: the username fell back to the default account while
+ * the password did not, and the cache — then keyed by username alone —
+ * handed back the default account's token. The caller believed it held a
+ * connection to the second account and was reading the first one's mail.
+ */
 export async function getAccessToken({
-  username = TEST_OIDC_EMAIL,
+  username,
+  email,
   password = TEST_OIDC_PASSWORD,
 } = {}) {
+  const user = username ?? email ?? TEST_OIDC_EMAIL;
   const now = Date.now();
-  const cached = cachedTokens.get(username);
+  const cacheKey = `${user}\u0000${password}`;
+  const cached = cachedTokens.get(cacheKey);
   if (cached?.token && cached.expiresAt > now + 30_000) {
     return cached.token;
   }
@@ -59,7 +72,7 @@ export async function getAccessToken({
   const body = new URLSearchParams({
     grant_type: 'password',
     client_id: OIDC_CLIENT_ID,
-    username,
+    username: user,
     password,
   });
 
@@ -76,7 +89,7 @@ export async function getAccessToken({
   if (!payload.access_token) {
     throw new Error(`Token response missing access_token: ${JSON.stringify(payload)}`);
   }
-  cachedTokens.set(username, {
+  cachedTokens.set(cacheKey, {
     token: payload.access_token,
     expiresAt: now + (payload.expires_in ?? 300) * 1000,
   });

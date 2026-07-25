@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   Bold,
   Code,
@@ -26,10 +26,16 @@ import {
 import DOMPurify from 'dompurify';
 import Squire from 'squire-rte';
 
-import { useComposeStore } from '../stores/compose-store';
+import {
+  RECIPIENT_FIELDS,
+  useComposeStore,
+  type RecipientEntry,
+  type RecipientField,
+} from '../stores/compose-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
 import AppButton from './AppButton.vue';
+import RecipientInput from './RecipientInput.vue';
 
 const composeStore = useComposeStore();
 const contactsStore = useContactsStore();
@@ -601,30 +607,80 @@ onUnmounted(() => {
 // erasing the draft here could lose it if the send then fails.
 const isSending = computed(() => composeStore.status === COMPOSE_STATE.SENDING);
 
-const autocompleteSuggestions = ref([]);
-const autocompleteFor = ref(null);
+/**
+ * The committed recipients of each field, as the control shows them.
+ *
+ * Held here rather than read from the store on render because the order the
+ * two kinds appear in is the control's: a fragment stays between the
+ * addresses it was typed between, which the draft does not record. The
+ * store keeps what the message carries and what refuses the send.
+ */
+const recipientEntries = reactive<Record<RecipientField, RecipientEntry[]>>({
+  to: [],
+  cc: [],
+  bcc: [],
+});
 
-async function onRecipientInput(field) {
-  autocompleteFor.value = field;
-  const value = composeStore.draft[field];
-  const lastTokenMatch = value.match(/(?:^|,)\s*([^,]+)$/);
-  const prefix = (lastTokenMatch?.[1] ?? '').trim();
-  if (prefix.length < 2) {
-    autocompleteSuggestions.value = [];
-    return;
-  }
-  autocompleteSuggestions.value = await contactsStore.autocomplete(prefix, 8);
+// Cc and Bcc stay out of the way until they hold something or are asked
+// for: three empty fields on every new message is the reason they were
+// left out in the first place.
+const showCc = ref(false);
+const showBcc = ref(false);
+
+const RECIPIENT_LABELS: Record<RecipientField, string> = { to: 'To', cc: 'Cc', bcc: 'Bcc' };
+
+const visibleRecipientFields = computed<RecipientField[]>(() => [
+  'to',
+  ...(showCc.value ? (['cc'] as const) : []),
+  ...(showBcc.value ? (['bcc'] as const) : []),
+]);
+
+watch(
+  () => composeStore.draftEpoch,
+  () => {
+    for (const field of RECIPIENT_FIELDS) {
+      recipientEntries[field] = composeStore.recipientEntries(field);
+    }
+    showCc.value = composeStore.draft.cc.length > 0;
+    showBcc.value = composeStore.draft.bcc.length > 0;
+  },
+  { immediate: true },
+);
+
+function setEntries(field: RecipientField, entries: RecipientEntry[]) {
+  recipientEntries[field] = entries;
+  composeStore.setRecipientEntries(field, entries);
 }
 
-function applySuggestion(field: 'to' | 'cc' | 'bcc', candidate: any) {
-  const value = composeStore.draft[field];
-  const lastTokenIdx = value.lastIndexOf(',');
-  const prefix = lastTokenIdx >= 0 ? value.slice(0, lastTokenIdx + 1) + ' ' : '';
-  const formatted = candidate.name
-    ? `${candidate.name} <${candidate.email}>`
-    : candidate.email;
-  composeStore.draft[field] = `${prefix}${formatted}, `;
-  autocompleteSuggestions.value = [];
+/**
+ * Addresses this message already carries in its other fields. Offering one
+ * of them again spends a row of the list on a recipient who is already on
+ * the message.
+ */
+function takenElsewhere(field: RecipientField): string[] {
+  return RECIPIENT_FIELDS
+    .filter((other) => other !== field)
+    .flatMap((other) => composeStore.draft[other].map((address) => address.email));
+}
+
+function queryContacts(prefix: string, limit: number) {
+  return contactsStore.autocomplete(prefix, limit);
+}
+
+/**
+ * The whole address book, for the browse path. The Contacts space is the
+ * other place this list lives, and it is behind this dialog rather than
+ * beside it, so the browse path stays in the field.
+ */
+async function browseAllContacts(limit: number) {
+  const contacts = await contactsStore.listContacts({ limit });
+  return contacts
+    .filter((contact) => !!contact.email)
+    .map((contact) => ({
+      ...(contact.display_name ? { name: contact.display_name } : {}),
+      email: contact.email as string,
+      source: 'contact' as const,
+    }));
 }
 
 async function send() {
@@ -661,24 +717,28 @@ function selectFromIdentity(event: Event) {
         </select>
       </div>
 
-      <div class="row">
-        <label>To</label>
-        <input
-          type="text"
-          v-model="composeStore.draft.to"
-          @input="onRecipientInput('to')"
-          autocomplete="off"
+      <!-- Remounted per draft: the control owns the text being typed, and a
+           reply that replaces the draft has to replace that too. -->
+      <div v-for="field in visibleRecipientFields" :key="field" class="row row--recipient">
+        <label :for="`compose-${field}`">{{ RECIPIENT_LABELS[field] }}</label>
+        <RecipientInput
+          :key="`${field}-${composeStore.draftEpoch}`"
+          :input-id="`compose-${field}`"
+          :label="RECIPIENT_LABELS[field]"
+          :entries="recipientEntries[field]"
+          :taken="takenElsewhere(field)"
+          :query="queryContacts"
+          :browse-all="browseAllContacts"
+          @update:entries="(entries: RecipientEntry[]) => setEntries(field, entries)"
         />
       </div>
-      <ul v-if="autocompleteFor === 'to' && autocompleteSuggestions.length > 0" class="autocomplete">
-        <li v-for="s in autocompleteSuggestions" :key="`${s.email}-${s.source}`">
-          <button type="button" @click="applySuggestion('to', s)">
-            <span class="ac-name">{{ s.name || s.email }}</span>
-            <span class="ac-email">{{ s.email }}</span>
-            <span class="ac-source">{{ s.source }}</span>
-          </button>
-        </li>
-      </ul>
+      <p v-if="!(showCc && showBcc)" class="recipient-toggles">
+        <button
+          type="button"
+          class="recipient-add"
+          @click="showCc ? (showBcc = true) : (showCc = true)"
+        >{{ showCc ? 'Add Bcc' : 'Add Cc' }}</button>
+      </p>
 
       <div class="row">
         <label>Subject</label>
@@ -1173,6 +1233,22 @@ function selectFromIdentity(event: Event) {
   border-radius: 8px;
   font-size: 14px;
 }
+/* Aligned to the input column, like .autocomplete below. */
+.recipient-toggles {
+  margin: -2px 0 0 78px;
+}
+.recipient-add {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--muted, #6b7388);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.recipient-add:hover {
+  color: inherit;
+}
 .compose-toolbar {
   display: flex;
   flex-wrap: nowrap;
@@ -1363,30 +1439,5 @@ footer {
   justify-content: flex-end;
   gap: 8px;
 }
-.autocomplete {
-  margin: 0 0 0 78px;
-  padding: 0;
-  list-style: none;
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-.autocomplete button {
-  width: 100%;
-  text-align: left;
-  border: 0;
-  background: transparent;
-  padding: 8px 10px;
-  cursor: pointer;
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 8px;
-  align-items: baseline;
-}
-.autocomplete button:hover { background: rgba(0, 0, 0, 0.04); }
-.ac-name { font-size: 13px; }
-.ac-email { font-size: 12px; color: var(--muted, #6b7388); }
-.ac-source { font-size: 11px; color: var(--muted, #6b7388); text-transform: uppercase; }
 .compose-error { color: #b3261e; font-size: 13px; }
 </style>

@@ -24,6 +24,11 @@ import {
   readViewCacheForFolderRole,
   waitForPendingMutations,
 } from './helpers/ui.js';
+import {
+  composeSubject,
+  fillRecipient,
+  recipientAddresses,
+} from './helpers/compose.js';
 
 /**
  * Compose + send (R-4.4, SC-2) — Verified Consistency triple.
@@ -47,13 +52,6 @@ import {
  */
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
-
-function composeInput(page, label) {
-  return page.locator('.compose-dialog .row')
-    .filter({ hasText: new RegExp(`^${label}$`) })
-    .locator('input')
-    .first();
-}
 
 async function findSentMessageBySubject(jmap, sentMailbox, subject) {
   const payload = await jmapRequest(jmap, [
@@ -143,8 +141,8 @@ test.describe('Compose + send e2e', () => {
         { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
       ).toBeGreaterThan(0);
 
-      await composeInput(page, 'To').fill(recipient);
-      await composeInput(page, 'Subject').fill(subject);
+      await fillRecipient(page, 'To', recipient);
+      await composeSubject(page).fill(subject);
 
       // Squire contenteditable body — click and type so the compose
       // store picks up htmlBody and textBody.

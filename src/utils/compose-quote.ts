@@ -1,5 +1,10 @@
 /**
- * Helpers for reply / forward / reply-all compose prefills.
+ * Subject prefixing and body quoting for reply and forward prefills.
+ *
+ * Who a reply is addressed to is decided in `reply.ts` from the parent's
+ * structured addresses. It used to be decided here, from the rendered
+ * header text split on commas, which could neither recognise the user's
+ * own addresses nor see the Cc that was never rendered into a column.
  */
 
 export function makeReplySubject(subject?: string | null): string {
@@ -80,52 +85,4 @@ function escapeHtml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-}
-
-export function parseAddressTokens(input?: string | null): string[] {
-  if (!input) return [];
-  return input
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
-
-export function extractEmailAddress(token: string): string {
-  const m = token.match(/<([^>]+)>/);
-  return (m ? m[1] : token).trim().toLowerCase();
-}
-
-export function uniqueAddressTokens(tokens: string[], excludeEmails: string[] = []): string[] {
-  const exclude = new Set(excludeEmails.map((e) => e.toLowerCase()));
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const token of tokens) {
-    const email = extractEmailAddress(token);
-    if (!email || exclude.has(email) || seen.has(email)) continue;
-    seen.add(email);
-    out.push(token);
-  }
-  return out;
-}
-
-export function buildReplyAllRecipients({
-  fromText,
-  toText,
-  selfEmail,
-}: {
-  fromText?: string | null;
-  toText?: string | null;
-  selfEmail?: string | null;
-}): { to: string; cc: string } {
-  const self = selfEmail?.trim().toLowerCase() ?? '';
-  const from = (fromText ?? '').trim();
-  const fromEmail = from ? extractEmailAddress(from) : '';
-  const others = uniqueAddressTokens(
-    parseAddressTokens(toText),
-    self ? [self, fromEmail] : [fromEmail].filter(Boolean),
-  );
-  return {
-    to: from,
-    cc: others.join(', '),
-  };
 }

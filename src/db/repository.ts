@@ -223,6 +223,16 @@ export class Repository {
   }
 
   /**
+   * The message's addresses as `{kind, position, name, email}` rows, where
+   * `kind` is one of from, to, cc, bcc, replyTo, sender. Compose reads
+   * these to address a reply, since Cc and Reply-To exist nowhere else in
+   * the cache.
+   */
+  listMessageAddresses(messageId) {
+    return this.call(DB_RPC.MESSAGE_LIST_ADDRESSES, { messageId });
+  }
+
+  /**
    * Return the subset of `ids` that still resolve to a live row in
    * `messages` for `accountId`. Used by the mail-store to drop stale
    * UI ids before enqueuing a mutation.

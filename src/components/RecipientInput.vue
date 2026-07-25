@@ -1,0 +1,727 @@
+<script setup lang="ts">
+import { computed, nextTick, onUnmounted, ref } from 'vue';
+
+import {
+  endsInsideAddress,
+  formatAddress,
+  parseAddressEntries,
+  type ParsedAddress,
+} from '../utils/address-parse';
+import type { RecipientEntry } from '../stores/compose-store';
+import type { AutocompleteCandidate } from '../stores/contacts-store';
+
+/**
+ * One recipient field: committed recipients as pills, a text input for the
+ * next one, and a suggestion list over the two.
+ *
+ * A pill is a recipient the user has finished with, which is what makes the
+ * two states distinguishable at all — text in the field is being written,
+ * a pill is decided. Anything committed that is not a readable address
+ * becomes a pill too, marked invalid, because the alternative is dropping
+ * a recipient or passing rubbish to the server as an address (CS-2.4). Any
+ * pill reopens as the text it was entered as, so a typo is corrected where
+ * it is rather than deleted and retyped (CS-3.16).
+ */
+const props = withDefaults(defineProps<{
+  label: string;
+  inputId: string;
+  entries: readonly RecipientEntry[];
+  /** Suggestion source. Defaults to none, for callers with no directory. */
+  query?: (prefix: string, limit: number) => Promise<AutocompleteCandidate[]>;
+  /** The whole address book, for the browse path CS-3.12 requires. */
+  browseAll?: (limit: number) => Promise<AutocompleteCandidate[]>;
+  /** Addresses already committed elsewhere, which are not offered again. */
+  taken?: readonly string[];
+  /** How long to wait after a keystroke before querying. */
+  debounceMs?: number;
+}>(), {
+  query: undefined,
+  browseAll: undefined,
+  taken: () => [],
+  debounceMs: 120,
+});
+
+const emit = defineEmits<{
+  'update:entries': [RecipientEntry[]];
+}>();
+
+/** CS-3.12: a list, not the address book. */
+const SUGGESTION_LIMIT = 10;
+/** One letter matches most of a directory, which is not a suggestion. */
+const MIN_PREFIX = 2;
+/**
+ * How much of the address book the browse path shows. Ten is the right
+ * number of typeahead matches and the wrong number for "show me everyone",
+ * which is a list to scroll rather than a list to read.
+ */
+const BROWSE_LIMIT = 200;
+
+const text = ref('');
+const suggestions = ref<AutocompleteCandidate[]>([]);
+const activeIndex = ref(-1);
+const expanded = ref(false);
+/** Whether the list currently holds the address book rather than matches. */
+const browsing = ref(false);
+const inputEl = ref<HTMLInputElement | null>(null);
+const pillsEl = ref<HTMLElement | null>(null);
+
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * The query whose answer is still wanted. Answers arrive in whatever order
+ * the worker returns them, and an earlier one landing later would replace
+ * the list for what the user has since typed (CS-3.10).
+ */
+let queryToken = 0;
+/**
+ * What to say about a lookup that found nothing. An empty live region is not
+ * an announcement — screen readers speak a change, not a clearing — so "no
+ * matches" has to be said in words or the user is left waiting for a list
+ * that is never coming.
+ */
+const foundNothing = ref<string | null>(null);
+
+onUnmounted(() => {
+  if (debounceTimer) clearTimeout(debounceTimer);
+});
+
+function isInvalid(entry: RecipientEntry): boolean {
+  return 'invalid' in entry;
+}
+
+/** What a pill reopens as: the address as written, or the text as typed. */
+function entryText(entry: RecipientEntry): string {
+  return 'invalid' in entry ? entry.text : formatAddress(entry);
+}
+
+function entryLabel(entry: RecipientEntry): string {
+  if ('invalid' in entry) return entry.text;
+  return entry.name?.trim() || entry.email;
+}
+
+/**
+ * The whole accessible name of a pill. A pill's visible text is a display
+ * name, which on its own does not say which address it stands for, and an
+ * invalid one has to say so in words as well as in colour (WCAG 1.4.1).
+ */
+function entryDescription(entry: RecipientEntry): string {
+  if ('invalid' in entry) return `${entry.text} — not a valid address`;
+  const name = entry.name?.trim();
+  return name ? `${name} <${entry.email}>` : entry.email;
+}
+
+const listboxId = computed(() => `${props.inputId}-listbox`);
+const statusId = computed(() => `${props.inputId}-status`);
+const optionId = (idx: number) => `${props.inputId}-option-${idx}`;
+
+const isListOpen = computed(() => expanded.value && suggestions.value.length > 0);
+
+/**
+ * Announced to a screen reader when the list changes, since a listbox
+ * appearing below the field is not something a non-sighted user can see.
+ */
+const resultSummary = computed(() => {
+  if (!isListOpen.value) {
+    // Silent on dismissal: the user who pressed Escape knows what it did.
+    return foundNothing.value ?? '';
+  }
+  const count = suggestions.value.length;
+  if (browsing.value) return `Showing ${count} contacts`;
+  return count === 1 ? '1 suggestion available' : `${count} suggestions available`;
+});
+
+function commitEntries(next: RecipientEntry[]): void {
+  emit('update:entries', next);
+}
+
+/** Everything already committed here or in a sibling field, lower-cased. */
+const takenEmails = computed(() => new Set([
+  ...props.entries
+    .filter((entry): entry is ParsedAddress => !('invalid' in entry))
+    .map((entry) => entry.email.toLowerCase()),
+  ...props.taken.map((email) => email.trim().toLowerCase()),
+]));
+
+/**
+ * Stop wanting a list, whatever the reason — dismissed, committed, or left.
+ *
+ * Invalidating the query is the whole point: an answer that arrives after
+ * this reopens a list nobody asked for, under a field that may no longer
+ * have focus, and an expanded combobox with focus elsewhere is a state the
+ * dialog cannot be closed from — the shortcut handler stands down for it and
+ * the control never receives the key. Cancelling the timer matters for the
+ * same reason: picking a suggestion with the mouse deliberately does not
+ * blur, so nothing else would.
+ */
+function closeList(): void {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = null;
+  queryToken += 1;
+  expanded.value = false;
+  activeIndex.value = -1;
+  suggestions.value = [];
+  browsing.value = false;
+  foundNothing.value = null;
+}
+
+/**
+ * Show the address book itself, for a recipient the user cannot spell well
+ * enough to find by typing. Ten matches is the right size for a typeahead
+ * and no help at all when the name is half-remembered (CS-3.12).
+ */
+async function browseContacts(): Promise<void> {
+  const browseAll = props.browseAll;
+  if (!browseAll) return;
+  if (debounceTimer) clearTimeout(debounceTimer);
+  const token = (queryToken += 1);
+  const found = await ask(() => browseAll(BROWSE_LIMIT));
+  if (token !== queryToken) return;
+  suggestions.value = notTaken(found);
+  activeIndex.value = -1;
+  browsing.value = true;
+  foundNothing.value = suggestions.value.length > 0 ? null : 'No contacts to show';
+  expanded.value = suggestions.value.length > 0;
+  focusInput();
+}
+
+async function runQuery(prefix: string): Promise<void> {
+  const query = props.query;
+  const token = (queryToken += 1);
+  const found = query ? await ask(() => query(prefix, SUGGESTION_LIMIT)) : [];
+  if (token !== queryToken) return;
+  suggestions.value = notTaken(found).slice(0, SUGGESTION_LIMIT);
+  activeIndex.value = -1;
+  browsing.value = false;
+  expanded.value = suggestions.value.length > 0;
+  foundNothing.value = suggestions.value.length > 0 ? null : `No suggestions for ${prefix}`;
+}
+
+/**
+ * Run a lookup, treating failure as "no matches".
+ *
+ * A rejected query used to leave the previous list on screen with its
+ * highlight intact, so Enter accepted a suggestion for text the user had
+ * since replaced — a wrong recipient, arrived at by pressing Enter.
+ */
+async function ask(
+  lookup: () => Promise<AutocompleteCandidate[]>,
+): Promise<AutocompleteCandidate[]> {
+  try {
+    return await lookup();
+  } catch {
+    return [];
+  }
+}
+
+/** Offering an existing recipient wastes a row and would do nothing. */
+function notTaken(found: readonly AutocompleteCandidate[]): AutocompleteCandidate[] {
+  return found.filter((candidate) => !takenEmails.value.has(candidate.email.toLowerCase()));
+}
+
+function scheduleQuery(): void {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  const prefix = text.value.trim();
+  if (prefix.length < MIN_PREFIX) {
+    // Nothing typed is not a query with no answers: dropping the token
+    // stops an answer for an earlier prefix from arriving into an empty
+    // field.
+    queryToken += 1;
+    closeList();
+    return;
+  }
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    void runQuery(prefix);
+  }, props.debounceMs);
+}
+
+function onInput(): void {
+  scheduleQuery();
+}
+
+/**
+ * Commit whatever text is in the field, as one entry per address written.
+ *
+ * Everything committed goes through here, typed or pasted, so a paste of
+ * ten addresses and a typed one are the same operation and neither can
+ * lose a fragment (CS-3.11).
+ */
+function commitText(value = text.value): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  const parsed = parseAddressEntries(trimmed);
+  if (parsed.length === 0) {
+    // Punctuation on its own — a stray comma — is nothing to commit and
+    // nothing lost. Anything else that parses to no element at all is text
+    // the user typed, and an empty group (`Team:;`) is legal enough to
+    // reach here: it keeps a pill rather than disappearing out of the field.
+    if (!/^[\s,;]+$/.test(trimmed)) {
+      text.value = '';
+      closeList();
+      commitEntries([...props.entries, { text: trimmed, invalid: true }]);
+      return true;
+    }
+    text.value = '';
+    return false;
+  }
+  const next = [...props.entries];
+  for (const element of parsed) {
+    if ('rejected' in element) {
+      next.push({ text: element.rejected, invalid: true });
+      continue;
+    }
+    // The same address twice is one recipient; the server would collapse
+    // them anyway, and a duplicate pill looks like a mistake.
+    const already = next.some(
+      (entry) => !('invalid' in entry)
+        && entry.email.toLowerCase() === element.address.email.toLowerCase(),
+    );
+    if (!already) next.push(element.address);
+  }
+  text.value = '';
+  closeList();
+  commitEntries(next);
+  return true;
+}
+
+function acceptSuggestion(candidate: AutocompleteCandidate): void {
+  const name = candidate.name?.trim();
+  const address: ParsedAddress = {
+    ...(name ? { name } : {}),
+    email: candidate.email,
+  };
+  commitText(formatAddress(address));
+  focusInput();
+}
+
+/** Reopen a pill as text, which is how a mistyped recipient is corrected. */
+function editEntry(index: number): void {
+  const entry = props.entries[index];
+  if (!entry) return;
+  const reopened = entryText(entry);
+  // Whatever was half-typed keeps its place after it, rather than being
+  // thrown away or run together with it.
+  const pending = text.value.trim();
+  text.value = pending ? `${reopened}, ${pending}` : reopened;
+  commitEntries(props.entries.filter((_, idx) => idx !== index));
+  focusInput();
+  scheduleQuery();
+}
+
+/**
+ * Remove a pill, then put focus somewhere deliberate: the pill that took
+ * its place, or the field. Removing the element that holds focus otherwise
+ * drops focus to the document, which strands a keyboard user (CS-3.9).
+ */
+async function removeEntry(index: number): Promise<void> {
+  const remaining = props.entries.filter((_, idx) => idx !== index);
+  commitEntries(remaining);
+  await nextTick();
+  const next = pillsEl.value?.querySelectorAll<HTMLButtonElement>('.pill__remove');
+  const target = next?.[Math.min(index, (next?.length ?? 0) - 1)];
+  if (target) target.focus();
+  else focusInput();
+}
+
+function focusInput(): void {
+  inputEl.value?.focus();
+}
+
+/**
+ * What has been written ahead of the caret, which is the address a typed
+ * separator would land in. The whole field stands in where the browser will
+ * not say — a keystroke without a caret position is the end of the text.
+ */
+function textBeforeCaret(): string {
+  const caret = inputEl.value?.selectionStart;
+  return typeof caret === 'number' ? text.value.slice(0, caret) : text.value;
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  switch (event.key) {
+    case 'ArrowDown':
+    case 'ArrowUp': {
+      if (suggestions.value.length === 0) {
+        // Down opens the list, as a combobox does: the address book on an
+        // empty field, and otherwise the matches for what is typed, which is
+        // how the list comes back after Escape without typing another
+        // character.
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        const prefix = text.value.trim();
+        if (prefix.length >= MIN_PREFIX) void runQuery(prefix);
+        else void browseContacts();
+        return;
+      }
+      event.preventDefault();
+      expanded.value = true;
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const count = suggestions.value.length;
+      // From nothing highlighted, Down goes to the first and Up to the
+      // last; past either end it wraps.
+      activeIndex.value = activeIndex.value < 0
+        ? (step === 1 ? 0 : count - 1)
+        : (activeIndex.value + step + count) % count;
+      return;
+    }
+    case 'Enter': {
+      // CS-3.8: Enter takes a suggestion only while one is highlighted.
+      // Otherwise it commits what was typed, which is the only way an
+      // address the directory has never seen can be entered at all.
+      event.preventDefault();
+      const candidate = suggestions.value[activeIndex.value];
+      if (candidate) acceptSuggestion(candidate);
+      else commitText();
+      return;
+    }
+    case 'Tab': {
+      // Leaves for the next field either way; what is typed comes with it.
+      commitText();
+      return;
+    }
+    case ',':
+    case ';': {
+      // The separators mean "that one is finished", which is a commit —
+      // except where the address being written is still open, as inside the
+      // quotes of `"Smith, Alice"`. There the character is part of the name
+      // and typing it must not cut the recipient in two.
+      if (endsInsideAddress(textBeforeCaret())) return;
+      event.preventDefault();
+      commitText();
+      return;
+    }
+    case 'Escape': {
+      // While the list is open Escape dismisses it and the dialog stays,
+      // which is the combobox pattern; with no list open the key belongs
+      // to whatever is listening above.
+      if (isListOpen.value) {
+        event.stopPropagation();
+        event.preventDefault();
+        closeList();
+      }
+      return;
+    }
+    case 'Backspace': {
+      // An empty field means the caret is against the last pill, and
+      // backspace over a recipient reopens it rather than deleting it
+      // outright: it is nearly always a correction.
+      if (text.value.length > 0 || props.entries.length === 0) return;
+      event.preventDefault();
+      editEntry(props.entries.length - 1);
+      return;
+    }
+    default:
+  }
+}
+
+/**
+ * Leaving the field commits what is in it. Losing a typed address because
+ * the user clicked Send rather than pressing Enter first is the whole
+ * failure this control has to avoid.
+ */
+function onBlur(): void {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  commitText();
+  closeList();
+}
+
+function onPaste(event: ClipboardEvent): void {
+  const pasted = event.clipboardData?.getData('text/plain');
+  if (!pasted) return;
+  // Pasted text is committed rather than inserted: a paste is a finished
+  // list, and newlines in a recipient field are not text a user meant to
+  // keep typing into (CS-3.11).
+  event.preventDefault();
+  const combined = text.value.trim()
+    ? `${text.value.trim()}, ${pasted}`
+    : pasted;
+  commitText(combined.replace(/[\r\n]+/g, ', '));
+}
+
+</script>
+
+<template>
+  <div class="recipient-input" :class="{ 'recipient-input--focused': isListOpen }">
+    <div ref="pillsEl" class="recipient-input__field" @click="focusInput">
+      <!-- The roles are spelled out because `display: contents` on the list
+           drops list semantics from the accessibility tree in more than one
+           browser, and "3 recipients" is the fact a screen reader is here
+           for. -->
+      <ul v-if="entries.length > 0" class="pills" role="list">
+        <li
+          v-for="(entry, idx) in entries"
+          :key="`${entryText(entry)}-${idx}`"
+          class="pill"
+          :class="{ 'pill--invalid': isInvalid(entry) }"
+          role="listitem"
+        >
+          <button
+            type="button"
+            class="pill__label"
+            :aria-invalid="isInvalid(entry) ? 'true' : undefined"
+            :aria-label="`${entryDescription(entry)}. Activate to edit.`"
+            :title="entryDescription(entry)"
+            @click.stop="editEntry(idx)"
+          >
+            <span v-if="isInvalid(entry)" class="pill__warning" aria-hidden="true">&#9888;</span>
+            <span class="pill__text">{{ entryLabel(entry) }}</span>
+          </button>
+          <button
+            type="button"
+            class="pill__remove"
+            :aria-label="`Remove ${entryDescription(entry)}`"
+            @click.stop="removeEntry(idx)"
+          >&times;</button>
+        </li>
+      </ul>
+      <input
+        :id="inputId"
+        ref="inputEl"
+        v-model="text"
+        type="text"
+        class="recipient-input__text"
+        role="combobox"
+        autocomplete="off"
+        aria-autocomplete="list"
+        :aria-expanded="isListOpen"
+        :aria-controls="listboxId"
+        :aria-activedescendant="activeIndex >= 0 ? optionId(activeIndex) : undefined"
+        @input="onInput"
+        @keydown="onKeydown"
+        @blur="onBlur"
+        @paste="onPaste"
+      />
+      <!-- Activated on click, not mousedown: a keyboard or screen-reader
+           activation dispatches click alone, and a control only a mouse can
+           reach is not a path to the address book. Mousedown is still
+           swallowed, to keep the field from losing focus on the way. -->
+      <button
+        v-if="browseAll"
+        type="button"
+        class="recipient-input__browse"
+        aria-label="Browse contacts"
+        @mousedown.prevent
+        @click="browseContacts()"
+      >&#9662;</button>
+    </div>
+
+    <div v-show="isListOpen" class="autocomplete">
+      <!-- The browse control sits outside the listbox: an option list whose
+           children are not all options is not a listbox any more, and a
+           screen reader counts it among the matches. -->
+      <ul
+        :id="listboxId"
+        class="autocomplete__options"
+        role="listbox"
+        :aria-label="`${label} suggestions`"
+      >
+        <li
+          v-for="(candidate, idx) in suggestions"
+          :id="optionId(idx)"
+          :key="`${candidate.email}-${candidate.source}`"
+          class="autocomplete__option"
+          :class="{ 'autocomplete__option--active': idx === activeIndex }"
+          role="option"
+          :aria-selected="idx === activeIndex"
+          @mousedown.prevent
+          @click="acceptSuggestion(candidate)"
+        >
+          <span class="ac-name">{{ candidate.name || candidate.email }}</span>
+          <span class="ac-email">{{ candidate.email }}</span>
+          <span class="ac-source">{{ candidate.source }}</span>
+        </li>
+      </ul>
+      <p v-if="browseAll && !browsing" class="autocomplete__browse">
+        <button type="button" @mousedown.prevent @click="browseContacts()">
+          Browse all contacts
+        </button>
+      </p>
+    </div>
+
+    <!-- A live region, and deliberately not this field's `aria-describedby`:
+         a description is read when the field is entered, and "3 suggestions
+         available" is not a description of a recipient field. -->
+    <p :id="statusId" class="sr-only" role="status">{{ resultSummary }}</p>
+  </div>
+</template>
+
+<style scoped>
+.recipient-input {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.recipient-input__field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 1px solid var(--border, #cfcfcf);
+  border-radius: 4px;
+  background: var(--input-bg, #fff);
+  cursor: text;
+}
+
+.recipient-input__field:focus-within {
+  border-color: var(--accent, #0060df);
+  outline: 2px solid color-mix(in srgb, var(--accent, #0060df) 35%, transparent);
+  outline-offset: -1px;
+}
+
+.pills {
+  display: contents;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 999px;
+  background: var(--pill-bg, rgba(0, 0, 0, 0.06));
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.pill__label,
+.pill__remove {
+  border: 0;
+  background: none;
+  padding: 1px 4px 1px 8px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 999px;
+}
+
+.pill__remove {
+  padding: 1px 7px 1px 4px;
+  opacity: 0.6;
+}
+
+.pill__remove:hover { opacity: 1; }
+
+.pill__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.pill__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Invalid is carried by the warning glyph and the dotted underline as well
+ * as by the colour, per WCAG 1.4.1: colour alone is not a message.
+ */
+.pill--invalid {
+  background: var(--invalid-bg, rgba(200, 30, 30, 0.1));
+  color: var(--invalid-fg, #a4000f);
+}
+
+.pill--invalid .pill__text {
+  text-decoration: underline dotted currentcolor;
+  text-underline-offset: 2px;
+}
+
+.pill__warning {
+  font-size: 0.9em;
+}
+
+.recipient-input__text {
+  flex: 1;
+  min-width: 8ch;
+  border: 0;
+  padding: 3px 2px;
+  background: none;
+  font: inherit;
+  color: inherit;
+}
+
+.recipient-input__text:focus { outline: none; }
+
+.recipient-input__browse {
+  border: 0;
+  background: none;
+  padding: 0 4px;
+  font: inherit;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
+.recipient-input__browse:hover { opacity: 1; }
+
+.autocomplete {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  right: 0;
+  margin: 2px 0 0;
+  background: var(--panel-bg, #fff);
+  border: 1px solid var(--border, #cfcfcf);
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.autocomplete__options {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.autocomplete__option {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.autocomplete__option--active,
+.autocomplete__option:hover {
+  background: var(--accent-soft, rgba(0, 96, 223, 0.12));
+}
+
+.ac-name { font-weight: 600; }
+.ac-email { opacity: 0.8; }
+.ac-source { margin-left: auto; font-size: 0.75rem; opacity: 0.6; }
+
+.autocomplete__browse {
+  margin: 0;
+  border-top: 1px solid var(--border, #cfcfcf);
+}
+
+.autocomplete__browse button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--accent, #0060df);
+  cursor: pointer;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+</style>

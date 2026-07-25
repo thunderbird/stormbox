@@ -126,36 +126,36 @@ makes a non-default origin work locally.
 
 ## Phase 2 — Recipients and reply (CS-2.1 to CS-2.8)
 
-- [ ] T201 Add `src/utils/address-parse.ts` implementing the RFC 5322
+- [x] T201 Add `src/utils/address-parse.ts` implementing the RFC 5322
       address-list grammar, returning parsed addresses and rejected
       fragments
-- [ ] T202 [P] Unit-test the parser: quoted display name containing a
+- [x] T202 [P] Unit-test the parser: quoted display name containing a
       comma, nested comments, group syntax, angle-addr, internationalized
       local part and domain, and malformed fragments
-- [ ] T203 Rewrite `parseAddressList` in `src/utils/address-list.ts` on
+- [x] T203 Rewrite `parseAddressList` in `src/utils/address-list.ts` on
       the new parser, keeping the existing signature working for callers
-- [ ] T204 Remove the comma-split address handling from
+- [x] T204 Remove the comma-split address handling from
       `src/utils/compose-quote.ts`
-- [ ] T205 Move draft recipients to structured arrays in
+- [x] T205 Move draft recipients to structured arrays in
       `src/stores/compose-store.ts`
-- [ ] T206 Add Cc and Bcc fields to `src/components/ComposeDialog.vue`
-- [ ] T207 Permit send when any of To, Cc, or Bcc holds a recipient
-- [ ] T208 Rebuild Reply All from structured `message_addresses`:
+- [x] T206 Add Cc and Bcc fields to `src/components/ComposeDialog.vue`
+- [x] T207 Permit send when any of To, Cc, or Bcc holds a recipient
+- [x] T208 Rebuild Reply All from structured `message_addresses`:
       original To and Cc, Reply-To preferred over From, all owned
       addresses excluded, Bcc never copied
-- [ ] T209 [P] Unit-test reply audience: Reply-To present, original Cc,
+- [x] T209 [P] Unit-test reply audience: Reply-To present, original Cc,
       duplicate recipients, several owned aliases, and a selected From
       that differs from the default identity
-- [ ] T210 Set `inReplyTo` and extend `references` on the Email create
+- [x] T210 Set `inReplyTo` and extend `references` on the Email create
       from the cached parent values
-- [ ] T211 Display Cc in the message detail view
-- [ ] T212 Apply the Identity `replyTo` default on send; persist but do
+- [x] T211 Display Cc in the message detail view
+- [x] T212 Apply the Identity `replyTo` default on send; persist but do
       not apply `bcc` pending a product decision
-- [ ] T213 E2E: Reply All against a message with Reply-To and Cc,
+- [x] T213 E2E: Reply All against a message with Reply-To and Cc,
       asserting `In-Reply-To` and `References` over direct JMAP
-- [ ] T214 E2E: reply audience and threading assertions against direct
+- [x] T214 E2E: reply audience and threading assertions against direct
       JMAP, on Chromium and Firefox
-- [ ] T215 Run checks including the two-browser e2e lane; commit
+- [x] T215 Run checks including the two-browser e2e lane; commit
 
 ## Phase 3 — Durable phased send (CS-1.6 to CS-1.10, CS-1.13)
 
@@ -249,22 +249,28 @@ makes a non-default origin work locally.
 
 ## Phase 6 — Recipient input control (CS-3.8 to CS-3.12)
 
-- [ ] T601 Add `src/components/RecipientInput.vue` with committed
-      recipient pills and validation state
-- [ ] T602 Implement the WAI-ARIA combobox pattern, including
-      `aria-activedescendant`, announced result count, accessible pill
-      removal, and focus restoration
-- [ ] T603 Enter accepts a highlighted suggestion only; otherwise commit
+- [x] T601 Add `src/components/RecipientInput.vue` with committed
+      recipient pills and validation state: an unreadable entry commits as
+      an invalid pill, marked by more than colour, and any pill reopens as
+      editable text when activated — exactly as entered where it is invalid,
+      canonical where it is not (CS-3.16)
+- [x] T602 Implement the WAI-ARIA combobox pattern, including
+      `aria-activedescendant`, announced result count and announced absence
+      of results, accessible pill removal, and focus restoration. Every
+      control operable by click, which is what a keyboard and a screen
+      reader dispatch
+- [x] T603 Enter accepts a highlighted suggestion only; otherwise commit
       typed input or report a parse error
-- [ ] T604 Debounce queries and discard stale responses via a request
-      sequence
-- [ ] T605 Multi-address paste on comma, semicolon, and newline, with
+- [x] T604 Debounce queries and discard stale responses via a request
+      sequence, including answers to a list that has since been dismissed,
+      left, or committed over
+- [x] T605 Multi-address paste on comma, semicolon, and newline, with
       rejected fragments surfaced
-- [ ] T606 Bound the suggestion list and add a browse-contacts path
-- [ ] T607 Use the control for To, Cc, and Bcc in `ComposeDialog.vue`
-- [ ] T608 [P] Component tests: mouse, keyboard, Escape, blur, paste,
+- [x] T606 Bound the suggestion list and add a browse-contacts path
+- [x] T607 Use the control for To, Cc, and Bcc in `ComposeDialog.vue`
+- [x] T608 [P] Component tests: mouse, keyboard, Escape, blur, paste,
       cross-field duplicate suppression, rapid typing
-- [ ] T609 E2E: keyboard-only recipient entry and screen-reader
+- [x] T609 E2E: keyboard-only recipient entry and screen-reader
       semantics in both browsers
 - [ ] T610 Run checks including the two-browser e2e lane; commit
 

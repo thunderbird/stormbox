@@ -163,6 +163,10 @@ export default defineConfig({
   // second Thundermail principal first. The per-test speedup comes
   // from storageState (Keycloak login skipped), not from worker
   // parallelism.
+  //
+  // This bounds one process only. A second `npm run test:e2e:local:full`
+  // races the first just as surely; the lane lock in global setup is what
+  // stops that.
   workers: LOCAL_STACK ? 1 : undefined,
   forbidOnly: !!process.env.CI,
   // One retry covers the occasional Keycloak SSO blip; real
@@ -170,6 +174,9 @@ export default defineConfig({
   retries: LOCAL_STACK ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'list',
   globalSetup: LOCAL_STACK ? './tests/e2e/global-setup.js' : undefined,
+  // Releases the single-lane lock the setup takes. A run killed outright
+  // never gets here, so the lock also clears itself once its holder is gone.
+  globalTeardown: LOCAL_STACK ? './tests/e2e/global-teardown.js' : undefined,
 
   use: {
     baseURL: BASE_URL,

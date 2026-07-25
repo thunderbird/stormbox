@@ -3,7 +3,7 @@
 import {
   afterEach, beforeEach, describe, expect, it, vi,
 } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
@@ -14,6 +14,7 @@ vi.mock('../../../src/services/auth', () => ({
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { useContactsStore } from '../../../src/stores/contacts-store';
 
 function firstTextNode(node) {
   if (node.nodeType === Node.TEXT_NODE) return node;
@@ -230,6 +231,175 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(wrapper.find('[data-toolbar-group="insert"]').exists()).toBe(true);
     expect(wrapper.get('.toolbar-more__menu').text()).toContain('Align left');
     expect(wrapper.get('.toolbar-more__menu').text()).toContain('Bulleted list');
+  });
+});
+
+describe('ComposeDialog recipient fields', () => {
+  const rowLabels = (wrapper: any) => wrapper.findAll('.row label').map((l: any) => l.text());
+  const recipientRow = (wrapper: any, label: string) => wrapper
+    .findAll('.row')
+    .find((row: any) => row.find('label').text() === label);
+  const recipientInput = (wrapper: any, label: string) => recipientRow(wrapper, label)
+    .find('input');
+  const pills = (wrapper: any, label: string) => recipientRow(wrapper, label)
+    .findAll('.pill')
+    .map((pill: any) => ({
+      text: pill.find('.pill__text').text(),
+      invalid: pill.classes('pill--invalid'),
+    }));
+
+  /**
+   * Wait out the control's suggestion debounce and let the query settle.
+   * Real time rather than fake, because other tests in this file poll on
+   * real timers and swapping them out globally would stall those.
+   */
+  async function suggestionsSettled() {
+    await new Promise((resolve) => { setTimeout(resolve, 160); });
+    await flushPromises();
+    await nextTick();
+  }
+
+  /** Type into a field and commit it the way Enter does. */
+  async function enterRecipient(wrapper: any, label: string, value: string) {
+    const input = recipientInput(wrapper, label);
+    input.element.value = value;
+    await input.trigger('input');
+    await input.trigger('keydown', { key: 'Enter' });
+    await nextTick();
+    return input;
+  }
+
+  it('opens with To only, and reveals Cc and then Bcc on request', async () => {
+    // Three empty fields on every new message is why Cc and Bcc were left
+    // out to begin with; they appear when there is a reason for them.
+    const { wrapper } = await mountOpenCompose();
+    expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Subject']);
+
+    await wrapper.get('.recipient-add').trigger('click');
+    expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Cc', 'Subject']);
+
+    await wrapper.get('.recipient-add').trigger('click');
+    expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Cc', 'Bcc', 'Subject']);
+    expect(wrapper.find('.recipient-add').exists()).toBe(false);
+  });
+
+  it('shows Cc already filled by a reply-all without being asked', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    composeStore.open({
+      to: [{ email: 'alice@example.com' }],
+      cc: [{ name: 'Bob', email: 'bob@example.com' }],
+    });
+    const wrapper = mount(ComposeDialog, { attachTo: document.body });
+    await nextTick();
+
+    expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Cc', 'Subject']);
+    expect(pills(wrapper, 'Cc')).toEqual([{ text: 'Bob', invalid: false }]);
+  });
+
+  it('turns committed text into the draft addresses', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+
+    await enterRecipient(wrapper, 'To', '"Smith, Alice" <alice@example.com>, bob@example.com');
+
+    expect(composeStore.draft.to).toEqual([
+      { name: 'Smith, Alice', email: 'alice@example.com' },
+      { email: 'bob@example.com' },
+    ]);
+    expect(pills(wrapper, 'To')).toEqual([
+      { text: 'Smith, Alice', invalid: false },
+      { text: 'bob@example.com', invalid: false },
+    ]);
+  });
+
+  it('leaves what the user is typing alone', async () => {
+    // An entry becomes a pill when the user says it is finished, not while
+    // it is half-written: reformatting mid-word rewrites what is being
+    // typed, and committing early makes a pill of `ali`.
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const input = recipientInput(wrapper, 'To');
+
+    input.element.value = 'ali';
+    await input.trigger('input');
+    await nextTick();
+
+    expect(input.element.value).toBe('ali');
+    expect(pills(wrapper, 'To')).toEqual([]);
+    expect(composeStore.draft.to).toEqual([]);
+  });
+
+  it('commits an unreadable entry as an invalid pill that refuses the send', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+
+    await enterRecipient(wrapper, 'To', 'alice@example.com, not an address');
+
+    expect(pills(wrapper, 'To')).toEqual([
+      { text: 'alice@example.com', invalid: false },
+      { text: 'not an address', invalid: true },
+    ]);
+    expect(composeStore.rejectedRecipients.to).toEqual(['not an address']);
+    expect(composeStore.draft.to).toEqual([{ email: 'alice@example.com' }]);
+  });
+
+  it('adds a chosen suggestion beside the recipients already committed', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const contactsStore = useContactsStore();
+    contactsStore.autocomplete = vi.fn(async () => [
+      { name: 'Bob', email: 'bob@example.com', source: 'contact' },
+    ]) as any;
+    await enterRecipient(wrapper, 'To', '"Smith, Alice" <alice@example.com>');
+
+    const input = recipientInput(wrapper, 'To');
+    input.element.value = 'bo';
+    await input.trigger('input');
+    await suggestionsSettled();
+
+    await wrapper.get('.autocomplete__option').trigger('click');
+    await nextTick();
+
+    expect(pills(wrapper, 'To')).toEqual([
+      { text: 'Smith, Alice', invalid: false },
+      { text: 'Bob', invalid: false },
+    ]);
+    expect(composeStore.draft.to).toEqual([
+      { name: 'Smith, Alice', email: 'alice@example.com' },
+      { name: 'Bob', email: 'bob@example.com' },
+    ]);
+  });
+
+  it('re-reads the fields when a reply replaces the draft', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const input = recipientInput(wrapper, 'To');
+    input.element.value = 'typing@example.com';
+    await input.trigger('input');
+
+    composeStore.open({ to: [{ name: 'Alice', email: 'alice@example.com' }] });
+    await nextTick();
+
+    expect(pills(wrapper, 'To')).toEqual([{ text: 'Alice', invalid: false }]);
+    // The half-typed entry belonged to the message that was replaced.
+    expect(recipientInput(wrapper, 'To').element.value).toBe('');
+  });
+
+  it('does not offer a contact who is already a recipient in another field', async () => {
+    const { wrapper } = await mountOpenCompose();
+    const contactsStore = useContactsStore();
+    contactsStore.autocomplete = vi.fn(async () => [
+      { name: 'Bob', email: 'bob@example.com', source: 'contact' },
+      { name: 'Bobbie', email: 'bobbie@example.com', source: 'contact' },
+    ]) as any;
+    await enterRecipient(wrapper, 'To', 'bob@example.com');
+    await wrapper.get('.recipient-add').trigger('click');
+
+    const cc = recipientInput(wrapper, 'Cc');
+    cc.element.value = 'bob';
+    await cc.trigger('input');
+    await suggestionsSettled();
+
+    const offered = recipientRow(wrapper, 'Cc')
+      .findAll('.autocomplete__option .ac-email')
+      .map((el: any) => el.text());
+    expect(offered).toEqual(['bobbie@example.com']);
   });
 });
 
