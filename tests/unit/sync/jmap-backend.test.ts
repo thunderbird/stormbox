@@ -1859,6 +1859,136 @@ describe('JmapBackend startup catch-up resilience', () => {
   });
 });
 
+describe('JmapBackend.stop with a stalled request', () => {
+  it('resolves instead of waiting out the request deadline', async () => {
+    // OutboxRunner.stop() awaits the in-flight drain, and the drain is
+    // awaiting a POST the server never answers. Without cancelling the
+    // transport first, stop() blocks for the whole request deadline —
+    // 30s in production. Everything that waits on teardown waits with
+    // it, including the sign-out path.
+    let stallReached: () => void;
+    const stalled = new Promise<void>((resolve) => { stallReached = resolve; });
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox' }],
+        state: 'mb-1',
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+    };
+    const respond = makeJmapHandlers(scenario);
+    const fetchMock = vi.fn(async (url, init) => {
+      if (init?.method === 'POST' && String(init.body).includes('Email/set')) {
+        stallReached();
+        // Hang exactly the way a stalled server does: connection
+        // accepted, no response, and only an abort ends it.
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            const err: any = new Error('The operation was aborted.');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      }
+      return respond(url, init);
+    });
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: fetchMock,
+      WebSocketImpl: FakeWebSocket,
+      // Deliberately far longer than the test is willing to wait, so a
+      // pass can only come from the abort and never from the deadline.
+      httpRequestTimeoutMs: 60_000,
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    await backend.start();
+    await backend.bootstrapped();
+
+    const ts = Date.now();
+    await engine.run(
+      `INSERT INTO messages(
+         account_id, remote_id, subject, keywords_json,
+         metadata_fetched_at, updated_at
+       ) VALUES (?, ?, 'subj', '{}', ?, ?)`,
+      [backend.account.id, 'e-1', ts, ts],
+    );
+    const message = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [backend.account.id, 'e-1'],
+    );
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: backend.account.id,
+      mutationType: 'setKeywords',
+      targetMessageId: message.id,
+      requestJson: JSON.stringify({ add: ['$seen'], remove: [] }),
+    });
+    backend.outboxRunner.notify({ immediate: true });
+    await stalled;
+
+    const started = Date.now();
+    await backend.stop();
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('opens no WebSocket for a backend that has already stopped', async () => {
+    // The bootstrap continuation runs detached from start() and swallows
+    // each step's failure, so teardown cannot end it by making a call
+    // fail. If it reached openWebSocket anyway, a signed-out account
+    // would be left holding an authenticated socket.
+    let releaseIdentities: () => void;
+    const identitiesHang = new Promise<void>((resolve) => { releaseIdentities = resolve; });
+    let identitiesReached: () => void;
+    const identitiesCalled = new Promise<void>((resolve) => { identitiesReached = resolve; });
+    const scenario = {
+      'Mailbox/get': () => ({
+        list: [{ id: 'mb-inbox', name: 'Inbox', role: 'inbox' }],
+        state: 'mb-1',
+      }),
+      'Identity/get': async () => {
+        identitiesReached();
+        await identitiesHang;
+        return { list: [], state: 'id' };
+      },
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+    };
+    const respond = makeJmapHandlers(scenario);
+    FakeWebSocket._reset();
+    const transport = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: async () => 'Bearer test',
+      fetch: vi.fn(async (url, init) => respond(url, init)),
+      WebSocketImpl: FakeWebSocket,
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: true },
+    });
+
+    await backend.start();
+    // Bootstrap is now parked inside syncIdentities, before the socket.
+    await identitiesCalled;
+    await backend.stop();
+    releaseIdentities();
+    await backend.bootstrapped().catch(() => {});
+
+    expect(FakeWebSocket.instances, 'teardown must leave no socket behind').toHaveLength(0);
+    expect((backend as any)._unsubStateChange).toBeNull();
+    expect((backend as any)._unsubClose).toBeNull();
+  });
+});
+
 describe('JmapBackend shared-account reconciliation', () => {
   it('acknowledges push state only after all account work succeeds', async () => {
     const primary = { id: 1, remote_account_id: 'acct-1' };

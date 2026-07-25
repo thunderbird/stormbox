@@ -120,6 +120,238 @@ describe('JmapTransport HTTP', () => {
     expect(result.methodResponses[0][0]).toBe('Mailbox/get');
   });
 
+  it('rejects a request with a typed timeout error when the server never responds', async () => {
+    // Failure mode: fetch() has no timeout. A server that accepts the
+    // POST and then stalls leaves the awaiting caller hung until the OS
+    // gives up on the socket. For a send that means compose-store never
+    // leaves status SENDING, and Close and Discard — which are gated on
+    // exactly that — stay disabled with no way out but a reload.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': (init) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const err: any = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      httpRequestTimeoutMs: 80,
+    });
+
+    const started = Date.now();
+    await expect(t.request([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]))
+      .rejects.toMatchObject({
+        type: 'httpRequestTimeout',
+        message: expect.stringMatching(/timed out/i),
+      });
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(50);
+    expect(elapsed).toBeLessThan(2_000);
+    expect((t as any)._inFlightHttp.size).toBe(0);
+  });
+
+  it('applies the deadline to the response body, not just the headers', async () => {
+    // fetch() resolves as soon as the headers arrive, so a deadline
+    // that stops there leaves a server which sends 200 and then stalls
+    // the body hanging in response.json() with the timer cleared.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': (init) => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            const err: any = new Error('The operation was aborted.');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }),
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      httpRequestTimeoutMs: 80,
+    });
+
+    await expect(t.request([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]))
+      .rejects.toMatchObject({ type: 'httpRequestTimeout' });
+    expect((t as any)._inFlightHttp.size).toBe(0);
+  });
+
+  it('abort() cancels an in-flight request with a distinguishable error', async () => {
+    // Teardown needs the pending call to settle now, not at the
+    // deadline, and the resulting error must not read as a stalled
+    // server: recovery treats the two differently.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': (init) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const err: any = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      httpRequestTimeoutMs: 60_000,
+    });
+
+    // Warm the session first. Otherwise request() issues the session
+    // fetch as well, and waiting on a size of 1 could be satisfied by
+    // that fetch's controller rather than by the parked POST this test
+    // means to abort.
+    await t.fetchSession();
+    const pending = t.request([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]);
+    await vi.waitFor(() => expect((t as any)._inFlightHttp.size).toBe(1));
+    t.abort();
+    await expect(pending).rejects.toMatchObject({ type: 'transportAborted' });
+    expect((t as any)._inFlightHttp.size).toBe(0);
+  });
+
+  it('refuses a request issued after abort() instead of sending it', async () => {
+    // The abort has to latch, not just cancel what is in flight. A
+    // mutation part-way through a multi-call operation reacts to its
+    // cancelled call by moving on, and the next call would otherwise be
+    // sent after teardown began and hold stop() open for its own
+    // deadline.
+    let posts = 0;
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': () => {
+        posts += 1;
+        return jsonResponse({ methodResponses: [['Mailbox/get', { list: [] }, 'm1']] });
+      },
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    t.abort();
+
+    await expect(t.request([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]))
+      .rejects.toMatchObject({ type: 'transportAborted' });
+    expect(posts, 'no request should reach the server after abort()').toBe(0);
+    expect((t as any)._inFlightHttp.size).toBe(0);
+  });
+
+  it('refuses a WebSocket request issued after abort() too', async () => {
+    // The WebSocket leg has the same exposure: abort() rejects what is
+    // pending, and a frame sent afterwards would sit until the 30s
+    // WebSocket deadline because stop() closes the socket only after
+    // the runner has quiesced.
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: makeFetch({}),
+    });
+    const sent: string[] = [];
+    (t as any)._ws = {
+      OPEN: 1,
+      readyState: 1,
+      send: (frame: string) => sent.push(frame),
+    };
+
+    t.abort();
+
+    await expect(t.wsRequest([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]))
+      .rejects.toMatchObject({ type: 'transportAborted' });
+    expect(sent, 'no frame should be sent after abort()').toEqual([]);
+  });
+
+  it('leaves a request that completes in time untouched and unregisters it', async () => {
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': () =>
+        jsonResponse({ methodResponses: [['Mailbox/get', { list: [] }, 'm1']] }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      httpRequestTimeoutMs: 60,
+    });
+    // Fake timers so the deadline timer's disposal can be observed
+    // directly. Waiting past the deadline instead would prove nothing:
+    // an armed timer would fire abort() on a controller already removed
+    // from _inFlightHttp, leaving every assertion here unchanged.
+    vi.useFakeTimers();
+    try {
+      const result = await t.request([JMAP_CAPS.CORE], [['Mailbox/get', {}, 'm1']]);
+      expect(result.methodResponses[0][0]).toBe('Mailbox/get');
+      expect((t as any)._inFlightHttp.size).toBe(0);
+      expect(
+        vi.getTimerCount(),
+        'the deadline timer must be cleared once the request settles',
+      ).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still honours a caller-supplied AbortSignal', async () => {
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap': (init) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const err: any = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+    const controller = new AbortController();
+    const pending = t.request(
+      [JMAP_CAPS.CORE],
+      [['Mailbox/get', {}, 'm1']],
+      { signal: controller.signal },
+    );
+    await vi.waitFor(() => expect((t as any)._inFlightHttp.size).toBe(1));
+    controller.abort();
+    // A caller-driven abort keeps its own AbortError rather than being
+    // relabelled as a transport teardown.
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('gives the session fetch a deadline too', async () => {
+    // request() awaits fetchSession() when no session is cached, so a
+    // stalled session document hangs a send just as surely as a stalled
+    // method call.
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': (init) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => {
+          const err: any = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      httpRequestTimeoutMs: 80,
+    });
+    await expect(t.fetchSession()).rejects.toMatchObject({ type: 'httpRequestTimeout' });
+  });
+
   it('attaches the auth header on every request', async () => {
     const fetchMock = makeFetch({
       'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
@@ -236,6 +468,31 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
     expect(seen[0].changed['acct-1'].Email).toBe('state-1');
     expect(seen[0].pushState).toBe('bbb');
     expect(t.lastPushState).toBe('bbb');
+  });
+
+  it('opens no socket once the transport has been aborted', async () => {
+    const t = makeTransport();
+    t.abort();
+    await expect(t.openWebSocket(['Email'], null))
+      .rejects.toMatchObject({ type: 'transportAborted' });
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('closes a socket that finished connecting after the abort', async () => {
+    // The abort can land while the handshake is in flight, between the
+    // constructor and the open event. Keeping that socket would leave an
+    // authenticated connection alive for a signed-out account, and the
+    // WebSocketPushEnable would go out after teardown.
+    const t = makeTransport();
+    const open = t.openWebSocket(['Email'], null);
+    const ws = await FakeWebSocket._waitForInstance();
+    t.abort();
+    ws._open();
+
+    await expect(open).rejects.toMatchObject({ type: 'transportAborted' });
+    expect(ws.sent, 'nothing may be sent on a socket opened into teardown').toEqual([]);
+    expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+    expect((t as any)._ws).toBeNull();
   });
 
   it('rejects pending requests when the WebSocket closes', async () => {

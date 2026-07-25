@@ -15,7 +15,7 @@
  */
 
 import {
-  describe, it, expect, beforeEach, afterEach,
+  describe, it, expect, beforeEach, afterEach, vi,
 } from 'vitest';
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
@@ -498,7 +498,9 @@ describe('OutboxRunner runMutation', () => {
     // second attempt will fire after the 5ms backoff and push the
     // row to conflicted.
     const result = await runner.runMutation(mutationId);
-    expect(result).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(result).toEqual({
+      attempted: 1, succeeded: 0, failed: 1, errorType: 'serverFail',
+    });
     const row = await loadRow(mutationId);
     expect(row.local_status).toBe('conflicted');
     expect(Number(row.attempts)).toBe(2);
@@ -528,6 +530,7 @@ describe('OutboxRunner runMutation', () => {
       succeeded: 0,
       failed: 1,
       result: perId,
+      errorType: 'notUpdated',
     });
     await runner.stop();
   });
@@ -649,5 +652,271 @@ describe('OutboxRunner integration with the handlers hook', () => {
       if (runner) await runner.stop();
       await localEngine.close();
     }
+  });
+});
+
+describe('OutboxRunner replay safety', () => {
+  async function strand(mutationId) {
+    await engine.run(
+      `UPDATE pending_mutations SET local_status = 'in_flight', attempts = 3
+        WHERE id = ?`,
+      [mutationId],
+    );
+  }
+
+  async function insertSend({ phase = null } = {}) {
+    const r = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId,
+      mutationType: 'send',
+      requestJson: JSON.stringify({ identityId: 1, to: [{ email: 'a@b.test' }] }),
+    });
+    if (phase) {
+      await engine.run('UPDATE pending_mutations SET phase = ? WHERE id = ?', [phase, r.id]);
+    }
+    return r.id;
+  }
+
+  const PHASE_POLICY = {
+    unsafeToReplayTypes: ['send'],
+    replayablePhases: ['queued', 'created'],
+    completedPhases: ['submitted', 'cache_pending'],
+  };
+  // 'submitting' is deliberately in neither list: a crash there is
+  // indistinguishable from a delivered message.
+
+  it('returns a stranded row to pending so a later boot can retry it', async () => {
+    // Migration 002 resets in_flight rows, but migrations run once per
+    // database version, so a crash after that boot leaves the row
+    // invisible to _loadReadyRows forever.
+    const localMsg = await seedMessage('e-1');
+    const mutationId = await insertSetKeywords({ targetMessageId: localMsg });
+    await strand(mutationId);
+
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: { notifyDelayMs: 0 },
+    });
+    await runner.recoverStranded();
+
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('pending');
+    expect(row.not_before).toBeNull();
+    // Preserved so the row keeps aging toward the attempt cap.
+    expect(Number(row.attempts)).toBe(3);
+    await runner.stop();
+  });
+
+  it('conflicts a stranded send that recorded no phase', async () => {
+    // Written before checkpoints existed, so there is no evidence of how
+    // far it got and a replay could deliver a second copy.
+    const mutationId = await insertSend();
+    await strand(mutationId);
+
+    const attempted = [];
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        attempted.push(row.id);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0, ...PHASE_POLICY },
+    });
+    await runner.recoverStranded();
+
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('conflicted');
+    const error = JSON.parse(row.error_json);
+    expect(error.type).toBe('outcomeUnknown');
+    expect(error.terminal).toBe(true);
+    // The request payload is still there for recovery.
+    expect(JSON.parse(row.request_json).to[0].email).toBe('a@b.test');
+
+    // A drain must not pick it back up.
+    await runner.drain();
+    expect(attempted).toEqual([]);
+    await runner.stop();
+  });
+
+  it('resumes a stranded send that had not reached submission', async () => {
+    // The checkpoint says an Email exists but was never submitted, so
+    // nothing irreversible happened and the row can safely continue.
+    const mutationId = await insertSend({ phase: 'created' });
+    await strand(mutationId);
+
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: { notifyDelayMs: 0, ...PHASE_POLICY },
+    });
+    await runner.recoverStranded();
+
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('pending');
+    expect(row.phase).toBe('created');
+    await runner.stop();
+  });
+
+  it('requeues a stranded send that had already been submitted', async () => {
+    // The message went out before the crash, so reporting a failure would
+    // be a lie and replaying the submission would send a second copy.
+    // The row returns to the queue, where the checkpoint makes it skip to
+    // filing the local copy.
+    const submitted = await insertSend({ phase: 'submitted' });
+    const filing = await insertSend({ phase: 'cache_pending' });
+    await strand(submitted);
+    await strand(filing);
+
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: { notifyDelayMs: 0, ...PHASE_POLICY },
+    });
+    await runner.recoverStranded();
+
+    expect((await loadRow(submitted)).local_status).toBe('pending');
+    expect((await loadRow(filing)).local_status).toBe('pending');
+    // The phase survives, which is what stops the resume from
+    // re-submitting.
+    expect((await loadRow(submitted)).phase).toBe('submitted');
+    await runner.stop();
+  });
+
+  it('conflicts a send stranded while its submission was in flight', async () => {
+    // The crash happened inside the submission round trip, so the server
+    // may already have accepted it. This is the case that must never be
+    // replayed, and the reason 'submitting' is written before the call.
+    const mutationId = await insertSend({ phase: 'submitting' });
+    await strand(mutationId);
+
+    const attempted = [];
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        attempted.push(row.id);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0, ...PHASE_POLICY },
+    });
+    await runner.recoverStranded();
+
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).type).toBe('outcomeUnknown');
+    await runner.drain();
+    expect(attempted).toEqual([]);
+    await runner.stop();
+  });
+
+  it('recovers a stranded non-send row while conflicting a phaseless send', async () => {
+    const localMsg = await seedMessage('e-2');
+    const keywordsId = await insertSetKeywords({ targetMessageId: localMsg });
+    const sendId = await insertSend();
+    await strand(keywordsId);
+    await strand(sendId);
+
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: { notifyDelayMs: 0, ...PHASE_POLICY },
+    });
+    await runner.recoverStranded();
+
+    expect((await loadRow(keywordsId)).local_status).toBe('pending');
+    expect((await loadRow(sendId)).local_status).toBe('conflicted');
+    await runner.stop();
+  });
+
+  it('does not retry a send after a transport error', async () => {
+    // The socket can die after the server accepted the submission, so a
+    // retry could deliver a second copy. Compare with the setKeywords
+    // case above, which does retry a thrown processRow.
+    let calls = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        calls += 1;
+        throw new Error('socket reset mid-submission');
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 10_000,
+        unsafeToReplayTypes: ['send'],
+      },
+    });
+    const mutationId = await insertSend();
+
+    expect(await runner.runMutation(mutationId)).toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      errorType: 'transport',
+    });
+
+    const row = await loadRow(mutationId);
+    expect(calls).toBe(1);
+    expect(row.local_status).toBe('conflicted');
+    const error = JSON.parse(row.error_json);
+    expect(error.type).toBe('transport');
+    expect(error.terminal).toBe(true);
+    await runner.stop();
+  });
+
+  it('tells a caller waiting on a send at teardown that the outcome is unknown', async () => {
+    // The row is parked for a retry that will never come, because the
+    // worker is going away. Nobody can say how far the send got, and
+    // reporting a plain failure is what makes the composer offer Send
+    // again — a second press is a second delivery.
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      // Not thrown, so the runner keeps a retry budget rather than
+      // conflicting the row outright.
+      processRow: async () => ({ ok: false, error: { type: 'serverFail' } }),
+      options: { notifyDelayMs: 0, backoffBaseMs: 60_000, ...PHASE_POLICY },
+    });
+    const mutationId = await insertSend({ phase: 'queued' });
+
+    const pending = runner.runMutation(mutationId);
+    await vi.waitUntil(async () => (await loadRow(mutationId))?.local_status === 'retry');
+    await runner.stop();
+
+    expect(await pending).toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      errorType: 'outcomeUnknown',
+    });
+  });
+
+  it('tells a caller waiting on a replayable mutation at teardown that it simply stopped', async () => {
+    // Nothing irreversible can be hiding behind a keyword change, so this
+    // caller is free to report an ordinary failure and try again.
+    const localMsg = await seedMessage('e-stop');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: false, error: { type: 'serverFail' } }),
+      options: { notifyDelayMs: 0, backoffBaseMs: 60_000, ...PHASE_POLICY },
+    });
+    const mutationId = await insertSetKeywords({ targetMessageId: localMsg });
+
+    const pending = runner.runMutation(mutationId);
+    await vi.waitUntil(async () => (await loadRow(mutationId))?.local_status === 'retry');
+    await runner.stop();
+
+    expect(await pending).toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      errorType: 'stopped',
+    });
   });
 });

@@ -121,10 +121,12 @@ export const test = base.extend({
  * Reset the shared page to a known state before a test runs:
  *   1. Sweep accumulated test-mail orphans (one OR'd Email/query).
  *   2. Close any stray compose dialog left by a previous test.
- *   3. Click Inbox to re-anchor the folder selection (no-op if the
+ *   3. Return to the Mail space, in case a previous test left the
+ *      window in Contacts.
+ *   4. Click Inbox to re-anchor the folder selection (no-op if the
  *      previous test left us there, fast in any case because the
  *      folder tree is already loaded).
- *   4. Clear the per-test console buffer.
+ *   5. Clear the per-test console buffer.
  *
  * Specs call this from their own `test.beforeEach` so individual
  * tests can layer additional setup (e.g. extra subject prefixes
@@ -144,10 +146,25 @@ export async function resetSharedSession(page, {
     await page.getByRole('button', { name: /^discard$/i }).click().catch(() => {});
     await page.locator('.compose-dialog').waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
   }
+  await returnToMailSpace(page);
   await clickFolder(page, 'Inbox');
   if (Array.isArray(page.__consoleLines)) {
     page.__consoleLines.length = 0;
   }
+}
+
+/**
+ * Switch back to the Mail space if the previous test left the window in
+ * Contacts. The Contacts space replaces the folder tree entirely, so
+ * without this the Inbox click below waits out its full timeout looking
+ * for a `.folder-node` that the current view does not render.
+ */
+async function returnToMailSpace(page) {
+  const mail = page.locator('nav[aria-label="Spaces"] button[aria-label="Mail"]');
+  if (await mail.count() === 0) return;
+  if (await mail.first().getAttribute('aria-pressed') === 'true') return;
+  await mail.first().click();
+  await page.locator('.folder-node').first().waitFor({ state: 'visible', timeout: 10_000 });
 }
 
 async function dismissWelcomeModal(page) {

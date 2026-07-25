@@ -25,7 +25,7 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
-import { SERVICE_KIND } from '../../../constants/states';
+import { SEND_PHASE, SERVICE_KIND } from '../../../constants/states';
 import { wlog } from '../../../db/worker-log';
 import { ingestSession } from './session';
 import { syncMailboxes, syncMailboxChanges } from './mailboxes';
@@ -42,7 +42,7 @@ import {
   syncContacts,
   syncContactCardChanges,
 } from './contacts';
-import { processMutationRow } from './outbox';
+import { MUTATION_TYPES, processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
 import { maxObjectsInGet } from './limits';
 import { bytesToBase64 } from '../../../utils/inline-images';
@@ -273,6 +273,14 @@ export class JmapBackend {
     // Stalwart.
     const runnerOptions = {
       ...(this._outboxRunnerOptions ?? {}),
+      // A send that was in flight when the worker died may already have
+      // been submitted, so it is never replayed blindly. Its checkpoint
+      // phase decides: before submission the row can safely resume,
+      // after submission the message is already gone and the row is
+      // finished.
+      unsafeToReplayTypes: [MUTATION_TYPES.SEND],
+      replayablePhases: [SEND_PHASE.QUEUED, SEND_PHASE.CREATED],
+      completedPhases: [SEND_PHASE.SUBMITTED, SEND_PHASE.CACHE_PENDING],
       onForegroundChange: (delta) => {
         this._foregroundFolderWindowCount = Math.max(
           0,
@@ -292,6 +300,14 @@ export class JmapBackend {
       }),
       options: runnerOptions,
     });
+    // Reclaim rows stranded in_flight by an earlier crash. Migration 002
+    // only covers the boot that applied it, so this has to run on every
+    // start or a crashed row is stuck forever.
+    try {
+      await this.outboxRunner.recoverStranded();
+    } catch (err) {
+      wlog.warn('jmap-backend', 'stranded outbox recovery failed', err);
+    }
 
     const mbResult = await syncMailboxes({
       transport: this.transport,
@@ -384,6 +400,12 @@ export class JmapBackend {
       }
     }
 
+    // Each step above swallows its own failure, so teardown cannot stop
+    // this chain by making a call fail. Check for it directly instead:
+    // everything below either opens a socket or arms something that
+    // outlives this function, and a stopped backend must do neither.
+    if (!this._started) return;
+
     if (this.useWebSocket) {
       const pushState = await this._loadPushState();
       try {
@@ -397,6 +419,9 @@ export class JmapBackend {
         wlog.warn('jmap-backend', 'WebSocket unavailable; staying on HTTP', err);
       }
     }
+    // stop() unsubscribes these; re-check so a teardown that happened
+    // while the socket was opening does not get them back.
+    if (!this._started) return;
     this._unsubStateChange = this.transport.onStateChange(
       (change) => this._onStateChange(change),
     );
@@ -448,6 +473,11 @@ export class JmapBackend {
       clearTimeout(this._indexerTimer);
       this._indexerTimer = null;
     }
+    // Cancel in-flight network calls before waiting on the runner.
+    // OutboxRunner.stop() awaits the in-flight drain, and a drain
+    // parked on a request that the server never answers would hold
+    // teardown open for the whole request deadline.
+    this.transport.abort();
     if (this.outboxRunner) {
       await this.outboxRunner.stop();
       this.outboxRunner = null;

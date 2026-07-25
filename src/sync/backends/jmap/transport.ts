@@ -61,6 +61,19 @@ export const JMAP_CAPS = Object.freeze({
  *                                     to globalThis.WebSocket.
  */
 
+/**
+ * The rejection for a request the transport refused or cancelled
+ * because teardown aborted it. Typed so a caller can tell an
+ * intentional teardown from a stalled server, and so neither is
+ * mistaken for a server-side rejection.
+ */
+function abortedError(label: string, elapsedMs: number) {
+  const err: any = new Error(`JMAP request ${label} was aborted`);
+  err.type = 'transportAborted';
+  err.elapsedMs = elapsedMs;
+  return err;
+}
+
 export class JmapTransport {
   _sessionUrl: string;
   _getAuthHeader: () => Promise<string>;
@@ -77,6 +90,10 @@ export class JmapTransport {
   _nextWsId: number;
   _lastPushState: any;
   _wsRequestTimeoutMs: number;
+  _httpRequestTimeoutMs: number;
+  _httpBlobTimeoutMs: number;
+  _inFlightHttp: Set<AbortController>;
+  _aborted: boolean;
 
   constructor(options: any) {
     this._sessionUrl = options.sessionUrl;
@@ -108,6 +125,123 @@ export class JmapTransport {
     // folder indexer chunks against a contended Stalwart) finish
     // in a few seconds.
     this._wsRequestTimeoutMs = options.wsRequestTimeoutMs ?? 30_000;
+    // The HTTP leg needs the same protection for a different reason.
+    // fetch() has no timeout of its own, so a server that accepts the
+    // connection and then stalls leaves the awaiting caller hung until
+    // the OS gives up on the socket. For a send that is worse than a
+    // slow send: compose-store keeps status SENDING, which is what
+    // Close and Discard are gated on, so the dialog becomes
+    // unclosable. Matching the WebSocket bound keeps the two legs
+    // behaving the same way.
+    this._httpRequestTimeoutMs = options.httpRequestTimeoutMs ?? 30_000;
+    // Blob transfers are sized by the attachment, not by server
+    // latency, so they get a looser deadline than a method call.
+    this._httpBlobTimeoutMs = options.httpBlobTimeoutMs ?? 120_000;
+    /** Abort controllers for HTTP requests that have not settled yet,
+     *  so abort() can cancel them during teardown. */
+    this._inFlightHttp = new Set();
+    this._aborted = false;
+  }
+
+  /**
+   * Cancel every HTTP request that has not settled and reject every
+   * pending WebSocket request, without closing the socket.
+   *
+   * Teardown calls this before awaiting the outbox runner: the runner
+   * cannot quiesce while a mutation is parked on a network call, and
+   * the caller of backend.stop() should not have to wait out a request
+   * deadline to find that out.
+   *
+   * The abort latches, and requests issued afterwards are refused
+   * rather than sent. Cancelling only what is in flight would not be
+   * enough: a mutation part-way through a multi-call operation (a send
+   * runs create, submit, then reconcile) reacts to its cancelled call
+   * by moving on, and the call it issues next would have missed the
+   * abort and hold teardown open for its own deadline. Latching is safe
+   * because sync-host builds one transport per started backend and
+   * discards it after stop(), so nothing ever needs this one again.
+   */
+  abort() {
+    this._aborted = true;
+    for (const controller of [...this._inFlightHttp]) {
+      try {
+        controller.abort();
+      } catch {
+        // A controller that already aborted throws nothing useful.
+      }
+    }
+    this._inFlightHttp.clear();
+    for (const [requestId, pending] of [...this._wsPending]) {
+      pending.reject(abortedError(requestId, 0));
+    }
+    this._wsPending.clear();
+  }
+
+  /**
+   * Run one fetch under a deadline and hand the response to `consume`
+   * while that deadline is still armed.
+   *
+   * The body read has to happen inside the window: fetch() resolves as
+   * soon as the response headers arrive, so a server that sends headers
+   * and then stalls the body would hang in response.json() with the
+   * timer already cleared.
+   *
+   * Aborts are reported as typed errors so a caller can tell a stalled
+   * server from an intentional teardown, and neither is mistaken for a
+   * server-side rejection.
+   */
+  async _fetchWithDeadline<T>(url: string, init: any, { timeoutMs, label, consume }: {
+    timeoutMs: number;
+    label: string;
+    consume: (response: any) => Promise<T>;
+  }): Promise<T> {
+    if (this._aborted) throw abortedError(label, 0);
+    const controller = new AbortController();
+    const external: AbortSignal | undefined = init.signal;
+    let forwardAbort: (() => void) | null = null;
+    if (external) {
+      if (external.aborted) controller.abort();
+      else {
+        forwardAbort = () => controller.abort();
+        external.addEventListener('abort', forwardAbort, { once: true });
+      }
+    }
+    this._inFlightHttp.add(controller);
+    const started = Date.now();
+    let timedOut = false;
+    let timer: any = null;
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timer = null;
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+    }
+    try {
+      const response = await this._fetch(url, { ...init, signal: controller.signal });
+      return await consume(response);
+    } catch (err: any) {
+      const elapsedMs = Date.now() - started;
+      if (timedOut) {
+        wlog.warn('jmap-transport', `${label} timeout after ${elapsedMs}ms`);
+        const timeoutErr: any = new Error(
+          `JMAP HTTP request ${label} timed out after ${elapsedMs}ms`,
+        );
+        timeoutErr.type = 'httpRequestTimeout';
+        timeoutErr.elapsedMs = elapsedMs;
+        throw timeoutErr;
+      }
+      if (controller.signal.aborted && !external?.aborted) {
+        throw abortedError(label, elapsedMs);
+      }
+      throw err;
+    } finally {
+      if (timer != null) clearTimeout(timer);
+      this._inFlightHttp.delete(controller);
+      if (forwardAbort && external) {
+        external.removeEventListener('abort', forwardAbort);
+      }
+    }
   }
 
   /**
@@ -119,18 +253,23 @@ export class JmapTransport {
       return this._session;
     }
     const auth = await this._getAuthHeader();
-    const response = await this._fetch(this._sessionUrl, {
+    this._session = await this._fetchWithDeadline(this._sessionUrl, {
       headers: {
         Authorization: auth,
         Accept: 'application/json',
       },
       mode: 'cors',
       credentials: 'omit',
+    }, {
+      timeoutMs: this._httpRequestTimeoutMs,
+      label: 'session',
+      consume: async (response) => {
+        if (!response.ok) {
+          throw new Error(`JMAP session fetch failed: ${response.status} ${response.statusText}`);
+        }
+        return response.json();
+      },
     });
-    if (!response.ok) {
-      throw new Error(`JMAP session fetch failed: ${response.status} ${response.statusText}`);
-    }
-    this._session = await response.json();
     return this._session;
   }
 
@@ -144,9 +283,13 @@ export class JmapTransport {
    *
    * @param {string[]} using
    * @param {Array<[string, object, string]>} methodCalls
-   * @param {{ signal?: AbortSignal }} [opts]
+   * @param {{ signal?: AbortSignal, timeoutMs?: number }} [opts]
    */
-  async request(using: string[], methodCalls: any[], opts: { signal?: AbortSignal } = {}) {
+  async request(
+    using: string[],
+    methodCalls: any[],
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ) {
     if (!this._session?.apiUrl) {
       await this.fetchSession();
     }
@@ -155,9 +298,8 @@ export class JmapTransport {
       `${name}(${params?.position != null ? `pos=${params.position}` : ''}${params?.limit != null ? ` lim=${params.limit}` : ''})`,
     ).join(' + ');
     wlog.info('jmap-transport', `httpRequest ${summary}`);
-    let response;
     try {
-      response = await this._fetch(this._session.apiUrl, {
+      return await this._fetchWithDeadline(this._session.apiUrl, {
         method: 'POST',
         headers: {
           Authorization: auth,
@@ -168,17 +310,24 @@ export class JmapTransport {
         credentials: 'omit',
         body: JSON.stringify({ using, methodCalls }),
         signal: opts.signal,
+      }, {
+        timeoutMs: opts.timeoutMs ?? this._httpRequestTimeoutMs,
+        label: summary,
+        consume: async (response) => {
+          wlog.info('jmap-transport', `httpResponse ${summary} status=${response.status}`);
+          if (!response.ok) {
+            const detail = await response.text().catch(() => '');
+            throw new Error(
+              `JMAP request failed: ${response.status} ${response.statusText}\n${detail}`,
+            );
+          }
+          return response.json();
+        },
       });
-    } catch (err) {
-      wlog.warn('jmap-transport', `httpRequest fetch threw: ${err?.message}`);
+    } catch (err: any) {
+      wlog.warn('jmap-transport', `httpRequest failed: ${err?.message}`);
       throw err;
     }
-    wlog.info('jmap-transport', `httpResponse ${summary} status=${response.status}`);
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(`JMAP request failed: ${response.status} ${response.statusText}\n${detail}`);
-    }
-    return response.json();
   }
 
   /**
@@ -205,7 +354,7 @@ export class JmapTransport {
     const url = template.replace('{accountId}', encodeURIComponent(accountId));
     const auth = await this._getAuthHeader();
     wlog.info('jmap-transport', `upload ${type} -> ${accountId}`);
-    const response = await this._fetch(url, {
+    return this._fetchWithDeadline(url, {
       method: 'POST',
       headers: {
         Authorization: auth,
@@ -215,12 +364,19 @@ export class JmapTransport {
       mode: 'cors',
       credentials: 'omit',
       body,
+    }, {
+      timeoutMs: this._httpBlobTimeoutMs,
+      label: `upload ${type}`,
+      consume: async (response) => {
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(
+            `JMAP upload failed: ${response.status} ${response.statusText}\n${detail}`,
+          );
+        }
+        return response.json();
+      },
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(`JMAP upload failed: ${response.status} ${response.statusText}\n${detail}`);
-    }
-    return response.json();
   }
 
   /**
@@ -254,16 +410,23 @@ export class JmapTransport {
       .replace('{type}', encodeURIComponent(type || 'application/octet-stream'));
     const auth = await this._getAuthHeader();
     wlog.info('jmap-transport', `download ${blobId} (${type})`);
-    const response = await this._fetch(url, {
+    return this._fetchWithDeadline(url, {
       headers: { Authorization: auth },
       mode: 'cors',
       credentials: 'omit',
+    }, {
+      timeoutMs: this._httpBlobTimeoutMs,
+      label: `download ${blobId}`,
+      consume: async (response) => {
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw new Error(
+            `JMAP download failed: ${response.status} ${response.statusText}\n${detail}`,
+          );
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
     });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(`JMAP download failed: ${response.status} ${response.statusText}\n${detail}`);
-    }
-    return new Uint8Array(await response.arrayBuffer());
   }
 
   /**
@@ -277,6 +440,9 @@ export class JmapTransport {
    *   will replay missed StateChanges.
    */
   async openWebSocket(dataTypes, pushState = null) {
+    if (this._aborted) {
+      return Promise.reject(abortedError('openWebSocket', 0));
+    }
     if (this._wsReadyPromise) {
       return this._wsReadyPromise;
     }
@@ -300,10 +466,24 @@ export class JmapTransport {
         if (cred?.kind === 'bearer') wsUrl.searchParams.set('access_token', cred.token);
         else if (cred?.kind === 'basic') wsUrl.searchParams.set('basic', cred.token);
       }
+      // Re-check on the far side of the session fetch and the
+      // credential await: teardown can land in either gap, and opening
+      // an authenticated socket after it would leave one live for a
+      // signed-out account.
+      if (this._aborted) throw abortedError('openWebSocket', 0);
       wlog.info('jmap-transport', `openWebSocket via ${wsUrl.host}${wsUrl.pathname}`);
       const ws = new this._WebSocket(wsUrl.toString(), ['jmap']);
       this._ws = ws;
       await waitForOpen(ws);
+      if (this._aborted) {
+        try {
+          ws.close(1000, 'transport aborted');
+        } catch {
+          // Nothing useful to do with a close that fails during teardown.
+        }
+        this._ws = null;
+        throw abortedError('openWebSocket', 0);
+      }
       ws.addEventListener('message', (event) => this._onWsMessage(event));
       ws.addEventListener('close', (event) => this._onWsClose(event));
       ws.addEventListener('error', (event) => this._onWsError(event));
@@ -330,6 +510,9 @@ export class JmapTransport {
    * @param {Array<[string, object, string]>} methodCalls
    */
   wsRequest(using, methodCalls, opts: { timeoutMs?: number } = {}) {
+    if (this._aborted) {
+      return Promise.reject(abortedError('wsRequest', 0));
+    }
     if (!this._ws || this._ws.readyState !== this._ws.OPEN) {
       return Promise.reject(new Error('WebSocket is not open'));
     }

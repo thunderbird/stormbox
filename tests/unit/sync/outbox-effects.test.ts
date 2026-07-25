@@ -274,11 +274,12 @@ describe('applySendLocally', () => {
       state: 'es',
     }));
 
-    await applySendLocally({
+    const applied = await applySendLocally({
       transport, account, handlers,
       createdRemoteId: 'em-new',
       sentRemoteId: 'mb-sent',
     });
+    expect(applied).toEqual({ filed: true });
 
     const newRow = await engine.get(
       'SELECT id, is_seen FROM messages WHERE account_id = ? AND remote_id = ?',
@@ -319,11 +320,12 @@ describe('applySendLocally', () => {
       state: 'es',
     }));
 
-    await applySendLocally({
+    const applied = await applySendLocally({
       transport: sendTransport, account, handlers,
       createdRemoteId: 'em-new',
       sentRemoteId: 'mb-sent',
     });
+    expect(applied).toEqual({ filed: true });
 
     const sentView = await loadSentView();
     expect(Number(sentView.total)).toBe(2);
@@ -340,17 +342,48 @@ describe('applySendLocally', () => {
       state: 'es',
     }));
 
-    await applySendLocally({
+    const applied = await applySendLocally({
       transport, account, handlers,
       createdRemoteId: 'em-new',
       sentRemoteId: 'mb-unknown',
     });
+    // Reported unfiled: the message is cached, but no local Sent view
+    // claims it, so the caller must mark that view for rebuild.
+    expect(applied).toEqual({ filed: false });
 
     const newRow = await engine.get(
       'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
       [account.id, 'em-new'],
     );
     expect(newRow).not.toBeNull();
+
+    const sentView = await loadSentView();
+    expect(Number(sentView.total)).toBe(0);
+    expect(await loadViewItems(sentView.id)).toEqual([]);
+  });
+
+  it('reports unfiled and skips the Sent view when the server left the message elsewhere', async () => {
+    // The failure this guards is Thunderbird bug 1656240: filing the
+    // local Sent copy on the strength of the *requested* target, so a
+    // message the server never moved out of Drafts still shows up in
+    // Sent. Placement comes from the server's mailboxIds, and a
+    // mismatch has to be reported so the caller can mark the view
+    // stale rather than leaving a cache that disagrees.
+    const transport = new MockTransport();
+    transport.handle('Email/get', (params: any) => ({
+      list: params.ids.map((id: string) => ({
+        ...sentEmailFixture(id),
+        mailboxIds: { 'mb-inbox': true },
+      })),
+      state: 'es',
+    }));
+
+    const applied = await applySendLocally({
+      transport, account, handlers,
+      createdRemoteId: 'em-new',
+      sentRemoteId: 'mb-sent',
+    });
+    expect(applied).toEqual({ filed: false });
 
     const sentView = await loadSentView();
     expect(Number(sentView.total)).toBe(0);
@@ -365,14 +398,36 @@ describe('applySendLocally', () => {
       return { list: [], state: 'es' };
     });
 
-    await applySendLocally({
+    const applied = await applySendLocally({
       transport, account, handlers,
       createdRemoteId: null,
       sentRemoteId: 'mb-sent',
     });
+    expect(applied).toEqual({ filed: false });
 
     expect(getCalls).toBe(0);
     const sentView = await loadSentView();
     expect(Number(sentView.total)).toBe(0);
+  });
+
+  it('reports unfiled when the server returns no such Email', async () => {
+    // A send whose Email/get comes back empty must not be reported as
+    // filed: there is nothing to file, and the caller needs to know so
+    // the Sent view is rebuilt from the server instead.
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => ({ list: [], state: 'es' }));
+
+    const applied = await applySendLocally({
+      transport, account, handlers,
+      createdRemoteId: 'em-new',
+      sentRemoteId: 'mb-sent',
+    });
+    expect(applied).toEqual({ filed: false });
+
+    const newRow = await engine.get(
+      'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'em-new'],
+    );
+    expect(newRow).toBeNull();
   });
 });

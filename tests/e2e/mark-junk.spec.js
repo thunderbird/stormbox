@@ -101,9 +101,13 @@ test.describe('Mark as junk e2e', () => {
       await expect(junkButton).toBeVisible({ timeout: 30_000 });
       await junkButton.click();
 
-      // Success toast confirms the action.
-      await expect(page.locator('.store-error-toast__item--success'))
-        .toContainText(/marked as junk/i, { timeout: 30_000 });
+      // Success toast confirms the action. Filtered rather than matched
+      // whole: an unrelated success notice can still be on screen, and
+      // either one satisfying a bare locator is not what this asserts.
+      await expect(
+        page.locator('.store-error-toast__item--success')
+          .filter({ hasText: /marked as junk/i }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // The message leaves the Inbox list.
       await expect.poll(
@@ -179,8 +183,10 @@ test.describe('Mark as junk e2e', () => {
 
       await page.locator('.msg-list__bulk-actions [title="Junk"]').click();
 
-      await expect(page.locator('.store-error-toast__item--success'))
-        .toContainText(/marked 3 messages as junk/i, { timeout: 30_000 });
+      await expect(
+        page.locator('.store-error-toast__item--success')
+          .filter({ hasText: /marked 3 messages as junk/i }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // Every selected message leaves the Inbox list.
       for (const subject of subjects) {

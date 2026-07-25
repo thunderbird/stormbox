@@ -7,7 +7,9 @@
  * top-level type as optional.
  */
 
-import type { MailboxRole, MutationStatus, MutationType, ServiceKind, SyncJobStatus } from '../constants/states';
+import type {
+  MailboxRole, MutationStatus, MutationType, SendPhase, ServiceKind, SyncJobStatus,
+} from '../constants/states';
 
 export interface AccountRow {
   id: number;
@@ -147,11 +149,14 @@ export interface PendingMutationRow {
   target_message_id: number | null;
   request_json: string;
   optimistic_patch_json: string | null;
+  /** For SEND rows this holds the durable send checkpoint. */
   server_response_json: string | null;
   error_json: string | null;
   attempts: number;
   last_attempt_at: number | null;
   not_before: number | null;
+  /** SendPhase for SEND rows; null for every other mutation type. */
+  phase: SendPhase | null;
   created_at: number;
   updated_at: number;
 }

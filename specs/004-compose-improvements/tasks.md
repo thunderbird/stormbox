@@ -4,12 +4,48 @@
 **Format**: `[ID] [P?] Description` — `[P]` means parallelizable with the
 task above it.
 
+**Landing order is 1, 3, 2, 4, 5, 6, 7** — durable send phases come
+before the recipient model, per the sequencing rationale in
+[plan.md](./plan.md). Phase numbers match work-package numbers, not
+landing order.
+
 All `npm` and `playwright` commands run inside the `stormbox-compose`
-container:
+container. Git runs on the **host**: the worktree's `.git` file points
+outside the container's mount, so git is unavailable inside it.
 
 ```bash
 docker exec stormbox-compose bash -c 'cd /workspace && npm test'
 ```
+
+Live e2e additionally needs the WS proxy running inside the container, or
+`tests/e2e/global-setup.js` aborts:
+
+```bash
+docker exec -d stormbox-compose bash -c 'cd /workspace && npm run stack:ws-proxy > /tmp/ws-proxy.log 2>&1'
+docker exec stormbox-compose bash -c 'cd /workspace && npm run test:e2e:local -- --project=chromium --project=firefox'
+```
+
+Manual browsing from the host on this worktree's port works, but only
+because the dev proxy rewrites the realm's pinned `frontendUrl` to the
+configured public origin. Serve it with every public URL pointed at the
+same origin and a Keycloak client registered for it:
+
+```bash
+docker exec -d stormbox-compose bash -c 'cd /workspace && \
+  VITE_LOCAL_PUBLIC_ORIGIN=https://localhost:3001 \
+  VITE_OIDC_ISSUER=https://localhost:3001/realms/tbpro \
+  VITE_OIDC_CLIENT_ID=stormbox-compose \
+  VITE_JMAP_SERVER_URL=https://localhost:3001/stalwart-jmap \
+  VITE_SENDER_AVATAR_PROXY_URL=https://localhost:3001/sender-avatar \
+  npm run dev > /tmp/vite.log 2>&1'
+```
+
+Note the hazard in the other direction: `tests/fixtures/configure-keycloak.mjs`
+writes the realm-wide `frontendUrl` and replaces the shared client's
+redirect origins from `VITE_LOCAL_PUBLIC_ORIGIN`. Running it with a
+non-default origin therefore reconfigures the realm for **every** worktree
+sharing it. Run the fixtures with default env only; the dev proxy is what
+makes a non-default origin work locally.
 
 ## Phase 0 — Specification
 
@@ -22,33 +58,71 @@ docker exec stormbox-compose bash -c 'cd /workspace && npm test'
 
 ## Phase 1 — Send safety hotfix (CS-1.1 to CS-1.5, CS-1.11, CS-1.12)
 
-- [ ] T101 Add `pickResponseById(result, methodName, callId)` to
+- [x] T101 Add `pickResponseById(result, methodName, callId)` to
       `src/sync/backends/jmap/invoke.ts`, leaving `pickResponse` intact
-- [ ] T102 [P] Unit-test `pickResponseById` against a multi-tuple
+- [x] T102 [P] Unit-test `pickResponseById` against a multi-tuple
       envelope containing two `Email/set` responses and an `error` tuple
-- [ ] T103 Remove the `envelope` from the `EmailSubmission/set` create in
+- [x] T103 Remove the `envelope` from the `EmailSubmission/set` create in
       `runSend` so the server derives `rcptTo` from To, Cc, and Bcc
-- [ ] T104 Validate `Email/set`/`c1`, `EmailSubmission/set`/`s1`, and the
+- [x] T104 Validate `Email/set`/`c1`, `EmailSubmission/set`/`s1`, and the
       implicit `Email/set`/`s1` in `runSend`, failing via
       `extractMethodError` when a tuple is missing, is an `error`, or
       carries no created id
-- [ ] T105 Flag permanently-rejected submissions `terminal: true` so the
+- [x] T105 Flag permanently-rejected submissions `terminal: true` so the
       outbox runner stops instead of recreating the Email per attempt
-- [ ] T106 Gate `applySendLocally` on a confirmed submission and read
+- [x] T106 Gate `applySendLocally` on a confirmed submission and read
       mailbox placement from the `Email/get` result, so nothing enters
       Sent locally unless it was sent
-- [ ] T107 Unit-test `runSend` failure paths: missing `EmailSubmission/set`
+- [x] T107 Unit-test `runSend` failure paths: missing `EmailSubmission/set`
       tuple, `error` tuple, missing created id, failed implicit update.
       Assert no Sent write and a preserved mutation row in each case
-- [ ] T108 Recover stale `in_flight` mutations at backend start, with a
+- [x] T108 Recover stale `in_flight` mutations at backend start, with a
       unit test proving a row stranded by a simulated crash is picked up
-- [ ] T109 Block Close and Discard while a send is in flight, with a
+- [x] T109 Block Close and Discard while a send is in flight, with a
       component test
-- [ ] T110 E2E: send with To, Cc, and Bcc to separate accounts; assert
+- [x] T110 Never replay a send after a transport error: the socket can
+      die after the server accepted the submission, so
+      `unsafeToReplayTypes` makes that terminal instead of retryable
+- [x] T111 E2E: send with To, Cc, and Bcc to separate accounts; assert
       all three receive and Bcc is absent from delivered headers
-- [ ] T111 E2E: inject a method-level error and assert the composer
+      (`tests/e2e/compose-send-walkthrough.spec.js`, Chromium + Firefox)
+- [x] T112 E2E: inject a method-level error and assert the composer
       reports failure, the mutation row survives, and Sent is untouched
-- [ ] T112 Run `npm test`, `npm run typecheck`, `npm run lint`; commit
+      (`tests/e2e/compose-send-method-error.spec.js`, Chromium +
+      Firefox). Injection happens in the e2e WebSocket proxy
+      (`tests/fixtures/ws-proxy/inject.mjs`): the transport lives in a
+      SharedWorker, whose traffic Playwright's routing cannot reach, and
+      it prefers WS whenever one is open. The proxy answers a marked
+      request instead of forwarding it, so the server performs no
+      operation and the spec can assert the message is in no mailbox at
+      all. A method-level error naming the request is now terminal, so
+      the composer stops waiting instead of burning eight retries
+- [x] T113a Give HTTP JMAP requests an abortable deadline: with no
+      timeout in `transport.ts`, a hung send leaves Close and
+      Discard disabled indefinitely. The deadline spans the body read,
+      not just the headers, and `backend.stop()` aborts the transport
+      before awaiting runner shutdown. The abort latches: cancelling
+      only what is in flight let the next call of a multi-call
+      operation be issued after teardown began, holding `stop()` open
+      for a fresh deadline. `openWebSocket` honours the latch on both
+      sides of its awaits, and `_continueBootstrap` re-checks
+      `_started`, because it runs detached from `start()` and swallows
+      each step's failure — so teardown could not stop it, and it could
+      leave an authenticated socket open for a signed-out account.
+      Follow-ons the deadline exposed: the dedupe scan before a create
+      now reports `found`/`absent`/`inconclusive` and only `absent`
+      licenses a create (a stalled request, a WebSocket deadline, or a
+      method-level rejection is not evidence that no draft exists), the
+      scan is skipped entirely on a first attempt, and a stalled blob
+      upload is terminal rather than spending eight 120s attempts with
+      the composer stuck in its sending state
+- [x] T113b Assert the new `{ filed }` send result in
+      `tests/unit/sync/outbox-effects.test.ts`, which still ignores it
+- [x] T113 Add a test asserting the migration list is contiguous and
+      strictly increasing, so a later package cannot strand an earlier
+      migration behind `user_version`
+- [x] T114 Run unit, typecheck, lint, and the two-browser e2e lane;
+      commit (855 unit tests, 90 e2e across Chromium and Firefox)
 
 ## Phase 2 — Recipients and reply (CS-2.1 to CS-2.8)
 
@@ -79,33 +153,47 @@ docker exec stormbox-compose bash -c 'cd /workspace && npm test'
       not apply `bcc` pending a product decision
 - [ ] T213 E2E: Reply All against a message with Reply-To and Cc,
       asserting `In-Reply-To` and `References` over direct JMAP
-- [ ] T214 Run checks; commit
+- [ ] T214 E2E: reply audience and threading assertions against direct
+      JMAP, on Chromium and Firefox
+- [ ] T215 Run checks including the two-browser e2e lane; commit
 
 ## Phase 3 — Durable phased send (CS-1.6 to CS-1.10, CS-1.13)
 
-- [ ] T301 Migration: add `phase` to `pending_mutations` with a recovery
+- [x] T301 Migration: add `phase` to `pending_mutations` with a recovery
       index
-- [ ] T302 Generate a stable per-operation Message-ID header and
+- [x] T302 Generate a stable per-operation Message-ID header and
       operation id, persisted before Email creation
-- [ ] T303 Split `runSend` into create, submit, and reconcile phases,
+- [x] T303 Split `runSend` into create, submit, and reconcile phases,
       persisting each checkpoint before the next protocol call
-- [ ] T304 Resume from the recorded phase; never repeat a confirmed phase
-- [ ] T305 Positive reconciliation after a lost response: Message-ID plus
+- [x] T304 Resume from the recorded phase; never repeat a confirmed phase
+- [x] T305 Positive reconciliation after a lost response: Message-ID plus
       mailbox scope for creation, submission and mailbox state for
-      submission
-- [ ] T306 Durable `send-outcome-unknown` state with no automatic retry
+      submission. Note the Message-ID match is client-side: every shape
+      of the RFC 8621 `header` FilterCondition returns nothing on
+      Stalwart v0.15.4
+- [x] T306 Durable `send-outcome-unknown` state with no automatic retry
       and no plain Retry action
-- [ ] T307 Separate `cache_pending` so reconciliation failure retries
-      only reconciliation
-- [ ] T308 [P] Unit-test each phase resume path, including a lost create
+- [x] T307 Separate `cache_pending` so reconciliation failure retries
+      only reconciliation. Filing gets its own attempt budget
+      (`cacheAttempts` on the checkpoint) because the row's `attempts`
+      also counts the create and submit tries, and a send that burned
+      those still deserves a full budget for the local repair
+- [x] T308 [P] Unit-test each phase resume path, including a lost create
       response, a lost submission response, and a purged
       `EmailSubmission`
-- [ ] T309 Change send confirmation copy to mean accepted for submission
-- [ ] T310 E2E: kill and reload the SharedWorker mid-send; assert exactly
+- [x] T309 Change send confirmation copy to mean accepted for submission.
+      An unknown outcome now says so instead of claiming failure, and
+      withdraws Send rather than inviting a second delivery
+- [x] T310 E2E: kill and reload the SharedWorker mid-send; assert exactly
       one Email and at most one delivery
-- [ ] T311 Run checks; commit
+- [x] T311 E2E: a lost submission response resolving to success by
+      reconciliation, and a genuinely ambiguous outcome staying in the
+      unknown state without retrying (CS-5.5 cases two and three), plus
+      the composer's own two answers: the warning with Send withheld, and
+      the accepted-for-delivery confirmation
+- [x] T312 Run checks including the two-browser e2e lane; commit
 
-## Phase 4 — Contact and identity integrity (CS-4.1 to CS-4.7)
+## Phase 4 — Contact and identity integrity (CS-4.1 to CS-4.8)
 
 - [ ] T401 Persist the ContactCard object state from `ContactCard/get`
       rather than `query.state`
@@ -121,12 +209,19 @@ docker exec stormbox-compose bash -c 'cd /workspace && npm test'
 - [ ] T406 Stop reporting contact mutation success when cache
       reconciliation failed; checkpoint and retry reconciliation only
 - [ ] T407 Apply `Identity/get` as a snapshot including the empty-list
-      case; persist `replyTo` and `bcc`
+      case; give `replyTo` and `bcc` first-class columns and API fields
+      rather than leaving `bcc` opaque inside `raw_json`
+- [ ] T407b Apply `AddressBook/get` as an authoritative snapshot with
+      deletion handling (CS-4.8)
 - [ ] T408 Refresh identities on compose open and reconnect, painting
       cached values first
 - [ ] T409 E2E: alias fidelity — selected alias reaches the externally
       received From header (#60, #86)
-- [ ] T410 Run checks; commit
+- [ ] T410 E2E: a contact mutation whose cache reconciliation fails
+      reports failure rather than success, and retries only reconciliation
+- [ ] T411 E2E: a server-side contact deletion disappears locally after a
+      full sync
+- [ ] T412 Run checks including the two-browser e2e lane; commit
 
 ## Phase 5 — Autocomplete data (CS-3.1 to CS-3.7, CS-3.13, CS-3.14)
 
@@ -150,7 +245,7 @@ docker exec stormbox-compose bash -c 'cd /workspace && npm test'
       against a stated latency budget
 - [ ] T510 E2E: import beyond one server page, then find a late-page
       contact by name from compose
-- [ ] T511 Run checks; commit
+- [ ] T511 Run checks including the two-browser e2e lane; commit
 
 ## Phase 6 — Recipient input control (CS-3.8 to CS-3.12)
 
@@ -169,10 +264,14 @@ docker exec stormbox-compose bash -c 'cd /workspace && npm test'
 - [ ] T607 Use the control for To, Cc, and Bcc in `ComposeDialog.vue`
 - [ ] T608 [P] Component tests: mouse, keyboard, Escape, blur, paste,
       cross-field duplicate suppression, rapid typing
-- [ ] T609 Run checks; commit
+- [ ] T609 E2E: keyboard-only recipient entry and screen-reader
+      semantics in both browsers
+- [ ] T610 Run checks including the two-browser e2e lane; commit
 
 ## Phase 7 — iOS compose overlay (#49)
 
 - [ ] T701 Fix the folders overlay stacking against the compose dialog
+      so compose stays visible and interactive on small viewports
+      (CS-2.9)
 - [ ] T702 Responsive CSS test coverage
 - [ ] T703 Run checks; commit

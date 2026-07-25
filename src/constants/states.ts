@@ -64,6 +64,36 @@ export const MUTATION_STATUS = {
 } as const;
 export type MutationStatus = (typeof MUTATION_STATUS)[keyof typeof MUTATION_STATUS];
 
+/**
+ * pending_mutations.phase for SEND rows. Records the furthest point known
+ * to have succeeded, written before the next protocol call is issued, so
+ * a resume can skip work that already happened. Only CREATED and
+ * SUBMITTED describe irreversible server state; the rest are local
+ * bookkeeping.
+ *
+ * UNKNOWN is terminal for automation on purpose: it means a response was
+ * lost and reconciliation could not decide, so the choice belongs to the
+ * user rather than to a retry loop.
+ */
+export const SEND_PHASE = {
+  QUEUED: 'queued',
+  CREATED: 'created',
+  /**
+   * The submission request is about to go out, or is out and unanswered.
+   * Written before the call rather than after it, because the window
+   * being guarded is the call itself: a worker that dies here may already
+   * have had its submission accepted, so this phase must never be
+   * replayed. Without it, `created` would have to cover both "not yet
+   * submitted" and "submission outcome unknown", and treating that as
+   * resumable delivers the message twice.
+   */
+  SUBMITTING: 'submitting',
+  SUBMITTED: 'submitted',
+  CACHE_PENDING: 'cache_pending',
+  UNKNOWN: 'unknown',
+} as const;
+export type SendPhase = (typeof SEND_PHASE)[keyof typeof SEND_PHASE];
+
 export const SYNC_JOB_STATUS = {
   PENDING: 'pending',
   IN_FLIGHT: 'in_flight',

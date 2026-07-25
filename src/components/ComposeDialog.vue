@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   Bold,
   Code,
@@ -596,6 +596,11 @@ onUnmounted(() => {
   destroyEditor();
 });
 
+// Discard and Close are withheld while the send mutation is in flight:
+// the queued request payload is the only durable copy of the message, so
+// erasing the draft here could lose it if the send then fails.
+const isSending = computed(() => composeStore.status === COMPOSE_STATE.SENDING);
+
 const autocompleteSuggestions = ref([]);
 const autocompleteFor = ref(null);
 
@@ -637,7 +642,14 @@ function selectFromIdentity(event: Event) {
     <div class="compose-dialog__card">
       <header>
         <h2>{{ composeStore.draft.subject || 'New Message' }}</h2>
-        <button type="button" class="icon" @click="composeStore.close()" aria-label="Close" title="Close">×</button>
+        <button
+          type="button"
+          class="icon"
+          :disabled="isSending"
+          :title="isSending ? 'Sending — please wait' : 'Close'"
+          aria-label="Close"
+          @click="composeStore.close()"
+        >×</button>
       </header>
 
       <div class="row">
@@ -1094,9 +1106,17 @@ function selectFromIdentity(event: Event) {
       </div>
 
       <footer>
-        <AppButton variant="outline" @click="composeStore.close()">Discard</AppButton>
-        <AppButton :disabled="composeStore.status === COMPOSE_STATE.SENDING" @click="send">
-          {{ composeStore.status === COMPOSE_STATE.SENDING ? 'Sending…' : 'Send' }}
+        <AppButton
+          variant="outline"
+          :disabled="isSending"
+          @click="composeStore.close()"
+        >Discard</AppButton>
+        <AppButton
+          v-if="!composeStore.outcomeUnknown"
+          :disabled="isSending"
+          @click="send"
+        >
+          {{ isSending ? 'Sending…' : 'Send' }}
         </AppButton>
       </footer>
 

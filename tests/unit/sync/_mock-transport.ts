@@ -99,6 +99,12 @@ export class MockTransport {
     };
   }
 
+  /** Teardown surface JmapBackend.stop() calls. Nothing here holds a
+   *  socket or an in-flight fetch, so both are no-ops. */
+  abort() {}
+
+  closeWebSocket() {}
+
   async request(using: any, methodCalls: any) {
     return this._dispatch(using, methodCalls);
   }
