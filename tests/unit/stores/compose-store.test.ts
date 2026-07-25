@@ -40,9 +40,49 @@ function sourceMessage(overrides: Record<string, unknown> = {}) {
     subject: 'Project update',
     from_text: 'Alice <alice@example.com>',
     to_text: 'Me <me@example.com>, Bob <bob@example.com>, Alice <alice@example.com>',
+    rfc822_message_id: 'parent@example.com',
+    references_json: null,
+    in_reply_to_json: null,
     received_at: Date.parse('2026-05-22T12:00:00Z'),
     ...overrides,
+  } as any;
+}
+
+/**
+ * The parent's `message_addresses` rows, which is where the reply audience
+ * comes from. `to_text` above is the display string for the same people;
+ * the two are kept consistent so a test reads as one message.
+ */
+function sourceAddresses() {
+  return [
+    { kind: 'from', position: 0, name: 'Alice', email: 'alice@example.com' },
+    { kind: 'to', position: 0, name: 'Me', email: 'me@example.com' },
+    { kind: 'to', position: 1, name: 'Bob', email: 'bob@example.com' },
+    { kind: 'to', position: 2, name: 'Alice', email: 'alice@example.com' },
+    { kind: 'cc', position: 0, name: 'Carol', email: 'carol@example.com' },
+  ];
+}
+
+/**
+ * A store attached to a repository that answers the address read the reply
+ * prefills depend on.
+ */
+async function storeWithParentAddresses(addresses = sourceAddresses(), identities = [
+  identity({ id: 1, name: 'Me', email: 'me@example.com' }),
+]) {
+  const repo = {
+    subscribe: vi.fn(() => () => {}),
+    getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+    listIdentities: vi.fn(async () => identities),
+    listMessageAddresses: vi.fn(async () => addresses),
   };
+  __setRepositoryForTests(repo);
+  const authStore = useAuthStore();
+  authStore.accountId = 1;
+  const composeStore = useComposeStore();
+  await composeStore.attach();
+  await waitForAsyncWatchers();
+  return { composeStore, repo };
 }
 
 beforeEach(() => {
@@ -52,39 +92,136 @@ beforeEach(() => {
 });
 
 describe('compose-store reply and forward prefills', () => {
-  it('prepares a reply addressed to the original sender with quoted content', () => {
-    const composeStore = useComposeStore();
+  it('prepares a reply addressed to the original sender with quoted content', async () => {
+    const { composeStore } = await storeWithParentAddresses();
 
-    composeStore.prepareReplyFromMessage(sourceMessage(), {
+    await composeStore.prepareReplyFromMessage(sourceMessage(), {
       html: '<p>Hello from Alice</p>',
       text: 'Hello from Alice',
     });
 
     expect(composeStore.isOpen).toBe(true);
-    expect(composeStore.draft.to).toBe('Alice <alice@example.com>');
-    expect(composeStore.draft.cc).toBe('');
+    expect(composeStore.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(composeStore.draft.cc).toEqual([]);
     expect(composeStore.draft.subject).toBe('Re: Project update');
     expect(composeStore.draft.htmlBody).toContain('From: Alice &lt;alice@example.com&gt;');
     expect(composeStore.draft.htmlBody).toContain('<blockquote type="cite"><p>Hello from Alice</p></blockquote>');
     expect(composeStore.draft.textBody).toContain('> Hello from Alice');
   });
 
-  it('prepares reply-all with the sender in To and non-self recipients in Cc', () => {
-    const composeStore = useComposeStore();
-    composeStore.identities = [{ id: 1, name: 'Me', email: 'me@example.com' } as any];
+  it('prepares reply-all with the sender in To and everyone else in Cc', async () => {
+    const { composeStore } = await storeWithParentAddresses();
 
-    composeStore.prepareReplyAll(sourceMessage(), {
+    await composeStore.prepareReplyAll(sourceMessage(), {
       text: 'Looping everyone in',
     });
 
     expect(composeStore.isOpen).toBe(true);
-    expect(composeStore.draft.to).toBe('Alice <alice@example.com>');
-    expect(composeStore.draft.cc).toBe('Bob <bob@example.com>');
+    expect(composeStore.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(composeStore.draft.cc, 'the original Cc travels too (issue #71)').toEqual([
+      { name: 'Bob', email: 'bob@example.com' },
+      { name: 'Carol', email: 'carol@example.com' },
+    ]);
     expect(composeStore.draft.textBody).toContain('> Looping everyone in');
   });
 
-  it('prepares a forward without recipients and with a forwarded subject', () => {
-    const composeStore = useComposeStore();
+  it('threads a reply to its parent', async () => {
+    const { composeStore } = await storeWithParentAddresses();
+
+    await composeStore.prepareReplyFromMessage(
+      sourceMessage({ references_json: JSON.stringify(['first@example.com']) }),
+      {},
+    );
+
+    expect(composeStore.draft.inReplyTo).toEqual(['parent@example.com']);
+    expect(composeStore.draft.references).toEqual([
+      'first@example.com',
+      'parent@example.com',
+    ]);
+  });
+
+  it('reads the audience from the addresses of the message being replied to', async () => {
+    const { composeStore, repo } = await storeWithParentAddresses();
+
+    await composeStore.prepareReplyAll(sourceMessage({ id: 99 }), {});
+
+    expect(repo.listMessageAddresses).toHaveBeenCalledWith(99);
+  });
+
+  it('leaves out every address the account owns, whichever From is selected', async () => {
+    // The audience is computed from what the account owns, not from the
+    // identity the draft happens to be sending as, so a reply from an alias
+    // still does not address the user's other alias.
+    const { composeStore } = await storeWithParentAddresses(
+      [
+        ...sourceAddresses(),
+        { kind: 'cc', position: 1, name: 'Me at work', email: 'work@example.com' },
+      ],
+      [
+        identity({ id: 1, name: 'Me', email: 'me@example.com' }),
+        identity({ id: 2, name: 'Me at work', email: 'work@example.com' }),
+      ],
+    );
+
+    await composeStore.prepareReplyAll(sourceMessage(), {});
+    composeStore.draft.fromIdx = 1;
+
+    const addressed = [...composeStore.draft.to, ...composeStore.draft.cc]
+      .map((a: any) => a.email);
+    expect(addressed).not.toContain('me@example.com');
+    expect(addressed).not.toContain('work@example.com');
+    expect(addressed).toEqual(['alice@example.com', 'bob@example.com', 'carol@example.com']);
+  });
+
+  it('falls back to a narrow reply when the parent addresses cannot be read', async () => {
+    // An empty audience would look like a message addressed to nobody, and
+    // a reply-all computed from nothing would silently drop every
+    // recipient. The sender is the one address the list row can supply.
+    const { composeStore, repo } = await storeWithParentAddresses();
+    repo.listMessageAddresses.mockRejectedValueOnce(new Error('worker gone'));
+
+    await composeStore.prepareReplyAll(sourceMessage(), {});
+
+    expect(composeStore.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(composeStore.draft.cc).toEqual([]);
+  });
+
+  it('opens the reply the user asked for last, not the read that finishes last', async () => {
+    // Each reply reads its parent's addresses before it can open, and two
+    // quick gestures settle in completion order. With a slow read for the
+    // first message, the composer ended up quoting and addressing the one
+    // the user had already left behind.
+    const { composeStore, repo } = await storeWithParentAddresses();
+    let releaseFirst = () => {};
+    repo.listMessageAddresses
+      .mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+        return [{ kind: 'from', position: 0, name: 'Alice', email: 'alice@example.com' }];
+      })
+      .mockImplementationOnce(async () => (
+        [{ kind: 'from', position: 0, name: 'Carol', email: 'carol@example.com' }]
+      ));
+
+    const first = composeStore.prepareReplyFromMessage(
+      sourceMessage({ id: 1, subject: 'The one abandoned' }),
+      { text: 'From Alice' },
+    );
+    const second = composeStore.prepareReplyFromMessage(
+      sourceMessage({ id: 2, subject: 'The one wanted' }),
+      { text: 'From Carol' },
+    );
+    await second;
+    releaseFirst();
+    await first;
+
+    expect(composeStore.draft.to).toEqual([{ name: 'Carol', email: 'carol@example.com' }]);
+    expect(composeStore.draft.subject).toBe('Re: The one wanted');
+    expect(composeStore.draft.textBody).toContain('> From Carol');
+    expect(composeStore.draft.textBody).not.toContain('From Alice');
+  });
+
+  it('prepares a forward without recipients and with a forwarded subject', async () => {
+    const { composeStore } = await storeWithParentAddresses();
 
     composeStore.prepareForward(sourceMessage(), {
       html: '<p>Forward this</p>',
@@ -92,11 +229,106 @@ describe('compose-store reply and forward prefills', () => {
     });
 
     expect(composeStore.isOpen).toBe(true);
-    expect(composeStore.draft.to).toBe('');
-    expect(composeStore.draft.cc).toBe('');
+    expect(composeStore.draft.to).toEqual([]);
+    expect(composeStore.draft.cc).toEqual([]);
+    expect(composeStore.draft.inReplyTo).toEqual([]);
     expect(composeStore.draft.subject).toBe('Fwd: Project update');
     expect(composeStore.draft.htmlBody).toContain('<blockquote type="cite"><p>Forward this</p></blockquote>');
     expect(composeStore.draft.textBody).toContain('> Forward this');
+  });
+});
+
+describe('compose-store recipient fields', () => {
+  it('takes the addresses from committed recipients', () => {
+    const composeStore = useComposeStore();
+    composeStore.open();
+
+    composeStore.setRecipientEntries('to', [
+      { name: 'Smith, Alice', email: 'alice@example.com' },
+      { email: 'bob@example.com' },
+    ]);
+
+    expect(composeStore.draft.to).toEqual([
+      { name: 'Smith, Alice', email: 'alice@example.com' },
+      { email: 'bob@example.com' },
+    ]);
+    expect(composeStore.rejectedRecipients.to).toEqual([]);
+  });
+
+  it('keeps a committed recipient that is not an address out of the message', () => {
+    const composeStore = useComposeStore();
+    composeStore.open();
+
+    composeStore.setRecipientEntries('cc', [
+      { email: 'alice@example.com' },
+      { text: 'not an address', invalid: true },
+    ]);
+
+    // What the message carries is the addresses; what stops it being sent is
+    // the presence of anything else (CS-2.4).
+    expect(composeStore.draft.cc).toEqual([{ email: 'alice@example.com' }]);
+    expect(composeStore.rejectedRecipients.cc).toEqual(['not an address']);
+  });
+
+  it('holds no reference to the entries a control handed it', () => {
+    // The control keeps its own copy and mutates it in place; a draft that
+    // shared the objects would change under the message being sent.
+    const composeStore = useComposeStore();
+    composeStore.open();
+    const entries = [{ name: 'Alice', email: 'alice@example.com' }];
+
+    composeStore.setRecipientEntries('to', entries);
+    entries[0].email = 'someone-else@example.com';
+
+    expect(composeStore.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+  });
+
+  it('hands a replaced draft back as recipients a control can show', () => {
+    const composeStore = useComposeStore();
+    composeStore.open({ to: [{ name: 'Smith, Alice', email: 'alice@example.com' }] });
+    composeStore.setRecipientEntries('to', [
+      ...composeStore.recipientEntries('to'),
+      { text: 'rubbish', invalid: true },
+    ]);
+
+    expect(composeStore.recipientEntries('to')).toEqual([
+      { name: 'Smith, Alice', email: 'alice@example.com' },
+      { text: 'rubbish', invalid: true },
+    ]);
+  });
+
+  it('counts recipients across all three fields', () => {
+    const composeStore = useComposeStore();
+    composeStore.open({
+      cc: [{ email: 'cc@example.com' }],
+      bcc: [{ email: 'bcc@example.com' }],
+    });
+
+    expect(composeStore.recipientCount).toBe(2);
+  });
+
+  it('does not share recipient arrays between drafts', () => {
+    const composeStore = useComposeStore();
+    const prefill = [{ email: 'alice@example.com' }];
+
+    composeStore.open({ to: prefill });
+    composeStore.setRecipientEntries('to', [{ email: 'bob@example.com' }]);
+    composeStore.close();
+    composeStore.open({ to: prefill });
+
+    expect(prefill).toEqual([{ email: 'alice@example.com' }]);
+    expect(composeStore.draft.to).toEqual([{ email: 'alice@example.com' }]);
+  });
+
+  it('clears rejected fragments when the draft is replaced', () => {
+    const composeStore = useComposeStore();
+    composeStore.open();
+    composeStore.setRecipientEntries('to', [{ text: 'rubbish', invalid: true }]);
+    expect(composeStore.rejectedRecipients.to).toEqual(['rubbish']);
+
+    composeStore.close();
+
+    expect(composeStore.rejectedRecipients.to).toEqual([]);
   });
 });
 
@@ -202,13 +434,13 @@ describe('compose-store send safety', () => {
     // closes, and its request payload is the only durable copy of the
     // message, so discarding here could lose the user's mail outright.
     const composeStore = useComposeStore();
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Keep me' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Keep me' });
     composeStore.status = COMPOSE_STATE.SENDING;
 
     expect(composeStore.close()).toBe(false);
     expect(composeStore.isOpen).toBe(true);
     expect(composeStore.draft.subject).toBe('Keep me');
-    expect(composeStore.draft.to).toBe('rcpt@example.com');
+    expect(composeStore.draft.to).toEqual([{ email: 'rcpt@example.com' }]);
   });
 
   it('does not let a send settling after logout write over a new composer', async () => {
@@ -230,7 +462,7 @@ describe('compose-store send safety', () => {
     await composeStore.attach();
     await waitForAsyncWatchers();
 
-    composeStore.open({ to: 'rcpt@example.com', subject: 'First' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'First' });
     const sending = composeStore.send();
     await waitForAsyncWatchers();
     expect(composeStore.status).toBe(COMPOSE_STATE.SENDING);
@@ -262,20 +494,25 @@ describe('compose-store send safety', () => {
    * A composer wired to a repo whose runMutation returns `outcome`, and
    * whose failed row carries `rowError` as its recorded error.
    */
+  /** The repository the most recent composerWithOutcome() wired up. */
+  let lastRepo: any = null;
+
   async function composerWithOutcome(
     outcome: Record<string, unknown>,
     rowError?: Record<string, unknown>,
+    identities: IdentityRow[] = [identity({ id: 1, email: 'me@example.com' })],
   ) {
     const repo = {
       subscribe: vi.fn(() => () => {}),
       getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
-      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      listIdentities: vi.fn(async () => identities),
       insertPendingMutation: vi.fn(async () => ({ id: 7 })),
       runMutation: vi.fn(async () => outcome),
       getPendingMutationError: vi.fn(async () => (rowError
         ? { mutation_type: 'send', local_status: 'conflicted', error_json: JSON.stringify(rowError) }
         : null)),
     };
+    lastRepo = repo;
     __setRepositoryForTests(repo);
     const authStore = useAuthStore();
     authStore.accountId = 1;
@@ -284,6 +521,138 @@ describe('compose-store send safety', () => {
     await waitForAsyncWatchers();
     return composeStore;
   }
+
+  /** The parsed request payload of the single mutation that was queued. */
+  function queuedSend() {
+    return JSON.parse(lastRepo.insertPendingMutation.mock.calls[0][0].requestJson);
+  }
+
+  it('sends a message addressed only in Cc', async () => {
+    // Any of the three fields carries the message; requiring To refuses a
+    // send the user has every right to make (CS-2.2).
+    const composeStore = await composerWithOutcome({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    composeStore.open({ cc: [{ email: 'cc@example.com' }], subject: 'Cc only' });
+
+    await expect(composeStore.send()).resolves.toBe(true);
+  });
+
+  it('sends a message addressed only in Bcc', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    composeStore.open({ bcc: [{ email: 'bcc@example.com' }], subject: 'Bcc only' });
+
+    await expect(composeStore.send()).resolves.toBe(true);
+  });
+
+  it('still refuses a send addressed to nobody', async () => {
+    const composeStore = await composerWithOutcome({});
+    composeStore.open({ subject: 'Nobody' });
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.error).toBe('Add at least one recipient.');
+  });
+
+  it('refuses to send while a recipient field holds something unreadable', async () => {
+    // Sending anyway would deliver to a smaller audience than the user
+    // believes they addressed, and say nothing about it (CS-2.4).
+    const composeStore = await composerWithOutcome({});
+    composeStore.open({ to: [{ email: 'alice@example.com' }] });
+    composeStore.setRecipientEntries('cc', [
+      { email: 'alice@example.com' },
+      { text: 'not an address', invalid: true },
+    ]);
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.error).toBe('not an address is not an email address.');
+  });
+
+  it('refuses a send whose recipients an unclosed comment hid', async () => {
+    // The worst shape of CS-2.4: comment syntax makes everything after `(`
+    // invisible, so this once queued Alice alone with nothing rejected and
+    // nothing to stop it, and Bob was simply never mailed.
+    const composeStore = await composerWithOutcome({});
+    composeStore.open();
+    composeStore.setRecipientEntries('to', [
+      { text: 'alice@example.com (Bob <bob@example.com>', invalid: true },
+    ]);
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.error).toContain('bob@example.com');
+    expect(composeStore.draft.to).toEqual([]);
+  });
+
+  it('names every unreadable fragment when there is more than one', async () => {
+    const composeStore = await composerWithOutcome({});
+    composeStore.open();
+    composeStore.setRecipientEntries('to', [
+      { text: 'first bad', invalid: true },
+      { text: 'second@', invalid: true },
+    ]);
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.error).toBe('These are not email addresses: first bad, second@');
+  });
+
+  it('queues the recipients as addresses, not as text', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    composeStore.open({
+      to: [{ name: 'Smith, Alice', email: 'alice@example.com' }],
+      cc: [{ email: 'cc@example.com' }],
+      bcc: [{ email: 'bcc@example.com' }],
+    });
+
+    await composeStore.send();
+
+    const request = queuedSend();
+    expect(request.to).toEqual([{ name: 'Smith, Alice', email: 'alice@example.com' }]);
+    expect(request.cc).toEqual([{ email: 'cc@example.com' }]);
+    expect(request.bcc).toEqual([{ email: 'bcc@example.com' }]);
+  });
+
+  it('carries the reply threading into the queued send', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    composeStore.open({
+      to: [{ email: 'alice@example.com' }],
+      inReplyTo: ['parent@example.com'],
+      references: ['first@example.com', 'parent@example.com'],
+    });
+
+    await composeStore.send();
+
+    const request = queuedSend();
+    expect(request.inReplyTo).toEqual(['parent@example.com']);
+    expect(request.references).toEqual(['first@example.com', 'parent@example.com']);
+  });
+
+  it('applies the identity Reply-To default and never its Bcc default', async () => {
+    // RFC 8621 §6.1 replyTo is applied; bcc is persisted on the identity
+    // but withheld, because silently Bcc-ing the user is user-visible
+    // behaviour that needs a product decision first (CS-2.8).
+    const composeStore = await composerWithOutcome(
+      { attempted: 1, succeeded: 1, failed: 0, result: { filed: true } },
+      undefined,
+      [identity({
+        id: 1,
+        email: 'me@example.com',
+        reply_to_json: JSON.stringify([{ name: 'Replies', email: 'replies@example.com' }]),
+        raw_json: JSON.stringify({ bcc: [{ email: 'archive@example.com' }] }),
+      })],
+    );
+    composeStore.open({ to: [{ email: 'alice@example.com' }] });
+
+    await composeStore.send();
+
+    const request = queuedSend();
+    expect(request.replyTo).toEqual([{ name: 'Replies', email: 'replies@example.com' }]);
+    expect(request.bcc).toEqual([]);
+  });
 
   it('confirms a send as accepted rather than delivered', async () => {
     // Nothing the client can observe proves the message reached anyone,
@@ -295,7 +664,7 @@ describe('compose-store send safety', () => {
       failed: 0,
       result: { filed: true },
     });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(true);
     expect(composeStore.notice).toBe('Message accepted for delivery.');
@@ -312,7 +681,7 @@ describe('compose-store send safety', () => {
       failed: 1,
       result: { filed: false, submitted: true },
     });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(true);
     expect(composeStore.status).toBe(COMPOSE_STATE.IDLE);
@@ -329,7 +698,7 @@ describe('compose-store send safety', () => {
       failed: 1,
       result: { filed: false },
     });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.status).toBe(COMPOSE_STATE.FAILED);
@@ -347,7 +716,7 @@ describe('compose-store send safety', () => {
       { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
       { type: 'outcomeUnknown', terminal: true, reason: 'noEvidence' },
     );
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.status).toBe(COMPOSE_STATE.FAILED);
@@ -366,7 +735,7 @@ describe('compose-store send safety', () => {
       { attempted: 1, succeeded: 0, failed: 1 },
       { type: 'outcomeUnknown', terminal: true, reason: 'interrupted' },
     );
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/may already have been sent/i);
@@ -378,7 +747,7 @@ describe('compose-store send safety', () => {
       { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
       { type: 'notSubmitted', terminal: true, detail: { type: 'forbiddenFrom' } },
     );
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/Send failed/);
@@ -390,7 +759,7 @@ describe('compose-store send safety', () => {
     // Reading that as success would confirm a message still sitting in
     // the queue.
     const composeStore = await composerWithOutcome({ attempted: 0, succeeded: 0, failed: 0 });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.status).toBe(COMPOSE_STATE.FAILED);
@@ -402,7 +771,7 @@ describe('compose-store send safety', () => {
     // The row was gone by the time the composer asked, which the runner
     // reports as a success with nothing attempted.
     const composeStore = await composerWithOutcome({ attempted: 0, succeeded: 1, failed: 0 });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(true);
     expect(composeStore.notice).toMatch(/accepted for delivery/);
@@ -416,7 +785,7 @@ describe('compose-store send safety', () => {
     const composeStore = await composerWithOutcome({
       attempted: 1, succeeded: 0, failed: 1, errorType: 'outcomeUnknown',
     });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/may already have been sent/i);
@@ -427,7 +796,7 @@ describe('compose-store send safety', () => {
     const composeStore = await composerWithOutcome({
       attempted: 1, succeeded: 0, failed: 1, errorType: 'stopped',
     });
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/Send failed/);
@@ -439,7 +808,7 @@ describe('compose-store send safety', () => {
       { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
       { type: 'outcomeUnknown', terminal: true, reason: 'noEvidence' },
     );
-    composeStore.open({ to: 'rcpt@example.com', subject: 'Hello' });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
     await composeStore.send();
     expect(composeStore.outcomeUnknown).toBe(true);
 

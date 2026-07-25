@@ -122,6 +122,20 @@ export function useThunderbirdShortcuts({
     if (!enabled.value) return;
     if (composeStore.isOpen) {
       if (event.key === 'Escape') {
+        // A combobox showing its list owns Escape: dismissing the list is
+        // what the user meant, and closing the whole message instead throws
+        // away a draft over a keypress. This handler runs in the capture
+        // phase, so the control cannot stop the event on its way past —
+        // hence reading the state it already publishes for a screen reader
+        // rather than a flag kept in parallel with it.
+        //
+        // Only where it has focus, because only there will it receive the
+        // key. Standing down for a list somewhere else in the dialog leaves
+        // Escape doing nothing at all, and a message that cannot be closed.
+        const focused = document.activeElement;
+        if (focused?.matches?.('.compose-dialog [role="combobox"][aria-expanded="true"]')) {
+          return;
+        }
         event.preventDefault();
         composeStore.close();
       }
@@ -147,14 +161,18 @@ export function useThunderbirdShortcuts({
     }
 
     const single = getSingleMessage(mailStore);
+    // The reply prefills read the parent's addresses from the cache, so
+    // they settle a tick later. The handler stays synchronous — it has a
+    // keystroke to preventDefault — and the composer opens when the read
+    // returns, which is the same latency the toolbar buttons have.
     if (single && matchesShortcut(event, { key: 'r', mod: true }) && !event.shiftKey) {
       event.preventDefault();
-      composeStore.prepareReplyFromMessage(single, mailStore.messageBody ?? {});
+      void composeStore.prepareReplyFromMessage(single, mailStore.messageBody ?? {});
       return;
     }
     if (single && matchesShortcut(event, { key: 'r', mod: true, shift: true })) {
       event.preventDefault();
-      composeStore.prepareReplyAll(single, mailStore.messageBody ?? {});
+      void composeStore.prepareReplyAll(single, mailStore.messageBody ?? {});
       return;
     }
     if (single && matchesShortcut(event, { key: 'l', mod: true })) {

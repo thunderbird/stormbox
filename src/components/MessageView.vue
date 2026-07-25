@@ -28,6 +28,7 @@ import {
   sanitizeMessageHtml,
 } from '../utils/message-html';
 import { adaptHtmlForDarkMode } from '../utils/dark-email';
+import { formatAddressList } from '../utils/address-parse';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -95,6 +96,19 @@ const message = computed(() =>
   // access so find() doesn't throw on a hole.
   mailStore.messages.find((m) => m?.id === mailStore.selectedMessageId) ?? null,
 );
+
+/**
+ * The message's Cc recipients, so the audience is visible before replying
+ * (CS-2.7). There is no `cc_text` column, and there should not be: the
+ * addresses are already cached one per row, which is the form Reply All
+ * needs anyway.
+ */
+const ccText = computed(() => formatAddressList(
+  mailStore.selectedMessageAddresses
+    .filter((row) => row.kind === 'cc' && row.email)
+    .sort((a, b) => a.position - b.position)
+    .map((row) => ({ ...(row.name ? { name: row.name } : {}), email: row.email })),
+));
 
 let resizeObserver = null;
 let iframeMeasurementCleanup = null;
@@ -425,12 +439,12 @@ async function quoteBody() {
 
 async function reply() {
   if (!message.value) return;
-  composeStore.prepareReplyFromMessage(message.value, await quoteBody());
+  await composeStore.prepareReplyFromMessage(message.value, await quoteBody());
 }
 
 async function replyAll() {
   if (!message.value) return;
-  composeStore.prepareReplyAll(message.value, await quoteBody());
+  await composeStore.prepareReplyAll(message.value, await quoteBody());
 }
 
 async function forward() {
@@ -596,6 +610,10 @@ function closeMessageView() {
           <div v-if="message.to_text" class="message-view__metadata-row">
             <dt>To</dt>
             <dd>{{ message.to_text }}</dd>
+          </div>
+          <div v-if="ccText" class="message-view__metadata-row">
+            <dt>Cc</dt>
+            <dd>{{ ccText }}</dd>
           </div>
           <div class="message-view__metadata-row message-view__title">
             <dt>Subject</dt>

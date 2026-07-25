@@ -48,6 +48,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_GET_BY_REMOTE: 'message.getByRemote',
   MESSAGE_LIST_FOR_THREAD: 'message.listForThread',
   MESSAGE_FIND_BY_RFC822_MESSAGE_ID: 'message.findByRfc822MessageId',
+  MESSAGE_LIST_ADDRESSES: 'message.listAddresses',
   MESSAGE_FILTER_EXISTING_IDS: 'message.filterExistingIds',
   MESSAGE_REPLACE_KEYWORDS: 'message.replaceKeywords',
   MESSAGE_REPLACE_KEYWORDS_MANY: 'message.replaceKeywordsMany',

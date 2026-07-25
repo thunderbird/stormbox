@@ -20,6 +20,11 @@ import {
   SHARED_TEST_OIDC_PASSWORD,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
+import {
+  composeSubject,
+  fillRecipient,
+  recipientAddresses,
+} from './helpers/compose.js';
 
 /**
  * An interrupted send must never deliver twice (CS-1.8, CS-1.9, CS-5.5).
@@ -194,13 +199,6 @@ async function sendAndWait(page, { to, subject }) {
   return { accountId, mutationId, summary };
 }
 
-function composeInput(page, label) {
-  return page.locator('.compose-dialog .row')
-    .filter({ hasText: new RegExp(`^${label}$`) })
-    .locator('input')
-    .first();
-}
-
 const sendButton = (page) =>
   page.locator('.compose-dialog button.primary', { hasText: /^Send$/ });
 
@@ -216,8 +214,8 @@ async function composeAndSend(page, { to, subject }) {
     async () => page.locator('.compose-dialog select').first().locator('option').count(),
     { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
   ).toBeGreaterThan(0);
-  await composeInput(page, 'To').fill(to);
-  await composeInput(page, 'Subject').fill(subject);
+  await fillRecipient(page, 'To', to);
+  await composeSubject(page).fill(subject);
   const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
   await editor.click();
   await page.keyboard.type('Interrupted send e2e body.');
@@ -591,8 +589,9 @@ test.describe('Interrupted send', () => {
         .toHaveCount(0);
       // The message is still in front of the user, so nothing is lost by
       // withholding the button.
-      await expect(composeInput(page, 'Subject')).toHaveValue(subject);
-      await expect(composeInput(page, 'To')).toHaveValue(SHARED_TEST_OIDC_EMAIL);
+      await expect(composeSubject(page)).toHaveValue(subject);
+      expect(await recipientAddresses(page, 'To'))
+        .toEqual([SHARED_TEST_OIDC_EMAIL.toLowerCase()]);
       await expect(
         page.locator('.compose-dialog button', { hasText: /^Discard$/ }),
         'the way out stays available',

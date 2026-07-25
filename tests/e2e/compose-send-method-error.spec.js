@@ -20,6 +20,11 @@ import {
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import { clickFolder } from './helpers/ui.js';
+import {
+  composeSubject,
+  fillRecipient,
+  recipientAddresses,
+} from './helpers/compose.js';
 
 /**
  * A method-level JMAP failure must fail the send (CS-1.3), keep the
@@ -41,13 +46,6 @@ import { clickFolder } from './helpers/ui.js';
  */
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
-
-function composeInput(page, label) {
-  return page.locator('.compose-dialog .row')
-    .filter({ hasText: new RegExp(`^${label}$`) })
-    .locator('input')
-    .first();
-}
 
 /**
  * Exact-subject lookup over the newest rows of a mailbox. The JMAP
@@ -210,8 +208,8 @@ test.describe('Compose send: method-level JMAP error', () => {
         { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
       ).toBeGreaterThan(0);
 
-      await composeInput(page, 'To').fill(selfEmail());
-      await composeInput(page, 'Subject').fill(subject);
+      await fillRecipient(page, 'To', selfEmail());
+      await composeSubject(page).fill(subject);
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();
       await page.keyboard.type('This send is answered with a method-level error.');
@@ -224,8 +222,8 @@ test.describe('Compose send: method-level JMAP error', () => {
       const error = page.locator('.compose-dialog .compose-error');
       await expect(error).toBeVisible({ timeout: 60_000 });
       await expect(error).toHaveText(/Send failed/i);
-      await expect(composeInput(page, 'Subject')).toHaveValue(subject);
-      await expect(composeInput(page, 'To')).toHaveValue(selfEmail());
+      await expect(composeSubject(page)).toHaveValue(subject);
+      expect(await recipientAddresses(page, 'To')).toEqual([selfEmail().toLowerCase()]);
 
       // The mutation row survives, carrying the server's own reason.
       const rows = await readSendMutations(page);

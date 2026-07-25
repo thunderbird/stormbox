@@ -1,40 +1,27 @@
 /**
- * Parse a free-form recipient input into a list of {name?, email}
- * pairs. Accepts the two RFC 5322 address shapes the compose UI lets
- * a user type:
+ * Address-list helpers for callers that only want the addresses.
  *
- *   alice@example.com
- *   "Alice Example" <alice@example.com>
- *
- * Comma-separated. Whitespace is trimmed. Quoted-display-name pairs
- * keep the inner text minus surrounding double quotes.
+ * The parsing itself lives in `address-parse.ts`, which also reports the
+ * fragments it could not read. This module is the narrower view: it drops
+ * the rejections, which is only appropriate where nothing can be done
+ * about them. A caller acting on user input should use the parser directly
+ * and surface them (CS-2.4).
  */
 
-export interface ParsedAddress {
-  name?: string;
-  email: string;
-}
+import { parseAddressList as parseAddresses, type ParsedAddress } from './address-parse';
+
+export type { ParsedAddress };
 
 /**
- * Parse a single address token (one comma-separated entry) into a
- * {name?, email} pair. Handles both shapes above; the display name keeps
- * its inner text minus surrounding double quotes. Returns null for an
- * empty token.
+ * Parse a display string into the one address it names, or null when it
+ * names none. Used for header text the server has already validated —
+ * a `from_text` — rather than for anything a user typed.
  */
 export function parseOneAddress(part: string): ParsedAddress | null {
-  const trimmed = part.trim();
-  if (!trimmed) return null;
-  const m = trimmed.match(/^(.+?)\s*<(.+?)>$/);
-  if (m) {
-    return { name: m[1].trim().replace(/^"|"$/g, ''), email: m[2].trim() };
-  }
-  return { email: trimmed };
+  return parseAddresses(part).addresses[0] ?? null;
 }
 
+/** Parse an address list, keeping only what parsed. */
 export function parseAddressList(input: string): ParsedAddress[] {
-  if (!input) return [];
-  return input
-    .split(',')
-    .map(parseOneAddress)
-    .filter((a): a is ParsedAddress => a != null);
+  return parseAddresses(input).addresses;
 }

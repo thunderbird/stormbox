@@ -590,6 +590,44 @@ describe('thread + message + membership handlers', () => {
     expect(Number(row.is_flagged)).toBe(1);
   });
 
+  it('returns a message addresses in header order for the reply path', async () => {
+    // Cc and Reply-To live nowhere else in the cache: there is no column
+    // for either, so Reply All can only be computed from these rows.
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id, { remoteId: 'inbox', role: 'inbox' });
+    const { messageId } = await seedMessage(account.id, inbox.id, {
+      remoteId: 'with-cc',
+      addresses: [
+        { kind: 'from', position: 0, name: 'Alice', email: 'alice@example.com' },
+        { kind: 'to', position: 1, name: null, email: 'second@example.com' },
+        { kind: 'to', position: 0, name: 'First', email: 'first@example.com' },
+        { kind: 'cc', position: 0, name: 'Carol', email: 'carol@example.com' },
+        { kind: 'replyTo', position: 0, name: null, email: 'replies@example.com' },
+      ],
+    });
+
+    const rows = await h[DB_RPC.MESSAGE_LIST_ADDRESSES]({ messageId });
+
+    expect(rows).toEqual([
+      { kind: 'cc', position: 0, name: 'Carol', email: 'carol@example.com' },
+      { kind: 'from', position: 0, name: 'Alice', email: 'alice@example.com' },
+      { kind: 'replyTo', position: 0, name: null, email: 'replies@example.com' },
+      { kind: 'to', position: 0, name: 'First', email: 'first@example.com' },
+      { kind: 'to', position: 1, name: null, email: 'second@example.com' },
+    ]);
+  });
+
+  it('returns no addresses for a message that has none', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id, { remoteId: 'inbox', role: 'inbox' });
+    const { messageId } = await seedMessage(account.id, inbox.id, {
+      remoteId: 'bare',
+      addresses: [],
+    });
+
+    expect(await h[DB_RPC.MESSAGE_LIST_ADDRESSES]({ messageId })).toEqual([]);
+  });
+
   it('supports many-to-many folder membership for one message', async () => {
     const account = await seedAccount();
     const inbox = await seedFolder(account.id, { remoteId: 'inbox', role: 'inbox' });

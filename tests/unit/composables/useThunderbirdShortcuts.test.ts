@@ -71,6 +71,18 @@ function mountHarness(options: { focusQuickFilter?: () => void } = {}) {
   return { wrapper, space, enabled };
 }
 
+/** A compose dialog holding a recipient combobox with its list showing. */
+function openDialogWithCombobox() {
+  const dialog = document.createElement('div');
+  dialog.className = 'compose-dialog';
+  const combobox = document.createElement('input');
+  combobox.setAttribute('role', 'combobox');
+  combobox.setAttribute('aria-expanded', 'true');
+  dialog.appendChild(combobox);
+  document.body.appendChild(dialog);
+  return { dialog, combobox };
+}
+
 function fireKey(key: string, init: Partial<KeyboardEventInit> = {}) {
   document.dispatchEvent(new KeyboardEvent('keydown', {
     key,
@@ -244,6 +256,60 @@ describe('useThunderbirdShortcuts', () => {
     await Promise.resolve();
 
     expect(destroySpy).not.toHaveBeenCalled();
+  });
+
+  it('Escape closes an open composer', () => {
+    mountHarness();
+    const composeStore = useComposeStore();
+    composeStore.open();
+
+    fireKey('Escape');
+
+    expect(composeStore.isOpen).toBe(false);
+  });
+
+  it('leaves Escape to a recipient list that is showing', () => {
+    // Escape is handled here in the capture phase, so a combobox inside the
+    // dialog cannot stop the event on its way past. Dismissing its list is
+    // what the key means while the list is up; closing the whole message
+    // instead discards a draft.
+    mountHarness();
+    const composeStore = useComposeStore();
+    composeStore.open();
+    const { dialog, combobox } = openDialogWithCombobox();
+
+    try {
+      combobox.focus();
+      fireKey('Escape');
+      expect(composeStore.isOpen).toBe(true);
+
+      combobox.setAttribute('aria-expanded', 'false');
+      fireKey('Escape');
+      expect(composeStore.isOpen).toBe(false);
+    } finally {
+      dialog.remove();
+    }
+  });
+
+  it('closes the composer when the open list is somewhere else', () => {
+    // A list can be left expanded on a field the user has moved away from.
+    // Standing down for that one leaves Escape doing nothing at all: the
+    // field never gets the key, so nothing closes and the draft is stuck.
+    mountHarness();
+    const composeStore = useComposeStore();
+    composeStore.open();
+    const { dialog } = openDialogWithCombobox();
+    const subject = document.createElement('input');
+    dialog.appendChild(subject);
+
+    try {
+      subject.focus();
+      fireKey('Escape');
+
+      expect(composeStore.isOpen).toBe(false);
+    } finally {
+      dialog.remove();
+    }
   });
 
   it('Delete works when focus is on a checkbox input', async () => {

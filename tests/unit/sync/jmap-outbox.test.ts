@@ -91,7 +91,9 @@ async function seedSendScaffolding() {
   return { drafts, sent, identity };
 }
 
-async function insertSendMutation({ drafts, sent, to, cc, bcc }: any) {
+async function insertSendMutation({
+  drafts, sent, to, cc, bcc, replyTo, inReplyTo, references,
+}: any) {
   const identity = await engine.get(
     'SELECT id FROM identities WHERE account_id = ? AND remote_id = ?',
     [account.id, 'id-1'],
@@ -104,6 +106,9 @@ async function insertSendMutation({ drafts, sent, to, cc, bcc }: any) {
       to: to ?? [{ email: 'rcpt@example.com' }],
       ...(cc ? { cc } : {}),
       ...(bcc ? { bcc } : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(inReplyTo ? { inReplyTo } : {}),
+      ...(references ? { references } : {}),
       subject: 'Hello',
       textBody: 'Hi.',
       draftsFolderId: drafts.id,
@@ -876,6 +881,58 @@ describe('drainOutbox', () => {
     // The server derives the envelope from these three fields, so no
     // client-built rcptTo is sent.
     expect(submitParams.create.s1.envelope).toBeUndefined();
+  });
+
+  it('threads a reply with In-Reply-To and References so other clients follow it', async () => {
+    // Subject prefixing is not threading (CS-2.6): without these headers a
+    // reply arrives as a new conversation in every other mail client.
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({
+      drafts,
+      sent,
+      to: [{ email: 'to@example.com' }],
+      inReplyTo: ['parent@example.com'],
+      references: ['first@example.com', 'parent@example.com'],
+      replyTo: [{ email: 'replies@example.com' }],
+    });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
+    });
+    transport.handle('EmailSubmission/set', () => ({ created: { s1: { id: 'sub-1' } } }));
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+
+    expect(summary.succeeded).toBe(1);
+    expect(setParams.create.c1.inReplyTo).toEqual(['parent@example.com']);
+    expect(setParams.create.c1.references).toEqual([
+      'first@example.com',
+      'parent@example.com',
+    ]);
+    expect(setParams.create.c1.replyTo).toEqual([{ email: 'replies@example.com' }]);
+  });
+
+  it('leaves threading headers off a message that is not a reply', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent, inReplyTo: [], references: [] });
+
+    const transport = new MockTransport();
+    let setParams;
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
+    });
+    transport.handle('EmailSubmission/set', () => ({ created: { s1: { id: 'sub-1' } } }));
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+
+    await drainOutbox({ transport, account, handlers });
+
+    expect(setParams.create.c1).not.toHaveProperty('inReplyTo');
+    expect(setParams.create.c1).not.toHaveProperty('references');
   });
 
   it('fails the send when the EmailSubmission/set response is absent', async () => {

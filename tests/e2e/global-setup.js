@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { configureKeycloak } from '../fixtures/configure-keycloak.mjs';
 import { configureStalwart } from '../fixtures/configure-stalwart.mjs';
 import { STATUS_PATH } from '../fixtures/ws-proxy/inject.mjs';
+import { acquireLaneLock, releaseLaneLock } from './helpers/lane-lock.js';
 
 function stackHost() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -31,6 +32,21 @@ async function checkUrl(label, url, { okStatuses = [200] } = {}) {
 }
 
 export default async function globalSetup() {
+  // Taken before anything touches the shared stack: `configureKeycloak` and
+  // `configureStalwart` reconfigure servers that a lane already in progress
+  // is relying on.
+  await acquireLaneLock();
+  try {
+    await prepareStack();
+  } catch (err) {
+    // A setup that throws gets no teardown, and a lock left behind would
+    // lock out every later run.
+    releaseLaneLock();
+    throw err;
+  }
+}
+
+async function prepareStack() {
   await configureKeycloak();
   await configureStalwart();
   await checkUrl(

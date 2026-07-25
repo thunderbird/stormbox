@@ -1601,6 +1601,23 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       ),
 
     /**
+     * The message's addresses as sync recorded them, one row per address.
+     *
+     * Reply and Reply All are computed from these rather than from the
+     * rendered `from_text` / `to_text`, which cannot say which address is
+     * the user's own or whether two spellings are the same person. `cc`
+     * and `replyTo` are only available here: neither has a display column.
+     */
+    [DB_RPC.MESSAGE_LIST_ADDRESSES]: async ({ messageId }) =>
+      engine.all(
+        `SELECT kind, position, name, email
+           FROM message_addresses
+          WHERE message_id = ?
+          ORDER BY kind, position`,
+        [messageId],
+      ),
+
+    /**
      * Return the subset of `ids` that still resolve to a row in
      * `messages` for `accountId`. Stores call this before enqueuing
      * a mutation so a stale UI id (e.g. a row the user double-clicked

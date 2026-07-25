@@ -258,6 +258,64 @@ describe('MessageView with a sparse messages array', () => {
     expect(junkSpy).toHaveBeenCalledWith([42]);
   });
 
+  it('shows Cc so the audience is visible before replying', async () => {
+    // There is no cc_text column, and the point of CS-2.7 is that a user
+    // should not have to open Reply All to find out who else got this.
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Has a Cc',
+      from_text: 'sender@example.com',
+      to_text: 'me@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+    mailStore.selectedMessageAddresses = [
+      { kind: 'cc', position: 1, name: null, email: 'carol@example.com' },
+      { kind: 'cc', position: 0, name: 'Bob', email: 'bob@example.com' },
+      { kind: 'bcc', position: 0, name: null, email: 'hidden@example.com' },
+    ];
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    const rows = wrapper.findAll('.message-view__metadata-row')
+      .map((row: any) => [row.find('dt').text(), row.find('dd').text()]);
+    expect(rows).toContainEqual(['Cc', 'Bob <bob@example.com>, carol@example.com']);
+    expect(wrapper.text(), 'Bcc is not part of the message as delivered')
+      .not.toContain('hidden@example.com');
+  });
+
+  it('leaves out the Cc row when the message has none', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'No Cc',
+      from_text: 'sender@example.com',
+      to_text: 'me@example.com',
+      received_at: 1_700_000_000_000,
+    }];
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    const labels = wrapper.findAll('.message-view__metadata-row dt').map((dt: any) => dt.text());
+    expect(labels).toEqual(['From', 'To', 'Subject', 'Date']);
+  });
+
   it('replies to the selected message from the toolbar', async () => {
     const authStore = useAuthStore();
     authStore.accountId = 1;
