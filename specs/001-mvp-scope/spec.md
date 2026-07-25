@@ -30,7 +30,7 @@ capability.
 | 1 | Sign in and session lifecycle | 4 | — | 1 | Session-expired UX |
 | 2 | Read mail | 9 | 2 | 1 | Conversation UI, full mail search, browser navigation |
 | 3 | Triage | 16 | — | 1 | Undo/redo queue |
-| 4 | Compose and send | 7 | — | 1 | Cc/Bcc autocomplete |
+| 4 | Compose and send | 6 | 1 | 1 | Send durability, Cc/Bcc autocomplete |
 | 5 | Contacts | 6 | — | — | — |
 | 6 | Attachments | 1 | — | 1 | Download |
 | 7 | Account storage usage | 2 | — | — | — |
@@ -97,10 +97,10 @@ capability.
 | R-4.1 🟩 Done | The system shall let the user compose a new message and reply, reply-all, or forward an open message. |
 | R-4.2 🟩 Done | The system shall offer rich-text editing via Squire and send a plain-text alternative alongside the HTML body. |
 | R-4.3 🟩 Done | The system shall let the user pick a sending identity when more than one is available. New compose windows shall default to the signed-in account's primary identity when it is known, fall back to the provider's non-deletable or Thundermail identity when needed, and remember the user's most recently selected sending identity for later compose windows in the same account. |
-| R-4.4 🟩 Done | When the user sends, the system shall create the message and submit it through `EmailSubmission/set` in a chained JMAP call, and the sent message shall appear in the Sent folder marked read on the server and in the local cache. |
+| R-4.4 🟨 Partial | When the user sends, the system shall create the message and submit it through `EmailSubmission/set`, and the sent message shall appear in the Sent folder marked read on the server and in the local cache. Creation and submission may be chained in one JMAP call or separated by a durable checkpoint; a single round trip is not required, because a checkpoint between the two is what lets a lost response be reconciled instead of retried. The message shall reach the Sent folder only when submission is confirmed. Durability, response validation, and ambiguous-outcome handling are specified in `specs/004-compose-improvements/spec.md` §1. |
 | R-4.5 🟩 Done | When send fails, the system shall surface the failure and keep the compose draft visible so the user can retry. |
 | R-4.6 🟩 Done | Visible Reply-all and Forward toolbar buttons. |
-| R-4.7 🟧 Planned | Cc/Bcc input fields with autocomplete. (The outbound payload already includes Cc/Bcc when populated.) |
+| R-4.7 🟧 Planned | Cc/Bcc input fields with autocomplete, specified in `specs/004-compose-improvements/spec.md` §2. The Email object already carries Cc and Bcc when the draft holds them, but the submission envelope currently derives `rcptTo` from To alone, so those recipients are not delivered; that defect is fixed as part of the same work. |
 | R-4.8 🟩 Done | When the user pastes an image from the clipboard into the compose editor, the system shall inline it in the draft immediately as a `data:` URL, centered by default, resizable by dragging the handles shown when the image is selected (via the editor's built-in object resizer), and with its alignment controllable by the editor's alignment tools (alignment is applied to the image's containing block). On send, the system shall upload each inline image as a server blob and assemble the message as a `multipart/related` body — a `multipart/alternative` (text plus HTML) together with each image part referenced from the HTML by `cid:` with inline disposition — so recipients can resolve the reference. The system shall not rely on the JMAP convenience `attachments` property for this, because the server emits those parts as a `multipart/mixed` sibling that leaves the `cid:` unresolved. When the user replies to or forwards a message containing inline `cid:` images, the system shall re-inline those images into the quoted body (per R-2.11 resolution) so they are re-uploaded and re-attached to the new message rather than left as dangling references. This shall work across the supported browsers and platforms. |
 
 ### 5. Contacts
