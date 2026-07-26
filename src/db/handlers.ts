@@ -12,6 +12,8 @@
  *   - Add their touched table families to the supplied broadcaster.
  */
 
+import { addressKey, nameTokens } from '../utils/address-key';
+import { autocompleteRecipients, ownedAddressKeys } from './autocomplete';
 import {
   batchResult,
   compactViewAfterDeletingPositions,
@@ -2779,9 +2781,40 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
             for (let i = 0; i < c.emails.length; i += 1) {
               const e = c.emails[i];
               await tx.run(
-                `INSERT INTO contact_emails(contact_id, position, email, label, is_preferred)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [contactId, i, e.email, e.label ?? null, e.isPreferred ? 1 : 0],
+                `INSERT INTO contact_emails(
+                   contact_id, position, email, email_key, label, is_preferred
+                 ) VALUES (?, ?, ?, ?, ?, ?)`,
+                // The address is stored verbatim for display and sending
+                // (CS-3.5); the key beside it is what lookups compare, and it
+                // is computed here rather than in SQL because SQLite's
+                // `lower()` folds ASCII only.
+                [
+                  contactId,
+                  i,
+                  e.email,
+                  addressKey(e.email),
+                  e.label ?? null,
+                  e.isPreferred ? 1 : 0,
+                ],
+              );
+            }
+          }
+          // Search tokens are replaced rather than added to, so renaming a
+          // contact stops matching the name it used to have (CS-3.2). A
+          // deleted card keeps none: it is not a suggestion.
+          //
+          // No nickname is tokenized because nothing maps one — CS-3.2 asks
+          // for it "where available", and no column or sync field carries it.
+          await tx.run('DELETE FROM contact_search_tokens WHERE contact_id = ?', [contactId]);
+          if (!c.isDeleted) {
+            const tokens = nameTokens(
+              c.displayName, c.fullName, c.givenName, c.familyName, c.organization,
+            );
+            for (const token of tokens) {
+              await tx.run(
+                `INSERT OR IGNORE INTO contact_search_tokens(contact_id, account_id, token)
+                 VALUES (?, ?, ?)`,
+                [contactId, accountId, token],
               );
             }
           }
@@ -2799,23 +2832,38 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * caller is responsible for only reaching here once every page
      * succeeded (CS-4.2). Soft delete, to match the `destroyed` path.
      *
-     * Contacts created locally and not yet pushed carry generation 0 and
-     * would otherwise be swept by the first sync to run after them, so a
-     * row with no remote id of its own is left alone.
+     * The `remote_id IS NOT NULL` clause is inert today — the column is
+     * declared NOT NULL — and is kept for the case it is written against:
+     * a contact created locally and not yet pushed has no remote id, and
+     * carries generation 0, so the first sync to run after it would
+     * otherwise sweep it. Making that column nullable is what turns the
+     * clause on; nothing currently inserts such a row.
      */
     [DB_RPC.CONTACT_SWEEP_STALE]: async ({ accountId, generation }) => {
       if (!Number.isFinite(generation) || generation <= 0) {
         throw new Error('CONTACT_SWEEP_STALE requires the generation the sync stamped');
       }
-      const result = await engine.run(
-        `UPDATE contacts SET is_deleted = 1, updated_at = ?
-          WHERE account_id = ?
-            AND is_deleted = 0
-            AND sync_generation < ?
-            AND remote_id IS NOT NULL`,
-        [now(), accountId, generation],
-      );
-      const swept = result?.changes ?? 0;
+      const swept = await engine.transaction(async (tx) => {
+        const result = await tx.run(
+          `UPDATE contacts SET is_deleted = 1, updated_at = ?
+            WHERE account_id = ?
+              AND is_deleted = 0
+              AND sync_generation < ?
+              AND remote_id IS NOT NULL`,
+          [now(), accountId, generation],
+        );
+        // A card the server no longer has must leave the name index with it.
+        // Written as "every deleted contact in the account" so it is
+        // idempotent rather than dependent on what this pass changed.
+        await tx.run(
+          `DELETE FROM contact_search_tokens
+            WHERE contact_id IN (
+                    SELECT id FROM contacts WHERE account_id = ? AND is_deleted = 1
+                  )`,
+          [accountId],
+        );
+        return result?.changes ?? 0;
+      });
       if (swept > 0) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { swept };
     },
@@ -2828,55 +2876,274 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      */
     [DB_RPC.CONTACT_DELETE_LOCAL]: async ({ accountId, remoteId }) => {
       if (remoteId == null) return { deleted: 0 };
-      const result = await engine.run(
-        `UPDATE contacts SET is_deleted = 1, updated_at = ?
-           WHERE account_id = ? AND remote_id = ?`,
-        [now(), accountId, remoteId],
-      );
+      const deleted = await engine.transaction(async (tx) => {
+        const result = await tx.run(
+          `UPDATE contacts SET is_deleted = 1, updated_at = ?
+             WHERE account_id = ? AND remote_id = ?`,
+          [now(), accountId, remoteId],
+        );
+        await tx.run(
+          `DELETE FROM contact_search_tokens
+            WHERE contact_id IN (
+                    SELECT id FROM contacts WHERE account_id = ? AND remote_id = ?
+                  )`,
+          [accountId, remoteId],
+        );
+        return result?.changes ?? 0;
+      });
       broadcaster.touch(TABLE_FAMILIES.CONTACTS);
-      return { deleted: result?.changes ?? 0 };
+      return { deleted };
     },
 
-    [DB_RPC.CONTACT_AUTOCOMPLETE]: async ({ accountId, prefix, limit = 20 }) => {
-      const lowered = String(prefix ?? '').toLowerCase();
-      if (!lowered) {
-        return [];
+    [DB_RPC.CONTACT_AUTOCOMPLETE]: async (params) =>
+      autocompleteRecipients(engine, params),
+
+    /**
+     * Learn the recipients of a send (CS-3.3).
+     *
+     * Only a confirmed submission may reach here. That is the whole point
+     * of the table: autocomplete used to draw on every address on every
+     * synced message, so anyone who had ever mailed the user became a
+     * suggestion, including senders they would never write to.
+     *
+     * A repeat send bumps the count and the timestamp rather than adding a
+     * row, because both are ranking inputs (CS-3.6) and one recipient is
+     * one suggestion (CS-3.4). A name only overwrites a stored name when
+     * there is one to store: a later send with no display name must not
+     * erase the name an earlier send taught us.
+     *
+     * A suppressed recipient stays suppressed (CS-3.13), and stops being
+     * recorded at all: un-suppressing on the next send would make the removal
+     * look like it had not worked, and going on collecting names and counts
+     * for a row that will never be offered keeps data about someone the user
+     * asked to be left out of this.
+     */
+    [DB_RPC.RECIPIENT_HISTORY_RECORD]: async ({ accountId, recipients }) => {
+      const byKey = new Map<string, { email: string; key: string; name: string | null }>();
+      for (const r of recipients ?? []) {
+        const email = String(r?.email ?? '').trim();
+        const key = addressKey(r?.email);
+        if (!email || !key) continue;
+        // One send to one person counts once, whatever spelling it arrived in
+        // and however many fields it was written into. The same address in To
+        // and Cc is one recipient (CS-3.4), and send frequency is a ranking
+        // input (CS-3.6), so counting it twice would quietly promote it.
+        const seen = byKey.get(key);
+        const name = r?.name ? String(r.name).trim() : null;
+        if (!seen) byKey.set(key, { email, key, name });
+        else if (!seen.name && name) seen.name = name;
       }
-      // Use a half-open range over email_lower so the planner uses
-      // contact_emails_lookup directly. LIKE with parameter binding does
-      // not get rewritten into a range scan because the column has BINARY
-      // collation, but `>= prefix AND < prefixUpperBound` always does.
-      const upper = nextPrefix(lowered);
-      const contactRows = await engine.all(
-        `SELECT 'contact' AS source, c.display_name AS name, ce.email AS email, ce.is_preferred AS is_preferred
-           FROM contact_emails ce
-           JOIN contacts c ON c.id = ce.contact_id
-          WHERE c.account_id = ?
-            AND c.is_deleted = 0
-            AND ce.email_lower >= ?
-            AND ce.email_lower < ?
-          ORDER BY ce.is_preferred DESC, c.display_name COLLATE NOCASE
-          LIMIT ?`,
-        [accountId, lowered, upper, limit],
+      const rows = [...byKey.values()];
+      if (rows.length === 0) return { learned: 0 };
+      const ts = now();
+      await engine.transaction(async (tx) => {
+        for (const row of rows) {
+          await tx.run(
+            `INSERT INTO recipient_history(
+               account_id, email, email_key, name, name_key,
+               send_count, last_sent_at, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+             ON CONFLICT(account_id, email_key) DO UPDATE SET
+                email = excluded.email,
+                name = COALESCE(excluded.name, recipient_history.name),
+                name_key = COALESCE(excluded.name_key, recipient_history.name_key),
+                send_count = recipient_history.send_count + 1,
+                last_sent_at = excluded.last_sent_at,
+                updated_at = excluded.updated_at
+              WHERE recipient_history.is_suppressed = 0`,
+            [
+              accountId,
+              row.email,
+              row.key,
+              row.name,
+              row.name ? row.name.normalize('NFC').toLowerCase() : null,
+              ts,
+              ts,
+              ts,
+            ],
+          );
+        }
+      });
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { learned: rows.length };
+    },
+
+    /**
+     * Stop offering one learned recipient (CS-3.13).
+     *
+     * Suppressed rather than deleted, so the next send to that address does
+     * not learn it again and undo what the user asked for. The row keeps its
+     * counts, so un-suppressing later would restore its ranking — nothing
+     * offers that yet, and nothing depends on it either.
+     */
+    [DB_RPC.RECIPIENT_HISTORY_SUPPRESS]: async ({ accountId, email }) => {
+      const key = addressKey(email);
+      if (!key) return { suppressed: 0 };
+      const result = await engine.run(
+        `UPDATE recipient_history SET is_suppressed = 1, updated_at = ?
+          WHERE account_id = ? AND email_key = ?`,
+        [now(), accountId, key],
       );
-      const historyLimit = Math.max(0, limit - contactRows.length);
-      if (historyLimit === 0) {
-        return contactRows;
+      const suppressed = result?.changes ?? 0;
+      if (suppressed > 0) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { suppressed };
+    },
+
+    /**
+     * Forget every learned recipient for the account (CS-3.13).
+     *
+     * Deleted outright, not suppressed: "clear my history" means the rows
+     * are gone, and learning an address again afterwards is the expected
+     * result of sending to it again.
+     */
+    /**
+     * Learn recipients from mail already in the Sent folder, one bounded
+     * batch at a time.
+     *
+     * Without this, a returning user's suggestions start empty and stay
+     * that way until they have written to each person again — the address
+     * book knows the contacts, but not who they actually write to.
+     *
+     * Three bounds, each for a reason:
+     *
+     * - **The newest `maxMessages` only.** A Sent folder can hold tens of
+     *   thousands of messages, and a five-year-old recipient is not a
+     *   suggestion worth the scan.
+     * - **The local cache only**, never the server. Paging a mailbox to
+     *   populate a typeahead is the wrong trade at any size.
+     * - **`batchSize` messages per call**, with where it stopped recorded,
+     *   so this can be run from an idle moment and resumed at the next one
+     *   rather than having to finish in one go.
+     *
+     * The From address must be one of the user's own. A Sent folder is not
+     * proof of authorship: an imported or shared mailbox can hold someone
+     * else's sent mail, and CS-3.3 asks for the user's confirmed sends.
+     *
+     * Messages with no send time are skipped. Ordering by recency is what
+     * makes "the newest N" mean anything, and a message with no time cannot
+     * be placed in that order.
+     */
+    [DB_RPC.RECIPIENT_HISTORY_BACKFILL]: async ({
+      accountId, batchSize = 200, maxMessages = 2000,
+    }) => {
+      const progress = await readBackfillProgress(engine, accountId);
+      if (progress.done) return { scanned: 0, learned: 0, done: true };
+
+      const sent = await engine.get(
+        `SELECT id FROM folders WHERE account_id = ? AND role = 'sent'`,
+        [accountId],
+      );
+      // No Sent folder cached yet. Not done — a later pass, after mail has
+      // synced, will find one.
+      if (!sent) return { scanned: 0, learned: 0, done: false };
+
+      const remaining = Math.max(0, maxMessages - progress.scanned);
+      if (remaining === 0) {
+        await writeBackfillProgress(engine, accountId, { ...progress, done: true });
+        return { scanned: 0, learned: 0, done: true };
       }
-      // message_addresses(email COLLATE NOCASE) lets us prefix-scan the
-      // sender/recipient history without lowercasing on read.
-      const historyRows = await engine.all(
-        `SELECT DISTINCT 'history' AS source, ma.name, ma.email, 0 AS is_preferred
-           FROM message_addresses ma
-           JOIN messages m ON m.id = ma.message_id
-          WHERE m.account_id = ?
-            AND ma.email IS NOT NULL
-            AND ma.email >= ? COLLATE NOCASE
-            AND ma.email < ? COLLATE NOCASE
+      const take = Math.min(batchSize, remaining);
+      const cursorClause = progress.cursorSentAt == null
+        ? ''
+        : `AND (fm.sort_sent_at < ?
+                OR (fm.sort_sent_at = ? AND fm.message_id < ?))`;
+      const cursorParams = progress.cursorSentAt == null
+        ? []
+        : [progress.cursorSentAt, progress.cursorSentAt, progress.cursorId];
+      const batch = await engine.all(
+        `SELECT fm.message_id AS message_id, fm.sort_sent_at AS sent_at
+           FROM folder_messages fm
+          WHERE fm.folder_id = ?
+            AND fm.sort_sent_at IS NOT NULL
+            ${cursorClause}
+          ORDER BY fm.sort_sent_at DESC, fm.message_id DESC
           LIMIT ?`,
-        [accountId, lowered, upper, historyLimit],
+        [sent.id, ...cursorParams, take],
       );
-      return [...contactRows, ...historyRows];
+      if (batch.length === 0) {
+        // Nothing more to read *for now*, which is not the same as finished.
+        // `folder_messages` fills in as Sent syncs and as the user pages back
+        // through it, and anything that arrives later is older than the cursor
+        // — so a resumed scan will reach it. Only the message budget retires
+        // this work; see below.
+        return { scanned: 0, learned: 0, done: false };
+      }
+
+      const ownedKeys = await ownedAddressKeys(engine, accountId);
+      if (ownedKeys.size === 0) {
+        // Not one address of the user's own is known yet, so there is no way
+        // to tell which of this folder's mail they sent: every message would
+        // be skipped and the cursor would move past them for good. Identities
+        // sync separately and a failure there is tolerated rather than fatal,
+        // which is what makes this reachable.
+        //
+        // A partly-synced identity list has a thinner version of the same
+        // problem — mail sent from an alias that has not arrived yet is read,
+        // skipped, and not reconsidered — which this cannot fix without
+        // rescanning the folder whenever an identity appears.
+        return { scanned: 0, learned: 0, done: false };
+      }
+      const last = batch[batch.length - 1];
+      const scanned = progress.scanned + batch.length;
+      // The budget is the only thing that finishes this. A batch shorter than
+      // the one asked for used to count as the end of the folder, and it is
+      // not: it is the ordinary state of a Sent folder that is still filling
+      // in, so a single cached message retired the backfill and every message
+      // that synced afterwards went unread.
+      const done = scanned >= maxMessages;
+
+      // What was learned and the cursor that says so commit together. Apart,
+      // a crash between them left the counts raised and the cursor where it
+      // was, so the next pass read the same messages and raised them again —
+      // and send frequency is a ranking input, so the addresses in whichever
+      // batch was interrupted would quietly climb the list.
+      let learned = 0;
+      await engine.transaction(async (tx) => {
+        learned = await learnFromSentMessages(tx, {
+          accountId,
+          messageIds: batch.map((row) => row.message_id),
+          sentAtById: new Map(batch.map((row) => [row.message_id, Number(row.sent_at)])),
+          owned: ownedKeys,
+        });
+        await writeBackfillProgress(tx, accountId, {
+          cursorSentAt: Number(last.sent_at),
+          cursorId: last.message_id,
+          scanned,
+          done,
+        });
+      });
+      if (learned > 0) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { scanned: batch.length, learned, done };
+    },
+
+    /**
+     * Forget every learned address (CS-3.13), while keeping the answer the
+     * user already gave about individual ones.
+     *
+     * "Clear the addresses you have suggested" and "never suggest this one
+     * again" are different statements, and the second outlives the first: an
+     * address removed on purpose must not come back as a suggestion because
+     * the history was later cleared. So a suppressed row survives as a
+     * tombstone — the flag and the key, and nothing else worth keeping.
+     */
+    [DB_RPC.RECIPIENT_HISTORY_CLEAR]: async ({ accountId }) => {
+      let cleared = 0;
+      await engine.transaction(async (tx) => {
+        const result = await tx.run(
+          `DELETE FROM recipient_history WHERE account_id = ? AND is_suppressed = 0`,
+          [accountId],
+        );
+        cleared = result?.changes ?? 0;
+        await tx.run(
+          `UPDATE recipient_history
+              SET name = NULL, name_key = NULL, send_count = 0,
+                  last_sent_at = NULL, updated_at = ?
+            WHERE account_id = ? AND is_suppressed = 1`,
+          [now(), accountId],
+        );
+      });
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { cleared };
     },
 
     [DB_RPC.SYNC_STATE_GET]: async ({ accountId, objectType, scope = '' }) =>
@@ -3074,24 +3341,136 @@ function splitIds(concatenated: unknown): number[] {
   return concatenated.split(',').map(Number);
 }
 
-/**
- * Half-open upper bound for a prefix range scan. For 'pers' returns 'pert';
- * for 'foo\uffff' returns the next code point. Returns null when there is
- * no representable next code point - callers should fall back to LIKE then.
- */
-function nextPrefix(prefix: string): string | null {
-  if (!prefix) {
-    return prefix;
+/** Where the Sent-folder backfill stopped, as `sync_states` records it. */
+const BACKFILL_OBJECT_TYPE = 'RecipientHistoryBackfill';
+
+interface BackfillProgress {
+  cursorSentAt: number | null;
+  cursorId: number | null;
+  scanned: number;
+  done: boolean;
+}
+
+async function readBackfillProgress(engine, accountId): Promise<BackfillProgress> {
+  const row = await engine.get(
+    `SELECT state FROM sync_states
+      WHERE account_id = ? AND object_type = ? AND scope = ''`,
+    [accountId, BACKFILL_OBJECT_TYPE],
+  );
+  const blank: BackfillProgress = {
+    cursorSentAt: null, cursorId: null, scanned: 0, done: false,
+  };
+  if (!row?.state) return blank;
+  try {
+    const parsed = JSON.parse(row.state);
+    return {
+      cursorSentAt: parsed.cursorSentAt ?? null,
+      cursorId: parsed.cursorId ?? null,
+      scanned: Number(parsed.scanned ?? 0),
+      done: !!parsed.done,
+    };
+  } catch {
+    // An unreadable checkpoint means starting over, which costs one bounded
+    // pass and cannot corrupt anything: the upsert is by address.
+    return blank;
   }
-  const codePoints = Array.from(prefix);
-  for (let i = codePoints.length - 1; i >= 0; i -= 1) {
-    const cp = codePoints[i].codePointAt(0)!;
-    if (cp < 0x10ffff) {
-      codePoints[i] = String.fromCodePoint(cp + 1);
-      return codePoints.slice(0, i + 1).join('');
+}
+
+function writeBackfillProgress(engine, accountId, progress: BackfillProgress) {
+  return engine.run(
+    `INSERT INTO sync_states(account_id, object_type, scope, state, updated_at)
+     VALUES (?, ?, '', ?, ?)
+     ON CONFLICT(account_id, object_type, scope) DO UPDATE SET
+        state = excluded.state,
+        updated_at = excluded.updated_at`,
+    [accountId, BACKFILL_OBJECT_TYPE, JSON.stringify(progress), Date.now()],
+  );
+}
+
+/**
+ * Learn the recipients of those messages in the batch the user actually
+ * sent, adding to the counts rather than replacing them.
+ *
+ * `last_sent_at` only ever moves forward: a backfilled message is older
+ * than anything learned live, and letting it win would make a recipient
+ * written to yesterday look years stale to the ranking.
+ *
+ * Takes a transaction rather than the engine, because what it writes and the
+ * cursor that records having written it have to land together: committing the
+ * counts and then failing to move the cursor means the next pass reads the
+ * same messages and adds them again.
+ */
+async function learnFromSentMessages(tx, { accountId, messageIds, sentAtById, owned }): Promise<number> {
+  if (messageIds.length === 0) return 0;
+  const rows = await tx.all(
+    `SELECT message_id, kind, name, email
+       FROM message_addresses
+      WHERE message_id IN (${placeholdersFor(messageIds)})
+        AND email IS NOT NULL`,
+    messageIds,
+  );
+  const byMessage = new Map<number, any[]>();
+  for (const row of rows) {
+    const list = byMessage.get(row.message_id);
+    if (list) list.push(row);
+    else byMessage.set(row.message_id, [row]);
+  }
+
+  const totals = new Map<string, { email: string; name: string | null; count: number; lastSentAt: number }>();
+  for (const [messageId, addresses] of byMessage) {
+    const sentByUser = addresses.some(
+      (row) => row.kind === 'from' && owned.has(addressKey(row.email)),
+    );
+    if (!sentByUser) continue;
+    const sentAt = sentAtById.get(messageId) ?? 0;
+    for (const row of addresses) {
+      if (row.kind !== 'to' && row.kind !== 'cc' && row.kind !== 'bcc') continue;
+      const key = addressKey(row.email);
+      if (!key || owned.has(key)) continue;
+      const existing = totals.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.lastSentAt = Math.max(existing.lastSentAt, sentAt);
+        existing.name = existing.name ?? (row.name || null);
+      } else {
+        totals.set(key, {
+          email: row.email, name: row.name || null, count: 1, lastSentAt: sentAt,
+        });
+      }
     }
   }
-  return null;
+  if (totals.size === 0) return 0;
+
+  const ts = Date.now();
+  {
+    for (const [key, value] of totals) {
+      await tx.run(
+        `INSERT INTO recipient_history(
+           account_id, email, email_key, name, name_key,
+           send_count, last_sent_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(account_id, email_key) DO UPDATE SET
+            name = COALESCE(recipient_history.name, excluded.name),
+            name_key = COALESCE(recipient_history.name_key, excluded.name_key),
+            send_count = recipient_history.send_count + excluded.send_count,
+            last_sent_at = MAX(COALESCE(recipient_history.last_sent_at, 0), excluded.last_sent_at),
+            updated_at = excluded.updated_at
+          WHERE recipient_history.is_suppressed = 0`,
+        [
+          accountId,
+          value.email,
+          key,
+          value.name,
+          value.name ? value.name.normalize('NFC').toLowerCase() : null,
+          value.count,
+          value.lastSentAt,
+          ts,
+          ts,
+        ],
+      );
+    }
+  }
+  return totals.size;
 }
 
 async function loadMailboxQueryView(engine, { accountId, folderId, sort = 'received' }) {

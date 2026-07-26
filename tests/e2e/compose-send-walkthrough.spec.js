@@ -38,6 +38,25 @@ import {
 } from './helpers/compose.js';
 
 /**
+ * A JMAP request carrying the contacts capability, which `jmapRequest`
+ * does not: its `using` list covers core, mail and submission only.
+ */
+async function contactsRequest(jmap, methodCalls) {
+  const res = await fetch(jmap.apiUrl, {
+    method: 'POST',
+    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`contacts JMAP failed: ${res.status} ${await res.text().catch(() => '')}`);
+  }
+  return res.json();
+}
+
+/**
  * Recorded walkthrough of the compose, send and recipient-autocomplete
  * surface — the scope of specs/004-compose-improvements.
  *
@@ -89,6 +108,23 @@ async function shot(page, name) {
 
 function suggestions(page) {
   return page.locator('.compose-dialog [role="option"]');
+}
+
+/**
+ * The suggestion rows, once the lookup has actually answered.
+ *
+ * Reading them straight after typing races the answer: the query is
+ * debounced and then run in the worker, so an empty list means "not yet"
+ * just as often as it means "nothing matched". The status line is the
+ * signal, because it is written in both cases — a count when there are
+ * matches, and words when there are none.
+ */
+async function settledSuggestions(page) {
+  await expect(page.locator('.compose-dialog #compose-to-status'))
+    .toHaveText(/(suggestions? available|No suggestions)/, { timeout: 15_000 });
+  return suggestions(page).evaluateAll(
+    (els) => els.map((el) => el.innerText.replace(/\s+/g, ' ').trim()),
+  );
 }
 
 async function openCompose(page) {
@@ -248,6 +284,64 @@ async function countSentRows(page) {
 }
 
 test.describe('Compose, send and autocomplete walkthrough', () => {
+  /**
+   * Put one contact in the address book and make sure this client has it.
+   *
+   * Suggestions come from contacts and from addresses the user has written
+   * to, never from received mail (CS-3.3), and the e2e account is seeded
+   * with mail rather than with an address book. So the autocomplete steps
+   * below need something findable that they put there themselves.
+   */
+  async function seedContact(page, jmap, { name, email }) {
+    const books = await contactsRequest(jmap, [[
+      'AddressBook/get', { accountId: jmap.accountId }, 'ab',
+    ]]);
+    const list = books.methodResponses?.find((r) => r[0] === 'AddressBook/get')?.[1]?.list ?? [];
+    const book = list.find((b) => b.isDefault) ?? list[0];
+    if (!book) throw new Error('the account needs an address book to file a contact in');
+    const res = await contactsRequest(jmap, [[
+      'ContactCard/set',
+      {
+        accountId: jmap.accountId,
+        create: {
+          c1: {
+            '@type': 'Card',
+            version: '1.0',
+            addressBookIds: { [book.id]: true },
+            name: { full: name },
+            emails: { e1: { '@type': 'EmailAddress', address: email } },
+          },
+        },
+      },
+      's',
+    ]]);
+    const id = res.methodResponses?.find((r) => r[0] === 'ContactCard/set')?.[1]?.created?.c1?.id;
+    if (!id) throw new Error(`the server refused the walkthrough contact: ${JSON.stringify(res)}`);
+    // The card was made behind the app's back, so ask for the sync rather
+    // than waiting on a push that may not come.
+    const outcome = await page.evaluate(async (wanted) => {
+      const accounts = await globalThis.__repo.listAccounts();
+      const synced = await globalThis.__repo.ensureContacts(accounts[0].id);
+      const rows = await globalThis.__repo.autocompleteContacts(accounts[0].id, wanted, 10);
+      return { synced, offered: rows.map((r) => r.email) };
+    }, email.split('@')[0].split('-')[0]);
+    // Said here so a fixture that never reached this client fails as a
+    // fixture, rather than as a suggestion list three steps later.
+    expect(
+      outcome.offered.length,
+      `the seeded contact must reach this client: sync returned `
+      + `${JSON.stringify(outcome.synced)}`,
+    ).toBeGreaterThan(0);
+    return id;
+  }
+
+  async function destroyContact(jmap, id) {
+    if (!id) return;
+    await contactsRequest(jmap, [[
+      'ContactCard/set', { accountId: jmap.accountId, destroy: [id] }, 's',
+    ]]).catch(() => {});
+  }
+
   test('exercises every path in the compose and send surface', async ({ page }, testInfo) => {
     const consoleLines = [];
     trackConsole(page, consoleLines);
@@ -278,6 +372,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       reply: `Re: Walkthrough received ${stamp}`,
     };
     const mine = [];
+    let contactId = null;
     const theirs = [];
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 
@@ -329,6 +424,17 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       // ---- Autocomplete -------------------------------------------------
+      await test.step('Put a contact in the book to be found', async () => {
+        contactId = await seedContact(page, jmap, {
+          name: `Tester Zephyr ${stamp}`,
+          email: `zephyr-${stamp}@example.org`,
+        });
+        record('Autocomplete sources (CS-3.1, CS-3.3)',
+          'One contact is created for these steps. Suggestions come from the '
+          + 'address book and from addresses this account has written to; the '
+          + 'seeded mail supplies neither.');
+      });
+
       await test.step('One character does not open the suggestion list', async () => {
         await typeInTo(page, 'e');
         await expect(suggestions(page), 'one character is not a query').toHaveCount(0);
@@ -337,56 +443,58 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('An address prefix produces suggestions', async () => {
-        await typeInTo(page, 'e2e');
-        const count = await suggestions(page).count();
-        if (count > 0) {
-          const rows = await suggestions(page).evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, ' ').trim()));
-          record('Autocomplete by address prefix',
-            `${count} suggestion(s): ${rows.join(' | ')}`);
-          const unique = new Set(rows.map((r) => r.toLowerCase()));
-          if (unique.size < rows.length) {
-            record('Duplicate suggestions (issue #58)',
-              `${rows.length} rows collapse to ${unique.size} distinct entries, so the same address is offered more than once.`);
-          }
-        } else {
-          record('Autocomplete by address prefix',
-            'No suggestions appeared for an address prefix; the account may have no contacts and no send history yet.');
-        }
+        await typeInTo(page, 'zephyr');
+        const rows = await settledSuggestions(page);
+        expect(rows.length, 'the seeded contact is found by its address').toBeGreaterThan(0);
+        record('Autocomplete by address prefix',
+          `${rows.length} suggestion(s): ${rows.join(' | ')}`);
+        // One address, one row, however many names it was stored under
+        // (CS-3.4). This used to be issue #58.
+        const unique = new Set(rows.map((r) => r.toLowerCase()));
+        expect(unique.size, 'each address is offered once (CS-3.4)').toBe(rows.length);
         await shot(page, 'autocomplete-address-prefix');
         await page.waitForTimeout(800);
       });
 
       await test.step('An upper-case prefix behaves the same as lower case', async () => {
-        await typeInTo(page, 'E2E');
-        const count = await suggestions(page).count();
+        await typeInTo(page, 'ZEPHYR');
+        const count = (await settledSuggestions(page)).length;
+        expect(count, 'case is not part of the query (CS-3.5)').toBeGreaterThan(0);
         record('Autocomplete case handling',
-          `Upper-case prefix "E2E" produced ${count} suggestion(s).`);
+          `Upper-case prefix "ZEPHYR" produced ${count} suggestion(s).`);
       });
 
-      await test.step('A display name produces nothing (CS-3.1)', async () => {
+      await test.step('A display name finds the contact (CS-3.1, CS-3.2)', async () => {
+        // The word is from the middle of the name and appears nowhere in the
+        // address, so only name matching can answer it.
         await typeInTo(page, 'Tester');
-        const count = await suggestions(page).count();
-        record('Autocomplete by name (CS-3.1)',
-          `Typing a name produced ${count} suggestion(s). Contacts are matched on the email column only, so a name that does not prefix the address cannot be found.`);
-        await shot(page, 'autocomplete-name-no-match');
+        const rows = await settledSuggestions(page);
+        expect(rows.length, 'a name is a way in, not only an address').toBeGreaterThan(0);
+        record('Autocomplete by name (CS-3.1, CS-3.2)',
+          `Typing a name produced ${rows.length} suggestion(s): ${rows.join(' | ')}. `
+          + 'Names are matched word by word, in any order, alongside addresses.');
+        await shot(page, 'autocomplete-name-match');
         await page.waitForTimeout(800);
       });
 
-      await test.step('An incoming sender is offered as a recipient (CS-3.3)', async () => {
+      await test.step('An incoming sender is not offered as a recipient (CS-3.3)', async () => {
         await typeInTo(page, 'stranger');
-        const count = await suggestions(page).count();
-        const rows = count > 0
-          ? await suggestions(page).evaluateAll((els) => els.map((el) => el.innerText.replace(/\s+/g, ' ').trim()))
-          : [];
+        const rows = await settledSuggestions(page);
+        expect(
+          rows,
+          'an address that only ever wrote to this account is not a suggestion',
+        ).toEqual([]);
         record('Suggestion provenance (CS-3.3)',
-          `An address that has only ever sent mail to this account produced ${count} suggestion(s)${rows.length ? `: ${rows.join(' | ')}` : ''}. History is drawn from every stored message address, not just confirmed outgoing recipients.`);
-        await shot(page, 'autocomplete-incoming-sender-offered');
+          `${stranger} has sent mail to this account and is in the local message `
+          + 'store, and it produced no suggestions. History is drawn from confirmed '
+          + 'outgoing recipients and the Sent folder, not from received mail.');
+        await shot(page, 'autocomplete-incoming-sender-not-offered');
         await page.waitForTimeout(800);
       });
 
       await test.step('Keyboard selection in the suggestion list (CS-3.8, CS-3.9)', async () => {
         await clearRecipients(page, 'To');
-        await typeInTo(page, 'e2e');
+        await typeInTo(page, 'zephyr');
         const field = recipientInput(page, 'To');
         await expect(field).toHaveAttribute('aria-expanded', 'true');
         await page.keyboard.press('ArrowDown');
@@ -402,7 +510,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('Clicking a suggestion fills the field', async () => {
-        await typeInTo(page, 'e2e');
+        await typeInTo(page, 'zephyr');
         await expect(suggestions(page).first()).toBeVisible();
         await suggestions(page).first().click();
         await expect(recipientPills(page, 'To')).toHaveCount(1);
@@ -630,6 +738,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       for (const id of theirs.filter(Boolean)) {
         await cleanupEmail(shared, id, sharedTrash?.id ?? null).catch(() => {});
       }
+      await destroyContact(jmap, contactId);
     }
   });
 });

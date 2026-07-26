@@ -62,8 +62,18 @@ function reload(rowId: number) {
   }).then((rows: any[]) => rows[0]);
 }
 
-/** A server that accepts writes; `getFails` breaks the read-back. */
-function contactServer({ getFails = false } = {}) {
+/**
+ * A server that accepts writes.
+ *
+ * `getFails` breaks the read-back at the transport level: the round trip
+ * itself does not complete. `getRefuses` breaks it at the method level,
+ * which is what a real server does when it declines one call inside an
+ * otherwise successful request — and which reaches the sync code as no
+ * answer at all rather than as a thrown error. The two are worth keeping
+ * apart: the second shape is the one that used to be read as "the server
+ * holds no such card".
+ */
+function contactServer({ getFails = false, getRefuses = false } = {}) {
   const transport = new MockTransport();
   const calls: string[] = [];
   transport.handle('AddressBook/get', () => ({
@@ -80,6 +90,7 @@ function contactServer({ getFails = false } = {}) {
   transport.handle('ContactCard/get', (params) => {
     calls.push('get');
     if (getFails) throw new Error('cache read failed');
+    if (getRefuses) return null;
     return {
       list: (params.ids ?? []).map((id: string) => ({
         id,
@@ -109,6 +120,56 @@ describe('a contact write the cache did not follow', () => {
       .toMatchObject({ applied: true, cached: false });
   });
 
+  it('reads a refused read-back as a failure, not as a card that is not there', async () => {
+    // The refusal arrives as a method-level error, which leaves nothing for
+    // `pickResponse` to return — indistinguishable, to an unguarded read,
+    // from a server answering that it holds no such card. Persisting nothing
+    // and reporting success is the CS-4.4 failure this whole group is about,
+    // and it is the shape a real server produces: the other cases here fail
+    // the round trip itself, which no server does to decline one call.
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    const { transport } = contactServer({ getRefuses: true });
+
+    const result = await processMutationRow({ transport, account, handlers, row });
+
+    expect(result.ok, 'a cache that never received the card is not a success').toBe(false);
+    expect(result.error.type).toBe('cacheReconcileFailed');
+    const parked = await reload(row.id);
+    expect(parked.phase).toBe(SEND_PHASE.CACHE_PENDING);
+    expect(JSON.parse(parked.server_response_json).reconcileIds).toEqual(['card-new']);
+    expect(
+      await handlers[DB_RPC.CONTACT_LIST]({ accountId: account.id }),
+      'and the list says what it honestly knows: nothing',
+    ).toEqual([]);
+  });
+
+  it('repairs the cache when the server stops refusing the read-back', async () => {
+    // The parked row has to be resumable from a refusal, not only from a
+    // dropped round trip: that is the sequence a retry actually meets.
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    const refusing = contactServer({ getRefuses: true });
+    await processMutationRow({ transport: refusing.transport, account, handlers, row });
+
+    const relenting = contactServer();
+    const retry = await processMutationRow({
+      transport: relenting.transport,
+      account,
+      handlers,
+      row: await reload(row.id),
+    });
+
+    expect(retry.ok).toBe(true);
+    expect(relenting.calls, 'the retry reads; it does not write a second card').toEqual(['get']);
+    const contacts = await handlers[DB_RPC.CONTACT_LIST]({ accountId: account.id });
+    expect(contacts.map((c: any) => c.email)).toEqual(['ada@example.com']);
+  });
+
   it('remembers that the write already happened', async () => {
     const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
       emails: ['ada@example.com'],
@@ -121,6 +182,112 @@ describe('a contact write the cache did not follow', () => {
     const parked = await reload(row.id);
     expect(parked.phase).toBe(SEND_PHASE.CACHE_PENDING);
     expect(JSON.parse(parked.server_response_json).reconcileIds).toEqual(['card-new']);
+  });
+
+  it('records the write before reading it back, so a crash cannot reissue it', async () => {
+    // Only `send` is held back from replay after a crash; every other row
+    // goes straight back to pending. So a contact row that died between a
+    // successful ContactCard/set and any durable note of it would come back
+    // looking untouched — and create a second card. The phase written
+    // before the read-back is what makes the difference, which means it has
+    // to be on disk by the time the read-back runs, not after it fails.
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    const transport = new MockTransport();
+    const calls: string[] = [];
+    let phaseDuringReadBack: string | null = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0, queryState: 'qs' }));
+    transport.handle('ContactCard/set', () => {
+      calls.push('set');
+      return { created: { c1: { id: 'card-new' } } };
+    });
+    transport.handle('ContactCard/get', async () => {
+      calls.push('get');
+      // Whatever is on disk right now is what a crash would leave behind.
+      phaseDuringReadBack = (await reload(row.id))?.phase ?? null;
+      throw new Error('the process died here');
+    });
+
+    await processMutationRow({ transport, account, handlers, row });
+
+    expect(phaseDuringReadBack, 'the write must be recorded before the read-back')
+      .toBe(SEND_PHASE.CACHE_PENDING);
+
+    // Prove it: resume the row exactly as recoverStranded would, and watch
+    // the write not happen twice.
+    const resumed = contactServer();
+    const retry = await processMutationRow({
+      transport: resumed.transport,
+      account,
+      handlers,
+      row: await reload(row.id),
+    });
+    expect(retry.ok).toBe(true);
+    expect(resumed.calls, 'the resumed row reads; it does not write again').toEqual(['get']);
+    expect(calls.filter((c) => c === 'set'), 'one card, one create').toHaveLength(1);
+  });
+
+  it('counts the attempt before the repair, so a crash cannot retry forever', async () => {
+    // The bounded case is the one that never reaches a catch block. A crash
+    // mid-repair returns the row to pending, and if the count only rose on a
+    // thrown error the row would resume at the same number every time —
+    // reissuing the repair for as long as it keeps dying.
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    const transport = new MockTransport();
+    let recorded: number | null = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0, queryState: 'qs' }));
+    transport.handle('ContactCard/set', () => ({ created: { c1: { id: 'card-new' } } }));
+    transport.handle('ContactCard/get', async () => {
+      // Whatever is on disk here is what a crash would leave behind.
+      const parked = await reload(row.id);
+      recorded = JSON.parse(parked?.server_response_json ?? '{}').attempts ?? null;
+      throw new Error('the process died here');
+    });
+
+    await processMutationRow({ transport, account, handlers, row });
+
+    expect(recorded, 'the attempt must be on disk before the repair runs').toBe(1);
+  });
+
+  it('does not send the row\'s attempt count backwards when it parks', async () => {
+    // The bound on a repeated crash is the runner's own column, not the
+    // counter in the checkpoint: `CONTACT_CACHE_MAX_ATTEMPTS` is read inside a
+    // catch block, and a crash never reaches one. The runner reads
+    // `attempts + 1` off the row and gives up at 8. So a checkpoint that reset
+    // the column — which this one used to do — pinned every attempt at 1 and
+    // made the loop unbounded again, with nothing failing to say so.
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: 'UPDATE pending_mutations SET attempts = ? WHERE id = ?',
+      params: [5, row.id],
+    });
+    const { transport } = contactServer({ getFails: true });
+
+    await processMutationRow({
+      transport, account, handlers, row: await reload(row.id),
+    });
+
+    const parked = await reload(row.id);
+    expect(
+      Number(parked.attempts),
+      'the column the runner counts with must not be rewound by a checkpoint',
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it('retries the cache alone, leaving the server card as it is', async () => {

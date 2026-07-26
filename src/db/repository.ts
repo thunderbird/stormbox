@@ -299,8 +299,16 @@ export class Repository {
     return this.call(DB_RPC.CONTACT_GET, { accountId, contactId });
   }
 
-  autocompleteContacts(accountId, prefix, limit = 20) {
-    return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit });
+  autocompleteContacts(accountId, prefix, limit = 20, exclude = []) {
+    return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit, exclude });
+  }
+
+  suppressRecipientHistory(accountId, email) {
+    return this.call(DB_RPC.RECIPIENT_HISTORY_SUPPRESS, { accountId, email });
+  }
+
+  clearRecipientHistory(accountId) {
+    return this.call(DB_RPC.RECIPIENT_HISTORY_CLEAR, { accountId });
   }
 
   // Sync infrastructure ------------------------------------------------

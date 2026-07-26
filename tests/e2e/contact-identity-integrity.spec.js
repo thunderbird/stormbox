@@ -26,7 +26,9 @@ import {
   waitForShellReady,
 } from './helpers/ui.js';
 import { composeSubject, fillRecipient } from './helpers/compose.js';
-import { CONTACT_CACHE_FAULT, FAULTS_PATH, STATUS_PATH } from '../fixtures/ws-proxy/inject.mjs';
+import {
+  CONTACT_CACHE_FAULT, CONTACT_CACHE_REFUSALS, FAULTS_PATH, STATUS_PATH,
+} from '../fixtures/ws-proxy/inject.mjs';
 
 /**
  * Contact and identity source integrity (CS-4.2, CS-4.4, CS-4.5, CS-4.6).
@@ -289,6 +291,11 @@ test.describe('Contact and identity integrity', () => {
       await expect(form).toBeVisible();
       await form.locator('input[type="text"]').first().fill(name);
       await form.locator('input[type="email"]').first().fill(email);
+      // Start watching for the parked row before the save can settle. The
+      // repair below is quick, and a poll that begins after it has already
+      // run would find a clean queue and read that as proof of a state it
+      // never actually observed.
+      const parked = firstParkedSighting(page, name);
       await form.getByRole('button', { name: /^save contact$/i }).click();
 
       // The server has the card even though this account could not read it
@@ -310,11 +317,25 @@ test.describe('Contact and identity integrity', () => {
       await expect.poll(async () => cacheRefusalsFor(cardId), {
         timeout: 30_000,
         message: `the ws-proxy should have refused the read-back of card ${cardId}`,
-      }).toBe(1);
+      }).toBeGreaterThanOrEqual(1);
 
-      // CS-4.4: a half-applied write is not a success. The mutation stays
-      // pending through the refused read-back and only settles once the
-      // cache has caught up.
+      // CS-4.4: a half-applied write is not a success. The row has to be
+      // seen carrying "written, not cached" — waiting only for the cache to
+      // agree in the end would pass just as well if the write had been
+      // called a success and the cache repaired by some later sync.
+      const { row: sighting, trail } = await parked;
+      expect(
+        sighting,
+        `the write should be parked as written-but-not-cached; the proxy refuses `
+        + `${CONTACT_CACHE_REFUSALS} read-backs so the row stays parked across a retry. `
+        + `Row states seen: ${trail.length ? trail.join(' -> ') : '(nothing)'}`,
+      ).toBeTruthy();
+      expect(sighting.phase).toBe('cache_pending');
+      expect(
+        JSON.parse(sighting.server_response_json ?? '{}').reconcileIds ?? [],
+        'and it should carry the id the repair needs',
+      ).toContain(cardId);
+
       await waitForPendingMutations(page);
       await expect.poll(async () => {
         const rows = await readContactsCache(page);
@@ -339,6 +360,64 @@ test.describe('Contact and identity integrity', () => {
     }
   });
 });
+
+/**
+ * The contact write parked at "the server has it, the cache does not".
+ *
+ * Polls from before the save until the row appears, so the window is
+ * observed rather than inferred from its aftermath. Resolves
+ * `{ row: null, trail }` if the queue drains without it ever being seen;
+ * `trail` is every distinct state the row was caught in, which is the
+ * difference between "the row never parked" and "the row never existed".
+ */
+async function firstParkedSighting(page, name) {
+  const deadline = Date.now() + 30_000;
+  // Every state this row was seen in, so a miss can say whether the row
+  // never existed, took another phase, or was simply never looked at.
+  const trail = [];
+  const note = (state) => {
+    if (trail[trail.length - 1] !== state) trail.push(state);
+  };
+  while (Date.now() < deadline) {
+    // An evaluate that fails is not the same as a row that is not there yet.
+    // Swallowing it would spend the whole deadline retrying and then report
+    // the absence as the product's behaviour.
+    const seen = await page.evaluate(async (wanted) => {
+      if (!globalThis.__repo) return { repo: false, rows: [] };
+      const rows = await globalThis.__repo.call('db.query', {
+        sql: `SELECT phase, mutation_type, local_status, attempts, error_json,
+                     request_json, server_response_json
+                FROM pending_mutations
+               ORDER BY created_at DESC
+               LIMIT 20`,
+        params: [],
+      });
+      return {
+        repo: true,
+        rows: (rows ?? []).filter((r) => (r.request_json ?? '').includes(wanted)),
+      };
+    }, name).catch((err) => {
+      if (String(err?.message ?? err).includes('Execution context was destroyed')) {
+        return { repo: false, rows: [] };
+      }
+      throw err;
+    });
+    if (!seen.repo) note('no __repo');
+    else if (seen.rows.length === 0) note('no row');
+    else {
+      for (const row of seen.rows) {
+        note(
+          `${row.mutation_type}/${row.local_status}:${row.phase ?? '-'}`
+          + `@${row.attempts}`
+          + `${row.error_json ? ` !${String(row.error_json).slice(0, 80)}` : ''}`,
+        );
+        if (row.phase === 'cache_pending') return { row, trail };
+      }
+    }
+    await page.waitForTimeout(50);
+  }
+  return { row: null, trail };
+}
 
 /** How many times the proxy refused the read-back of one specific card. */
 async function cacheRefusalsFor(cardId) {

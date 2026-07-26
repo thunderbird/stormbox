@@ -17,6 +17,7 @@ import {
   INJECTED_ERROR_TYPE,
   SUBMISSION_FAULTS,
   CONTACT_CACHE_FAULT,
+  CONTACT_CACHE_REFUSALS,
 } from '../../fixtures/ws-proxy/inject.mjs';
 
 function requestFrame(methodCalls: any[], id = 'r7') {
@@ -308,13 +309,23 @@ describe('ws-proxy contact cache fault', () => {
     expect(answer.response.methodResponses[0][1].type).toBe(INJECTED_ERROR_TYPE);
   });
 
-  it('refuses the read-back once, so the retry can succeed', () => {
+  it('refuses a bounded number of read-backs, then lets one through', () => {
+    // Refusing only the first read-back leaves the state under test
+    // unobservable: the client repairs the cache within milliseconds, so a
+    // spec polling for the parked row races the repair instead of checking
+    // it. Refusing the retry as well holds the row parked across a whole
+    // retry interval, and the count still runs out so the repair happens.
     const injector = armedForCard();
-    injector.onClientFrame(cardGet(['card-1']));
 
-    const retry = injector.onClientFrame(cardGet(['card-1'], 'r3'));
+    for (let i = 0; i < CONTACT_CACHE_REFUSALS; i += 1) {
+      const refused = injector.onClientFrame(cardGet(['card-1'], `r-${i}`));
+      expect(refused.action, `read-back ${i + 1} should be refused`).toBe('answer');
+    }
 
-    expect(retry.action).toBe('forward');
+    expect(
+      injector.onClientFrame(cardGet(['card-1'], 'r-last')).action,
+      'the repair has to be able to succeed eventually',
+    ).toBe('forward');
   });
 
   it('leaves a read of some other card alone', () => {

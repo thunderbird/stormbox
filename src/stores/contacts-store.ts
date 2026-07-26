@@ -176,12 +176,39 @@ export const useContactsStore = defineStore('contacts', () => {
   /**
    * Resolve a typeahead prefix into a list of {name, email, source}
    * candidates. `source` is 'contact' or 'history'.
+   *
+   * `exclude` carries the addresses already in To, Cc and Bcc. They are
+   * dropped as candidates are gathered — before ranking, and before the count
+   * that decides whether the expensive tier is worth running — rather than
+   * filtered out of the finished list. A recipient already entered must not
+   * spend one of the limited places, nor make the list look full (CS-3.7).
    */
-  async function autocomplete(prefix: string, limit = 20): Promise<AutocompleteCandidate[]> {
+  async function autocomplete(
+    prefix: string, limit = 20, exclude: string[] = [],
+  ): Promise<AutocompleteCandidate[]> {
     if (!repo || authStore.accountId == null || !prefix) {
       return [];
     }
-    return repo.autocompleteContacts(authStore.accountId, prefix, limit);
+    return repo.autocompleteContacts(authStore.accountId, prefix, limit, exclude);
+  }
+
+  /**
+   * Stop offering one learned address, and forget them all (CS-3.13).
+   *
+   * Contacts are not touched by either: an address the user has in their
+   * address book is not a suggestion the app invented, so removing it means
+   * editing the contact.
+   */
+  async function forgetRecipient(email: string): Promise<boolean> {
+    if (!repo || authStore.accountId == null || !email) return false;
+    const { suppressed } = await repo.suppressRecipientHistory(authStore.accountId, email);
+    return suppressed > 0;
+  }
+
+  async function clearRecipientHistory(): Promise<number> {
+    if (!repo || authStore.accountId == null) return 0;
+    const { cleared } = await repo.clearRecipientHistory(authStore.accountId);
+    return cleared;
   }
 
   /**
@@ -368,6 +395,8 @@ export const useContactsStore = defineStore('contacts', () => {
     listContacts,
     getContact,
     autocomplete,
+    forgetRecipient,
+    clearRecipientHistory,
     createContact,
     updateContact,
     deleteContact,

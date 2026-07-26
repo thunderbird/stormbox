@@ -663,8 +663,17 @@ function takenElsewhere(field: RecipientField): string[] {
     .flatMap((other) => composeStore.draft[other].map((address) => address.email));
 }
 
-function queryContacts(prefix: string, limit: number) {
-  return contactsStore.autocomplete(prefix, limit);
+function queryContacts(prefix: string, limit: number, exclude: string[]) {
+  return contactsStore.autocomplete(prefix, limit, exclude);
+}
+
+/**
+ * Stop offering a learned address (CS-3.13). Only learned addresses can be
+ * removed from here — a contact goes on being a contact, and unwanted
+ * contacts are edited in the Contacts space.
+ */
+function forgetSuggestion(email: string) {
+  return contactsStore.forgetRecipient(email);
 }
 
 /**
@@ -728,6 +737,7 @@ function selectFromIdentity(event: Event) {
           :entries="recipientEntries[field]"
           :taken="takenElsewhere(field)"
           :query="queryContacts"
+          :forget="forgetSuggestion"
           :browse-all="browseAllContacts"
           @update:entries="(entries: RecipientEntry[]) => setEntries(field, entries)"
         />

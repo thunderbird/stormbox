@@ -26,13 +26,36 @@
 -- Which duplicate survives, and what the duplicates were filed under. Both
 -- have to be read before the rebuild: the old rows are the only record of
 -- it.
+--
+-- The survivor is the freshest live row, not the lowest id. Duplicates
+-- exist because re-filing a card inserted a second row instead of moving
+-- the first, so the lowest id is precisely the copy left behind — taking it
+-- would resurrect a stale name and address over the current one, and a
+-- deleted row over a live one. Live before deleted, then newest before
+-- oldest, with the id only breaking a genuine tie.
 CREATE TABLE _contact_survivors AS
-  SELECT account_id, remote_id, MIN(id) AS keep_id
-    FROM contacts
-   GROUP BY account_id, remote_id;
+  SELECT account_id, remote_id, keep_id FROM (
+    SELECT
+      account_id,
+      remote_id,
+      id AS keep_id,
+      ROW_NUMBER() OVER (
+        PARTITION BY account_id, remote_id
+        ORDER BY is_deleted ASC, updated_at DESC, id DESC
+      ) AS rank
+      FROM contacts
+  ) WHERE rank = 1;
 
 CREATE TABLE _contact_books AS
   SELECT s.keep_id AS contact_id, c.addressbook_id AS addressbook_id
+    FROM contacts c
+    JOIN _contact_survivors s
+      ON s.account_id = c.account_id AND s.remote_id = c.remote_id;
+
+-- Every old row against the row that will represent it, so the addresses
+-- of a row that is about to disappear can still be found.
+CREATE TABLE _contact_dupes AS
+  SELECT s.keep_id AS keep_id, c.id AS old_id
     FROM contacts c
     JOIN _contact_survivors s
       ON s.account_id = c.account_id AND s.remote_id = c.remote_id;
@@ -97,10 +120,26 @@ CREATE TABLE contact_emails (
   PRIMARY KEY(contact_id, position)
 );
 
+-- Addresses follow the survivor, and where the survivor carries none of its
+-- own they are taken from a duplicate that does. Folding two rows together
+-- must not leave a contact with no way to reach it, and these rows are
+-- copies of one card rather than two different address sets.
+CREATE TABLE _contact_email_source AS
+  SELECT
+    keep_id,
+    COALESCE(
+      MIN(CASE WHEN old_id = keep_id THEN old_id END),
+      MIN(old_id)
+    ) AS source_id
+    FROM _contact_dupes d
+   WHERE EXISTS (SELECT 1 FROM _contact_emails_keep e WHERE e.contact_id = d.old_id)
+   GROUP BY keep_id;
+
 INSERT INTO contact_emails(contact_id, position, email, label, is_preferred)
-  SELECT contact_id, position, email, label, is_preferred
-    FROM _contact_emails_keep
-   WHERE contact_id IN (SELECT id FROM contacts);
+  SELECT s.keep_id, e.position, e.email, e.label, e.is_preferred
+    FROM _contact_email_source s
+    JOIN _contact_emails_keep e ON e.contact_id = s.source_id
+   WHERE s.keep_id IN (SELECT id FROM contacts);
 
 CREATE INDEX contact_emails_lookup
   ON contact_emails(email_lower, contact_id);
@@ -122,5 +161,7 @@ CREATE INDEX addressbook_contacts_book
   ON addressbook_contacts(addressbook_id, contact_id);
 
 DROP TABLE _contact_emails_keep;
+DROP TABLE _contact_email_source;
+DROP TABLE _contact_dupes;
 DROP TABLE _contact_books;
 DROP TABLE _contact_survivors;

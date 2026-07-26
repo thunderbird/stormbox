@@ -88,6 +88,11 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.E2E_LANE_LOCK;
+  // One scratch directory per case, and nothing was removing them: a few
+  // hundred `lane-lock-*` directories accumulate in /tmp, where they read
+  // like abandoned lane locks to anyone diagnosing a lane that will not
+  // start.
+  fs.rmSync(path.dirname(lockPath), { recursive: true, force: true });
 });
 
 describe('e2e lane lock', () => {
