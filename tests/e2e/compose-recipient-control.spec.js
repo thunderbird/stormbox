@@ -52,6 +52,46 @@ async function closeCompose(page) {
 }
 
 /**
+ * Put a contact in the book and return the word that finds it.
+ *
+ * A test that needs the suggestion list to open has to seed something
+ * findable first. The e2e account is seeded with mail, not with an address
+ * book, and suggestions come only from contacts and from addresses the user
+ * has written to — never from received mail (CS-3.3). Part of the account's
+ * own address will not do either: an owned address is suppressed until it is
+ * typed in full (CS-3.7).
+ *
+ * Leaves the app in Mail, where the callers expect to be.
+ */
+async function seedFindableContact(page, word) {
+  const stamp = Date.now();
+  const name = `${word} Person ${stamp}`;
+  const email = `${word.toLowerCase()}-${stamp}@example.org`;
+  await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+  await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Add contact' }).click();
+  const form = page.locator('.contacts__form');
+  await expect(form).toBeVisible();
+  await form.locator('input[type="text"]').first().fill(name);
+  await form.locator('input[type="email"]').first().fill(email);
+  await form.getByRole('button', { name: /^save contact$/i }).click();
+  await expect(page.locator('.contacts__row').filter({ hasText: name }))
+    .toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Mail', exact: true }).click();
+  return { name, email, term: word.toLowerCase() };
+}
+
+/** Undo `seedFindableContact`; the shared session resets, the server does not. */
+async function forgetContact(page, name) {
+  await page.getByRole('button', { name: 'Contacts', exact: true }).click().catch(() => {});
+  await page.locator('.contacts__row').filter({ hasText: name })
+    .getByRole('button', { name: /^Remove / })
+    .click({ timeout: 10_000 })
+    .catch(() => {});
+  await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
+}
+
+/**
  * Paste into the focused recipient field.
  *
  * A real Ctrl+V needs clipboard permissions that differ between the two
@@ -137,6 +177,7 @@ test.describe('Recipient control', () => {
   });
 
   test('exposes the combobox to a screen reader', async ({ sharedPage: page }) => {
+    const seeded = await seedFindableContact(page, 'Zephyr');
     try {
       await openCompose(page);
       const field = recipientInput(page, 'To');
@@ -144,7 +185,7 @@ test.describe('Recipient control', () => {
       await expect(field).toHaveAttribute('role', 'combobox');
       await expect(field).toHaveAttribute('aria-expanded', 'false');
 
-      await page.keyboard.type('e2e');
+      await page.keyboard.type(seeded.term);
       const listbox = page.locator('.compose-dialog #compose-to-listbox');
       await expect(field, 'typing opens the list').toHaveAttribute('aria-expanded', 'true');
       await expect(listbox).toHaveAttribute('role', 'listbox');
@@ -186,6 +227,7 @@ test.describe('Recipient control', () => {
       expect(focused.id).toBe('compose-to');
     } finally {
       await closeCompose(page);
+      await forgetContact(page, seeded.name);
     }
   });
 
@@ -194,25 +236,31 @@ test.describe('Recipient control', () => {
     // the whole dialog unclosable: the shortcut handler stands down for an
     // expanded combobox, and the control only receives the key when it has
     // focus, so Escape reached nothing at all.
-    await openCompose(page);
-    const field = recipientInput(page, 'To');
-    await field.click();
-    await page.keyboard.type('e2e');
-    await expect(field).toHaveAttribute('aria-expanded', 'true');
+    const seeded = await seedFindableContact(page, 'Quilla');
+    try {
+      await openCompose(page);
+      const field = recipientInput(page, 'To');
+      await field.click();
+      await page.keyboard.type(seeded.term);
+      await expect(field).toHaveAttribute('aria-expanded', 'true');
 
-    // Focus leaves by keyboard because it cannot leave by mouse: the list is
-    // drawn over the rows beneath it, so a click aimed at Subject lands on a
-    // suggestion. Tab is the gesture that gets out of the field with the
-    // list up.
-    await page.keyboard.press('Tab');
-    await expect(field).not.toBeFocused();
-    await expect(
-      page.locator('.compose-dialog [role="combobox"][aria-expanded="true"]'),
-      'leaving a field takes its list with it',
-    ).toHaveCount(0);
+      // Focus leaves by keyboard because it cannot leave by mouse: the list is
+      // drawn over the rows beneath it, so a click aimed at Subject lands on a
+      // suggestion. Tab is the gesture that gets out of the field with the
+      // list up.
+      await page.keyboard.press('Tab');
+      await expect(field).not.toBeFocused();
+      await expect(
+        page.locator('.compose-dialog [role="combobox"][aria-expanded="true"]'),
+        'leaving a field takes its list with it',
+      ).toHaveCount(0);
 
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 10_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 10_000 });
+    } finally {
+      await closeCompose(page);
+      await forgetContact(page, seeded.name);
+    }
   });
 
   test('commits a pasted list, and keeps what it could not read', async ({ sharedPage: page }) => {

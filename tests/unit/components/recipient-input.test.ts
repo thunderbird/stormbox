@@ -20,7 +20,10 @@ import type { AutocompleteCandidate } from '../../../src/stores/contacts-store';
  */
 function mountControl(options: {
   entries?: RecipientEntry[];
-  query?: (prefix: string, limit: number) => Promise<AutocompleteCandidate[]>;
+  query?: (
+    prefix: string, limit: number, exclude: string[],
+  ) => Promise<AutocompleteCandidate[]>;
+  forget?: (email: string) => Promise<boolean>;
   browseAll?: (limit: number) => Promise<AutocompleteCandidate[]>;
   taken?: string[];
   debounceMs?: number;
@@ -33,6 +36,7 @@ function mountControl(options: {
       entries: options.entries ?? [],
       debounceMs: options.debounceMs ?? 0,
       ...(options.query ? { query: options.query } : {}),
+      ...(options.forget ? { forget: options.forget } : {}),
       ...(options.browseAll ? { browseAll: options.browseAll } : {}),
       ...(options.taken ? { taken: options.taken } : {}),
       // A parent holds the committed recipients, so the control sees its
@@ -50,6 +54,8 @@ const pills = (wrapper: any) => wrapper.findAll('.pill').map((pill: any) => ({
 }));
 const options = (wrapper: any) => wrapper.findAll('[role="option"]')
   .map((option: any) => option.find('.ac-email').text());
+/** The option elements themselves, for asserting on what is inside a row. */
+const optionRows = (wrapper: any) => wrapper.findAll('[role="option"]');
 
 /** Let the debounce fire and the query it issued settle. */
 async function settle(wrapper: any) {
@@ -437,7 +443,7 @@ describe('RecipientInput suggestions', () => {
     await new Promise((resolve) => { setTimeout(resolve, 80); });
     await flushPromises();
     expect(query).toHaveBeenCalledTimes(1);
-    expect(query).toHaveBeenCalledWith('bob', 10);
+    expect(query).toHaveBeenCalledWith('bob', 10, []);
   });
 
   it('asks for nothing until there are two characters to ask about', async () => {
@@ -556,6 +562,32 @@ describe('RecipientInput suggestions', () => {
     expect(wrapper.get('[role="status"]').text()).toBe('No contacts to show');
   });
 
+  it('does not pass a broken lookup off as an empty address book', async () => {
+    // "No suggestions" is a fact about the address book. A user told that
+    // stops typing a name it really holds and writes the address out by hand,
+    // so a failure has to read as a failure.
+    const wrapper = mountControl({
+      query: async () => { throw new Error('worker gone'); },
+    });
+
+    await type(wrapper, 'zz');
+    await settle(wrapper);
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Suggestions are unavailable');
+    expect(options(wrapper), 'and no stale list is left to accept with Enter').toHaveLength(0);
+  });
+
+  it('says when the address book itself could not be read', async () => {
+    const wrapper = mountControl({
+      browseAll: async () => { throw new Error('worker gone'); },
+    });
+
+    await wrapper.get('.recipient-input__browse').trigger('click');
+    await settle(wrapper);
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Contacts are unavailable');
+  });
+
   it('keeps the list to itself when a lookup fails', async () => {
     // A rejected query used to leave the previous list up with its
     // highlight, so Enter accepted a suggestion for text long since
@@ -626,8 +658,115 @@ describe('RecipientInput suggestions', () => {
     await type(wrapper, 'co');
     await settle(wrapper);
 
-    expect(query).toHaveBeenCalledWith('co', 10);
+    expect(query).toHaveBeenCalledWith('co', 10, []);
     expect(options(wrapper)).toHaveLength(10);
+  });
+
+  it('tells the query which addresses are already entered (CS-3.7)', async () => {
+    const query = vi.fn(async () => [] as AutocompleteCandidate[]);
+    const wrapper = mountControl({
+      query,
+      entries: [{ name: 'Bob', email: 'bob@example.com' }],
+      taken: ['carol@example.com'],
+    });
+
+    await type(wrapper, 'da');
+    await settle(wrapper);
+
+    // Both this field's own pills and the sibling fields' go with the
+    // query, so an address already entered does not spend one of the ten
+    // places and then get filtered out of the answer.
+    expect(query).toHaveBeenCalledWith('da', 10, ['bob@example.com', 'carol@example.com']);
+  });
+});
+
+describe('RecipientInput forgetting a suggestion (CS-3.13)', () => {
+  const LEARNED: AutocompleteCandidate[] = [
+    { name: 'Dana Learned', email: 'dana@example.com', source: 'history' },
+    { name: 'Dana Contact', email: 'dana.contact@example.com', source: 'contact' },
+  ];
+
+  async function openList(forget: any) {
+    const wrapper = mountControl({ query: async () => LEARNED, forget });
+    await type(wrapper, 'dana');
+    await settle(wrapper);
+    return wrapper;
+  }
+
+  it('offers to forget a learned address but not a contact', async () => {
+    const wrapper = await openList(vi.fn(async () => true));
+    const rows = optionRows(wrapper);
+    expect(rows[0].find('.ac-forget').exists()).toBe(true);
+    // A contact is in the address book because the user put it there;
+    // "remove this suggestion" would misdescribe what the control does.
+    expect(rows[1].find('.ac-forget').exists()).toBe(false);
+  });
+
+  it('removes the suggestion from the open list once it is forgotten', async () => {
+    const forget = vi.fn(async () => true);
+    const wrapper = await openList(forget);
+
+    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
+    await settle(wrapper);
+
+    expect(forget).toHaveBeenCalledWith('dana@example.com');
+    expect(options(wrapper)).toHaveLength(1);
+    expect(wrapper.text()).not.toContain('Dana Learned');
+    // A shorter list is not an announcement of what left it.
+    expect(wrapper.get('[role="status"]').text())
+      .toContain('dana@example.com removed from suggestions');
+  });
+
+  it('leaves the list alone when the removal did not apply, and says so', async () => {
+    const wrapper = await openList(vi.fn(async () => false));
+    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
+    await settle(wrapper);
+    expect(options(wrapper)).toHaveLength(2);
+    // Pressing ✕ and watching the row stay put is not an answer.
+    expect(wrapper.get('[role="status"]').text())
+      .toContain('dana@example.com could not be removed');
+  });
+
+  it('survives a failed removal without dropping the row', async () => {
+    const wrapper = await openList(vi.fn(async () => { throw new Error('worker gone'); }));
+    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
+    await settle(wrapper);
+    expect(wrapper.get('[role="status"]').text())
+      .toContain('dana@example.com could not be removed');
+    expect(options(wrapper)).toHaveLength(2);
+  });
+
+  it('forgets the highlighted suggestion on Shift+Delete', async () => {
+    const forget = vi.fn(async () => true);
+    const wrapper = await openList(forget);
+    const field = input(wrapper);
+
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    await field.trigger('keydown', { key: 'Delete', shiftKey: true });
+    await settle(wrapper);
+
+    // The ✕ is not focusable, so this is the whole keyboard route to it.
+    expect(forget).toHaveBeenCalledWith('dana@example.com');
+    expect(options(wrapper)).toHaveLength(1);
+  });
+
+  it('leaves plain Delete to the text field', async () => {
+    const forget = vi.fn(async () => true);
+    const wrapper = await openList(forget);
+    const field = input(wrapper);
+
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    await field.trigger('keydown', { key: 'Delete' });
+    await settle(wrapper);
+
+    expect(forget).not.toHaveBeenCalled();
+  });
+
+  it('does not offer removal at all without a way to do it', async () => {
+    const wrapper = mountControl({ query: async () => LEARNED });
+    await type(wrapper, 'dana');
+    await settle(wrapper);
+    expect(wrapper.find('.ac-forget').exists()).toBe(false);
   });
 });
 

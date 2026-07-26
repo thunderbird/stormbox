@@ -4,7 +4,7 @@
 **Format**: `[ID] [P?] Description` — `[P]` means parallelizable with the
 task above it.
 
-**Landing order is 1, 3, 2, 4, 5, 6, 7** — durable send phases come
+**Landing order is 1, 3, 2, 6, 4, 5, 7** — durable send phases come
 before the recipient model, per the sequencing rationale in
 [plan.md](./plan.md). Phase numbers match work-package numbers, not
 landing order.
@@ -97,6 +97,9 @@ makes a non-default origin work locally.
       operation and the spec can assert the message is in no mailbox at
       all. A method-level error naming the request is now terminal, so
       the composer stops waiting instead of burning eight retries
+- [x] T113 Add a test asserting the migration list is contiguous and
+      strictly increasing, so a later package cannot strand an earlier
+      migration behind `user_version`
 - [x] T113a Give HTTP JMAP requests an abortable deadline: with no
       timeout in `transport.ts`, a hung send leaves Close and
       Discard disabled indefinitely. The deadline spans the body read,
@@ -118,9 +121,6 @@ makes a non-default origin work locally.
       the composer stuck in its sending state
 - [x] T113b Assert the new `{ filed }` send result in
       `tests/unit/sync/outbox-effects.test.ts`, which still ignores it
-- [x] T113 Add a test asserting the migration list is contiguous and
-      strictly increasing, so a later package cannot strand an earlier
-      migration behind `user_version`
 - [x] T114 Run unit, typecheck, lint, and the two-browser e2e lane;
       commit (855 unit tests, 90 e2e across Chromium and Firefox)
 
@@ -225,25 +225,34 @@ makes a non-default origin work locally.
 
 ## Phase 5 — Autocomplete data (CS-3.1 to CS-3.7, CS-3.13, CS-3.14)
 
-- [ ] T501 Migration: `recipient_history` plus a contact search-token
+- [x] T501 Migration: `recipient_history` plus a contact search-token
       table with indexes
-- [ ] T502 Write recipient history only after a confirmed submission
-- [ ] T503 Backfill history from Sent-folder messages whose From is an
-      owned address; exclude everything else
-- [ ] T504 Populate search tokens for display name, full name, given and
+- [x] T502 Write recipient history only after a confirmed submission
+- [x] T503 Backfill history from Sent-folder messages whose From is an
+      owned address; exclude everything else. Bound the scan before
+      writing it: it runs once per account against a Sent folder that may
+      hold tens of thousands of messages, so read the newest N (start at
+      2,000) from the existing local cache rather than paging the server,
+      and run it off the compose path — a backfill must never be what the
+      first keystroke waits on. Record where it stopped so it resumes
+      rather than restarting.
+- [x] T504 Populate search tokens for display name, full name, given and
       family names, organization, and nickname on contact persist
-- [ ] T505 Rewrite `DB_RPC.CONTACT_AUTOCOMPLETE`: query both pools, merge
+- [x] T505 Rewrite `DB_RPC.CONTACT_AUTOCOMPLETE`: query both pools, merge
       by normalized address, rank deterministically, apply the limit
       after merging
-- [ ] T506 [P] Unit-test matching and ranking: name and token-order
+- [x] T506 [P] Unit-test matching and ranking: name and token-order
       matches, exact history outranking a weak contact substring,
       one row per address, deterministic display-name winner
-- [ ] T507 Exclude addresses already entered across To, Cc, and Bcc, and
+- [x] T507 Exclude addresses already entered across To, Cc, and Bcc, and
       suppress owned addresses
-- [ ] T508 Add remove-suggestion and clear-history controls
-- [ ] T509 [P] Performance test at 500+ contacts and a large history
-      against a stated latency budget
-- [ ] T510 E2E: import beyond one server page, then find a late-page
+- [x] T508 Add remove-suggestion and clear-history controls
+- [x] T509 [P] Performance test against CS-3.14's budget as written: 50 ms
+      at the 95th percentile over 5,000 contacts and 20,000 history rows,
+      measured in the worker rather than through the UI. Those are the
+      numbers the requirement states; an easier fixture would leave the
+      requirement untested rather than met.
+- [x] T510 E2E: import beyond one server page, then find a late-page
       contact by name from compose
 - [ ] T511 Run checks including the two-browser e2e lane; commit
 

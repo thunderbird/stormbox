@@ -92,6 +92,13 @@ describe('parseAddressList', () => {
         { name: 'Bob', email: 'bob@example.com' },
       ]);
     expect(parseAddressList('Nobody:;').addresses).toEqual([]);
+    // The case that actually arrives: servers and clients write this into To
+    // when everyone was Bcc'd. Reading it as an unparseable fragment would
+    // make replying to such a message report a recipient it cannot read.
+    expect(parseAddressList('undisclosed-recipients:;')).toEqual({
+      addresses: [],
+      rejected: [],
+    });
     expect(
       parseAddressList('Team: alice@example.com;, carol@example.com').addresses,
     ).toEqual([

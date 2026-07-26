@@ -542,6 +542,406 @@ describe('syncContacts', () => {
     expect(saved?.state, 'a full sync must leave a checkpoint to resume from')
       .toBe('object-state-1');
   });
+
+  /** An address book and two cards already synced and settled. */
+  async function seedTwoContacts() {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      generation: 1,
+      contacts: ['c-1', 'c-2'].map((remoteId) => ({
+        addressbookIds: [books[0].id],
+        remoteId,
+        displayName: remoteId,
+        emails: [{ email: `${remoteId}@example.com` }],
+      })),
+    });
+  }
+
+  /** A get that answers for whatever ids it is handed. */
+  function answerGets(transport: MockTransport, book = 'ab-default') {
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id, addressBookId: book, fullName: id, emails: [{ email: `${id}@example.com` }],
+      })),
+      state: 'object-state-1',
+    }));
+  }
+
+  /** Three cards already synced, so a sweep has something to lose. */
+  async function seedContacts(remoteIds: string[]) {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      generation: 1,
+      contacts: remoteIds.map((remoteId) => ({
+        addressbookIds: [books[0].id],
+        remoteId,
+        displayName: remoteId,
+        emails: [{ email: `${remoteId}@example.com` }],
+      })),
+    });
+  }
+
+  it('keeps a card the query named and the get withheld', async () => {
+    // CS-4.2. `notFound` is the documented answer for ids a get did not
+    // return (RFC 8620 §5.1), and it arrives without anything being wrong: a
+    // server capping objects in a get below the ids its own query returned, a
+    // permission change between the two method calls, or a destroy landing
+    // between them. Only the last makes a local deletion correct, and this
+    // code cannot tell them apart, so it must not delete.
+    //
+    // The page reads as complete on every count the loop keeps: the ids were
+    // all named, the cursor advanced by all of them, and `total` is reached.
+    // Only the number of cards actually returned differs.
+    await seedContacts(['c-a', 'c-b']);
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-a', 'c-b'], total: 2, position: 0, queryState: 'q-1',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.filter((id: string) => id !== 'c-b').map((id: string) => ({
+        id, addressBookId: 'ab-default', fullName: id, emails: [{ email: `${id}@example.com` }],
+      })),
+      notFound: ['c-b'],
+      state: 'object-state-1',
+    }));
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(await liveRemoteIds(), 'a card the get withheld is not a card the server lost')
+      .toEqual(['c-a', 'c-b']);
+    expect(result.swept, 'nothing may be removed on a reading this incomplete').toBe(0);
+    // And the gap has to stay transient: the card is missing from this pass,
+    // so a checkpoint here would make the next sync incremental, and
+    // `changes` never names a card nothing modified.
+    const checkpoint = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(checkpoint?.state ?? null, 'no checkpoint past a card this pass never saw')
+      .toBeNull();
+  });
+
+  it('starts over rather than sweeping when the card list moves under the cursor', async () => {
+    // CS-4.2, and the case has to be one where drift actually costs a card,
+    // or the test passes against code with no drift detection at all.
+    //
+    // The server holds [A, B, C] and serves A. A is then deleted elsewhere, so
+    // B slides from index 1 to index 0 and the next page — position 1 — serves
+    // C. B is never fetched, so never stamped, and a sweep would delete a card
+    // the server still has. `changes` cannot save it: nothing modified B.
+    await seedContacts(['c-a', 'c-b', 'c-c']);
+    const transport = new MockTransport();
+    let pass = 1;
+    let served = 0;
+    transport.handle('ContactCard/query', ({ position }) => {
+      if (pass === 1) {
+        served += 1;
+        if (served === 1) {
+          return { ids: ['c-a'], total: 3, position: 0, queryState: 'q-1' };
+        }
+        // A is gone; the list is now [B, C] under a new query state.
+        pass = 2;
+        return { ids: ['c-c'], total: 2, position: 1, queryState: 'q-2' };
+      }
+      const list = ['c-b', 'c-c'];
+      return {
+        ids: list.slice(position, position + 1),
+        total: 2,
+        position,
+        queryState: 'q-2',
+      };
+    });
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 1 });
+
+    // The exact end state, because it is what separates the two worlds: with
+    // drift detection the restarted pass reads [B, C] and sweeps A, which
+    // really was deleted. Without it, the first pass reads A then C, never
+    // sees B, and sweeps B instead — leaving ['c-a', 'c-c']. A count of
+    // fetched cards is 2 either way and cannot tell them apart.
+    expect(await liveRemoteIds(), 'the card that slid past the cursor must survive')
+      .toEqual(['c-b', 'c-c']);
+    expect(result.swept, 'and the card that really went is the one removed').toBe(1);
+    expect(
+      countMethod(transport, 'ContactCard/query'),
+      'a restart means the list is read again, not carried on from mid-way',
+    ).toBeGreaterThan(2);
+  });
+
+  it('gives up sweeping rather than paging forever against a moving list', async () => {
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    let page = 0;
+    transport.handle('ContactCard/query', () => {
+      page += 1;
+      return { ids: ['c-1'], total: 2, position: 0, queryState: `q-${page}` };
+    });
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 1 });
+
+    expect(result.unstable, 'the caller should learn the list never settled').toBe(true);
+    expect(result.swept).toBe(0);
+    expect(await liveRemoteIds(), 'an unsettled account keeps what it had')
+      .toEqual(['c-1', 'c-2']);
+  });
+
+  it('refuses to read a failed page as an account with no contacts', async () => {
+    // `pickResponse` answers null for a method-level error as well as an
+    // absent slot, so an unguarded read turns one failed round trip into an
+    // empty result — and the sweep behind it into a deletion of the entire
+    // address book.
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-1', 'c-2'], total: 2, queryState: 'q-1',
+    }));
+    transport.handle('ContactCard/get', () => null);
+    nothingChanged(transport);
+
+    await expect(syncContacts({ transport, account, handlers }))
+      .rejects.toThrow(/ContactCard\/get/);
+    expect(await liveRemoteIds(), 'a failed page must leave the contacts alone')
+      .toEqual(['c-1', 'c-2']);
+  });
+
+  it('refuses to read an unanswered query as an account with no contacts', async () => {
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => null);
+    transport.handle('ContactCard/get', () => ({ list: [], state: 's' }));
+    nothingChanged(transport);
+
+    await expect(syncContacts({ transport, account, handlers }))
+      .rejects.toThrow(/ContactCard\/query/);
+    expect(await liveRemoteIds()).toEqual(['c-1', 'c-2']);
+  });
+
+  it('keeps paging when the server caps the page below what was asked for', async () => {
+    // RFC 8620 §5.5 lets the server clamp `limit` and requires it to return
+    // the limit it enforced. Measuring a short page against what we asked
+    // for rather than what it agreed to give reads a capped server as an
+    // account that ran out of contacts after one page — and the sweep
+    // deletes the remainder. Stalwart's cap is 5000 against a 500 page, so
+    // only a tighter-configured instance reaches this.
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', ({ position }) => ({
+      // Asked for 500 a page; this server will only ever give one.
+      ids: position === 0 ? ['c-1'] : ['c-2'],
+      total: 2,
+      position,
+      limit: 1,
+      queryState: 'q-1',
+    }));
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.fetched, 'both pages should be read').toBe(2);
+    expect(await liveRemoteIds(), 'and nothing swept for being past a short page')
+      .toEqual(['c-1', 'c-2']);
+  });
+
+  it('does not sweep a card it could not file for want of its address book', async () => {
+    // The card is plainly on the server — it came back in this very page —
+    // but no local book matches, so it goes unstamped. Sweeping then reads
+    // it as absent and deletes it, and the `changes` catch-up cannot bring
+    // it back because nothing modified it.
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-1', 'c-2'], total: 2, queryState: 'q-1',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        // c-2 has been re-filed into a book this account has not synced.
+        addressBookId: id === 'c-2' ? 'ab-unknown' : 'ab-default',
+        fullName: id,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+      state: 'object-state-1',
+    }));
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.swept).toBe(0);
+    expect(await liveRemoteIds(), 'an unfiled card is not an absent one')
+      .toEqual(['c-1', 'c-2']);
+  });
+
+  it('will not sweep across pages the server gave it no way to tie together', async () => {
+    // A query state is what makes several pages one list. Without one, drift
+    // is undetectable — and initialising the stored state to the same value
+    // that means "the server sent none" is how the whole check quietly stops
+    // running while appearing to pass.
+    // `c-stale` is held locally and absent from the server's list, so a sweep
+    // has something to delete. Asserting `swept === 0` against a list where
+    // every card gets stamped would pass with no check running at all.
+    await seedContacts(['c-a', 'c-b', 'c-stale']);
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', ({ position }) => ({
+      ids: ['c-a', 'c-b'].slice(position, position + 1),
+      total: 2,
+      position,
+    }));
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 1 });
+
+    expect(result.fetched, 'both pages are still read').toBe(2);
+    expect(result.swept, 'but nothing may be removed on an unverifiable reading').toBe(0);
+    expect(await liveRemoteIds(), 'including a card this pass could not account for')
+      .toContain('c-stale');
+  });
+
+  it('still sweeps a single-page account that reports no query state', async () => {
+    // The other half of the rule, and the common case: one request cannot
+    // drift, because the query and the get are answered together. Refusing to
+    // sweep here would mean a deletion on the server never arrives locally
+    // for any account small enough to fit in one page.
+    await seedContacts(['c-a', 'c-b']);
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-a'], total: 1, position: 0,
+    }));
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.swept, 'the card the server no longer has must go').toBe(1);
+    expect(await liveRemoteIds()).toEqual(['c-a']);
+  });
+
+  it('ignores a limit larger than the one it asked for', async () => {
+    // Clamping only ever reduces. A server reporting its configured ceiling
+    // while serving the page requested would otherwise make every page look
+    // short of it, ending the pass after one page and sweeping the rest.
+    await seedContacts(['c-a', 'c-b']);
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', ({ position }) => ({
+      ids: ['c-a', 'c-b'].slice(position, position + 1),
+      position,
+      limit: 5_000,
+      queryState: 'q-1',
+    }));
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 1 });
+
+    expect(result.fetched, 'the second page must still be asked for').toBe(2);
+    expect(await liveRemoteIds()).toEqual(['c-a', 'c-b']);
+  });
+
+  it('stops rather than paging forever against a cursor that never moves', async () => {
+    // A server that keeps echoing position 0 while serving full pages makes
+    // every page look like a full page, and a stable query state means no
+    // restart fires either. Nothing else in the loop breaks the tie.
+    await seedContacts(['c-a', 'c-b']);
+    const transport = new MockTransport();
+    let pages = 0;
+    transport.handle('ContactCard/query', () => {
+      pages += 1;
+      if (pages > 50) throw new Error('paged without terminating');
+      return { ids: ['c-a'], position: 0, queryState: 'q-1' };
+    });
+    answerGets(transport);
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers, pageSize: 1 });
+
+    expect(pages, 'it must give up quickly, not spin').toBeLessThan(50);
+    expect(result.swept, 'and sweep nothing on a reading it could not finish').toBe(0);
+  });
+
+  it('leaves no checkpoint when a card could not be filed', async () => {
+    // Suppressing the sweep keeps the card from being deleted, but a
+    // checkpoint makes the next sync incremental — and `changes` never names
+    // a card nothing modified, so the local gap would be permanent instead of
+    // lasting until the address book arrives.
+    //
+    // The checkpoint seeded here is the point: a full sync runs with one
+    // already on disk — `changes` asking for a rebuild, or the
+    // `SYNC_ENSURE_CONTACTS` RPC — so declining to *write* one is not the same
+    // as leaving none behind. Without the seed this passes either way.
+    await seedContacts(['c-a']);
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+      state: 'checkpoint-from-an-earlier-sync',
+    });
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-a', 'c-b'], total: 2, queryState: 'q-1',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: id === 'c-b' ? 'ab-unknown' : 'ab-default',
+        fullName: id,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+      state: 'object-state-1',
+    }));
+    nothingChanged(transport);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.needsFullSync, 'the caller has to know to read the list again').toBe(true);
+    const saved = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(saved?.state ?? null, 'a checkpoint here would strand the unfiled card')
+      .toBeNull();
+  });
+
+  it('drops the checkpoint when the catch-up cannot be calculated', async () => {
+    // The baseline is the first page's state, so without a catch-up the
+    // window spent paging is unaccounted for. Keeping a checkpoint that
+    // implies otherwise would let the next delta resume from a state the
+    // cache never reached.
+    await seedTwoContacts();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-1'], total: 1, queryState: 'q-1',
+    }));
+    answerGets(transport);
+    // A server that cannot calculate the delta answers with an error, which
+    // reaches the reader as a response it cannot use.
+    transport.handle('ContactCard/changes', () => null);
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.needsFullSync, 'the caller has to know to rebuild').toBe(true);
+    const saved = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(saved?.state ?? null, 'no checkpoint is better than a false one').toBeNull();
+  });
 });
 
 describe('createContactCard', () => {
@@ -767,6 +1167,20 @@ describe('updateContactCard', () => {
     expect(result.error.type).toBe('notFound');
   });
 
+  it('does not call a refused read a card that no longer exists', async () => {
+    // `notFound` is terminal in the outbox runner: the row is retired as
+    // conflicted and the user is told the edit cannot be made. A method-level
+    // error deserves the backoff instead, so the two must not collapse into
+    // one answer.
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => null);
+    const result = await updateContactCard({
+      transport, account, remoteId: 'd', emails: ['x@example.com'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.type, 'a refused read is worth retrying').toBe('serverFail');
+  });
+
   it('reports an error when the server refuses the update', async () => {
     const transport = new MockTransport();
     transport.handle('ContactCard/get', () => ({ list: [cardWithExtras()] }));
@@ -938,6 +1352,80 @@ describe('syncContactCardChanges', () => {
       [account.id, 'c-2'],
     );
     expect(Number(gone.is_deleted)).toBe(1);
+  });
+
+  it('does not advance past a changed card it could not file', async () => {
+    // The mirror of what the full sync does with `skipped`. A card filed in a
+    // book this account has not synced cannot be stored, so it is missing
+    // locally; advancing the checkpoint over it makes that permanent, because
+    // `changes` names what was modified and nothing will modify it again.
+    const transport = new MockTransport();
+    transport.handle('ContactCard/changes', () => ({
+      oldState: 'cc-0',
+      newState: 'cc-1',
+      hasMoreChanges: false,
+      created: ['c-elsewhere'],
+      updated: [],
+      destroyed: [],
+    }));
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        id: 'c-elsewhere',
+        addressBookId: 'ab-not-synced-here',
+        fullName: 'Filed Elsewhere',
+        emails: [{ email: 'elsewhere@example.com' }],
+      }],
+      state: 'cc-1',
+    }));
+
+    const result = await syncContactCardChanges({
+      transport, account, handlers, sinceState: 'cc-0',
+    });
+
+    expect(
+      await engine.get(
+        'SELECT id FROM contacts WHERE account_id = ? AND remote_id = ?',
+        [account.id, 'c-elsewhere'],
+      ),
+      'the card could not be filed, so it is not here',
+    ).toBeFalsy();
+    expect(result.needsFullSync, 'a delta that dropped a card asks for a rebuild').toBe(true);
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(stateRow?.state ?? null, 'and it does not checkpoint past the card it dropped')
+      .not.toBe('cc-1');
+  });
+
+  it('does not advance past changed cards it was refused', async () => {
+    // The state is persisted after the cards are fetched, so a refused
+    // read-back that is swallowed costs the delta permanently: those ids
+    // are named once and never again, and the next catch-up starts from a
+    // state the cache never actually reached.
+    const transport = new MockTransport();
+    transport.handle('ContactCard/changes', () => ({
+      oldState: 'cc-0',
+      newState: 'cc-1',
+      hasMoreChanges: false,
+      created: [],
+      updated: ['c-1'],
+      destroyed: [],
+    }));
+    transport.handle('ContactCard/get', () => null);
+
+    await expect(syncContactCardChanges({
+      transport, account, handlers, sinceState: 'cc-0',
+    })).rejects.toThrow(/ContactCard\/get/);
+
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(
+      stateRow?.state ?? null,
+      'the checkpoint must not move past a page that was never applied',
+    ).not.toBe('cc-1');
   });
 
   it('requests a full sync when the server reports more changes without advancing state', async () => {

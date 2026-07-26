@@ -77,6 +77,19 @@ export const SUBMISSION_FAULTS = {
 export const CONTACT_CACHE_FAULT = 'stormbox-break-contact-cache';
 
 /**
+ * How many read-backs of a marked card the proxy refuses before relenting.
+ *
+ * Bounded from above by `CONTACT_CACHE_MAX_ATTEMPTS` in
+ * `src/sync/backends/jmap/outbox.ts`, which is 3: the repair has to be allowed
+ * to succeed on an attempt the row still has. At 2 the parked state survives a
+ * retry, which is what makes it observable, and attempt 3 repairs the cache.
+ * Raising this to the cap turns the e2e into a test of the give-up path
+ * instead, and the two constants live in different trees with nothing but this
+ * note between them.
+ */
+export const CONTACT_CACHE_REFUSALS = 2;
+
+/**
  * The fault modes this build of the injector can apply, reported over
  * STATUS_PATH.
  *
@@ -258,7 +271,13 @@ export function createInjector({ applied = [] } = {}) {
   /** requestId of a marked card create -> creations awaiting their ids. */
   const pendingCards = new Map();
   /** Card ids whose next read-back is to fail. */
-  const armedCards = new Set();
+  // cardId -> refusals still to serve. More than one because a single
+  // refusal makes the state under test unobservable in practice: the client
+  // repairs the cache within milliseconds, so a spec polling for the parked
+  // row is racing the repair rather than checking it. Refusing the first
+  // retry too holds the row parked across a whole retry interval, and the
+  // count still runs out so the repair can be seen to happen.
+  const armedCards = new Map();
   // `applied` records what was actually done to whom, in order. A spec
   // asserting on the server's state cannot otherwise tell an injected
   // fault from a send that simply worked: every assertion in a fault test
@@ -288,9 +307,11 @@ export function createInjector({ applied = [] } = {}) {
     if (armedCards.size > 0) {
       const gets = cardGetCallsFor(frame, armedCards);
       if (gets.length > 0) {
-        // One-shot, like the submission faults: the retry this provokes has
-        // to be able to succeed, or the spec could only watch it fail.
-        for (const { cardId } of gets) armedCards.delete(cardId);
+        for (const { cardId } of gets) {
+          const left = (armedCards.get(cardId) ?? 1) - 1;
+          if (left > 0) armedCards.set(cardId, left);
+          else armedCards.delete(cardId);
+        }
         record('CONTACT_CACHE', gets[0].cardId, 'readBackRefused');
         return {
           action: 'answer',
@@ -344,7 +365,9 @@ export function createInjector({ applied = [] } = {}) {
     const cardCreations = pendingCards.get(frame.requestId);
     if (cardCreations != null) {
       pendingCards.delete(frame.requestId);
-      for (const id of createdCardIdsFor(frame, cardCreations)) armedCards.add(id);
+      for (const id of createdCardIdsFor(frame, cardCreations)) {
+        armedCards.set(id, CONTACT_CACHE_REFUSALS);
+      }
       return { action: 'forward' };
     }
 

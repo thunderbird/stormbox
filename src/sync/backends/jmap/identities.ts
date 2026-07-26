@@ -20,12 +20,13 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
     useWebSocket,
   });
   const response = pickResponse(result, 'Identity/get');
-  if (!response) {
-    // An unreadable response is not an account without identities. Applying
-    // one as a snapshot would empty the From picker over a bad reply.
+  // An unreadable response is not an account without identities, and
+  // neither is a readable one carrying no list. Applying either as a
+  // snapshot would empty the From picker over a bad reply.
+  if (!response || !Array.isArray(response.list)) {
     return { count: 0, state: null, removed: 0 };
   }
-  const list = response.list ?? [];
+  const list = response.list;
   const { removed } = await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
     accountId: account.id,
     snapshot: true,

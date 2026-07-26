@@ -97,6 +97,10 @@ export const DB_RPC = Object.freeze({
   CONTACT_SWEEP_STALE: 'contact.sweepStale',
   CONTACT_DELETE_LOCAL: 'contact.deleteLocal',
   CONTACT_AUTOCOMPLETE: 'contact.autocomplete',
+  RECIPIENT_HISTORY_RECORD: 'recipientHistory.record',
+  RECIPIENT_HISTORY_SUPPRESS: 'recipientHistory.suppress',
+  RECIPIENT_HISTORY_CLEAR: 'recipientHistory.clear',
+  RECIPIENT_HISTORY_BACKFILL: 'recipientHistory.backfill',
 
   SYNC_STATE_GET: 'syncState.get',
   SYNC_STATE_SET: 'syncState.set',

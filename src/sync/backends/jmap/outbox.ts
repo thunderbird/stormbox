@@ -1090,6 +1090,24 @@ function contactWriteApplied(row: any): { ids: string[]; attempts: number } | nu
 }
 
 /**
+ * Park a row at "the server write is done, the cache is not", carrying the
+ * ids a repair needs and how many repairs have been tried.
+ */
+function checkpointContactWrite({ handlers, row, ids, attempts }: any) {
+  return handlers[DB_RPC.QUERY]({
+    sql: `UPDATE pending_mutations
+             SET phase = ?, server_response_json = ?, updated_at = ?
+           WHERE id = ?`,
+    params: [
+      SEND_PHASE.CACHE_PENDING,
+      JSON.stringify({ reconcileIds: ids ?? [], attempts }),
+      Date.now(),
+      row.id,
+    ],
+  });
+}
+
+/**
  * Repair the cache after a contact write the server has accepted, and say
  * plainly when that fails.
  *
@@ -1102,13 +1120,38 @@ function contactWriteApplied(row: any): { ids: string[]; attempts: number } | nu
 async function reconcileOrReport({
   transport, account, handlers, row, ids, useWebSocket, attempts = 0, repair,
 }: any) {
+  // Record that the server write happened *before* touching the cache.
+  //
+  // Only `send` is held back from replay after a crash (`recoverStranded`
+  // returns everything else to pending), so a contact row that died between
+  // a successful `ContactCard/set` and any durable note of it comes back
+  // indistinguishable from one that never ran — and creates a second card.
+  // The phase is what `contactWriteApplied` reads to skip the write, so
+  // writing it here is what closes that window. If this write itself fails
+  // the repair below still runs: a repair that succeeds leaves server and
+  // cache agreeing, which is the outcome that matters.
+  //
+  // The attempt is counted here rather than after the repair fails, because
+  // the case that needs bounding is the one that never reaches a catch block.
+  // A crash mid-repair returns the row to pending; if the count only rose on
+  // a thrown error, such a row would resume at the same number forever.
+  const attempting = attempts + 1;
+  if (row?.id != null) {
+    await checkpointContactWrite({ handlers, row, ids, attempts: attempting })
+      .catch((err) => {
+        wlog.warn(
+          'jmap-outbox',
+          `contact write not checkpointed before reconcile: ${err?.message ?? err}`,
+        );
+      });
+  }
   try {
     await (repair
       ? repair()
       : reconcileContactCards({ transport, account, handlers, ids, useWebSocket }));
     return { ok: true };
   } catch (err: any) {
-    const attempted = attempts + 1;
+    const attempted = attempting;
     wlog.warn(
       'jmap-outbox',
       `contact write applied but the cache did not follow: ${err?.message ?? err}`,
@@ -1133,17 +1176,7 @@ async function reconcileOrReport({
         },
       };
     }
-    await handlers[DB_RPC.QUERY]({
-      sql: `UPDATE pending_mutations
-               SET phase = ?, server_response_json = ?, attempts = 0, updated_at = ?
-             WHERE id = ?`,
-      params: [
-        SEND_PHASE.CACHE_PENDING,
-        JSON.stringify({ reconcileIds: ids ?? [], attempts: attempted }),
-        Date.now(),
-        row.id,
-      ],
-    });
+    await checkpointContactWrite({ handlers, row, ids, attempts: attempted });
     return {
       ok: false,
       error: {
@@ -2109,6 +2142,8 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
         rowId,
         checkpoint,
         submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
+        account,
+        request,
       });
       if (recorded.err) {
         return postSubmissionFailure({
@@ -2324,7 +2359,7 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
     // problem, never a failed send — including this one, which is the
     // write that tells a resume not to submit again.
     const recorded = await recordAcceptedSubmission({
-      handlers, rowId, checkpoint, submissionRemoteId: accepted,
+      handlers, rowId, checkpoint, submissionRemoteId: accepted, account, request,
     });
     if (recorded.err) {
       return postSubmissionFailure({
@@ -2501,19 +2536,49 @@ async function parkUnknown(handlers, rowId, checkpoint) {
  * composer invite a second delivery.
  */
 async function recordAcceptedSubmission({
-  handlers, rowId, checkpoint, submissionRemoteId,
+  handlers, rowId, checkpoint, submissionRemoteId, account, request,
 }): Promise<{ checkpoint?: any; err?: any }> {
   try {
-    return {
-      checkpoint: await saveCheckpoint(
-        handlers,
-        rowId,
-        { ...checkpoint, submissionRemoteId },
-        SEND_PHASE.SUBMITTED,
-      ),
-    };
+    const saved = await saveCheckpoint(
+      handlers,
+      rowId,
+      { ...checkpoint, submissionRemoteId },
+      SEND_PHASE.SUBMITTED,
+    );
+    await learnRecipients({ handlers, account, request });
+    return { checkpoint: saved };
   } catch (err: any) {
     return { err };
+  }
+}
+
+/**
+ * Teach autocomplete the addresses this send went to (CS-3.3).
+ *
+ * Called from the one place that knows the server accepted the submission,
+ * which is what makes the history "confirmed sends" rather than "attempted
+ * sends". It is called once per send: the caller reaches it only on first
+ * observing acceptance, so a resumed row does not count the send twice.
+ *
+ * A failure here is swallowed. Learning a recipient is a convenience, and
+ * the message has already gone out — letting it raise would turn a delivered
+ * message into a reported failure, which is the outcome CS-1.10 exists to
+ * prevent.
+ */
+async function learnRecipients({ handlers, account, request }) {
+  const recipients = [
+    ...(request?.to ?? []),
+    ...(request?.cc ?? []),
+    ...(request?.bcc ?? []),
+  ].filter((r) => r?.email);
+  if (recipients.length === 0) return;
+  try {
+    await handlers[DB_RPC.RECIPIENT_HISTORY_RECORD]({
+      accountId: account.id,
+      recipients: recipients.map((r) => ({ email: r.email, name: r.name ?? null })),
+    });
+  } catch (err: any) {
+    wlog.warn('jmap-outbox', `recipients not learned: ${err?.message ?? err}`);
   }
 }
 

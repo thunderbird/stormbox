@@ -1146,7 +1146,7 @@ describe('contacts and autocomplete', () => {
     expect(row.sync_generation).toBe(300);
   });
 
-  it('autocompletes from contacts and message-history with case-insensitive prefix', async () => {
+  it('autocompletes from contacts and learned recipients, never from received mail', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
       accountId: account.id,
@@ -1172,19 +1172,28 @@ describe('contacts and autocomplete', () => {
       ],
     });
 
-    const inbox = await seedFolder(account.id);
+    // Someone the user has written to: a confirmed send taught us this one.
+    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
+      accountId: account.id,
+      recipients: [{ email: 'jasmine@history.example', name: 'Jasmine' }],
+    });
+
+    // Someone who wrote to the user and was never written back to. This is
+    // the address the old implementation would offer and CS-3.3 forbids:
+    // being mailed by a stranger is not evidence you want to mail them.
+    await seedFolder(account.id);
     await h[DB_RPC.MESSAGE_UPSERT_MANY]({
       accountId: account.id,
       messages: [{
-        remoteId: 'm-from-history',
+        remoteId: 'm-from-stranger',
         threadId: null,
         rfc822MessageId: '<x@example.com>',
-        subject: 'history',
+        subject: 'unsolicited',
         receivedAt: Date.now(),
         keywordsJson: '{}',
         keywords: [],
         addresses: [
-          { kind: 'from', position: 0, name: 'Jasmine', email: 'jasmine@history.example' },
+          { kind: 'from', position: 0, name: 'Jarvis', email: 'jarvis@stranger.example' },
         ],
         metadataFetchedAt: Date.now(),
       }],
@@ -1195,50 +1204,124 @@ describe('contacts and autocomplete', () => {
       prefix: 'ja',
       limit: 10,
     });
-    expect(matches.length).toBeGreaterThanOrEqual(2);
     const emails = matches.map((m) => m.email);
     expect(emails).toContain('Jane@Example.com');
+    expect(emails).toContain('jasmine@history.example');
+    expect(emails).not.toContain('jarvis@stranger.example');
     const sources = new Set(matches.map((m) => m.source));
     expect(sources.has('contact')).toBe(true);
     expect(sources.has('history')).toBe(true);
   });
 
-  // The two tests below characterise defects the autocomplete rewrite
-  // (CS-3.4, CS-3.6) is specified to remove. They assert today's
-  // behaviour so the rewrite has to update them deliberately rather
-  // than changing suggestion quality unnoticed.
-
-  it('offers the same address once per display name it was stored under (CS-3.4)', async () => {
+  it('finds a contact by a word of its name, not just by address (CS-3.1, CS-3.2)', async () => {
     const account = await seedAccount();
-    await seedFolder(account.id);
-    // One correspondent, two messages, two different display names —
-    // exactly what a real mailbox accumulates over time.
-    await h[DB_RPC.MESSAGE_UPSERT_MANY]({
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
       accountId: account.id,
-      messages: [
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', isDefault: true, name: 'Default' }],
+    });
+    const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{
+        addressbookIds: [ab.id],
+        remoteId: 'c-jane',
+        displayName: 'Smith, Jane',
+        givenName: 'Jane',
+        familyName: 'Smith',
+        // Nothing about this address begins with "jane", which is why an
+        // address-prefix-only implementation could never find her.
+        emails: [{ email: 'jqs@example.com', isPreferred: true }],
+      }],
+    });
+
+    const byGivenName = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'jane', limit: 10,
+    });
+    expect(byGivenName.map((m) => m.email)).toEqual(['jqs@example.com']);
+
+    // Two words, in the order the name is not stored in.
+    const unordered = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'jane smi', limit: 10,
+    });
+    expect(unordered.map((m) => m.email)).toEqual(['jqs@example.com']);
+
+    // A second word narrows rather than widens: nobody is called "jane
+    // nokia", so nothing matches.
+    const narrowed = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'jane nokia', limit: 10,
+    });
+    expect(narrowed).toEqual([]);
+  });
+
+  it('stops matching a name the contact no longer has', async () => {
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', isDefault: true, name: 'Default' }],
+    });
+    const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
+    const card = {
+      addressbookIds: [ab.id],
+      remoteId: 'c-1',
+      displayName: 'Jane Maidenname',
+      emails: [{ email: 'jane@example.com' }],
+    };
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts: [card] });
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{ ...card, displayName: 'Jane Marriedname' }],
+    });
+
+    const byNewName = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'marriedname', limit: 10,
+    });
+    expect(byNewName.map((m) => m.email)).toEqual(['jane@example.com']);
+    // Tokens are replaced rather than added to, so the old name stops
+    // matching. Otherwise a rename would leave a suggestion nobody could
+    // account for.
+    const byOldName = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'maidenname', limit: 10,
+    });
+    expect(byOldName).toEqual([]);
+  });
+
+  // The two tests below were written to characterise the defects the
+  // autocomplete rewrite (CS-3.4, CS-3.6) is specified to remove. They now
+  // assert the fixed behaviour: the old expectations are recorded in each
+  // one so the change of contract stays legible.
+
+  it('offers one row per address however many names it was stored under (CS-3.4)', async () => {
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', isDefault: true, name: 'Default' }],
+    });
+    const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
+    // One correspondent known three ways — two cards and a send — which is
+    // what a real address book accumulates over time.
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [
         {
-          remoteId: 'm-dup-1',
-          threadId: null,
-          rfc822MessageId: '<dup1@example.com>',
-          subject: 'first',
-          receivedAt: Date.now(),
-          keywordsJson: '{}',
-          keywords: [],
-          addresses: [{ kind: 'from', position: 0, name: 'Dana Smith', email: 'dana@example.com' }],
-          metadataFetchedAt: Date.now(),
+          addressbookIds: [ab.id],
+          remoteId: 'c-dana-work',
+          displayName: 'Dana Smith',
+          emails: [{ email: 'dana@example.com', isPreferred: true }],
         },
         {
-          remoteId: 'm-dup-2',
-          threadId: null,
-          rfc822MessageId: '<dup2@example.com>',
-          subject: 'second',
-          receivedAt: Date.now(),
-          keywordsJson: '{}',
-          keywords: [],
-          addresses: [{ kind: 'from', position: 0, name: 'dana', email: 'dana@example.com' }],
-          metadataFetchedAt: Date.now(),
+          addressbookIds: [ab.id],
+          remoteId: 'c-dana-old',
+          displayName: 'dana',
+          emails: [{ email: 'Dana@Example.com' }],
         },
       ],
+    });
+    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
+      accountId: account.id,
+      recipients: [{ email: 'dana@example.com', name: 'D.' }],
     });
 
     const matches = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
@@ -1246,13 +1329,24 @@ describe('contacts and autocomplete', () => {
       prefix: 'dana',
       limit: 10,
     });
-    // DISTINCT applies across (name, email), so one address surfaces
-    // twice. This is the mechanism behind issue #58.
-    expect(matches.map((m) => m.email)).toEqual(['dana@example.com', 'dana@example.com']);
-    expect(new Set(matches.map((m) => m.name))).toEqual(new Set(['Dana Smith', 'dana']));
+    // Previously: two rows, one per stored display name — issue #58. The
+    // addresses differ only by case, which CS-3.5 folds for comparison.
+    expect(matches.map((m) => m.email)).toEqual(['dana@example.com']);
+    // Contact metadata beats a name learned from a send, and the preferred
+    // address beats the secondary one. Neither is a coin toss.
+    expect(matches[0].name).toBe('Dana Smith');
+    expect(matches[0].source).toBe('contact');
+
+    // Deterministic means the same answer twice, not merely one answer.
+    const again = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id,
+      prefix: 'dana',
+      limit: 10,
+    });
+    expect(again).toEqual(matches);
   });
 
-  it('lets contacts consume the whole limit and starve an exact history match (CS-3.6)', async () => {
+  it('offers the exact address typed even when contacts could fill the limit (CS-3.6)', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
       accountId: account.id,
@@ -1271,34 +1365,34 @@ describe('contacts and autocomplete', () => {
     }
     await h[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
 
-    await seedFolder(account.id);
-    await h[DB_RPC.MESSAGE_UPSERT_MANY]({
+    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
       accountId: account.id,
-      messages: [{
-        remoteId: 'm-exact',
-        threadId: null,
-        rfc822MessageId: '<exact@example.com>',
-        subject: 'exact',
-        receivedAt: Date.now(),
-        keywordsJson: '{}',
-        keywords: [],
-        addresses: [{ kind: 'to', position: 0, name: 'Team', email: 'team@example.com' }],
-        metadataFetchedAt: Date.now(),
-      }],
+      recipients: [{ email: 'team@example.com', name: 'Team' }],
     });
 
     // The user has typed the complete address of someone they have
-    // written to before.
+    // written to before, and there are exactly enough contacts sharing its
+    // prefix to fill the limit.
     const matches = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id,
+      prefix: 'team@example.com',
+      limit: 8,
+    });
+    // Previously: the contact query was issued with the caller's full
+    // limit, so history was left no budget and this address — the one thing
+    // the user had typed in full — could not be offered at all.
+    expect(matches[0].email).toBe('team@example.com');
+
+    // It also has to survive a prefix that every contact shares, where the
+    // exact match competes with eight equally valid prefix matches.
+    const onPrefix = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
       accountId: account.id,
       prefix: 'team',
       limit: 8,
     });
-    // The contact query is issued with the full limit, so history never
-    // gets a budget and the exact match cannot be offered.
-    expect(matches).toHaveLength(8);
-    expect(matches.every((m) => m.source === 'contact')).toBe(true);
-    expect(matches.map((m) => m.email)).not.toContain('team@example.com');
+    expect(onPrefix.map((m) => m.email)).toContain('team@example.com');
+    // An exact match is a better match than a prefix match, so it leads.
+    expect(onPrefix[0].email).toBe('team@example.com');
   });
 });
 

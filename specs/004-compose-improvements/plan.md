@@ -24,25 +24,14 @@ for the authoritative checklist.
   `tests/e2e/global-setup.js` aborts:
   `docker exec -d stormbox-compose bash -c 'cd /workspace && npm run stack:ws-proxy > /tmp/ws-proxy.log 2>&1'`
 
-### Progress
+### Landing order, and the rule that keeps recurring
 
-Phase 0 complete. Phase 1 is 16/16, Phase 3 is 6/12, Phases 2, 4, 5, 6
-and 7 are untouched. Landing order is **1, 3, 2, 4, 5, 6, 7**.
+**`tasks.md` is the authoritative checklist — this section deliberately
+keeps no second copy of it.** Landing order is **1, 3, 2, 6, 4, 5, 7**; the
+reasoning is under "Sequencing and rationale" below.
 
-Done in substance: the submission envelope, per-call-id response
-validation including the implicit `Email/set`, terminal handling of
-permanent rejections, the "nothing enters Sent unless the server says so"
-invariant, phase-checkpointed create/submit/reconcile with resume,
-phase-aware crash recovery, positive reconciliation of a lost response,
-and a bounded, abortable deadline on every network leg. Not started:
-anything the user can see — Cc/Bcc fields, Reply All's dropped Cc,
-threading headers, contact sync integrity, autocomplete matching, the
-recipient input control.
-
-Known gaps carried in tasks.md: T309, T310, T311.
-
-One rule earned the hard way while closing Phase 1, and it generalises
-past sending: **a read that exists to establish what the server has must
+One rule earned the hard way while closing WP1, and it generalises past
+sending: **a read that exists to establish what the server has must
 distinguish "the server says no" from "I could not ask"**. Collapsing the
 two is what turns a stalled network into a duplicate. Three places had
 done it — the dedupe scan before a create (`.catch(() => null)`), the
@@ -51,185 +40,18 @@ and every request without a deadline, which could not report a stall at
 all. `findEmailByMessageId` now returns `found` / `absent` /
 `inconclusive`, and only `absent` licenses a create.
 
-### Measured facts about the reference server
+WP4 proved the same rule holds for reads that drive deletion rather than
+creation: every way of misreading "the server has no more contacts" was a
+way of deleting contacts it does have.
 
-Stalwart v0.15.4 on the local stack. These were each verified directly and
-several contradict what seemed obvious:
+### Reference server, test environment, and review practice
 
-- It **does** derive `rcptTo` from To + Cc + Bcc for a separately stored
-  Email, including the Bcc-only case. An earlier claim to the contrary in
-  this plan was wrong; do not reintroduce a client-built envelope without
-  re-measuring.
-- An explicit `rcptTo: []` is **accepted**, files the message into Sent
-  and delivers to nobody. Omitting the envelope keeps the server's
-  `noRecipients` rejection, which is why omission is the safer default.
-- It emits the implicit `Email/set` from `onSuccessUpdateEmail` under the
-  **submission's** call id, so `pickResponse` by name alone can never see
-  it. Use `pickResponseById`.
-- `EmailSubmission` records are retained briefly and reaped later, so
-  their absence proves nothing.
-- Every shape of the RFC 8621 `header` FilterCondition returns no results.
-  Finding an Email by Message-ID means listing a mailbox and comparing
-  client-side.
-- **Self-addressed mail is accepted and never delivered** (issue #77).
-  Assert delivery against the second account, never the sending one.
-- **A rate-limited sender's mail is accepted and never delivered.** The
-  default per-sender SMTP limit is 25 messages an hour, which a full e2e
-  lane exceeds. Past it, `EmailSubmission/set` still returns a created
-  submission, `onSuccessUpdateEmail` still files the message in Sent and
-  clears `$draft`, and the internal SMTP hop then rejects it at `MAIL
-  FROM` — no queue entry, no bounce, nothing delivered. Verified directly
-  against v0.15.4: the JMAP answer is indistinguishable from a real send,
-  so no client can detect this. Every unexplained "sent but never
-  arrived" e2e failure should be checked against
-  `smtp.rate-limit-exceeded` in the server log before it is treated as a
-  defect.
-
-  The local stack now raises that limit in
-  `thunderbird-accounts/mail/etc/config.toml`
-  (`queue.limiter.inbound."sender"`). Stalwart warns that the key also
-  exists in its settings database, so the file's value cannot be assumed
-  to win — it was confirmed by sending 30 messages in one burst and
-  finding 30 deliveries and no rate-limit hits in the log.
-- The JMAP `subject` filter is full-text tokenised and cannot match a
-  subject containing `Re:`. Locate replies by exact-subject comparison
-  over a mailbox listing.
-
-### Test environment gotchas
-
-- `connectJmap()` takes `username`, not `email`. Passing `email` silently
-  authenticates the default account and looks like a credentials failure.
-- The second account is `shared-e2e@example.org` / `shared-e2e`,
-  provisioned by `tests/fixtures/configure-keycloak.mjs`, which resets
-  passwords on every run.
-- That fixture writes the realm-wide `frontendUrl` and replaces the
-  shared client's redirect origins from `VITE_LOCAL_PUBLIC_ORIGIN`, so
-  running it with a non-default origin reconfigures Keycloak for **every**
-  worktree. Run it with default env only.
-- Do not pipe command output through `tail`; it buffers and hides
-  progress on long runs.
-- **Never run two lanes at once.** `workers: 1` serialises tests within one
-  Playwright process and does nothing about a second process, and both share
-  the one Stalwart account. An overlap produced a report of one hard failure
-  and two flakes, none of which meant anything: the run that caused them
-  passed, and the run that suffered them looked like a product defect —
-  a mailbox seeded with 1033 messages counted 0 a moment later. Global setup
-  now takes a lock (`tests/e2e/helpers/lane-lock.js`) and a second lane fails
-  fast, naming the command that holds it. It cannot see a lane in another
-  container.
-- The first version of that lock could admit two lanes, which both reviews
-  caught: finding a dead holder, checking it, and then overwriting the file
-  is three steps, and two lanes can each complete all three. The lock is now
-  created by linking a fully written file into place, so a competitor can
-  never read it half-written, and ownership is a token checked again after a
-  short pause — a lane that finds someone else's token in the file stands
-  down. Identity is that token rather than a pid, because a pid gets reused:
-  judging a holder alive by `kill(pid, 0)` alone means one recycled pid locks
-  every later run out of the machine. What the pid is running is checked
-  where the system will say, with the recorded age as the backstop where it
-  will not. Testing exclusion needs two real processes; inside one, neither
-  can tell the other is alive.
-- `resetSharedSession` had to learn to return to the Mail space:
-  `contacts-junk.spec.js` leaves the window in Contacts, where no
-  `.folder-node` exists, so the next spec's Inbox click waited out its
-  full 30s timeout. Any new space-switching spec needs the same courtesy.
-- Firefox ignores `clipboardData` passed to the `ClipboardEvent`
-  constructor and substitutes an *empty* one, so a synthetic paste reads as
-  an empty clipboard and a null check never catches it. Compare the payload
-  and attach it with `Object.defineProperty` when it does not survive; see
-  `pasteIntoTo` in `compose-recipient-control.spec.js`. A real paste always
-  carries a payload, so this belongs in the harness, not in the component.
-- A pill's own `aria-label` continues into a sentence ("… Activate to
-  edit."), so an address matched out of it comes back with the full stop
-  attached. `recipientAddresses` reads the remove button's label instead,
-  which ends at the address.
-- **`refresh-button.spec.js` is broken on Firefox, not flaky.** Pre-existing
-  and unrelated to this plan — the spec seeds over JMAP, writes a ghost row
-  into the repository and reloads, never opening the composer — but recorded
-  here properly because it fails the lane on its own. Three uncontended runs
-  of it: Firefox failed 2, and one of those failed its retry as well;
-  Chromium passed 3 for 3 in 3.0s each time. It dies at line 127 waiting for
-  the ghost row after `page.reload()`, and the snapshot shows the Inbox
-  settled at 15 rows holding neither the ghost row *nor* the baseline
-  message this spec created and asserted visible before the reload. So the
-  reloaded window renders a state older than the test's own setup, which is
-  either a hydration defect or a race the spec's premise depends on. It was
-  logged as an occasional Firefox flake earlier, and once on Chromium at the
-  next assertion (line 128, the baseline row); the two engines fail at
-  different assertions, so one root cause is not established.
-- **A self-addressed send cannot prove delivery.** The client writes the
-  Sent copy before submitting, so when Stalwart delivers the message back to
-  the same account its ingest drops the inbound copy as a duplicate
-  Message-ID — while still answering 250, and logging
-  `message-ingest.duplicate`. The Inbox copy simply never appears. Anything
-  asserting on what a recipient received has to send to the second account,
-  which has no Sent copy to collide with.
-- **The ws-proxy outlives the suite and can be running older code.** It is a
-  long-lived process nothing in the run starts, Node loads a module once, and
-  an older build forwards a marked frame untouched — which looks exactly like
-  a marker that stopped matching, and costs a poll timeout to tell apart. Its
-  `/__status` now lists the fault modes the running build knows, so a case can
-  say "restart the proxy" instead. A new fault mode means adding it to
-  `KNOWN_FAULT_MODES` **and** restarting the proxy.
-- Counting a proxy's recorded faults does not prove one fired: the log
-  outlives the run, so `> 0` is satisfied by an earlier case before the
-  current one does anything. Bind the assertion to the id the fault was
-  recorded against, as `faultApplied` and `cacheRefusalsFor` do.
-- Nothing else in the suite is failing: `zz-large-bulk-move.spec.js` and
-  `delete-message.spec.js` were only ever red under lane contention and pass
-  6 for 6 uncontended, seed verification included. Chromium takes 15-19s over
-  Firefox's ~1s on the Inbox-to-Trash case, consistently, which nobody has
-  explained.
-
-### Working agreement
-
-Each work package is implemented with tests, then reviewed by a *different*
-agent before moving on. Approved reviewers: Kimi-K3 through the goose CLI,
-Opus 5, or GPT 5.6 Sol — not Sonnet. goose needs `source ~/secrets.sh`
-first because its stored OpenRouter credential is stale:
-
-```bash
-source ~/secrets.sh >/dev/null 2>&1
-goose run --no-session -q --provider openrouter --model moonshotai/kimi-k3 -t "…"
-```
-
-**Give the reviewer a tree that cannot move.** Copy the worktree, or commit
-first and hand over the ref — do not point a reviewer at files still being
-edited. Reviewing WP2, one reviewer's harness printed results that
-contradicted the code it had read minutes earlier, because a second
-reviewer's findings were being applied at the same time; it then spent its
-remaining effort diffing snapshots to work out what it was looking at.
-Findings against a moved file cannot be told apart from findings against a
-defect, so both the reviewer's time and the reader's trust are wasted.
-
-Reviews have repeatedly been right about substance, including one blocker
-where a phase written after the wrong step reopened the duplicate-delivery
-window, and one case where a claim of mine did not reproduce at all. Treat
-their findings as claims to verify, not as either gospel or noise.
-
-**A work package builds what it owns and nothing another one owns.** No
-stand-in, no interim version, no "temporary" UI for a control a later
-package specifies — that work is thrown away by the package that was always
-going to do it properly, and it costs a second rewrite of every test that
-touched it. WP2 built a warning line under the recipient field for
-unreadable fragments, which is the pill control's job under CS-3.8 and
-T601; it was removed rather than shipped. When a requirement in the current
-package seems to need part of a later one, the current package delivers the
-guarantee at the level it owns — WP2 owes CS-2.4 a fragment that reaches the
-draft and a send that refuses, not a rendering of it — and the later package
-adds the presentation.
-
-Two rounds are worth the time when the first round changes anything
-load-bearing. Reviewing Phase 1's close-out, Kimi found that
-`transport.abort()` cancelled only what was in flight, so the next call of
-a multi-call operation was issued after teardown began; the fix (a latch)
-was then reviewed by GPT 5.6 Sol, which found that the latch's stated
-justification — "nothing uses the transport after `stop()`" — was false,
-because `_continueBootstrap()` runs detached and can reach
-`openWebSocket()`. Each round found a defect the other did not, and the
-second only existed because the first was acted on.
-
----
+These outlived this feature and moved to [AGENTS.md](../../AGENTS.md),
+where the next one will find them: what Stalwart v0.15.4 was measured to
+actually do, the e2e environment's traps, and how work packages get
+reviewed. The lane lock's design rationale lives in
+[lane-lock.js](../../tests/e2e/helpers/lane-lock.js) beside the code it
+explains.
 
 ## Summary
 
@@ -326,7 +148,7 @@ Changes:
    automatically — not after a crash and not after a transport error.
    Until CS-1.8 lands, that means a flaky network turns a send into a
    surfaced failure with the draft intact, which is the safe direction.
-7. Block Close and Discard while `status === SENDING` in
+8. Block Close and Discard while `status === SENDING` in
    [ComposeDialog.vue](../../src/components/ComposeDialog.vue) and
    [compose-store.ts](../../src/stores/compose-store.ts).
 
@@ -401,6 +223,20 @@ a backfill from the existing `contacts.addressbook_id`. Identity sync
 becomes a snapshot and gives `bcc` a first-class column and API field;
 today it survives only opaquely inside `raw_json`, with no typed column
 and no way for the store to read it.
+
+#### What the review changed
+
+Nine defects, all verified against the code before being acted on. The
+durable lesson is one sentence, and it is the same rule WP1 learned from the
+other direction: **because the full sync sweeps whatever an older generation
+left behind, every way of misreading "the server has no more cards" is a way
+of deleting cards it does have.** A method-level error read as an empty page,
+a page short of the server's own clamped limit read as the end of the list,
+a card whose address book had not synced read as absent — each of them ended
+in a deletion.
+
+The findings and their fixes are recorded where they can be read against the
+change itself, in commit `f35aa7d`.
 
 ### WP5 — Autocomplete data
 

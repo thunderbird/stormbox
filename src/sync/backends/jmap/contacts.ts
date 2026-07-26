@@ -34,6 +34,28 @@ const CONTACT_PROPERTIES = [
 ];
 
 /**
+ * How many times a full sync will start over when the card list moves
+ * under its cursor before it settles for not sweeping.
+ *
+ * An account being edited from another client can in principle keep a
+ * pass from ever completing, and looping forever on a shared address book
+ * is worse than leaving a deletion unreflected until the next sync.
+ */
+const FULL_SYNC_MAX_ATTEMPTS = 3;
+
+interface FullContactSync {
+  fetched: number;
+  total: number;
+  state: string | null;
+  /** Contacts the server no longer has, removed by this run. */
+  swept: number;
+  /** The catch-up could not be calculated; the caller should rebuild. */
+  needsFullSync?: boolean;
+  /** The card list kept moving, so nothing was removed. */
+  unstable?: boolean;
+}
+
+/**
  * Pull every visible AddressBook for the account and persist them as a
  * snapshot: what the server did not list, the account no longer has.
  */
@@ -48,12 +70,13 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
     useWebSocket,
   });
   const response = pickResponse(result, 'AddressBook/get');
-  if (!response) {
-    // No answer is not an empty account. Applying one as a snapshot would
-    // retire every book the user has over a malformed response.
+  // No answer is not an empty account, and neither is an answer with no
+  // list in it. Applying either as a snapshot would retire every book the
+  // user has over one malformed response.
+  if (!response || !Array.isArray(response.list)) {
     return { count: 0, state: null, retired: 0 };
   }
-  const list = response.list ?? [];
+  const list = response.list;
   const { retired } = await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
     accountId: account.id,
     serviceKind: SERVICE_KIND.JMAP_CONTACTS,
@@ -94,17 +117,77 @@ export async function syncContacts({
   transport, account, handlers,
   pageSize = 500,
   useWebSocket = false,
-}) {
+  maxAttempts = FULL_SYNC_MAX_ATTEMPTS,
+}): Promise<FullContactSync> {
+  for (let attempt = 1; ; attempt += 1) {
+    const pass = await pageAllContacts({
+      transport, account, handlers, pageSize, useWebSocket,
+    });
+    if (!pass.restart) return pass.result;
+    // The card set moved under the cursor. Nothing has been removed —
+    // sweeping is the only destructive step and a restarting pass never
+    // reaches it — so the cost of going again is a re-read, and the
+    // alternative is deleting a contact the server still has.
+    if (attempt >= maxAttempts) {
+      // Reading the whole list is the only way to know what is missing, and
+      // this run never managed it. Everything read so far is kept and the
+      // catch-up still runs; the account simply keeps whatever it had.
+      return { ...pass.result, swept: 0, unstable: true };
+    }
+  }
+}
+
+let lastGeneration = 0;
+
+/**
+ * The next sweep generation, which must be larger than the last one this
+ * process used.
+ *
+ * A bare `Date.now()` is not, because two passes can fall inside one
+ * millisecond — a restart after query-state drift most easily, since nothing
+ * between the two attempts has to be slow. Both then stamp the same number,
+ * and the sweep's `sync_generation < generation` spares a card the earlier
+ * attempt stamped and the server has since lost. That errs on the safe side,
+ * so it costs a stale row rather than a real one, but it also makes the
+ * behaviour depend on the clock's resolution — which is no way to decide
+ * whether the one irreversible step runs.
+ */
+function nextGeneration(): number {
+  const reading = Date.now();
+  lastGeneration = reading > lastGeneration ? reading : lastGeneration + 1;
+  return lastGeneration;
+}
+
+/**
+ * One pass over the whole card list, sweeping only if it saw all of it.
+ *
+ * Returns `{ restart: true }` when the query state moved between pages,
+ * which the caller answers by starting over.
+ */
+async function pageAllContacts({
+  transport, account, handlers, pageSize, useWebSocket,
+}): Promise<{ restart: boolean; result: FullContactSync }> {
   const limit = clampToMaxObjectsInGet(transport, pageSize);
-  // Every row this run sees is stamped with it, and afterwards the rows
-  // that still carry an older stamp are the ones the server no longer has.
-  // A clock reading is enough: it only has to be larger than whatever the
-  // last completed sync used, and monotonic within one run.
-  const generation = Date.now();
+  // Every row this run sees is stamped with it, and afterwards the rows that
+  // still carry an older stamp are the ones the server no longer has.
+  const generation = nextGeneration();
   let position = 0;
   let fetched = 0;
   let total = null;
   let state = null;
+  // `undefined` is "no page has answered yet"; `null` is "the server sent no
+  // query state". Conflating them is what makes an absent field look like a
+  // state that never changes.
+  let queryState;
+  let skipped = 0;
+  // Cards the query named that the get did not return. Counted apart from
+  // `skipped` because the cause differs, but treated the same way: both are
+  // cards this pass knows of and does not have.
+  let withheld = 0;
+  let lastPosition = -1;
+  // Set when this pass cannot prove it read one whole list. The sweep is the
+  // only irreversible step, so it is what gets withheld.
+  let unverified = false;
   for (;;) {
     const result = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
@@ -136,10 +219,31 @@ export async function syncContacts({
       useWebSocket,
     });
     const query = pickResponse(result, 'ContactCard/query');
-    const ids = query?.ids ?? [];
+    // No answer is not an empty account. `pickResponse` returns null for a
+    // method-level error too, and reading that as "the server has no cards"
+    // would hand an empty result to the sweep, which would then delete the
+    // entire address book over one failed round trip.
+    if (!query || !Array.isArray(query.ids)) {
+      throw new Error('ContactCard/query did not answer with a list of ids');
+    }
+    const ids = query.ids;
     if (Number.isFinite(query?.total)) total = query.total;
 
+    // CS-4.2: paging by position alone lets a concurrent deletion shift an
+    // unseen card past the cursor, and a later `changes` catch-up cannot
+    // recover it because that card was never modified. The query state is
+    // what makes the pages one list rather than several.
+    const pageQueryState = query.queryState ?? null;
+    if (queryState === undefined) {
+      queryState = pageQueryState;
+    } else if (pageQueryState !== queryState) {
+      return { restart: true, result: { fetched, total: total ?? fetched, state, swept: 0 } };
+    }
+
     const got = pickResponse(result, 'ContactCard/get');
+    if (ids.length > 0 && (!got || !Array.isArray(got.list))) {
+      throw new Error('ContactCard/get did not answer for a page that had ids');
+    }
     // The checkpoint is the object state from `get`, taken on the first
     // page and kept: `changes` consumes that state (RFC 8620 §5.2), while
     // the `queryState` a query answers with is a different thing that
@@ -150,8 +254,20 @@ export async function syncContacts({
     if (state === null && got?.state) state = got.state;
 
     const cards = got?.list ?? [];
+    // A page is only as complete as the cards it returned, not as the ids it
+    // asked for. `notFound` is the documented answer for an id a get did not
+    // return (RFC 8620 §5.1), and it arrives without anything being broken: a
+    // server capping objects in a get below the ids its own query listed, a
+    // permission change between the two method calls, or a destroy landing
+    // between them. Only the last makes a local deletion correct, and there is
+    // no way to tell which happened, so the difference is counted and the
+    // irreversible step withheld. Every other measure the loop keeps reads
+    // clean here — the ids were all named, the cursor advanced by all of them,
+    // and `total` is reached — which is what made this deletion silent.
+    withheld += Math.max(0, ids.length - cards.length);
     if (cards.length > 0) {
-      await persistContactCards({ account, cards, handlers, generation });
+      const persisted = await persistContactCards({ account, cards, handlers, generation });
+      skipped += persisted.skipped;
       fetched += cards.length;
     }
 
@@ -160,20 +276,85 @@ export async function syncContacts({
     // page actually started.
     const pageStart = Number.isFinite(query?.position) ? Number(query.position) : position;
     position = pageStart + ids.length;
-    // A short (or empty) page means the query is exhausted. The total
-    // check also stops a server that keeps echoing full pages without
-    // advancing past its own reported count.
-    if (ids.length < limit || (total != null && position >= total)) break;
+
+    // The same clause lets the server clamp `limit`, and requires it to
+    // return the limit it enforced. Measuring a short page against what we
+    // asked for rather than what it agreed to give is how a server whose
+    // query cap sits below our page size gets read as an account that ran
+    // out of contacts after one page — with the sweep behind it deleting
+    // the rest. Stalwart caps queries at 5000 against our 500, so this
+    // costs nothing there and everything on an instance configured tighter.
+    // Clamping only ever reduces, so a limit above the one requested says
+    // nothing about this page — a server reporting its configured ceiling
+    // while serving the page asked for would otherwise make every page look
+    // short, ending the pass after one and sweeping the rest.
+    const echoed = Number.isFinite(query?.limit) ? Number(query.limit) : limit;
+    const served = Math.min(limit, echoed);
+    if (ids.length === 0) break;
+    if (total != null && position >= total) break;
+    if (ids.length < served) break;
+
+    // The cursor has to move. A server that keeps echoing `position: 0` while
+    // serving full pages would otherwise be read forever, since every page
+    // looks like a full page and the query state never changes.
+    if (position <= lastPosition) {
+      unverified = true;
+      break;
+    }
+    lastPosition = position;
+
+    // Another page is needed, and from here on the pages have to be provably
+    // one list. Without a query state they cannot be: a deletion between two
+    // requests slides an unseen card past the cursor, and the `changes`
+    // catch-up will never name it because nothing modified it. A single-page
+    // account is not exposed to this — its query and get share one request —
+    // which is why this is checked on continuing rather than up front.
+    if (queryState === null) unverified = true;
   }
+
+  // Exhausted the pages without reaching the count the server reported.
+  // Something is inconsistent, and the sweep is the one step that cannot be
+  // taken back, so it does not run on a partial reading.
+  const shortOfTotal = total != null && position < total;
   // Only here, with every page applied, is the local copy known to be the
   // whole of what the server has — so only here may anything be removed. An
   // interruption above leaves this unreached and the contacts intact, which
   // is the point: a sync that stopped halfway knows nothing about the cards
   // it never asked for (CS-4.2).
-  const { swept } = await handlers[DB_RPC.CONTACT_SWEEP_STALE]({
-    accountId: account.id,
-    generation,
-  });
+  //
+  // A card the server returned but this pass could not file is the same
+  // problem in miniature: it went unstamped, so the sweep would read it as
+  // absent and delete a card the server plainly still has. So is a card the
+  // query named and the get withheld.
+  let swept = 0;
+  if (skipped === 0 && withheld === 0 && !shortOfTotal && !unverified) {
+    ({ swept } = await handlers[DB_RPC.CONTACT_SWEEP_STALE]({
+      accountId: account.id,
+      generation,
+    }));
+  }
+
+  // A card that could not be filed is missing locally and will stay missing:
+  // a checkpoint here makes the next sync incremental, and `changes` never
+  // names a card nothing modified. Leaving the checkpoint unwritten is what
+  // makes the gap transient rather than permanent. A withheld card is missing
+  // for a different reason and stays missing in exactly the same way.
+  if (state && (skipped > 0 || withheld > 0)) {
+    // Clearing beats declining to write. A full sync runs with a checkpoint
+    // already on disk — after `changes` has asked for a rebuild, or through
+    // the `SYNC_ENSURE_CONTACTS` RPC — and an older one left in place is read
+    // by the next delta as a state this cache reached, which is exactly the
+    // claim this pass cannot make.
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+      state: null,
+    });
+    return {
+      restart: false,
+      result: { fetched, total: total ?? fetched, state: null, swept, needsFullSync: true },
+    };
+  }
 
   if (state) {
     await handlers[DB_RPC.SYNC_STATE_SET]({
@@ -187,9 +368,25 @@ export async function syncContacts({
     const caught = await syncContactCardChanges({
       transport, account, handlers, sinceState: state, useWebSocket,
     });
-    if (!caught.needsFullSync && caught.newState) state = caught.newState;
+    if (caught.needsFullSync) {
+      // The catch-up is part of the algorithm, not an optional extra: the
+      // baseline is the *first* page's state, so without it everything that
+      // happened while the later pages were read is unaccounted for. Drop
+      // the checkpoint rather than leave one that implies otherwise, and
+      // tell the caller so it can rebuild.
+      await handlers[DB_RPC.SYNC_STATE_SET]({
+        accountId: account.id,
+        objectType: 'ContactCard',
+        state: null,
+      });
+      return {
+        restart: false,
+        result: { fetched, total: total ?? fetched, state: null, swept, needsFullSync: true },
+      };
+    }
+    if (caught.newState) state = caught.newState;
   }
-  return { fetched, total: total ?? fetched, state, swept };
+  return { restart: false, result: { fetched, total: total ?? fetched, state, swept } };
 }
 
 /**
@@ -237,7 +434,13 @@ export async function syncContactCardChanges({
     }
     const ids = [...(change.created ?? []), ...(change.updated ?? [])];
     if (ids.length > 0) {
-      await fetchAndPersistContactCards({ transport, account, handlers, ids, useWebSocket });
+      const { skipped } = await fetchAndPersistContactCards({
+        transport, account, handlers, ids, useWebSocket,
+      });
+      // Stopping before the state is written is the whole of the fix: the
+      // dropped card is missing locally, and this delta is the only time it
+      // will ever be named. A rebuild is the one thing that can still find it.
+      if (skipped > 0) return { needsFullSync: true };
     }
     if (change.destroyed?.length) {
       const placeholders = change.destroyed.map(() => '?').join(',');
@@ -272,9 +475,17 @@ export async function syncContactCardChanges({
   };
 }
 
+/**
+ * Read the named cards and file them, reporting how many could not be filed.
+ *
+ * A caller that goes on to advance a sync checkpoint has to know: a card left
+ * unfiled is missing locally, and `changes` will never name it again, so the
+ * checkpoint is what turns a transient gap into a permanent one.
+ */
 async function fetchAndPersistContactCards({ transport, account, handlers, ids, useWebSocket }) {
   const cap = maxObjectsInGet(transport);
   let fetched = 0;
+  let skipped = 0;
   for (let index = 0; index < ids.length; index += cap) {
     const got = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
@@ -289,15 +500,29 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
       ]],
       useWebSocket,
     });
-    const list = pickResponse(got, 'ContactCard/get')?.list ?? [];
-    if (list.length === 0) continue;
-    await persistContactCards({ account, cards: list, handlers });
-    fetched += list.length;
+    const answer = pickResponse(got, 'ContactCard/get');
+    // A method-level error leaves nothing to read, and reading that as "the
+    // server holds no such cards" is what turns a failed read-back into a
+    // reported success: nothing is persisted, the caller retires the write,
+    // and the cache silently disagrees with the server (CS-4.4). For the
+    // `changes` catch-up it is worse — the caller advances the sync state
+    // next, so the updates in this page would never be asked for again.
+    //
+    // An answered but empty list is a different thing: those ids are
+    // genuinely gone, which no amount of retrying will change.
+    if (!answer || !Array.isArray(answer.list)) {
+      throw new Error('ContactCard/get did not answer for the cards it was asked to read');
+    }
+    if (answer.list.length === 0) continue;
+    const persisted = await persistContactCards({ account, cards: answer.list, handlers });
+    skipped += persisted.skipped;
+    fetched += answer.list.length;
   }
-  return fetched;
+  return { fetched, skipped };
 }
 
 async function persistContactCards({ account, cards, handlers, generation = null }) {
+  let skipped = 0;
   const normalized = cards.map(normalizeCard);
   // Resolve addressbook remote ids -> local ids. A JSContact card can
   // belong to several books (the addressBookIds map of RFC 9610), and the
@@ -321,9 +546,12 @@ async function persistContactCards({ account, cards, handlers, generation = null
   for (const card of normalized) {
     const localBooks = knownLocalBooks(card.bookRemoteIds, abMap);
     if (localBooks.length === 0) {
-      // Skip cards for unknown addressbooks rather than failing the
-      // batch; the next addressbook sync will catch up and a follow-up
-      // ContactCard/changes will resync them.
+      // Filing needs a local book, and this card names none we know. The
+      // count goes back to the caller because a full sync must not sweep
+      // after this: the card is plainly on the server, so treating it as
+      // absent would delete it. A `changes` catch-up cannot rescue it
+      // either — it was never modified, so it will never be named.
+      skipped += 1;
       continue;
     }
     contacts.push({
@@ -350,6 +578,7 @@ async function persistContactCards({ account, cards, handlers, generation = null
       generation,
     });
   }
+  return { skipped };
 }
 
 interface ContactWriteError {
@@ -655,7 +884,19 @@ export async function updateContactCard({
     ]],
     useWebSocket,
   });
-  const current = pickResponse(got, 'ContactCard/get')?.list?.[0];
+  const answer = pickResponse(got, 'ContactCard/get');
+  // A refused read is not a card that is gone, and the difference decides
+  // the row's fate: `notFound` is terminal in the outbox runner, so reading
+  // one as the other retires the user's edit as impossible over a round trip
+  // that was worth retrying. Only a list the server actually answered with
+  // can say the card is absent.
+  if (!answer || !Array.isArray(answer.list)) {
+    return {
+      ok: false,
+      error: { type: 'serverFail', message: 'ContactCard/get did not answer' },
+    };
+  }
+  const current = answer.list[0];
   if (!current) {
     return { ok: false, error: { type: 'notFound' } };
   }
@@ -782,23 +1023,11 @@ export async function deleteContactCard({
 }
 
 /**
- * Re-pull address books then contacts from the server so the local
- * cache reflects a contact mutation that was just applied. A full
- * `syncContacts` (rather than a delta) is used so a card filed in a
- * book that was created in the same operation — e.g. "Trusted senders"
- * — is not dropped by the unknown-book skip in `persistContactCards`.
- */
-export async function reconcileContacts({ transport, account, handlers, useWebSocket = false }) {
-  await syncAddressBooks({ transport, account, handlers, useWebSocket });
-  return syncContacts({ transport, account, handlers, useWebSocket });
-}
-
-/**
  * Reconcile the local cache for a small, known set of cards after a
- * single-contact mutation (whitelist, add, edit), instead of re-pulling
- * the entire address book the way `reconcileContacts` does. Cost is
- * O(books) + O(ids) rather than O(all contacts), so a whitelist stays
- * fast no matter how many contacts the account has.
+ * single-contact mutation (whitelist, add, edit), instead of re-pulling the
+ * entire address book. Cost is O(books) + O(ids) rather than
+ * O(all contacts), so a whitelist stays fast no matter how many contacts the
+ * account has.
  *
  * Address books are synced first (they are few) so a card filed in a
  * book that was created in the same operation — e.g. "Trusted senders" —
@@ -810,9 +1039,18 @@ export async function reconcileContactCards({
   await syncAddressBooks({ transport, account, handlers, useWebSocket });
   const list = (ids ?? []).filter(Boolean);
   if (list.length === 0) return { fetched: 0 };
-  const fetched = await fetchAndPersistContactCards({
+  const { fetched, skipped } = await fetchAndPersistContactCards({
     transport, account, handlers, ids: list, useWebSocket,
   });
+  // The caller reports a contact write as cached on the strength of this
+  // returning. A card that was read back and then not filed leaves the list
+  // contradicting the write, which is the failure CS-4.4 names — so say so,
+  // and let the row park and retry rather than claim a repair that did not
+  // happen. `syncAddressBooks` ran above, so an unresolved book here is not
+  // merely a book this pass had not heard of yet.
+  if (skipped > 0) {
+    throw new Error(`${skipped} card(s) read back but not filed`);
+  }
   return { fetched };
 }
 

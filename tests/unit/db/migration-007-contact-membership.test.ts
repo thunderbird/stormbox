@@ -34,14 +34,19 @@ async function legacyEngine() {
 }
 
 async function legacyContact(engine: any, {
-  id, book, remoteId, name, email,
-}: { id: number; book: number; remoteId: string; name: string; email: string }) {
+  id, book, remoteId, name, email, updatedAt = 0, isDeleted = 0,
+}: {
+  id: number; book: number; remoteId: string; name: string;
+  email: string | null; updatedAt?: number; isDeleted?: number;
+}) {
   await engine.run(
     `INSERT INTO contacts(
-       id, account_id, addressbook_id, remote_id, display_name, full_name, updated_at
-     ) VALUES (?, 1, ?, ?, ?, ?, 0)`,
-    [id, book, remoteId, name, name],
+       id, account_id, addressbook_id, remote_id, display_name, full_name,
+       is_deleted, updated_at
+     ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
+    [id, book, remoteId, name, name, isDeleted, updatedAt],
   );
+  if (email === null) return;
   await engine.run(
     `INSERT INTO contact_emails(contact_id, position, email, is_preferred)
      VALUES (?, 0, ?, 1)`,
@@ -115,9 +120,12 @@ describe('migration 007: contact membership', () => {
     await upgrade(engine);
 
     const contacts = await engine.all('SELECT id, remote_id FROM contacts');
-    expect(contacts, 'one card is one contact').toEqual([{ id: 100, remote_id: 'card-a' }]);
+    expect(contacts.map((c: any) => c.remote_id), 'one card is one contact')
+      .toEqual(['card-a']);
+    const keptId = contacts[0].id;
     const books = await engine.all(
-      'SELECT addressbook_id FROM addressbook_contacts WHERE contact_id = 100 ORDER BY addressbook_id',
+      'SELECT addressbook_id FROM addressbook_contacts WHERE contact_id = ? ORDER BY addressbook_id',
+      [keptId],
     );
     expect(books, 'and it is still in both books').toEqual([
       { addressbook_id: 10 },
@@ -145,6 +153,53 @@ describe('migration 007: contact membership', () => {
         WHERE contact_id NOT IN (SELECT id FROM contacts)`,
     );
     expect(orphans).toEqual([]);
+    await engine.close();
+  });
+
+  it('keeps the live copy of a duplicate, not the one with the smaller id', async () => {
+    // Duplicates exist because re-filing a card inserted a second row
+    // instead of moving the first, so the lower id is the copy left behind.
+    // Keeping it by id alone would resurrect a stale name over the current
+    // one — and a deleted row over a live one.
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100, book: 10, remoteId: 'card-a', name: 'Old name',
+      email: 'old@example.org', updatedAt: 1_000, isDeleted: 1,
+    });
+    await legacyContact(engine, {
+      id: 200, book: 11, remoteId: 'card-a', name: 'Current name',
+      email: 'current@example.org', updatedAt: 2_000,
+    });
+
+    await upgrade(engine);
+
+    const rows = await engine.all('SELECT id, display_name, is_deleted FROM contacts');
+    expect(rows).toEqual([{ id: 200, display_name: 'Current name', is_deleted: 0 }]);
+    const emails = await engine.all('SELECT email FROM contact_emails');
+    expect(emails, 'the surviving copy keeps its own address')
+      .toEqual([{ email: 'current@example.org' }]);
+    await engine.close();
+  });
+
+  it('takes the addresses of a duplicate when the survivor has none', async () => {
+    // Folding two rows together must not leave a contact with no way to
+    // reach it. These are copies of one card, so this restores addresses
+    // rather than merging two different sets.
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100, book: 10, remoteId: 'card-a', name: 'Ada', email: 'ada@example.org', updatedAt: 1_000,
+    });
+    await legacyContact(engine, {
+      id: 200, book: 11, remoteId: 'card-a', name: 'Ada', email: null, updatedAt: 2_000,
+    });
+
+    await upgrade(engine);
+
+    const rows = await engine.all('SELECT id FROM contacts');
+    expect(rows, 'the freshest row still wins').toEqual([{ id: 200 }]);
+    const emails = await engine.all('SELECT contact_id, email FROM contact_emails');
+    expect(emails, 'and it inherits the address rather than losing it')
+      .toEqual([{ contact_id: 200, email: 'ada@example.org' }]);
     await engine.close();
   });
 

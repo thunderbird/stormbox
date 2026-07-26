@@ -26,8 +26,17 @@ const props = withDefaults(defineProps<{
   label: string;
   inputId: string;
   entries: readonly RecipientEntry[];
-  /** Suggestion source. Defaults to none, for callers with no directory. */
-  query?: (prefix: string, limit: number) => Promise<AutocompleteCandidate[]>;
+  /**
+   * Suggestion source. Defaults to none, for callers with no directory.
+   *
+   * `exclude` is passed rather than filtered afterwards so that recipients
+   * already entered do not consume places in a limited list (CS-3.7).
+   */
+  query?: (
+    prefix: string, limit: number, exclude: string[],
+  ) => Promise<AutocompleteCandidate[]>;
+  /** Stop offering one learned suggestion (CS-3.13). */
+  forget?: (email: string) => Promise<boolean>;
   /** The whole address book, for the browse path CS-3.12 requires. */
   browseAll?: (limit: number) => Promise<AutocompleteCandidate[]>;
   /** Addresses already committed elsewhere, which are not offered again. */
@@ -36,6 +45,7 @@ const props = withDefaults(defineProps<{
   debounceMs?: number;
 }>(), {
   query: undefined,
+  forget: undefined,
   browseAll: undefined,
   taken: () => [],
   debounceMs: 120,
@@ -79,6 +89,11 @@ let queryToken = 0;
  * that is never coming.
  */
 const foundNothing = ref<string | null>(null);
+/**
+ * A one-off thing to say, for an act whose result is a list that is merely
+ * shorter. Cleared by the next lookup, so it is never stale.
+ */
+const announcement = ref<string | null>(null);
 
 onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -120,6 +135,10 @@ const isListOpen = computed(() => expanded.value && suggestions.value.length > 0
  * appearing below the field is not something a non-sighted user can see.
  */
 const resultSummary = computed(() => {
+  // Takes precedence: forgetting a suggestion shortens the list, and "4
+  // suggestions available" does not tell a non-sighted user that the one
+  // they asked to remove is the one that went.
+  if (announcement.value) return announcement.value;
   if (!isListOpen.value) {
     // Silent on dismissal: the user who pressed Escape knows what it did.
     return foundNothing.value ?? '';
@@ -161,6 +180,7 @@ function closeList(): void {
   suggestions.value = [];
   browsing.value = false;
   foundNothing.value = null;
+  announcement.value = null;
 }
 
 /**
@@ -173,12 +193,15 @@ async function browseContacts(): Promise<void> {
   if (!browseAll) return;
   if (debounceTimer) clearTimeout(debounceTimer);
   const token = (queryToken += 1);
-  const found = await ask(() => browseAll(BROWSE_LIMIT));
+  announcement.value = null;
+  const { value: found, answered } = await ask(() => browseAll(BROWSE_LIMIT), []);
   if (token !== queryToken) return;
   suggestions.value = notTaken(found);
   activeIndex.value = -1;
   browsing.value = true;
-  foundNothing.value = suggestions.value.length > 0 ? null : 'No contacts to show';
+  foundNothing.value = suggestions.value.length > 0
+    ? null
+    : (answered ? 'No contacts to show' : 'Contacts are unavailable');
   expanded.value = suggestions.value.length > 0;
   focusInput();
 }
@@ -186,29 +209,76 @@ async function browseContacts(): Promise<void> {
 async function runQuery(prefix: string): Promise<void> {
   const query = props.query;
   const token = (queryToken += 1);
-  const found = query ? await ask(() => query(prefix, SUGGESTION_LIMIT)) : [];
+  announcement.value = null;
+  const excluded = [...takenEmails.value];
+  const { value: found, answered } = query
+    ? await ask(() => query(prefix, SUGGESTION_LIMIT, excluded), [])
+    : { value: [] as AutocompleteCandidate[], answered: true };
   if (token !== queryToken) return;
+  // The query has already left these out. Filtering again costs nothing and
+  // covers a caller whose query ignores the argument.
   suggestions.value = notTaken(found).slice(0, SUGGESTION_LIMIT);
   activeIndex.value = -1;
   browsing.value = false;
   expanded.value = suggestions.value.length > 0;
-  foundNothing.value = suggestions.value.length > 0 ? null : `No suggestions for ${prefix}`;
+  foundNothing.value = suggestions.value.length > 0
+    ? null
+    : (answered ? `No suggestions for ${prefix}` : 'Suggestions are unavailable');
 }
 
 /**
- * Run a lookup, treating failure as "no matches".
+ * Stop offering a learned suggestion (CS-3.13).
  *
- * A rejected query used to leave the previous list on screen with its
- * highlight intact, so Enter accepted a suggestion for text the user had
- * since replaced — a wrong recipient, arrived at by pressing Enter.
+ * Only learned addresses can be removed this way. A contact is in the
+ * address book because the user put it there, so "remove this suggestion"
+ * would be a lie about what the control does — removing it means editing the
+ * contact, which is the Contacts space's job.
  */
-async function ask(
-  lookup: () => Promise<AutocompleteCandidate[]>,
-): Promise<AutocompleteCandidate[]> {
+function canForget(candidate: AutocompleteCandidate): boolean {
+  return !!props.forget && candidate.source === 'history';
+}
+
+async function forgetSuggestion(candidate: AutocompleteCandidate): Promise<void> {
+  const forget = props.forget;
+  if (!forget) return;
+  const { value: removed, answered } = await ask(() => forget(candidate.email), false);
+  // Pressing ✕ and seeing the row stay is not an answer. Whether the removal
+  // failed or simply did not apply, the row is still there and saying nothing
+  // leaves the control looking broken.
+  if (!answered || !removed) {
+    announcement.value = `${candidate.email} could not be removed`;
+    return;
+  }
+  suggestions.value = suggestions.value.filter((s) => s.email !== candidate.email);
+  announcement.value = `${candidate.email} removed from suggestions`;
+  if (activeIndex.value >= suggestions.value.length) {
+    activeIndex.value = suggestions.value.length - 1;
+  }
+  if (suggestions.value.length === 0) {
+    expanded.value = false;
+    foundNothing.value = 'No suggestions';
+  }
+  focusInput();
+}
+
+/**
+ * Run a lookup, and say whether it answered at all.
+ *
+ * A rejected query must not leave the previous list on screen with its
+ * highlight intact: Enter would accept a suggestion for text the user had
+ * since replaced — a wrong recipient, arrived at by pressing Enter. But it
+ * must not read as "nothing matched" either, which is what the caller used to
+ * show. A user told there are no matches stops typing a name their address
+ * book really holds, and types the address out instead; one told the lookup
+ * failed knows the difference.
+ */
+async function ask<T>(
+  lookup: () => Promise<T>, onFailure: T,
+): Promise<{ value: T; answered: boolean }> {
   try {
-    return await lookup();
+    return { value: await lookup(), answered: true };
   } catch {
-    return [];
+    return { value: onFailure, answered: false };
   }
 }
 
@@ -361,6 +431,17 @@ function onKeydown(event: KeyboardEvent): void {
       activeIndex.value = activeIndex.value < 0
         ? (step === 1 ? 0 : count - 1)
         : (activeIndex.value + step + count) % count;
+      return;
+    }
+    case 'Delete': {
+      // Shift+Delete forgets the highlighted suggestion (CS-3.13). This is
+      // the shortcut Firefox and Thunderbird use for the same act, and it is
+      // the whole of the keyboard route to it: the ✕ in the row is not
+      // focusable, for the reason given where it is rendered.
+      const candidate = suggestions.value[activeIndex.value];
+      if (!event.shiftKey || !candidate || !canForget(candidate)) return;
+      event.preventDefault();
+      void forgetSuggestion(candidate);
       return;
     }
     case 'Enter': {
@@ -528,6 +609,20 @@ function onPaste(event: ClipboardEvent): void {
           <span class="ac-name">{{ candidate.name || candidate.email }}</span>
           <span class="ac-email">{{ candidate.email }}</span>
           <span class="ac-source">{{ candidate.source }}</span>
+          <!-- Not a <button>, and not focusable, on purpose. An option with
+               an interactive descendant stops being an option to a screen
+               reader, which is the same reason the browse control sits
+               outside this list. The keyboard route to the same act is
+               Shift+Delete, and ARIA's own answer for a row with its own
+               controls — a combobox with a grid popup — would mean this list
+               were not a listbox at all. -->
+          <span
+            v-if="canForget(candidate)"
+            class="ac-forget"
+            :title="`Forget ${candidate.email}`"
+            @mousedown.prevent
+            @click.stop="forgetSuggestion(candidate)"
+          >✕</span>
         </li>
       </ul>
       <p v-if="browseAll && !browsing" class="autocomplete__browse">
@@ -696,6 +791,25 @@ function onPaste(event: ClipboardEvent): void {
 .ac-name { font-weight: 600; }
 .ac-email { opacity: 0.8; }
 .ac-source { margin-left: auto; font-size: 0.75rem; opacity: 0.6; }
+
+.ac-forget {
+  padding: 0 4px;
+  font-size: 0.8rem;
+  /* Visible only on the row being considered: a ✕ on every line reads as
+     clutter, and on the active line it reads as an offer. */
+  opacity: 0;
+  border-radius: 3px;
+}
+
+.autocomplete__option--active .ac-forget,
+.autocomplete__option:hover .ac-forget {
+  opacity: 0.75;
+}
+
+.ac-forget:hover {
+  opacity: 1;
+  background: var(--danger-soft, rgba(200, 40, 40, 0.14));
+}
 
 .autocomplete__browse {
   margin: 0;

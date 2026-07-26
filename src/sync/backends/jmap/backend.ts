@@ -400,6 +400,24 @@ export class JmapBackend {
       }
     }
 
+    // Learn who the user writes to from the Sent mail already cached, so a
+    // returning user's suggestions are not empty until they have written to
+    // everyone again. Here rather than anywhere near compose: a backfill
+    // must never be what the first keystroke waits on, and this runs in
+    // bounded batches that resume where the last one stopped.
+    try {
+      const backfill = await this.handlers[DB_RPC.RECIPIENT_HISTORY_BACKFILL]({
+        accountId: this.account.id,
+      });
+      wlog.info(
+        'jmap-backend',
+        `recipient backfill -> scanned ${backfill.scanned}, learned ${backfill.learned}`
+        + `${backfill.done ? ', complete' : ''}`,
+      );
+    } catch (err) {
+      wlog.warn('jmap-backend', 'recipient backfill failed; continuing bootstrap', err);
+    }
+
     // Each step above swallows its own failure, so teardown cannot stop
     // this chain by making a call fail. Check for it directly instead:
     // everything below either opens a socket or arms something that

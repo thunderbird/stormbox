@@ -12,6 +12,13 @@ const { contacts, addressbooks, saving, deletingIds } = storeToRefs(contactsStor
 
 const filter = ref('');
 const showForm = ref(false);
+/** How many learned addresses the last clear removed; null before any. */
+const historyCleared = ref<number | null>(null);
+
+async function clearHistory(): Promise<void> {
+  historyCleared.value = await contactsStore.clearRecipientHistory();
+}
+
 const newName = ref('');
 // One entry per email input row; always at least one row. Each row
 // carries a stable id so v-for keys stay attached to the same input
@@ -207,6 +214,25 @@ async function removeContact(contact: ContactListRow) {
         </div>
       </header>
 
+      <!-- Learned addresses are not contacts and are not shown in this list,
+           so the control to forget them says what it acts on. It lives here
+           because this is where addresses are managed; there is no settings
+           surface to put it in. -->
+      <p class="contacts__history" role="status">
+        <span v-if="historyCleared === null">
+          Addresses you have written to are suggested in compose, and never
+          leave this device.
+        </span>
+        <span v-else-if="historyCleared === 0">No suggested addresses to forget.</span>
+        <span v-else>
+          Forgot {{ historyCleared }} suggested
+          {{ historyCleared === 1 ? 'address' : 'addresses' }}.
+        </span>
+        <button type="button" class="contacts__history-clear" @click="clearHistory">
+          Clear suggested addresses
+        </button>
+      </p>
+
       <form
         v-if="showForm"
         ref="formEl"
@@ -393,6 +419,27 @@ async function removeContact(contact: ContactListRow) {
   gap: 12px;
   padding: 16px;
   border-bottom: 1px solid var(--border, #e3e6ee);
+}
+.contacts__history {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  opacity: 0.8;
+  border-bottom: 1px solid var(--border, #e3e6ee);
+}
+.contacts__history-clear {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--accent, #0060df);
+  text-decoration: underline;
+  cursor: pointer;
 }
 .contacts h2 {
   margin: 0;
