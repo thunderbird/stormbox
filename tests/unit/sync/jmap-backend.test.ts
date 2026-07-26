@@ -2082,6 +2082,50 @@ describe('JmapBackend shared-account reconciliation', () => {
     expect(backend._refreshActiveQueryViews).toHaveBeenNthCalledWith(2, shared);
   });
 
+  it('re-reads the identities after reconnect', async () => {
+    // Identities have no delta call, and a push sent while the socket was
+    // down is not replayed — so an alias that changed during the outage is
+    // invisible until something asks again (CS-4.6).
+    const transport = new MockTransport() as any;
+    transport.openWebSocket = vi.fn(async () => {});
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: true },
+    });
+    backend.account = { id: 1, remote_account_id: 'acct-1' };
+    backend._started = true;
+    backend._refreshActiveQueryViews = vi.fn(async () => {});
+    backend.ensureIdentities = vi.fn(async () => ({ count: 0, state: null, removed: 0 }));
+
+    await backend._reconnect();
+
+    expect(backend.ensureIdentities).toHaveBeenCalled();
+  });
+
+  it('still refreshes the views when the identity re-read fails', async () => {
+    const transport = new MockTransport() as any;
+    transport.openWebSocket = vi.fn(async () => {});
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: true },
+    });
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    backend.account = primary;
+    backend._started = true;
+    backend._refreshActiveQueryViews = vi.fn(async () => {});
+    backend.ensureIdentities = vi.fn(async () => {
+      throw new Error('identity fetch failed');
+    });
+
+    await backend._reconnect();
+
+    expect(backend._refreshActiveQueryViews).toHaveBeenCalledWith(primary);
+  });
+
   it('rejects folders whose shared account is no longer in the Session', async () => {
     const primary = { id: 1, remote_account_id: 'acct-1' };
     const backend = new JmapBackend({

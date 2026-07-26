@@ -135,7 +135,8 @@ export interface AddressbookRow {
 export interface ContactListRow {
   id: number;
   remote_id: string | null;
-  addressbook_id: number | null;
+  /** Every address book the card is filed in; a card may be in several. */
+  addressbook_ids: number[];
   display_name: string | null;
   organization: string | null;
   email: string | null;

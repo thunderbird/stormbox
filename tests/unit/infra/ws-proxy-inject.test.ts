@@ -16,6 +16,7 @@ import {
   INJECT_MARKER,
   INJECTED_ERROR_TYPE,
   SUBMISSION_FAULTS,
+  CONTACT_CACHE_FAULT,
 } from '../../fixtures/ws-proxy/inject.mjs';
 
 function requestFrame(methodCalls: any[], id = 'r7') {
@@ -272,6 +273,89 @@ describe('ws-proxy submission fault injection', () => {
     ));
     expect(applied).toEqual([
       { mode: 'LOSE', emailId: 'em-9', effect: 'responseBlanked', at: expect.any(Number) },
+    ]);
+  });
+});
+
+describe('ws-proxy contact cache fault', () => {
+  /** A marked card create, answered with the id the server assigned. */
+  function armedForCard(cardId = 'card-1') {
+    const injector = createInjector({ applied: [] });
+    const create = requestFrame([[
+      'ContactCard/set',
+      { create: { c1: { name: { full: `Probe ${CONTACT_CACHE_FAULT}` } } } },
+      'c1',
+    ]], 'r1');
+    expect(injector.onClientFrame(create).action).toBe('forward');
+    injector.onServerFrame(responseFrame(
+      [['ContactCard/set', { created: { c1: { id: cardId } } }, 'c1']],
+      'r1',
+    ));
+    return injector;
+  }
+
+  function cardGet(ids: string[], id = 'r2') {
+    return requestFrame([['ContactCard/get', { ids }, 'g1']], id);
+  }
+
+  it('lets the write through and refuses only the read-back', () => {
+    const injector = armedForCard();
+
+    const answer = injector.onClientFrame(cardGet(['card-1']));
+
+    expect(answer.action, 'the server must really hold the card').toBe('answer');
+    expect(answer.response.methodResponses[0][0]).toBe('error');
+    expect(answer.response.methodResponses[0][1].type).toBe(INJECTED_ERROR_TYPE);
+  });
+
+  it('refuses the read-back once, so the retry can succeed', () => {
+    const injector = armedForCard();
+    injector.onClientFrame(cardGet(['card-1']));
+
+    const retry = injector.onClientFrame(cardGet(['card-1'], 'r3'));
+
+    expect(retry.action).toBe('forward');
+  });
+
+  it('leaves a read of some other card alone', () => {
+    const injector = armedForCard();
+
+    expect(injector.onClientFrame(cardGet(['card-other'])).action).toBe('forward');
+  });
+
+  it('does nothing at all without the marker', () => {
+    const injector = createInjector({ applied: [] });
+    const create = requestFrame([[
+      'ContactCard/set',
+      { create: { c1: { name: { full: 'Ordinary' } } } },
+      'c1',
+    ]], 'r1');
+    injector.onClientFrame(create);
+    injector.onServerFrame(responseFrame(
+      [['ContactCard/set', { created: { c1: { id: 'card-2' } } }, 'c1']],
+      'r1',
+    ));
+
+    expect(injector.onClientFrame(cardGet(['card-2'])).action).toBe('forward');
+  });
+
+  it('records what it refused, so a spec can prove the fault fired', () => {
+    const applied: any[] = [];
+    const injector = createInjector({ applied });
+    injector.onClientFrame(requestFrame([[
+      'ContactCard/set',
+      { create: { c1: { name: { full: `Probe ${CONTACT_CACHE_FAULT}` } } } },
+      'c1',
+    ]], 'r1'));
+    injector.onServerFrame(responseFrame(
+      [['ContactCard/set', { created: { c1: { id: 'card-5' } } }, 'c1']],
+      'r1',
+    ));
+
+    injector.onClientFrame(cardGet(['card-5']));
+
+    expect(applied).toEqual([
+      { mode: 'CONTACT_CACHE', emailId: 'card-5', effect: 'readBackRefused', at: expect.any(Number) },
     ]);
   });
 });

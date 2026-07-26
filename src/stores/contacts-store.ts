@@ -72,7 +72,7 @@ export interface ContactDetailEmail {
 export interface ContactDetail {
   id: number;
   remote_id: string | null;
-  addressbook_id: number | null;
+  addressbook_ids: number[];
   display_name: string | null;
   full_name: string | null;
   organization: string | null;

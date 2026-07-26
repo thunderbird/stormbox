@@ -74,6 +74,9 @@ export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.ver
  *   PRAGMA synchronous=NORMAL. Safe in our setup because the only
  *   process touching the database is the SharedWorker; ignored by
  *   `:memory:` databases.
+ * @param {number} [args.upTo] open at an older schema version, applying
+ *   migrations only up to it. For testing an upgrade against the data it
+ *   has to carry forward.
  * @returns {Promise<Engine>}
  *
  * Note: we used to also try `PRAGMA journal_mode=WAL` here. With
@@ -86,13 +89,13 @@ export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.ver
  * + DedicatedWorker, the bootstrap there will own the
  * locking_mode=EXCLUSIVE + journal_mode=WAL handshake.
  */
-export async function openEngine({ sqlite3, db, relaxedDurability = true }) {
+export async function openEngine({ sqlite3, db, relaxedDurability = true, upTo = undefined }) {
   const engine = new Engine(sqlite3, db);
   await engine.exec('PRAGMA foreign_keys = ON');
   if (relaxedDurability) {
     await engine.exec('PRAGMA synchronous = NORMAL').catch(() => {});
   }
-  await engine.runMigrations();
+  await engine.runMigrations({ upTo });
   return engine;
 }
 
@@ -230,7 +233,14 @@ export class Engine {
     });
   }
 
-  async runMigrations() {
+  /**
+   * @param {object} [options]
+   * @param {number} [options.upTo] stop after this version instead of
+   *   applying every migration. A migration that rewrites existing rows can
+   *   only be tested against a database that predates it, and this is how
+   *   such a database is built.
+   */
+  async runMigrations({ upTo = Infinity } = {}) {
     // SQLite's built-in PRAGMA user_version is a single 32-bit integer
     // stored in the database header. We use it as the applied-migration
     // marker so we don't have to bootstrap a tracking table before any
@@ -241,6 +251,9 @@ export class Engine {
     for (const migration of MIGRATIONS) {
       if (migration.version <= currentVersion) {
         continue;
+      }
+      if (migration.version > upTo) {
+        break;
       }
       await this._applyMigration(migration);
       currentVersion = migration.version;

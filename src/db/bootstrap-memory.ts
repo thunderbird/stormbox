@@ -48,9 +48,12 @@ function getSqlite3() {
  * Open a fresh in-memory database. The wa-sqlite module is cached per
  * process; each call gets a new ':memory:' DB so tests do not leak rows
  * into each other.
+ *
+ * `upTo` stops at an older schema version, so a test can populate the
+ * database a migration will have to carry forward and then run it.
  */
-export async function bootTestEngine() {
+export async function bootTestEngine({ upTo }: { upTo?: number } = {}) {
   const sqlite3 = await getSqlite3();
   const db = await sqlite3.open_v2(':memory:');
-  return openEngine({ sqlite3, db });
+  return openEngine({ sqlite3, db, upTo });
 }

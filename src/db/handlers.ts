@@ -894,21 +894,34 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [accountId],
       ),
 
-    [DB_RPC.IDENTITY_UPSERT_MANY]: async ({ accountId, identities }) => {
-      if (!identities?.length) {
+    /**
+     * @param {object} args
+     * @param {boolean} [args.snapshot] the list is everything this account
+     *   has: an identity missing from it has been removed server-side and
+     *   goes here too (CS-4.5). Upsert-only left a deleted alias in the From
+     *   picker for the life of the account, where choosing it means sending
+     *   as an address the server will reject. An empty snapshot is a real
+     *   answer — an account whose last identity was removed — so unlike an
+     *   upsert it is not treated as nothing to do.
+     */
+    [DB_RPC.IDENTITY_UPSERT_MANY]: async ({ accountId, identities, snapshot = false }) => {
+      if (!identities?.length && !snapshot) {
         return { upserted: 0 };
       }
       const ts = now();
+      let removed = 0;
       await engine.transaction(async (tx) => {
-        for (const id of identities) {
+        for (const id of identities ?? []) {
           await tx.run(
             `INSERT INTO identities(
-                account_id, remote_id, name, email, reply_to_json, raw_json, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                account_id, remote_id, name, email, reply_to_json, bcc_json,
+                raw_json, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id, remote_id) DO UPDATE SET
                 name = excluded.name,
                 email = excluded.email,
                 reply_to_json = excluded.reply_to_json,
+                bcc_json = excluded.bcc_json,
                 raw_json = excluded.raw_json,
                 updated_at = excluded.updated_at`,
             [
@@ -917,14 +930,28 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               id.name ?? null,
               id.email,
               id.replyToJson ?? null,
+              id.bccJson ?? null,
               id.rawJson ?? null,
               ts,
             ],
           );
         }
+        if (!snapshot) return;
+        const kept = (identities ?? []).map((id) => id.remoteId);
+        const placeholders = kept.map(() => '?').join(',');
+        // A hard delete, unlike contacts: an identity has no local edits to
+        // preserve and nothing references the row, so a tombstone would only
+        // be a row every query has to remember to exclude.
+        const result = await tx.run(
+          `DELETE FROM identities
+            WHERE account_id = ?
+              ${kept.length > 0 ? `AND remote_id NOT IN (${placeholders})` : ''}`,
+          [accountId, ...kept],
+        );
+        removed = result?.changes ?? 0;
       });
       broadcaster.touch(TABLE_FAMILIES.IDENTITIES);
-      return { upserted: identities.length };
+      return { upserted: identities?.length ?? 0, removed };
     },
 
     [DB_RPC.THREAD_UPSERT_MANY]: async ({ accountId, threads }) => {
@@ -2555,13 +2582,25 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [accountId],
       ),
 
-    [DB_RPC.ADDRESSBOOK_UPSERT_MANY]: async ({ accountId, serviceKind, addressbooks }) => {
-      if (!addressbooks?.length) {
+    /**
+     * @param {object} args
+     * @param {boolean} [args.snapshot] treat the list as the whole truth for
+     *   this account and service: a book that is not in it has been removed
+     *   server-side and is retired here too (CS-4.8). Without this an
+     *   address book deleted elsewhere stays on offer as a filing target
+     *   forever, since `AddressBook/get` has no way to mention it again.
+     *   An empty snapshot is meaningful and removes everything.
+     */
+    [DB_RPC.ADDRESSBOOK_UPSERT_MANY]: async ({
+      accountId, serviceKind, addressbooks, snapshot = false,
+    }) => {
+      if (!addressbooks?.length && !snapshot) {
         return { upserted: 0 };
       }
       const ts = now();
+      let retired = 0;
       await engine.transaction(async (tx) => {
-        for (const ab of addressbooks) {
+        for (const ab of addressbooks ?? []) {
           await tx.run(
             `INSERT INTO addressbooks(
                 account_id, service_kind, remote_id, name, description,
@@ -2594,9 +2633,19 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
             ],
           );
         }
+        if (!snapshot) return;
+        const kept = (addressbooks ?? []).map((ab) => ab.remoteId);
+        const placeholders = kept.map(() => '?').join(',');
+        const result = await tx.run(
+          `UPDATE addressbooks SET is_deleted = 1, updated_at = ?
+            WHERE account_id = ? AND service_kind = ? AND is_deleted = 0
+              ${kept.length > 0 ? `AND remote_id NOT IN (${placeholders})` : ''}`,
+          [ts, accountId, serviceKind, ...kept],
+        );
+        retired = result?.changes ?? 0;
       });
       broadcaster.touch(TABLE_FAMILIES.CONTACTS);
-      return { upserted: addressbooks.length };
+      return { upserted: addressbooks?.length ?? 0, retired };
     },
 
     /**
@@ -2606,23 +2655,29 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * Unbounded by default so the contact book shows the whole account;
      * callers that want a window pass an explicit `limit`.
      */
-    [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = null }) =>
-      engine.all(
+    [DB_RPC.CONTACT_LIST]: async ({ accountId, limit = null }) => {
+      const rows = await engine.all(
         `SELECT c.id,
                 c.remote_id,
-                c.addressbook_id,
                 c.display_name,
                 c.organization,
                 (SELECT email FROM contact_emails ce
                   WHERE ce.contact_id = c.id
                   ORDER BY is_preferred DESC, position
-                  LIMIT 1) AS email
+                  LIMIT 1) AS email,
+                -- A card can be filed in several books (RFC 9610), so the
+                -- view is given all of them and decides what to show.
+                (SELECT group_concat(ac.addressbook_id)
+                   FROM addressbook_contacts ac
+                  WHERE ac.contact_id = c.id) AS addressbook_ids
            FROM contacts c
           WHERE c.account_id = ? AND c.is_deleted = 0
           ORDER BY c.display_name COLLATE NOCASE
           LIMIT ?`,
         [accountId, Number.isFinite(limit) && limit > 0 ? limit : -1],
-      ),
+      );
+      return rows.map((row) => ({ ...row, addressbook_ids: splitIds(row.addressbook_ids) }));
+    },
 
     /**
      * Fetch a single contact plus its full ordered email list, for the
@@ -2630,7 +2685,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      */
     [DB_RPC.CONTACT_GET]: async ({ accountId, contactId }) => {
       const row = await engine.get(
-        `SELECT id, remote_id, addressbook_id, display_name, full_name, organization
+        `SELECT id, remote_id, display_name, full_name, organization
            FROM contacts
           WHERE id = ? AND account_id = ? AND is_deleted = 0`,
         [contactId, accountId],
@@ -2641,10 +2696,21 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
            FROM contact_emails WHERE contact_id = ? ORDER BY position`,
         [contactId],
       );
-      return { ...row, emails };
+      const books = await engine.all(
+        `SELECT addressbook_id FROM addressbook_contacts
+          WHERE contact_id = ? ORDER BY addressbook_id`,
+        [contactId],
+      );
+      return { ...row, emails, addressbook_ids: books.map((book) => book.addressbook_id) };
     },
 
-    [DB_RPC.CONTACT_UPSERT_MANY]: async ({ accountId, contacts }) => {
+    /**
+     * @param {object} args
+     * @param {number} [args.generation] stamp each row with the full sync
+     *   that saw it, so `CONTACT_SWEEP_STALE` can afterwards tell the rows
+     *   the server still has from the ones it no longer does.
+     */
+    [DB_RPC.CONTACT_UPSERT_MANY]: async ({ accountId, contacts, generation = null }) => {
       if (!contacts?.length) {
         return { upserted: 0 };
       }
@@ -2653,11 +2719,11 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         for (const c of contacts) {
           await tx.run(
             `INSERT INTO contacts(
-                account_id, addressbook_id, remote_id, uid, etag,
+                account_id, remote_id, uid, etag,
                 full_name, display_name, given_name, family_name, organization,
-                vcard_text, vcard_version, raw_json, is_deleted, updated_at
+                vcard_text, vcard_version, raw_json, sync_generation, is_deleted, updated_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(account_id, addressbook_id, remote_id) DO UPDATE SET
+             ON CONFLICT(account_id, remote_id) DO UPDATE SET
                 uid = excluded.uid,
                 etag = excluded.etag,
                 full_name = excluded.full_name,
@@ -2668,11 +2734,13 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 vcard_text = excluded.vcard_text,
                 vcard_version = excluded.vcard_version,
                 raw_json = excluded.raw_json,
+                -- A targeted reconcile passes no generation and must not
+                -- backdate a row out from under a sweep that is running.
+                sync_generation = MAX(excluded.sync_generation, contacts.sync_generation),
                 is_deleted = excluded.is_deleted,
                 updated_at = excluded.updated_at`,
             [
               accountId,
-              c.addressbookId,
               c.remoteId,
               c.uid ?? null,
               c.etag ?? null,
@@ -2684,15 +2752,28 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               c.vcardText ?? null,
               c.vcardVersion ?? null,
               c.rawJson ?? null,
+              generation ?? 0,
               c.isDeleted ? 1 : 0,
               ts,
             ],
           );
           const contactRow = await tx.get(
-            `SELECT id FROM contacts WHERE account_id = ? AND addressbook_id = ? AND remote_id = ?`,
-            [accountId, c.addressbookId, c.remoteId],
+            `SELECT id FROM contacts WHERE account_id = ? AND remote_id = ?`,
+            [accountId, c.remoteId],
           );
           const contactId = contactRow.id;
+          // Membership is replaced, not added to: a card removed from a
+          // book must leave it, and the card names every book it is in.
+          if (c.addressbookIds) {
+            await tx.run('DELETE FROM addressbook_contacts WHERE contact_id = ?', [contactId]);
+            for (const bookId of c.addressbookIds) {
+              await tx.run(
+                `INSERT OR IGNORE INTO addressbook_contacts(contact_id, addressbook_id)
+                 VALUES (?, ?)`,
+                [contactId, bookId],
+              );
+            }
+          }
           if (c.emails) {
             await tx.run(`DELETE FROM contact_emails WHERE contact_id = ?`, [contactId]);
             for (let i = 0; i < c.emails.length; i += 1) {
@@ -2708,6 +2789,35 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       });
       broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { upserted: contacts.length };
+    },
+
+    /**
+     * Remove the contacts a completed full sync did not see.
+     *
+     * A card the server no longer has is named by no page of the sweep's
+     * own generation, and a sync that did not finish must not call: the
+     * caller is responsible for only reaching here once every page
+     * succeeded (CS-4.2). Soft delete, to match the `destroyed` path.
+     *
+     * Contacts created locally and not yet pushed carry generation 0 and
+     * would otherwise be swept by the first sync to run after them, so a
+     * row with no remote id of its own is left alone.
+     */
+    [DB_RPC.CONTACT_SWEEP_STALE]: async ({ accountId, generation }) => {
+      if (!Number.isFinite(generation) || generation <= 0) {
+        throw new Error('CONTACT_SWEEP_STALE requires the generation the sync stamped');
+      }
+      const result = await engine.run(
+        `UPDATE contacts SET is_deleted = 1, updated_at = ?
+          WHERE account_id = ?
+            AND is_deleted = 0
+            AND sync_generation < ?
+            AND remote_id IS NOT NULL`,
+        [now(), accountId, generation],
+      );
+      const swept = result?.changes ?? 0;
+      if (swept > 0) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      return { swept };
     },
 
     /**
@@ -2953,6 +3063,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
   };
 
   return h;
+}
+
+/**
+ * The address-book ids `group_concat` returned, as numbers. A contact in no
+ * book concatenates to null rather than an empty string.
+ */
+function splitIds(concatenated: unknown): number[] {
+  if (typeof concatenated !== 'string' || concatenated === '') return [];
+  return concatenated.split(',').map(Number);
 }
 
 /**

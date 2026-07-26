@@ -35,12 +35,15 @@ onMounted(async () => {
   await contactsStore.listContacts();
 });
 
-/** Per-book contact counts, derived from the loaded contact list. */
+/**
+ * Per-book contact counts, derived from the loaded contact list. A card in
+ * two books counts once in each, so these do not sum to the total.
+ */
 const bookCounts = computed(() => {
   const counts = new Map<number, number>();
   for (const c of contacts.value) {
-    if (c.addressbook_id != null) {
-      counts.set(c.addressbook_id, (counts.get(c.addressbook_id) ?? 0) + 1);
+    for (const bookId of c.addressbook_ids ?? []) {
+      counts.set(bookId, (counts.get(bookId) ?? 0) + 1);
     }
   }
   return counts;
@@ -59,7 +62,7 @@ const selectedBook = computed(() =>
 const filtered = computed(() => {
   let list = contacts.value;
   if (selectedBookId.value != null) {
-    list = list.filter((c) => c.addressbook_id === selectedBookId.value);
+    list = list.filter((c) => (c.addressbook_ids ?? []).includes(selectedBookId.value!));
   }
   const term = filter.value.trim().toLowerCase();
   if (term) {

@@ -145,12 +145,41 @@ export class MockTransport {
     if (!handler) {
       throw new Error(`MockTransport has no handler for ${methodName}`);
     }
-    return [methodName, await handler(params, callId), callId];
+    const payload = await handler(params, callId);
+    assertAnswerable(methodName, payload);
+    return [methodName, payload, callId];
   }
 }
 
 /** A result reference that cannot resolve because its target was rejected. */
 export class ResultReferenceError extends Error {}
+
+/**
+ * Refuse to answer in a way no server would.
+ *
+ * A query answers with `queryState` and a get with `state`, and RFC 8620
+ * §5.2 and §5.5 are explicit that these are different tokens: only the
+ * object state can be handed to `changes`. A stand-in that returns `state`
+ * from a query lets code read a field the real server never sends, and the
+ * test then proves the opposite of the truth — that is exactly how contact
+ * delta sync came to be dead in production while its tests passed.
+ */
+function assertAnswerable(methodName: string, payload: any): void {
+  if (payload === null || typeof payload !== 'object') return;
+  const [, verb] = methodName.split('/');
+  if (verb === 'query' && 'state' in payload) {
+    throw new Error(
+      `MockTransport: ${methodName} answered with 'state'. A query answers with `
+      + "'queryState' (RFC 8620 §5.5); only a get answers with 'state'.",
+    );
+  }
+  if ((verb === 'get' || verb === 'changes') && 'queryState' in payload) {
+    throw new Error(
+      `MockTransport: ${methodName} answered with 'queryState'. That token belongs `
+      + "to a query; a get answers with 'state' (RFC 8620 §5.2).",
+    );
+  }
+}
 
 /**
  * RFC 8620 §3.1.3 result references. Method-call args may contain

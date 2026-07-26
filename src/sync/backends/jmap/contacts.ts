@@ -34,7 +34,8 @@ const CONTACT_PROPERTIES = [
 ];
 
 /**
- * Pull every visible AddressBook for the account and persist them.
+ * Pull every visible AddressBook for the account and persist them as a
+ * snapshot: what the server did not list, the account no longer has.
  */
 export async function syncAddressBooks({ transport, account, handlers, useWebSocket = false }) {
   const result = await callJmap(transport, {
@@ -47,10 +48,16 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
     useWebSocket,
   });
   const response = pickResponse(result, 'AddressBook/get');
-  const list = response?.list ?? [];
-  await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+  if (!response) {
+    // No answer is not an empty account. Applying one as a snapshot would
+    // retire every book the user has over a malformed response.
+    return { count: 0, state: null, retired: 0 };
+  }
+  const list = response.list ?? [];
+  const { retired } = await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
     accountId: account.id,
     serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+    snapshot: true,
     addressbooks: list.map((ab) => ({
       remoteId: ab.id,
       name: ab.name ?? null,
@@ -61,14 +68,14 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
       isDeleted: false,
     })),
   });
-  if (response?.state) {
+  if (response.state) {
     await handlers[DB_RPC.SYNC_STATE_SET]({
       accountId: account.id,
       objectType: 'AddressBook',
       state: response.state,
     });
   }
-  return { count: list.length, state: response?.state ?? null };
+  return { count: list.length, state: response.state ?? null, retired };
 }
 
 /**
@@ -89,6 +96,11 @@ export async function syncContacts({
   useWebSocket = false,
 }) {
   const limit = clampToMaxObjectsInGet(transport, pageSize);
+  // Every row this run sees is stamped with it, and afterwards the rows
+  // that still carry an older stamp are the ones the server no longer has.
+  // A clock reading is enough: it only has to be larger than whatever the
+  // last completed sync used, and monotonic within one run.
+  const generation = Date.now();
   let position = 0;
   let fetched = 0;
   let total = null;
@@ -125,12 +137,21 @@ export async function syncContacts({
     });
     const query = pickResponse(result, 'ContactCard/query');
     const ids = query?.ids ?? [];
-    if (query?.state) state = query.state;
     if (Number.isFinite(query?.total)) total = query.total;
 
-    const cards = pickResponse(result, 'ContactCard/get')?.list ?? [];
+    const got = pickResponse(result, 'ContactCard/get');
+    // The checkpoint is the object state from `get`, taken on the first
+    // page and kept: `changes` consumes that state (RFC 8620 §5.2), while
+    // the `queryState` a query answers with is a different thing that
+    // `changes` will reject. Reading the state the first page was drawn
+    // from — rather than the last — means anything that happens while the
+    // remaining pages are read is replayed by the catch-up instead of
+    // falling into the gap between them.
+    if (state === null && got?.state) state = got.state;
+
+    const cards = got?.list ?? [];
     if (cards.length > 0) {
-      await persistContactCards({ account, cards, handlers });
+      await persistContactCards({ account, cards, handlers, generation });
       fetched += cards.length;
     }
 
@@ -144,14 +165,31 @@ export async function syncContacts({
     // advancing past its own reported count.
     if (ids.length < limit || (total != null && position >= total)) break;
   }
+  // Only here, with every page applied, is the local copy known to be the
+  // whole of what the server has — so only here may anything be removed. An
+  // interruption above leaves this unreached and the contacts intact, which
+  // is the point: a sync that stopped halfway knows nothing about the cards
+  // it never asked for (CS-4.2).
+  const { swept } = await handlers[DB_RPC.CONTACT_SWEEP_STALE]({
+    accountId: account.id,
+    generation,
+  });
+
   if (state) {
     await handlers[DB_RPC.SYNC_STATE_SET]({
       accountId: account.id,
       objectType: 'ContactCard',
       state,
     });
+    // Anything that changed while the pages were being read happened after
+    // the checkpoint, so it is replayed rather than lost in the gap between
+    // pages — including a deletion the sweep could not have known about.
+    const caught = await syncContactCardChanges({
+      transport, account, handlers, sinceState: state, useWebSocket,
+    });
+    if (!caught.needsFullSync && caught.newState) state = caught.newState;
   }
-  return { fetched, total: total ?? fetched, state };
+  return { fetched, total: total ?? fetched, state, swept };
 }
 
 /**
@@ -259,11 +297,13 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
   return fetched;
 }
 
-async function persistContactCards({ account, cards, handlers }) {
+async function persistContactCards({ account, cards, handlers, generation = null }) {
   const normalized = cards.map(normalizeCard);
   // Resolve addressbook remote ids -> local ids. A JSContact card can
-  // belong to several books (addressBookIds map); we file the local row
-  // under the first one we already know about from syncAddressBooks.
+  // belong to several books (the addressBookIds map of RFC 9610), and the
+  // local row is filed in every one of them that is already known from
+  // syncAddressBooks — which book a card is in is information the user put
+  // there, and keeping only the first would quietly discard it.
   const remoteAbIds = uniq(normalized.flatMap((c) => c.bookRemoteIds));
   const abMap = new Map();
   if (remoteAbIds.length > 0) {
@@ -279,15 +319,15 @@ async function persistContactCards({ account, cards, handlers }) {
   }
   const contacts = [];
   for (const card of normalized) {
-    const localAb = firstKnownLocalBook(card.bookRemoteIds, abMap);
-    if (!localAb) {
+    const localBooks = knownLocalBooks(card.bookRemoteIds, abMap);
+    if (localBooks.length === 0) {
       // Skip cards for unknown addressbooks rather than failing the
       // batch; the next addressbook sync will catch up and a follow-up
       // ContactCard/changes will resync them.
       continue;
     }
     contacts.push({
-      addressbookId: localAb,
+      addressbookIds: localBooks,
       remoteId: card.id,
       uid: card.uid ?? null,
       etag: null,
@@ -304,7 +344,11 @@ async function persistContactCards({ account, cards, handlers }) {
     });
   }
   if (contacts.length > 0) {
-    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts,
+      generation,
+    });
   }
 }
 
@@ -419,12 +463,14 @@ function normalizeOrganization(card: any): string | null {
   return null;
 }
 
-function firstKnownLocalBook(bookRemoteIds: string[], abMap: Map<string, number>): number | null {
+/** Every book of the card's that this account already knows about. */
+function knownLocalBooks(bookRemoteIds: string[], abMap: Map<string, number>): number[] {
+  const found = [];
   for (const remoteId of bookRemoteIds) {
     const localId = abMap.get(remoteId);
-    if (localId) return localId;
+    if (localId && !found.includes(localId)) found.push(localId);
   }
-  return null;
+  return found;
 }
 
 const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';

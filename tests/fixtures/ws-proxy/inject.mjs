@@ -63,6 +63,37 @@ export const SUBMISSION_FAULTS = {
 };
 
 /**
+ * Break the read-back after a contact write the server accepted, for the
+ * spec that covers a stale cache (CS-4.4).
+ *
+ * Same shape as the submission faults and for the same reason: the failure
+ * has to land on the second leg of a two-leg operation, and the second leg
+ * carries nothing to match on. A marked `ContactCard/set` create arms the
+ * card id the server reports, and the `ContactCard/get` that asks for that
+ * id is answered with a method-level error — so the card genuinely exists
+ * while the client genuinely cannot read it back, which is the only state
+ * in which the behaviour under test is reachable.
+ */
+export const CONTACT_CACHE_FAULT = 'stormbox-break-contact-cache';
+
+/**
+ * The fault modes this build of the injector can apply, reported over
+ * STATUS_PATH.
+ *
+ * The proxy is a long-lived process the suite does not start, so it
+ * routinely predates the code a new case needs: Node loads a module once,
+ * and an older process forwards a marked frame untouched. That looks
+ * exactly like a fault that stopped matching, and costs a poll timeout to
+ * diagnose. Naming the modes lets a case say "restart the proxy" instead.
+ */
+export const KNOWN_FAULT_MODES = Object.freeze([
+  'HOLD',
+  'LOSE',
+  'DROP',
+  'CONTACT_CACHE',
+]);
+
+/**
  * Build the Response frame for an intercepted Request: one method-level
  * error slot per call id, which is the shape RFC 8620 §3.6.1 specifies
  * for a method the server could not run.
@@ -124,6 +155,49 @@ function submittedEmailIds(frame) {
 }
 
 /**
+ * The `ContactCard/set` creations carrying the contact-cache marker, and
+ * the ids a response reports for them. Separate from the Email pair below
+ * only because the method name and response shape differ.
+ */
+function markedCardCreations(frame) {
+  const found = [];
+  for (const [name, params, callId] of frame.methodCalls ?? []) {
+    if (name !== 'ContactCard/set') continue;
+    for (const [creationKey, create] of Object.entries(params?.create ?? {})) {
+      if (JSON.stringify(create ?? null).includes(CONTACT_CACHE_FAULT)) {
+        found.push({ callId, creationKey });
+      }
+    }
+  }
+  return found;
+}
+
+function createdCardIdsFor(frame, creations) {
+  const ids = [];
+  for (const [name, payload, callId] of frame.methodResponses ?? []) {
+    if (name !== 'ContactCard/set') continue;
+    for (const { callId: wantedCall, creationKey } of creations) {
+      if (callId !== wantedCall) continue;
+      const id = payload?.created?.[creationKey]?.id;
+      if (typeof id === 'string') ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/** The call ids of `ContactCard/get`s in this frame asking for a given id. */
+function cardGetCallsFor(frame, cardIds) {
+  const calls = [];
+  for (const [name, params, callId] of frame.methodCalls ?? []) {
+    if (name !== 'ContactCard/get') continue;
+    const asked = Array.isArray(params?.ids) ? params.ids : [];
+    const match = asked.find((id) => cardIds.has(id));
+    if (match) calls.push({ callId, cardId: match });
+  }
+  return calls;
+}
+
+/**
  * The `Email/set` creations in this request that actually carry the
  * marker, as { callId, creationKey } pairs.
  *
@@ -181,6 +255,10 @@ export function createInjector({ applied = [] } = {}) {
   const armed = new Map();
   /** requestId of a broken submission -> { mode, emailId } for its answer. */
   const broken = new Map();
+  /** requestId of a marked card create -> creations awaiting their ids. */
+  const pendingCards = new Map();
+  /** Card ids whose next read-back is to fail. */
+  const armedCards = new Set();
   // `applied` records what was actually done to whom, in order. A spec
   // asserting on the server's state cannot otherwise tell an injected
   // fault from a send that simply worked: every assertion in a fault test
@@ -197,6 +275,37 @@ export function createInjector({ applied = [] } = {}) {
     const frame = parseFrame(raw);
     if (frame?.['@type'] !== 'Request' || !Array.isArray(frame.methodCalls)) {
       return { action: 'forward' };
+    }
+
+    if (raw.includes(CONTACT_CACHE_FAULT)) {
+      const cardCreations = markedCardCreations(frame);
+      if (cardCreations.length > 0) {
+        pendingCards.set(frame.id, cardCreations);
+        return { action: 'forward' };
+      }
+    }
+
+    if (armedCards.size > 0) {
+      const gets = cardGetCallsFor(frame, armedCards);
+      if (gets.length > 0) {
+        // One-shot, like the submission faults: the retry this provokes has
+        // to be able to succeed, or the spec could only watch it fail.
+        for (const { cardId } of gets) armedCards.delete(cardId);
+        record('CONTACT_CACHE', gets[0].cardId, 'readBackRefused');
+        return {
+          action: 'answer',
+          kind: 'CONTACT_CACHE',
+          response: {
+            '@type': 'Response',
+            requestId: frame.id,
+            methodResponses: frame.methodCalls.map(([, , callId]) => ([
+              'error',
+              { type: INJECTED_ERROR_TYPE, description: 'contact cache read refused by the e2e proxy' },
+              callId,
+            ])),
+          },
+        };
+      }
     }
 
     const mode = findFault(raw);
@@ -231,6 +340,13 @@ export function createInjector({ applied = [] } = {}) {
   function onServerFrame(raw) {
     const frame = parseFrame(raw);
     if (frame?.['@type'] !== 'Response') return { action: 'forward' };
+
+    const cardCreations = pendingCards.get(frame.requestId);
+    if (cardCreations != null) {
+      pendingCards.delete(frame.requestId);
+      for (const id of createdCardIdsFor(frame, cardCreations)) armedCards.add(id);
+      return { action: 'forward' };
+    }
 
     const pending = pendingCreates.get(frame.requestId);
     if (pending != null) {

@@ -74,6 +74,7 @@ async function storeWithParentAddresses(addresses = sourceAddresses(), identitie
     subscribe: vi.fn(() => () => {}),
     getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
     listIdentities: vi.fn(async () => identities),
+    ensureIdentities: vi.fn(async () => {}),
     listMessageAddresses: vi.fn(async () => addresses),
   };
   __setRepositoryForTests(repo);
@@ -345,6 +346,7 @@ describe('compose-store from identity selection', () => {
       subscribe: vi.fn(() => () => {}),
       getAccount: vi.fn(async () => ({ id: 1, primary_email: primaryEmail })),
       listIdentities: vi.fn(async () => currentIdentities),
+      ensureIdentities: vi.fn(async () => {}),
       setIdentities(next: IdentityRow[]) {
         currentIdentities = next;
       },
@@ -372,6 +374,49 @@ describe('compose-store from identity selection', () => {
 
     expect(composeStore.draft.fromIdx).toBe(1);
     expect(composeStore.fromIdentity?.email).toBe('primary@thundermail.com');
+  });
+
+  it('asks the server for the identity list each time compose opens', async () => {
+    // CS-4.6: an alias added on another device does not exist locally until
+    // something fetches it, and the list was only ever read at login — so
+    // using a new address meant restarting the app.
+    const { composeStore, repo } = await attachedStore({
+      identities: [identity({ id: 1, remote_id: 'primary', email: 'primary@thundermail.com' })],
+    });
+
+    composeStore.open();
+
+    expect(repo.ensureIdentities).toHaveBeenCalledWith(1);
+  });
+
+  it('shows the identities it already has without waiting for the server', async () => {
+    // The refresh is behind what is on screen, not in front of it: a slow
+    // or unreachable server must not leave the From picker empty.
+    const { composeStore, repo } = await attachedStore({
+      identities: [identity({ id: 1, remote_id: 'primary', email: 'primary@thundermail.com' })],
+    });
+    let releaseServer: () => void = () => {};
+    repo.ensureIdentities.mockImplementation(
+      () => new Promise<void>((resolve) => { releaseServer = resolve; }),
+    );
+
+    composeStore.open();
+
+    expect(composeStore.fromIdentity?.email).toBe('primary@thundermail.com');
+    releaseServer();
+  });
+
+  it('opens anyway when the identity refresh fails', async () => {
+    const { composeStore, repo } = await attachedStore({
+      identities: [identity({ id: 1, remote_id: 'primary', email: 'primary@thundermail.com' })],
+    });
+    repo.ensureIdentities.mockRejectedValue(new Error('offline'));
+
+    composeStore.open();
+    await waitForAsyncWatchers();
+
+    expect(composeStore.isOpen).toBe(true);
+    expect(composeStore.error).toBeNull();
   });
 
   it('remembers an explicitly selected From identity for later compose windows', async () => {
@@ -452,6 +497,7 @@ describe('compose-store send safety', () => {
       subscribe: vi.fn(() => () => {}),
       getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
       listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
       insertPendingMutation: vi.fn(async () => ({ id: 7 })),
       runMutation: vi.fn(() => new Promise((resolve) => { releaseMutation = resolve; })),
     };
@@ -506,6 +552,7 @@ describe('compose-store send safety', () => {
       subscribe: vi.fn(() => () => {}),
       getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
       listIdentities: vi.fn(async () => identities),
+      ensureIdentities: vi.fn(async () => {}),
       insertPendingMutation: vi.fn(async () => ({ id: 7 })),
       runMutation: vi.fn(async () => outcome),
       getPendingMutationError: vi.fn(async () => (rowError
