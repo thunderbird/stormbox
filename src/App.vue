@@ -1116,7 +1116,13 @@ html.light,
   }
   .shell .sidebar-slot {
     position: absolute;
-    z-index: 70;
+    /* Under `.compose-dialog` (50), which is a modal and has to be reachable
+       from the one control that opens it here — the New Message button inside
+       this drawer. At 70 the drawer covered the dialog it had just opened, and
+       took its taps with it, which is what made compose unusable on a phone
+       (CS-2.9). Nothing else occupies the band between the mail columns and
+       the dialog, so this only reorders those two. */
+    z-index: 40;
     top: 56px;
     bottom: 0;
     left: 56px;
