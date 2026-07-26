@@ -955,7 +955,7 @@ describe('contacts and autocomplete', () => {
       accountId: account.id,
       contacts: [
         {
-          addressbookId: ab.id,
+          addressbookIds: [ab.id],
           remoteId: 'c-1',
           fullName: 'Jane Doe',
           displayName: 'Jane Doe',
@@ -978,7 +978,7 @@ describe('contacts and autocomplete', () => {
       accountId: account.id,
       contacts: [
         {
-          addressbookId: ab.id,
+          addressbookIds: [ab.id],
           remoteId: 'c-1',
           fullName: 'Jane Doe',
           displayName: 'Jane Doe',
@@ -993,6 +993,159 @@ describe('contacts and autocomplete', () => {
     expect(rows.map((r) => r.email_lower)).toEqual(['jane@new.example.com']);
   });
 
+  it('files one card in every book it belongs to', async () => {
+    // RFC 9610 lets a card belong to several books, and which books it is
+    // in is something a user arranged. The old shape kept the first and
+    // dropped the rest.
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [
+        { remoteId: 'ab-personal', name: 'Personal', isDefault: true },
+        { remoteId: 'ab-work', name: 'Work' },
+      ],
+    });
+    const books = await engine.all(
+      'SELECT id, remote_id FROM addressbooks WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    const [personal, work] = books.map((book) => book.id);
+
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{
+        addressbookIds: [personal, work],
+        remoteId: 'c-1',
+        displayName: 'Ada',
+        emails: [{ email: 'ada@example.com' }],
+      }],
+    });
+
+    const rows = await engine.all('SELECT id FROM contacts WHERE account_id = ?', [account.id]);
+    expect(rows, 'one card is one contact').toHaveLength(1);
+    const listed = await h[DB_RPC.CONTACT_LIST]({ accountId: account.id });
+    expect(listed[0].addressbook_ids.sort()).toEqual([personal, work].sort());
+    const fetched = await h[DB_RPC.CONTACT_GET]({
+      accountId: account.id,
+      contactId: rows[0].id,
+    });
+    expect(fetched.addressbook_ids.sort()).toEqual([personal, work].sort());
+  });
+
+  it('takes a contact out of a book it has been removed from', async () => {
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [
+        { remoteId: 'ab-personal', name: 'Personal', isDefault: true },
+        { remoteId: 'ab-work', name: 'Work' },
+      ],
+    });
+    const books = await engine.all(
+      'SELECT id FROM addressbooks WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    const [personal, work] = books.map((book) => book.id);
+    const card = {
+      remoteId: 'c-1',
+      displayName: 'Ada',
+      emails: [{ email: 'ada@example.com' }],
+    };
+
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{ ...card, addressbookIds: [personal, work] }],
+    });
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{ ...card, addressbookIds: [personal] }],
+    });
+
+    const listed = await h[DB_RPC.CONTACT_LIST]({ accountId: account.id });
+    expect(listed[0].addressbook_ids).toEqual([personal]);
+  });
+
+  it('sweeps the contacts a completed sync did not see, and only those', async () => {
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
+    const contact = (remoteId: string) => ({
+      addressbookIds: [ab.id],
+      remoteId,
+      displayName: remoteId,
+      emails: [{ email: `${remoteId}@example.com` }],
+    });
+
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [contact('stays'), contact('goes')],
+      generation: 100,
+    });
+    // The next sync sees only one of them, as it would if the other card
+    // had been deleted on the server.
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [contact('stays')],
+      generation: 200,
+    });
+
+    const { swept } = await h[DB_RPC.CONTACT_SWEEP_STALE]({
+      accountId: account.id,
+      generation: 200,
+    });
+
+    expect(swept).toBe(1);
+    const live = await h[DB_RPC.CONTACT_LIST]({ accountId: account.id });
+    expect(live.map((row: any) => row.remote_id)).toEqual(['stays']);
+  });
+
+  it('refuses to sweep without the generation the sync stamped', async () => {
+    // A sweep with no generation, or a zero one, would match every row: the
+    // failure mode is deleting the address book, so it must not be reachable
+    // by a caller that forgot an argument.
+    const account = await seedAccount();
+
+    await expect(h[DB_RPC.CONTACT_SWEEP_STALE]({ accountId: account.id }))
+      .rejects.toThrow(/generation/);
+    await expect(h[DB_RPC.CONTACT_SWEEP_STALE]({ accountId: account.id, generation: 0 }))
+      .rejects.toThrow(/generation/);
+  });
+
+  it('does not let a targeted reconcile backdate a row into a sweep', async () => {
+    // A reconcile after a single-card edit passes no generation. If that
+    // reset the stamp, the card the user just saved would be swept by a
+    // full sync that had already passed it.
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
+    const card = {
+      addressbookIds: [ab.id],
+      remoteId: 'c-1',
+      displayName: 'Ada',
+      emails: [{ email: 'ada@example.com' }],
+    };
+
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [card],
+      generation: 300,
+    });
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts: [card] });
+
+    const row = await engine.get('SELECT sync_generation FROM contacts WHERE remote_id = ?', ['c-1']);
+    expect(row.sync_generation).toBe(300);
+  });
+
   it('autocompletes from contacts and message-history with case-insensitive prefix', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
@@ -1005,13 +1158,13 @@ describe('contacts and autocomplete', () => {
       accountId: account.id,
       contacts: [
         {
-          addressbookId: ab.id,
+          addressbookIds: [ab.id],
           remoteId: 'c-jane',
           displayName: 'Jane Doe',
           emails: [{ email: 'Jane@Example.com', isPreferred: true }],
         },
         {
-          addressbookId: ab.id,
+          addressbookIds: [ab.id],
           remoteId: 'c-jay',
           displayName: 'Jay',
           emails: [{ email: 'jay@example.com' }],
@@ -1110,7 +1263,7 @@ describe('contacts and autocomplete', () => {
     const contacts = [];
     for (let i = 0; i < 8; i += 1) {
       contacts.push({
-        addressbookId: ab.id,
+        addressbookIds: [ab.id],
         remoteId: `c-team-${i}`,
         displayName: `Team ${i}`,
         emails: [{ email: `team-${i}@example.com` }],
@@ -1329,7 +1482,7 @@ describe('index usage on the canonical query patterns', () => {
     const seed = [];
     for (let i = 0; i < 50; i += 1) {
       seed.push({
-        addressbookId: ab.id,
+        addressbookIds: [ab.id],
         remoteId: `c-${i}`,
         displayName: `Person ${i}`,
         emails: [{ email: `person${i}@example.com` }],

@@ -259,13 +259,13 @@ export async function processMutationRow({
     case MUTATION_TYPES.SEND:
       return runSend({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.WHITELIST_SENDER:
-      return runWhitelistSender({ transport, account, handlers, request, useWebSocket });
+      return runWhitelistSender({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.CREATE_CONTACT:
-      return runCreateContact({ transport, account, handlers, request, useWebSocket });
+      return runCreateContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.UPDATE_CONTACT:
-      return runUpdateContact({ transport, account, handlers, request, useWebSocket });
+      return runUpdateContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DELETE_CONTACT:
-      return runDeleteContact({ transport, account, handlers, request, useWebSocket });
+      return runDeleteContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
       return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.CREATE_MAILBOX:
@@ -936,23 +936,28 @@ async function runSetKeywords({ transport, handlers, row, request, useWebSocket 
  * and is idempotent per address, so a retry after a partial failure
  * converges.
  */
-async function runWhitelistSender({ transport, account, handlers, request, useWebSocket }) {
-  const senders = Array.isArray(request?.senders)
-    ? request.senders
-    : [{ email: request?.email, name: request?.name }];
-  const result = await createTrustedContactCards({
-    transport, account, senders, useWebSocket,
-  });
-  if (!result.ok) {
-    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+async function runWhitelistSender({ transport, account, handlers, row, request, useWebSocket }) {
+  const applied = contactWriteApplied(row);
+  let ids = applied?.ids;
+  if (!applied) {
+    const senders = Array.isArray(request?.senders)
+      ? request.senders
+      : [{ email: request?.email, name: request?.name }];
+    const result = await createTrustedContactCards({
+      transport, account, senders, useWebSocket,
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    }
+    ids = result.ids;
   }
   // Pull only the newly-trusted card(s) into the local cache so they show
   // up in the contacts view without waiting for a StateChange push.
   // Targeted (not a full address-book resync) so a whitelist stays fast
-  // regardless of contact count. Best-effort: the trust already took
-  // effect server-side, so a reconcile failure must not fail the mutation.
-  await reconcileContactCardsQuietly({ transport, account, handlers, ids: result.ids, useWebSocket });
-  return { ok: true };
+  // regardless of contact count.
+  return reconcileOrReport({
+    transport, account, handlers, row, ids, useWebSocket, attempts: applied?.attempts ?? 0,
+  });
 }
 
 /**
@@ -964,22 +969,26 @@ async function runWhitelistSender({ transport, account, handlers, request, useWe
  * before the mutation returns" rule. request shape:
  * { emails: string[], name?, bookRemoteId? }.
  */
-async function runCreateContact({ transport, account, handlers, request, useWebSocket }) {
-  const result = await createContactCard({
-    transport,
-    account,
-    emails: request?.emails,
-    name: request?.name,
-    bookId: request?.bookRemoteId ?? null,
-    useWebSocket,
-  });
-  if (!result.ok) {
-    return { ok: false, error: result.error ?? { type: 'serverFail' } };
+async function runCreateContact({ transport, account, handlers, row, request, useWebSocket }) {
+  const applied = contactWriteApplied(row);
+  let ids = applied?.ids;
+  if (!applied) {
+    const result = await createContactCard({
+      transport,
+      account,
+      emails: request?.emails,
+      name: request?.name,
+      bookId: request?.bookRemoteId ?? null,
+      useWebSocket,
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    }
+    ids = result.id ? [result.id] : [];
   }
-  await reconcileContactCardsQuietly({
-    transport, account, handlers, ids: result.id ? [result.id] : [], useWebSocket,
+  return reconcileOrReport({
+    transport, account, handlers, row, ids, useWebSocket, attempts: applied?.attempts ?? 0,
   });
-  return { ok: true };
 }
 
 /**
@@ -987,22 +996,30 @@ async function runCreateContact({ transport, account, handlers, request, useWebS
  * cache so the edited row reflects the server once the mutation
  * resolves. request shape: { remoteId, emails: string[], name? }.
  */
-async function runUpdateContact({ transport, account, handlers, request, useWebSocket }) {
-  const result = await updateContactCard({
+async function runUpdateContact({ transport, account, handlers, row, request, useWebSocket }) {
+  const applied = contactWriteApplied(row);
+  if (!applied) {
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: request?.remoteId,
+      emails: request?.emails,
+      name: request?.name,
+      useWebSocket,
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    }
+  }
+  return reconcileOrReport({
     transport,
     account,
-    remoteId: request?.remoteId,
-    emails: request?.emails,
-    name: request?.name,
+    handlers,
+    row,
+    ids: request?.remoteId ? [request.remoteId] : [],
     useWebSocket,
+    attempts: applied?.attempts ?? 0,
   });
-  if (!result.ok) {
-    return { ok: false, error: result.error ?? { type: 'serverFail' } };
-  }
-  await reconcileContactCardsQuietly({
-    transport, account, handlers, ids: request?.remoteId ? [request.remoteId] : [], useWebSocket,
-  });
-  return { ok: true };
 }
 
 /**
@@ -1011,28 +1028,130 @@ async function runUpdateContact({ transport, account, handlers, request, useWebS
  * reconcile would not remove it because the destroyed card is simply
  * absent from the server list. request shape: { remoteId }.
  */
-async function runDeleteContact({ transport, account, handlers, request, useWebSocket }) {
-  const result = await deleteContactCard({
+async function runDeleteContact({ transport, account, handlers, row, request, useWebSocket }) {
+  const applied = contactWriteApplied(row);
+  if (!applied) {
+    const result = await deleteContactCard({
+      transport,
+      account,
+      remoteId: request?.remoteId,
+      useWebSocket,
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    }
+  }
+  // A destroyed card is absent from the server list rather than marked
+  // gone in it, so the row is removed here; a reconcile could not do it.
+  return reconcileOrReport({
     transport,
     account,
-    remoteId: request?.remoteId,
+    handlers,
+    row,
+    ids: [],
     useWebSocket,
+    attempts: applied?.attempts ?? 0,
+    repair: () => handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
+      accountId: account.id,
+      remoteId: request?.remoteId,
+    }),
   });
-  if (!result.ok) {
-    return { ok: false, error: result.error ?? { type: 'serverFail' } };
-  }
-  await handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
-    accountId: account.id,
-    remoteId: request?.remoteId,
-  });
-  return { ok: true };
 }
 
-async function reconcileContactCardsQuietly({ transport, account, handlers, ids, useWebSocket }) {
+/**
+ * How many times the cache repair is retried before the row retires. The
+ * server write is done by then and the next full sync will reconcile the
+ * account anyway, so this only bounds how long a row sits in the outbox.
+ */
+const CONTACT_CACHE_MAX_ATTEMPTS = 3;
+
+/**
+ * Was this row's server write already made on an earlier attempt?
+ *
+ * A contact row parked at `cache_pending` has a card on the server and a
+ * local cache that does not show it. Repeating the write would be wrong
+ * rather than merely wasteful: a destroy replayed against a card that is
+ * already gone answers `notFound`, which the runner reads as a permanent
+ * failure — a delete that worked, reported as one that cannot.
+ */
+function contactWriteApplied(row: any): { ids: string[]; attempts: number } | null {
+  if (readPhase(row) !== SEND_PHASE.CACHE_PENDING) return null;
+  let parsed;
   try {
-    await reconcileContactCards({ transport, account, handlers, ids, useWebSocket });
+    parsed = JSON.parse(row?.server_response_json ?? 'null');
   } catch {
-    // Cache will catch up on the next StateChange push or periodic sync.
+    return null;
+  }
+  if (!Array.isArray(parsed?.reconcileIds)) return null;
+  return {
+    ids: parsed.reconcileIds.filter((id: unknown) => typeof id === 'string'),
+    attempts: Number.isInteger(parsed.attempts) ? parsed.attempts : 0,
+  };
+}
+
+/**
+ * Repair the cache after a contact write the server has accepted, and say
+ * plainly when that fails.
+ *
+ * Reporting success on a failed repair (CS-4.4) tells the user their edit
+ * is done and shows them a list that contradicts it, with nothing in the
+ * system that remembers the discrepancy. Instead the row stays, parked at
+ * the phase that skips the write, until the cache matches or the attempts
+ * run out.
+ */
+async function reconcileOrReport({
+  transport, account, handlers, row, ids, useWebSocket, attempts = 0, repair,
+}: any) {
+  try {
+    await (repair
+      ? repair()
+      : reconcileContactCards({ transport, account, handlers, ids, useWebSocket }));
+    return { ok: true };
+  } catch (err: any) {
+    const attempted = attempts + 1;
+    wlog.warn(
+      'jmap-outbox',
+      `contact write applied but the cache did not follow: ${err?.message ?? err}`,
+    );
+    if (row?.id == null || attempted >= CONTACT_CACHE_MAX_ATTEMPTS) {
+      // Out of attempts. The card is right on the server, so the account's
+      // own copy is what is wrong: drop the contact checkpoint and the next
+      // sync rebuilds from scratch rather than trusting a delta from a
+      // state the cache never actually reached.
+      await handlers[DB_RPC.SYNC_STATE_SET]({
+        accountId: account.id,
+        objectType: 'ContactCard',
+        state: null,
+      }).catch(() => {});
+      return {
+        ok: false,
+        error: {
+          type: 'cacheReconcileFailed',
+          message: err?.message ?? String(err),
+          terminal: true,
+          result: { applied: true, cached: false },
+        },
+      };
+    }
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE pending_mutations
+               SET phase = ?, server_response_json = ?, attempts = 0, updated_at = ?
+             WHERE id = ?`,
+      params: [
+        SEND_PHASE.CACHE_PENDING,
+        JSON.stringify({ reconcileIds: ids ?? [], attempts: attempted }),
+        Date.now(),
+        row.id,
+      ],
+    });
+    return {
+      ok: false,
+      error: {
+        type: 'cacheReconcileFailed',
+        message: err?.message ?? String(err),
+        result: { applied: true, cached: false },
+      },
+    };
   }
 }
 

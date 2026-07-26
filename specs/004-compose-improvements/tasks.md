@@ -195,33 +195,33 @@ makes a non-default origin work locally.
 
 ## Phase 4 — Contact and identity integrity (CS-4.1 to CS-4.8)
 
-- [ ] T401 Persist the ContactCard object state from `ContactCard/get`
+- [x] T401 Persist the ContactCard object state from `ContactCard/get`
       rather than `query.state`
-- [ ] T402 Migration: contact sync generation column plus an
+- [x] T402 Migration: contact sync generation column plus an
       `addressbook_contacts` junction table with a backfill
-- [ ] T403 Make full contact sync authoritative: transactional
+- [x] T403 Make full contact sync authoritative: transactional
       mark-and-sweep after all pages succeed, then a
       `ContactCard/changes` catch-up from the baseline
-- [ ] T404 [P] Unit-test that an interrupted paging sequence does not
+- [x] T404 [P] Unit-test that an interrupted paging sequence does not
       sweep, and that a server-side deletion is reflected locally
-- [ ] T405 Represent multi-address-book membership through the junction
+- [x] T405 Represent multi-address-book membership through the junction
       table
-- [ ] T406 Stop reporting contact mutation success when cache
+- [x] T406 Stop reporting contact mutation success when cache
       reconciliation failed; checkpoint and retry reconciliation only
-- [ ] T407 Apply `Identity/get` as a snapshot including the empty-list
+- [x] T407 Apply `Identity/get` as a snapshot including the empty-list
       case; give `replyTo` and `bcc` first-class columns and API fields
       rather than leaving `bcc` opaque inside `raw_json`
-- [ ] T407b Apply `AddressBook/get` as an authoritative snapshot with
+- [x] T407b Apply `AddressBook/get` as an authoritative snapshot with
       deletion handling (CS-4.8)
-- [ ] T408 Refresh identities on compose open and reconnect, painting
+- [x] T408 Refresh identities on compose open and reconnect, painting
       cached values first
-- [ ] T409 E2E: alias fidelity — selected alias reaches the externally
+- [x] T409 E2E: alias fidelity — selected alias reaches the externally
       received From header (#60, #86)
-- [ ] T410 E2E: a contact mutation whose cache reconciliation fails
+- [x] T410 E2E: a contact mutation whose cache reconciliation fails
       reports failure rather than success, and retries only reconciliation
-- [ ] T411 E2E: a server-side contact deletion disappears locally after a
+- [x] T411 E2E: a server-side contact deletion disappears locally after a
       full sync
-- [ ] T412 Run checks including the two-browser e2e lane; commit
+- [x] T412 Run checks including the two-browser e2e lane; commit
 
 ## Phase 5 — Autocomplete data (CS-3.1 to CS-3.7, CS-3.13, CS-3.14)
 
@@ -272,7 +272,7 @@ makes a non-default origin work locally.
       cross-field duplicate suppression, rapid typing
 - [x] T609 E2E: keyboard-only recipient entry and screen-reader
       semantics in both browsers
-- [ ] T610 Run checks including the two-browser e2e lane; commit
+- [x] T610 Run checks including the two-browser e2e lane; commit
 
 ## Phase 7 — iOS compose overlay (#49)
 

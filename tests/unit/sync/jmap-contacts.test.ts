@@ -75,9 +75,108 @@ describe('syncAddressBooks', () => {
     });
     expect(stateRow.state).toBe('ab-1');
   });
+
+  it('retires a book the server has stopped listing', async () => {
+    // CS-4.8. Upsert-only left a deleted book on offer as a place to file
+    // new contacts, where every save would fail against a book the server
+    // does not have.
+    const transport = new MockTransport();
+    let books = [
+      { id: 'ab-default', name: 'Default', isDefault: true },
+      { id: 'ab-shared', name: 'Shared' },
+    ];
+    transport.handle('AddressBook/get', () => ({ list: books, state: 'ab-1' }));
+    await syncAddressBooks({ transport, account, handlers });
+
+    books = [{ id: 'ab-default', name: 'Default', isDefault: true }];
+    const result = await syncAddressBooks({ transport, account, handlers });
+
+    expect(result.retired).toBe(1);
+    const list = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    expect(list.map((ab: any) => ab.remote_id)).toEqual(['ab-default']);
+  });
+
+  it('takes an empty list as an answer', async () => {
+    // The empty case is the one an upsert cannot express, and it is real:
+    // an account whose last address book was deleted.
+    const transport = new MockTransport();
+    let books: any[] = [{ id: 'ab-default', name: 'Default', isDefault: true }];
+    transport.handle('AddressBook/get', () => ({ list: books, state: 'ab-1' }));
+    await syncAddressBooks({ transport, account, handlers });
+
+    books = [];
+    await syncAddressBooks({ transport, account, handlers });
+
+    const list = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    expect(list).toEqual([]);
+  });
+
+  it('keeps every book when the response cannot be read', async () => {
+    // A missing response is not an empty account, and treating it as one
+    // would retire the whole address book over a bad reply.
+    const transport = new MockTransport();
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'ab-default', name: 'Default', isDefault: true }],
+      state: 'ab-1',
+    }));
+    await syncAddressBooks({ transport, account, handlers });
+
+    transport.handle('AddressBook/get', () => null);
+    const result = await syncAddressBooks({ transport, account, handlers });
+
+    expect(result.retired).toBe(0);
+    const list = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    expect(list).toHaveLength(1);
+  });
+
+  it('leaves another service\'s books alone', async () => {
+    // Snapshots are scoped to the service that answered. A CardDAV book is
+    // not absent from a JMAP response in any meaningful sense.
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: 'carddav',
+      addressbooks: [{ remoteId: 'dav-1', name: 'From CardDAV' }],
+    });
+    const transport = new MockTransport();
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'ab-default', name: 'Default', isDefault: true }],
+      state: 'ab-1',
+    }));
+
+    await syncAddressBooks({ transport, account, handlers });
+
+    const list = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    expect(list.map((ab: any) => ab.remote_id).sort()).toEqual(['ab-default', 'dav-1']);
+  });
 });
 
 describe('syncContacts', () => {
+  /**
+   * A server with nothing to report since the checkpoint. A full sync ends
+   * with a catch-up over the window it spent paging, so every one of these
+   * cases reaches ContactCard/changes whether or not it is what is being
+   * tested.
+   */
+  /** The contacts the account still has, in a stable order. */
+  async function liveRemoteIds(): Promise<string[]> {
+    const rows = await engine.all(
+      'SELECT remote_id FROM contacts WHERE account_id = ? AND is_deleted = 0 ORDER BY remote_id',
+      [account.id],
+    );
+    return rows.map((row: any) => row.remote_id);
+  }
+
+  function nothingChanged(transport: MockTransport) {
+    transport.handle('ContactCard/changes', ({ sinceState }) => ({
+      oldState: sinceState,
+      newState: sinceState,
+      created: [],
+      updated: [],
+      destroyed: [],
+      hasMoreChanges: false,
+    }));
+  }
+
   it('queries ids, fetches cards, and persists contact + emails', async () => {
     // Pre-seed an addressbook so contacts can resolve.
     await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
@@ -90,7 +189,7 @@ describe('syncContacts', () => {
     transport.handle('ContactCard/query', () => ({
       ids: ['c-1', 'c-2'],
       total: 2,
-      state: 'cc-1',
+      queryState: 'query-state-not-a-checkpoint',
     }));
     transport.handle('ContactCard/get', (params) => ({
       list: params.ids.map((id) => ({
@@ -106,6 +205,7 @@ describe('syncContacts', () => {
       state: 'cc-1',
     }));
 
+    nothingChanged(transport);
     const result = await syncContacts({ transport, account, handlers });
     expect(result.fetched).toBe(2);
 
@@ -138,9 +238,10 @@ describe('syncContacts', () => {
         ids: allIds.slice(params.position, params.position + params.limit),
         position: params.position,
         total,
-        state: 'cc-paged',
+        queryState: 'query-state-not-a-checkpoint',
       };
     });
+    let getPage = 0;
     transport.handle('ContactCard/get', (params) => ({
       list: params.ids.map((id) => ({
         id,
@@ -148,12 +249,18 @@ describe('syncContacts', () => {
         fullName: `Contact ${id}`,
         emails: [{ email: `${id}@example.com` }],
       })),
+      // The state moves on under the paging, as a live server's would.
+      state: `cc-paged-${(getPage += 1)}`,
     }));
 
+    nothingChanged(transport);
     const result = await syncContacts({ transport, account, handlers, pageSize: 3 });
     expect(result.fetched).toBe(total);
     expect(result.total).toBe(total);
-    expect(result.state).toBe('cc-paged');
+    // The checkpoint is the state the *first* page was read from, so a
+    // change made while the later pages were in flight is replayed by a
+    // catch-up rather than lost between them.
+    expect(result.state).toBe('cc-paged-1');
     expect(positions).toEqual([0, 3, 6]);
 
     const row = await engine.get(
@@ -162,11 +269,17 @@ describe('syncContacts', () => {
     );
     expect(row.n).toBe(total);
 
-    // Each page is one chained query+get round trip, not two requests.
-    expect(transport.requests).toHaveLength(3);
-    for (const req of transport.requests) {
+    // Each page is one chained query+get round trip, not two requests,
+    // followed by the single catch-up that closes the paging window.
+    const paging = transport.requests.filter(
+      (req) => req.methodCalls[0][0] === 'ContactCard/query',
+    );
+    expect(paging).toHaveLength(3);
+    for (const req of paging) {
       expect(req.methodCalls.map(([m]) => m)).toEqual(['ContactCard/query', 'ContactCard/get']);
     }
+    expect(transport.requests.at(-1).methodCalls.map(([m]) => m))
+      .toEqual(['ContactCard/changes']);
   });
 
   it('clamps the page size to the session maxObjectsInGet', async () => {
@@ -187,7 +300,7 @@ describe('syncContacts', () => {
         ids: allIds.slice(params.position, params.position + params.limit),
         position: params.position,
         total: allIds.length,
-        state: 'cc-clamped',
+        queryState: 'query-state-not-a-checkpoint',
       };
     });
     transport.handle('ContactCard/get', (params) => ({
@@ -199,6 +312,7 @@ describe('syncContacts', () => {
       })),
     }));
 
+    nothingChanged(transport);
     const result = await syncContacts({ transport, account, handlers, pageSize: 500 });
     expect(result.fetched).toBe(3);
     expect(limits).toEqual([2, 2]);
@@ -206,7 +320,7 @@ describe('syncContacts', () => {
 
   it('skips cards whose addressbook is not yet synced locally', async () => {
     const transport = new MockTransport();
-    transport.handle('ContactCard/query', () => ({ ids: ['c-1'], total: 1, state: 'cc' }));
+    transport.handle('ContactCard/query', () => ({ ids: ['c-1'], total: 1, queryState: 'qs' }));
     transport.handle('ContactCard/get', () => ({
       list: [{
         id: 'c-1',
@@ -217,6 +331,7 @@ describe('syncContacts', () => {
       }],
       state: 'cc',
     }));
+    nothingChanged(transport);
     await syncContacts({ transport, account, handlers });
     const list = await engine.all('SELECT * FROM contacts WHERE account_id = ?', [account.id]);
     expect(list).toHaveLength(0);
@@ -230,7 +345,7 @@ describe('syncContacts', () => {
     });
 
     const transport = new MockTransport();
-    transport.handle('ContactCard/query', () => ({ ids: ['d'], total: 1, state: 'cc-map' }));
+    transport.handle('ContactCard/query', () => ({ ids: ['d'], total: 1, queryState: 'qs' }));
     transport.handle('ContactCard/get', () => ({
       list: [{
         '@type': 'Card',
@@ -245,6 +360,7 @@ describe('syncContacts', () => {
       state: 'cc-map',
     }));
 
+    nothingChanged(transport);
     const result = await syncContacts({ transport, account, handlers });
     expect(result.fetched).toBe(1);
 
@@ -259,6 +375,172 @@ describe('syncContacts', () => {
     expect(row.remote_id).toBe('d');
     expect(row.email).toBe('ada@example.com');
     expect(Number(row.is_preferred)).toBe(1);
+  });
+
+  it('removes a contact the server no longer has', async () => {
+    // CS-4.2: a full sync is authoritative. Without a sweep a card deleted
+    // on another device stays in the address book and in autocomplete for
+    // as long as the account lives, because `changes` will never name a
+    // card it has already forgotten.
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    let serverCards = ['c-1', 'c-2'];
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: serverCards,
+      total: serverCards.length,
+      queryState: 'qs',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Contact ${id}`,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+      state: `state-${serverCards.length}`,
+    }));
+    nothingChanged(transport);
+
+    await syncContacts({ transport, account, handlers });
+    expect(await liveRemoteIds()).toEqual(['c-1', 'c-2']);
+
+    serverCards = ['c-1'];
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.swept).toBe(1);
+    expect(await liveRemoteIds()).toEqual(['c-1']);
+  });
+
+  it('sweeps nothing when the paging did not finish', async () => {
+    // The dangerous half of an authoritative sync: a run that stopped after
+    // one page knows nothing about the cards it never asked for, and must
+    // not read its own ignorance as a deletion.
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const allIds = ['c-0', 'c-1', 'c-2', 'c-3'];
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', (params) => ({
+      ids: allIds.slice(params.position, params.position + params.limit),
+      position: params.position,
+      total: allIds.length,
+      queryState: 'qs',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Contact ${id}`,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+      state: 'state-full',
+    }));
+    nothingChanged(transport);
+    await syncContacts({ transport, account, handlers, pageSize: 2 });
+    expect(await liveRemoteIds()).toEqual(allIds);
+
+    // Now the connection drops after the first page of the next sync.
+    let pages = 0;
+    transport.handle('ContactCard/query', (params) => {
+      pages += 1;
+      if (pages > 1) throw new Error('connection lost');
+      return {
+        ids: allIds.slice(params.position, params.position + params.limit),
+        position: params.position,
+        total: allIds.length,
+        queryState: 'qs',
+      };
+    });
+
+    await expect(syncContacts({ transport, account, handlers, pageSize: 2 }))
+      .rejects.toThrow(/connection lost/);
+
+    expect(await liveRemoteIds(), 'an interrupted sync deletes nothing').toEqual(allIds);
+  });
+
+  it('replays what changed while it was paging', async () => {
+    // The checkpoint is the state the first page was read from, so a card
+    // deleted during the sync is caught by the catch-up rather than sitting
+    // in the gap between the pages and the checkpoint.
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-1', 'c-2'],
+      total: 2,
+      queryState: 'qs',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: `Contact ${id}`,
+        emails: [{ email: `${id}@example.com` }],
+      })),
+      state: 'state-1',
+    }));
+    transport.handle('ContactCard/changes', ({ sinceState }) => ({
+      oldState: sinceState,
+      newState: 'state-2',
+      created: [],
+      updated: [],
+      destroyed: ['c-2'],
+      hasMoreChanges: false,
+    }));
+
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(await liveRemoteIds()).toEqual(['c-1']);
+    expect(result.state, 'the checkpoint moves on to where the catch-up ended')
+      .toBe('state-2');
+  });
+
+  it('checkpoints the object state, which is the only one changes accepts', async () => {
+    // The checkpoint used to be read from the query response's `state`, a
+    // field no server sends — a query answers with `queryState` (RFC 8620
+    // §5.5), and only the object state from `get` can be handed to
+    // `changes` (§5.2). Nothing was therefore ever written, and every
+    // contact push fell back to resyncing the whole account.
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-1'],
+      total: 1,
+      queryState: 'query-state-not-a-checkpoint',
+    }));
+    transport.handle('ContactCard/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        addressBookId: 'ab-default',
+        fullName: 'Ada',
+        emails: [{ email: 'ada@example.com' }],
+      })),
+      state: 'object-state-1',
+    }));
+
+    nothingChanged(transport);
+    const result = await syncContacts({ transport, account, handlers });
+
+    expect(result.state).toBe('object-state-1');
+    const saved = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'ContactCard',
+    });
+    expect(saved?.state, 'a full sync must leave a checkpoint to resume from')
+      .toBe('object-state-1');
   });
 });
 
@@ -737,7 +1019,7 @@ describe('whitelist reconcile cost is independent of contact count', () => {
     transport.handle('ContactCard/query', (params) => {
       if (!params.filter) {
         fullListQueried = true;
-        return { ids: Array.from({ length: 1099 }, (_, i) => `seed-${i}`), total: 1099, state: 's' };
+        return { ids: Array.from({ length: 1099 }, (_, i) => `seed-${i}`), total: 1099, queryState: 's' };
       }
       return { ids: [], total: 0 }; // existence check: none of the senders carded yet
     });

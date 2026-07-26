@@ -1100,6 +1100,13 @@ export class JmapBackend {
     // catch up on any state changes the server may have buffered.
     // Mirrors the startup catch-up path.
     this.outboxRunner?.notify();
+    // An Identity push emitted while the socket was down is not replayed,
+    // and there is no delta call for identities to fall back on, so a
+    // reconnect is the only chance to notice an alias that changed while we
+    // were away (CS-4.6).
+    await this.ensureIdentities().catch((err) => {
+      wlog.warn('jmap-backend', `reconnect identity refresh failed`, err);
+    });
     for (const account of this._sessionAccounts()) {
       await this._refreshActiveQueryViews(account).catch((err) => {
         wlog.warn(

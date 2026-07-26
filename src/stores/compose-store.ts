@@ -334,6 +334,24 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   /**
+   * Ask the server for the identity list, without making anyone wait.
+   *
+   * An alias added on another device does not exist locally until something
+   * fetches it, and nothing did: the list was read once at login, which
+   * meant restarting the app to send from a new address (CS-4.6). What is
+   * cached is already on screen, so this refreshes behind it — the answer
+   * arrives as an IDENTITIES broadcast, which the subscription above turns
+   * into a repaint whether or not this call is still being awaited.
+   *
+   * Failure is not surfaced: composing with the identities we have is the
+   * correct outcome of a refresh that could not reach the server.
+   */
+  function refreshIdentitiesFromServer(): void {
+    if (!repo || authStore.accountId == null) return;
+    void repo.ensureIdentities(authStore.accountId).catch(() => {});
+  }
+
+  /**
    * Return the draft and the recipient state to empty.
    *
    * The recipient arrays are replaced rather than emptied in place so a
@@ -363,6 +381,7 @@ export const useComposeStore = defineStore('compose', () => {
     error.value = null;
     outcomeUnknown.value = false;
     clearNotice();
+    refreshIdentitiesFromServer();
   }
 
   /**

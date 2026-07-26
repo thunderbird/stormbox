@@ -157,6 +157,24 @@ several contradict what seemed obvious:
   logged as an occasional Firefox flake earlier, and once on Chromium at the
   next assertion (line 128, the baseline row); the two engines fail at
   different assertions, so one root cause is not established.
+- **A self-addressed send cannot prove delivery.** The client writes the
+  Sent copy before submitting, so when Stalwart delivers the message back to
+  the same account its ingest drops the inbound copy as a duplicate
+  Message-ID — while still answering 250, and logging
+  `message-ingest.duplicate`. The Inbox copy simply never appears. Anything
+  asserting on what a recipient received has to send to the second account,
+  which has no Sent copy to collide with.
+- **The ws-proxy outlives the suite and can be running older code.** It is a
+  long-lived process nothing in the run starts, Node loads a module once, and
+  an older build forwards a marked frame untouched — which looks exactly like
+  a marker that stopped matching, and costs a poll timeout to tell apart. Its
+  `/__status` now lists the fault modes the running build knows, so a case can
+  say "restart the proxy" instead. A new fault mode means adding it to
+  `KNOWN_FAULT_MODES` **and** restarting the proxy.
+- Counting a proxy's recorded faults does not prove one fired: the log
+  outlives the run, so `> 0` is satisfied by an earlier case before the
+  current one does anything. Bind the assertion to the id the fault was
+  recorded against, as `faultApplied` and `cacheRefusalsFor` do.
 - Nothing else in the suite is failing: `zz-large-bulk-move.spec.js` and
   `delete-message.spec.js` were only ever red under lane contention and pass
   6 for 6 uncontended, seed verification included. Chromium takes 15-19s over

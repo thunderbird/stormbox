@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { createInjector, FAULTS_PATH, STATUS_PATH } from './inject.mjs';
+import { createInjector, FAULTS_PATH, KNOWN_FAULT_MODES, STATUS_PATH } from './inject.mjs';
 
 function stackHost() {
   if (process.env.STACK_HOST) return process.env.STACK_HOST;
@@ -55,7 +55,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === STATUS_PATH) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ liveSockets }));
+    res.end(JSON.stringify({ liveSockets, modes: KNOWN_FAULT_MODES }));
     return;
   }
   res.writeHead(426, { 'Content-Type': 'text/plain' });

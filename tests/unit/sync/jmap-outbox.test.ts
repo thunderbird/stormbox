@@ -1330,7 +1330,7 @@ describe('drainOutbox', () => {
     // have left behind. Here there is none — the create never reached
     // the server — and the scan has to say so, because a scan that
     // cannot answer stops the send rather than creating.
-    transport.handle('Email/query', () => ({ ids: [], total: 0, state: 'q' }));
+    transport.handle('Email/query', () => ({ ids: [], total: 0, queryState: 'q' }));
 
     // Two passes over the same row, as a retry would do.
     await drainOutbox({ transport, account, handlers, mutationId: inserted.id });
