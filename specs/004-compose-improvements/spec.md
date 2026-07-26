@@ -31,17 +31,23 @@ directly and its statuses are read alongside them.
 | # | Area | 🟩 Done | 🟨 Partial | 🟧 Planned | 🟥 Won't |
 |---|---|--:|--:|--:|--:|
 | 1 | Submission correctness and durability | 14 | — | — | — |
-| 2 | Recipients, reply audience, and threading | 8 | — | 1 | 1 |
+| 2 | Recipients, reply audience, and threading | 9 | — | — | 1 |
 | 3 | Recipient autocomplete | 16 | — | — | — |
 | 4 | Contact and identity source integrity | 8 | — | — | — |
 | 5 | Verification | 5 | 1 | — | — |
 
 CS-2.10 records a deliberate non-goal rather than outstanding work.
 
-What remains: CS-2.9 (WP7, the iOS overlay) and CS-5.4, which stays partial
-until the last package ships its specification. CS-3.2's nickname clause is
-satisfied only as far as "where available" allows: no column or sync field
-carries a nickname, so none is tokenized.
+What remains is CS-5.4, and the reason is now specific rather than pending.
+Every package that changes server and cache state has shipped its Playwright
+coverage, and all of it runs on both engines. One assertion of the three the
+row asks for is missing: `compose-reply-audience.spec.js` proves the reply
+audience and the threading headers through the UI and through JMAP on the
+delivered message, but nothing reads the threading fields back out of local
+SQLite. That is one assertion in one spec, not a package without coverage.
+
+CS-3.2's nickname clause is satisfied only as far as "where available" allows:
+no column or sync field carries a nickname, so none is tokenized.
 
 These marks are part of each work package's close-out task, not a separate
 ledger to reconcile later. `tasks.md` remains the authoritative checklist of
@@ -132,7 +138,7 @@ the full owned-address set, not on the currently selected From identity.
 | CS-2.6 🟩 Done | Reply and Reply All shall set `In-Reply-To` to the parent's Message-ID and extend `References` with it, drawn from the cached `rfc822_message_id` and `references_json` columns, so external clients thread the response. Subject prefixing alone is not threading. |
 | CS-2.7 🟩 Done | The message detail view shall display Cc so the user can see the audience before replying. |
 | CS-2.8 🟩 Done | The system shall apply the selected Identity's `replyTo` default on send, per RFC 8621 §6.1. Applying the Identity `bcc` default requires an explicit product decision first, because silently Bcc-ing the user is user-visible behavior; until that decision is recorded the property shall be persisted but not applied. |
-| CS-2.9 🟧 Planned | The compose dialog shall remain visible and interactive above the folder navigation overlay on small viewports, so opening compose on iOS does not leave the user with an obscured or unreachable form. |
+| CS-2.9 🟩 Done | The compose dialog shall remain visible and interactive above the folder navigation overlay on small viewports, so opening compose on iOS does not leave the user with an obscured or unreachable form. |
 
 ## 3. Recipient autocomplete
 

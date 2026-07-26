@@ -285,8 +285,8 @@ makes a non-default origin work locally.
 
 ## Phase 7 — iOS compose overlay (#49)
 
-- [ ] T701 Fix the folders overlay stacking against the compose dialog
+- [x] T701 Fix the folders overlay stacking against the compose dialog
       so compose stays visible and interactive on small viewports
       (CS-2.9)
-- [ ] T702 Responsive CSS test coverage
+- [x] T702 Responsive CSS test coverage
 - [ ] T703 Run checks; commit
