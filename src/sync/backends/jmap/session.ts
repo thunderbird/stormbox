@@ -31,11 +31,29 @@ function serviceKindFor(capability) {
  * row (post-upsert). serverOrigin must be the server's https origin
  * (e.g. https://mail.example.com).
  *
- * In addition to the primary mail account, every other mail-capable
- * account in the session `accounts` map is upserted as a non-primary
- * account row. Per RFC 8620 §1.6.2 / RFC 9670 these are accounts other
- * principals shared with the user (isPersonal=false); their mailboxes
- * are what the UI surfaces as shared folders.
+ * In addition to the primary mail account, every other account in the
+ * session `accounts` map is upserted as a non-primary account row. Per
+ * RFC 8620 §1.6.2 / RFC 9670 these are accounts other principals shared
+ * with the user (isPersonal=false); their mailboxes are what the UI
+ * surfaces as shared folders.
+ *
+ * We deliberately do not require the account to advertise
+ * urn:ietf:params:jmap:mail. RFC 8620 §2 obliges a server to advertise a
+ * capability whenever the user may call its methods on that account, but
+ * Stalwart up to 0.15.x derived a shared account's accountCapabilities
+ * from the shared principal's own permission set instead: a group holding
+ * only the send/receive email permissions advertised no mail capability
+ * while still answering Mailbox/get for its members, which is how such
+ * folders reached IMAP clients but not JMAP ones. Stalwart 0.16.0 fixed
+ * this by evaluating the capabilities against the requesting user's
+ * token, so newer servers advertise correctly and this permissiveness is
+ * inert there.
+ *
+ * Enforcement is the server's responsibility, so Mailbox/get rather than
+ * the advertisement decides whether a shared account has mail. Sync is
+ * best-effort per shared account and an account that yields no folders is
+ * filtered out of both the sidebar and the folder manager, so the
+ * permissive path costs nothing when the account genuinely has no mail.
  *
  * @param {object} args
  * @param {object} args.session  the parsed JMAP session document
@@ -65,14 +83,14 @@ export async function ingestSession({ session, serverOrigin, handlers }) {
   });
   const account = upserted.row;
 
-  // Non-primary mail-capable accounts: shared accounts (RFC 9670) or
-  // secondary personal accounts. Upsert a row per account so mailbox
-  // sync can attach folders to them.
+  // Non-primary accounts: shared accounts (RFC 9670) or secondary
+  // personal accounts. Upsert a row per account so mailbox sync can
+  // attach folders to them. See the note above on why the advertised
+  // mail capability is not a precondition.
   const sharedAccounts = [];
   const accountsMap: Record<string, any> = session.accounts ?? {};
   for (const [otherRemoteId, otherInfo] of Object.entries(accountsMap)) {
     if (otherRemoteId === remoteAccountId) continue;
-    if (!(otherInfo?.accountCapabilities ?? {})[JMAP_CAPS.MAIL]) continue;
     const otherUpserted = await handlers[DB_RPC.ACCOUNT_UPSERT]({
       displayName: otherInfo.name ?? null,
       primaryEmail: otherInfo.name ?? null,
