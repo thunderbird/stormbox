@@ -360,11 +360,6 @@ describe('metadata indexer: chunk-size selection', () => {
 });
 
 describe('metadata indexer: shared accounts', () => {
-  // A shared folder used to be invisible to the indexer, whose folder
-  // query was scoped to the primary account id. Coverage only advanced
-  // through foreground paging while the user sat in the folder, so a
-  // partially-read shared folder stalled at whatever percent it had
-  // reached and never resumed on its own.
   const SHARED_TOTAL = 120;
   let sharedAccount;
   let sharedFolder;

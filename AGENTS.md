@@ -26,6 +26,24 @@ Use a commit style similar to the other commits in the repository, don't randoml
 
 When a commit closes a GitHub issue, append the issue reference in the historical format: `Commit message sentence. (Fixes #123)`.
 
+When a commit only relates to an issue without fixing it — follow-up work on an issue another commit already closed, partial progress, or a change whose context lives in that issue — reference it without the verb instead: `Commit message sentence. (#123)`. Reserve `Fixes` for the commit that actually closes the issue, so a reference never claims a fix it did not deliver.
+
+# Code comments
+
+Comments describe what the current code does and the constraints it must
+satisfy. Do not narrate how the code used to behave or explain a fixed
+bug at length. Concise references or links to fixed issues are acceptable;
+detailed history belongs in the commit message and the issue.
+
+Keep comments tight and strictly factual. Do not restate what the code
+plainly does. Where a non-obvious constraint comes from a spec, cite the
+requirement id (for example `FM-6.9`) or the RFC section instead of
+explaining its background. The same applies to test comments: state what
+the test pins, not which regression prompted it.
+
+This governs comments you write. Leave existing comments alone, even
+where they break the rule — do not rewrite them unless asked.
+
 ## Spec-driven development
 
 Spec Kit is the shared spec workflow. Slash commands:
