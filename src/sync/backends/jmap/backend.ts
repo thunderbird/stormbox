@@ -685,10 +685,7 @@ export class JmapBackend {
    *
    * Shared accounts are indexed too, but only after every primary
    * folder is covered, and only for folders the sidebar actually
-   * renders — subscribed shared folders, per FM-6.9. Without this a
-   * shared folder only ever advanced through foreground paging while
-   * the user sat in it, so its coverage stalled part-way and never
-   * resumed on its own.
+   * renders — subscribed shared folders, per FM-6.9.
    */
   async _runMetadataIndexerChunk() {
     if (this._indexerRunning || !this.account) return;
