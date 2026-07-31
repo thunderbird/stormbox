@@ -682,6 +682,13 @@ export class JmapBackend {
    * yields to any foreground ensureFolderWindow the user kicks off
    * mid-flight (which would bump _foregroundFolderWindowCount and
    * stall the *next* tick at the gate above).
+   *
+   * Shared accounts are indexed too, but only after every primary
+   * folder is covered, and only for folders the sidebar actually
+   * renders — subscribed shared folders, per FM-6.9. Without this a
+   * shared folder only ever advanced through foreground paging while
+   * the user sat in it, so its coverage stalled part-way and never
+   * resumed on its own.
    */
   async _runMetadataIndexerChunk() {
     if (this._indexerRunning || !this.account) return;
@@ -689,20 +696,25 @@ export class JmapBackend {
     this._indexerRunning = true;
     try {
       const serverCap = await this._loadMaxObjectsInGetCap();
+      const accountIds = this._sessionAccounts().map((a) => Number(a.id));
+      const placeholders = accountIds.map(() => '?').join(',');
+      const primaryId = Number(this.account.id);
       const folders = await this.handlers[DB_RPC.QUERY]({
         sql: `SELECT *
                 FROM folders
-               WHERE account_id = ?
+               WHERE account_id IN (${placeholders})
                  AND is_deleted = 0
                  AND COALESCE(total_emails, 0) > 0
-               ORDER BY CASE role
+                 AND (account_id = ? OR COALESCE(is_subscribed, 0) != 0)
+               ORDER BY CASE WHEN account_id = ? THEN 0 ELSE 1 END,
+                        CASE role
                           WHEN 'inbox' THEN 0
                           WHEN 'sent' THEN 1
                           WHEN 'archive' THEN 2
                           ELSE 3
                         END,
                         COALESCE(total_emails, 0) DESC`,
-        params: [this.account.id],
+        params: [...accountIds, primaryId, primaryId],
       });
       for (const folder of folders) {
         const progress = await this._queryViewProgress(folder);
@@ -720,7 +732,7 @@ export class JmapBackend {
         if ((result?.fetched ?? 0) > 0) {
           wlog.info(
             'jmap-backend',
-            `metadata indexer folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
+            `metadata indexer account=${this._accountForFolder(folder).remote_account_id} folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
           );
         }
         break;

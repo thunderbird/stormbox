@@ -151,9 +151,9 @@ async function readRanges() {
   );
 }
 
-async function readProgress(folderId) {
+async function readProgress(folderId, accountId = account.id) {
   return handlers[DB_RPC.QUERY_VIEW_PROGRESS]({
-    accountId: account.id,
+    accountId,
     folderId,
     sort: 'received',
   });
@@ -356,6 +356,142 @@ describe('metadata indexer: chunk-size selection', () => {
     await expect(backend._loadMaxObjectsInGetCap()).rejects.toThrow(
       /maxObjectsInGet/,
     );
+  });
+});
+
+describe('metadata indexer: shared accounts', () => {
+  // A shared folder used to be invisible to the indexer, whose folder
+  // query was scoped to the primary account id. Coverage only advanced
+  // through foreground paging while the user sat in the folder, so a
+  // partially-read shared folder stalled at whatever percent it had
+  // reached and never resumed on its own.
+  const SHARED_TOTAL = 120;
+  let sharedAccount;
+  let sharedFolder;
+
+  /**
+   * Attach a shared account carrying one folder, wired the way
+   * ingestSession would leave the backend after a Session advertising a
+   * second, non-primary account.
+   */
+  async function attachSharedAccount({ isSubscribed }) {
+    sharedAccount = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Team',
+      primaryEmail: 'team@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: sharedAccount.id,
+      folders: [{
+        remoteId: 'mb-shared',
+        name: 'Team Mail',
+        totalEmails: SHARED_TOTAL,
+        unreadEmails: 0,
+        isSubscribed,
+      }],
+    });
+    sharedFolder = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [sharedAccount.id, 'mb-shared'],
+    );
+    backend.sharedAccounts = [sharedAccount];
+    backend._accountsByLocalId = new Map(
+      [account, sharedAccount].map((a) => [Number(a.id), a]),
+    );
+  }
+
+  /**
+   * Replace the single-mailbox fixtures from the outer beforeEach with
+   * ones that answer for both accounts, keyed by the requested mailbox.
+   */
+  function registerTwoAccountFixtures() {
+    const totals = new Map([['mb-inbox', INBOX_TOTAL], ['mb-shared', SHARED_TOTAL]]);
+    const prefixes = new Map([['mb-inbox', 'e'], ['mb-shared', 's']]);
+    transport.handle('Email/query', (params) => {
+      const mailbox = params.filter?.inMailbox;
+      const total = totals.get(mailbox) ?? 0;
+      const position = Number(params.position ?? 0);
+      const limit = Number(params.limit ?? 100);
+      const ids = [];
+      for (let i = position; i < Math.min(position + limit, total); i += 1) {
+        ids.push(`${prefixes.get(mailbox)}-${i}`);
+      }
+      return {
+        accountId: params.accountId,
+        filter: params.filter,
+        sort: params.sort,
+        queryState: `qs-${mailbox}-${position}-${ids.length}`,
+        canCalculateChanges: true,
+        position,
+        total,
+        ids,
+      };
+    });
+    transport.handle('Email/get', (params) => ({
+      accountId: params.accountId,
+      state: 'es',
+      list: (params.ids ?? []).map((id) => ({
+        ...emailFixture(id),
+        mailboxIds: { [id.startsWith('s-') ? 'mb-shared' : 'mb-inbox']: true },
+      })),
+      notFound: [],
+    }));
+  }
+
+  /** Drive ticks until the primary Inbox is fully covered. */
+  async function coverPrimaryInbox() {
+    await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
+    await backend._runMetadataIndexerChunk();
+    const progress = await readProgress(inbox.id);
+    expect(progress.covered).toBe(INBOX_TOTAL);
+  }
+
+  beforeEach(() => {
+    registerTwoAccountFixtures();
+  });
+
+  it('indexes a subscribed shared folder once the primary account is covered', async () => {
+    await attachSharedAccount({ isSubscribed: true });
+    await coverPrimaryInbox();
+
+    expect((await readProgress(sharedFolder.id, sharedAccount.id)).covered).toBe(0);
+
+    await backend._runMetadataIndexerChunk();
+    const shared = await readProgress(sharedFolder.id, sharedAccount.id);
+    expect(shared.total).toBe(SHARED_TOTAL);
+    expect(shared.covered).toBe(SHARED_TOTAL);
+    expect(shared.percent).toBe(100);
+  });
+
+  it('finishes every primary folder before starting a shared one', async () => {
+    // Ordering pin: the signed-in account must not starve behind a
+    // shared folder. The Inbox still has 250 uncovered positions here,
+    // so the tick has to spend itself there.
+    backend = makeBackend({ indexerChunksPerTick: 1 });
+    await attachSharedAccount({ isSubscribed: true });
+    await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
+
+    await backend._runMetadataIndexerChunk();
+
+    expect((await readProgress(inbox.id)).covered).toBe(200);
+    expect((await readProgress(sharedFolder.id, sharedAccount.id)).covered).toBe(0);
+  });
+
+  it('never indexes an unsubscribed shared folder', async () => {
+    // An unsubscribed shared folder renders in neither the sidebar nor
+    // a message list (FM-6.9), so pulling its metadata would be pure
+    // waste.
+    await attachSharedAccount({ isSubscribed: false });
+    await coverPrimaryInbox();
+
+    const requestCountBefore = transport.requests.length;
+    await backend._runMetadataIndexerChunk();
+
+    expect(transport.requests.length).toBe(requestCountBefore);
+    expect((await readProgress(sharedFolder.id, sharedAccount.id)).covered).toBe(0);
   });
 });
 
