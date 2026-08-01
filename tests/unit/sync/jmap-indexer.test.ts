@@ -85,9 +85,19 @@ beforeEach(async () => {
   );
 
   transport = new MockTransport();
-  transport.handle('Email/query', (params) => {
-    // Stalwart-style positional Email/query: return up to `limit`
-    // ids starting from `position`, plus an authoritative total.
+  registerInboxFixtures(transport);
+
+  backend = makeBackend();
+});
+
+/**
+ * The default single-mailbox fixtures: Stalwart-style positional
+ * Email/query returning up to `limit` ids starting from `position`
+ * plus an authoritative total, and an Email/get answering fixtures
+ * for whatever ids it is handed.
+ */
+function registerInboxFixtures(t) {
+  t.handle('Email/query', (params) => {
     const position = Number(params.position ?? 0);
     const limit = Number(params.limit ?? 100);
     const ids = [];
@@ -105,15 +115,13 @@ beforeEach(async () => {
       ids,
     };
   });
-  transport.handle('Email/get', (params) => ({
+  t.handle('Email/get', (params) => ({
     accountId: account.remote_account_id,
     state: 'es',
     list: (params.ids ?? []).map(emailFixture),
     notFound: [],
   }));
-
-  backend = makeBackend();
-});
+}
 
 /**
  * Build a JmapBackend wired to the test engine + transport. Tests
@@ -363,13 +371,19 @@ describe('metadata indexer: shared accounts', () => {
   const SHARED_TOTAL = 120;
   let sharedAccount;
   let sharedFolder;
+  // Read lazily by the Email/query fixture so attachSharedAccount can
+  // grow the shared folder after the fixture was registered.
+  let currentSharedTotal = SHARED_TOTAL;
 
   /**
    * Attach a shared account carrying one folder, wired the way
    * ingestSession would leave the backend after a Session advertising a
-   * second, non-primary account.
+   * second, non-primary account. role/totalEmails override the shared
+   * folder's sort keys for tests that need it to outrank the primary
+   * Inbox on the secondary ORDER BY criteria.
    */
-  async function attachSharedAccount({ isSubscribed }) {
+  async function attachSharedAccount({ isSubscribed, role = null, totalEmails = SHARED_TOTAL }) {
+    currentSharedTotal = totalEmails;
     sharedAccount = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
       displayName: 'Team',
       primaryEmail: 'team@example.com',
@@ -383,7 +397,8 @@ describe('metadata indexer: shared accounts', () => {
       folders: [{
         remoteId: 'mb-shared',
         name: 'Team Mail',
-        totalEmails: SHARED_TOTAL,
+        role,
+        totalEmails,
         unreadEmails: 0,
         isSubscribed,
       }],
@@ -403,11 +418,10 @@ describe('metadata indexer: shared accounts', () => {
    * ones that answer for both accounts, keyed by the requested mailbox.
    */
   function registerTwoAccountFixtures() {
-    const totals = new Map([['mb-inbox', INBOX_TOTAL], ['mb-shared', SHARED_TOTAL]]);
     const prefixes = new Map([['mb-inbox', 'e'], ['mb-shared', 's']]);
     transport.handle('Email/query', (params) => {
       const mailbox = params.filter?.inMailbox;
-      const total = totals.get(mailbox) ?? 0;
+      const total = mailbox === 'mb-shared' ? currentSharedTotal : INBOX_TOTAL;
       const position = Number(params.position ?? 0);
       const limit = Number(params.limit ?? 100);
       const ids = [];
@@ -465,8 +479,18 @@ describe('metadata indexer: shared accounts', () => {
     // Ordering pin: the signed-in account must not starve behind a
     // shared folder. The Inbox still has 250 uncovered positions here,
     // so the tick has to spend itself there.
+    //
+    // The shared fixture deliberately outranks the primary Inbox on
+    // every secondary sort key — same 'inbox' role, larger
+    // total_emails — so without the account-priority CASE in the
+    // indexer SQL the tick would pick the shared folder first and
+    // both assertions below would fail.
     backend = makeBackend({ indexerChunksPerTick: 1 });
-    await attachSharedAccount({ isSubscribed: true });
+    await attachSharedAccount({
+      isSubscribed: true,
+      role: 'inbox',
+      totalEmails: INBOX_TOTAL + 250,
+    });
     await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
 
     await backend._runMetadataIndexerChunk();
@@ -541,5 +565,192 @@ describe('metadata indexer: yields to foreground requests mid-tick', () => {
     } finally {
       backend._foregroundFolderWindowCount = 0;
     }
+  });
+});
+
+describe('metadata indexer: folder failure isolation', () => {
+  /**
+   * Make Email/query against one mailbox answer a JMAP error tuple —
+   * the shape a server produces when e.g. a shared mailbox's
+   * mayReadItems was revoked while the folder stayed subscribed.
+   */
+  function armQueryError(mailboxId) {
+    transport.handleError('Email/query', (params) => (
+      params?.filter?.inMailbox === mailboxId
+        ? { type: 'forbidden', description: 'simulated revocation' }
+        : null
+    ));
+  }
+
+  beforeEach(() => {
+    transport = new MockTransport();
+    registerInboxFixtures(transport);
+    backend = makeBackend();
+  });
+
+  /** Requests that carried an Email/query filtered on the Inbox. */
+  function inboxQueryCount() {
+    return transport.requests.filter((req) =>
+      req.methodCalls.some(([name, params]) =>
+        name === 'Email/query' && params?.filter?.inMailbox === 'mb-inbox'),
+    ).length;
+  }
+
+  it('keeps indexing lower-priority folders when a higher-priority folder errors, and backs the failing folder off', async () => {
+    const ARCHIVE_TOTAL = 200;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{
+        remoteId: 'mb-archive',
+        name: 'Archive',
+        role: 'archive',
+        totalEmails: ARCHIVE_TOTAL,
+        unreadEmails: 0,
+      }],
+    });
+    const archive = await engine.get(
+      'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-archive'],
+    );
+    const totals = new Map([['mb-inbox', INBOX_TOTAL], ['mb-archive', ARCHIVE_TOTAL]]);
+    transport.handle('Email/query', (params) => {
+      const mailbox = params.filter?.inMailbox;
+      const total = totals.get(mailbox) ?? 0;
+      const position = Number(params.position ?? 0);
+      const limit = Number(params.limit ?? 100);
+      const ids = [];
+      for (let i = position; i < Math.min(position + limit, total); i += 1) {
+        ids.push(`${mailbox}-${i}`);
+      }
+      return {
+        accountId: params.accountId,
+        filter: params.filter,
+        sort: params.sort,
+        queryState: `qs-${mailbox}-${position}-${ids.length}`,
+        canCalculateChanges: true,
+        position,
+        total,
+        ids,
+      };
+    });
+    transport.handle('Email/get', (params) => ({
+      accountId: params.accountId,
+      state: 'es',
+      list: (params.ids ?? []).map((id) => ({
+        ...emailFixture(id),
+        mailboxIds: { [id.startsWith('mb-archive-') ? 'mb-archive' : 'mb-inbox']: true },
+      })),
+      notFound: [],
+    }));
+    // The Inbox outranks Archive (role sort 0 < 2), so without
+    // per-folder isolation its error would abort every tick and
+    // starve Archive forever.
+    armQueryError('mb-inbox');
+
+    await backend._runMetadataIndexerChunk();
+
+    // The same tick moved past the erroring Inbox and fully indexed
+    // the healthy Archive behind it.
+    expect((await readProgress(inbox.id)).covered).toBe(0);
+    expect((await readProgress(archive.id)).covered).toBe(ARCHIVE_TOTAL);
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(true);
+    expect(inboxQueryCount()).toBe(1);
+
+    // While backed off, subsequent ticks skip the Inbox entirely —
+    // no re-query every 250 ms.
+    const requestsAfterFirstTick = transport.requests.length;
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(1);
+    expect(transport.requests.length).toBe(requestsAfterFirstTick);
+  });
+
+  it('does not hot-loop when the server overstates the total and tail pages come back empty', async () => {
+    // The folder row and every Email/query response claim
+    // INBOX_TOTAL, but the server stops returning ids at REAL_TOTAL
+    // (e.g. contents purged server-side, totals not yet re-synced).
+    // The gap at REAL_TOTAL can never be filled; the indexer must
+    // back the folder off instead of re-probing it every tick.
+    const REAL_TOTAL = 200;
+    transport.handle('Email/query', (params) => {
+      const position = Number(params.position ?? 0);
+      const limit = Number(params.limit ?? 100);
+      const ids = [];
+      for (let i = position; i < Math.min(position + limit, REAL_TOTAL); i += 1) {
+        ids.push(`e-${i}`);
+      }
+      return {
+        accountId: account.remote_account_id,
+        filter: params.filter,
+        sort: params.sort,
+        queryState: `qs-${position}-${ids.length}`,
+        canCalculateChanges: true,
+        position,
+        total: INBOX_TOTAL,
+        ids,
+      };
+    });
+    await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
+
+    // First tick covers the honest gap (100..200) and stops at the
+    // first empty page rather than probing further empty offsets.
+    await backend._runMetadataIndexerChunk();
+    expect((await readProgress(inbox.id)).covered).toBe(REAL_TOTAL);
+
+    // Second tick probes the stuck gap exactly once (a dense JMAP
+    // result that is empty at 200 has nothing at 300 either), marks
+    // the folder failed, and backs it off.
+    const queriesBeforeStuckTick = inboxQueryCount();
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(queriesBeforeStuckTick + 1);
+    expect((await readProgress(inbox.id)).covered).toBe(REAL_TOTAL);
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(true);
+
+    // Third tick: backed off, so no traffic at all.
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(queriesBeforeStuckTick + 1);
+  });
+
+  it('does not hot-loop when the live query says the folder is empty but the cached total says otherwise', async () => {
+    // Folder row still claims INBOX_TOTAL (so it passes the candidate
+    // SQL prefilter) but the live Email/query answers total 0, ids []
+    // (folder purged server-side before folder totals re-synced).
+    // No range is ever recorded, so coverage never advances.
+    transport.handle('Email/query', (params) => ({
+      accountId: account.remote_account_id,
+      filter: params.filter,
+      sort: params.sort,
+      queryState: 'qs-empty',
+      canCalculateChanges: true,
+      position: Number(params.position ?? 0),
+      total: 0,
+      ids: [],
+    }));
+
+    // One probe per tick attempt — the empty-ids break must stop the
+    // chunk loop from re-issuing the identical position-0 query for
+    // every remaining chunk in the tick.
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(1);
+    expect((await readProgress(inbox.id)).covered).toBe(0);
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(true);
+
+    // Backed off on the following tick rather than re-probed.
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(1);
+  });
+
+  it('resumes indexing a folder once its failure clears and the sync succeeds', async () => {
+    armQueryError('mb-inbox');
+    await backend._runMetadataIndexerChunk();
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(true);
+    expect((await readProgress(inbox.id)).covered).toBe(0);
+
+    transport.clearError('Email/query');
+    // Expire the backoff so the next tick retries immediately.
+    backend._indexerFolderFailures.get(inbox.id).nextRetryAfter = 0;
+
+    await backend._runMetadataIndexerChunk();
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(false);
+    expect((await readProgress(inbox.id)).covered).toBe(INBOX_TOTAL);
   });
 });

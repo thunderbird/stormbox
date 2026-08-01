@@ -20,7 +20,7 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
-import { callJmap, pickResponse } from './invoke';
+import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
 
 /**
@@ -96,10 +96,7 @@ export async function syncFolderWindow({
     ],
     useWebSocket,
   });
-  const query = pickResponse(result, 'Email/query');
-  if (!query) {
-    throw new Error('Email/query returned no payload');
-  }
+  const query = requireResponse(result, 'Email/query');
 
   const ids = query.ids ?? [];
   const resolvedPosition = Number.isFinite(query.position)
