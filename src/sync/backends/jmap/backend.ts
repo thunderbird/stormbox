@@ -64,6 +64,14 @@ const SUBSCRIBED_TYPES = [
 // browsed other folders.
 const ACTIVE_VIEW_REFRESH_LIMIT = 5;
 
+// How many folders a single indexer tick may attempt and fail before
+// giving up for the tick. Bounds the burst when a whole account's
+// folders fail at once (e.g. a revoked shared session answers every
+// Email/query with an error tuple): the sweep pushes every failing
+// folder into backoff over a few ticks instead of issuing one failing
+// round trip per folder per tick.
+const INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK = 3;
+
 export class JmapBackend {
   transport: any;
   serverOrigin: string;
@@ -84,6 +92,11 @@ export class JmapBackend {
   _eagerBodyPrefetchCap: number;
   _indexerTickDelayMs: number;
   _indexerChunksPerTick: number;
+  _indexerFolderFailures: Map<number, { count: number; nextRetryAfter: number }>;
+  _indexerFailureBackoffBaseMs: number;
+  _indexerFailureBackoffMaxMs: number;
+  _indexerTickFailures: number;
+  _indexerTickMaxDelayMs: number;
   outboxRunner: any;
   _outboxRunnerOptions: any;
   _bootstrappedPromise: Promise<void> | null;
@@ -158,6 +171,21 @@ export class JmapBackend {
     // more records than the server is willing to return.
     this._indexerTickDelayMs = options.indexerTickDelayMs ?? 250;
     this._indexerChunksPerTick = options.indexerChunksPerTick ?? 5;
+    // Per-folder indexer failure backoff, in-memory only (a restart
+    // resets it). A folder whose sync throws — or that returns without
+    // advancing coverage — is skipped until its backoff expires, so
+    // one bad folder can neither hot-loop the tick nor starve the
+    // folders ordered behind it. 30 s base is 120 ticks: a stuck
+    // folder drops from four probes/second to two/minute, and the 15
+    // min cap bounds a permanently-dead folder to four probes/hour.
+    this._indexerFolderFailures = new Map();
+    this._indexerFailureBackoffBaseMs = options.indexerFailureBackoffBaseMs ?? 30_000;
+    this._indexerFailureBackoffMaxMs = options.indexerFailureBackoffMaxMs ?? 15 * 60_000;
+    // Consecutive whole-tick failures (candidate SQL or the session
+    // capability probe throwing before the folder loop) back the
+    // scheduler itself off exponentially up to this cap.
+    this._indexerTickFailures = 0;
+    this._indexerTickMaxDelayMs = options.indexerTickMaxDelayMs ?? 30_000;
     // Created in start() once we know our local account.id. Owns the
     // pending_mutations drain loop: auto-draining on insert (via the
     // makeHandlers hook), on StateChange (any push that signals the
@@ -650,6 +678,15 @@ export class JmapBackend {
       fetched += result?.fetched ?? 0;
       total = Number(result?.total ?? total);
       offset = gap.offset + gap.limit;
+      if ((result?.ids?.length ?? 0) === 0) {
+        // A JMAP query result is a dense list: empty at this position
+        // means the server's real result ends here (or its advertised
+        // total was overstated), so later offsets can only be empty
+        // too. Without this break, the effectiveTotal<=0 fallback in
+        // _nextQueryViewGap — which ignores startAt — re-issues the
+        // identical position-0 probe for every remaining chunk.
+        break;
+      }
     }
     return { fetched, total };
   }
@@ -662,11 +699,30 @@ export class JmapBackend {
     this._indexerTimer = setTimeout(() => {
       this._indexerTimer = null;
       this._runMetadataIndexerChunk()
-        .catch((err) => wlog.warn('jmap-backend', 'metadata indexer failed', err))
+        .then(() => {
+          this._indexerTickFailures = 0;
+        })
+        .catch((err) => {
+          // Whole-tick failures (candidate SQL, the session capability
+          // probe, or a scaffolding bug) never reach the network, but
+          // without backoff they would spin the worker and flood the
+          // log every 250 ms forever. Back off exponentially, capped,
+          // until a tick succeeds again.
+          this._indexerTickFailures += 1;
+          wlog.warn('jmap-backend', 'metadata indexer failed', err);
+        })
         .finally(() => {
-          if (this._started) this._scheduleMetadataIndexer(this._indexerTickDelayMs);
+          if (this._started) this._scheduleMetadataIndexer(this._indexerTickFailureDelayMs());
         });
     }, effectiveDelay);
+  }
+
+  _indexerTickFailureDelayMs() {
+    if (this._indexerTickFailures === 0) return this._indexerTickDelayMs;
+    return Math.min(
+      this._indexerTickDelayMs * 2 ** this._indexerTickFailures,
+      this._indexerTickMaxDelayMs,
+    );
   }
 
   /**
@@ -677,11 +733,24 @@ export class JmapBackend {
    * `_selectIndexerChunkSize`) and is clamped against the server's
    * advertised maxObjectsInGet.
    *
-   * `break` after one folder per tick is intentional: it keeps the
-   * WS connection serving a predictable single-folder stream and
-   * yields to any foreground ensureFolderWindow the user kicks off
-   * mid-flight (which would bump _foregroundFolderWindowCount and
-   * stall the *next* tick at the gate above).
+   * `break` after one SUCCESSFUL folder per tick is intentional: it
+   * keeps the WS connection serving a predictable single-folder
+   * stream and yields to any foreground ensureFolderWindow the user
+   * kicks off mid-flight (which would bump
+   * _foregroundFolderWindowCount and stall the *next* tick at the
+   * gate above).
+   *
+   * A folder whose sync throws (e.g. a still-subscribed shared
+   * mailbox whose mayReadItems was revoked, so Email/query answers a
+   * JMAP error tuple) or that returns without advancing coverage (an
+   * overstated server total whose tail pages keep coming back empty)
+   * must not abort the tick: the failure is recorded in
+   * `_indexerFolderFailures` with exponential backoff and the tick
+   * moves on to the next candidate, so one bad folder neither
+   * hot-loops every 250 ms nor starves every folder ordered behind
+   * it. At most INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK failing folders
+   * are walked per tick, bounding the burst when an entire account
+   * is failing.
    *
    * Shared accounts are indexed too, but only after every primary
    * folder is covered, and only for folders the sidebar actually
@@ -713,29 +782,91 @@ export class JmapBackend {
                         COALESCE(total_emails, 0) DESC`,
         params: [...accountIds, primaryId, primaryId],
       });
+      this._pruneIndexerFolderFailures(folders);
+      let failedAttempts = 0;
       for (const folder of folders) {
-        const progress = await this._queryViewProgress(folder);
-        if (progress.total > 0 && progress.covered >= progress.total) {
+        const failure = this._indexerFolderFailures.get(folder.id);
+        if (failure && failure.nextRetryAfter > Date.now()) {
           continue;
         }
-        const effectiveTotal = progress.total || Number(folder.total_emails ?? 0);
-        const chunkLimit = this._selectIndexerChunkSize(effectiveTotal, serverCap);
-        const result = await this.ensureFolderIndex(folder.id, {
-          limit: chunkLimit,
-          maxChunks: this._indexerChunksPerTick,
-          total: effectiveTotal,
-          yieldToForeground: true,
-        });
-        if ((result?.fetched ?? 0) > 0) {
-          wlog.info(
-            'jmap-backend',
-            `metadata indexer account=${this._accountForFolder(folder).remote_account_id} folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
-          );
+        try {
+          const progress = await this._queryViewProgress(folder);
+          if (progress.total > 0 && progress.covered >= progress.total) {
+            this._indexerFolderFailures.delete(folder.id);
+            continue;
+          }
+          const effectiveTotal = progress.total || Number(folder.total_emails ?? 0);
+          const chunkLimit = this._selectIndexerChunkSize(effectiveTotal, serverCap);
+          const result = await this.ensureFolderIndex(folder.id, {
+            limit: chunkLimit,
+            maxChunks: this._indexerChunksPerTick,
+            total: effectiveTotal,
+            yieldToForeground: true,
+          });
+          if ((result?.fetched ?? 0) > 0) {
+            wlog.info(
+              'jmap-backend',
+              `metadata indexer account=${this._accountForFolder(folder).remote_account_id} folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
+            );
+            this._indexerFolderFailures.delete(folder.id);
+            break;
+          }
+          // The sync returned without throwing but fetched nothing.
+          // It only counts as stuck when coverage did not move at
+          // all: a concurrent foreground sync may have advanced it,
+          // and a server that corrected an overstated total downward
+          // may have completed it — neither is a failure.
+          const after = await this._queryViewProgress(folder);
+          const advanced = after.covered > progress.covered;
+          const complete = after.total > 0 && after.covered >= after.total;
+          if (advanced || complete) {
+            this._indexerFolderFailures.delete(folder.id);
+            break;
+          }
+          this._markIndexerFolderFailed(folder, 'no coverage progress');
+          failedAttempts += 1;
+        } catch (err) {
+          this._markIndexerFolderFailed(folder, err);
+          failedAttempts += 1;
         }
-        break;
+        if (failedAttempts >= INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK) break;
       }
     } finally {
       this._indexerRunning = false;
+    }
+  }
+
+  /**
+   * Record an indexer failure for one folder and skip it until the
+   * backoff expires. The entry is cleared the next time the folder
+   * makes progress, becomes fully covered, or leaves the candidate
+   * set; user-visible folders usually recover sooner through the
+   * foreground / push sync paths, which never consult this map.
+   */
+  _markIndexerFolderFailed(folder, reason) {
+    const prev = this._indexerFolderFailures.get(folder.id);
+    const count = (prev?.count ?? 0) + 1;
+    const delay = Math.min(
+      this._indexerFailureBackoffBaseMs * 2 ** (count - 1),
+      this._indexerFailureBackoffMaxMs,
+    );
+    this._indexerFolderFailures.set(folder.id, {
+      count,
+      nextRetryAfter: Date.now() + delay,
+    });
+    wlog.warn(
+      'jmap-backend',
+      `metadata indexer folder=${folder.name} attempt ${count} failed; retry in ${delay}ms`,
+      reason,
+    );
+  }
+
+  /** Drop failure entries for folders no longer in the candidate set. */
+  _pruneIndexerFolderFailures(folders) {
+    if (this._indexerFolderFailures.size === 0) return;
+    const candidateIds = new Set(folders.map((f) => Number(f.id)));
+    for (const id of [...this._indexerFolderFailures.keys()]) {
+      if (!candidateIds.has(id)) this._indexerFolderFailures.delete(id);
     }
   }
 

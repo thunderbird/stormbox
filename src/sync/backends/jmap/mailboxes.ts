@@ -13,7 +13,7 @@
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
 import { JMAP_CAPS } from './transport';
-import { callJmap, pickResponse } from './invoke';
+import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
 
 const MAILBOX_PROPERTIES = [
@@ -32,9 +32,13 @@ const MAX_CHANGES_PAGES = 20;
  * the first response fills the cap we page the id list via
  * Mailbox/query and fetch the remainder in id-chunks. The common case
  * (fewer mailboxes than the cap) stays a single round-trip.
+ *
+ * Every call here is required: the caller treats the returned list as
+ * the account's complete mailbox set (FM-1.7), so a rejected call must
+ * fail the sync rather than shrink the list.
  */
 async function fetchAllMailboxes({ transport, account, useWebSocket }) {
-  const first = pickResponse(await callJmap(transport, {
+  const first = requireResponse(await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[
       'Mailbox/get',
@@ -43,8 +47,8 @@ async function fetchAllMailboxes({ transport, account, useWebSocket }) {
     ]],
     useWebSocket,
   }), 'Mailbox/get');
-  let list = first?.list ?? [];
-  let state = first?.state;
+  let list = first.list ?? [];
+  let state = first.state;
   const cap = maxObjectsInGet(transport);
   if (list.length < cap) {
     return { list, state };
@@ -53,7 +57,7 @@ async function fetchAllMailboxes({ transport, account, useWebSocket }) {
   // Possibly truncated: collect every id, then fetch the ones we miss.
   const ids = [];
   for (let position = 0; ;) {
-    const query = pickResponse(await callJmap(transport, {
+    const query = requireResponse(await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
       methodCalls: [[
         'Mailbox/query',
@@ -62,16 +66,16 @@ async function fetchAllMailboxes({ transport, account, useWebSocket }) {
       ]],
       useWebSocket,
     }), 'Mailbox/query');
-    const got = query?.ids ?? [];
+    const got = query.ids ?? [];
     ids.push(...got);
-    const total = Number(query?.total);
+    const total = Number(query.total);
     if (got.length === 0 || (Number.isFinite(total) && ids.length >= total)) break;
     position += got.length;
   }
   const have = new Set(list.map((m) => m.id));
   const missing = ids.filter((id) => !have.has(id));
   for (let i = 0; i < missing.length; i += cap) {
-    const got = pickResponse(await callJmap(transport, {
+    const got = requireResponse(await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
       methodCalls: [[
         'Mailbox/get',
@@ -84,8 +88,8 @@ async function fetchAllMailboxes({ transport, account, useWebSocket }) {
       ]],
       useWebSocket,
     }), 'Mailbox/get');
-    list = list.concat(got?.list ?? []);
-    state = got?.state ?? state;
+    list = list.concat(got.list ?? []);
+    state = got.state ?? state;
   }
   return { list, state };
 }
@@ -208,8 +212,10 @@ export async function syncMailboxChanges({ transport, account, handlers, sinceSt
         ]],
         useWebSocket,
       });
-      const got = pickResponse(getResult, 'Mailbox/get');
-      upserted = upserted.concat(got?.list ?? []);
+      // Required: newState below is persisted as "every change applied",
+      // so a rejected page must not be skipped (FM-1.8).
+      const got = requireResponse(getResult, 'Mailbox/get');
+      upserted = upserted.concat(got.list ?? []);
     }
     await persistMailboxes({ account, mailboxes: upserted, handlers });
   }

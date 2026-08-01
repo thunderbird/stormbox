@@ -340,6 +340,137 @@ describe('syncMailboxes (full sync)', () => {
   });
 });
 
+describe('syncMailboxes: a rejected call is not an empty mailbox list', () => {
+  /**
+   * FM-1.7: only a complete response is authoritative. A rejected call
+   * carries no payload, which read as an empty list would tombstone
+   * every folder in the account and store a NULL Mailbox state.
+   */
+  async function seedFolders() {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+        { remoteId: 'mb-docs', name: 'Documents' },
+      ],
+    });
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: account.id,
+      objectType: 'Mailbox',
+      state: 'mb-state-known',
+    });
+  }
+
+  async function expectFoldersIntact() {
+    const rows = await engine.all(
+      'SELECT remote_id, is_deleted FROM folders WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    expect(rows).toEqual([
+      { remote_id: 'mb-docs', is_deleted: 0 },
+      { remote_id: 'mb-inbox', is_deleted: 0 },
+    ]);
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'Mailbox',
+    });
+    expect(stateRow.state).toBe('mb-state-known');
+  }
+
+  it('fails the sync when the first Mailbox/get is rejected', async () => {
+    const transport = new MockTransport();
+    transport.handleError('Mailbox/get', { type: 'forbidden' });
+    await seedFolders();
+
+    await expect(syncMailboxes({ transport, account, handlers, repairArchive: false }))
+      .rejects.toThrow(/Mailbox\/get returned no payload \(forbidden\)/);
+
+    await expectFoldersIntact();
+  });
+
+  it('fails the sync when a Mailbox/query page is rejected mid-pagination', async () => {
+    const transport = new MockTransport({
+      capabilities: { 'urn:ietf:params:jmap:core': { maxObjectsInGet: 2 } },
+    });
+    // The first get fills the cap, so paging starts; the query that
+    // enumerates the remaining ids is then rejected.
+    transport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+        { id: 'mb-docs', name: 'Documents' },
+      ],
+      state: 'mb-partial',
+    }));
+    transport.handleError('Mailbox/query', { type: 'serverFail' });
+    await seedFolders();
+
+    await expect(syncMailboxes({ transport, account, handlers, repairArchive: false }))
+      .rejects.toThrow(/Mailbox\/query returned no payload \(serverFail\)/);
+
+    await expectFoldersIntact();
+  });
+
+  it('fails the sync when a paged Mailbox/get is rejected after the id list resolved', async () => {
+    const transport = new MockTransport({
+      capabilities: { 'urn:ietf:params:jmap:core': { maxObjectsInGet: 2 } },
+    });
+    let gets = 0;
+    transport.handle('Mailbox/get', () => {
+      gets += 1;
+      return {
+        list: [
+          { id: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+          { id: 'mb-docs', name: 'Documents' },
+        ],
+        state: 'mb-partial',
+      };
+    });
+    transport.handle('Mailbox/query', (params) => ({
+      ids: ['mb-inbox', 'mb-docs', 'mb-extra'].slice(
+        params.position, params.position + params.limit,
+      ),
+      total: 3,
+      position: params.position,
+    }));
+    // Reject only the follow-up get that fetches the ids the truncated
+    // first response missed.
+    transport.handleError('Mailbox/get', () => (gets >= 1 ? { type: 'serverUnavailable' } : null));
+    await seedFolders();
+
+    await expect(syncMailboxes({ transport, account, handlers, repairArchive: false }))
+      .rejects.toThrow(/Mailbox\/get returned no payload \(serverUnavailable\)/);
+
+    await expectFoldersIntact();
+  });
+
+  it('still treats a genuinely empty mailbox list as authoritative', async () => {
+    // FM-1.11: an account that yields no folders is a valid answer and
+    // must stay distinguishable from a rejected call.
+    const transport = new MockTransport();
+    transport.handle('Mailbox/get', () => ({ list: [], state: 'mb-empty' }));
+    await seedFolders();
+
+    const result = await syncMailboxes({
+      transport, account, handlers, repairArchive: false,
+    });
+
+    expect(result.count).toBe(0);
+    const rows = await engine.all(
+      'SELECT remote_id, is_deleted FROM folders WHERE account_id = ? ORDER BY remote_id',
+      [account.id],
+    );
+    expect(rows).toEqual([
+      { remote_id: 'mb-docs', is_deleted: 1 },
+      { remote_id: 'mb-inbox', is_deleted: 1 },
+    ]);
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'Mailbox',
+    });
+    expect(stateRow.state).toBe('mb-empty');
+  });
+});
+
 describe('syncMailboxChanges (delta sync)', () => {
   it('creates and updates folders, marks destroyed folders deleted', async () => {
     const transport = new MockTransport();
@@ -406,6 +537,37 @@ describe('syncMailboxChanges (delta sync)', () => {
       objectType: 'Mailbox',
     });
     expect(stateRow.state).toBe('s1');
+  });
+
+  it('does not advance the state token when a Mailbox/get page is rejected', async () => {
+    // FM-1.8: the terminal state is persisted only after every page
+    // applies. Skipping a rejected page would strand those folders at
+    // a state token that claims they were already synced.
+    const transport = new MockTransport();
+    await handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: account.id,
+      objectType: 'Mailbox',
+      state: 's0',
+    });
+    transport.handle('Mailbox/changes', () => ({
+      oldState: 's0',
+      newState: 's1',
+      hasMoreChanges: false,
+      created: ['mb-new'],
+      updated: [],
+      destroyed: [],
+    }));
+    transport.handleError('Mailbox/get', { type: 'serverFail' });
+
+    await expect(syncMailboxChanges({
+      transport, account, handlers, sinceState: 's0',
+    })).rejects.toThrow(/Mailbox\/get returned no payload \(serverFail\)/);
+
+    const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'Mailbox',
+    });
+    expect(stateRow.state).toBe('s0');
   });
 
   it('follows hasMoreChanges across multiple Mailbox/changes pages', async () => {

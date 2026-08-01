@@ -11,6 +11,7 @@
 export class MockTransport {
   _session: any;
   _handlers: Map<string, (params: any, callId?: string) => any>;
+  _errors: Map<string, any>;
   requests: Array<{ using: any; methodCalls: any }>;
   uploads: Array<{ accountId: string; type: string; body: any }>;
   _uploadHandler: ((args: { accountId: string; type: string; body: any }) => any) | null;
@@ -25,6 +26,7 @@ export class MockTransport {
       },
     };
     this._handlers = new Map();
+    this._errors = new Map();
     this._handlers.set('Mailbox/get', (params) => ({
       list: (params.ids ?? []).map((id) => ({
         id,
@@ -56,6 +58,23 @@ export class MockTransport {
    */
   handle(methodName: string, fn: (params: any, callId?: string) => any) {
     this._handlers.set(methodName, fn);
+  }
+
+  /**
+   * Answer a method with a JMAP `["error", args, id]` tuple (RFC 8620
+   * §3.1.2) instead of its own response tuple — what a server sends
+   * when it rejects the call but the request itself succeeded. Pass the
+   * error args, or a function of the call params returning args (null
+   * to answer that call normally). A later call whose back reference
+   * points at a rejected call answers invalidResultReference, as a
+   * server does.
+   */
+  handleError(methodName: string, error: any) {
+    this._errors.set(methodName, error);
+  }
+
+  clearError(methodName: string) {
+    this._errors.delete(methodName);
   }
 
   /**
@@ -93,19 +112,39 @@ export class MockTransport {
     const responses: any[] = [];
     const byCallId = new Map<string, any[]>();
     for (const [methodName, rawParams, callId] of methodCalls) {
-      const handler = this._handlers.get(methodName);
-      if (!handler) {
-        throw new Error(`MockTransport has no handler for ${methodName}`);
-      }
-      const params = resolveResultRefs(rawParams, byCallId);
-      const payload = await handler(params, callId);
-      const tuple = [methodName, payload, callId];
+      const tuple = await this._respond(methodName, rawParams, callId, byCallId);
       responses.push(tuple);
       byCallId.set(callId, tuple);
     }
     return { methodResponses: responses };
   }
+
+  async _respond(methodName: string, rawParams: any, callId: string, byCallId: Map<string, any[]>) {
+    let params;
+    try {
+      params = resolveResultRefs(rawParams, byCallId);
+    } catch (err) {
+      // A back reference into a rejected call cannot resolve, so the
+      // server rejects this call too (RFC 8620 §3.1.3). Scaffolding
+      // mistakes still throw.
+      if (!(err instanceof ResultReferenceError)) throw err;
+      return ['error', { type: 'invalidResultReference' }, callId];
+    }
+    const error = this._errors.get(methodName);
+    const errorArgs = typeof error === 'function' ? error(params) : error;
+    if (errorArgs) {
+      return ['error', errorArgs, callId];
+    }
+    const handler = this._handlers.get(methodName);
+    if (!handler) {
+      throw new Error(`MockTransport has no handler for ${methodName}`);
+    }
+    return [methodName, await handler(params, callId), callId];
+  }
 }
+
+/** A result reference that cannot resolve because its target was rejected. */
+export class ResultReferenceError extends Error {}
 
 /**
  * RFC 8620 §3.1.3 result references. Method-call args may contain
@@ -125,6 +164,11 @@ export function resolveResultRefs(value: any, byCallId: Map<string, any[]>): any
       const tuple = byCallId.get(ref.resultOf);
       if (!tuple) {
         throw new Error(`MockTransport: unknown resultOf '${ref.resultOf}'`);
+      }
+      if (tuple[0] === 'error') {
+        throw new ResultReferenceError(
+          `MockTransport: '${ref.resultOf}' answered an error tuple`,
+        );
       }
       if (tuple[0] !== ref.name) {
         throw new Error(`MockTransport: resultOf method mismatch (expected ${ref.name}, got ${tuple[0]})`);
