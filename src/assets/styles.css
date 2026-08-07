@@ -81,7 +81,7 @@
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
-  --border: #1e2230;
+  --border: #3e4764; /* 2.0:1 on --panel; the old #1e2230 sat at 1.17:1, invisible on dark */
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
@@ -96,6 +96,10 @@
   --warn-bg: rgba(255, 193, 7, 0.1);
   --warn-fg: #ffd166;
   --warn-border: rgba(255, 193, 7, 0.38);
+  /* Errors (invalid pills, inline failures): light red on a red wash,
+     readable over --panel and --panel2. */
+  --error-bg: rgba(255, 107, 107, 0.14);
+  --error-fg: #ff6b6b;
   color-scheme: dark light;
 }
 
@@ -105,7 +109,7 @@ html.dark,
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
-  --border: #1e2230;
+  --border: #3e4764; /* 2.0:1 on --panel; the old #1e2230 sat at 1.17:1, invisible on dark */
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
@@ -114,6 +118,8 @@ html.dark,
   --warn-bg: rgba(255, 193, 7, 0.1);
   --warn-fg: #ffd166;
   --warn-border: rgba(255, 193, 7, 0.38);
+  --error-bg: rgba(255, 107, 107, 0.14);
+  --error-fg: #ff6b6b;
 }
 
 html.light,
@@ -121,7 +127,7 @@ html.light,
   --bg: #f6f8fc;
   --panel: #ffffff;
   --panel2: #f4f7fb;
-  --border: #dbe1ea;
+  --border: #ced3dc; /* 1.5:1 on --panel; the old #dbe1ea sat at 1.31:1 */
   --text: #111827;
   --muted: #6b7280;
   /* Light mode adopts services-ui's primary blue (--colour-primary-default,
@@ -135,6 +141,9 @@ html.light,
   --warn-bg: #fdf4d0;
   --warn-fg: #664700;
   --warn-border: #e7c34d;
+  /* Deep red on a solid pale-red field; #a4000f on #fbeaea ≈ 7.6:1. */
+  --error-bg: #fbeaea;
+  --error-fg: #a4000f;
 }
 
 /* If user prefers light and no explicit theme chosen, use light */
@@ -143,7 +152,7 @@ html.light,
     --bg: #f6f8fc;
     --panel: #ffffff;
     --panel2: #f4f7fb;
-    --border: #dbe1ea;
+    --border: #ced3dc; /* 1.5:1 on --panel; the old #dbe1ea sat at 1.31:1 */
     --text: #111827;
     --muted: #6b7280;
     --accent: #1373d9;
@@ -152,6 +161,8 @@ html.light,
     --warn-bg: #fdf4d0;
     --warn-fg: #664700;
     --warn-border: #e7c34d;
+    --error-bg: #fbeaea;
+    --error-fg: #a4000f;
   }
 }
 

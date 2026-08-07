@@ -136,6 +136,14 @@ export function useThunderbirdShortcuts({
         if (focused?.matches?.('.compose-dialog [role="combobox"][aria-expanded="true"]')) {
           return;
         }
+        // An open dropdown owns Escape the same way, but is checked
+        // document-wide rather than by focus: its summary keeps focus in
+        // the editor on purpose, so the menu is open while focus sits
+        // elsewhere. The widget's own capture listener registers after
+        // this one, so standing down is what lets it act.
+        if (document.querySelector('.compose-dialog details[data-dropdown-group][open]')) {
+          return;
+        }
         event.preventDefault();
         composeStore.close();
       }

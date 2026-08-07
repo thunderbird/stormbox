@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
+  Check,
   ChevronRight,
   FolderRoot,
   Pencil,
@@ -18,6 +19,7 @@ import { useMailStore } from '../stores/mail-store';
 import type { AccountRow, FolderRow } from '../types';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { folderSortKey } from '../utils/folder-presentation';
+import AppDropdown from './AppDropdown.vue';
 import FolderCreateDialog from './FolderCreateDialog.vue';
 
 const emit = defineEmits<{ close: [] }>();
@@ -767,6 +769,19 @@ const editorParentOptions = computed<ParentOption[]>(() => {
   return options;
 });
 
+/** The closed control shows the choice without its tree indentation. */
+const editorParentLabel = computed(() => {
+  const chosen = editorParentOptions.value
+    .find((option) => option.id === (editorParentId.value ?? null));
+  return (chosen?.label ?? 'Top Level').replace(/^\u00a0+/, '');
+});
+
+function pickEditorParent(id: number | null, event: Event) {
+  editorParentId.value = id;
+  const details = (event.currentTarget as HTMLElement).closest('details');
+  if (details) details.open = false;
+}
+
 async function saveEditor(row: DialogFolderRow) {
   if (editorBusy.value) return;
   const changes: { name?: string; parentFolderId?: number | null } = {};
@@ -923,6 +938,13 @@ onBeforeUnmount(() => {
             :ref="measureElement"
             :data-index="virtualRow.index"
             class="folder-subs__item"
+            :class="{
+              // Every transformed row is its own stacking context, so a
+              // dropdown opened in the editor would paint under the rows
+              // that follow; the editing row is lifted above its siblings.
+              'folder-subs__item--editing':
+                item.kind === 'row' && editingFolderId === item.row.folder.id,
+            }"
             :style="{ transform: `translateY(${virtualRow.start}px)` }"
           >
             <h3
@@ -1147,21 +1169,35 @@ onBeforeUnmount(() => {
                       @keydown.enter.prevent="saveEditor(item.row)"
                     />
                   </label>
-                  <label class="folder-subs__editor-field">
-                    <span>Parent</span>
-                    <select
-                      v-model="editorParentId"
-                      class="folder-subs__editor-input"
+                  <div class="folder-subs__editor-field">
+                    <span :id="`folder-move-label-${item.row.folder.id}`">Parent</span>
+                    <AppDropdown
+                      class="folder-subs__parent"
                       :disabled="!item.row.canRename || editorBusy"
                       data-folder-move-select
                     >
-                      <option
-                        v-for="option in editorParentOptions"
-                        :key="option.id ?? 'root'"
-                        :value="option.id"
-                      >{{ option.label }}</option>
-                    </select>
-                  </label>
+                      <summary
+                        class="app-dropdown__summary folder-subs__parent-summary"
+                        :aria-labelledby="`folder-move-label-${item.row.folder.id}`"
+                      >{{ editorParentLabel }}</summary>
+                      <div class="app-dropdown__menu folder-subs__parent-menu" role="menu" aria-label="Move to parent">
+                        <button
+                          v-for="option in editorParentOptions"
+                          :key="option.id ?? 'root'"
+                          type="button"
+                          class="app-dropdown__item"
+                          role="menuitemradio"
+                          :aria-checked="editorParentId === option.id"
+                          :data-folder-move-option="option.id ?? 'root'"
+                          @click="pickEditorParent(option.id, $event)"
+                        >
+                          <Check v-if="editorParentId === option.id" :size="14" />
+                          <span v-else aria-hidden="true" />
+                          <span>{{ option.label }}</span>
+                        </button>
+                      </div>
+                    </AppDropdown>
+                  </div>
                   <p v-if="editorError" class="folder-subs__editor-error">{{ editorError }}</p>
                   <div class="folder-subs__editor-actions">
                     <button
@@ -1455,6 +1491,9 @@ onBeforeUnmount(() => {
   left: 0;
   width: 100%;
 }
+.folder-subs__item--editing {
+  z-index: 1;
+}
 .folder-subs__account-name {
   display: flex;
   align-items: center;
@@ -1740,6 +1779,29 @@ onBeforeUnmount(() => {
 .folder-subs__editor-field > span {
   flex-shrink: 0;
   width: 60px;
+}
+.folder-subs__parent {
+  flex: 1;
+  min-width: 0;
+}
+/* The field look of .folder-subs__editor-input, on a summary. */
+.folder-subs__parent-summary {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.folder-subs__parent-summary::after {
+  margin-left: auto;
+}
+.folder-subs__parent-menu {
+  right: 0;
 }
 .folder-subs__editor-input {
   flex: 1;

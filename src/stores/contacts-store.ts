@@ -32,6 +32,9 @@ export interface AutocompleteCandidate {
   email: string;
   source: 'contact' | 'history';
   is_preferred?: 0 | 1;
+  /** History evidence (CS-3.3): how often and how recently this was written to. */
+  send_count?: number;
+  last_sent_at?: number | null;
 }
 
 /**

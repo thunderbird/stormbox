@@ -35,6 +35,7 @@ import {
   recipientAddresses,
   recipientInput,
   recipientPills,
+  waitForIdentities,
 } from './helpers/compose.js';
 
 /**
@@ -130,11 +131,7 @@ async function settledSuggestions(page) {
 async function openCompose(page) {
   await page.keyboard.press('ControlOrMeta+n');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-  const fromSelect = page.locator('.compose-dialog select').first();
-  await expect.poll(
-    async () => fromSelect.locator('option').count(),
-    { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-  ).toBeGreaterThan(0);
+  await waitForIdentities(page);
 }
 
 async function closeCompose(page) {
@@ -411,16 +408,23 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await expect(page.locator('.compose-dialog .editor[contenteditable]')).toBeVisible();
         // Cc and Bcc exist but stay out of the way until asked for; three
         // empty recipient rows on every new message is why they were left
-        // out to begin with (CS-2.1).
+        // out to begin with (CS-2.1). Both toggles sit inline with To, and
+        // a field left empty gives its row back when focus moves on.
         await expect(composeRow(page, 'Cc')).toHaveCount(0);
-        await page.locator('.compose-dialog .recipient-add').click();
+        await page.locator('.compose-dialog .recipient-toggle', { hasText: /^Cc$/ }).click();
         await expect(composeRow(page, 'Cc')).toHaveCount(1);
-        await page.locator('.compose-dialog .recipient-add').click();
+        await page.locator('.compose-dialog .recipient-toggle', { hasText: /^Bcc$/ }).click();
         await expect(composeRow(page, 'Bcc')).toHaveCount(1);
+        // Revealing Bcc moved focus out of the untouched Cc, which collapsed
+        // and returned its toggle.
+        await expect(composeRow(page, 'Cc')).toHaveCount(0);
         record('Cc/Bcc fields (R-4.7, CS-2.1)',
-          'Cc and Bcc are reachable from the To row, one control at a time, and a reply-all opens with Cc already shown.');
+          'Cc and Bcc are both offered inline with the To row; an untouched field collapses when focus moves on, and a reply-all opens with Cc already shown.');
         await page.waitForTimeout(1_000);
         await shot(page, 'compose-fields-cc-bcc');
+        // Leaving the empty Bcc for the Subject collapses it the same way.
+        await composeSubject(page).click();
+        await expect(composeRow(page, 'Bcc')).toHaveCount(0);
       });
 
       // ---- Autocomplete -------------------------------------------------

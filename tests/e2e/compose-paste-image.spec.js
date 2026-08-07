@@ -27,6 +27,7 @@ import {
   composeSubject,
   fillRecipient,
   recipientAddresses,
+  waitForIdentities,
 } from './helpers/compose.js';
 
 /**
@@ -170,11 +171,7 @@ test.describe('Compose paste image e2e', () => {
       await page.keyboard.press('ControlOrMeta+n');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
 
-      const fromSelect = page.locator('.compose-dialog select').first();
-      await expect.poll(
-        async () => fromSelect.locator('option').count(),
-        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-      ).toBeGreaterThan(0);
+      await waitForIdentities(page);
 
       await fillRecipient(page, 'To', recipient);
       await composeSubject(page).fill(subject);
@@ -271,10 +268,7 @@ test.describe('Compose paste image e2e', () => {
     try {
       await page.keyboard.press('ControlOrMeta+n');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-      await expect.poll(
-        async () => page.locator('.compose-dialog select').first().locator('option').count(),
-        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-      ).toBeGreaterThan(0);
+      await waitForIdentities(page);
 
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();
@@ -324,10 +318,7 @@ test.describe('Compose paste image e2e', () => {
     try {
       await page.keyboard.press('ControlOrMeta+n');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-      await expect.poll(
-        async () => page.locator('.compose-dialog select').first().locator('option').count(),
-        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-      ).toBeGreaterThan(0);
+      await waitForIdentities(page);
 
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();

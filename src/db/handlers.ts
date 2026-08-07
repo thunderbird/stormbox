@@ -3281,12 +3281,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     /**
      * Read the error fields a failed mutation row left behind. The
      * mail-store uses this to format a user-facing failure message
-     * after runMutation reports `failed > 0`.
+     * after runMutation reports `failed > 0`. `server_response_json`
+     * rides along for sends: it holds the send checkpoint, whose
+     * `emailRemoteId` tells the composer whether the message text
+     * already exists on the server when the outcome is unknown.
      */
     [DB_RPC.PENDING_MUTATION_GET_ERROR]: async ({ mutationId }) => {
       if (mutationId == null) return null;
       const row = await engine.get(
-        `SELECT mutation_type, local_status, error_json
+        `SELECT mutation_type, local_status, error_json, server_response_json
            FROM pending_mutations WHERE id = ?`,
         [mutationId],
       );

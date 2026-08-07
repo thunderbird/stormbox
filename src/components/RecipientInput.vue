@@ -8,6 +8,7 @@ import {
   type ParsedAddress,
 } from '../utils/address-parse';
 import { addressKey } from '../utils/address-key';
+import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import type { RecipientEntry } from '../stores/compose-store';
 import type { AutocompleteCandidate } from '../stores/contacts-store';
 
@@ -134,6 +135,76 @@ function optionLabel(candidate: AutocompleteCandidate): string {
 }
 
 /**
+ * The same initials-on-a-hashed-hue circle the message list draws for a
+ * sender, so one person is one color everywhere (see sender-avatar.ts).
+ */
+function avatarStyleFor(email: string): Record<string, string> {
+  return senderAvatarStyle(email);
+}
+
+function avatarInitialsFor(candidate: { name?: string | null; email: string }): string {
+  return senderInitials(candidate.name?.trim() || candidate.email);
+}
+
+function pillAvatarStyle(entry: RecipientEntry): Record<string, string> {
+  return 'invalid' in entry ? {} : avatarStyleFor(entry.email);
+}
+
+function pillAvatarInitials(entry: RecipientEntry): string {
+  return 'invalid' in entry ? '' : avatarInitialsFor(entry);
+}
+
+/**
+ * The evidence for a learned suggestion — how recently and how often the
+ * user wrote to it. The ranking already consumed these signals; showing
+ * them explains the row's presence instead of asserting it (CS-3.3).
+ */
+function historyMeta(candidate: AutocompleteCandidate): string | null {
+  if (candidate.source !== 'history') return null;
+  const parts: string[] = [];
+  const at = Number(candidate.last_sent_at);
+  if (Number.isFinite(at) && at > 0) {
+    const days = Math.floor((Date.now() - at) / 86_400_000);
+    if (days < 1) parts.push('today');
+    else if (days < 7) parts.push(`${days}d ago`);
+    else if (days < 30) parts.push(`${Math.floor(days / 7)}w ago`);
+    else if (days < 365) parts.push(`${Math.floor(days / 30)}mo ago`);
+    else parts.push(`${Math.floor(days / 365)}y ago`);
+  }
+  const sends = Number(candidate.send_count);
+  if (Number.isFinite(sends) && sends > 1) parts.push(`${sends} sends`);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * Split display text around the first occurrence of the typed text, so the
+ * list can show why each row is here. Case-folded, display-level only —
+ * membership was decided by the worker's key matching, and a row it
+ * matched some other way (punycode, another word) simply shows unmarked.
+ */
+function matchSegments(displayText: string): { text: string; hit: boolean }[] {
+  const typed = text.value.trim().toLowerCase();
+  if (!typed) return [{ text: displayText, hit: false }];
+  const idx = displayText.toLowerCase().indexOf(typed);
+  if (idx < 0) return [{ text: displayText, hit: false }];
+  const segments: { text: string; hit: boolean }[] = [];
+  if (idx > 0) segments.push({ text: displayText.slice(0, idx), hit: false });
+  segments.push({ text: displayText.slice(idx, idx + typed.length), hit: true });
+  if (idx + typed.length < displayText.length) {
+    segments.push({ text: displayText.slice(idx + typed.length), hit: false });
+  }
+  return segments;
+}
+
+const anyForgettable = computed(() => suggestions.value.some((c) => canForget(c)));
+
+const countLabel = computed(() => {
+  const count = suggestions.value.length;
+  if (browsing.value) return count === 1 ? '1 contact' : `${count} contacts`;
+  return count === 1 ? '1 suggestion' : `${count} suggestions`;
+});
+
+/**
  * Keep the highlighted option visible. aria-activedescendant moves the
  * screen reader's point of regard without moving DOM focus, so nothing
  * scrolls a capped-height list on its own and the visible highlight can
@@ -146,7 +217,18 @@ async function scrollActiveOptionIntoView(): Promise<void> {
     ?.scrollIntoView({ block: 'nearest' });
 }
 
+/**
+ * The typed text a completed lookup answered with nothing, kept so the
+ * panel can say so where the user is looking — and say what still works:
+ * Enter commits the text as an address regardless. A failed lookup never
+ * lands here; "unavailable" must not read as "not in your address book".
+ */
+const noMatches = ref<string | null>(null);
+
 const isListOpen = computed(() => expanded.value && suggestions.value.length > 0);
+
+/** The popup as a whole: the option list, or the visible no-matches state. */
+const isPanelOpen = computed(() => isListOpen.value || noMatches.value !== null);
 
 /**
  * Announced to a screen reader when the list changes, since a listbox
@@ -202,6 +284,7 @@ function closeList(): void {
   suggestions.value = [];
   browsing.value = false;
   foundNothing.value = null;
+  noMatches.value = null;
   announcement.value = null;
 }
 
@@ -221,6 +304,7 @@ async function browseContacts(): Promise<void> {
   suggestions.value = notTaken(found);
   activeIndex.value = -1;
   browsing.value = true;
+  noMatches.value = null;
   foundNothing.value = suggestions.value.length > 0
     ? null
     : (answered ? 'No contacts to show' : 'Contacts are unavailable');
@@ -242,6 +326,10 @@ async function runQuery(prefix: string): Promise<void> {
   suggestions.value = notTaken(found).slice(0, SUGGESTION_LIMIT);
   activeIndex.value = -1;
   browsing.value = false;
+  // An answered empty result keeps the panel open to say so, and to say
+  // what still works; a failure closes it, because "unavailable" offered
+  // where suggestions go would read as "not in your address book".
+  noMatches.value = suggestions.value.length === 0 && answered ? prefix : null;
   expanded.value = suggestions.value.length > 0;
   foundNothing.value = suggestions.value.length > 0
     ? null
@@ -495,10 +583,10 @@ function onKeydown(event: KeyboardEvent): void {
       return;
     }
     case 'Escape': {
-      // While the list is open Escape dismisses it and the dialog stays,
-      // which is the combobox pattern; with no list open the key belongs
+      // While the panel is open Escape dismisses it and the dialog stays,
+      // which is the combobox pattern; with no panel open the key belongs
       // to whatever is listening above.
-      if (isListOpen.value) {
+      if (isPanelOpen.value) {
         event.stopPropagation();
         event.preventDefault();
         closeList();
@@ -545,7 +633,7 @@ function onPaste(event: ClipboardEvent): void {
 </script>
 
 <template>
-  <div class="recipient-input" :class="{ 'recipient-input--focused': isListOpen }">
+  <div class="recipient-input" :class="{ 'recipient-input--focused': isPanelOpen }">
     <div ref="pillsEl" class="recipient-input__field" @click="focusInput">
       <!-- The roles are spelled out because `display: contents` on the list
            drops list semantics from the accessibility tree in more than one
@@ -568,6 +656,12 @@ function onPaste(event: ClipboardEvent): void {
             @click.stop="editEntry(idx)"
           >
             <span v-if="isInvalid(entry)" class="pill__warning" aria-hidden="true">&#9888;</span>
+            <span
+              v-else
+              class="pill__avatar"
+              aria-hidden="true"
+              :style="pillAvatarStyle(entry)"
+            >{{ pillAvatarInitials(entry) }}</span>
             <span class="pill__text">{{ entryLabel(entry) }}</span>
           </button>
           <button
@@ -587,7 +681,7 @@ function onPaste(event: ClipboardEvent): void {
         role="combobox"
         autocomplete="off"
         aria-autocomplete="list"
-        :aria-expanded="isListOpen"
+        :aria-expanded="isPanelOpen"
         :aria-controls="listboxId"
         :aria-activedescendant="activeIndex >= 0 ? optionId(activeIndex) : undefined"
         @input="onInput"
@@ -595,21 +689,9 @@ function onPaste(event: ClipboardEvent): void {
         @blur="onBlur"
         @paste="onPaste"
       />
-      <!-- Activated on click, not mousedown: a keyboard or screen-reader
-           activation dispatches click alone, and a control only a mouse can
-           reach is not a path to the address book. Mousedown is still
-           swallowed, to keep the field from losing focus on the way. -->
-      <button
-        v-if="browseAll"
-        type="button"
-        class="recipient-input__browse"
-        aria-label="Browse contacts"
-        @mousedown.prevent
-        @click="browseContacts()"
-      >&#9662;</button>
     </div>
 
-    <div v-show="isListOpen" class="autocomplete">
+    <div v-show="isPanelOpen" class="autocomplete">
       <!-- The browse control sits outside the listbox: an option list whose
            children are not all options is not a listbox any more, and a
            screen reader counts it among the matches. -->
@@ -631,11 +713,30 @@ function onPaste(event: ClipboardEvent): void {
           @mousedown.prevent
           @click="acceptSuggestion(candidate)"
         >
-          <span class="ac-name">{{ candidate.name || candidate.email }}</span>
-          <span class="ac-email">{{ candidate.email }}</span>
-          <!-- Decoration to a screen reader: without aria-hidden the option's
-               computed name reads "Jane Doe jane@x.com history ✕". -->
-          <span class="ac-source" aria-hidden="true">{{ candidate.source }}</span>
+          <!-- Decorations are aria-hidden throughout: the option's name is
+               the explicit aria-label, not its rendered contents. -->
+          <span
+            class="ac-avatar"
+            aria-hidden="true"
+            :style="avatarStyleFor(candidate.email)"
+          >{{ avatarInitialsFor(candidate) }}</span>
+          <span class="ac-lines">
+            <span v-if="candidate.name?.trim()" class="ac-name">
+              <template v-for="(seg, sidx) in matchSegments(candidate.name.trim())" :key="sidx">
+                <span v-if="seg.hit" class="ac-match">{{ seg.text }}</span>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </span>
+            <span class="ac-email" :class="{ 'ac-email--primary': !candidate.name?.trim() }">
+              <template v-for="(seg, sidx) in matchSegments(candidate.email)" :key="sidx">
+                <span v-if="seg.hit" class="ac-match">{{ seg.text }}</span>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </span>
+          </span>
+          <span v-if="historyMeta(candidate)" class="ac-meta" aria-hidden="true">
+            {{ historyMeta(candidate) }}
+          </span>
           <!-- Not a <button>, and not focusable, on purpose. An option with
                an interactive descendant stops being an option to a screen
                reader, which is the same reason the browse control sits
@@ -653,11 +754,23 @@ function onPaste(event: ClipboardEvent): void {
           >✕</span>
         </li>
       </ul>
+      <!-- Visible-only: the live region already says this in words, so the
+           panel copy is decoration to a screen reader. -->
+      <div v-if="noMatches !== null" class="autocomplete__empty" aria-hidden="true">
+        <span class="autocomplete__empty-text">No matches for “{{ noMatches }}”</span>
+        <span class="ac-key-hint"><kbd>↵</kbd> add it as typed</span>
+      </div>
       <p v-if="browseAll && !browsing" class="autocomplete__browse">
         <button type="button" @mousedown.prevent @click="browseContacts()">
           Browse all contacts
         </button>
       </p>
+      <div v-if="suggestions.length > 0" class="autocomplete__keys" aria-hidden="true">
+        <span class="ac-key-hint"><kbd>↑↓</kbd> navigate</span>
+        <span class="ac-key-hint"><kbd>↵</kbd> add</span>
+        <span v-if="anyForgettable" class="ac-key-hint"><kbd>⇧⌦</kbd> forget</span>
+        <span class="autocomplete__count">{{ countLabel }}</span>
+      </div>
     </div>
 
     <!-- A live region, and deliberately not this field's `aria-describedby`:
@@ -674,6 +787,8 @@ function onPaste(event: ClipboardEvent): void {
   min-width: 0;
 }
 
+/* Tokens come from src/assets/styles.css; the fallbacks are the light
+   palette, for a host that provides none. */
 .recipient-input__field {
   display: flex;
   flex-wrap: wrap;
@@ -682,7 +797,7 @@ function onPaste(event: ClipboardEvent): void {
   padding: 2px 4px;
   border: 1px solid var(--border, #cfcfcf);
   border-radius: 4px;
-  background: var(--input-bg, #fff);
+  background: var(--panel2, #fff);
   cursor: text;
 }
 
@@ -704,7 +819,9 @@ function onPaste(event: ClipboardEvent): void {
   align-items: center;
   max-width: 100%;
   border-radius: 999px;
-  background: var(--pill-bg, rgba(0, 0, 0, 0.06));
+  /* A wash of the theme's own text colour reads as a raised chip on any
+     surface, in either theme. */
+  background: color-mix(in srgb, var(--text, #111827) 9%, transparent);
   font-size: 0.85rem;
   line-height: 1.4;
 }
@@ -745,8 +862,8 @@ function onPaste(event: ClipboardEvent): void {
  * as by the colour, per WCAG 1.4.1: colour alone is not a message.
  */
 .pill--invalid {
-  background: var(--invalid-bg, rgba(200, 30, 30, 0.1));
-  color: var(--invalid-fg, #a4000f);
+  background: var(--error-bg, rgba(200, 30, 30, 0.1));
+  color: var(--error-fg, #a4000f);
 }
 
 .pill--invalid .pill__text {
@@ -756,6 +873,18 @@ function onPaste(event: ClipboardEvent): void {
 
 .pill__warning {
   font-size: 0.9em;
+}
+
+.pill__avatar {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  flex: none;
 }
 
 .recipient-input__text {
@@ -770,55 +899,99 @@ function onPaste(event: ClipboardEvent): void {
 
 .recipient-input__text:focus { outline: none; }
 
-.recipient-input__browse {
-  border: 0;
-  background: none;
-  padding: 0 4px;
-  font: inherit;
-  line-height: 1;
-  color: inherit;
-  opacity: 0.55;
-  cursor: pointer;
-}
-
-.recipient-input__browse:hover { opacity: 1; }
-
 .autocomplete {
   position: absolute;
   z-index: 10;
   left: 0;
   right: 0;
   margin: 2px 0 0;
-  background: var(--panel-bg, #fff);
+  background: var(--panel, #fff);
   border: 1px solid var(--border, #cfcfcf);
   border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .autocomplete__options {
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 15rem;
+  max-height: 19rem;
   overflow-y: auto;
 }
 
 .autocomplete__option {
   display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 5px 8px;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
   cursor: pointer;
 }
 
-.autocomplete__option--active,
+/* The same hover/selected pair the message list uses, so the two lists
+   read as one system. Active sits above hover. */
 .autocomplete__option:hover {
-  background: var(--accent-soft, rgba(0, 96, 223, 0.12));
+  background: var(--rowHover, rgba(0, 96, 223, 0.08));
 }
 
-.ac-name { font-weight: 600; }
-.ac-email { opacity: 0.8; }
-.ac-source { margin-left: auto; font-size: 0.75rem; opacity: 0.6; }
+.autocomplete__option--active {
+  background: var(--rowActive, rgba(0, 96, 223, 0.12));
+}
+
+/* The message list's sender circle at list size: initials on a hue hashed
+   from the address (senderAvatarStyle), one color per person everywhere. */
+.ac-avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex: none;
+}
+
+.ac-lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.ac-name {
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-email {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A row with no display name shows the address as its one line. */
+.ac-email--primary {
+  font-size: inherit;
+  color: inherit;
+  font-weight: 600;
+}
+
+/* Why the row is here: the typed text, wherever it landed. */
+.ac-match {
+  color: var(--accent, #0060df);
+}
+
+.ac-meta {
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+  flex: none;
+}
 
 .ac-forget {
   padding: 0 4px;
@@ -836,7 +1009,7 @@ function onPaste(event: ClipboardEvent): void {
 
 .ac-forget:hover {
   opacity: 1;
-  background: var(--danger-soft, rgba(200, 40, 40, 0.14));
+  background: var(--error-bg, rgba(200, 40, 40, 0.14));
 }
 
 .autocomplete__browse {
@@ -849,10 +1022,56 @@ function onPaste(event: ClipboardEvent): void {
   text-align: left;
   border: 0;
   background: none;
-  padding: 6px 8px;
+  padding: 6px 10px;
   font: inherit;
   color: var(--accent, #0060df);
   cursor: pointer;
+}
+
+.autocomplete__empty {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.autocomplete__empty-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autocomplete__keys {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border, #cfcfcf);
+  font-size: 11px;
+  color: var(--muted, #6b7280);
+}
+
+.autocomplete__count {
+  margin-left: auto;
+}
+
+.ac-key-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.ac-key-hint kbd {
+  font: inherit;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--border, #cfcfcf);
+  border-radius: 4px;
+  color: var(--text, #111827);
 }
 
 .sr-only {

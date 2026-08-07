@@ -225,6 +225,11 @@ See `tests/e2e/.env.local.example` for optional overrides.
 - Routes in `src/router/`; human-readable folder names in URLs.
 - Views in `src/views/`; shared components in `src/components/`.
 - Config via `src/defines.js` and Vite env vars (`VITE_JMAP_SERVER_URL`, etc.).
+- No native `<select>` in the product surface (constitution IX): its
+  popup is unthemeable OS chrome. Menus and dropdowns reuse the app's
+  styled patterns — e.g. the compose toolbar's `<details>` menus — so
+  the same interaction always looks the same. Native chrome stays only
+  where the platform UI is the feature (file and color pickers).
 
 ## Import conventions
 

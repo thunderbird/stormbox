@@ -80,7 +80,14 @@ export interface AutocompleteParams {
 export async function autocompleteRecipients(
   engine: any,
   { accountId, prefix, limit = DEFAULT_LIMIT, exclude = [], nowMs = Date.now() }: AutocompleteParams,
-): Promise<{ name: string | null; email: string; source: string; is_preferred: 0 | 1 }[]> {
+): Promise<{
+  name: string | null;
+  email: string;
+  source: string;
+  is_preferred: 0 | 1;
+  send_count: number;
+  last_sent_at: number | null;
+}[]> {
   const typed = String(prefix ?? '').trim();
   if (!typed || !(limit > 0)) return [];
 
@@ -135,11 +142,16 @@ export async function autocompleteRecipients(
 
   const ranked = [...merged.values()].sort((a, b) => compareCandidates(a, b, nowMs));
 
+  // send_count / last_sent_at ride along so the list can show the evidence
+  // for a learned suggestion ("2d ago · 14 sends") — the same signals the
+  // ranking above already consumed.
   return ranked.slice(0, limit).map((c) => ({
     name: c.name,
     email: c.email,
     source: c.source,
     is_preferred: c.isPreferred ? 1 : 0,
+    send_count: c.sendCount,
+    last_sent_at: c.lastSentAt,
   }));
 }
 

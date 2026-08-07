@@ -13,6 +13,7 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
+import { COMPOSE_STATE } from '../../../src/constants/states';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
 
@@ -203,6 +204,23 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(composeStore.draft.htmlBody).not.toMatch(/text-align:\s*center/i);
   });
 
+  it('opens one toolbar dropdown at a time', async () => {
+    // Font, Size, and More are AppDropdowns in the default group, so
+    // opening any of them closes whichever was open.
+    const { wrapper } = await mountOpenCompose();
+    const dropdowns = wrapper.get('.compose-toolbar').findAll('details');
+    expect(dropdowns.length).toBeGreaterThanOrEqual(3);
+    const [font, size] = dropdowns;
+
+    font.element.open = true;
+    await font.trigger('toggle');
+    size.element.open = true;
+    await size.trigger('toggle');
+
+    expect(size.element.open).toBe(true);
+    expect(font.element.open, 'opening Size closed Font').toBe(false);
+  });
+
   it('moves rightmost toolbar groups into More as width shrinks', async () => {
     const { wrapper } = await mountOpenCompose();
     const toolbar = wrapper.get('.compose-toolbar').element;
@@ -229,13 +247,21 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(wrapper.find('[data-toolbar-group="alignment"]').exists()).toBe(false);
     expect(wrapper.find('[data-toolbar-group="lists"]').exists()).toBe(false);
     expect(wrapper.find('[data-toolbar-group="insert"]').exists()).toBe(true);
-    expect(wrapper.get('.toolbar-more__menu').text()).toContain('Align left');
-    expect(wrapper.get('.toolbar-more__menu').text()).toContain('Bulleted list');
+    // Scoped to the More control: the font and size dropdowns reuse the
+    // same menu classes for their own popups.
+    expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Align left');
+    expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Bulleted list');
   });
 });
 
 describe('ComposeDialog recipient fields', () => {
   const rowLabels = (wrapper: any) => wrapper.findAll('.row label').map((l: any) => l.text());
+  const toggleLabels = (wrapper: any) => wrapper
+    .findAll('.recipient-toggle')
+    .map((b: any) => b.text());
+  const recipientToggle = (wrapper: any, label: string) => wrapper
+    .findAll('.recipient-toggle')
+    .find((b: any) => b.text() === label);
   const recipientRow = (wrapper: any, label: string) => wrapper
     .findAll('.row')
     .find((row: any) => row.find('label').text() === label);
@@ -269,18 +295,52 @@ describe('ComposeDialog recipient fields', () => {
     return input;
   }
 
-  it('opens with To only, and reveals Cc and then Bcc on request', async () => {
+  it('opens with To only, and offers both Cc and Bcc toggles inline', async () => {
     // Three empty fields on every new message is why Cc and Bcc were left
-    // out to begin with; they appear when there is a reason for them.
+    // out to begin with; they appear when there is a reason for them. Both
+    // toggles are offered at once, inline with To.
     const { wrapper } = await mountOpenCompose();
     expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Subject']);
+    expect(toggleLabels(wrapper)).toEqual(['Cc', 'Bcc']);
 
-    await wrapper.get('.recipient-add').trigger('click');
+    await recipientToggle(wrapper, 'Cc').trigger('click');
     expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Cc', 'Subject']);
+    expect(toggleLabels(wrapper)).toEqual(['Bcc']);
 
-    await wrapper.get('.recipient-add').trigger('click');
+    // Give Cc a recipient so revealing Bcc — which blurs the empty Cc —
+    // does not collapse it; an empty field hides on blur by design.
+    await enterRecipient(wrapper, 'Cc', 'cc@example.com');
+    await recipientToggle(wrapper, 'Bcc').trigger('click');
     expect(rowLabels(wrapper)).toEqual(['From', 'To', 'Cc', 'Bcc', 'Subject']);
-    expect(wrapper.find('.recipient-add').exists()).toBe(false);
+    expect(toggleLabels(wrapper)).toEqual([]);
+  });
+
+  it('collapses an empty Cc when focus leaves the row', async () => {
+    const { wrapper } = await mountOpenCompose();
+    await recipientToggle(wrapper, 'Cc').trigger('click');
+    expect(rowLabels(wrapper)).toContain('Cc');
+
+    // focusout bubbles from the field's input to the row; no relatedTarget
+    // means focus left the row entirely.
+    await recipientInput(wrapper, 'Cc').trigger('focusout');
+    await nextTick();
+    await nextTick();
+
+    expect(rowLabels(wrapper)).not.toContain('Cc');
+    // The toggle comes back, so the field can be reopened.
+    expect(toggleLabels(wrapper)).toContain('Cc');
+  });
+
+  it('keeps a Cc that holds a recipient when focus leaves the row', async () => {
+    const { wrapper } = await mountOpenCompose();
+    await recipientToggle(wrapper, 'Cc').trigger('click');
+    await enterRecipient(wrapper, 'Cc', 'cc@example.com');
+
+    await recipientInput(wrapper, 'Cc').trigger('focusout');
+    await nextTick();
+    await nextTick();
+
+    expect(rowLabels(wrapper)).toContain('Cc');
   });
 
   it('shows Cc already filled by a reply-all without being asked', async () => {
@@ -389,7 +449,7 @@ describe('ComposeDialog recipient fields', () => {
       { name: 'Bobbie', email: 'bobbie@example.com', source: 'contact' },
     ]) as any;
     await enterRecipient(wrapper, 'To', 'bob@example.com');
-    await wrapper.get('.recipient-add').trigger('click');
+    await recipientToggle(wrapper, 'Cc').trigger('click');
 
     const cc = recipientInput(wrapper, 'Cc');
     cc.element.value = 'bob';
@@ -411,16 +471,60 @@ describe('ComposeDialog send control', () => {
     expect(footerButtons(wrapper)).toContain('Send');
   });
 
-  it('withdraws Send once a send has ended with an unknown outcome', async () => {
-    // Re-sending would build a new message with a new Message-ID, which
-    // the duplicate guard cannot match against the one that may already
-    // be out. The only safe controls left are Discard and looking in
-    // Sent (CS-1.9).
+  it('keeps Send offered while an unconfirmed send holds the draft open', async () => {
+    // When the outcome is unknown and no server copy is known, the store
+    // keeps the dialog open with a warning to check Sent first. Send is
+    // never resubmitted automatically, but it stays available: after that
+    // check, sending again is the user's decision (CS-1.9).
     const { wrapper, composeStore } = await mountOpenCompose();
-    composeStore.outcomeUnknown = true;
+    composeStore.status = COMPOSE_STATE.FAILED;
+    composeStore.error = 'Could not confirm whether this message was sent. '
+      + 'Check your Sent folder before sending it again.';
     await nextTick();
 
-    expect(footerButtons(wrapper)).not.toContain('Send');
+    expect(footerButtons(wrapper)).toContain('Send');
     expect(footerButtons(wrapper)).toContain('Discard');
+    expect(wrapper.get('.compose-error').text()).toMatch(/check your sent folder/i);
+  });
+});
+
+describe('ComposeDialog opening focus', () => {
+  it('starts a fresh message in the To field', async () => {
+    await mountOpenCompose();
+    await nextTick();
+    await flushPromises();
+
+    expect(document.activeElement?.id).toBe('compose-to');
+  });
+
+  it('starts a prefilled draft in the body, where writing continues', async () => {
+    // A reply arrives already addressed; landing focus in To would put
+    // the first keystrokes into a field that is finished.
+    const composeStore = useComposeStore();
+    composeStore.identities = [{
+      id: 1,
+      name: 'Sender',
+      email: 'sender@example.com',
+    } as any];
+    composeStore.open({
+      to: [{ email: 'alice@example.com' }],
+      htmlBody: 'quoted',
+    });
+    const wrapper = mount(ComposeDialog, { attachTo: document.body });
+    await nextTick();
+    await flushPromises();
+
+    expect(document.activeElement).toBe(wrapper.get('.editor').element);
+  });
+
+  it('moves focus with a draft that replaces the open one', async () => {
+    const { composeStore } = await mountOpenCompose();
+    await flushPromises();
+
+    composeStore.open({ to: [{ email: 'alice@example.com' }], htmlBody: 'quoted' });
+    await nextTick();
+    await flushPromises();
+
+    expect(document.activeElement?.id).not.toBe('compose-to');
   });
 });

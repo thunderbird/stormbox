@@ -2,15 +2,15 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import {
   Bold,
+  Check,
   Code,
   Highlighter,
   Image as ImageIcon,
   Italic,
   Link as LinkIcon,
   List,
-  ListIndentDecrease,
-  ListIndentIncrease,
   ListOrdered,
+  Quote,
   Redo2,
   RemoveFormatting,
   Strikethrough,
@@ -34,7 +34,10 @@ import {
 } from '../stores/compose-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
+import type { IdentityRow } from '../types/db';
+import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import AppButton from './AppButton.vue';
+import AppDropdown from './AppDropdown.vue';
 import RecipientInput from './RecipientInput.vue';
 
 const composeStore = useComposeStore();
@@ -119,6 +122,10 @@ const fontSizeOptions = [
   { label: 'Large', value: '18px' },
   { label: 'Huge', value: '24px' },
 ];
+// The menus offer "Default" as a choice; the buttons name themselves
+// while nothing is chosen, so the two dropdowns stay distinguishable.
+const fontFamilyChoices = [{ label: 'Default', value: '' }, ...fontOptions];
+const fontSizeChoices = [{ label: 'Default', value: '' }, ...fontSizeOptions];
 const alignmentOptions = [
   { label: 'Align left', value: 'left', icon: TextAlignStart },
   { label: 'Align center', value: 'center', icon: TextAlignCenter },
@@ -346,21 +353,17 @@ function toggleList(type: 'UL' | 'OL') {
   });
 }
 
-function adjustIndent(delta: number) {
+/**
+ * Quote or unquote the selection. In HTML mail the blockquote is the
+ * quoting element — the one other clients draw with the vertical bar —
+ * and it is distinct from list nesting, which Squire's own Tab and
+ * Shift+Tab handle inside a list. The buttons are purely about quoting,
+ * the way Fastmail's Squire toolbar exposes the same commands.
+ */
+function adjustQuote(delta: number) {
   runEditorCommand((editor: any) => {
-    const path = editor.getPath();
-    const inList = /(?:^|>)[OU]L/.test(path);
-    const inQuote = /(?:^|>)BLOCKQUOTE/.test(path);
-    const useListLevel = inList && !inQuote;
-
-    if (delta > 0) {
-      if (useListLevel) editor.increaseListLevel();
-      else editor.increaseQuoteLevel();
-    } else if (useListLevel) {
-      editor.decreaseListLevel();
-    } else {
-      editor.decreaseQuoteLevel();
-    }
+    if (delta > 0) editor.increaseQuoteLevel();
+    else editor.decreaseQuoteLevel();
   });
 }
 
@@ -370,6 +373,31 @@ function applyFontFace(value: string) {
 
 function applyFontSize(value: string) {
   runEditorCommand((editor: any) => editor.setFontSize(value || null));
+}
+
+const fontFamilyLabel = computed(() =>
+  fontOptions.find((font) => font.value === toolbarState.value.fontFamily)?.label ?? 'Font');
+const fontSizeLabel = computed(() =>
+  fontSizeOptions.find((size) => size.value === toolbarState.value.fontSize)?.label ?? 'Size');
+
+/**
+ * Close the <details> dropdown a picked item belongs to. A single-choice
+ * menu that stays open after the choice reads as a menu that did not
+ * work; <details> provides no close-on-activate of its own.
+ */
+function closeDropdown(event: Event) {
+  const details = (event.currentTarget as HTMLElement).closest('details');
+  if (details) details.open = false;
+}
+
+function pickFontFace(value: string, event: Event) {
+  closeDropdown(event);
+  applyFontFace(value);
+}
+
+function pickFontSize(value: string, event: Event) {
+  closeDropdown(event);
+  applyFontSize(value);
 }
 
 function applyTextColor(value: string) {
@@ -582,16 +610,37 @@ function initEditor() {
   observeToolbarSize();
 }
 
+/**
+ * Where writing starts for this draft: the To field when it is empty (a
+ * fresh message begins with addressing), the body when recipients came
+ * prefilled (a reply or forward — addressing is done, prose is next).
+ * Called after the open/remount tick, so the target exists.
+ */
+function focusFreshDraft() {
+  if (!composeStore.isOpen) return;
+  if (composeStore.draft.to.length === 0) {
+    document.getElementById('compose-to')?.focus();
+  } else {
+    squire?.focus();
+  }
+}
+
 onMounted(() => {
   window.addEventListener('resize', scheduleToolbarOverflowUpdate);
   if (composeStore.isOpen) {
-    void nextTick().then(initEditor);
+    void nextTick().then(() => {
+      initEditor();
+      focusFreshDraft();
+    });
   }
 });
 
 watch(() => composeStore.isOpen, (open) => {
   if (open) {
-    void nextTick().then(initEditor);
+    void nextTick().then(() => {
+      initEditor();
+      focusFreshDraft();
+    });
   } else {
     destroyEditor();
   }
@@ -643,6 +692,10 @@ watch(
     }
     showCc.value = composeStore.draft.cc.length > 0;
     showBcc.value = composeStore.draft.bcc.length > 0;
+    // A draft replacing the current one while the dialog is open (reply
+    // taken from the message view, say) restarts writing too. No-op while
+    // closed; the recipient controls remount on the epoch, hence the tick.
+    void nextTick().then(focusFreshDraft);
   },
   { immediate: true },
 );
@@ -650,6 +703,35 @@ watch(
 function setEntries(field: RecipientField, entries: RecipientEntry[]) {
   recipientEntries[field] = entries;
   composeStore.setRecipientEntries(field, entries);
+}
+
+/** Reveal Cc or Bcc and put the cursor in it. */
+function revealField(field: 'cc' | 'bcc') {
+  if (field === 'cc') showCc.value = true;
+  else showBcc.value = true;
+  void nextTick().then(() => document.getElementById(`compose-${field}`)?.focus());
+}
+
+/**
+ * A Cc or Bcc left empty collapses when focus leaves the row, so an
+ * unused field is not left open. focusout bubbles from the control's
+ * input to this row; relatedTarget still inside the row means focus only
+ * moved between the field and its own pills, which is not leaving.
+ *
+ * The empty check is deferred a tick because leaving the field also
+ * commits any pending text, and a committed recipient must keep the
+ * field open. To never hides.
+ */
+function onRecipientFocusOut(field: RecipientField, event: FocusEvent) {
+  if (field === 'to') return;
+  const row = event.currentTarget as HTMLElement | null;
+  const next = event.relatedTarget as Node | null;
+  if (row && next && row.contains(next)) return;
+  void nextTick().then(() => {
+    if (recipientEntries[field].length > 0) return;
+    if (field === 'cc') showCc.value = false;
+    else showBcc.value = false;
+  });
 }
 
 /**
@@ -697,9 +779,23 @@ async function send() {
   await composeStore.send();
 }
 
-function selectFromIdentity(event: Event) {
-  const select = event.target as HTMLSelectElement | null;
-  composeStore.selectFromIndex(select?.value ?? 0);
+function pickFromIdentity(idx: number, event: Event) {
+  closeDropdown(event);
+  composeStore.selectFromIndex(idx);
+}
+
+function identityLabel(id: IdentityRow | null): string {
+  if (!id) return '';
+  return id.name ? `${id.name} <${id.email}>` : id.email;
+}
+
+/** The message list's sender circle, so one address is one color everywhere. */
+function identityAvatarStyle(id: IdentityRow): Record<string, string> {
+  return senderAvatarStyle(id.email);
+}
+
+function identityInitials(id: IdentityRow): string {
+  return senderInitials(id.name?.trim() || id.email);
 }
 </script>
 
@@ -719,17 +815,61 @@ function selectFromIdentity(event: Event) {
       </header>
 
       <div class="row">
-        <label>From</label>
-        <select :value="composeStore.draft.fromIdx" @change="selectFromIdentity">
-          <option v-for="(id, idx) in composeStore.identities" :key="id.id" :value="idx">
-            {{ id.name ? `${id.name} <${id.email}>` : id.email }}
-          </option>
-        </select>
+        <label id="compose-from-label">From</label>
+        <!-- An identity is a person with an address, so its rows wear the
+             same avatar-and-two-lines dress the suggestion list and the
+             message list use: one look for one kind of thing. -->
+        <AppDropdown class="from-picker" data-compose-from>
+          <summary
+            class="app-dropdown__summary from-picker__summary"
+            aria-labelledby="compose-from-label"
+          >
+            <span
+              v-if="composeStore.fromIdentity"
+              class="from-picker__avatar"
+              aria-hidden="true"
+              :style="identityAvatarStyle(composeStore.fromIdentity)"
+            >{{ identityInitials(composeStore.fromIdentity) }}</span>
+            <span class="from-picker__summary-text">
+              {{ identityLabel(composeStore.fromIdentity) }}
+            </span>
+          </summary>
+          <div class="app-dropdown__menu from-picker__menu" role="menu" aria-label="From identity">
+            <button
+              v-for="(id, idx) in composeStore.identities"
+              :key="id.id"
+              type="button"
+              class="app-dropdown__item from-picker__option"
+              role="menuitemradio"
+              :aria-checked="idx === composeStore.draft.fromIdx"
+              @click="pickFromIdentity(idx, $event)"
+            >
+              <span
+                class="from-picker__avatar"
+                aria-hidden="true"
+                :style="identityAvatarStyle(id)"
+              >{{ identityInitials(id) }}</span>
+              <span class="from-picker__lines">
+                <span v-if="id.name" class="from-picker__name">{{ id.name }}</span>
+                <span class="from-picker__email" :class="{ 'from-picker__email--primary': !id.name }">
+                  {{ id.email }}
+                </span>
+              </span>
+              <Check v-if="idx === composeStore.draft.fromIdx" :size="15" class="from-picker__check" />
+            </button>
+          </div>
+        </AppDropdown>
       </div>
 
       <!-- Remounted per draft: the control owns the text being typed, and a
            reply that replaces the draft has to replace that too. -->
-      <div v-for="field in visibleRecipientFields" :key="field" class="row row--recipient">
+      <div
+        v-for="field in visibleRecipientFields"
+        :key="field"
+        class="row row--recipient"
+        :class="{ 'row--to': field === 'to' }"
+        @focusout="onRecipientFocusOut(field, $event)"
+      >
         <label :for="`compose-${field}`">{{ RECIPIENT_LABELS[field] }}</label>
         <RecipientInput
           :key="`${field}-${composeStore.draftEpoch}`"
@@ -742,14 +882,24 @@ function selectFromIdentity(event: Event) {
           :browse-all="browseAllContacts"
           @update:entries="(entries: RecipientEntry[]) => setEntries(field, entries)"
         />
+        <!-- Cc/Bcc live at the right of To, both offered at once. Each
+             reveals its field; an empty field hides again on blur, so the
+             toggle returns. -->
+        <div v-if="field === 'to'" class="recipient-cc-toggles">
+          <button
+            v-if="!showCc"
+            type="button"
+            class="recipient-toggle"
+            @click="revealField('cc')"
+          >Cc</button>
+          <button
+            v-if="!showBcc"
+            type="button"
+            class="recipient-toggle"
+            @click="revealField('bcc')"
+          >Bcc</button>
+        </div>
       </div>
-      <p v-if="!(showCc && showBcc)" class="recipient-toggles">
-        <button
-          type="button"
-          class="recipient-add"
-          @click="showCc ? (showBcc = true) : (showCc = true)"
-        >{{ showCc ? 'Add Bcc' : 'Add Cc' }}</button>
-      </p>
 
       <div class="row">
         <label>Subject</label>
@@ -805,32 +955,54 @@ function selectFromIdentity(event: Event) {
         </div>
 
         <div v-if="isToolbarGroupVisible('font')" class="toolbar-group" data-toolbar-group="font">
-          <select
-            class="toolbar-select"
-            :value="toolbarState.fontFamily"
-            aria-label="Font family"
-            title="Font family"
-            @mousedown="rememberSelection"
-            @change="applyFontFace(($event.target as HTMLInputElement | HTMLSelectElement).value)"
-          >
-            <option value="">Font</option>
-            <option v-for="font in fontOptions" :key="font.value" :value="font.value">
-              {{ font.label }}
-            </option>
-          </select>
-          <select
-            class="toolbar-select toolbar-select--size"
-            :value="toolbarState.fontSize"
-            aria-label="Font size"
-            title="Font size"
-            @mousedown="rememberSelection"
-            @change="applyFontSize(($event.target as HTMLInputElement | HTMLSelectElement).value)"
-          >
-            <option value="">Size</option>
-            <option v-for="size in fontSizeOptions" :key="size.value" :value="size.value">
-              {{ size.label }}
-            </option>
-          </select>
+          <AppDropdown class="toolbar-dropdown">
+            <summary
+              class="toolbar-button toolbar-more__summary"
+              aria-label="Font family"
+              title="Font family"
+              @mousedown.prevent
+            >{{ fontFamilyLabel }}</summary>
+            <div class="toolbar-more__menu" role="menu" aria-label="Font family">
+              <button
+                v-for="font in fontFamilyChoices"
+                :key="font.value"
+                type="button"
+                class="toolbar-menu-button"
+                role="menuitemradio"
+                :aria-checked="toolbarState.fontFamily === font.value"
+                @mousedown.prevent
+                @click="pickFontFace(font.value, $event)"
+              >
+                <Check v-if="toolbarState.fontFamily === font.value" :size="15" />
+                <span v-else aria-hidden="true" />
+                <span :style="font.value ? { fontFamily: font.value } : undefined">{{ font.label }}</span>
+              </button>
+            </div>
+          </AppDropdown>
+          <AppDropdown class="toolbar-dropdown">
+            <summary
+              class="toolbar-button toolbar-more__summary"
+              aria-label="Font size"
+              title="Font size"
+              @mousedown.prevent
+            >{{ fontSizeLabel }}</summary>
+            <div class="toolbar-more__menu" role="menu" aria-label="Font size">
+              <button
+                v-for="size in fontSizeChoices"
+                :key="size.value"
+                type="button"
+                class="toolbar-menu-button"
+                role="menuitemradio"
+                :aria-checked="toolbarState.fontSize === size.value"
+                @mousedown.prevent
+                @click="pickFontSize(size.value, $event)"
+              >
+                <Check v-if="toolbarState.fontSize === size.value" :size="15" />
+                <span v-else aria-hidden="true" />
+                <span>{{ size.label }}</span>
+              </button>
+            </div>
+          </AppDropdown>
           <label class="toolbar-color" title="Text color">
             <span>A</span>
             <input
@@ -903,23 +1075,23 @@ function selectFromIdentity(event: Event) {
           <button
             type="button"
             class="toolbar-button"
-            aria-label="Decrease quote or list indent"
-            title="Decrease quote or list indent"
+            :class="{ active: toolbarState.quote }"
+            aria-label="Quote"
+            title="Quote"
             @mousedown.prevent
-            @click="adjustIndent(-1)"
+            @click="adjustQuote(1)"
           >
-            <ListIndentDecrease :size="15" />
+            <Quote :size="15" class="icon-mirrored" />
           </button>
           <button
             type="button"
             class="toolbar-button"
-            :class="{ active: toolbarState.quote }"
-            aria-label="Increase quote or list indent"
-            title="Increase quote or list indent"
+            aria-label="Unquote"
+            title="Unquote"
             @mousedown.prevent
-            @click="adjustIndent(1)"
+            @click="adjustQuote(-1)"
           >
-            <ListIndentIncrease :size="15" />
+            <Quote :size="15" />
           </button>
         </div>
 
@@ -938,40 +1110,44 @@ function selectFromIdentity(event: Event) {
           </button>
         </div>
 
-        <details class="toolbar-more">
+        <AppDropdown class="toolbar-more">
           <summary class="toolbar-button toolbar-more__summary" @mousedown.prevent>
             More
           </summary>
           <div class="toolbar-more__menu" role="menu" aria-label="More formatting options">
             <div v-if="!isToolbarGroupVisible('font')" class="toolbar-menu-section" role="group" aria-label="Font formatting">
-              <label class="toolbar-menu-field">
-                <span>Font</span>
-                <select
-                  :value="toolbarState.fontFamily"
-                  aria-label="Font family"
-                  @mousedown="rememberSelection"
-                  @change="applyFontFace(($event.target as HTMLInputElement | HTMLSelectElement).value)"
-                >
-                  <option value="">Default</option>
-                  <option v-for="font in fontOptions" :key="font.value" :value="font.value">
-                    {{ font.label }}
-                  </option>
-                </select>
-              </label>
-              <label class="toolbar-menu-field">
-                <span>Size</span>
-                <select
-                  :value="toolbarState.fontSize"
-                  aria-label="Font size"
-                  @mousedown="rememberSelection"
-                  @change="applyFontSize(($event.target as HTMLInputElement | HTMLSelectElement).value)"
-                >
-                  <option value="">Default</option>
-                  <option v-for="size in fontSizeOptions" :key="size.value" :value="size.value">
-                    {{ size.label }}
-                  </option>
-                </select>
-              </label>
+              <span class="toolbar-menu-heading" aria-hidden="true">Font</span>
+              <button
+                v-for="font in fontFamilyChoices"
+                :key="`font-${font.value}`"
+                type="button"
+                class="toolbar-menu-button"
+                role="menuitemradio"
+                :aria-checked="toolbarState.fontFamily === font.value"
+                :aria-label="`Font: ${font.label}`"
+                @mousedown.prevent
+                @click="applyFontFace(font.value)"
+              >
+                <Check v-if="toolbarState.fontFamily === font.value" :size="15" />
+                <span v-else aria-hidden="true" />
+                <span :style="font.value ? { fontFamily: font.value } : undefined">{{ font.label }}</span>
+              </button>
+              <span class="toolbar-menu-heading" aria-hidden="true">Size</span>
+              <button
+                v-for="size in fontSizeChoices"
+                :key="`size-${size.value}`"
+                type="button"
+                class="toolbar-menu-button"
+                role="menuitemradio"
+                :aria-checked="toolbarState.fontSize === size.value"
+                :aria-label="`Size: ${size.label}`"
+                @mousedown.prevent
+                @click="applyFontSize(size.value)"
+              >
+                <Check v-if="toolbarState.fontSize === size.value" :size="15" />
+                <span v-else aria-hidden="true" />
+                <span>{{ size.label }}</span>
+              </button>
               <label class="toolbar-menu-field">
                 <span>Text color</span>
                 <input
@@ -1018,7 +1194,7 @@ function selectFromIdentity(event: Event) {
               </button>
             </div>
 
-            <div v-if="!isToolbarGroupVisible('lists')" class="toolbar-menu-section" role="group" aria-label="Lists and indentation">
+            <div v-if="!isToolbarGroupVisible('lists')" class="toolbar-menu-section" role="group" aria-label="Lists and quoting">
               <button
                 type="button"
                 class="toolbar-menu-button"
@@ -1044,23 +1220,23 @@ function selectFromIdentity(event: Event) {
               <button
                 type="button"
                 class="toolbar-menu-button"
+                :class="{ active: toolbarState.quote }"
                 role="menuitem"
                 @mousedown.prevent
-                @click="adjustIndent(-1)"
+                @click="adjustQuote(1)"
               >
-                <ListIndentDecrease :size="15" />
-                <span>Decrease indent</span>
+                <Quote :size="15" class="icon-mirrored" />
+                <span>Quote</span>
               </button>
               <button
                 type="button"
                 class="toolbar-menu-button"
-                :class="{ active: toolbarState.quote }"
                 role="menuitem"
                 @mousedown.prevent
-                @click="adjustIndent(1)"
+                @click="adjustQuote(-1)"
               >
-                <ListIndentIncrease :size="15" />
-                <span>Increase indent</span>
+                <Quote :size="15" />
+                <span>Unquote</span>
               </button>
             </div>
 
@@ -1169,7 +1345,7 @@ function selectFromIdentity(event: Event) {
             </button>
             </div>
           </div>
-        </details>
+        </AppDropdown>
       </div>
 
       <div class="editor-wrap">
@@ -1183,7 +1359,6 @@ function selectFromIdentity(event: Event) {
           @click="composeStore.close()"
         >Discard</AppButton>
         <AppButton
-          v-if="!composeStore.outcomeUnknown"
           :disabled="isSending"
           @click="send"
         >
@@ -1238,27 +1413,108 @@ function selectFromIdentity(event: Event) {
   font-size: 12px;
   color: var(--muted, #6b7388);
 }
-.row input, .row select {
+.row input {
   padding: 7px 10px;
   border: 1px solid var(--border, #d6d9e2);
   border-radius: 8px;
   font-size: 14px;
 }
-/* Aligned to the input column, like .autocomplete below. */
-.recipient-toggles {
-  margin: -2px 0 0 78px;
+/* The field look of .row input, on a summary; the chevron rides the
+   right edge. */
+.from-picker__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 8px;
+  font-size: 14px;
+  background: var(--panel, transparent);
 }
-.recipient-add {
-  padding: 2px 0;
-  border: none;
+.from-picker__summary::after {
+  margin-left: auto;
+}
+.from-picker__summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Full row width: an identity line is long, a 190px panel is not. */
+.from-picker__menu {
+  right: 0;
+}
+/* Person rows: avatar, the two lines, and the check on the selected
+   one — the suggestion list's shape. */
+.from-picker__option {
+  grid-template-columns: 24px 1fr auto;
+}
+.from-picker__avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex: none;
+}
+.from-picker__summary .from-picker__avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+.from-picker__lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.from-picker__name {
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.from-picker__email {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.from-picker__email--primary {
+  font-size: inherit;
+  color: inherit;
+  font-weight: 600;
+}
+.from-picker__check {
+  flex: none;
+  color: var(--accent, #0060df);
+}
+/* The To row carries the Cc/Bcc toggles in a third, content-width column
+   at its right edge; the label column stays 70px so every row aligns. */
+.row--to {
+  grid-template-columns: 70px 1fr auto;
+}
+.recipient-cc-toggles {
+  display: flex;
+  gap: 4px;
+}
+.recipient-toggle {
+  padding: 4px 8px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 6px;
   background: none;
   color: var(--muted, #6b7388);
   font-size: 12px;
-  text-decoration: underline;
   cursor: pointer;
 }
-.recipient-add:hover {
-  color: inherit;
+.recipient-toggle:hover {
+  color: var(--text, inherit);
+  border-color: var(--accent, #0060df);
 }
 .compose-toolbar {
   display: flex;
@@ -1286,7 +1542,6 @@ function selectFromIdentity(event: Event) {
   border-right: 0;
 }
 .toolbar-button,
-.toolbar-select,
 .toolbar-color {
   height: 28px;
   border: 0;
@@ -1310,22 +1565,12 @@ function selectFromIdentity(event: Event) {
 }
 .toolbar-button:hover,
 .toolbar-button.active,
-.toolbar-select:hover,
 .toolbar-color:hover {
   background: rgba(127, 127, 127, 0.18);
 }
 .toolbar-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
-}
-.toolbar-select {
-  max-width: 76px;
-  padding: 0 4px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.toolbar-select--size {
-  max-width: 70px;
 }
 .toolbar-color {
   position: relative;
@@ -1348,6 +1593,31 @@ function selectFromIdentity(event: Event) {
 .toolbar-more {
   position: relative;
   flex: 0 0 auto;
+}
+/* Font and size share the More menu's popup pieces; the container class
+   differs because the overflow maths reserves width by `.toolbar-more`
+   and must keep finding only the real More control. */
+.toolbar-dropdown {
+  position: relative;
+  flex: 0 0 auto;
+}
+/* Anchored at the button's start edge: these sit at the toolbar's left,
+   where a right-anchored panel would escape the dialog. */
+.toolbar-dropdown .toolbar-more__menu {
+  left: 0;
+  right: auto;
+  min-width: 130px;
+}
+.toolbar-dropdown[open] .toolbar-more__summary {
+  background: rgba(127, 127, 127, 0.18);
+}
+.toolbar-menu-heading {
+  padding: 4px 8px 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted, #6b7388);
 }
 .toolbar-more__summary {
   list-style: none;
@@ -1444,6 +1714,20 @@ function selectFromIdentity(event: Event) {
 .editor :deep(img) {
   max-width: 100%;
   height: auto;
+}
+/* Editor chrome only: the sent HTML carries a bare <blockquote> and the
+   receiving client draws its own bar. The border mirrors what the
+   message view puts on a first-level quote, so quoting looks the same
+   while writing as it will when read. */
+.editor :deep(blockquote) {
+  margin: 1ex 0;
+  padding: 0.4ex 1ex;
+  border-inline-start: 2px solid rgb(114, 159, 207);
+}
+/* The lucide glyph draws closing marks; mirrored it reads as the opening
+   pair, which is the convention for "quote" beside "unquote". */
+.icon-mirrored {
+  transform: scaleX(-1);
 }
 footer {
   display: flex;

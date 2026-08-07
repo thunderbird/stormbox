@@ -10,6 +10,7 @@ import {
 import {
   clearRecipients,
   composeSubject,
+  waitForIdentities,
   invalidRecipients,
   recipientAddresses,
   recipientInput,
@@ -37,11 +38,7 @@ function sendButton(page) {
 async function openCompose(page) {
   await page.keyboard.press('ControlOrMeta+n');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-  const fromSelect = page.locator('.compose-dialog select').first();
-  await expect.poll(
-    async () => fromSelect.locator('option').count(),
-    { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-  ).toBeGreaterThan(0);
+  await waitForIdentities(page);
 }
 
 async function closeCompose(page) {
@@ -342,17 +339,16 @@ test.describe('Recipient control', () => {
       await expect(listbox.locator('[role="option"]').filter({ hasText: contactName }))
         .toHaveCount(1);
 
-      // The chevron beside the field is the same path for a pointer, and it
-      // has to answer a keyboard too: activation from the keyboard and from
-      // a screen reader arrives as a click and nothing else, so a control
-      // listening for mousedown alone is one those users cannot reach.
+      // The field is a plain text combobox now — no dropdown chevron. The
+      // pointer path to the full book is the "Browse all contacts" footer
+      // the typed panel carries; typing part of the address opens it.
       await page.keyboard.press('Escape');
       await expect(listbox).toBeHidden();
-      await field.focus();
-      await page.keyboard.press('Tab');
-      await expect(page.locator('.compose-dialog .recipient-input__browse').first())
-        .toBeFocused();
-      await page.keyboard.press('Enter');
+      await field.click();
+      await field.pressSequentially('brow');
+      await expect(page.locator('.compose-dialog .autocomplete__browse button'))
+        .toBeVisible();
+      await page.locator('.compose-dialog .autocomplete__browse button').click();
       await expect(status).toHaveText(/Showing \d+ contacts/);
 
       await listbox.locator('[role="option"]').filter({ hasText: contactName }).click();
