@@ -154,6 +154,25 @@ describe('recipient history backfill', () => {
     ]);
   });
 
+  it('counts an address once per message even when it appears in To and Cc', async () => {
+    // Live learning (RECIPIENT_HISTORY_RECORD) counts each key once per
+    // send; the backfill has to agree, or an address the user double-listed
+    // climbs the frequency ranking twice as fast from history as from a
+    // real send.
+    await sentFolder();
+    await sentMessage({
+      from: 'me@example.com',
+      to: ['both@example.com'],
+      cc: ['both@example.com'],
+    });
+
+    const result = await backfill();
+    expect(result.learned).toBe(1);
+    const rows = await historyRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].send_count, 'one message, one send').toBe(1);
+  });
+
   it('ignores mail in the Sent folder that the user did not send', async () => {
     await sentFolder();
     // An imported or shared mailbox holds other people's sent mail. Being

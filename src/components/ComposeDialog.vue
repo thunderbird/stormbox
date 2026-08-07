@@ -679,10 +679,11 @@ function forgetSuggestion(email: string) {
 /**
  * The whole address book, for the browse path. The Contacts space is the
  * other place this list lives, and it is behind this dialog rather than
- * beside it, so the browse path stays in the field.
+ * beside it, so the browse path stays in the field. No limit is passed:
+ * CS-3.12 requires every contact to be selectable from the browse list.
  */
-async function browseAllContacts(limit: number) {
-  const contacts = await contactsStore.listContacts({ limit });
+async function browseAllContacts() {
+  const contacts = await contactsStore.listContacts();
   return contacts
     .filter((contact) => !!contact.email)
     .map((contact) => ({

@@ -9,6 +9,7 @@
  * verbatim, so all of it is answerable without parsing anything back.
  */
 
+import { addressKey } from './address-key';
 import type { ParsedAddress } from './address-parse';
 
 /** A `message_addresses` row, as the repository returns it. */
@@ -48,7 +49,7 @@ function pick(addresses: readonly MessageAddress[], kind: string): ParsedAddress
 }
 
 function key(address: ParsedAddress): string {
-  return address.email.trim().toLowerCase();
+  return addressKey(address.email);
 }
 
 /**
@@ -97,13 +98,14 @@ export function buildReplyAudience({
   ownedEmails?: readonly (string | null | undefined)[];
   all?: boolean;
 }): ReplyAudience {
-  // Trimmed as well as lower-cased, per CS-3.5: these come from an identity
-  // row and an account column, and one stray space either side would leave
-  // the user's own address in the audience of their own reply.
+  // Keyed with `addressKey` (CS-3.5): identity rows and server-returned
+  // addresses can spell the same address in different Unicode normalization
+  // forms or as U-label vs punycode, and any mismatch here leaves the user's
+  // own address in the audience of their own reply.
   const owned = new Set(
     ownedEmails
       .filter((email): email is string => !!email)
-      .map((email) => email.trim().toLowerCase())
+      .map((email) => addressKey(email))
       .filter(Boolean),
   );
   const originalTo = pick(addresses, KIND.TO);
@@ -181,7 +183,13 @@ export function buildThreadHeaders(parent: {
   const parentId = parent.rfc822_message_id?.replace(/^<|>$/g, '').trim();
   if (!parentId) return { inReplyTo: [], references: [] };
   const inherited = parseIdList(parent.references_json);
-  const chain = inherited.length > 0 ? inherited : parseIdList(parent.in_reply_to_json);
+  // RFC 5322 §3.6.4 allows In-Reply-To to stand in for missing References
+  // only when it "contains a single message identifier"; with more than one
+  // the chain is the parent's Message-ID alone.
+  const substitute = parseIdList(parent.in_reply_to_json);
+  const chain = inherited.length > 0
+    ? inherited
+    : (substitute.length === 1 ? substitute : []);
   const references = [...chain.filter((id) => id !== parentId), parentId];
   return { inReplyTo: [parentId], references };
 }

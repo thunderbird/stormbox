@@ -48,6 +48,17 @@ describe('addressKey (CS-3.5)', () => {
   it('keeps an address literal rather than refusing it', () => {
     expect(addressKey('jane@[192.0.2.1]')).toBe('jane@[192.0.2.1]');
   });
+
+  it('does not collapse distinct malformed domains onto one key', () => {
+    // The WHATWG URL parser truncates the authority at '/', '?', '#', and
+    // ':', which would give two different unparseable entries the same key —
+    // the collapse the fallback exists to prevent.
+    const plain = addressKey('a@foo.com');
+    expect(addressKey('a@foo.com/x')).not.toBe(plain);
+    expect(addressKey('a@foo.com:25')).not.toBe(plain);
+    expect(addressKey('a@foo.com?y')).not.toBe(plain);
+    expect(addressKey('a@foo.com#z')).not.toBe(plain);
+  });
 });
 
 describe('nameTokens (CS-3.2)', () => {

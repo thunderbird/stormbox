@@ -84,14 +84,17 @@ export async function autocompleteRecipients(
   const typed = String(prefix ?? '').trim();
   if (!typed || !(limit > 0)) return [];
 
+  // Both stored columns (`contact_emails.email_key`, `recipient_history
+  // .email_key`) are written by `addressKey`, so every address lookup —
+  // exact and prefix, contacts and history — is driven by the same folded
+  // key. For a partial address the key degrades gracefully: a bare local
+  // part folds exactly as the stored key's local part does, and a complete
+  // Unicode domain label punycodes to the stored spelling. A domain label
+  // still being typed cannot prefix-match its punycode form (punycode
+  // prefixes do not nest), for contacts and history alike; the name tier
+  // covers discovery until the label is whole.
   const typedKey = addressKey(typed);
   const words = nameTokens(typed);
-  // A partial address has no key of its own — `addressKey` needs a domain to
-  // normalize — but the leading characters of one are still comparable, because
-  // the local part of a key is folded exactly this way. So the range scan is
-  // driven by the typed text folded the same as the stored key, and the exact
-  // lookup by the key itself.
-  const scan = typed.normalize('NFC').toLowerCase();
   const pool = poolSize(limit);
 
   // Worked out before anything is collected, because a row that cannot be
@@ -114,7 +117,7 @@ export async function autocompleteRecipients(
   collect(await exactContactRows(engine, accountId, typedKey), MATCH_TIER.EXACT);
   collect(await exactHistoryRows(engine, accountId, typedKey), MATCH_TIER.EXACT);
 
-  collect(await contactAddressPrefixRows(engine, accountId, scan, pool), MATCH_TIER.ADDRESS_PREFIX);
+  collect(await contactAddressPrefixRows(engine, accountId, typedKey, pool), MATCH_TIER.ADDRESS_PREFIX);
   collect(await historyAddressPrefixRows(engine, accountId, typedKey, pool), MATCH_TIER.ADDRESS_PREFIX);
 
   if (words.length > 0) {
@@ -249,8 +252,10 @@ function boostOf(c: Candidate, nowMs: number): number {
 
 /**
  * Half-open upper bound for a prefix range scan. For 'pers' returns 'pert';
- * for 'foo\uffff' returns the next code point. Returns null when there is
- * no representable next code point — callers must fall back to LIKE then.
+ * for 'foo\uffff' returns the next code point. Returns the empty string
+ * unchanged, and null when there is no representable next code point —
+ * callers answer null with no rows, since a scan they cannot bound is a
+ * scan they must not run.
  */
 export function nextPrefix(prefix: string): string | null {
   if (!prefix) {
@@ -278,7 +283,7 @@ const CONTACT_COLUMNS = `c.display_name AS display_name, c.full_name AS full_nam
  * the entire address book on every keystroke, and gets away with it on a
  * fixture of a few hundred. `CROSS JOIN` is SQLite's documented way to say
  * which table is the outer loop, and putting `contact_emails` there is what
- * makes the range over `email_lower` the thing the index answers (CS-3.14).
+ * makes the range over `email_key` the thing the index answers (CS-3.14).
  *
  * The queries are exported so their plans can be asserted against the query
  * actually issued, rather than against a copy in a test that can drift from
@@ -351,14 +356,14 @@ async function exactHistoryRows(engine: any, accountId: number, key: string) {
 }
 
 async function contactAddressPrefixRows(
-  engine: any, accountId: number, scan: string, pool: number,
+  engine: any, accountId: number, key: string, pool: number,
 ) {
-  const upper = nextPrefix(scan);
+  const upper = nextPrefix(key);
   if (upper == null) return [];
-  // A half-open range over the generated `email_lower` column, because a
-  // bound parameter in LIKE is not rewritten into a range scan against a
+  // A half-open range over the `email_key` column, because a bound
+  // parameter in LIKE is not rewritten into a range scan against a
   // BINARY-collated column, and this is.
-  const rows = await engine.all(CONTACT_ADDRESS_PREFIX_SQL, [accountId, scan, upper, pool]);
+  const rows = await engine.all(CONTACT_ADDRESS_PREFIX_SQL, [accountId, key, upper, pool]);
   return rows.map(contactRow);
 }
 

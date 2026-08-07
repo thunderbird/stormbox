@@ -16,10 +16,12 @@
 -- `server_response_json` column, which was already the row's scratch
 -- space for server results.
 --
--- Values, in order of progress:
---   NULL           legacy rows and every non-send mutation type
+-- Values, in order of progress (send rows; contact writes later reuse
+-- 'cache_pending' for their own server-applied-cache-behind window):
+--   NULL           legacy rows and mutation types that record no phase
 --   'queued'       checkpoint persisted, nothing sent yet
 --   'created'      an Email exists on the server with our Message-ID
+--   'submitting'   the submission call is out and unanswered; never replayed
 --   'submitted'    a submission was accepted; the mail may be in transit
 --   'cache_pending' submitted, but the local cache does not match yet
 --   'unknown'      a response was lost and reconciliation was inconclusive

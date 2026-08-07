@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 describe('syncIdentities', () => {
-  it('upserts identities and stores the state token', async () => {
+  it('upserts identities, and keeps no checkpoint it would never read', async () => {
     const transport = new MockTransport();
     transport.handle('Identity/get', () => ({
       list: [
@@ -50,16 +50,20 @@ describe('syncIdentities', () => {
 
     const result = await syncIdentities({ transport, account, handlers });
     expect(result.count).toBe(2);
-    expect(result.state).toBe('is-1');
 
     const list = await handlers[DB_RPC.IDENTITY_LIST]({ accountId: account.id });
     expect(list.map((i) => i.email).sort()).toEqual(['alias@example.com', 'tester@example.com']);
 
+    // The server sends a state token and this deliberately drops it. There is
+    // no `Identity/changes` call to hand it to — the whole list is re-read
+    // when the server says it moved — so storing one would be a write with no
+    // reader, and the next person to find it would reasonably assume a delta
+    // sync existed somewhere.
     const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
       accountId: account.id,
       objectType: 'Identity',
     });
-    expect(stateRow.state).toBe('is-1');
+    expect(stateRow ?? null).toBeNull();
   });
 
   it('stores the reply-to and bcc defaults as fields, not as a blob', async () => {

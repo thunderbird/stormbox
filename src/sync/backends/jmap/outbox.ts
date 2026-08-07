@@ -142,13 +142,13 @@ const SET_ERROR_WRAPPERS = new Set(['notCreated', 'notUpdated', 'notDestroyed'])
 // rejected again. `overQuota` needs the user to free space, not a
 // 60-second backoff. That leaves rate limiting, where waiting is exactly
 // the right response. Note serverFail / serverPartialFail /
-// serverUnavailable are method-level errors under RFC 8620 §3.6.1 rather
+// serverUnavailable are method-level errors under RFC 8620 §3.6.2 rather
 // than SetError values, and RFC 8620 explicitly says a serverFail retry
 // is expected to fail again while serverPartialFail requires
 // resynchronisation, so neither belongs here.
 const RETRYABLE_SUBMISSION_ERROR_TYPES = new Set(['rateLimit']);
 // The same allowlist reasoning applied to method-level errors
-// (RFC 8620 §3.6.1) on a send. Retrying the create phase is safe — the
+// (RFC 8620 §3.6.2) on a send. Retrying the create phase is safe — the
 // operation's Message-ID makes an already-created Email findable, so a
 // replay cannot orphan a second draft — but it is not free: the runner
 // spends up to eight attempts across roughly two minutes of backoff
@@ -1934,6 +1934,21 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   const rowId = row?.id ?? null;
   const resumePhase = readPhase(row);
   let checkpoint = readCheckpoint(row);
+  if (row?.phase != null && resumePhase === null) {
+    // Recorded progress this build cannot interpret — a phase written by a
+    // newer worker, say — is the unreadable-checkpoint case (CS-1.6), not a
+    // fresh row. Falling through would re-run create-and-submit against
+    // work that may already sit past the submission.
+    return {
+      ok: false,
+      error: {
+        type: 'outcomeUnknown',
+        terminal: true,
+        reason: 'unrecognizedPhase',
+        description: 'This send recorded a phase this build cannot interpret.',
+      },
+    };
+  }
   if (resumePhase === SEND_PHASE.UNKNOWN) {
     // A previous attempt could not determine whether the message was
     // sent. Guessing here is exactly what must not happen.
@@ -2216,26 +2231,39 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   }
 
   if (!checkpoint.emailRemoteId) {
-    const createResult = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-      methodCalls: [[
-        'Email/set',
-        {
-          accountId: account.remote_account_id,
-          create: {
-            c1: {
-              ...emailCreate,
-              // Supplying the id makes the created Email findable by it
-              // later; RFC 8621 §4.6 has the server generate one only
-              // when the client omits it.
-              messageId: [checkpoint.messageId.replace(/^<|>$/g, '')],
+    let createResult;
+    try {
+      createResult = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [[
+          'Email/set',
+          {
+            accountId: account.remote_account_id,
+            create: {
+              c1: {
+                ...emailCreate,
+                // Supplying the id makes the created Email findable by it
+                // later; RFC 8621 §4.6 has the server generate one only
+                // when the client omits it.
+                messageId: [checkpoint.messageId.replace(/^<|>$/g, '')],
+              },
             },
           },
-        },
-        'c1',
-      ]],
-      useWebSocket,
-    });
+          'c1',
+        ]],
+        useWebSocket,
+      });
+    } catch (err: any) {
+      // Nothing was submitted by this request, and the QUEUED phase plus
+      // the Message-ID probe above make a replay safe. Classified here as
+      // retryable rather than allowed to escape: the runner terminals any
+      // throw from a send, which would strand the row on the one failure
+      // the recovery machinery exists for.
+      return {
+        ok: false,
+        error: { type: err?.type ?? 'transport', message: err?.message ?? String(err) },
+      };
+    }
     const emailSet = pickResponseById(createResult, 'Email/set', 'c1');
     if (!emailSet) {
       // Nothing was submitted in this request, so a retry cannot
@@ -2314,6 +2342,25 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
     const submission = pickResponseById(result, 'EmailSubmission/set', 's1');
     let accepted: string;
     if (!submission) {
+      // An intact envelope carrying an error tuple for this call is a
+      // definitive answer, not a lost one: RFC 8620 §3.6.2 has every
+      // method-level error except serverPartialFail leave server state
+      // unchanged, so nothing was submitted. The Email from phase 1
+      // survives; the row rewinds to CREATED so a retryable type
+      // (serverUnavailable, rateLimit) resubmits instead of resuming into
+      // the crash-ambiguity path, and a terminal one surfaces the server's
+      // reason rather than a false "may already have been sent".
+      const methodError = submitFailure ? null : extractMethodErrorById(result, 's1');
+      if (methodError
+        && methodError.type !== 'noResponse'
+        && methodError.type !== 'serverPartialFail') {
+        try {
+          checkpoint = await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CREATED);
+        } catch {
+          // Rewind is best-effort: an unrewound row probes before assuming.
+        }
+        return { ok: false, error: methodError };
+      }
       // Either the server answered without reporting this call, or there
       // was no answer at all. Ask it what happened rather than assuming:
       // the Email id is known, so both the submission record and the
@@ -2351,6 +2398,16 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
         const detail = submission.notCreated?.s1
           ?? Object.values(submission.notCreated ?? {})[0]
           ?? null;
+        // A notCreated is the server saying nothing was submitted, so the
+        // phase must not keep claiming an in-flight submission: left at
+        // SUBMITTING, the retry a rateLimit earns re-enters the
+        // crash-resume branch, finds no evidence of a submission the
+        // server refused, and parks the send as outcome-unknown.
+        try {
+          checkpoint = await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CREATED);
+        } catch {
+          // Rewind is best-effort: an unrewound row probes before assuming.
+        }
         return { ok: false, error: submissionError('notSubmitted', detail) };
       }
       accepted = created;
@@ -2798,7 +2855,7 @@ async function uploadInlineImages({ transport, account, images }) {
  * Returns { filed } so the caller can distinguish "sent and filed in
  * Sent" from "sent, filing still pending".
  *
- * Exported so the unit test in tests/unit/sync/outbox-apply.test.ts
+ * Exported so the unit tests in tests/unit/sync/outbox-effects.test.ts
  * can drive it directly without spinning up a full SEND row.
  */
 export async function applySendLocally({
@@ -2837,32 +2894,106 @@ export async function applySendLocally({
   const sentFolderId = folderRows[0]?.id;
   if (sentFolderId == null) return { filed: false };
 
-  // Prepend the new remote_id at position 0 of every open Sent
-  // mailbox-window query_view and bump total. Sent is sorted newest
-  // first, so position 0 is correct for any sort variant the open
-  // view holds.
+  // CS-1.14: the position and total of every open Sent view come from the
+  // server, never assumed — one Email/query per view under the view's own
+  // filter and sort, anchored at the new message, with the Sent Mailbox
+  // counters riding the same request. A view the server could not answer
+  // for is marked stale so the next read rebuilds it, rather than being
+  // given an invented position or count.
   const viewRows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id FROM query_views
+    sql: `SELECT id, filter_json, sort_json FROM query_views
            WHERE account_id = ? AND folder_id = ?
              AND view_type = 'mailbox-window'`,
     params: [account.id, Number(sentFolderId)],
   });
-  for (const view of viewRows) {
-    const viewId = Number(view.id);
-    const result = await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
-      viewId,
-      removed: [],
-      added: [{ id: createdRemoteId, index: 0 }],
-    });
-    if (Number(result?.added ?? 0) > 0) {
-      await handlers[DB_RPC.QUERY]({
-        sql: `UPDATE query_views
-                 SET total = COALESCE(total, 0) + ?,
-                     updated_at = ?
-               WHERE id = ?`,
-        params: [Number(result.added), Date.now(), viewId],
-      });
+
+  const parsed = (json: string) => {
+    try {
+      const value = JSON.parse(json);
+      return value && typeof value === 'object' ? value : null;
+    } catch {
+      return null;
     }
+  };
+  const calls = viewRows.map((view, i) => {
+    const filter = parsed(view.filter_json);
+    const sort = parsed(view.sort_json);
+    return [
+      'Email/query',
+      {
+        accountId: account.remote_account_id,
+        ...(filter && Object.keys(filter).length > 0
+          ? { filter }
+          : { filter: { inMailbox: sentRemoteId } }),
+        ...(Array.isArray(sort) && sort.length > 0 ? { sort } : {}),
+        anchor: createdRemoteId,
+        anchorOffset: 0,
+        limit: 1,
+        calculateTotal: true,
+      },
+      `q${i}`,
+    ];
+  });
+  calls.push([
+    'Mailbox/get',
+    {
+      accountId: account.remote_account_id,
+      ids: [sentRemoteId],
+      properties: ['id', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'],
+    },
+    'm1',
+  ]);
+
+  let reconciled;
+  try {
+    reconciled = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: calls,
+      useWebSocket,
+    });
+  } catch {
+    reconciled = null;
+  }
+
+  for (let i = 0; i < viewRows.length; i += 1) {
+    const viewId = Number(viewRows[i].id);
+    const query = reconciled ? pickResponseById(reconciled, 'Email/query', `q${i}`) : null;
+    const position = Number(query?.position);
+    const total = Number(query?.total);
+    if (!query || !Number.isFinite(position) || !Number.isFinite(total)) {
+      await handlers[DB_RPC.QUERY]({
+        sql: 'UPDATE query_views SET stale = 1, updated_at = ? WHERE id = ?',
+        params: [Date.now(), viewId],
+      });
+      continue;
+    }
+    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId,
+      removed: [createdRemoteId],
+      added: [{ id: createdRemoteId, index: position }],
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: 'UPDATE query_views SET total = ?, updated_at = ? WHERE id = ?',
+      params: [total, Date.now(), viewId],
+    });
+  }
+
+  const mailbox = reconciled
+    ? pickResponseById(reconciled, 'Mailbox/get', 'm1')?.list?.[0]
+    : null;
+  if (mailbox && mailbox.id === sentRemoteId) {
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE folders
+               SET total_emails = ?, unread_emails = ?, updated_at = ?
+             WHERE account_id = ? AND remote_id = ?`,
+      params: [
+        Number(mailbox.totalEmails ?? 0),
+        Number(mailbox.unreadEmails ?? 0),
+        Date.now(),
+        account.id,
+        sentRemoteId,
+      ],
+    });
   }
   return { filed: true };
 }
@@ -3135,7 +3266,7 @@ async function deleteRow(handlers, id) {
 /**
  * Build a typed error result for the case where Email/set did not
  * return its expected response slot. Most commonly this is a JMAP
- * method-level error (RFC 8620 §3.6.1) returned in the "error" slot
+ * method-level error (RFC 8620 §3.6.2) returned in the "error" slot
  * of methodResponses, e.g. requestTooLarge, limit, serverFail. We
  * surface the server-reported type so the user gets actionable text
  * ("Could not move message (requestTooLarge).") instead of the

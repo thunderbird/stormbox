@@ -50,7 +50,7 @@ describe('pickResponseById', () => {
   });
 
   it('does not match an error tuple as the requested method', () => {
-    // RFC 8620 §3.6.1: a method that cannot run has its slot replaced by
+    // RFC 8620 §3.6.2: a method that cannot run has its slot replaced by
     // ["error", {...}, callId]. Treating that as a response is how a
     // failed send used to pass as a success.
     const failed = {

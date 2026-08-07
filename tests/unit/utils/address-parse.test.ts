@@ -55,6 +55,29 @@ describe('parseAddressList', () => {
       .toEqual([{ name: 'Back\\slash', email: 'alice@example.com' }]);
   });
 
+  it('rejects control characters inside a quoted string', () => {
+    // RFC 5322 §3.2.4 qtext excludes controls, and RFC 6532 §3.2 adds only
+    // UTF8-non-ascii — a NUL, bare CR/LF, or BEL is not quotable content.
+    // Space and tab stay legal as FWS.
+    expect(parseAddressList('"a\u0000b" <x@example.com>').addresses).toEqual([]);
+    expect(parseAddressList('"a\rb" <x@example.com>').addresses).toEqual([]);
+    expect(parseAddressList('"a\nb" <x@example.com>').addresses).toEqual([]);
+    expect(parseAddressList('"a\u0007b" <x@example.com>').rejected)
+      .toEqual(['"a\u0007b" <x@example.com>']);
+    expect(parseAddressList('"a \tb" <x@example.com>').addresses)
+      .toEqual([{ name: 'a \tb', email: 'x@example.com' }]);
+  });
+
+  it('rejects a lone surrogate inside a quoted string', () => {
+    // An unpaired UTF-16 surrogate is not a Unicode scalar value, so it can
+    // never be the valid UTF-8 RFC 6532 §3.2 admits.
+    expect(parseAddressList('"a\ud800b" <x@example.com>').addresses).toEqual([]);
+    expect(parseAddressList('"a\udc00b" <x@example.com>').addresses).toEqual([]);
+    // A real surrogate pair is fine.
+    expect(parseAddressList('"a\u{1F600}b" <x@example.com>').addresses)
+      .toEqual([{ name: 'a\u{1F600}b', email: 'x@example.com' }]);
+  });
+
   it('keeps bare dots in an unquoted display name (obs-phrase)', () => {
     expect(parseAddressList('Alice B. Smith <alice@example.com>').addresses)
       .toEqual([{ name: 'Alice B. Smith', email: 'alice@example.com' }]);
@@ -221,7 +244,6 @@ describe('parseAddressList', () => {
       // a separator, so only quoting brings it back.
       { name: 'multi  space', email: 'alice@example.com' },
       { name: 'tab\tname', email: 'alice@example.com' },
-      { name: 'newline\nname', email: 'alice@example.com' },
       { email: '"alice smith"@example.com' },
       { email: 'alice@[192.0.2.1]' },
     ];
@@ -230,6 +252,16 @@ describe('parseAddressList', () => {
         .toEqual([address]);
     }
     expect(parseAddressList(formatAddressList(cases)).addresses).toEqual(cases);
+  });
+
+  it('folds a line break in a display name to a space when rendering', () => {
+    // A quoted-string cannot carry a bare CR/LF (§3.2.4): on the wire the
+    // break exists only as folding, which reads back as whitespace.
+    expect(
+      parseAddressList(
+        formatAddress({ name: 'newline\nname', email: 'alice@example.com' }),
+      ).addresses,
+    ).toEqual([{ name: 'newline name', email: 'alice@example.com' }]);
   });
 
   it('does not let a colon in rejected text swallow the addresses after it', () => {
@@ -344,6 +376,25 @@ describe('parseAddressList', () => {
       addresses: [{ email: 'bob@example.com' }],
       rejected: ['broken <a, b>'],
     });
+    // A `>` inside a quoted string closes nothing. Taking it for the
+    // terminator resumes the element scan mid-string, where the string's
+    // own closing quote reads as one that never closes — and the address
+    // after the comma went down with the fragment.
+    expect(parseAddressList('foo <"x>y", bob@example.com')).toEqual({
+      addresses: [{ email: 'bob@example.com' }],
+      rejected: ['foo <"x>y"'],
+    });
+  });
+
+  it('hands accepted addresses on in NFC (RFC 6532 §3.1)', () => {
+    // One address, typed in its decomposed spelling: the accepted value is
+    // wire content, so it leaves the parser composed. The rejected path is
+    // untouched — an invalid pill must reopen byte-for-byte as typed.
+    const decomposed = 'jose\u0301@example.com';
+    expect(parseAddressList(decomposed).addresses)
+      .toEqual([{ email: 'jos\u00e9@example.com' }]);
+    expect(parseAddressList(`Zoe\u0301 <z@example.com>`).addresses)
+      .toEqual([{ name: 'Zo\u00e9', email: 'z@example.com' }]);
   });
 
   it('does not read a domain literal that holds a space as an address', () => {

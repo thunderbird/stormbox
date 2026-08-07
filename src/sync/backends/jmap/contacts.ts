@@ -30,7 +30,7 @@ const ADDRESSBOOK_PROPERTIES = [
 // compatibility, but we request the spec property names here.
 const CONTACT_PROPERTIES = [
   'id', 'addressBookIds', 'uid',
-  'name', 'emails', 'phones', 'organizations',
+  'name', 'nicknames', 'emails', 'phones', 'organizations',
 ];
 
 /**
@@ -443,11 +443,12 @@ export async function syncContactCardChanges({
       if (skipped > 0) return { needsFullSync: true };
     }
     if (change.destroyed?.length) {
-      const placeholders = change.destroyed.map(() => '?').join(',');
-      await handlers[DB_RPC.QUERY]({
-        sql: `UPDATE contacts SET is_deleted = 1, updated_at = ?
-                WHERE account_id = ? AND remote_id IN (${placeholders})`,
-        params: [Date.now(), account.id, ...change.destroyed],
+      // Through the typed handler, which also drops the cards' search
+      // tokens and broadcasts the contacts family — raw SQL here left
+      // stale tokens behind and open views unaware (CS-3.2).
+      await handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
+        accountId: account.id,
+        remoteIds: change.destroyed,
       });
     }
     await handlers[DB_RPC.SYNC_STATE_SET]({
@@ -564,6 +565,7 @@ async function persistContactCards({ account, cards, handlers, generation = null
       givenName: card.givenName,
       familyName: card.familyName,
       organization: card.organization,
+      nicknames: card.nicknames,
       vcardText: null,
       vcardVersion: null,
       rawJson: JSON.stringify(card.raw),
@@ -614,6 +616,7 @@ interface NormalizedCard {
   givenName: string | null;
   familyName: string | null;
   organization: string | null;
+  nicknames: string[];
   emails: NormalizedEmail[];
   raw: unknown;
 }
@@ -635,8 +638,13 @@ function normalizeCard(card: any): NormalizedCard {
   const fullName = card.fullName
     ?? (typeof card.name === 'object' ? card.name?.full : null)
     ?? null;
-  const givenName = card.name?.given ?? null;
-  const familyName = card.name?.surname ?? card.name?.surnames ?? null;
+  // RFC 9553 §2.2.1 carries given/family names as NameComponent entries,
+  // keyed by `kind`; the flat name.given/name.surname reads stay as a
+  // tolerance for the older non-RFC shape.
+  const givenName = joinComponentValues(card.name, ['given'])
+    ?? card.name?.given ?? null;
+  const familyName = joinComponentValues(card.name, ['surname', 'surname2'])
+    ?? card.name?.surname ?? card.name?.surnames ?? null;
   const display = fullName
     ?? combineNameComponents(card.name)
     ?? emails[0]?.email
@@ -651,9 +659,26 @@ function normalizeCard(card: any): NormalizedCard {
     givenName,
     familyName,
     organization: normalizeOrganization(card),
+    nicknames: normalizeNicknames(card.nicknames),
     emails,
     raw: card,
   };
+}
+
+/**
+ * The names a card's `nicknames` map carries (RFC 9553 §2.2.2), for the
+ * search tokens CS-3.2 asks for. Tolerates a flat array of strings the
+ * way the other normalizers tolerate the pre-RFC shape.
+ */
+function normalizeNicknames(nicknames: any): string[] {
+  if (!nicknames) return [];
+  const entries = Array.isArray(nicknames) ? nicknames : Object.values(nicknames);
+  const out: string[] = [];
+  for (const entry of entries) {
+    const name = typeof entry === 'string' ? entry : entry?.name;
+    if (typeof name === 'string' && name.trim()) out.push(name.trim());
+  }
+  return out;
 }
 
 function normalizeEmails(emails: any): NormalizedEmail[] {
@@ -661,10 +686,12 @@ function normalizeEmails(emails: any): NormalizedEmail[] {
   // JSContact map shape: { e1: { address, contexts, pref }, ... }
   const entries = Array.isArray(emails) ? emails : Object.values(emails);
   const out: NormalizedEmail[] = [];
+  const prefs: (number | null)[] = [];
   for (const e of entries) {
     if (typeof e === 'string') {
       if (!e) continue;
       out.push({ position: out.length, email: e, label: null, isPreferred: false });
+      prefs.push(null);
       continue;
     }
     const email = e?.address ?? e?.email ?? null;
@@ -673,10 +700,22 @@ function normalizeEmails(emails: any): NormalizedEmail[] {
       ?? e.kind
       ?? (e.contexts ? Object.keys(e.contexts)[0] : null)
       ?? null;
-    // `pref` (1 = most preferred) in JSContact, `isDefault` in the
-    // older shape.
-    const isPreferred = e.pref != null || !!e.isDefault;
-    out.push({ position: out.length, email, label, isPreferred });
+    // `isDefault` is the older shape's flag; JSContact `pref` is resolved
+    // across the whole card below.
+    out.push({ position: out.length, email, label, isPreferred: !!e.isDefault });
+    const pref = Number(e?.pref);
+    prefs.push(Number.isInteger(pref) && pref >= 1 && pref <= 100 ? pref : null);
+  }
+  // RFC 9553 §1.5.3: pref is a 1-100 ordering, lower is more preferred, and
+  // an address without one is least preferred. Exactly the most-preferred
+  // address is marked (ties go to the first listed).
+  const best = prefs.reduce<number | null>(
+    (min, p) => (p != null && (min == null || p < min) ? p : min),
+    null,
+  );
+  if (best != null) {
+    const winner = prefs.findIndex((p) => p === best);
+    out.forEach((e, i) => { e.isPreferred = i === winner; });
   }
   return out;
 }
@@ -1166,7 +1205,15 @@ async function existingCardEmails({ transport, account, emails, useWebSocket }):
     }
     position += ids.length;
     const total = Number(query?.total);
-    if (ids.length === 0 || ids.length < cap
+    // A short page is judged against the limit the server enforced (RFC
+    // 8620 §5.5 echoes it), not the one requested — the same rule
+    // pageAllContacts applies, so a server clamping below our cap is not
+    // read as an account that ran out of matches.
+    const echoed = Number.isFinite(Number(query?.limit)) && query?.limit != null
+      ? Number(query.limit)
+      : cap;
+    const served = Math.min(cap, echoed);
+    if (ids.length === 0 || ids.length < served
       || (Number.isFinite(total) && position >= total)) break;
   }
   return present;
@@ -1220,8 +1267,39 @@ async function submitContactCardCreate({
   return { ok: false, error: { type: 'noResponse' } };
 }
 
+/** The values of the RFC 9553 §2.2.1.2 name components of the given kinds. */
+function componentValues(name: any, kinds: readonly string[]): string[] {
+  if (!Array.isArray(name?.components)) return [];
+  return name.components
+    .filter((c: any) => kinds.includes(c?.kind) && typeof c?.value === 'string' && c.value)
+    .map((c: any) => c.value as string);
+}
+
+function joinComponentValues(name: any, kinds: readonly string[]): string | null {
+  const values = componentValues(name, kinds);
+  return values.length > 0 ? values.join(' ') : null;
+}
+
+/**
+ * A display name assembled from a structured Name. RFC 9553 §2.2.1.1 makes
+ * `full` optional once `components` is set, so a components-only card must
+ * still get a readable name: its component values in listed order, joined
+ * by `defaultSeparator` when the card names one. The flat given/surname
+ * reads remain as a tolerance for the older non-RFC shape.
+ */
 function combineNameComponents(name) {
   if (!name) return null;
+  if (Array.isArray(name.components)) {
+    const parts = name.components
+      .filter((c: any) => c?.kind !== 'separator' && typeof c?.value === 'string' && c.value)
+      .map((c: any) => c.value as string);
+    if (parts.length > 0) {
+      const separator = typeof name.defaultSeparator === 'string' && name.defaultSeparator
+        ? name.defaultSeparator
+        : ' ';
+      return parts.join(separator);
+    }
+  }
   const parts = [name.given, name.surname].filter(Boolean);
   return parts.length > 0 ? parts.join(' ') : null;
 }

@@ -30,10 +30,15 @@
  *                   responses for the same method name. Send is the
  *                   case that matters: RFC 8621 §7.5 has
  *                   onSuccessUpdateEmail generate a second, implicit
- *                   Email/set response tagged with the
- *                   EmailSubmission/set call id, so pickResponse()
- *                   would always return the explicit create and never
- *                   the implicit update.
+ *                   Email/set response after the EmailSubmission/set
+ *                   response, so pickResponse() would always return
+ *                   the explicit create and never the implicit update.
+ *                   The RFC does not say which call id tags the
+ *                   implicit response; Stalwart v0.15.4 tags it with
+ *                   the EmailSubmission/set call id (measured — see
+ *                   AGENTS.md), and the send path's own gating on the
+ *                   server's mailboxIds keeps a differently-tagged
+ *                   response fail-safe.
  */
 
 export async function callJmap(transport, { using, methodCalls, useWebSocket }) {

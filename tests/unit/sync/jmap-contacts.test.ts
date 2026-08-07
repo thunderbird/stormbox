@@ -1298,6 +1298,31 @@ describe('syncContactCardChanges', () => {
     expect(Number(destroyed.is_deleted)).toBe(1);
   });
 
+  it("drops a destroyed card's search tokens along with its suggestion (CS-3.2)", async () => {
+    // The destroyed leg must go through the typed delete handler:
+    // is_deleted alone hides the card from queries that filter on it, but
+    // its name tokens stay behind in contact_search_tokens.
+    const transport = new MockTransport();
+    transport.handle('ContactCard/changes', () => ({
+      oldState: 'cc-0',
+      newState: 'cc-1',
+      hasMoreChanges: false,
+      created: [],
+      updated: [],
+      destroyed: ['c-2'],
+    }));
+
+    await syncContactCardChanges({ transport, account, handlers, sinceState: 'cc-0' });
+
+    const tokens = await engine.all(
+      `SELECT t.token FROM contact_search_tokens t
+        JOIN contacts c ON c.id = t.contact_id
+       WHERE c.account_id = ? AND c.remote_id = ?`,
+      [account.id, 'c-2'],
+    );
+    expect(tokens).toEqual([]);
+  });
+
   it('follows hasMoreChanges across pages and persists each page state', async () => {
     const transport = new MockTransport();
     const seenStates: string[] = [];
@@ -1561,5 +1586,196 @@ describe('whitelist reconcile cost is independent of contact count', () => {
 
     // The 1099 existing contacts are untouched; exactly 150 were added.
     expect((await countContacts()).n).toBe(1249);
+  });
+});
+
+describe('JSContact ingestion (RFC 9553)', () => {
+  function nothingChanged(transport: MockTransport) {
+    transport.handle('ContactCard/changes', ({ sinceState }) => ({
+      oldState: sinceState,
+      newState: sinceState,
+      created: [],
+      updated: [],
+      destroyed: [],
+      hasMoreChanges: false,
+    }));
+  }
+
+  async function seedDefaultBook() {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+  }
+
+  it('reads given and family names from name.components (RFC 9553 §2.2.1.2)', async () => {
+    // RFC 9553 defines Name as components/full — there are no name.given or
+    // name.surname properties, and `full` is optional once components are
+    // set. This card is the shape of RFC 9610's own ContactCard/get example.
+    await seedDefaultBook();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-joe'], total: 1, queryState: 'qs-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        id: 'c-joe',
+        uid: 'uid-joe',
+        addressBookIds: { 'ab-default': true },
+        name: {
+          isOrdered: true,
+          components: [
+            { kind: 'given', value: 'Joe' },
+            { kind: 'surname', value: 'Bloggs' },
+          ],
+        },
+        emails: { e1: { address: 'joe.bloggs@example.com' } },
+      }],
+      state: 'cc-1',
+    }));
+    nothingChanged(transport);
+
+    await syncContacts({ transport, account, handlers });
+
+    const row = await engine.get(
+      'SELECT display_name, given_name, family_name FROM contacts WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'c-joe'],
+    );
+    expect(row.given_name).toBe('Joe');
+    expect(row.family_name).toBe('Bloggs');
+    expect(row.display_name).toBe('Joe Bloggs');
+
+    // The CS-3.2 behavior that depends on those columns: the contact is
+    // reachable by name.
+    const matches = await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'joe blo', limit: 10,
+    });
+    expect(matches.map((m: any) => m.email)).toContain('joe.bloggs@example.com');
+  });
+
+  it('tokenizes nicknames so a contact is reachable by one (RFC 9553 §2.2.2)', async () => {
+    // CS-3.2 names nickname among the match inputs "where available"; the
+    // nicknames map is served by Stalwart, so it is available whenever the
+    // card carries one.
+    await seedDefaultBook();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-nick'], total: 1, queryState: 'qs-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        id: 'c-nick',
+        addressBookIds: { 'ab-default': true },
+        name: { full: 'Robert Paulson' },
+        nicknames: { n1: { name: 'Ace' } },
+        emails: { e1: { address: 'robert@example.com' } },
+      }],
+      state: 'cc-1',
+    }));
+    nothingChanged(transport);
+
+    await syncContacts({ transport, account, handlers });
+
+    const matches = await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: account.id, prefix: 'ace', limit: 10,
+    });
+    expect(matches.map((m: any) => m.email)).toContain('robert@example.com');
+  });
+
+  it('marks only the most-preferred address as preferred (RFC 9553 §1.5.3)', async () => {
+    // pref is a 1-100 ordering where lower is more preferred, not a flag;
+    // treating any pref as "preferred" defeats the CS-3.6 boost and the
+    // CS-3.4 display-name preference rank.
+    await seedDefaultBook();
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['c-pref'], total: 1, queryState: 'qs-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        id: 'c-pref',
+        addressBookIds: { 'ab-default': true },
+        name: { full: 'Pref Erence' },
+        emails: {
+          e1: { address: 'secondary@example.com', pref: 50 },
+          e2: { address: 'primary@example.com', pref: 1 },
+        },
+      }],
+      state: 'cc-1',
+    }));
+    nothingChanged(transport);
+
+    await syncContacts({ transport, account, handlers });
+
+    const rows = await engine.all(
+      `SELECT ce.email, ce.is_preferred
+         FROM contact_emails ce JOIN contacts c ON c.id = ce.contact_id
+        WHERE c.account_id = ? AND c.remote_id = ? ORDER BY ce.email`,
+      [account.id, 'c-pref'],
+    );
+    expect(rows).toEqual([
+      { email: 'primary@example.com', is_preferred: 1 },
+      { email: 'secondary@example.com', is_preferred: 0 },
+    ]);
+  });
+
+  it('pages the whitelist existence check by the limit the server enforced', async () => {
+    // RFC 8620 §5.5 lets the server clamp `limit` and requires it to echo
+    // the enforced value; measuring a short page against the requested cap
+    // reads a clamped server as "no more rows" and re-creates cards that
+    // already exist. pageAllContacts already honors the echo — this pins
+    // the same rule for existingCardEmails.
+    const senders = [
+      { email: 'a@example.com', name: 'A' },
+      { email: 'b@example.com', name: 'B' },
+    ];
+    const pages = [['card-a'], ['card-b']];
+    const cardEmails: Record<string, string> = {
+      'card-a': 'a@example.com',
+      'card-b': 'b@example.com',
+    };
+    const transport = new MockTransport();
+    let queryCalls = 0;
+    transport.handle('ContactCard/query', (params) => {
+      const page = pages[queryCalls] ?? [];
+      queryCalls += 1;
+      return {
+        ids: page,
+        position: params.position,
+        // The server enforces a page size of 1 regardless of the request.
+        limit: 1,
+        total: 2,
+        queryState: 'qs-1',
+      };
+    });
+    transport.handle('ContactCard/get', (params) => ({
+      list: (params.ids ?? []).map((id: string) => ({
+        id,
+        emails: { e1: { address: cardEmails[id] } },
+      })),
+      state: 'cc-1',
+    }));
+    let created = 0;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'ab-trust', name: 'Trusted senders' }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/set', (params) => {
+      created += Object.keys(params.create ?? {}).length;
+      return {
+        created: Object.fromEntries(
+          Object.keys(params.create ?? {}).map((k, i) => [k, { id: `new-${i}` }]),
+        ),
+      };
+    });
+
+    const result = await createTrustedContactCards({ transport, account, senders });
+
+    expect(result.ok).toBe(true);
+    // Both addresses already have cards; nothing may be created.
+    expect(created).toBe(0);
+    expect(result.created ?? 0).toBe(0);
+    expect(result.alreadyTrusted).toBe(true);
   });
 });

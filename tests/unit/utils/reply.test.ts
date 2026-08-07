@@ -287,6 +287,40 @@ describe('buildReplyAudience', () => {
     expect(buildReplyAudience({ addresses: [] })).toEqual({ to: [], cc: [] });
     expect(buildReplyAudience({ addresses: [], all: true })).toEqual({ to: [], cc: [] });
   });
+
+  it('recognizes an owned address across Unicode normalization forms (CS-3.5)', () => {
+    // The identity row holds NFC; a server may return the same address NFD.
+    const audience = buildReplyAudience({
+      addresses: rows({
+        from: [['Alice', 'alice@example.com']],
+        to: ['jose\u0301@example.com', 'bob@example.com'],
+      }),
+      ownedEmails: ['jos\u00e9@example.com'],
+      all: true,
+    });
+
+    expect(audience.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(
+      audience.cc.map((a) => a.email),
+      'the NFD spelling of the owned address must be suppressed',
+    ).toEqual(['bob@example.com']);
+  });
+
+  it('recognizes an owned Unicode domain against its punycode spelling (CS-3.5)', () => {
+    const audience = buildReplyAudience({
+      addresses: rows({
+        from: [['Alice', 'alice@example.com']],
+        to: ['me@xn--mnchen-3ya.de', 'bob@example.com'],
+      }),
+      ownedEmails: ['me@m\u00fcnchen.de'],
+      all: true,
+    });
+
+    expect(
+      audience.cc.map((a) => a.email),
+      'the punycode spelling of the owned domain must be suppressed',
+    ).toEqual(['bob@example.com']);
+  });
 });
 
 describe('buildThreadHeaders', () => {
@@ -314,6 +348,19 @@ describe('buildThreadHeaders', () => {
     })).toEqual({
       inReplyTo: ['second@example.com'],
       references: ['first@example.com', 'second@example.com'],
+    });
+  });
+
+  it('does not substitute a multi-id In-Reply-To for missing References (RFC 5322 §3.6.4)', () => {
+    // The substitution is permitted only when the parent's In-Reply-To
+    // "contains a single message identifier"; otherwise References is the
+    // parent's Message-ID alone.
+    expect(buildThreadHeaders({
+      rfc822_message_id: 'third@example.com',
+      in_reply_to_json: JSON.stringify(['first@example.com', 'second@example.com']),
+    })).toEqual({
+      inReplyTo: ['third@example.com'],
+      references: ['third@example.com'],
     });
   });
 

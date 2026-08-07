@@ -1,8 +1,9 @@
 /**
  * Compose state. Holds the in-flight draft and the identity picker.
  * Send is implemented as a pending_mutations row plus a drainOutbox
- * call on the worker, so the UI can dismiss the composer immediately
- * and the actual JMAP submission proceeds asynchronously.
+ * call on the worker. send() awaits the outcome and close() refuses
+ * while SENDING (CS-1.12): the composer stays open until the send is
+ * confirmed, failed, or parked, so its result is never invisible.
  */
 
 import { defineStore } from 'pinia';
@@ -91,7 +92,7 @@ function emptyDraft(): Draft {
 }
 
 /**
- * Identity `replyTo` per RFC 8621 §6.1: where replies to this identity
+ * Identity `replyTo` per RFC 8621 §6: where replies to this identity
  * should go. Stored as JSON since it is a list.
  *
  * The Identity's `bcc` default is deliberately not applied. It is

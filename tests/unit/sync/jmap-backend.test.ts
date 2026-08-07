@@ -4,7 +4,7 @@ import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
-import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
+import { JmapBackend, drainRecipientBackfill } from '../../../src/sync/backends/jmap/backend';
 import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
 import { FakeWebSocket } from './_fake-ws';
@@ -2258,5 +2258,58 @@ describe('JmapBackend shared-account reconciliation', () => {
       objectType: 'Email',
       scope: '',
     })).toBeNull();
+  });
+});
+
+describe('drainRecipientBackfill', () => {
+  it('drains batch after batch until the budget retires the job', async () => {
+    // The handler reads one bounded batch per call; the boot-time drain
+    // must keep calling until `done`, or a 2,000-message budget takes ten
+    // app starts to cover (CS-3.3).
+    let calls = 0;
+    const handlers = {
+      [DB_RPC.RECIPIENT_HISTORY_BACKFILL]: async () => {
+        calls += 1;
+        return calls < 10
+          ? { scanned: 200, learned: 12, done: false }
+          : { scanned: 200, learned: 3, done: true };
+      },
+    };
+
+    const result = await drainRecipientBackfill(handlers, 1);
+
+    expect(calls).toBe(10);
+    expect(result).toEqual({ scanned: 2000, learned: 111, done: true });
+  });
+
+  it('stops when the cache has nothing more to read for now', async () => {
+    // scanned 0 with done false is a Sent folder still filling in: the
+    // drain must not spin on it — the next boot resumes from the cursor.
+    let calls = 0;
+    const handlers = {
+      [DB_RPC.RECIPIENT_HISTORY_BACKFILL]: async () => {
+        calls += 1;
+        return { scanned: 0, learned: 0, done: false };
+      },
+    };
+
+    const result = await drainRecipientBackfill(handlers, 1);
+
+    expect(calls).toBe(1);
+    expect(result.done).toBe(false);
+  });
+
+  it('stops between batches when the backend is torn down', async () => {
+    let calls = 0;
+    const handlers = {
+      [DB_RPC.RECIPIENT_HISTORY_BACKFILL]: async () => {
+        calls += 1;
+        return { scanned: 200, learned: 1, done: false };
+      },
+    };
+
+    await drainRecipientBackfill(handlers, 1, () => calls < 2);
+
+    expect(calls).toBe(2);
   });
 });
