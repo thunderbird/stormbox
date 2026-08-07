@@ -193,15 +193,18 @@ test.describe('Contact and identity integrity', () => {
       // the composer is what has to notice it.
       await page.keyboard.press('ControlOrMeta+n');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-      const picker = page.locator('.compose-dialog select').first();
+      const picker = page.locator('.compose-dialog [data-compose-from]');
+      const aliasOption = picker.locator('.app-dropdown__item', { hasText: alias });
       await expect
-        .poll(async () => picker.locator(`option:has-text("${alias}")`).count(), {
+        .poll(async () => aliasOption.count(), {
           timeout: 30_000,
           message: 'opening the composer should pick up an alias added since login',
         })
         .toBe(1);
 
-      await picker.selectOption({ label: `Alias E2E <${alias}>` });
+      await picker.locator('summary').click();
+      await aliasOption.click();
+      await expect(picker.locator('summary')).toContainText(alias);
       await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
       await composeSubject(page).fill(subject);
       await page.locator('.compose-dialog .editor[contenteditable]').first().click();

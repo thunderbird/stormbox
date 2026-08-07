@@ -77,7 +77,7 @@ describe('FolderCreateDialog', () => {
     await nextTick();
 
     const labels = wrapper.find('[data-folder-create-parent]')
-      .findAll('option')
+      .findAll('.app-dropdown__item')
       .map((o) => o.text().replaceAll('\u00a0', ''));
     expect(labels).toContain('Top Level');
     expect(labels).toContain('Inbox');
@@ -97,7 +97,7 @@ describe('FolderCreateDialog', () => {
     await nextTick();
 
     await wrapper.find('[data-folder-create-name]').setValue('  Receipts  ');
-    await wrapper.find('[data-folder-create-parent]').setValue('10');
+    await wrapper.find('[data-folder-parent-option="10"]').trigger('click');
     await wrapper.find('form').trigger('submit');
     await nextTick();
 

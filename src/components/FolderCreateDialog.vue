@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { X } from '@lucide/vue';
+import { Check, X } from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { FolderRow } from '../types';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { folderSortKey } from '../utils/folder-presentation';
+import AppDropdown from './AppDropdown.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -69,6 +70,18 @@ const groups = computed(() => {
   }
   return [...byGroup.entries()].map(([label, options]) => ({ label, options }));
 });
+
+/** The closed control shows the choice without its tree indentation. */
+const selectedParentLabel = computed(() => {
+  const chosen = parentOptions.value.find((option) => option.id === parentFolderId.value);
+  return (chosen?.label ?? 'Top Level').replace(/^\u00a0+/, '');
+});
+
+function pickParent(id: number | null, event: Event) {
+  parentFolderId.value = id;
+  const details = (event.currentTarget as HTMLElement).closest('details');
+  if (details) details.open = false;
+}
 
 function flatten(accountFolders: FolderRow[]): Array<{ folder: FolderRow; depth: number }> {
   const byParent = new Map<number | 'ROOT', FolderRow[]>();
@@ -173,22 +186,34 @@ onBeforeUnmount(() => {
             data-folder-create-name
           />
         </label>
-        <label class="folder-create__field">
-          <span>Parent</span>
-          <select
-            v-model="parentFolderId"
-            class="folder-create__input"
-            data-folder-create-parent
-          >
-            <optgroup v-for="group in groups" :key="group.label" :label="group.label">
-              <option
-                v-for="option in group.options"
-                :key="option.id ?? 'root'"
-                :value="option.id"
-              >{{ option.label }}</option>
-            </optgroup>
-          </select>
-        </label>
+        <div class="folder-create__field">
+          <span id="folder-create-parent-label">Parent</span>
+          <AppDropdown class="folder-create__parent" data-folder-create-parent>
+            <summary
+              class="app-dropdown__summary folder-create__parent-summary"
+              aria-labelledby="folder-create-parent-label"
+            >{{ selectedParentLabel }}</summary>
+            <div class="app-dropdown__menu folder-create__parent-menu" role="menu" aria-label="Parent folder">
+              <template v-for="group in groups" :key="group.label">
+                <span class="app-dropdown__heading" aria-hidden="true">{{ group.label }}</span>
+                <button
+                  v-for="option in group.options"
+                  :key="option.id ?? 'root'"
+                  type="button"
+                  class="app-dropdown__item"
+                  role="menuitemradio"
+                  :aria-checked="parentFolderId === option.id"
+                  :data-folder-parent-option="option.id ?? 'root'"
+                  @click="pickParent(option.id, $event)"
+                >
+                  <Check v-if="parentFolderId === option.id" :size="14" />
+                  <span v-else aria-hidden="true" />
+                  <span>{{ option.label }}</span>
+                </button>
+              </template>
+            </div>
+          </AppDropdown>
+        </div>
         <p v-if="failure" class="folder-create__error">{{ failure }}</p>
         <div class="folder-create__actions">
           <button
@@ -301,6 +326,29 @@ onBeforeUnmount(() => {
 .folder-create__input:focus-visible {
   outline: none;
   border-color: var(--accent);
+}
+.folder-create__parent {
+  flex: 1;
+  min-width: 0;
+}
+/* The field look of .folder-create__input, on a summary. */
+.folder-create__parent-summary {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.folder-create__parent-summary::after {
+  margin-left: auto;
+}
+.folder-create__parent-menu {
+  right: 0;
 }
 .folder-create__error {
   margin: 0;

@@ -547,6 +547,7 @@ describe('compose-store send safety', () => {
     outcome: Record<string, unknown>,
     rowError?: Record<string, unknown>,
     identities: IdentityRow[] = [identity({ id: 1, email: 'me@example.com' })],
+    rowCheckpoint?: Record<string, unknown>,
   ) {
     const repo = {
       subscribe: vi.fn(() => () => {}),
@@ -556,7 +557,12 @@ describe('compose-store send safety', () => {
       insertPendingMutation: vi.fn(async () => ({ id: 7 })),
       runMutation: vi.fn(async () => outcome),
       getPendingMutationError: vi.fn(async () => (rowError
-        ? { mutation_type: 'send', local_status: 'conflicted', error_json: JSON.stringify(rowError) }
+        ? {
+          mutation_type: 'send',
+          local_status: 'conflicted',
+          error_json: JSON.stringify(rowError),
+          server_response_json: rowCheckpoint ? JSON.stringify(rowCheckpoint) : null,
+        }
         : null)),
     };
     lastRepo = repo;
@@ -751,42 +757,65 @@ describe('compose-store send safety', () => {
     expect(composeStore.status).toBe(COMPOSE_STATE.FAILED);
     expect(composeStore.error).toMatch(/Send failed/);
     expect(composeStore.notice).toBeNull();
-    expect(composeStore.outcomeUnknown).toBe(false);
   });
 
-  it('warns instead of blaming the send when the outcome is unknown', async () => {
-    // Nothing here proves the message did not go out, so the copy must not
-    // say it failed, and Send must not be offered again: a second press
-    // builds a new message with a new Message-ID, which the duplicate
-    // guard cannot recognise (CS-1.9).
+  it('resolves an unknown outcome through the mailbox when the message is on the server', async () => {
+    // The checkpoint proves the Email was created, so the text lives in
+    // Drafts or in Sent — the folders show which as they sync. Holding
+    // the composer open behind a special state would add nothing the
+    // mailbox does not already say (CS-1.9).
     const composeStore = await composerWithOutcome(
       { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
       { type: 'outcomeUnknown', terminal: true, reason: 'noEvidence' },
+      undefined,
+      { operationId: 'op1', messageId: '<m1@example.com>', emailRemoteId: 'M99' },
+    );
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.isOpen, 'the folders are where the answer is').toBe(false);
+    expect(composeStore.error).toBeNull();
+    expect(composeStore.notice).toMatch(/could not confirm/i);
+    expect(composeStore.notice).toMatch(/Sent/);
+    expect(composeStore.notice).toMatch(/Drafts/);
+  });
+
+  it('holds the draft when an unknown outcome left no copy on the server', async () => {
+    // No Email id in the checkpoint means this dialog may hold the only
+    // reachable copy of the text, so it must not close over it. The copy
+    // must not read as a plain failure either — nothing proves the
+    // message did not go out — and Send stays offered: resending after
+    // checking Sent is the user's decision (CS-1.9).
+    const composeStore = await composerWithOutcome(
+      { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
+      { type: 'outcomeUnknown', terminal: true, reason: 'unreadableCheckpoint' },
     );
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.status).toBe(COMPOSE_STATE.FAILED);
-    expect(composeStore.error).toMatch(/may already have been sent/i);
+    expect(composeStore.isOpen, 'the draft here may be the only copy').toBe(true);
+    expect(composeStore.error).toMatch(/could not confirm/i);
+    expect(composeStore.error).toMatch(/check your sent folder/i);
     expect(composeStore.error).not.toMatch(/failed/i);
-    expect(composeStore.outcomeUnknown).toBe(true);
-    expect(composeStore.isOpen).toBe(true);
   });
 
   it('recognises a send parked by crash recovery', async () => {
     // Startup recovery parks an interrupted send itself, without going
     // through the outbox. It records the same type, and the composer has
-    // to read it the same way — the row's phase still says where the send
-    // was interrupted, which is not what classifies it.
+    // to read it the same way. The row it parks keeps its checkpoint, so
+    // one that had created its Email resolves through the mailbox.
     const composeStore = await composerWithOutcome(
       { attempted: 1, succeeded: 0, failed: 1 },
       { type: 'outcomeUnknown', terminal: true, reason: 'interrupted' },
+      undefined,
+      { operationId: 'op1', messageId: '<m1@example.com>', emailRemoteId: 'M42' },
     );
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
-    expect(composeStore.error).toMatch(/may already have been sent/i);
-    expect(composeStore.outcomeUnknown).toBe(true);
+    expect(composeStore.isOpen).toBe(false);
+    expect(composeStore.notice).toMatch(/could not confirm/i);
   });
 
   it('blames the send when the failure was not ambiguous', async () => {
@@ -798,7 +827,7 @@ describe('compose-store send safety', () => {
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/Send failed/);
-    expect(composeStore.outcomeUnknown).toBe(false);
+    expect(composeStore.isOpen).toBe(true);
   });
 
   it('does not confirm a send the outbox never got to', async () => {
@@ -828,15 +857,18 @@ describe('compose-store send safety', () => {
     // A send interrupted by the worker shutting down is reported by the
     // outcome itself, with no row left to consult: the runner knows the
     // mutation was checked out to a worker that is going away, and for a
-    // send that is not the same as knowing it failed.
+    // send that is not the same as knowing it failed. With no row there
+    // is no checkpoint either, so nothing proves a server copy exists
+    // and the composer keeps the draft open.
     const composeStore = await composerWithOutcome({
       attempted: 1, succeeded: 0, failed: 1, errorType: 'outcomeUnknown',
     });
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(false);
-    expect(composeStore.error).toMatch(/may already have been sent/i);
-    expect(composeStore.outcomeUnknown).toBe(true);
+    expect(composeStore.isOpen).toBe(true);
+    expect(composeStore.error).toMatch(/could not confirm/i);
+    expect(composeStore.error).toMatch(/check your sent folder/i);
   });
 
   it('blames a stopped mutation that was safe to stop', async () => {
@@ -847,19 +879,22 @@ describe('compose-store send safety', () => {
 
     await expect(composeStore.send()).resolves.toBe(false);
     expect(composeStore.error).toMatch(/Send failed/);
-    expect(composeStore.outcomeUnknown).toBe(false);
   });
 
-  it('clears the unknown-outcome hold when the composer is reused', async () => {
+  it('leaves an unconfirmed send behind when the composer is reused', async () => {
+    // The held-open unknown state is advisory, not a lock: the user can
+    // still close the dialog, and a new message starts clean.
     const composeStore = await composerWithOutcome(
       { attempted: 1, succeeded: 0, failed: 1, result: { filed: false } },
       { type: 'outcomeUnknown', terminal: true, reason: 'noEvidence' },
     );
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
     await composeStore.send();
-    expect(composeStore.outcomeUnknown).toBe(true);
+    expect(composeStore.isOpen).toBe(true);
 
     expect(composeStore.close()).toBe(true);
-    expect(composeStore.outcomeUnknown).toBe(false);
+    composeStore.open({ to: [{ email: 'other@example.com' }] });
+    expect(composeStore.error).toBeNull();
+    expect(composeStore.status).toBe(COMPOSE_STATE.EDITING);
   });
 });

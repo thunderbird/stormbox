@@ -28,6 +28,7 @@ import {
   composeSubject,
   fillRecipient,
   recipientAddresses,
+  waitForIdentities,
 } from './helpers/compose.js';
 
 /**
@@ -130,16 +131,8 @@ test.describe('Compose + send e2e', () => {
       // firefox we sometimes open compose before it lands. Without an
       // identity, send() fails with "No identities are configured."
       // and the dialog stays open. Wait until the From <select> in
-      // particular has at least one option. The From select is the
-      // first <select> in the dialog (toolbar font/size selects come
-      // later); scoping by position avoids the `<label>` regex trick,
-      // which breaks the moment options populate and push their text
-      // into the row's text content.
-      const fromSelect = page.locator('.compose-dialog select').first();
-      await expect.poll(
-        async () => fromSelect.locator('option').count(),
-        { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-      ).toBeGreaterThan(0);
+      // particular has at least one identity to send as.
+      await waitForIdentities(page);
 
       await fillRecipient(page, 'To', recipient);
       await composeSubject(page).fill(subject);

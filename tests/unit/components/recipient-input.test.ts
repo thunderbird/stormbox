@@ -568,7 +568,7 @@ describe('RecipientInput suggestions', () => {
   it('says when the address book has nothing to show', async () => {
     const wrapper = mountControl({ browseAll: async () => [] });
 
-    await wrapper.get('.recipient-input__browse').trigger('click');
+    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await settle(wrapper);
 
     expect(wrapper.get('[role="status"]').text()).toBe('No contacts to show');
@@ -594,7 +594,7 @@ describe('RecipientInput suggestions', () => {
       browseAll: async () => { throw new Error('worker gone'); },
     });
 
-    await wrapper.get('.recipient-input__browse').trigger('click');
+    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await settle(wrapper);
 
     expect(wrapper.get('[role="status"]').text()).toBe('Contacts are unavailable');
@@ -655,7 +655,11 @@ describe('RecipientInput suggestions', () => {
     await settle(wrapper);
 
     expect(options(wrapper)).toEqual([]);
-    expect(input(wrapper).attributes('aria-expanded')).toBe('false');
+    // The panel stays open to say there is nothing to offer — and that
+    // Enter still commits the text as typed. No option means no row a
+    // stray Enter could accept.
+    expect(input(wrapper).attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('.autocomplete__empty').text()).toContain('No matches for “bo”');
   });
 
   it('shows at most ten matches, however many the source returns', async () => {
@@ -783,11 +787,11 @@ describe('RecipientInput forgetting a suggestion (CS-3.13)', () => {
 });
 
 describe('RecipientInput browsing', () => {
-  it('offers the address book when the name is not typeable', async () => {
+  it('offers the address book on ArrowDown when the name is not typeable', async () => {
     const browseAll = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ browseAll });
 
-    await wrapper.get('.recipient-input__browse').trigger('click');
+    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await settle(wrapper);
 
     // No page size: a browse fetch that ends before the address book does
@@ -797,14 +801,19 @@ describe('RecipientInput browsing', () => {
     expect(wrapper.get('[role="status"]').text()).toBe('Showing 2 contacts');
   });
 
-  it('opens the same list from the keyboard on an empty field', async () => {
+  it('offers the same browse path from the in-list footer', async () => {
     const browseAll = vi.fn(async () => CONTACTS);
-    const wrapper = mountControl({ browseAll });
-
-    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
+    // A typed query opens the panel, which carries the "Browse all
+    // contacts" footer — the mouse route now the field has no chevron.
+    const wrapper = mountControl({ query: async () => CONTACTS, browseAll });
+    await type(wrapper, 'bo');
     await settle(wrapper);
 
-    expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+    await wrapper.get('.autocomplete__browse button').trigger('click');
+    await settle(wrapper);
+
+    expect(browseAll).toHaveBeenCalledWith();
+    expect(wrapper.get('[role="status"]').text()).toBe('Showing 2 contacts');
   });
 
   it('shows the whole address book, not a page of it', async () => {
@@ -819,16 +828,21 @@ describe('RecipientInput browsing', () => {
     }));
     const wrapper = mountControl({ browseAll: async () => many });
 
-    await wrapper.get('.recipient-input__browse').trigger('click');
+    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await settle(wrapper);
 
     expect(options(wrapper)).toHaveLength(250);
     expect(wrapper.get('[role="status"]').text()).toBe('Showing 250 contacts');
   });
 
-  it('has no browse control where there is no address book to browse', () => {
+  it('does not browse on ArrowDown where there is no address book', async () => {
     const wrapper = mountControl();
-    expect(wrapper.find('.recipient-input__browse').exists()).toBe(false);
+
+    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
+    await settle(wrapper);
+
+    expect(options(wrapper)).toEqual([]);
+    expect(input(wrapper).attributes('aria-expanded')).toBe('false');
   });
 });
 
@@ -879,5 +893,64 @@ describe('RecipientInput paste', () => {
 
     expect(pills(wrapper).map((pill: any) => pill.text))
       .toEqual(['alice@example.com', 'bob@example.com']);
+  });
+});
+
+describe('RecipientInput presentation', () => {
+  it('renders identity on two lines with the match marked', async () => {
+    const wrapper = mountControl({ query: async () => CONTACTS });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+
+    const first = wrapper.findAll('[role="option"]')[0];
+    expect(first.get('.ac-name').text()).toBe('Bob');
+    expect(first.get('.ac-email').text()).toBe('bob@example.com');
+    // The marked span is why the row is here: the typed text, where it hit.
+    expect(first.get('.ac-name .ac-match').text().toLowerCase()).toBe('bo');
+    // Decoration only — the option's accessible name is its aria-label.
+    expect(first.get('.ac-avatar').attributes('aria-hidden')).toBe('true');
+  });
+
+  it('shows a candidate with no display name as its address alone', async () => {
+    const wrapper = mountControl({
+      query: async () => [{ email: 'list@example.com', source: 'contact' as const }],
+    });
+
+    await type(wrapper, 'li');
+    await settle(wrapper);
+
+    const first = wrapper.findAll('[role="option"]')[0];
+    expect(first.find('.ac-name').exists()).toBe(false);
+    expect(first.get('.ac-email').text()).toBe('list@example.com');
+  });
+
+  it('shows the evidence for a learned suggestion', async () => {
+    const wrapper = mountControl({
+      query: async () => [{
+        name: 'Zed',
+        email: 'zed@example.com',
+        source: 'history' as const,
+        send_count: 14,
+        last_sent_at: Date.now() - 2 * 86_400_000,
+      }],
+    });
+
+    await type(wrapper, 'ze');
+    await settle(wrapper);
+
+    expect(wrapper.get('.ac-meta').text()).toBe('2d ago · 14 sends');
+  });
+
+  it('teaches the keys where they apply, and admits the cut', async () => {
+    const wrapper = mountControl({ query: async () => CONTACTS });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+
+    const keys = wrapper.get('.autocomplete__keys');
+    expect(keys.attributes('aria-hidden')).toBe('true');
+    expect(keys.text()).toContain('navigate');
+    expect(keys.text()).toContain('2 suggestions');
   });
 });

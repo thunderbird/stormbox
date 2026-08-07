@@ -23,7 +23,7 @@ import {
 import {
   composeSubject,
   fillRecipient,
-  recipientAddresses,
+  waitForIdentities,
 } from './helpers/compose.js';
 
 /**
@@ -210,10 +210,7 @@ async function composeAndSend(page, { to, subject }) {
   await page.locator('.folder-node').first().click();
   await page.keyboard.press('ControlOrMeta+n');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
-  await expect.poll(
-    async () => page.locator('.compose-dialog select').first().locator('option').count(),
-    { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-  ).toBeGreaterThan(0);
+  await waitForIdentities(page);
   await fillRecipient(page, 'To', to);
   await composeSubject(page).fill(subject);
   const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
@@ -561,45 +558,38 @@ test.describe('Interrupted send', () => {
     }
   });
 
-  test('withholds Send from the composer when it cannot say what happened', async ({ sharedPage: page }, testInfo) => {
-    // The outbox parking the row is only half the protection. If the
-    // composer reports this as a failed send and leaves the button there,
-    // the user presses it, and the second attempt carries a new
-    // Message-ID that no duplicate guard can match (CS-1.9).
+  test('resolves an unconfirmed send through the mailbox, not a composer state', async ({ sharedPage: page }, testInfo) => {
+    // The outbox parking the row is only half the protection: the row is
+    // never resubmitted, so a second delivery cannot happen by itself.
+    // For the user, the created Email is on the server — in Drafts, since
+    // the submission never went out — so the composer closes and points
+    // at the folders instead of trapping the draft behind a state whose
+    // only exit was Discard (CS-1.9).
     const subject = `${SUBJECT_PREFIX} ui unknown ${Date.now()} ${SUBMISSION_FAULTS.DROP}`;
     let mutationId = null;
     try {
       await composeAndSend(page, { to: SHARED_TEST_OIDC_EMAIL, subject });
 
       // Checked before anything is read from the UI. An uninterrupted send
-      // produces an ordinary success, and waiting on a warning that was
+      // produces an ordinary success, and waiting on a notice that was
       // never going to appear only reports a timeout — this says why.
       const created = await waitForCreatedEmailId(page, subject);
       const fault = await faultApplied('DROP', created);
       expect(fault.effect, 'the submission must never have reached the server')
         .toBe('notForwarded');
 
-      const error = page.locator('.compose-dialog .compose-error');
-      await expect(error).toBeVisible({ timeout: 90_000 });
-      await expect(error).toContainText(/may already have been sent/i);
-      await expect(error, 'nobody knows that it failed').not.toContainText(/failed/i);
-      await expect(error).toContainText(/Sent folder/i);
-
-      await expect(sendButton(page), 'a second press is a possible second delivery')
-        .toHaveCount(0);
-      // The message is still in front of the user, so nothing is lost by
-      // withholding the button.
-      await expect(composeSubject(page)).toHaveValue(subject);
-      expect(await recipientAddresses(page, 'To'))
-        .toEqual([SHARED_TEST_OIDC_EMAIL.toLowerCase()]);
-      await expect(
-        page.locator('.compose-dialog button', { hasText: /^Discard$/ }),
-        'the way out stays available',
-      ).toBeVisible();
+      // The composer closes: the draft is not lost with it, because the
+      // created Email is already sitting in Drafts on the server.
+      await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 90_000 });
+      const toast = page.locator('.store-error-toast__item--success')
+        .filter({ hasText: /could not confirm/i });
+      await expect(toast).toBeVisible();
+      await expect(toast).toContainText(/Sent/);
+      await expect(toast).toContainText(/Drafts/);
 
       // The same row the programmatic case asserts, reached through the UI.
       const row = await findSendMutation(page, subject);
-      expect(row, 'the row survives so the message is not lost').not.toBeNull();
+      expect(row, 'the row survives as the durable no-retry record').not.toBeNull();
       mutationId = row.id;
       expect(row.local_status).toBe('conflicted');
       expect(JSON.parse(row.error_json ?? '{}').type).toBe('outcomeUnknown');
@@ -607,12 +597,13 @@ test.describe('Interrupted send', () => {
         await findAllByExactSubject(recipient, recipientInbox, subject),
         'nothing was submitted, so nothing may be delivered',
       ).toEqual([]);
+      // Where the user is told to look: the message is findable in Drafts.
+      expect(
+        await findAllByExactSubject(jmap, drafts, subject),
+        'the unconfirmed message waits in Drafts for the user to resolve',
+      ).toHaveLength(1);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
-      // Bounded: on a failure the dialog may already be gone, and the
-      // project's default action timeout is unlimited.
-      await page.locator('.compose-dialog button', { hasText: /^Discard$/ })
-        .click({ timeout: 5_000 }).catch(() => {});
       if (mutationId != null) await deleteMutation(page, mutationId);
       await sweep(subject);
     }

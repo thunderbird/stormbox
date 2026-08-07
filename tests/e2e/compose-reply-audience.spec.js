@@ -34,6 +34,7 @@ import {
   recipientAddresses,
   recipientInput,
   recipientPills,
+  waitForIdentities,
 } from './helpers/compose.js';
 
 /**
@@ -69,15 +70,6 @@ async function closeCompose(page) {
     .click({ timeout: 5_000 })
     .catch(() => {});
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-}
-
-/** Wait for identity sync, without which send() has no From address. */
-async function waitForIdentities(page) {
-  const fromSelect = page.locator('.compose-dialog select').first();
-  await expect.poll(
-    async () => fromSelect.locator('option').count(),
-    { timeout: 30_000, message: 'identity sync should populate the From dropdown' },
-  ).toBeGreaterThan(0);
 }
 
 /**
@@ -349,17 +341,19 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 
-      // CS-2.1: the fields exist and are reachable, one control at a time.
+      // CS-2.1: the fields exist and are reachable from inline toggles.
+      // Each is filled as it is revealed: an empty Cc collapses when focus
+      // moves on to the Bcc field, so filling both afterwards cannot work.
       await expect(composeRow(page, 'Cc')).toHaveCount(0);
-      await page.locator('.compose-dialog .recipient-add').click();
+      await page.locator('.compose-dialog .recipient-toggle', { hasText: /^Cc$/ }).click();
       await expect(composeRow(page, 'Cc')).toHaveCount(1);
-      await page.locator('.compose-dialog .recipient-add').click();
-      await expect(composeRow(page, 'Bcc')).toHaveCount(1);
 
       // CS-2.2: nothing in To, and the send is still permitted. The quoted
       // display name also proves the parser end to end: a comma inside it
       // is not a separator (CS-2.3).
       await fillRecipient(page, 'Cc', `"Watcher, A" <${SHARED_TEST_OIDC_EMAIL}>`);
+      await page.locator('.compose-dialog .recipient-toggle', { hasText: /^Bcc$/ }).click();
+      await expect(composeRow(page, 'Bcc')).toHaveCount(1);
       await fillRecipient(page, 'Bcc', selfEmail());
       await composeSubject(page).fill(subject);
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();

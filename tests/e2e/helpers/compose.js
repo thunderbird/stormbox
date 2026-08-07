@@ -12,6 +12,8 @@
  * text, and `/^To$/` stops matching the moment a recipient exists.
  */
 
+import { expect } from '@playwright/test';
+
 const FIELD_IDS = { To: 'compose-to', Cc: 'compose-cc', Bcc: 'compose-bcc' };
 
 function fieldId(label) {
@@ -86,4 +88,16 @@ export async function clearRecipients(page, label) {
     await pills.first().locator('.pill__remove').click();
   }
   await recipientInput(page, label).fill('');
+}
+
+/**
+ * Wait for identity sync, without which send() has no From address. The
+ * identity rows render inside the From dropdown whether or not it is
+ * open, so counting them needs no clicks.
+ */
+export async function waitForIdentities(page) {
+  await expect.poll(
+    async () => page.locator('.compose-dialog [data-compose-from] .app-dropdown__item').count(),
+    { timeout: 30_000, message: 'identity sync should populate the From picker' },
+  ).toBeGreaterThan(0);
 }

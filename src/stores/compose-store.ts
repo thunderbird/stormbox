@@ -161,12 +161,6 @@ export const useComposeStore = defineStore('compose', () => {
   // notice is, so it never lingers over a later screen.
   const notice = ref<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  // Set when a send ended without the server telling us whether the
-  // message went out. Send is withheld while it is set: pressing it again
-  // queues a new operation with a new Message-ID, so the checkpoint that
-  // protects against duplicate delivery could not recognise the second
-  // attempt (CS-1.9).
-  const outcomeUnknown = ref(false);
   const isOpen = ref(false);
   // Bumped by every open() and $reset(). send() captures it and drops its
   // own result if it no longer matches, so a slow send settling after a
@@ -261,7 +255,6 @@ export const useComposeStore = defineStore('compose', () => {
     isOpen.value = false;
     status.value = COMPOSE_STATE.IDLE;
     error.value = null;
-    outcomeUnknown.value = false;
     clearNotice();
   }
 
@@ -380,7 +373,6 @@ export const useComposeStore = defineStore('compose', () => {
     isOpen.value = true;
     status.value = COMPOSE_STATE.EDITING;
     error.value = null;
-    outcomeUnknown.value = false;
     clearNotice();
     refreshIdentitiesFromServer();
   }
@@ -400,7 +392,6 @@ export const useComposeStore = defineStore('compose', () => {
     status.value = COMPOSE_STATE.IDLE;
     resetDraft();
     error.value = null;
-    outcomeUnknown.value = false;
     return true;
   }
 
@@ -571,25 +562,48 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   /**
-   * Did this mutation end without the server saying whether the message
-   * went out?
+   * What a finished mutation row says about a send whose confirmation
+   * never arrived: whether the outcome is recorded as unknown, and
+   * whether the created Email is known to exist on the server.
    *
-   * Read from the row when the outcome itself did not say so, which covers
-   * a send parked by a pass the caller was not waiting on — the crash
-   * recovery at startup, or an earlier attempt. Every path that parks a
-   * send records the same `outcomeUnknown` type, with the underlying
-   * transport or server diagnostic in `reason`.
+   * Every path that parks a send records the same `outcomeUnknown` type —
+   * the outbox itself, and the crash recovery at startup — so reading the
+   * row also covers a park the caller was not waiting on.
+   *
+   * `emailOnServer` comes from the send checkpoint the row carries in
+   * `server_response_json` (send-checkpoint.ts): a recorded Email id
+   * means the message text lives in a mailbox — Sent if the submission
+   * was accepted, Drafts if it was not — so the folders will show what
+   * happened. Without one, this composer holds the only copy the user
+   * can reach. A row with no readable checkpoint reads as "no server
+   * copy", which errs toward keeping the draft open.
    */
-  async function endedUnknown(mutationId: number | null | undefined): Promise<boolean> {
-    if (!repo || mutationId == null) return false;
+  async function readUnknownSend(mutationId: number | null | undefined): Promise<{
+    unknown: boolean;
+    emailOnServer: boolean;
+  }> {
+    const nothing = { unknown: false, emailOnServer: false };
+    if (!repo || mutationId == null) return nothing;
     try {
       const row = await repo.getPendingMutationError(mutationId);
-      if (!row?.error_json) return false;
-      return JSON.parse(row.error_json)?.type === 'outcomeUnknown';
+      if (!row) return nothing;
+      let emailOnServer = false;
+      if (row.server_response_json) {
+        try {
+          emailOnServer =
+            typeof JSON.parse(row.server_response_json)?.emailRemoteId === 'string';
+        } catch {
+          // An unreadable checkpoint proves nothing about a server copy.
+        }
+      }
+      const unknown = row.error_json
+        ? JSON.parse(row.error_json)?.type === 'outcomeUnknown'
+        : false;
+      return { unknown, emailOnServer };
     } catch {
       // No readable error means nothing to warn about; the generic
       // failure message below is still correct.
-      return false;
+      return nothing;
     }
   }
 
@@ -683,18 +697,34 @@ export const useComposeStore = defineStore('compose', () => {
       const submitted = (result.succeeded > 0 && result.failed === 0)
         || result.result?.submitted === true;
       if (!submitted) {
-        // An unknown outcome is not a failure the user can safely act on
-        // by pressing Send again, so say what is actually known and
-        // withhold the control (CS-1.9). The outcome reports it directly
-        // when the runner knows; otherwise the row's own error does.
-        const unknown = result.errorType === 'outcomeUnknown'
-          || await endedUnknown(mutation?.id);
+        // The outcome reports an unknown ending directly when the runner
+        // knows; otherwise the row's own error does (a park by crash
+        // recovery, say).
+        const parked = await readUnknownSend(mutation?.id);
+        const unknown = result.errorType === 'outcomeUnknown' || parked.unknown;
         if (!stillCurrent()) return false;
+        if (unknown && parked.emailOnServer) {
+          // The message text is on the server: in Sent if the submission
+          // was accepted, still in Drafts if it was not. Nothing here can
+          // tell which, but the mailbox itself will as it syncs, so the
+          // composer closes and says where to look rather than holding
+          // the draft behind a state only Discard could leave (CS-1.9).
+          status.value = COMPOSE_STATE.IDLE;
+          close();
+          setNotice(
+            'Could not confirm this send. If it went out it is in your '
+            + 'Sent folder; if not, the message is in Drafts.',
+          );
+          return false;
+        }
         if (unknown) {
-          outcomeUnknown.value = true;
+          // No Email is known to exist on the server, so the text in this
+          // dialog is the only copy the user can reach: it stays open.
+          // Send stays offered too — never resubmitted automatically, but
+          // after checking Sent, sending again is the user's call (CS-1.9).
           return failSend(
-            'This message may already have been sent. Check your Sent folder '
-            + 'before sending it again.',
+            'Could not confirm whether this message was sent. Check your '
+            + 'Sent folder before sending it again.',
           );
         }
         return failSend('Send failed; the message stays in your outbox.');
@@ -720,7 +750,6 @@ export const useComposeStore = defineStore('compose', () => {
     error,
     notice,
     clearNotice,
-    outcomeUnknown,
     isOpen,
     identities,
     draft,

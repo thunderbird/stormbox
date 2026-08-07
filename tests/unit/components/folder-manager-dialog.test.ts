@@ -234,7 +234,7 @@ describe('FolderManagerDialog cascading subscription toggles', () => {
     await editButton(wrapper, 'Reports').trigger('click');
     await nextTick();
     const parents = wrapper.find('[data-folder-move-select]')
-      .findAll('option')
+      .findAll('.app-dropdown__item')
       .map((option) => option.text().trim());
     expect(parents).toContain('Inbox');
   });
@@ -769,7 +769,7 @@ describe('FolderManagerDialog row editor', () => {
     await editButton(wrapper, 'Reports').trigger('click');
     await nextTick();
 
-    await wrapper.find('[data-folder-move-select]').setValue('10');
+    await wrapper.find('[data-folder-move-option="10"]').trigger('click');
     await wrapper.find('[data-folder-save]').trigger('click');
     await nextTick();
 
@@ -787,7 +787,7 @@ describe('FolderManagerDialog row editor', () => {
     await nextTick();
 
     const labels = wrapper.find('[data-folder-move-select]')
-      .findAll('option')
+      .findAll('.app-dropdown__item')
       .map((o) => o.text().replaceAll('\u00a0', ''));
     expect(labels).toContain('Top Level');
     expect(labels).toContain('Reports');
@@ -976,9 +976,11 @@ describe('FolderManagerDialog row editor', () => {
     await wrapper.find('[data-folder-add="Projects"]').trigger('click');
     await nextTick();
 
-    const parentSelect = wrapper.find('[data-folder-create-parent]');
-    expect(parentSelect.exists()).toBe(true);
+    const parentPicker = wrapper.find('[data-folder-create-parent]');
+    expect(parentPicker.exists()).toBe(true);
     // Projects has id 10 in the seed.
-    expect((parentSelect.element as HTMLSelectElement).value).toBe('10');
+    expect(parentPicker.get('summary').text()).toBe('Projects');
+    expect(parentPicker.get('[data-folder-parent-option="10"]').attributes('aria-checked'))
+      .toBe('true');
   });
 });
