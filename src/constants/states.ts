@@ -69,7 +69,9 @@ export type MutationStatus = (typeof MUTATION_STATUS)[keyof typeof MUTATION_STAT
  * to have succeeded, written before the next protocol call is issued, so
  * a resume can skip work that already happened. Only CREATED and
  * SUBMITTED describe irreversible server state; the rest are local
- * bookkeeping.
+ * bookkeeping. Contact writes reuse CACHE_PENDING for their own
+ * server-applied-cache-behind window (see checkpointContactWrite); every
+ * other mutation type leaves phase NULL.
  *
  * UNKNOWN is terminal for automation on purpose: it means a response was
  * lost and reconciliation could not decide, so the choice belongs to the

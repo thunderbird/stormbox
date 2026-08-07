@@ -125,10 +125,32 @@ function skipCfws(cur: Cursor): boolean {
 }
 
 /**
+ * Whether a code unit at `i` may appear inside a quoted-string. qtext
+ * (§3.2.4) excludes controls other than the FWS whitespace, and RFC 6532
+ * §3.2 adds only valid UTF-8 — so an unpaired UTF-16 surrogate, which no
+ * scalar value encodes, is out too.
+ */
+function isQuotableAt(src: string, i: number): boolean {
+  const code = src.charCodeAt(i);
+  if (code < 0x20) return code === 0x09; // tab is FWS; other controls are not
+  if (code === 0x7f) return false;
+  if (code >= 0xd800 && code <= 0xdbff) {
+    const next = src.charCodeAt(i + 1);
+    return next >= 0xdc00 && next <= 0xdfff;
+  }
+  if (code >= 0xdc00 && code <= 0xdfff) {
+    const prev = src.charCodeAt(i - 1);
+    return prev >= 0xd800 && prev <= 0xdbff;
+  }
+  return true;
+}
+
+/**
  * Read a quoted-string (§3.2.4) from the opening quote, returning its
- * decoded content and its raw text. Null if the closing quote is missing,
- * which makes the whole fragment a rejection rather than letting the rest
- * of the list be swallowed by the unterminated quote.
+ * decoded content and its raw text. Null if the closing quote is missing
+ * or the content is not quotable, which makes the whole fragment a
+ * rejection rather than letting the rest of the list be swallowed by the
+ * unterminated quote.
  */
 function readQuotedString(cur: Cursor): { value: string; raw: string } | null {
   const start = cur.i;
@@ -142,7 +164,7 @@ function readQuotedString(cur: Cursor): { value: string; raw: string } | null {
     }
     if (ch === '\\') {
       const next = cur.src[cur.i + 1];
-      if (next === undefined) {
+      if (next === undefined || !isQuotableAt(cur.src, cur.i + 1)) {
         cur.i = start;
         return null;
       }
@@ -153,6 +175,10 @@ function readQuotedString(cur: Cursor): { value: string; raw: string } | null {
     if (ch === '"') {
       cur.i += 1;
       return { value, raw: cur.src.slice(start, cur.i) };
+    }
+    if (!isQuotableAt(cur.src, cur.i)) {
+      cur.i = start;
+      return null;
     }
     value += ch;
     cur.i += 1;
@@ -241,10 +267,14 @@ function readPhraseWords(cur: Cursor): Word[] | null {
 }
 
 function joinWords(words: Word[]): string {
+  // NFC per RFC 6532 §3.1: an accepted name is content headed for the
+  // wire, so a decomposed spelling is normalized here. Rejected fragments
+  // stay byte-exact — an invalid pill reopens as typed (CS-3.16).
   return words
     .map((word, idx) => (idx > 0 && word.spaced ? ` ${word.text}` : word.text))
     .join('')
-    .trim();
+    .trim()
+    .normalize('NFC');
 }
 
 /**
@@ -269,7 +299,9 @@ function readAddrSpec(cur: Cursor): string | null {
   if (!skipCfws(cur)) return null;
   const domain = cur.src[cur.i] === '[' ? readDomainLiteral(cur) : readDotAtom(cur);
   if (!domain) return null;
-  return `${local}@${domain}`;
+  // NFC per RFC 6532 §3.1: the accepted address is what goes on the wire,
+  // and canonically equivalent spellings must leave here as one form.
+  return `${local}@${domain}`.normalize('NFC');
 }
 
 /**
@@ -283,6 +315,28 @@ function readAddrSpec(cur: Cursor): string | null {
 function hasAngleAhead(cur: Cursor): boolean {
   if (cur.lastAngle === undefined) cur.lastAngle = cur.src.lastIndexOf('>');
   return cur.lastAngle > cur.i;
+}
+
+/**
+ * Index of the top-level `>` closing an angle section that opens here, or
+ * -1 when every `>` ahead sits inside a quoted string. `hasAngleAhead`'s
+ * cache answers the common case of no `>` at all; this scan settles whether
+ * one of them really terminates, because taking a quoted `>` for the
+ * terminator resumes the element scan mid-string and swallows the addresses
+ * after it.
+ */
+function angleCloseAhead(cur: Cursor): number {
+  const scratch: Cursor = { src: cur.src, i: cur.i + 1 };
+  while (scratch.i < scratch.src.length) {
+    const ch = scratch.src[scratch.i];
+    if (ch === '>') return scratch.i;
+    if (ch === '"') {
+      if (!readQuotedString(scratch)) return -1;
+      continue;
+    }
+    scratch.i += 1;
+  }
+  return -1;
 }
 
 /**
@@ -348,9 +402,14 @@ function skipToElementEnd(cur: Cursor, wasGroup: boolean): void {
       continue;
     }
     if (ch === '<' && hasAngleAhead(cur)) {
-      while (cur.i < cur.src.length && cur.src[cur.i] !== '>') cur.i += 1;
-      if (cur.src[cur.i] === '>') cur.i += 1;
-      continue;
+      const close = angleCloseAhead(cur);
+      if (close >= 0) {
+        cur.i = close + 1;
+        continue;
+      }
+      // Every '>' ahead is quoted, so this '<' opens nothing: it is one
+      // ordinary character of a broken fragment, and falls through to the
+      // plain advance below.
     }
     cur.i += 1;
   }
@@ -366,7 +425,7 @@ interface MailboxResult {
 const FAILED: MailboxResult = { addresses: null, wasGroup: false };
 const FAILED_GROUP: MailboxResult = { addresses: null, wasGroup: true };
 
-function read(addresses: ParsedAddress[]): MailboxResult {
+function succeeded(addresses: ParsedAddress[]): MailboxResult {
   return { addresses, wasGroup: false };
 }
 
@@ -395,7 +454,7 @@ function readMailbox(cur: Cursor, depth: number): MailboxResult {
     cur.i += 1;
     if (!skipCfws(cur)) return FAILED;
     const name = joinWords(words);
-    return read([{ ...(name ? { name } : {}), email }]);
+    return succeeded([{ ...(name ? { name } : {}), email }]);
   }
 
   // A group nested in a group is not in the grammar (§3.4), and treating
@@ -414,7 +473,7 @@ function readMailbox(cur: Cursor, depth: number): MailboxResult {
   const email = readAddrSpec(cur);
   if (email === null) return FAILED;
   if (!skipCfws(cur)) return FAILED;
-  return read([{ email }]);
+  return succeeded([{ email }]);
 }
 
 /**
@@ -530,7 +589,14 @@ export function parseAddressList(input: string | null | undefined): AddressListP
  * `Smith, Alice` unusable before.
  */
 export function formatAddress(address: ParsedAddress): string {
-  const name = address.name?.trim();
+  // A quoted string can carry any whitespace but a line break, and controls
+  // and lone surrogates are not quotable at all (§3.2.4); fold what cannot
+  // survive the wire to a space, which is what header folding reads back as.
+  const name = address.name
+    ?.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (m) => (m.length === 2 ? m : ' '))
+    // eslint-disable-next-line no-control-regex -- folding controls is the point
+    .replace(/[\u0000-\u0008\u000A-\u001F\u007F]/g, ' ')
+    .trim();
   if (!name) return address.email;
   // Structural characters, and any whitespace that is not a single space:
   // an unquoted phrase is a list of words, so a run of spaces or a tab

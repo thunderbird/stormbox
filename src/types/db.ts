@@ -156,7 +156,7 @@ export interface PendingMutationRow {
   attempts: number;
   last_attempt_at: number | null;
   not_before: number | null;
-  /** SendPhase for SEND rows; null for every other mutation type. */
+  /** SendPhase for SEND rows; contact writes reuse 'cache_pending', the rest stay null. */
   phase: SendPhase | null;
   created_at: number;
   updated_at: number;

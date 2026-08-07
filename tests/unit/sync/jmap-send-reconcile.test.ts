@@ -165,7 +165,7 @@ describe('findEmailByMessageId', () => {
   });
 
   it('treats a rejected method call as a scan that did not happen', async () => {
-    // A method-level error replaces the response slot (RFC 8620 §3.6.1),
+    // A method-level error replaces the response slot (RFC 8620 §3.6.2),
     // so the chained get never runs and an empty list would be an
     // artefact of the rejection.
     const transport = new MockTransport();

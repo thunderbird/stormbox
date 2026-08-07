@@ -71,8 +71,9 @@ export function makeMessageId(identityEmail: string | null | undefined): string 
 /**
  * RFC 5322 §3.6.4 `id-right` is ASCII, so an internationalised identity
  * domain has to be punycoded before it can appear in a Message-ID.
- * Sending the raw Unicode would need RFC 6532, which applies to the
- * address fields rather than to this identifier.
+ * RFC 6532 §3.2 does extend Message-IDs to UTF-8, but §3.3 advises
+ * generators to keep them ASCII so the id survives non-6532 handling,
+ * which is what this does.
  *
  * `URL` performs IDNA for us in both the worker and Node. A domain it
  * cannot parse is dropped rather than guessed at, leaving the caller's

@@ -7,6 +7,7 @@ import {
   parseAddressEntries,
   type ParsedAddress,
 } from '../utils/address-parse';
+import { addressKey } from '../utils/address-key';
 import type { RecipientEntry } from '../stores/compose-store';
 import type { AutocompleteCandidate } from '../stores/contacts-store';
 
@@ -37,8 +38,12 @@ const props = withDefaults(defineProps<{
   ) => Promise<AutocompleteCandidate[]>;
   /** Stop offering one learned suggestion (CS-3.13). */
   forget?: (email: string) => Promise<boolean>;
-  /** The whole address book, for the browse path CS-3.12 requires. */
-  browseAll?: (limit: number) => Promise<AutocompleteCandidate[]>;
+  /**
+   * The whole address book, for the browse path CS-3.12 requires. All of
+   * it: the control asks for no page size, because a browse list that ends
+   * before the address book does silently hides the rest.
+   */
+  browseAll?: () => Promise<AutocompleteCandidate[]>;
   /** Addresses already committed elsewhere, which are not offered again. */
   taken?: readonly string[];
   /** How long to wait after a keystroke before querying. */
@@ -59,12 +64,6 @@ const emit = defineEmits<{
 const SUGGESTION_LIMIT = 10;
 /** One letter matches most of a directory, which is not a suggestion. */
 const MIN_PREFIX = 2;
-/**
- * How much of the address book the browse path shows. Ten is the right
- * number of typeahead matches and the wrong number for "show me everyone",
- * which is a list to scroll rather than a list to read.
- */
-const BROWSE_LIMIT = 200;
 
 const text = ref('');
 const suggestions = ref<AutocompleteCandidate[]>([]);
@@ -128,6 +127,25 @@ const listboxId = computed(() => `${props.inputId}-listbox`);
 const statusId = computed(() => `${props.inputId}-status`);
 const optionId = (idx: number) => `${props.inputId}-option-${idx}`;
 
+/** The option's accessible name: who it is, not the row's decorations. */
+function optionLabel(candidate: AutocompleteCandidate): string {
+  const name = candidate.name?.trim();
+  return name ? `${name} <${candidate.email}>` : candidate.email;
+}
+
+/**
+ * Keep the highlighted option visible. aria-activedescendant moves the
+ * screen reader's point of regard without moving DOM focus, so nothing
+ * scrolls a capped-height list on its own and the visible highlight can
+ * otherwise walk out of view.
+ */
+async function scrollActiveOptionIntoView(): Promise<void> {
+  await nextTick();
+  if (activeIndex.value < 0) return;
+  document.getElementById(optionId(activeIndex.value))
+    ?.scrollIntoView({ block: 'nearest' });
+}
+
 const isListOpen = computed(() => expanded.value && suggestions.value.length > 0);
 
 /**
@@ -152,12 +170,16 @@ function commitEntries(next: RecipientEntry[]): void {
   emit('update:entries', next);
 }
 
-/** Everything already committed here or in a sibling field, lower-cased. */
+/**
+ * Everything already committed here or in a sibling field, keyed by
+ * `addressKey` (CS-3.5) so an NFD or punycode spelling of a committed
+ * address is recognized as the same recipient.
+ */
 const takenEmails = computed(() => new Set([
   ...props.entries
     .filter((entry): entry is ParsedAddress => !('invalid' in entry))
-    .map((entry) => entry.email.toLowerCase()),
-  ...props.taken.map((email) => email.trim().toLowerCase()),
+    .map((entry) => addressKey(entry.email)),
+  ...props.taken.map((email) => addressKey(email)),
 ]));
 
 /**
@@ -194,7 +216,7 @@ async function browseContacts(): Promise<void> {
   if (debounceTimer) clearTimeout(debounceTimer);
   const token = (queryToken += 1);
   announcement.value = null;
-  const { value: found, answered } = await ask(() => browseAll(BROWSE_LIMIT), []);
+  const { value: found, answered } = await ask(() => browseAll(), []);
   if (token !== queryToken) return;
   suggestions.value = notTaken(found);
   activeIndex.value = -1;
@@ -284,7 +306,7 @@ async function ask<T>(
 
 /** Offering an existing recipient wastes a row and would do nothing. */
 function notTaken(found: readonly AutocompleteCandidate[]): AutocompleteCandidate[] {
-  return found.filter((candidate) => !takenEmails.value.has(candidate.email.toLowerCase()));
+  return found.filter((candidate) => !takenEmails.value.has(addressKey(candidate.email)));
 }
 
 function scheduleQuery(): void {
@@ -340,10 +362,11 @@ function commitText(value = text.value): boolean {
       continue;
     }
     // The same address twice is one recipient; the server would collapse
-    // them anyway, and a duplicate pill looks like a mistake.
+    // them anyway, and a duplicate pill looks like a mistake. Keyed by
+    // addressKey so a punycode or NFD respelling is the same recipient.
     const already = next.some(
       (entry) => !('invalid' in entry)
-        && entry.email.toLowerCase() === element.address.email.toLowerCase(),
+        && addressKey(entry.email) === addressKey(element.address.email),
     );
     if (!already) next.push(element.address);
   }
@@ -431,6 +454,7 @@ function onKeydown(event: KeyboardEvent): void {
       activeIndex.value = activeIndex.value < 0
         ? (step === 1 ? 0 : count - 1)
         : (activeIndex.value + step + count) % count;
+      void scrollActiveOptionIntoView();
       return;
     }
     case 'Delete': {
@@ -603,12 +627,15 @@ function onPaste(event: ClipboardEvent): void {
           :class="{ 'autocomplete__option--active': idx === activeIndex }"
           role="option"
           :aria-selected="idx === activeIndex"
+          :aria-label="optionLabel(candidate)"
           @mousedown.prevent
           @click="acceptSuggestion(candidate)"
         >
           <span class="ac-name">{{ candidate.name || candidate.email }}</span>
           <span class="ac-email">{{ candidate.email }}</span>
-          <span class="ac-source">{{ candidate.source }}</span>
+          <!-- Decoration to a screen reader: without aria-hidden the option's
+               computed name reads "Jane Doe jane@x.com history ✕". -->
+          <span class="ac-source" aria-hidden="true">{{ candidate.source }}</span>
           <!-- Not a <button>, and not focusable, on purpose. An option with
                an interactive descendant stops being an option to a screen
                reader, which is the same reason the browse control sits
@@ -619,6 +646,7 @@ function onPaste(event: ClipboardEvent): void {
           <span
             v-if="canForget(candidate)"
             class="ac-forget"
+            aria-hidden="true"
             :title="`Forget ${candidate.email}`"
             @mousedown.prevent
             @click.stop="forgetSuggestion(candidate)"

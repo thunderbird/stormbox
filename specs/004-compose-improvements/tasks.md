@@ -254,7 +254,7 @@ makes a non-default origin work locally.
       requirement untested rather than met.
 - [x] T510 E2E: import beyond one server page, then find a late-page
       contact by name from compose
-- [ ] T511 Run checks including the two-browser e2e lane; commit
+- [x] T511 Run checks including the two-browser e2e lane; commit
 
 ## Phase 6 — Recipient input control (CS-3.8 to CS-3.12)
 
@@ -289,4 +289,4 @@ makes a non-default origin work locally.
       so compose stays visible and interactive on small viewports
       (CS-2.9)
 - [x] T702 Responsive CSS test coverage
-- [ ] T703 Run checks; commit
+- [x] T703 Run checks; commit

@@ -14,7 +14,7 @@
  * - **The domain is case-insensitive**, so it lower-cases, and it is
  *   IDNA-normalized so a Unicode domain and its punycode spelling agree.
  * - **The local part is case-SENSITIVE to the receiving server**
- *   (RFC 5321 §2.3.11), so nothing may rewrite it in transit. Folding its
+ *   (RFC 5321 §2.4), so nothing may rewrite it in transit. Folding its
  *   case *here* is a deliberate trade-off, on the ground that two addresses
  *   differing only by local-part case are effectively never two people.
  * - **No provider-specific canonicalization.** No dot-stripping, no
@@ -46,6 +46,9 @@ export function addressKey(email: string | null | undefined): string {
 function normalizeAddressDomain(domain: string): string {
   const lowered = domain.trim().toLowerCase();
   if (!lowered || lowered.startsWith('[')) return lowered;
+  // The URL parser truncates the authority at these characters instead of
+  // refusing, which would collapse distinct malformed domains onto one key.
+  if (/[/?#:@\\]/.test(lowered)) return lowered;
   try {
     const { hostname } = new URL(`https://${lowered}`);
     return hostname || lowered;

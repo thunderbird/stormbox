@@ -1,6 +1,12 @@
 /**
- * Identity sync. JMAP Identity/get + Identity/changes.
- * Identities feed the compose form's "From" picker.
+ * Identity sync, feeding the compose form's From picker.
+ *
+ * `Identity/get` and nothing else. An account has a handful of identities, so
+ * reading all of them costs one small round trip, and a delta would have to
+ * earn its checkpoint: the server pushes an `Identity` StateChange when the
+ * list moves, and the handler answers it by calling this again. There is no
+ * `Identity/changes` call, and no state is stored — one used to be written
+ * here and nothing ever read it.
  */
 
 import { DB_RPC } from '../../../db/protocol';
@@ -24,7 +30,7 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
   // neither is a readable one carrying no list. Applying either as a
   // snapshot would empty the From picker over a bad reply.
   if (!response || !Array.isArray(response.list)) {
-    return { count: 0, state: null, removed: 0 };
+    return { count: 0, removed: 0 };
   }
   const list = response.list;
   const { removed } = await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
@@ -39,13 +45,6 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
       rawJson: JSON.stringify(id),
     })),
   });
-  if (response.state) {
-    await handlers[DB_RPC.SYNC_STATE_SET]({
-      accountId: account.id,
-      objectType: 'Identity',
-      state: response.state,
-    });
-  }
-  return { count: list.length, state: response.state ?? null, removed };
+  return { count: list.length, removed };
 }
 

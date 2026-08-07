@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { CONTACT_ADDRESS_PREFIX_SQL } from '../../../src/db/autocomplete';
 import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers';
 import { DB_RPC, TABLE_FAMILIES } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
@@ -1033,6 +1034,34 @@ describe('contacts and autocomplete', () => {
     expect(fetched.addressbook_ids.sort()).toEqual([personal, work].sort());
   });
 
+  it('lists the whole address book when no limit is asked for', async () => {
+    // The compose browse path calls CONTACT_LIST with no limit and relies
+    // on getting every card back (CS-3.12); a default page size here would
+    // silently hide the contacts sorted after it.
+    const account = await seedAccount();
+    await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'ab-default', name: 'Default', isDefault: true }],
+    });
+    const books = await engine.all(
+      'SELECT id FROM addressbooks WHERE account_id = ?', [account.id],
+    );
+
+    await h[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: Array.from({ length: 250 }, (_, i) => ({
+        addressbookIds: [books[0].id],
+        remoteId: `c-${i}`,
+        displayName: `Contact ${String(i).padStart(3, '0')}`,
+        emails: [{ email: `contact${i}@example.com` }],
+      })),
+    });
+
+    const listed = await h[DB_RPC.CONTACT_LIST]({ accountId: account.id });
+    expect(listed).toHaveLength(250);
+  });
+
   it('takes a contact out of a book it has been removed from', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
@@ -1565,7 +1594,7 @@ describe('index usage on the canonical query patterns', () => {
     expect(detail).toMatch(/folder_messages_by_folder_received/);
   });
 
-  it('uses contact_emails_lookup for autocomplete prefix scans', async () => {
+  it('serves the autocomplete prefix scan by index, on the query production runs', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
       accountId: account.id,
@@ -1585,34 +1614,17 @@ describe('index usage on the canonical query patterns', () => {
     await h[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts: seed });
     await engine.exec('ANALYZE');
 
-    // The handler uses a half-open range scan against email_lower so the
-    // planner can use contact_emails_lookup unconditionally. The exact
-    // entry point (account-led vs email-led) is up to the optimiser, but
-    // there must not be a full SCAN of either table.
-    const planAccountScoped = await engine.all(
-      `EXPLAIN QUERY PLAN
-        SELECT c.display_name, ce.email FROM contact_emails ce
-          JOIN contacts c ON c.id = ce.contact_id
-         WHERE c.account_id = ?
-           AND c.is_deleted = 0
-           AND ce.email_lower >= ?
-           AND ce.email_lower < ?`,
-      [account.id, 'pers', 'pert'],
+    // EXPLAIN the exported SQL the handler actually issues, not a copy that
+    // can drift from it. The half-open range over email_key must be what an
+    // index answers: no full SCAN of either table.
+    const plan = await engine.all(
+      `EXPLAIN QUERY PLAN ${CONTACT_ADDRESS_PREFIX_SQL}`,
+      [account.id, 'pers', 'pert', 40],
     );
-    const accountDetail = planAccountScoped.map((row) => row.detail).join(' | ');
-    expect(accountDetail).not.toMatch(/SCAN contact_emails\b(?! USING)/i);
-    expect(accountDetail).not.toMatch(/SCAN contacts\b(?! USING)/i);
-
-    // The email-only path used by autocomplete fall-throughs MUST hit
-    // contact_emails_lookup - there is no other reasonable plan.
-    const planEmailOnly = await engine.all(
-      `EXPLAIN QUERY PLAN
-        SELECT contact_id FROM contact_emails
-         WHERE email_lower >= ? AND email_lower < ?`,
-      ['pers', 'pert'],
-    );
-    const emailDetail = planEmailOnly.map((row) => row.detail).join(' | ');
-    expect(emailDetail).toMatch(/contact_emails_lookup/);
+    const detail = plan.map((row) => row.detail).join(' | ');
+    expect(detail).not.toMatch(/SCAN contact_emails\b(?! USING)/i);
+    expect(detail).not.toMatch(/SCAN contacts\b(?! USING)/i);
+    expect(detail).toMatch(/contact_emails_key_lookup/);
   });
 
 });

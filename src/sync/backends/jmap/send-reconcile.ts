@@ -103,7 +103,7 @@ export async function findEmailByMessageId({
       ],
       useWebSocket,
     });
-    // A method-level error (RFC 8620 §3.6.1) replaces the response slot,
+    // A method-level error (RFC 8620 §3.6.2) replaces the response slot,
     // and the chained Email/get then fails its dependency. Either way the
     // scan did not happen, so an empty list would be an artefact of the
     // failure rather than a statement about the mailbox.

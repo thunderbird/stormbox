@@ -108,7 +108,7 @@ export const KNOWN_FAULT_MODES = Object.freeze([
 
 /**
  * Build the Response frame for an intercepted Request: one method-level
- * error slot per call id, which is the shape RFC 8620 §3.6.1 specifies
+ * error slot per call id, which is the shape RFC 8620 §3.6.2 specifies
  * for a method the server could not run.
  *
  * Returns null when the frame is not an interception target, so the

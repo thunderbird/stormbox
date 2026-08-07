@@ -2802,13 +2802,11 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           // Search tokens are replaced rather than added to, so renaming a
           // contact stops matching the name it used to have (CS-3.2). A
           // deleted card keeps none: it is not a suggestion.
-          //
-          // No nickname is tokenized because nothing maps one — CS-3.2 asks
-          // for it "where available", and no column or sync field carries it.
           await tx.run('DELETE FROM contact_search_tokens WHERE contact_id = ?', [contactId]);
           if (!c.isDeleted) {
             const tokens = nameTokens(
               c.displayName, c.fullName, c.givenName, c.familyName, c.organization,
+              ...(c.nicknames ?? []),
             );
             for (const token of tokens) {
               await tx.run(
@@ -2869,25 +2867,30 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     },
 
     /**
-     * Soft-delete a contact by its remote id after the server card has
-     * been destroyed. Soft delete (rather than a row delete) keeps the
-     * behaviour consistent with ContactCard/changes destroyed handling
-     * and lets the autocomplete / list queries filter on is_deleted.
+     * Soft-delete contacts by remote id after the server cards have been
+     * destroyed — one id or a batch, so ContactCard/changes destroyed
+     * handling goes through here too rather than around it. Soft delete
+     * (rather than a row delete) lets the autocomplete / list queries
+     * filter on is_deleted; the search tokens go in the same transaction,
+     * because a deleted card is not a suggestion (CS-3.2).
      */
-    [DB_RPC.CONTACT_DELETE_LOCAL]: async ({ accountId, remoteId }) => {
-      if (remoteId == null) return { deleted: 0 };
+    [DB_RPC.CONTACT_DELETE_LOCAL]: async ({ accountId, remoteId = null, remoteIds = null }) => {
+      const ids = remoteIds ?? (remoteId == null ? [] : [remoteId]);
+      if (ids.length === 0) return { deleted: 0 };
+      const placeholders = ids.map(() => '?').join(',');
       const deleted = await engine.transaction(async (tx) => {
         const result = await tx.run(
           `UPDATE contacts SET is_deleted = 1, updated_at = ?
-             WHERE account_id = ? AND remote_id = ?`,
-          [now(), accountId, remoteId],
+             WHERE account_id = ? AND remote_id IN (${placeholders})`,
+          [now(), accountId, ...ids],
         );
         await tx.run(
           `DELETE FROM contact_search_tokens
             WHERE contact_id IN (
-                    SELECT id FROM contacts WHERE account_id = ? AND remote_id = ?
+                    SELECT id FROM contacts
+                     WHERE account_id = ? AND remote_id IN (${placeholders})
                   )`,
-          [accountId, remoteId],
+          [accountId, ...ids],
         );
         return result?.changes ?? 0;
       });
@@ -2989,13 +2992,6 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return { suppressed };
     },
 
-    /**
-     * Forget every learned recipient for the account (CS-3.13).
-     *
-     * Deleted outright, not suppressed: "clear my history" means the rows
-     * are gone, and learning an address again afterwards is the expected
-     * result of sending to it again.
-     */
     /**
      * Learn recipients from mail already in the Sent folder, one bounded
      * batch at a time.
@@ -3423,11 +3419,19 @@ async function learnFromSentMessages(tx, { accountId, messageIds, sentAtById, ow
     );
     if (!sentByUser) continue;
     const sentAt = sentAtById.get(messageId) ?? 0;
+    // One message is one send: an address listed in both To and Cc counts
+    // once, matching how RECIPIENT_HISTORY_RECORD counts a live send.
+    const seenInMessage = new Set<string>();
     for (const row of addresses) {
       if (row.kind !== 'to' && row.kind !== 'cc' && row.kind !== 'bcc') continue;
       const key = addressKey(row.email);
       if (!key || owned.has(key)) continue;
       const existing = totals.get(key);
+      if (seenInMessage.has(key)) {
+        if (existing) existing.name = existing.name ?? (row.name || null);
+        continue;
+      }
+      seenInMessage.add(key);
       if (existing) {
         existing.count += 1;
         existing.lastSentAt = Math.max(existing.lastSentAt, sentAt);

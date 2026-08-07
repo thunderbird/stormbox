@@ -24,7 +24,7 @@ function mountControl(options: {
     prefix: string, limit: number, exclude: string[],
   ) => Promise<AutocompleteCandidate[]>;
   forget?: (email: string) => Promise<boolean>;
-  browseAll?: (limit: number) => Promise<AutocompleteCandidate[]>;
+  browseAll?: () => Promise<AutocompleteCandidate[]>;
   taken?: string[];
   debounceMs?: number;
 } = {}) {
@@ -214,6 +214,18 @@ describe('RecipientInput committing', () => {
     await typeAndCommit(wrapper, 'ALICE@example.com');
 
     expect(pills(wrapper)).toEqual([{ text: 'alice@example.com', invalid: false }]);
+  });
+
+  it('treats a punycode respelling as the recipient already committed', async () => {
+    // One address, two legal spellings (CS-3.5): the pill holds the Unicode
+    // domain, the second commit types its IDNA form. A plain lower-case
+    // comparison sees two different strings and mints a second pill for the
+    // same mailbox.
+    const wrapper = mountControl({ entries: [{ email: 'jane@münchen.de' }] });
+
+    await typeAndCommit(wrapper, 'jane@xn--mnchen-3ya.de');
+
+    expect(pills(wrapper)).toEqual([{ text: 'jane@münchen.de', invalid: false }]);
   });
 
   it('commits nothing from an empty field', async () => {
@@ -778,7 +790,9 @@ describe('RecipientInput browsing', () => {
     await wrapper.get('.recipient-input__browse').trigger('click');
     await settle(wrapper);
 
-    expect(browseAll).toHaveBeenCalledWith(200);
+    // No page size: a browse fetch that ends before the address book does
+    // silently hides the rest (CS-3.12).
+    expect(browseAll).toHaveBeenCalledWith();
     expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
     expect(wrapper.get('[role="status"]').text()).toBe('Showing 2 contacts');
   });
@@ -793,10 +807,12 @@ describe('RecipientInput browsing', () => {
     expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
   });
 
-  it('shows more of the book than the typeahead would', async () => {
-    // The cap exists so a typeahead is readable; browsing is the case it
-    // gets in the way of.
-    const many = Array.from({ length: 40 }, (_, idx) => ({
+  it('shows the whole address book, not a page of it', async () => {
+    // The typeahead's 10-match cap keeps suggestions readable; the browse
+    // list is a scroll, and every contact must be selectable from it
+    // (CS-3.12) — 250 is large enough that any page-sized fetch or render
+    // would fall short of it.
+    const many = Array.from({ length: 250 }, (_, idx) => ({
       name: `Contact ${idx}`,
       email: `contact${idx}@example.com`,
       source: 'contact' as const,
@@ -806,7 +822,8 @@ describe('RecipientInput browsing', () => {
     await wrapper.get('.recipient-input__browse').trigger('click');
     await settle(wrapper);
 
-    expect(options(wrapper)).toHaveLength(40);
+    expect(options(wrapper)).toHaveLength(250);
+    expect(wrapper.get('[role="status"]').text()).toBe('Showing 250 contacts');
   });
 
   it('has no browse control where there is no address book to browse', () => {

@@ -798,7 +798,7 @@ describe('drainOutbox', () => {
   });
 
   it('surfaces method-level JMAP errors instead of generic noResponse', async () => {
-    // RFC 8620 §3.6.1: when a JMAP server cannot run a method call,
+    // RFC 8620 §3.6.2: when a JMAP server cannot run a method call,
     // it replaces that call's response slot with ["error", {...},
     // callId]. Stalwart does this for requestTooLarge / limit when
     // the Email/set is too big for its batch handler. The outbox
@@ -992,18 +992,20 @@ describe('drainOutbox', () => {
     expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
 
     const row = await engine.get(
-      `SELECT local_status, error_json FROM pending_mutations WHERE mutation_type = ?`,
+      `SELECT local_status, phase, error_json FROM pending_mutations WHERE mutation_type = ?`,
       [MUTATION_TYPES.SEND],
     );
     expect(row.local_status).toBe('conflicted');
-    // A rejection of the submission call is still not proof that nothing
-    // was submitted — the server could have accepted it and failed while
-    // building the response — so the row is parked, keeping the server's
-    // own error as the diagnostic.
+    // An error tuple for the submission call is a definitive rejection:
+    // RFC 8620 §3.6.2 has every method-level error except serverPartialFail
+    // leave server state unchanged, and serverFail's own text says a retry
+    // is expected to fail again. The server's reason is surfaced as a
+    // terminal failure rather than parked as an ambiguous outcome.
     const error = JSON.parse(row.error_json);
-    expect(error.type).toBe('outcomeUnknown');
-    expect(error.reason).toBe('serverFail');
+    expect(error.type).toBe('serverFail');
+    expect(error.terminal).toBe(true);
     expect(error.description).toBe('submission blew up');
+    expect(row.phase).not.toBe('unknown');
     await expectNothingFiledInSent();
   });
 
@@ -1066,7 +1068,7 @@ describe('drainOutbox', () => {
   });
 
   it('marks a method-level create rejection terminal so the composer stops waiting', async () => {
-    // A method-level error naming the request (RFC 8620 §3.6.1) earns
+    // A method-level error naming the request (RFC 8620 §3.6.2) earns
     // the same answer eight times over. Retrying is safe here — the
     // operation's Message-ID finds any Email a replay would otherwise
     // orphan — but the composer stays in its sending state until the
@@ -1209,6 +1211,11 @@ describe('drainOutbox', () => {
     transport.handle('Email/set', () => ({ created: { c1: { id: 'em-new' } } }));
     transport.handle('EmailSubmission/set', () => ({ created: { s1: { id: 'sub-1' } } }));
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+    // The CS-1.14 reconciliation asks the server for the view's position
+    // and total rather than assuming them.
+    transport.handle('Email/query', () => ({
+      ids: ['em-new'], position: 0, total: 1, queryState: 'qs2',
+    }));
 
     const result = await processMutationRow({
       transport,
@@ -1824,13 +1831,21 @@ describe('drainOutbox', () => {
     // The phase is written before the create, so a row that has never
     // carried one cannot have an Email on the server. Probing anyway
     // costs every send an extra round trip and gives the send another
-    // way to fail for nothing.
+    // way to fail for nothing. (The anchored Email/query after success is
+    // the CS-1.14 view reconciliation, not a probe.)
     const { drafts, sent } = await seedSendScaffolding();
     const transport = new MockTransport();
-    transport.handle('Email/query', () => {
-      throw new Error('a first attempt must not probe for an earlier draft');
+    let created = false;
+    transport.handle('Email/query', (params) => {
+      if (!created || !params.anchor) {
+        throw new Error('a first attempt must not probe for an earlier draft');
+      }
+      return { ids: ['em-new'], position: 0, total: 1, queryState: 'qs2' };
     });
-    transport.handle('Email/set', () => ({ created: { c1: { id: 'em-new' } } }));
+    transport.handle('Email/set', () => {
+      created = true;
+      return { created: { c1: { id: 'em-new' } } };
+    });
     transport.handle('EmailSubmission/set', () => ({ created: { s1: { id: 'sub-1' } } }));
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
 
@@ -1842,10 +1857,6 @@ describe('drainOutbox', () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(
-      transport.requests.some((r) => r.methodCalls[0][0] === 'Email/query'),
-      'no Email/query should be issued on a first attempt',
-    ).toBe(false);
   });
 
   it('refuses to touch a send already parked as outcome-unknown', async () => {
@@ -1954,9 +1965,12 @@ describe('drainOutbox', () => {
       calls.push('EmailSubmission/set');
       return { created: { s1: { id: 'sub-second' } } };
     });
-    transport.handle('Email/query', () => {
+    transport.handle('Email/query', (params) => {
       calls.push('Email/query');
-      return { ids: [], total: 0, state: 'q' };
+      // Only the CS-1.14 view reconciliation may query, and it is
+      // anchored at the filed message — never the create-probe scan.
+      expect(params.anchor).toBe('em-new');
+      return { ids: ['em-new'], position: 0, total: 1, queryState: 'q' };
     });
     transport.handle('Email/get', (params) => {
       calls.push('Email/get');
@@ -1992,7 +2006,10 @@ describe('drainOutbox', () => {
       submissionRemoteId: 'sub-6',
       filed: true,
     });
-    expect(calls, 'only the filing read belongs to phase 3').toEqual(['Email/get']);
+    expect(
+      calls,
+      'only the filing read and its view reconciliation belong to phase 3',
+    ).toEqual(['Email/get', 'Email/query']);
     expect(transport.uploads).toHaveLength(0);
   });
 
@@ -2173,7 +2190,10 @@ describe('drainOutbox', () => {
       'SELECT attempts, phase FROM pending_mutations WHERE id = ?',
       [rowId],
     );
-    expect(after.phase, 'the row stopped short of submission succeeding').toBe('submitting');
+    // The server's notCreated is a definitive answer, so the row rewinds
+    // to `created` rather than sitting at `submitting` as if the call
+    // were still in flight.
+    expect(after.phase, 'the row stopped short of submission succeeding').toBe('created');
     expect(Number(after.attempts)).toBe(4);
   });
 
@@ -4000,5 +4020,205 @@ describe('account-aware message mutations', () => {
     expect(move.error.type).toBe('unknownMessage');
     expect(copy.error.type).toBe('unknownMessage');
     expect(transport.requests).toHaveLength(0);
+  });
+});
+
+describe('send-state classification of definitive server answers', () => {
+  async function lastSendRow() {
+    return engine.get(
+      `SELECT * FROM pending_mutations WHERE mutation_type = ? ORDER BY id DESC LIMIT 1`,
+      [MUTATION_TYPES.SEND],
+    );
+  }
+
+  it('resubmits a rate-limited submission on the retry instead of parking it', async () => {
+    // The one submission SetError classified retryable must actually be
+    // able to retry. The server's notCreated is a definitive answer —
+    // nothing was submitted — so the row rewinds to `created` and the
+    // retry re-enters at the submission, not the crash-ambiguity path.
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent });
+
+    let submitCalls = 0;
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
+    }));
+    transport.handle('EmailSubmission/set', () => {
+      submitCalls += 1;
+      // First attempt: refused (RFC 8620 §5.3 rateLimit, "It may work if
+      // tried again later"). Second attempt: accepted.
+      return submitCalls === 1
+        ? { notCreated: { s1: { type: 'rateLimit' } } }
+        : { created: { s1: { id: 'sub-1' } } };
+    });
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+    transport.handle('Email/query', (params) => (params.anchor
+      ? { ids: ['em-new'], position: 0, total: 1, queryState: 'qs2' }
+      : { ids: [], position: 0, total: 0, queryState: 'q-scan' }));
+
+    const first = await processMutationRow({
+      transport, account, handlers, row: await lastSendRow(),
+    });
+    expect(first.ok).toBe(false);
+    expect(first.error.terminal).toBeUndefined();
+
+    const row = await lastSendRow();
+    // The rejection was definitive, so the phase must not claim an
+    // in-flight submission.
+    expect(row.phase).toBe('created');
+
+    const second = await processMutationRow({ transport, account, handlers, row });
+    expect(second.ok).toBe(true);
+    expect(submitCalls, 'the refused submission must be re-issued').toBe(2);
+  });
+
+  it('retries the submission after an explicit serverUnavailable method error', async () => {
+    // RFC 8620 §3.6.2: except serverPartialFail, a method-level error means
+    // the call made no changes. serverUnavailable is transient, so the send
+    // stays retryable and resumes at the submission leg.
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent });
+
+    let submitCalls = 0;
+    const transport = tupleTransport((methodCalls) => {
+      const [name, params, callId] = methodCalls[0];
+      if (name === 'Email/set') {
+        return [['Email/set', { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } }, 'c1']];
+      }
+      if (name === 'EmailSubmission/set') {
+        submitCalls += 1;
+        return submitCalls === 1
+          ? [['error', { type: 'serverUnavailable', description: 'temporary' }, 's1']]
+          : [['EmailSubmission/set', { created: { s1: { id: 'sub-1' } } }, 's1']];
+      }
+      if (name === 'Email/get') {
+        return [['Email/get', sentEmailGetResponse(params), callId]];
+      }
+      if (name === 'Email/query') {
+        return [['Email/query', { ids: ['em-new'], position: 0, total: 1, queryState: 'qs2' }, callId]];
+      }
+      throw new Error(`unexpected method ${name}`);
+    });
+
+    const first = await processMutationRow({
+      transport: transport as any, account, handlers, row: await lastSendRow(),
+    });
+    expect(first.ok).toBe(false);
+    expect(first.error.type).toBe('serverUnavailable');
+    expect(first.error.terminal).toBeUndefined();
+
+    const row = await lastSendRow();
+    expect(row.phase).toBe('created');
+
+    const second = await processMutationRow({
+      transport: transport as any, account, handlers, row,
+    });
+    expect(second.ok).toBe(true);
+    expect(submitCalls).toBe(2);
+  });
+
+  it('fails the send with the server reason when the submission call is rejected outright', async () => {
+    // A complete envelope carrying ["error", …, "s1"] is CS-5.5 case 1
+    // (server-rejected), not case 3 (genuinely ambiguous): RFC 8620 §3.6.2
+    // guarantees no state changed, so no evidence probe may run and the
+    // composer must keep Send available.
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent });
+
+    const transport = tupleTransport((methodCalls) => {
+      const [name] = methodCalls[0];
+      if (name === 'Email/set') {
+        return [['Email/set', { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } }, 'c1']];
+      }
+      if (name === 'EmailSubmission/set') {
+        return [['error', { type: 'invalidArguments', description: 'bad identityId' }, 's1']];
+      }
+      throw new Error(`evidence probe issued for a definitive rejection: ${name}`);
+    });
+
+    const summary = await drainOutbox({ transport: transport as any, account, handlers });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+
+    const row = await lastSendRow();
+    expect(row.local_status).toBe('conflicted');
+    const error = JSON.parse(row.error_json);
+    expect(error.type).toBe('invalidArguments');
+    expect(error.terminal).toBe(true);
+    expect(row.phase).not.toBe('unknown');
+    await expectNothingFiledInSent();
+  });
+
+  it('leaves a send retryable when the create call dies on the wire', async () => {
+    // The QUEUED phase is written before the create and the Message-ID
+    // probe recognises an Email a lost response created, so a transport
+    // death here is the exact case the recovery machinery exists for — it
+    // must not escape to the runner's blanket terminal rule for sends.
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent });
+
+    const inner = new MockTransport();
+    inner.handle('Email/set', () => ({
+      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
+    }));
+    inner.handle('EmailSubmission/set', () => ({ created: { s1: { id: 'sub-1' } } }));
+    inner.handle('Email/get', (params) => sentEmailGetResponse(params));
+    inner.handle('Email/query', (params) => (params.anchor
+      ? { ids: ['em-new'], position: 0, total: 1, queryState: 'qs2' }
+      : { ids: [], position: 0, total: 0, queryState: 'q-scan' }));
+    let threw = false;
+    const transport = {
+      session: inner.session,
+      async request(using: any, methodCalls: any[]) {
+        if (!threw && methodCalls[0][0] === 'Email/set') {
+          threw = true;
+          throw Object.assign(new Error('socket died mid-create'), {
+            type: 'httpRequestTimeout',
+          });
+        }
+        return inner.request(using, methodCalls);
+      },
+    };
+
+    const first = await processMutationRow({
+      transport: transport as any, account, handlers, row: await lastSendRow(),
+    });
+    expect(first.ok).toBe(false);
+    expect(first.error.terminal).toBeUndefined();
+
+    // The retry scans for the Message-ID (finding nothing), creates, and
+    // submits — one delivery, no orphan.
+    const second = await processMutationRow({
+      transport: transport as any, account, handlers, row: await lastSendRow(),
+    });
+    expect(second.ok).toBe(true);
+  });
+
+  it('refuses a phase this build does not recognise instead of re-running the send', async () => {
+    // CS-1.6: recorded progress that cannot be interpreted is ambiguous.
+    // A phase written by a newer build may sit past the submission; falling
+    // through to a fresh create-and-submit could deliver twice.
+    const { drafts, sent } = await seedSendScaffolding();
+    const calls: string[] = [];
+    const transport = tupleTransport((methodCalls) => {
+      calls.push(methodCalls[0][0]);
+      throw new Error('no call may be issued for an uninterpretable phase');
+    });
+
+    const result = await processMutationRow({
+      transport: transport as any,
+      account,
+      handlers,
+      row: sendRow({
+        drafts,
+        sent,
+        phase: 'submitting-v2',
+        checkpoint: { messageId: '<op-1@example.com>', emailRemoteId: 'em-old' },
+      }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({ type: 'outcomeUnknown', terminal: true });
+    expect(calls).toEqual([]);
   });
 });

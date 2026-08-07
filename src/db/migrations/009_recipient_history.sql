@@ -16,7 +16,7 @@ CREATE TABLE recipient_history (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   -- `email` is verbatim: the local part is case-sensitive to the receiving
-  -- server (RFC 5321 §2.3.11), so this is what gets suggested and sent.
+  -- server (RFC 5321 §2.4), so this is what gets suggested and sent.
   -- `email_key` is the folded comparison key (CS-3.5) and exists only to
   -- decide whether two rows are the same recipient.
   email TEXT NOT NULL,

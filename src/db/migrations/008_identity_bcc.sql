@@ -1,6 +1,6 @@
 -- Identity Bcc as a column of its own (v8).
 --
--- RFC 8621 §6.1 gives an identity a `bcc` default alongside `replyTo`, and
+-- RFC 8621 §6 gives an identity a `bcc` default alongside `replyTo`, and
 -- the sync has always requested both. Only `replyTo` was given a column;
 -- `bcc` survived inside `raw_json`, which is the row's verbatim copy of the
 -- server object rather than anything the application reads. A default that

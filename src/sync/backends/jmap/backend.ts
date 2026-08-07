@@ -403,12 +403,13 @@ export class JmapBackend {
     // Learn who the user writes to from the Sent mail already cached, so a
     // returning user's suggestions are not empty until they have written to
     // everyone again. Here rather than anywhere near compose: a backfill
-    // must never be what the first keystroke waits on, and this runs in
-    // bounded batches that resume where the last one stopped.
+    // must never be what the first keystroke waits on. It drains batch by
+    // batch until the budget retires it or the cache runs dry for now — one
+    // batch per boot needed ten starts to cover the budget.
     try {
-      const backfill = await this.handlers[DB_RPC.RECIPIENT_HISTORY_BACKFILL]({
-        accountId: this.account.id,
-      });
+      const backfill = await drainRecipientBackfill(
+        this.handlers, this.account.id, () => this._started,
+      );
       wlog.info(
         'jmap-backend',
         `recipient backfill -> scanned ${backfill.scanned}, learned ${backfill.learned}`
@@ -1585,6 +1586,31 @@ export class JmapBackend {
     return cursor < effectiveTotal
       ? { offset: cursor, limit: Math.min(limit, effectiveTotal - cursor) }
       : null;
+  }
+}
+
+/**
+ * Drain the recipient-history backfill (CS-3.3): one bounded batch per
+ * call, repeated until the message budget retires the job or the cache
+ * has nothing more to read for now. The thread is yielded between
+ * batches so a query the UI is waiting on is not stuck behind the scan,
+ * and `isLive` stops the drain when the backend is torn down mid-way.
+ */
+export async function drainRecipientBackfill(
+  handlers: any,
+  accountId: number,
+  isLive: () => boolean = () => true,
+): Promise<{ scanned: number; learned: number; done: boolean }> {
+  let scanned = 0;
+  let learned = 0;
+  for (;;) {
+    const batch = await handlers[DB_RPC.RECIPIENT_HISTORY_BACKFILL]({ accountId });
+    const scannedNow = Number(batch?.scanned ?? 0);
+    scanned += scannedNow;
+    learned += Number(batch?.learned ?? 0);
+    if (batch?.done) return { scanned, learned, done: true };
+    if (scannedNow === 0 || !isLive()) return { scanned, learned, done: false };
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
 }
 

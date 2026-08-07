@@ -544,4 +544,28 @@ describe('finding a contact by the name the user remembers (CS-3.2)', () => {
       'and by the address exactly as it is stored',
     ).toEqual(['JOSÉ@example.com']);
   });
+
+  it('finds a contact by a nickname (CS-3.2)', async () => {
+    await contact('c-nick', 'Robert Paulson', [{ email: 'robert@example.com' }], {
+      nicknames: ['Bob'],
+    });
+
+    expect((await suggest('bob')).map((r: any) => r.email))
+      .toEqual(['robert@example.com']);
+  });
+
+  it('prefix-matches a Unicode domain against the punycode key the store holds', async () => {
+    // `contact_emails.email_key` holds `jane@xn--mnchen-3ya.dev`. The typed
+    // text folds to the same punycode spelling (a whole label encodes to a
+    // prefix of the stored label run), so the address-prefix range must be
+    // driven by the folded key, the same one the history pool scans with —
+    // the raw typed Unicode can never prefix-match the stored form. The name
+    // tier cannot rescue this contact: `münchen` is not among its name words.
+    await contact('c-idn', 'Jane Weber', [{ email: 'jane@münchen.dev' }]);
+
+    expect(
+      (await suggest('jane@münchen.de')).map((r: any) => r.email),
+      'a typed Unicode domain reaches the punycode-keyed row',
+    ).toEqual(['jane@münchen.dev']);
+  });
 });
