@@ -988,16 +988,34 @@ describe('createContactCard', () => {
       .toEqual(['a@example.com', 'b@example.com']);
   });
 
-  it('is idempotent: reports alreadyExists without creating a duplicate', async () => {
+  it('promotes an existing card instead of creating a duplicate', async () => {
     const transport = new MockTransport();
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+    }));
     transport.handle('ContactCard/query', () => ({ ids: ['existing'], total: 1 }));
-    const result = await createContactCard({
-      transport, account, emails: ['dup@example.com'],
+    transport.handle('ContactCard/get', () => ({
+      list: [{
+        id: 'existing',
+        addressBookIds: { 'book-trusted': true },
+        emails: { e1: { '@type': 'EmailAddress', address: 'dup@example.com' } },
+      }],
+    }));
+    let update: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      update = params.update;
+      return { updated: { existing: null } };
     });
-    expect(result).toEqual({ ok: true, alreadyExists: true });
-    const didSet = transport.requests.some((r) =>
-      r.methodCalls.some(([m]) => m === 'ContactCard/set'));
-    expect(didSet).toBe(false);
+    const result = await createContactCard({
+      transport, account, emails: ['dup@example.com'], name: 'Promoted',
+    });
+    expect(result).toEqual({ ok: true, id: 'existing', alreadyExists: true });
+    expect(update.existing.addressBookIds).toEqual({
+      'book-trusted': true,
+      'book-default': true,
+    });
+    expect(update.existing.name.full).toBe('Promoted');
+    expect(update.existing.emails.e1.address).toBe('dup@example.com');
   });
 });
 
@@ -1061,6 +1079,34 @@ describe('createTrustedContactCards', () => {
     expect(Object.values(getCreated()).map((c: any) => c.emails.e1.address)).toEqual(['b@y.com']);
   });
 
+  it('checks every email on every returned card with the canonical NFC/IDNA key', async () => {
+    const { transport } = setup({
+      existingIds: ['ordinary-book-card'],
+      existingCards: [{
+        id: 'ordinary-book-card',
+        addressBookIds: { 'book-default': true },
+        emails: {
+          home: { address: 'other@example.com' },
+          work: { address: 'Usér@bücher.example' },
+        },
+      }],
+    });
+    const result = await createTrustedContactCards({
+      transport,
+      account,
+      senders: [{ email: 'use\u0301r@xn--bcher-kva.example', name: 'Duplicate spelling' }],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      created: 0,
+      alreadyTrusted: true,
+      ids: ['ordinary-book-card'],
+    });
+    expect(countMethod(transport, 'ContactCard/set')).toBe(0);
+    expect(countMethod(transport, 'AddressBook/get')).toBe(0);
+  });
+
   it('reports alreadyTrusted and issues no create when every sender exists', async () => {
     const { transport } = setup({
       existingIds: ['e1', 'e2'],
@@ -1074,9 +1120,31 @@ describe('createTrustedContactCards', () => {
       account,
       senders: [{ email: 'a@x.com' }, { email: 'b@y.com' }],
     });
-    expect(result).toEqual({ ok: true, created: 0, alreadyTrusted: true });
+    expect(result).toEqual({
+      ok: true,
+      created: 0,
+      alreadyTrusted: true,
+      ids: ['e1', 'e2'],
+    });
     expect(countMethod(transport, 'ContactCard/set')).toBe(0);
     expect(countMethod(transport, 'AddressBook/get')).toBe(0);
+  });
+
+  it('fails closed when a duplicate-check card cannot be read', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: ['possible'], total: 1 }));
+    transport.handle('ContactCard/get', () => null);
+    const result = await createTrustedContactCards({
+      transport,
+      account,
+      senders: [{ email: 'possible@example.com' }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: 'serverFail' },
+    });
+    expect(countMethod(transport, 'ContactCard/set')).toBe(0);
   });
 
   it('fails without touching the server when no valid sender is provided', async () => {

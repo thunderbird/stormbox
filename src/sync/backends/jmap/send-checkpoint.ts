@@ -37,6 +37,8 @@ export interface SendCheckpoint {
    * deserves a full budget for the local repair that follows.
    */
   cacheAttempts: number;
+  /** The accepted-send checkpoint and trusted-recipient mutation committed together. */
+  trustedRecipientsQueued: boolean;
 }
 
 function randomToken(): string {
@@ -116,6 +118,7 @@ export function readCheckpoint(row: any): SendCheckpoint | null {
     submissionRemoteId:
       typeof parsed.submissionRemoteId === 'string' ? parsed.submissionRemoteId : null,
     cacheAttempts: Number.isInteger(parsed.cacheAttempts) ? parsed.cacheAttempts : 0,
+    trustedRecipientsQueued: parsed.trustedRecipientsQueued === true,
   };
 }
 
@@ -126,6 +129,7 @@ export function newCheckpoint(identityEmail: string | null | undefined): SendChe
     emailRemoteId: null,
     submissionRemoteId: null,
     cacheAttempts: 0,
+    trustedRecipientsQueued: false,
   };
 }
 

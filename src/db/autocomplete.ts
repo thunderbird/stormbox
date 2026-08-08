@@ -1,22 +1,15 @@
 /**
  * Recipient autocomplete (CS-3.1 to CS-3.7).
  *
- * Two pools feed one list: synced contacts, and addresses learned from mail
- * the user actually sent. The list is merged by normalized address so one
- * address is one suggestion however many sources know it, ranked by how well
- * it matches what was typed, and only then cut to the caller's limit.
- *
- * The order of those last two steps is the point. The previous
- * implementation issued the contact query with the caller's full limit and
- * gave history whatever was left, so a mailbox with enough contacts could
- * never offer an exact match for the address the user had just typed in
- * full. Ranking before cutting is what makes that impossible.
+ * ContactCards are the only source of suggestions. A rebuildable local usage
+ * cache supplies frequency and recency boosts from the latest Sent window,
+ * without becoming a second address book.
  *
  * ## Reading the tiers
  *
  * A candidate is scored on the *best* way it matches, not on every way. The
  * tiers are ordered, and the ordering is the guarantee CS-3.6 asks for: an
- * exact history match beats a weak contact substring match because
+ * exact address match beats a weak contact substring match because
  * `EXACT` sorts before `SUBSTRING`, not because of any tuning.
  *
  * ## Why an exact match gets its own query
@@ -56,7 +49,7 @@ function poolSize(limit: number): number {
 interface RawCandidate {
   email: string;
   name: string | null;
-  source: 'contact' | 'history';
+  source: 'contact';
   isPreferred: boolean;
   sendCount: number;
   lastSentAt: number | null;
@@ -91,15 +84,8 @@ export async function autocompleteRecipients(
   const typed = String(prefix ?? '').trim();
   if (!typed || !(limit > 0)) return [];
 
-  // Both stored columns (`contact_emails.email_key`, `recipient_history
-  // .email_key`) are written by `addressKey`, so every address lookup —
-  // exact and prefix, contacts and history — is driven by the same folded
-  // key. For a partial address the key degrades gracefully: a bare local
-  // part folds exactly as the stored key's local part does, and a complete
-  // Unicode domain label punycodes to the stored spelling. A domain label
-  // still being typed cannot prefix-match its punycode form (punycode
-  // prefixes do not nest), for contacts and history alike; the name tier
-  // covers discovery until the label is whole.
+  // Contact email keys are written by `addressKey`, so exact and prefix
+  // lookups use the same folded key as recipient de-duplication.
   const typedKey = addressKey(typed);
   const words = nameTokens(typed);
   const pool = poolSize(limit);
@@ -109,12 +95,12 @@ export async function autocompleteRecipients(
   // the end instead left `merged.size` counting rows destined to be dropped,
   // so a field already holding `limit` matching addresses would skip the
   // substring tier as though the list were full (CS-3.7).
-  const suppressed = await suppressionKeys(engine, accountId, exclude, typedKey);
+  const excluded = await excludedKeys(engine, accountId, exclude, typedKey);
 
   const merged = new Map<string, Candidate>();
   const collect = (rows: RawCandidate[], tier: number) => {
     for (const row of rows) {
-      if (suppressed.has(addressKey(row.email))) continue;
+      if (excluded.has(addressKey(row.email))) continue;
       mergeCandidate(merged, row, tier, typedKey);
     }
   };
@@ -122,14 +108,11 @@ export async function autocompleteRecipients(
   // An equality lookup, so the address the user typed in full is always a
   // candidate no matter how many others share its prefix.
   collect(await exactContactRows(engine, accountId, typedKey), MATCH_TIER.EXACT);
-  collect(await exactHistoryRows(engine, accountId, typedKey), MATCH_TIER.EXACT);
 
   collect(await contactAddressPrefixRows(engine, accountId, typedKey, pool), MATCH_TIER.ADDRESS_PREFIX);
-  collect(await historyAddressPrefixRows(engine, accountId, typedKey, pool), MATCH_TIER.ADDRESS_PREFIX);
 
   if (words.length > 0) {
     collect(await contactNamePrefixRows(engine, accountId, words, pool), MATCH_TIER.NAME_PREFIX);
-    collect(await historyNamePrefixRows(engine, accountId, words[0], pool), MATCH_TIER.NAME_PREFIX);
   }
 
   // The expensive tier, so it only runs when the cheap ones left room. A
@@ -137,14 +120,12 @@ export async function autocompleteRecipients(
   // list is already full changes nothing the user would see.
   if (words.length > 0 && merged.size < limit) {
     collect(await contactSubstringRows(engine, accountId, words, pool), MATCH_TIER.SUBSTRING);
-    collect(await historySubstringRows(engine, accountId, words, pool), MATCH_TIER.SUBSTRING);
   }
 
   const ranked = [...merged.values()].sort((a, b) => compareCandidates(a, b, nowMs));
 
-  // send_count / last_sent_at ride along so the list can show the evidence
-  // for a learned suggestion ("2d ago · 14 sends") — the same signals the
-  // ranking above already consumed.
+  // send_count / last_sent_at are derived ranking evidence, never an
+  // independent suggestion source.
   return ranked.slice(0, limit).map((c) => ({
     name: c.name,
     email: c.email,
@@ -158,12 +139,9 @@ export async function autocompleteRecipients(
 /**
  * Fold a row into the list, keeping the best tier and the best name.
  *
- * "Best name" is decided rather than left to whichever row arrived first
- * (CS-3.4): contact metadata beats a name learned from a send, a preferred
- * address beats a secondary one, and between two equal claims the
- * alphabetically first name wins. That last rule is arbitrary but it is
- * *fixed*, which is what the requirement asks for — the same database must
- * produce the same suggestion every time.
+ * "Best name" is decided rather than left to whichever duplicate card row
+ * arrived first: a preferred address wins, then the alphabetically first
+ * name. The final rule is arbitrary but deterministic.
  */
 function mergeCandidate(
   merged: Map<string, Candidate>, row: RawCandidate, tier: number, typedKey: string,
@@ -183,13 +161,6 @@ function mergeCandidate(
   existing.tier = Math.min(existing.tier, effective);
   existing.sendCount = Math.max(existing.sendCount, row.sendCount);
   existing.lastSentAt = maxOrNull(existing.lastSentAt, row.lastSentAt);
-  // Where the address comes from is not the same question as which row has the
-  // better name for it, and it must not be decided by that. `source` is what
-  // the control reads to decide whether a suggestion can be forgotten
-  // (CS-3.13), and an address the address book holds cannot be: suppressing
-  // the history row would report success and change nothing the user can see.
-  // So contact provenance sticks, even when a learned row supplies the name.
-  const fromContact = existing.source === 'contact' || row.source === 'contact';
   if (namePreferenceRank(row) < namePreferenceRank(existing)
     || (namePreferenceRank(row) === namePreferenceRank(existing)
       && compareNames(row.name, existing.name) < 0)) {
@@ -201,12 +172,10 @@ function mergeCandidate(
     // ranking input.
     existing.isPreferred = true;
   }
-  existing.source = fromContact ? 'contact' : 'history';
 }
 
 function namePreferenceRank(row: RawCandidate): number {
   if (!row.name) return 4;
-  if (row.source !== 'contact') return 3;
   return row.isPreferred ? 0 : 1;
 }
 
@@ -285,7 +254,11 @@ export function nextPrefix(prefix: string): string | null {
 }
 
 const CONTACT_COLUMNS = `c.display_name AS display_name, c.full_name AS full_name,
-       ce.email AS email, ce.is_preferred AS is_preferred`;
+       ce.email AS email, ce.is_preferred AS is_preferred,
+       COALESCE(ru.send_count, 0) AS send_count,
+       ru.last_sent_at AS last_sent_at`;
+const CONTACT_USAGE_JOIN = `LEFT JOIN recipient_usage ru
+         ON ru.account_id = c.account_id AND ru.email_key = ce.email_key`;
 
 /**
  * `CROSS JOIN`, to fix the join order.
@@ -304,6 +277,7 @@ const CONTACT_COLUMNS = `c.display_name AS display_name, c.full_name AS full_nam
 export const CONTACT_ADDRESS_PREFIX_SQL = `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        CROSS JOIN contacts c ON c.id = ce.contact_id
+       ${CONTACT_USAGE_JOIN}
       WHERE c.account_id = ?
         AND c.is_deleted = 0
         AND ce.email_key >= ?
@@ -314,6 +288,7 @@ export const CONTACT_ADDRESS_PREFIX_SQL = `SELECT ${CONTACT_COLUMNS}
 export const CONTACT_ADDRESS_EXACT_SQL = `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        CROSS JOIN contacts c ON c.id = ce.contact_id
+       ${CONTACT_USAGE_JOIN}
       WHERE c.account_id = ? AND c.is_deleted = 0 AND ce.email_key = ?`;
 
 /** One word of a name, as a prefix range over the token index. */
@@ -326,45 +301,15 @@ function contactRow(row: any): RawCandidate {
     name: row.display_name || row.full_name || null,
     source: 'contact',
     isPreferred: row.is_preferred === 1,
-    sendCount: 0,
-    lastSentAt: null,
-  };
-}
-
-function historyRow(row: any): RawCandidate {
-  return {
-    email: row.email,
-    name: row.name || null,
-    source: 'history',
-    isPreferred: false,
     sendCount: Number(row.send_count ?? 0),
     lastSentAt: row.last_sent_at == null ? null : Number(row.last_sent_at),
   };
 }
 
-/**
- * One key, because contacts and history are now normalized the same way.
- *
- * This used to ask for two spellings — the normalized key and the raw typed
- * text — to paper over `email_lower` being `lower(email)` with no NFC or IDNA
- * applied. It could not work: SQLite folds ASCII only, so an address carrying
- * an uppercase non-ASCII letter was stored under a spelling that matched
- * neither. `contact_emails.email_key` is written by `addressKey`, so the
- * comparison is now exact by construction.
- */
+/** `contact_emails.email_key` is written by `addressKey`. */
 async function exactContactRows(engine: any, accountId: number, key: string) {
   const rows = await engine.all(CONTACT_ADDRESS_EXACT_SQL, [accountId, key]);
   return rows.map(contactRow);
-}
-
-async function exactHistoryRows(engine: any, accountId: number, key: string) {
-  const rows = await engine.all(
-    `SELECT email, name, send_count, last_sent_at
-       FROM recipient_history
-      WHERE account_id = ? AND is_suppressed = 0 AND email_key = ?`,
-    [accountId, key],
-  );
-  return rows.map(historyRow);
 }
 
 async function contactAddressPrefixRows(
@@ -377,28 +322,6 @@ async function contactAddressPrefixRows(
   // BINARY-collated column, and this is.
   const rows = await engine.all(CONTACT_ADDRESS_PREFIX_SQL, [accountId, key, upper, pool]);
   return rows.map(contactRow);
-}
-
-async function historyAddressPrefixRows(
-  engine: any, accountId: number, key: string, pool: number,
-) {
-  const upper = nextPrefix(key);
-  if (upper == null) return [];
-  // The ORDER BY is load-bearing, not cosmetic: with more matches than the
-  // pool, an unordered LIMIT returns an unspecified subset that can differ
-  // between two identical queries (CS-3.6).
-  const rows = await engine.all(
-    `SELECT email, name, send_count, last_sent_at
-       FROM recipient_history
-      WHERE account_id = ?
-        AND is_suppressed = 0
-        AND email_key >= ?
-        AND email_key < ?
-      ORDER BY last_sent_at DESC, send_count DESC, email_key
-      LIMIT ?`,
-    [accountId, key, upper, pool],
-  );
-  return rows.map(historyRow);
 }
 
 /**
@@ -424,6 +347,7 @@ async function contactNamePrefixRows(
     `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        JOIN contacts c ON c.id = ce.contact_id
+       ${CONTACT_USAGE_JOIN}
       WHERE c.account_id = ?
         AND c.is_deleted = 0
         AND c.id IN (${clauses.join(' INTERSECT ')})
@@ -432,33 +356,6 @@ async function contactNamePrefixRows(
     [accountId, ...params, pool],
   );
   return rows.map(contactRow);
-}
-
-/**
- * Learned recipients whose name starts with what was typed.
- *
- * Only the first typed word, and only from the start of the name: history
- * keeps a single name string with no token index, so this is an indexed
- * range scan rather than the per-word match contacts get. A word in the
- * middle of a learned name is reachable through the substring tier.
- */
-async function historyNamePrefixRows(
-  engine: any, accountId: number, word: string, pool: number,
-) {
-  const upper = nextPrefix(word);
-  if (upper == null) return [];
-  const rows = await engine.all(
-    `SELECT email, name, send_count, last_sent_at
-       FROM recipient_history
-      WHERE account_id = ?
-        AND is_suppressed = 0
-        AND name_key >= ?
-        AND name_key < ?
-      ORDER BY last_sent_at DESC, send_count DESC, email_key
-      LIMIT ?`,
-    [accountId, word, upper, pool],
-  );
-  return rows.map(historyRow);
 }
 
 async function contactSubstringRows(
@@ -475,6 +372,7 @@ async function contactSubstringRows(
     `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        JOIN contacts c ON c.id = ce.contact_id
+       ${CONTACT_USAGE_JOIN}
       WHERE c.account_id = ?
         AND c.is_deleted = 0
         AND c.id IN (${clauses.join(' INTERSECT ')})
@@ -483,29 +381,6 @@ async function contactSubstringRows(
     [accountId, ...params, pool],
   );
   return rows.map(contactRow);
-}
-
-async function historySubstringRows(
-  engine: any, accountId: number, words: string[], pool: number,
-) {
-  const clauses = words
-    .map(() => `(name_key LIKE ? ESCAPE '\\' OR email_key LIKE ? ESCAPE '\\')`)
-    .join(' AND ');
-  const params = words.flatMap((word) => {
-    const like = `%${escapeLike(word)}%`;
-    return [like, like];
-  });
-  const rows = await engine.all(
-    `SELECT email, name, send_count, last_sent_at
-       FROM recipient_history
-      WHERE account_id = ?
-        AND is_suppressed = 0
-        AND ${clauses}
-      ORDER BY last_sent_at DESC, send_count DESC, email_key
-      LIMIT ?`,
-    [accountId, ...params, pool],
-  );
-  return rows.map(historyRow);
 }
 
 /**
@@ -533,7 +408,7 @@ export function escapeLike(value: string): string {
  * Mailing yourself is deliberate when you do it and noise when you don't,
  * and typing the whole address is the signal that separates the two.
  */
-async function suppressionKeys(
+async function excludedKeys(
   engine: any, accountId: number, exclude: string[], typedKey: string,
 ): Promise<Set<string>> {
   const keys = new Set<string>();

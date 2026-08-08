@@ -18,6 +18,7 @@ import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { AccountRow, FolderRow } from '../types';
 import { folderCapabilities } from '../utils/folder-capabilities';
+import { isComposingKeyEvent } from '../utils/keyboard';
 import { folderSortKey } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 import FolderCreateDialog from './FolderCreateDialog.vue';
@@ -807,6 +808,16 @@ async function saveEditor(row: DialogFolderRow) {
   }
 }
 
+/**
+ * Enter confirms an input-method candidate before it ever means "save",
+ * so the rename field acts on it only outside a composition.
+ */
+function onEditorNameEnter(event: KeyboardEvent, row: DialogFolderRow) {
+  if (isComposingKeyEvent(event)) return;
+  event.preventDefault();
+  void saveEditor(row);
+}
+
 async function requestDelete(row: DialogFolderRow) {
   if (deleteStage.value == null) {
     deleteStage.value = 'confirm';
@@ -862,6 +873,9 @@ function editedMessageCount(row: DialogFolderRow): number {
 // bubbling from a focused descendant. An open row editor, bulk
 // confirmation, or nested create dialog swallows the first Escape.
 function onWindowKeydown(event: KeyboardEvent) {
+  // Escape cancels an input-method conversion in the rename or filter
+  // field, so it belongs to the composition rather than to this dialog.
+  if (isComposingKeyEvent(event)) return;
   if (event.key !== 'Escape') return;
   if (showCreateDialog.value) {
     // FolderCreateDialog has its own window listener that closes it.
@@ -1166,7 +1180,7 @@ onBeforeUnmount(() => {
                       class="folder-subs__editor-input"
                       :disabled="!item.row.canRename || editorBusy"
                       data-folder-rename-input
-                      @keydown.enter.prevent="saveEditor(item.row)"
+                      @keydown.enter="onEditorNameEnter($event, item.row)"
                     />
                   </label>
                   <div class="folder-subs__editor-field">

@@ -6,6 +6,7 @@ import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { FolderRow } from '../types';
 import { folderCapabilities } from '../utils/folder-capabilities';
+import { isComposingKeyEvent } from '../utils/keyboard';
 import { folderSortKey } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 
@@ -139,6 +140,9 @@ async function submit() {
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
+  // Escape cancels an input-method conversion in the name field, so it
+  // belongs to the composition rather than to this dialog.
+  if (isComposingKeyEvent(event)) return;
   if (event.key === 'Escape') emit('close');
 }
 

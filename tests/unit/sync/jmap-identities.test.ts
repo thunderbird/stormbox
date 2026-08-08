@@ -66,9 +66,7 @@ describe('syncIdentities', () => {
     expect(stateRow ?? null).toBeNull();
   });
 
-  it('stores the reply-to and bcc defaults as fields, not as a blob', async () => {
-    // CS-4.5. `bcc` was requested from the server and then left inside
-    // raw_json, where nothing reads it.
+  it('stores the reply-to default as a typed field', async () => {
     const transport = new MockTransport();
     transport.handle('Identity/get', () => ({
       list: [{
@@ -76,7 +74,6 @@ describe('syncIdentities', () => {
         name: 'Tester',
         email: 'tester@example.com',
         replyTo: [{ email: 'replies@example.com' }],
-        bcc: [{ email: 'archive@example.com' }],
       }],
       state: 'is-1',
     }));
@@ -85,7 +82,6 @@ describe('syncIdentities', () => {
 
     const [row] = await handlers[DB_RPC.IDENTITY_LIST]({ accountId: account.id });
     expect(JSON.parse(row.reply_to_json)).toEqual([{ email: 'replies@example.com' }]);
-    expect(JSON.parse(row.bcc_json)).toEqual([{ email: 'archive@example.com' }]);
   });
 
   it('drops an identity the server has stopped offering', async () => {

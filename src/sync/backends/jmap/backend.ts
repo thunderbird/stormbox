@@ -46,6 +46,7 @@ import { MUTATION_TYPES, processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
 import { maxObjectsInGet } from './limits';
 import { bytesToBase64 } from '../../../utils/inline-images';
+import { addressKey } from '../../../utils/address-key';
 
 const SUBSCRIBED_TYPES = [
   'Mailbox',
@@ -71,6 +72,14 @@ const ACTIVE_VIEW_REFRESH_LIMIT = 5;
 // folder into backoff over a few ticks instead of issuing one failing
 // round trip per folder per tick.
 const INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK = 3;
+
+// Concurrent account starts can briefly create overlapping backend instances.
+// The shared handler map identifies one local database, so automatic historical
+// promotion is serialized per database and account (CS-3.13).
+const RECIPIENT_IMPORT_INFLIGHT = new WeakMap<
+  Record<string, (params: any) => Promise<any>>,
+  Map<number, Promise<any>>
+>();
 
 export class JmapBackend {
   transport: any;
@@ -400,23 +409,31 @@ export class JmapBackend {
       }
     }
 
-    // Learn who the user writes to from the Sent mail already cached, so a
-    // returning user's suggestions are not empty until they have written to
-    // everyone again. Here rather than anywhere near compose: a backfill
-    // must never be what the first keystroke waits on. It drains batch by
-    // batch until the budget retires it or the cache runs dry for now — one
-    // batch per boot needed ten starts to cover the budget.
+    let recipientUsage: { scanned: number; ranked: number } | null = null;
     try {
-      const backfill = await drainRecipientBackfill(
-        this.handlers, this.account.id, () => this._started,
-      );
+      const usage = await this._refreshRecipientUsage();
+      recipientUsage = usage;
       wlog.info(
         'jmap-backend',
-        `recipient backfill -> scanned ${backfill.scanned}, learned ${backfill.learned}`
-        + `${backfill.done ? ', complete' : ''}`,
+        `recipient usage -> scanned ${usage.scanned}, ranked ${usage.ranked}`,
       );
     } catch (err) {
-      wlog.warn('jmap-backend', 'recipient backfill failed; continuing bootstrap', err);
+      wlog.warn('jmap-backend', 'recipient usage rebuild failed; continuing bootstrap', err);
+    }
+
+    if (recipientUsage && this._hasContactsService()) {
+      try {
+        const result = await this.importRecentRecipients(recipientUsage.scanned);
+        const status = result.alreadyImported
+          ? 'already complete'
+          : (result.deferred ? 'deferred' : 'completed');
+        wlog.info(
+          'jmap-backend',
+          `recent recipient import -> ${status}, considered ${result.considered}`,
+        );
+      } catch (err) {
+        wlog.warn('jmap-backend', 'recent recipient import failed; continuing bootstrap', err);
+      }
     }
 
     // Each step above swallows its own failure, so teardown cannot stop
@@ -1035,6 +1052,115 @@ export class JmapBackend {
     });
   }
 
+  /**
+   * Serialize automatic historical promotion across overlapping bootstraps.
+   * Ranking refreshes remain read-only with respect to contacts (CS-3.13).
+   */
+  importRecentRecipients(scanned: number) {
+    const accountId = Number(this.account?.id);
+    if (!Number.isFinite(accountId)) {
+      throw new Error('Recent recipient import requires a local account');
+    }
+    let imports = RECIPIENT_IMPORT_INFLIGHT.get(this.handlers);
+    if (!imports) {
+      imports = new Map();
+      RECIPIENT_IMPORT_INFLIGHT.set(this.handlers, imports);
+    }
+    const current = imports.get(accountId);
+    if (current) return current;
+    const tracked = this._importRecentRecipients(scanned);
+    imports.set(accountId, tracked);
+    const clear = () => {
+      if (imports.get(accountId) === tracked) imports.delete(accountId);
+    };
+    void tracked.then(clear, clear);
+    return tracked;
+  }
+
+  async _importRecentRecipients(scanned: number) {
+    const prior = await this.handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: this.account.id,
+      objectType: 'RecentRecipientContactImport',
+    });
+    if (prior?.state) {
+      return { considered: 0, alreadyImported: true, deferred: false };
+    }
+    if (scanned <= 0) {
+      return { considered: 0, alreadyImported: false, deferred: true };
+    }
+    const rows = await this.handlers[DB_RPC.QUERY]({
+      sql: `WITH recent AS (
+              SELECT m.id AS message_id,
+                     MAX(COALESCE(m.sent_at, fm.sort_sent_at)) AS sent_at
+                FROM messages m
+                JOIN folder_messages fm ON fm.message_id = m.id
+                JOIN folders f ON f.id = fm.folder_id
+               WHERE m.account_id = ?
+                 AND f.account_id = ?
+                 AND f.role = 'sent'
+                 AND COALESCE(m.sent_at, fm.sort_sent_at) IS NOT NULL
+               GROUP BY m.id
+               ORDER BY sent_at DESC, m.id DESC
+               LIMIT 300
+            )
+            SELECT r.message_id, r.sent_at, ma.kind, ma.name, ma.email
+              FROM recent r
+              JOIN message_addresses ma ON ma.message_id = r.message_id
+             WHERE ma.email IS NOT NULL
+             ORDER BY r.sent_at DESC, r.message_id DESC, ma.kind, ma.position`,
+      params: [this.account.id, this.account.id],
+    });
+    const ownedRows = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT email FROM identities WHERE account_id = ?
+            UNION
+            SELECT primary_email AS email FROM accounts
+             WHERE id = ? AND primary_email IS NOT NULL`,
+      params: [this.account.id, this.account.id],
+    });
+    const owned = new Set(ownedRows.map((row) => addressKey(row.email)).filter(Boolean));
+    const byMessage = new Map<number, any[]>();
+    for (const row of rows) {
+      const messageId = Number(row.message_id);
+      const list = byMessage.get(messageId) ?? [];
+      list.push(row);
+      byMessage.set(messageId, list);
+    }
+    const recipients = new Map<string, { email: string; name: string | null }>();
+    for (const addresses of byMessage.values()) {
+      if (!addresses.some((row) => row.kind === 'from' && owned.has(addressKey(row.email)))) {
+        continue;
+      }
+      for (const row of addresses) {
+        if (row.kind !== 'to' && row.kind !== 'cc' && row.kind !== 'bcc') continue;
+        const key = addressKey(row.email);
+        if (!key || owned.has(key) || recipients.has(key)) continue;
+        recipients.set(key, {
+          email: String(row.email).trim(),
+          name: row.name?.trim() || null,
+        });
+      }
+    }
+
+    if (recipients.size > 0) {
+      const inserted = await this.handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+        accountId: this.account.id,
+        mutationType: MUTATION_TYPES.WHITELIST_SENDER,
+        targetMessageId: null,
+        requestJson: JSON.stringify({ senders: [...recipients.values()] }),
+      });
+      const result = await this.runMutation(inserted.id);
+      if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
+        throw new Error('Recent recipient import did not complete');
+      }
+    }
+    await this.handlers[DB_RPC.SYNC_STATE_SET]({
+      accountId: this.account.id,
+      objectType: 'RecentRecipientContactImport',
+      state: JSON.stringify({ completedAt: Date.now() }),
+    });
+    return { considered: recipients.size, alreadyImported: false, deferred: false };
+  }
+
   async drainOutbox() {
     if (!this.outboxRunner) {
       return { attempted: 0, succeeded: 0, failed: 0 };
@@ -1135,6 +1261,9 @@ export class JmapBackend {
         );
       });
     }
+    await this._refreshRecipientUsage().catch((err) => {
+      wlog.warn('jmap-backend', 'reconnect recipient usage refresh failed', err);
+    });
   }
 
   // ----- StateChange dispatch -----------------------------------------
@@ -1249,7 +1378,22 @@ export class JmapBackend {
     let needViewRefresh = false;
     const viewRefreshTypes: string[] = [];
     const failedTypes: Record<string, string> = {};
-    for (const type of Object.keys(types)) {
+    // Contact deletions must land before Email events from the same push so an
+    // older Sent change cannot recreate a card another client just removed.
+    // Address books precede cards because card membership depends on them.
+    const priority = new Map([
+      ['AddressBook', 0],
+      ['ContactCard', 1],
+      ['Identity', 2],
+      ['Mailbox', 3],
+      ['Email', 4],
+      ['EmailDelivery', 5],
+      ['Thread', 6],
+    ]);
+    const orderedTypes = Object.keys(types).sort(
+      (left, right) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99),
+    );
+    for (const type of orderedTypes) {
       try {
         switch (type) {
           case 'Mailbox': {
@@ -1277,13 +1421,16 @@ export class JmapBackend {
           case 'Email': {
             const sync = await this._loadSyncStateFor(account, 'Email');
             if (sync?.state) {
-              await syncEmailChanges({
+              const result = await syncEmailChanges({
                 transport: this.transport,
                 account,
                 handlers: this.handlers,
                 sinceState: sync.state,
                 useWebSocket: this._wsReady(),
               });
+              if (result.needsFullSync && account.id === this.account.id) {
+                await this._refreshRecipientUsage({ resetEmailState: true });
+              }
             }
             needViewRefresh = true;
             viewRefreshTypes.push(type);
@@ -1314,6 +1461,9 @@ export class JmapBackend {
               useWebSocket: this._wsReady(),
             });
             if (result.needsFullSync) await this.ensureContacts();
+            await this.handlers[DB_RPC.RECIPIENT_USAGE_REBUILD]({
+              accountId: this.account.id,
+            });
             break;
           }
           default:
@@ -1355,6 +1505,74 @@ export class JmapBackend {
       this._stateChangeRetryPending = null;
       if (pending && this._started) this._onStateChange(pending);
     }, this._stateChangeRetryDelayMs);
+  }
+
+  /**
+   * Refresh the latest Sent metadata and replace the local ranking cache.
+   * This path never creates contacts; it is safe after a user deletes one.
+   */
+  async _refreshRecipientUsage({ resetEmailState = false } = {}) {
+    const sent = await this.handlers[DB_RPC.FOLDER_BY_ROLE]({
+      accountId: this.account.id,
+      role: 'sent',
+    });
+    if (!sent) return { scanned: 0, ranked: 0 };
+    let position = 0;
+    let baselineEmailState: string | null = null;
+    let queryState: string | null = null;
+    while (position < 300) {
+      const page = await syncFolderWindow({
+        transport: this.transport,
+        account: this.account,
+        folder: sent,
+        handlers: this.handlers,
+        sortProp: 'sentAt',
+        position,
+        limit: 300 - position,
+        useWebSocket: this._wsReady(),
+      });
+      if (baselineEmailState == null) {
+        if (!page.emailState) {
+          throw new Error('Sent snapshot did not include an Email object state');
+        }
+        baselineEmailState = page.emailState;
+      }
+      if (queryState == null) queryState = page.queryState ?? null;
+      else if (!page.queryState || page.queryState !== queryState) {
+        throw new Error('Sent query changed while rebuilding recipient usage');
+      }
+      const fetched = Number(page.fetched ?? 0);
+      position += fetched;
+      if (fetched === 0 || position >= Number(page.total ?? position)) break;
+      if (!queryState) {
+        throw new Error('Sent query did not provide stable paging state');
+      }
+    }
+    const current = await this.handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: this.account.id,
+      objectType: 'Email',
+    });
+    if (baselineEmailState && (resetEmailState || !current?.state)) {
+      await this.handlers[DB_RPC.SYNC_STATE_SET]({
+        accountId: this.account.id,
+        objectType: 'Email',
+        state: baselineEmailState,
+      });
+      const catchup = await syncEmailChanges({
+        transport: this.transport,
+        account: this.account,
+        handlers: this.handlers,
+        sinceState: baselineEmailState,
+        useWebSocket: this._wsReady(),
+      });
+      if (catchup.needsFullSync) {
+        throw new Error('Sent snapshot changes catch-up was incomplete');
+      }
+    }
+    return this.handlers[DB_RPC.RECIPIENT_USAGE_REBUILD]({
+      accountId: this.account.id,
+      limit: 300,
+    });
   }
 
   async _refreshActiveQueryViews(account = this.account) {
@@ -1586,31 +1804,6 @@ export class JmapBackend {
     return cursor < effectiveTotal
       ? { offset: cursor, limit: Math.min(limit, effectiveTotal - cursor) }
       : null;
-  }
-}
-
-/**
- * Drain the recipient-history backfill (CS-3.3): one bounded batch per
- * call, repeated until the message budget retires the job or the cache
- * has nothing more to read for now. The thread is yielded between
- * batches so a query the UI is waiting on is not stuck behind the scan,
- * and `isLive` stops the drain when the backend is torn down mid-way.
- */
-export async function drainRecipientBackfill(
-  handlers: any,
-  accountId: number,
-  isLive: () => boolean = () => true,
-): Promise<{ scanned: number; learned: number; done: boolean }> {
-  let scanned = 0;
-  let learned = 0;
-  for (;;) {
-    const batch = await handlers[DB_RPC.RECIPIENT_HISTORY_BACKFILL]({ accountId });
-    const scannedNow = Number(batch?.scanned ?? 0);
-    scanned += scannedNow;
-    learned += Number(batch?.learned ?? 0);
-    if (batch?.done) return { scanned, learned, done: true };
-    if (scannedNow === 0 || !isLive()) return { scanned, learned, done: false };
-    await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
 }
 

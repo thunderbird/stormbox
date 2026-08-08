@@ -247,6 +247,11 @@ both populated through the existing DB handler layer. Rewrite
 by normalized address, and rank in SQL where possible so the limit
 applies after merging rather than per source.
 
+Historical ContactCard promotion runs automatically during bootstrap exactly
+once per account after a non-empty cached Sent-window refresh. An empty local
+Sent window or failed contact mutation leaves the import pending for a later
+bootstrap, preserving the deletion guarantee in CS-3.13.
+
 ### WP6 — Recipient input control
 
 New `src/components/RecipientInput.vue` owning pills, keyboard, ARIA,
@@ -355,9 +360,11 @@ WP7 is independent and can land at any point.
 
 ## Risks
 
-- **Stalwart behavior on an omitted envelope.** CS-1.1 relies on
-  server-side derivation. Verify against the local stack before relying
-  on it, and capture the wire exchange in the e2e assertion.
+- **Stalwart behavior on an omitted envelope.** Measured on the local
+  stack: derivation silently skips header addresses the server's
+  sanitizer rejects and delivers to the surviving subset. CS-1.1
+  therefore requires a client-built complete envelope. Capture the wire
+  exchange in the e2e assertion.
 - **Migration ordering.** WP3, WP4, and WP5 all add migrations.
   `runMigrations` skips every version `<=` the stored `user_version`
   ([engine.ts](../../src/db/engine.ts):226-241), so a higher-numbered

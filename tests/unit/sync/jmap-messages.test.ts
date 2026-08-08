@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
+import { SERVICE_KIND } from '../../../src/constants/states';
 import {
   syncFolderWindow,
   syncFolderWindowChanges,
@@ -483,6 +484,182 @@ describe('syncFolderWindowChanges', () => {
 });
 
 describe('syncEmailChanges', () => {
+  it('queues one trusted-contact mutation for a new outgoing Sent email', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-sent', name: 'Sent', role: 'sent' }],
+    });
+    const transport = new MockTransport();
+    transport.handle('Email/changes', () => ({
+      oldState: 'es-0',
+      newState: 'es-1',
+      hasMoreChanges: false,
+      created: ['out-1'],
+      updated: [],
+      destroyed: [],
+    }));
+    transport.handle('Email/get', () => ({
+      list: [emailFixture({
+        id: 'out-1',
+        mailboxIds: { 'mb-sent': true },
+        from: [{ name: 'Me', email: 't@example.com' }],
+        to: [{ name: 'Alice', email: 'alice@example.com' }],
+        cc: [{ name: 'Alice duplicate', email: 'ALICE@example.com' }],
+        bcc: [{ name: 'Bob', email: 'bob@example.com' }],
+      })],
+      state: 'es-1',
+    }));
+
+    await syncEmailChanges({ transport, account, handlers, sinceState: 'es-0' });
+
+    const row = await engine.get(
+      `SELECT request_json FROM pending_mutations
+        WHERE mutation_type = 'whitelistSender'`,
+    );
+    expect(JSON.parse(row.request_json).senders).toEqual([
+      { email: 'alice@example.com', name: 'Alice', sourceSentAt: NOW - 1000 },
+      { email: 'bob@example.com', name: 'Bob', sourceSentAt: NOW - 1000 },
+    ]);
+  });
+
+  it('does not recreate a deleted trusted contact from an older Sent event', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-sent', name: 'Sent', role: 'sent' }],
+    });
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'trusted', name: 'Trusted senders' }],
+    });
+    const book = await engine.get(
+      `SELECT id FROM addressbooks WHERE account_id = ? AND remote_id = 'trusted'`,
+      [account.id],
+    );
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts: [{
+        remoteId: 'deleted-card',
+        addressbookIds: [book.id],
+        displayName: 'Removed',
+        emails: [{ email: 'removed@example.com' }],
+      }],
+    });
+    await handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
+      accountId: account.id,
+      remoteId: 'deleted-card',
+    });
+
+    const transport = new MockTransport();
+    transport.handle('Email/changes', () => ({
+      oldState: 'es-0',
+      newState: 'es-1',
+      hasMoreChanges: false,
+      created: ['old-send'],
+      updated: [],
+      destroyed: [],
+    }));
+    transport.handle('Email/get', () => ({
+      list: [emailFixture({
+        id: 'old-send',
+        sentAt: '2020-01-01T00:00:00Z',
+        mailboxIds: { 'mb-sent': true },
+        from: [{ email: 't@example.com' }],
+        to: [{ email: 'removed@example.com' }],
+      })],
+      state: 'es-1',
+    }));
+
+    await syncEmailChanges({ transport, account, handlers, sinceState: 'es-0' });
+
+    expect(await engine.get(
+      `SELECT id FROM pending_mutations WHERE mutation_type = 'whitelistSender'`,
+    )).toBeNull();
+
+    const newer = new MockTransport();
+    newer.handle('Email/changes', () => ({
+      oldState: 'es-1',
+      newState: 'es-2',
+      hasMoreChanges: false,
+      created: ['new-send'],
+      updated: [],
+      destroyed: [],
+    }));
+    newer.handle('Email/get', () => ({
+      list: [emailFixture({
+        id: 'new-send',
+        sentAt: new Date(Date.now() + 10_000).toISOString(),
+        mailboxIds: { 'mb-sent': true },
+        from: [{ email: 't@example.com' }],
+        to: [{ email: 'removed@example.com' }],
+      })],
+      state: 'es-2',
+    }));
+    await syncEmailChanges({ transport: newer, account, handlers, sinceState: 'es-1' });
+    expect(await engine.get(
+      `SELECT id FROM pending_mutations WHERE mutation_type = 'whitelistSender'`,
+    )).not.toBeNull();
+  });
+
+  it('does not advance Email state when changed metadata is incomplete', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/changes', () => ({
+      oldState: 'es-0',
+      newState: 'es-1',
+      hasMoreChanges: false,
+      created: ['missing'],
+      updated: [],
+      destroyed: [],
+    }));
+    transport.handle('Email/get', () => ({ list: [], state: 'es-1' }));
+
+    expect(await syncEmailChanges({
+      transport, account, handlers, sinceState: 'es-0',
+    })).toEqual({ needsFullSync: true });
+    expect(await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'Email',
+    })).toBeNull();
+  });
+
+  it('drains every Email/changes page before checkpointing the final state', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/changes', (params) => params.sinceState === 'es-0'
+      ? {
+        oldState: 'es-0',
+        newState: 'es-1',
+        hasMoreChanges: true,
+        created: ['page-1'],
+        updated: [],
+        destroyed: [],
+      }
+      : {
+        oldState: 'es-1',
+        newState: 'es-2',
+        hasMoreChanges: false,
+        created: ['page-2'],
+        updated: [],
+        destroyed: [],
+      });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailFixture({ id })),
+      state: 'es-2',
+    }));
+
+    const result = await syncEmailChanges({
+      transport, account, handlers, sinceState: 'es-0',
+    });
+    expect(result).toMatchObject({
+      needsFullSync: false,
+      created: ['page-1', 'page-2'],
+      newState: 'es-2',
+    });
+    expect(await handlers[DB_RPC.SYNC_STATE_GET]({
+      accountId: account.id,
+      objectType: 'Email',
+    })).toMatchObject({ state: 'es-2' });
+  });
+
   it('updates cached metadata and removes destroyed messages', async () => {
     // Bootstrap with two messages.
     const bootstrap = new MockTransport();

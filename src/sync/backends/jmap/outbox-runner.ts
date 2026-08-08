@@ -38,6 +38,7 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
+import { MUTATION_TYPE } from '../../../constants/states';
 
 // SetError types that cannot succeed by retrying: no amount of waiting
 // will turn 'forbidden' into 'success'. Anything else (serverFail,
@@ -53,6 +54,7 @@ const TERMINAL_ERROR_TYPES = new Set([
   'unknownFolder',
   'unknownIdentity',
   'invalidName',
+  'duplicateContacts',
   'emptyUpdate',
   'unsupportedMutation',
 ]);
@@ -478,14 +480,20 @@ export class OutboxRunner {
 
   /**
    * Schedule the dispatch of one row behind any previously-queued
-   * dispatches for the same target_message_id. Rows with no target
-   * (currently only the SEND mutation type) get a unique key so they
-   * run concurrently with each other.
+   * dispatches for the same target_message_id. ContactCard writes share an
+   * account lane because their query-before-create de-duplication must not
+   * race. Other targetless rows keep a unique key.
    */
   _dispatch(row) {
-    const key = row.target_message_id == null
-      ? `row:${row.id}`
-      : `target:${Number(row.target_message_id)}`;
+    const contactWrite = row.mutation_type === MUTATION_TYPE.WHITELIST_SENDER
+      || row.mutation_type === MUTATION_TYPE.CREATE_CONTACT
+      || row.mutation_type === MUTATION_TYPE.UPDATE_CONTACT
+      || row.mutation_type === MUTATION_TYPE.DELETE_CONTACT;
+    const key = contactWrite
+      ? 'contact-writes'
+      : (row.target_message_id == null
+        ? `row:${row.id}`
+        : `target:${Number(row.target_message_id)}`);
     const prev = this._targetLocks.get(key) ?? Promise.resolve();
     // suppressed-rejection chain: if row N for target T fails, row
     // N+1 for the same target should still get a chance to run.

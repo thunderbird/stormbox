@@ -23,7 +23,6 @@ function mountControl(options: {
   query?: (
     prefix: string, limit: number, exclude: string[],
   ) => Promise<AutocompleteCandidate[]>;
-  forget?: (email: string) => Promise<boolean>;
   browseAll?: () => Promise<AutocompleteCandidate[]>;
   taken?: string[];
   debounceMs?: number;
@@ -36,7 +35,6 @@ function mountControl(options: {
       entries: options.entries ?? [],
       debounceMs: options.debounceMs ?? 0,
       ...(options.query ? { query: options.query } : {}),
-      ...(options.forget ? { forget: options.forget } : {}),
       ...(options.browseAll ? { browseAll: options.browseAll } : {}),
       ...(options.taken ? { taken: options.taken } : {}),
       // A parent holds the committed recipients, so the control sees its
@@ -93,7 +91,7 @@ function pasteInto(wrapper: any, pasted: string) {
 
 const CONTACTS: AutocompleteCandidate[] = [
   { name: 'Bob', email: 'bob@example.com', source: 'contact' },
-  { name: 'Bobbie', email: 'bobbie@example.com', source: 'history' },
+  { name: 'Bobbie', email: 'bobbie@example.com', source: 'contact' },
 ];
 
 beforeEach(() => {
@@ -122,6 +120,25 @@ describe('RecipientInput committing', () => {
     await typeAndCommit(wrapper, 'alice@example.com', key);
 
     expect(pills(wrapper)).toEqual([{ text: 'alice@example.com', invalid: false }]);
+  });
+
+  it('does not commit a comma owned by an active composition', async () => {
+    const wrapper = mountControl();
+    const field = await type(wrapper, 'alice@example.com');
+    const event = new window.KeyboardEvent('keydown', {
+      key: ',',
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+
+    field.element.dispatchEvent(event);
+    await nextTick();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(wrapper.emitted('update:entries')).toBeUndefined();
+    expect(field.element.value).toBe('alice@example.com');
+    expect(pills(wrapper)).toEqual([]);
   });
 
   it.each([',', ';'])('leaves %s alone inside a display name', async (key) => {
@@ -356,6 +373,32 @@ describe('RecipientInput suggestions', () => {
     await nextTick();
 
     expect(pills(wrapper)).toEqual([{ text: 'Bobbie', invalid: false }]);
+  });
+
+  it('leaves a composing Enter to the input method', async () => {
+    const query = vi.fn(async () => CONTACTS);
+    const wrapper = mountControl({ query });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+    const field = input(wrapper);
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    const event = new window.KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+
+    field.element.dispatchEvent(event);
+    await nextTick();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(wrapper.emitted('update:entries')).toBeUndefined();
+    expect(field.element.value).toBe('bo');
+    expect(field.attributes('aria-activedescendant')).toBe('compose-to-option-0');
+    expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+    expect(pills(wrapper)).toEqual([]);
   });
 
   it('commits what was typed when Enter finds nothing highlighted', async () => {
@@ -696,96 +739,6 @@ describe('RecipientInput suggestions', () => {
   });
 });
 
-describe('RecipientInput forgetting a suggestion (CS-3.13)', () => {
-  const LEARNED: AutocompleteCandidate[] = [
-    { name: 'Dana Learned', email: 'dana@example.com', source: 'history' },
-    { name: 'Dana Contact', email: 'dana.contact@example.com', source: 'contact' },
-  ];
-
-  async function openList(forget: any) {
-    const wrapper = mountControl({ query: async () => LEARNED, forget });
-    await type(wrapper, 'dana');
-    await settle(wrapper);
-    return wrapper;
-  }
-
-  it('offers to forget a learned address but not a contact', async () => {
-    const wrapper = await openList(vi.fn(async () => true));
-    const rows = optionRows(wrapper);
-    expect(rows[0].find('.ac-forget').exists()).toBe(true);
-    // A contact is in the address book because the user put it there;
-    // "remove this suggestion" would misdescribe what the control does.
-    expect(rows[1].find('.ac-forget').exists()).toBe(false);
-  });
-
-  it('removes the suggestion from the open list once it is forgotten', async () => {
-    const forget = vi.fn(async () => true);
-    const wrapper = await openList(forget);
-
-    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
-    await settle(wrapper);
-
-    expect(forget).toHaveBeenCalledWith('dana@example.com');
-    expect(options(wrapper)).toHaveLength(1);
-    expect(wrapper.text()).not.toContain('Dana Learned');
-    // A shorter list is not an announcement of what left it.
-    expect(wrapper.get('[role="status"]').text())
-      .toContain('dana@example.com removed from suggestions');
-  });
-
-  it('leaves the list alone when the removal did not apply, and says so', async () => {
-    const wrapper = await openList(vi.fn(async () => false));
-    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
-    await settle(wrapper);
-    expect(options(wrapper)).toHaveLength(2);
-    // Pressing ✕ and watching the row stay put is not an answer.
-    expect(wrapper.get('[role="status"]').text())
-      .toContain('dana@example.com could not be removed');
-  });
-
-  it('survives a failed removal without dropping the row', async () => {
-    const wrapper = await openList(vi.fn(async () => { throw new Error('worker gone'); }));
-    await optionRows(wrapper)[0].get('.ac-forget').trigger('click');
-    await settle(wrapper);
-    expect(wrapper.get('[role="status"]').text())
-      .toContain('dana@example.com could not be removed');
-    expect(options(wrapper)).toHaveLength(2);
-  });
-
-  it('forgets the highlighted suggestion on Shift+Delete', async () => {
-    const forget = vi.fn(async () => true);
-    const wrapper = await openList(forget);
-    const field = input(wrapper);
-
-    await field.trigger('keydown', { key: 'ArrowDown' });
-    await field.trigger('keydown', { key: 'Delete', shiftKey: true });
-    await settle(wrapper);
-
-    // The ✕ is not focusable, so this is the whole keyboard route to it.
-    expect(forget).toHaveBeenCalledWith('dana@example.com');
-    expect(options(wrapper)).toHaveLength(1);
-  });
-
-  it('leaves plain Delete to the text field', async () => {
-    const forget = vi.fn(async () => true);
-    const wrapper = await openList(forget);
-    const field = input(wrapper);
-
-    await field.trigger('keydown', { key: 'ArrowDown' });
-    await field.trigger('keydown', { key: 'Delete' });
-    await settle(wrapper);
-
-    expect(forget).not.toHaveBeenCalled();
-  });
-
-  it('does not offer removal at all without a way to do it', async () => {
-    const wrapper = mountControl({ query: async () => LEARNED });
-    await type(wrapper, 'dana');
-    await settle(wrapper);
-    expect(wrapper.find('.ac-forget').exists()).toBe(false);
-  });
-});
-
 describe('RecipientInput browsing', () => {
   it('offers the address book on ArrowDown when the name is not typeable', async () => {
     const browseAll = vi.fn(async () => CONTACTS);
@@ -925,12 +878,12 @@ describe('RecipientInput presentation', () => {
     expect(first.get('.ac-email').text()).toBe('list@example.com');
   });
 
-  it('shows the evidence for a learned suggestion', async () => {
+  it('shows rolling usage evidence for a contact', async () => {
     const wrapper = mountControl({
       query: async () => [{
         name: 'Zed',
         email: 'zed@example.com',
-        source: 'history' as const,
+        source: 'contact' as const,
         send_count: 14,
         last_sent_at: Date.now() - 2 * 86_400_000,
       }],

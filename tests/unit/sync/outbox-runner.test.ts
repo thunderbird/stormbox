@@ -80,6 +80,16 @@ async function insertDestroy({ targetMessageId = null } = {}) {
   return r.id;
 }
 
+async function insertContactWrite(mutationType = 'whitelistSender') {
+  const result = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+    accountId,
+    mutationType,
+    targetMessageId: null,
+    requestJson: JSON.stringify({ senders: [{ email: `${mutationType}@example.com` }] }),
+  });
+  return result.id;
+}
+
 async function loadRow(id) {
   const rows = await engine.all(
     'SELECT * FROM pending_mutations WHERE id = ?',
@@ -184,6 +194,38 @@ describe('OutboxRunner auto-drain', () => {
 });
 
 describe('OutboxRunner per-target serialization', () => {
+  it('serializes account-wide ContactCard writes with null message targets', async () => {
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertContactWrite('whitelistSender');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.id}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.id}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const secondId = await insertContactWrite('createContact');
+    const drainPromise = runner.drain();
+
+    await waitFor(() => order.includes(`start:${firstId}`));
+    expect(order).not.toContain(`start:${secondId}`);
+    firstBlocked.resolve();
+    await drainPromise;
+
+    expect(order).toEqual([
+      `start:${firstId}`,
+      `end:${firstId}`,
+      `start:${secondId}`,
+      `end:${secondId}`,
+    ]);
+    await runner.stop();
+  });
+
   it('serializes setKeywords + destroy against the same message id', async () => {
     // markRead followed by destroy must not interleave: if the
     // destroy Email/set lands before the setKeywords, the second

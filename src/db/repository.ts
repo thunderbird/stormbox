@@ -303,14 +303,6 @@ export class Repository {
     return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit, exclude });
   }
 
-  suppressRecipientHistory(accountId, email) {
-    return this.call(DB_RPC.RECIPIENT_HISTORY_SUPPRESS, { accountId, email });
-  }
-
-  clearRecipientHistory(accountId) {
-    return this.call(DB_RPC.RECIPIENT_HISTORY_CLEAR, { accountId });
-  }
-
   // Sync infrastructure ------------------------------------------------
 
   getSyncState(accountId, objectType, scope = '') {

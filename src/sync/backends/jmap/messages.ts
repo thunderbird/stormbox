@@ -19,6 +19,8 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
+import { MUTATION_TYPE } from '../../../constants/states';
+import { addressKey } from '../../../utils/address-key';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
@@ -103,7 +105,14 @@ export async function syncFolderWindow({
     ? Number(query.position)
     : position;
   const got = pickResponse(result, 'Email/get');
-  const list = got?.list ?? [];
+  if (!got || !Array.isArray(got.list)) {
+    throw new Error('Email/get returned no payload for the query window');
+  }
+  const list = got.list;
+  const returnedIds = new Set(list.map((email) => email.id));
+  if (ids.some((id) => !returnedIds.has(id))) {
+    throw new Error('Email/get omitted a message from the query window');
+  }
   const persisted = await handlers[DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]({
     accountId: account.id,
     folderId: folder.id,
@@ -125,6 +134,7 @@ export async function syncFolderWindow({
     position: resolvedPosition,
     ids,
     viewId: persisted.viewId,
+    emailState: got?.state ?? null,
   };
 }
 
@@ -229,68 +239,189 @@ export async function syncEmailChanges({
   maxChanges = 500,
   useWebSocket = false,
 }) {
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/changes',
-      { accountId: account.remote_account_id, sinceState, maxChanges },
-      'c1',
-    ]],
-    useWebSocket,
-  });
-  const change = pickResponse(result, 'Email/changes');
-  if (!change || !change.newState) {
-    return { needsFullSync: true };
-  }
-  const ids = [...(change.created ?? []), ...(change.updated ?? [])];
-  for (let index = 0; index < ids.length; index += maxObjectsInGet(transport)) {
-    const chunk = ids.slice(index, index + maxObjectsInGet(transport));
-    const got = await callJmap(transport, {
+  let state = sinceState;
+  const created = new Set<string>();
+  const updated = new Set<string>();
+  const destroyed = new Set<string>();
+  const previouslySent = new Set<string>();
+  const changedEmails = [];
+  for (;;) {
+    const result = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
       methodCalls: [[
-        'Email/get',
-        {
-          accountId: account.remote_account_id,
-          ids: chunk,
-          properties: EMAIL_LIST_PROPERTIES,
-        },
-        'g1',
+        'Email/changes',
+        { accountId: account.remote_account_id, sinceState: state, maxChanges },
+        'c1',
       ]],
       useWebSocket,
     });
-    const list = pickResponse(got, 'Email/get')?.list ?? [];
-    await persistEmails({ account, emails: list, handlers });
+    const change = pickResponse(result, 'Email/changes');
+    if (!change || !change.newState) {
+      return { needsFullSync: true };
+    }
+    const pageCreated = change.created ?? [];
+    const pageUpdated = change.updated ?? [];
+    for (const id of pageCreated) created.add(id);
+    for (const id of pageUpdated) updated.add(id);
+    for (const id of change.destroyed ?? []) destroyed.add(id);
+    const prior = await sentRemoteIds(handlers, account.id, pageUpdated);
+    for (const id of prior) previouslySent.add(id);
+
+    const ids = [...pageCreated, ...pageUpdated];
+    for (let index = 0; index < ids.length; index += maxObjectsInGet(transport)) {
+      const chunk = ids.slice(index, index + maxObjectsInGet(transport));
+      const got = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [[
+          'Email/get',
+          {
+            accountId: account.remote_account_id,
+            ids: chunk,
+            properties: EMAIL_LIST_PROPERTIES,
+          },
+          'g1',
+        ]],
+        useWebSocket,
+      });
+      const answer = pickResponse(got, 'Email/get');
+      if (!answer || !Array.isArray(answer.list)) {
+        return { needsFullSync: true };
+      }
+      const returned = new Set(answer.list.map((email) => email.id));
+      if (chunk.some((id) => !returned.has(id))) {
+        return { needsFullSync: true };
+      }
+      changedEmails.push(...answer.list);
+      await persistEmails({ account, emails: answer.list, handlers });
+    }
+    if (change.destroyed?.length) {
+      await handlers[DB_RPC.MESSAGE_DESTROY_REMOTE_IDS_BATCH]({
+        accountId: account.id,
+        remoteIds: change.destroyed,
+      });
+    }
+    state = change.newState;
+    if (!change.hasMoreChanges) break;
   }
-  if (change.destroyed?.length) {
-    // Before nuking the messages row, drop any query_view_items
-    // entries that reference its remote_id. The FK on
-    // query_view_items.message_id only has ON DELETE SET NULL, so
-    // the bulk DELETE below would leave skeleton-placeholder rows
-    // showing in every folder view that knew about this message
-    // (and would also leave query_views.total over-counting the
-    // dead positions). _refreshActiveQueryViews only runs queryChanges
-    // on the top-5 LRU views, so any other folder would keep the
-    // ghost until the user manually navigated back to it.
-    await handlers[DB_RPC.MESSAGE_DESTROY_REMOTE_IDS_BATCH]({
-      accountId: account.id,
-      remoteIds: change.destroyed,
-    });
-  }
+  await queueNewOutgoingRecipients({
+    account,
+    handlers,
+    emails: changedEmails,
+    createdIds: created,
+    previouslySent,
+  });
+  await handlers[DB_RPC.RECIPIENT_USAGE_REBUILD]({ accountId: account.id });
   await handlers[DB_RPC.SYNC_STATE_SET]({
     accountId: account.id,
     objectType: 'Email',
-    state: change.newState,
+    state,
   });
   return {
     needsFullSync: false,
-    created: change.created ?? [],
-    updated: change.updated ?? [],
-    destroyed: change.destroyed ?? [],
-    newState: change.newState,
+    created: [...created],
+    updated: [...updated],
+    destroyed: [...destroyed],
+    newState: state,
   };
 }
 
 // ----- helpers ---------------------------------------------------------
+
+async function sentRemoteIds(handlers, accountId, remoteIds): Promise<Set<string>> {
+  if (remoteIds.length === 0) return new Set();
+  const placeholders = remoteIds.map(() => '?').join(',');
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT DISTINCT m.remote_id
+            FROM messages m
+            JOIN folder_messages fm ON fm.message_id = m.id
+            JOIN folders f ON f.id = fm.folder_id
+           WHERE m.account_id = ?
+             AND f.account_id = ?
+             AND f.role = 'sent'
+             AND m.remote_id IN (${placeholders})`,
+    params: [accountId, accountId, ...remoteIds],
+  });
+  return new Set(rows.map((row) => String(row.remote_id)));
+}
+
+/**
+ * Collect recipients only from newly-created Emails or a locally-observed
+ * first transition into Sent. Snapshot reconciliation never calls this path,
+ * so deleting a trusted ContactCard is not undone by old mail.
+ */
+async function queueNewOutgoingRecipients({
+  account, handlers, emails, createdIds, previouslySent,
+}) {
+  const sentFolders = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT remote_id FROM folders
+           WHERE account_id = ? AND role = 'sent' AND is_deleted = 0`,
+    params: [account.id],
+  });
+  const sentIds = new Set(sentFolders.map((row) => String(row.remote_id)));
+  if (sentIds.size === 0) return;
+  const ownedRows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT email FROM identities WHERE account_id = ?
+          UNION
+          SELECT primary_email AS email FROM accounts
+           WHERE id = ? AND primary_email IS NOT NULL`,
+    params: [account.id, account.id],
+  });
+  const owned = new Set(ownedRows.map((row) => addressKey(row.email)).filter(Boolean));
+  if (owned.size === 0) return;
+
+  const candidates = new Map<string, { email: string; name: string | null; sentAt: number }>();
+  for (const email of emails) {
+    const remoteId = String(email?.id ?? '');
+    const isNewEvent = createdIds.has(remoteId) || !previouslySent.has(remoteId);
+    const inSent = Object.keys(email?.mailboxIds ?? {}).some((id) => sentIds.has(id));
+    const authored = (email?.from ?? []).some((from) => owned.has(addressKey(from?.email)));
+    const sentAt = Date.parse(email?.sentAt ?? '');
+    if (!remoteId || !isNewEvent || !inSent || !authored || !Number.isFinite(sentAt)) continue;
+    for (const recipient of [...(email?.to ?? []), ...(email?.cc ?? []), ...(email?.bcc ?? [])]) {
+      const key = addressKey(recipient?.email);
+      if (!key || owned.has(key)) continue;
+      const prior = candidates.get(key);
+      if (!prior || sentAt > prior.sentAt) {
+        candidates.set(key, {
+          email: String(recipient.email).trim(),
+          name: recipient?.name?.trim() || null,
+          sentAt,
+        });
+      }
+    }
+  }
+  if (candidates.size === 0) return;
+
+  const keys = [...candidates.keys()];
+  const placeholders = keys.map(() => '?').join(',');
+  const deletedRows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT ce.email_key, MAX(c.updated_at) AS deleted_at
+            FROM contact_emails ce
+            JOIN contacts c ON c.id = ce.contact_id
+           WHERE c.account_id = ?
+             AND c.is_deleted = 1
+             AND ce.email_key IN (${placeholders})
+           GROUP BY ce.email_key`,
+    params: [account.id, ...keys],
+  });
+  const deletedAt = new Map<string, number>(
+    deletedRows.map((row) => [String(row.email_key), Number(row.deleted_at)]),
+  );
+  const senders = [...candidates.entries()]
+    .filter(([key, candidate]) => candidate.sentAt > (deletedAt.get(key) ?? 0))
+    .map(([, candidate]) => ({
+      email: candidate.email,
+      name: candidate.name,
+      sourceSentAt: candidate.sentAt,
+    }));
+  if (senders.length === 0) return;
+  await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+    accountId: account.id,
+    mutationType: MUTATION_TYPE.WHITELIST_SENDER,
+    targetMessageId: null,
+    requestJson: JSON.stringify({ senders }),
+  });
+}
 
 /**
  * Public helper: given a list of Email JSON objects (as returned by

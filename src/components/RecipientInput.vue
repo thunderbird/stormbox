@@ -8,6 +8,7 @@ import {
   type ParsedAddress,
 } from '../utils/address-parse';
 import { addressKey } from '../utils/address-key';
+import { isComposingKeyEvent } from '../utils/keyboard';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import type { RecipientEntry } from '../stores/compose-store';
 import type { AutocompleteCandidate } from '../stores/contacts-store';
@@ -37,8 +38,6 @@ const props = withDefaults(defineProps<{
   query?: (
     prefix: string, limit: number, exclude: string[],
   ) => Promise<AutocompleteCandidate[]>;
-  /** Stop offering one learned suggestion (CS-3.13). */
-  forget?: (email: string) => Promise<boolean>;
   /**
    * The whole address book, for the browse path CS-3.12 requires. All of
    * it: the control asks for no page size, because a browse list that ends
@@ -51,7 +50,6 @@ const props = withDefaults(defineProps<{
   debounceMs?: number;
 }>(), {
   query: undefined,
-  forget: undefined,
   browseAll: undefined,
   taken: () => [],
   debounceMs: 120,
@@ -89,12 +87,6 @@ let queryToken = 0;
  * that is never coming.
  */
 const foundNothing = ref<string | null>(null);
-/**
- * A one-off thing to say, for an act whose result is a list that is merely
- * shorter. Cleared by the next lookup, so it is never stale.
- */
-const announcement = ref<string | null>(null);
-
 onUnmounted(() => {
   if (debounceTimer) clearTimeout(debounceTimer);
 });
@@ -155,12 +147,9 @@ function pillAvatarInitials(entry: RecipientEntry): string {
 }
 
 /**
- * The evidence for a learned suggestion — how recently and how often the
- * user wrote to it. The ranking already consumed these signals; showing
- * them explains the row's presence instead of asserting it (CS-3.3).
+ * How recently and often this contact appears in the bounded Sent window.
  */
-function historyMeta(candidate: AutocompleteCandidate): string | null {
-  if (candidate.source !== 'history') return null;
+function usageMeta(candidate: AutocompleteCandidate): string | null {
   const parts: string[] = [];
   const at = Number(candidate.last_sent_at);
   if (Number.isFinite(at) && at > 0) {
@@ -195,8 +184,6 @@ function matchSegments(displayText: string): { text: string; hit: boolean }[] {
   }
   return segments;
 }
-
-const anyForgettable = computed(() => suggestions.value.some((c) => canForget(c)));
 
 const countLabel = computed(() => {
   const count = suggestions.value.length;
@@ -235,10 +222,6 @@ const isPanelOpen = computed(() => isListOpen.value || noMatches.value !== null)
  * appearing below the field is not something a non-sighted user can see.
  */
 const resultSummary = computed(() => {
-  // Takes precedence: forgetting a suggestion shortens the list, and "4
-  // suggestions available" does not tell a non-sighted user that the one
-  // they asked to remove is the one that went.
-  if (announcement.value) return announcement.value;
   if (!isListOpen.value) {
     // Silent on dismissal: the user who pressed Escape knows what it did.
     return foundNothing.value ?? '';
@@ -285,7 +268,6 @@ function closeList(): void {
   browsing.value = false;
   foundNothing.value = null;
   noMatches.value = null;
-  announcement.value = null;
 }
 
 /**
@@ -298,7 +280,6 @@ async function browseContacts(): Promise<void> {
   if (!browseAll) return;
   if (debounceTimer) clearTimeout(debounceTimer);
   const token = (queryToken += 1);
-  announcement.value = null;
   const { value: found, answered } = await ask(() => browseAll(), []);
   if (token !== queryToken) return;
   suggestions.value = notTaken(found);
@@ -315,7 +296,6 @@ async function browseContacts(): Promise<void> {
 async function runQuery(prefix: string): Promise<void> {
   const query = props.query;
   const token = (queryToken += 1);
-  announcement.value = null;
   const excluded = [...takenEmails.value];
   const { value: found, answered } = query
     ? await ask(() => query(prefix, SUGGESTION_LIMIT, excluded), [])
@@ -334,41 +314,6 @@ async function runQuery(prefix: string): Promise<void> {
   foundNothing.value = suggestions.value.length > 0
     ? null
     : (answered ? `No suggestions for ${prefix}` : 'Suggestions are unavailable');
-}
-
-/**
- * Stop offering a learned suggestion (CS-3.13).
- *
- * Only learned addresses can be removed this way. A contact is in the
- * address book because the user put it there, so "remove this suggestion"
- * would be a lie about what the control does — removing it means editing the
- * contact, which is the Contacts space's job.
- */
-function canForget(candidate: AutocompleteCandidate): boolean {
-  return !!props.forget && candidate.source === 'history';
-}
-
-async function forgetSuggestion(candidate: AutocompleteCandidate): Promise<void> {
-  const forget = props.forget;
-  if (!forget) return;
-  const { value: removed, answered } = await ask(() => forget(candidate.email), false);
-  // Pressing ✕ and seeing the row stay is not an answer. Whether the removal
-  // failed or simply did not apply, the row is still there and saying nothing
-  // leaves the control looking broken.
-  if (!answered || !removed) {
-    announcement.value = `${candidate.email} could not be removed`;
-    return;
-  }
-  suggestions.value = suggestions.value.filter((s) => s.email !== candidate.email);
-  announcement.value = `${candidate.email} removed from suggestions`;
-  if (activeIndex.value >= suggestions.value.length) {
-    activeIndex.value = suggestions.value.length - 1;
-  }
-  if (suggestions.value.length === 0) {
-    expanded.value = false;
-    foundNothing.value = 'No suggestions';
-  }
-  focusInput();
 }
 
 /**
@@ -518,6 +463,7 @@ function textBeforeCaret(): string {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (isComposingKeyEvent(event)) return;
   switch (event.key) {
     case 'ArrowDown':
     case 'ArrowUp': {
@@ -543,17 +489,6 @@ function onKeydown(event: KeyboardEvent): void {
         ? (step === 1 ? 0 : count - 1)
         : (activeIndex.value + step + count) % count;
       void scrollActiveOptionIntoView();
-      return;
-    }
-    case 'Delete': {
-      // Shift+Delete forgets the highlighted suggestion (CS-3.13). This is
-      // the shortcut Firefox and Thunderbird use for the same act, and it is
-      // the whole of the keyboard route to it: the ✕ in the row is not
-      // focusable, for the reason given where it is rendered.
-      const candidate = suggestions.value[activeIndex.value];
-      if (!event.shiftKey || !candidate || !canForget(candidate)) return;
-      event.preventDefault();
-      void forgetSuggestion(candidate);
       return;
     }
     case 'Enter': {
@@ -734,24 +669,9 @@ function onPaste(event: ClipboardEvent): void {
               </template>
             </span>
           </span>
-          <span v-if="historyMeta(candidate)" class="ac-meta" aria-hidden="true">
-            {{ historyMeta(candidate) }}
+          <span v-if="usageMeta(candidate)" class="ac-meta" aria-hidden="true">
+            {{ usageMeta(candidate) }}
           </span>
-          <!-- Not a <button>, and not focusable, on purpose. An option with
-               an interactive descendant stops being an option to a screen
-               reader, which is the same reason the browse control sits
-               outside this list. The keyboard route to the same act is
-               Shift+Delete, and ARIA's own answer for a row with its own
-               controls — a combobox with a grid popup — would mean this list
-               were not a listbox at all. -->
-          <span
-            v-if="canForget(candidate)"
-            class="ac-forget"
-            aria-hidden="true"
-            :title="`Forget ${candidate.email}`"
-            @mousedown.prevent
-            @click.stop="forgetSuggestion(candidate)"
-          >✕</span>
         </li>
       </ul>
       <!-- Visible-only: the live region already says this in words, so the
@@ -768,7 +688,6 @@ function onPaste(event: ClipboardEvent): void {
       <div v-if="suggestions.length > 0" class="autocomplete__keys" aria-hidden="true">
         <span class="ac-key-hint"><kbd>↑↓</kbd> navigate</span>
         <span class="ac-key-hint"><kbd>↵</kbd> add</span>
-        <span v-if="anyForgettable" class="ac-key-hint"><kbd>⇧⌦</kbd> forget</span>
         <span class="autocomplete__count">{{ countLabel }}</span>
       </div>
     </div>
@@ -991,25 +910,6 @@ function onPaste(event: ClipboardEvent): void {
   font-size: 11px;
   color: var(--muted, #6b7280);
   flex: none;
-}
-
-.ac-forget {
-  padding: 0 4px;
-  font-size: 0.8rem;
-  /* Visible only on the row being considered: a ✕ on every line reads as
-     clutter, and on the active line it reads as an offer. */
-  opacity: 0;
-  border-radius: 3px;
-}
-
-.autocomplete__option--active .ac-forget,
-.autocomplete__option:hover .ac-forget {
-  opacity: 0.75;
-}
-
-.ac-forget:hover {
-  opacity: 1;
-  background: var(--error-bg, rgba(200, 40, 40, 0.14));
 }
 
 .autocomplete__browse {

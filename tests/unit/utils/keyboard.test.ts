@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  isComposingKeyEvent,
   isDeleteKey,
   isEditableTarget,
   isModKey,
@@ -31,6 +32,21 @@ describe('keyboard utils', () => {
   it('matchesShortcut is case-insensitive for letter keys', () => {
     const event = keyEvent('A', { ctrlKey: true });
     expect(matchesShortcut(event, { key: 'a', mod: true })).toBe(true);
+  });
+
+  it('isComposingKeyEvent recognizes the standard composition signal', () => {
+    expect(isComposingKeyEvent(keyEvent('Enter', { isComposing: true }))).toBe(true);
+  });
+
+  it('isComposingKeyEvent recognizes the legacy IME key code', () => {
+    const event = keyEvent('Enter');
+    Object.defineProperty(event, 'keyCode', { value: 229 });
+
+    expect(isComposingKeyEvent(event)).toBe(true);
+  });
+
+  it('isComposingKeyEvent rejects ordinary key events', () => {
+    expect(isComposingKeyEvent(keyEvent('Enter'))).toBe(false);
   });
 
   it('isEditableTarget detects form fields but not plain divs', () => {

@@ -15,9 +15,10 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { SERVICE_KIND } from '../../../constants/states';
+import { addressKey } from '../../../utils/address-key';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
-import { maxObjectsInGet } from './limits';
+import { maxObjectsInGet, maxObjectsInSet } from './limits';
 
 const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
@@ -514,6 +515,11 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
     if (!answer || !Array.isArray(answer.list)) {
       throw new Error('ContactCard/get did not answer for the cards it was asked to read');
     }
+    const requested = ids.slice(index, index + cap);
+    const returned = new Set(answer.list.map((card) => card.id));
+    if (requested.some((id) => !returned.has(id))) {
+      throw new Error('ContactCard/get omitted a card it was asked to read');
+    }
     if (answer.list.length === 0) continue;
     const persisted = await persistContactCards({ account, cards: answer.list, handlers });
     skipped += persisted.skipped;
@@ -810,12 +816,12 @@ export async function createTrustedContactCard({
 export async function createTrustedContactCards({
   transport, account, senders, useWebSocket = false,
 }): Promise<ContactWriteResult> {
-  // Dedupe by address (case-insensitive), keeping the first name seen.
+  // Dedupe with the same NFC/IDNA key autocomplete and contact storage use.
   const byEmail = new Map<string, { email: string; name: string | null }>();
   for (const s of senders ?? []) {
     const email = String(s?.email ?? '').trim();
-    if (!email) continue;
-    const key = email.toLowerCase();
+    const key = addressKey(email);
+    if (!email || !key) continue;
     if (!byEmail.has(key)) byEmail.set(key, { email, name: s?.name ?? null });
   }
   const unique = [...byEmail.values()];
@@ -824,47 +830,72 @@ export async function createTrustedContactCards({
   }
 
   // 1) One existence query for every address; skip ones already carded.
-  const existing = await existingCardEmails({
-    transport, account, emails: unique.map((s) => s.email), useWebSocket,
-  });
-  const toCreate = unique.filter((s) => !existing.has(s.email.toLowerCase()));
+  let existing;
+  try {
+    existing = await existingCardEmails({
+      transport, account, emails: unique.map((s) => s.email), useWebSocket,
+    });
+  } catch (error: any) {
+    return {
+      ok: false,
+      error: { type: 'serverFail', message: error?.message ?? String(error) },
+    };
+  }
+  const toCreate = unique.filter((s) => !existing.keys.has(addressKey(s.email)));
   if (toCreate.length === 0) {
-    return { ok: true, created: 0, alreadyTrusted: true };
+    return {
+      ok: true,
+      created: 0,
+      alreadyTrusted: true,
+      ids: [...existing.cardIds],
+    };
   }
 
   // 2) Resolve the trusted-senders book once for the whole batch.
   const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
 
-  // 3) Create every missing card in a single ContactCard/set.
-  const create: Record<string, unknown> = {};
-  toCreate.forEach((s, i) => {
-    create[`c${i + 1}`] = buildContactCard({ name: s.name, emails: [s.email], bookId });
-  });
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/set',
-      { accountId: account.remote_account_id, create },
-      'cset',
-    ]],
-    useWebSocket,
-  });
-  const set = pickResponse(result, 'ContactCard/set');
-  if (!set) return { ok: false, error: { type: 'serverFail' } };
-  const notCreated = set.notCreated ? Object.values(set.notCreated) : [];
-  if (notCreated.length > 0) {
-    return { ok: false, error: { type: 'notCreated', detail: notCreated[0] } };
+  // 3) Create every missing card in server-sized batches.
+  const ids: string[] = [...existing.cardIds];
+  const cap = maxObjectsInSet(transport);
+  for (let offset = 0; offset < toCreate.length; offset += cap) {
+    const create: Record<string, unknown> = {};
+    toCreate.slice(offset, offset + cap).forEach((s, i) => {
+      create[`c${offset + i + 1}`] = buildContactCard({
+        name: s.name,
+        emails: [s.email],
+        bookId,
+      });
+    });
+    const result = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/set',
+        { accountId: account.remote_account_id, create },
+        'cset',
+      ]],
+      useWebSocket,
+    });
+    const set = pickResponse(result, 'ContactCard/set');
+    if (!set) return { ok: false, error: { type: 'serverFail' } };
+    const notCreated = set.notCreated ? Object.values(set.notCreated) : [];
+    if (notCreated.length > 0) {
+      return { ok: false, error: { type: 'notCreated', detail: notCreated[0] } };
+    }
+    const createdKeys = Object.keys(set.created ?? {});
+    if (Object.keys(create).some((key) => !createdKeys.includes(key))) {
+      return { ok: false, error: { type: 'noResponse' } };
+    }
+    ids.push(...Object.values(set.created ?? {})
+      .map((card: any) => card?.id)
+      .filter(Boolean));
   }
-  const ids = Object.values(set.created ?? {}).map((c: any) => c?.id).filter(Boolean);
-  return { ok: true, created: ids.length, ids };
+  return { ok: true, created: ids.length - existing.cardIds.size, ids };
 }
 
 /**
- * Add a contact to the user's primary ("default") address book. Used by
- * the contacts UI's "Add contact" action. Idempotent on email: if a
- * card with this address already exists anywhere in the account we
- * report `alreadyExists` rather than creating a duplicate. Returns
- * { ok, alreadyExists?, id?, error? }.
+ * Add a contact to the requested address book. When any supplied address is
+ * already on exactly one card, enrich and re-file that card rather than
+ * creating a duplicate.
  */
 export async function createContactCard({
   transport, account, emails, name = null, bookId = null, useWebSocket = false,
@@ -873,12 +904,64 @@ export async function createContactCard({
   if (addresses.length === 0) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no email' } };
   }
-  if (await cardExistsForEmail({ transport, account, email: addresses[0], useWebSocket })) {
-    return { ok: true, alreadyExists: true };
-  }
   // Caller may pin a target book (the selected folder in the contacts
   // UI); otherwise fall back to the account's default book.
   const targetBook = bookId ?? await resolveDefaultBook({ transport, account, useWebSocket });
+  let existing;
+  try {
+    existing = await findContactCardsForEmails({
+      transport, account, emails: addresses, useWebSocket,
+    });
+  } catch (error: any) {
+    return {
+      ok: false,
+      error: { type: 'serverFail', message: error?.message ?? String(error) },
+    };
+  }
+  if (existing.length > 1) {
+    return {
+      ok: false,
+      error: {
+        type: 'duplicateContacts',
+        message: 'The supplied addresses belong to more than one existing contact.',
+      },
+    };
+  }
+  if (existing.length === 1) {
+    const card = existing[0];
+    const id = String(card.id);
+    const currentAddresses = normalizeEmails(card.emails).map((email) => email.email);
+    const mergedAddresses = normalizeAddressList([...currentAddresses, ...addresses]);
+    const addressBookIds = card.addressBookIds && typeof card.addressBookIds === 'object'
+      ? { ...card.addressBookIds }
+      : (card.addressBookId ? { [card.addressBookId]: true } : {});
+    if (targetBook) addressBookIds[targetBook] = true;
+    const patch: Record<string, unknown> = {
+      addressBookIds,
+      emails: mergeEmails(card.emails, mergedAddresses),
+    };
+    if (name != null && name !== (card.name?.full ?? null)) {
+      patch.name = { ...(card.name ?? {}), full: name };
+    }
+    const result = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/set',
+        { accountId: account.remote_account_id, update: { [id]: patch } },
+        'cpromote',
+      ]],
+      useWebSocket,
+    });
+    const set = pickResponse(result, 'ContactCard/set');
+    if (!set) return { ok: false, error: { type: 'serverFail' } };
+    if (set.notUpdated?.[id]) {
+      return { ok: false, error: { type: 'notUpdated', detail: set.notUpdated[id] } };
+    }
+    if (set.updated && id in set.updated) {
+      return { ok: true, id, alreadyExists: true };
+    }
+    return { ok: false, error: { type: 'noResponse' } };
+  }
   return submitContactCardCreate({
     transport, account, emails: addresses, name, bookId: targetBook, useWebSocket,
   });
@@ -980,14 +1063,14 @@ function mergeEmails(currentEmails: any, addresses: string[]): Record<string, un
     : [];
   for (const [key, entry] of entries) {
     originalKeys.add(key);
-    const addr = String(entry?.address ?? '').trim().toLowerCase();
-    if (!addr) continue;
-    if (!pool.has(addr)) pool.set(addr, []);
-    pool.get(addr).push({ key, entry });
+    const comparisonKey = addressKey(entry?.address);
+    if (!comparisonKey) continue;
+    if (!pool.has(comparisonKey)) pool.set(comparisonKey, []);
+    pool.get(comparisonKey).push({ key, entry });
   }
   // Pass 1: claim a matching original entry for each address, in order.
   const assignments = addresses.map((address) => {
-    const queue = pool.get(address.toLowerCase());
+    const queue = pool.get(addressKey(address));
     if (queue && queue.length > 0) {
       const { key, entry } = queue.shift();
       return { key, entry: { ...entry, address } };
@@ -1011,9 +1094,7 @@ function mergeEmails(currentEmails: any, addresses: string[]): Record<string, un
 }
 
 /**
- * Trim, drop empties, and de-duplicate (case-insensitively, keeping the
- * first spelling) an email list, accepting either an array or a single
- * string.
+ * Trim, drop empties, and de-duplicate with the canonical address key.
  */
 function normalizeAddressList(emails: any): string[] {
   const list = Array.isArray(emails) ? emails : (emails == null ? [] : [emails]);
@@ -1022,9 +1103,9 @@ function normalizeAddressList(emails: any): string[] {
   for (const raw of list) {
     const addr = String(raw ?? '').trim();
     if (!addr) continue;
-    const lower = addr.toLowerCase();
-    if (seen.has(lower)) continue;
-    seen.add(lower);
+    const key = addressKey(addr);
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(addr);
   }
   return out;
@@ -1129,39 +1210,21 @@ async function resolveDefaultBook({ transport, account, useWebSocket = false }):
   return pickResponse(created, 'AddressBook/set')?.created?.tb?.id ?? null;
 }
 
-/**
- * True if any ContactCard in the account already carries this email.
- * A filter the server does not support yields an empty id list, so the
- * caller falls through to create rather than failing.
- */
-async function cardExistsForEmail({ transport, account, email, useWebSocket }): Promise<boolean> {
-  const found = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/query',
-      { accountId: account.remote_account_id, filter: { email } },
-      'cq',
-    ]],
-    useWebSocket,
-  });
-  return (pickResponse(found, 'ContactCard/query')?.ids ?? []).length > 0;
-}
-
-/**
- * Of the given addresses, return the set (lowercased) that already have a
- * ContactCard anywhere in the account. Query pages and follow-up gets
- * are bounded to the live JMAP Session's object limit.
- * A filter the server does not support yields no ids, so callers fall
- * through to create rather than failing.
- */
-async function existingCardEmails({ transport, account, emails, useWebSocket }): Promise<Set<string>> {
-  const present = new Set<string>();
-  if (!emails || emails.length === 0) return present;
-  const wanted = new Set(emails.map((e) => e.toLowerCase()));
-  const filter = emails.length === 1
-    ? { email: emails[0] }
-    : { operator: 'OR', conditions: emails.map((email) => ({ email })) };
+async function findContactCardsForEmails({
+  transport, account, emails, useWebSocket,
+}): Promise<any[]> {
+  const wanted = new Set(emails.map(addressKey).filter(Boolean));
+  if (wanted.size === 0) return [];
+  const queryEmails = [...new Set(emails.flatMap((email) => {
+    const key = addressKey(email);
+    return key && key !== email ? [email, key] : [email];
+  }))];
+  const filter = queryEmails.length === 1
+    ? { email: queryEmails[0] }
+    : { operator: 'OR', conditions: queryEmails.map((email) => ({ email })) };
   const cap = maxObjectsInGet(transport);
+  const matched = new Map<string, any>();
+  let queryState: string | null = null;
   for (let position = 0; ;) {
     const found = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
@@ -1179,6 +1242,103 @@ async function existingCardEmails({ transport, account, emails, useWebSocket }):
       useWebSocket,
     });
     const query = pickResponse(found, 'ContactCard/query');
+    if (!query || !Array.isArray(query.ids)) {
+      throw new Error('ContactCard/query did not answer the duplicate check');
+    }
+    if (queryState == null) queryState = query.queryState ?? null;
+    else if (!query.queryState || query.queryState !== queryState) {
+      throw new Error('ContactCard/query changed during the duplicate check');
+    }
+    const ids = query?.ids ?? [];
+    for (let index = 0; index < ids.length; index += cap) {
+      const got = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+        methodCalls: [[
+          'ContactCard/get',
+          { accountId: account.remote_account_id, ids: ids.slice(index, index + cap) },
+          'cg',
+        ]],
+        useWebSocket,
+      });
+      const answer = pickResponse(got, 'ContactCard/get');
+      if (!answer || !Array.isArray(answer.list)) {
+        throw new Error('ContactCard/get did not answer the duplicate check');
+      }
+      const requested = ids.slice(index, index + cap);
+      const returned = new Set(answer.list.map((card) => card.id));
+      if (requested.some((id) => !returned.has(id))) {
+        throw new Error('ContactCard/get omitted a duplicate-check card');
+      }
+      for (const card of answer.list) {
+        if (normalizeEmails(card.emails).some((email) => wanted.has(addressKey(email.email)))) {
+          matched.set(card.id, card);
+        }
+      }
+    }
+    position += ids.length;
+    const total = Number(query?.total);
+    const served = Math.min(
+      cap,
+      Number.isFinite(Number(query?.limit)) && query?.limit != null
+        ? Number(query.limit)
+        : cap,
+    );
+    if (ids.length === 0 || ids.length < served
+      || (Number.isFinite(total) && position >= total)) break;
+    if (!queryState) {
+      throw new Error('ContactCard/query did not provide stable paging state');
+    }
+  }
+  return [...matched.values()];
+}
+
+/**
+ * Of the given addresses, return the canonical keys that already have a
+ * ContactCard anywhere in the account. Query pages and follow-up gets
+ * are bounded to the live JMAP Session's object limit.
+ * A refused duplicate check fails closed rather than creating a card whose
+ * uniqueness was never established.
+ */
+async function existingCardEmails({
+  transport, account, emails, useWebSocket,
+}): Promise<{ keys: Set<string>; cardIds: Set<string> }> {
+  const present = new Set<string>();
+  const cardIds = new Set<string>();
+  if (!emails || emails.length === 0) return { keys: present, cardIds };
+  const wanted = new Set(emails.map(addressKey).filter(Boolean));
+  const queryEmails = [...new Set(emails.flatMap((email) => {
+    const key = addressKey(email);
+    return key && key !== email ? [email, key] : [email];
+  }))];
+  const filter = queryEmails.length === 1
+    ? { email: queryEmails[0] }
+    : { operator: 'OR', conditions: queryEmails.map((email) => ({ email })) };
+  const cap = maxObjectsInGet(transport);
+  let queryState: string | null = null;
+  for (let position = 0; ;) {
+    const found = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/query',
+        {
+          accountId: account.remote_account_id,
+          filter,
+          position,
+          limit: cap,
+          calculateTotal: true,
+        },
+        'cq',
+      ]],
+      useWebSocket,
+    });
+    const query = pickResponse(found, 'ContactCard/query');
+    if (!query || !Array.isArray(query.ids)) {
+      throw new Error('ContactCard/query did not answer the duplicate check');
+    }
+    if (queryState == null) queryState = query.queryState ?? null;
+    else if (!query.queryState || query.queryState !== queryState) {
+      throw new Error('ContactCard/query changed during the duplicate check');
+    }
     const ids = query?.ids ?? [];
     for (let index = 0; index < ids.length; index += cap) {
       const got = await callJmap(transport, {
@@ -1194,13 +1354,27 @@ async function existingCardEmails({ transport, account, emails, useWebSocket }):
         ]],
         useWebSocket,
       });
-      for (const card of pickResponse(got, 'ContactCard/get')?.list ?? []) {
+      const answer = pickResponse(got, 'ContactCard/get');
+      if (!answer || !Array.isArray(answer.list)) {
+        throw new Error('ContactCard/get did not answer the duplicate check');
+      }
+      const requested = ids.slice(index, index + cap);
+      const returned = new Set(answer.list.map((card) => card.id));
+      if (requested.some((id) => !returned.has(id))) {
+        throw new Error('ContactCard/get omitted a duplicate-check card');
+      }
+      for (const card of answer.list) {
         const map = card?.emails;
         if (!map || typeof map !== 'object') continue;
+        let matched = false;
         for (const entry of Object.values(map) as any[]) {
-          const addr = String(entry?.address ?? '').trim().toLowerCase();
-          if (addr && wanted.has(addr)) present.add(addr);
+          const key = addressKey(entry?.address);
+          if (key && wanted.has(key)) {
+            present.add(key);
+            matched = true;
+          }
         }
+        if (matched && typeof card.id === 'string') cardIds.add(card.id);
       }
     }
     position += ids.length;
@@ -1215,8 +1389,11 @@ async function existingCardEmails({ transport, account, emails, useWebSocket }):
     const served = Math.min(cap, echoed);
     if (ids.length === 0 || ids.length < served
       || (Number.isFinite(total) && position >= total)) break;
+    if (!queryState) {
+      throw new Error('ContactCard/query did not provide stable paging state');
+    }
   }
-  return present;
+  return { keys: present, cardIds };
 }
 
 /**

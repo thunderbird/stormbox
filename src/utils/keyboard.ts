@@ -13,6 +13,16 @@ export function isModKey(event: KeyboardEvent): boolean {
 }
 
 /**
+ * True while an input method editor owns the key event.
+ *
+ * `isComposing` is the standard signal. Some browsers and input stacks
+ * report IME-consumed keys only through the legacy 229 key code.
+ */
+export function isComposingKeyEvent(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
+
+/**
  * True when the event target is a field where single-key shortcuts
  * would interfere with typing. Checkbox inputs are excluded — they
  * are selection toggles, not text entry, and should not block Delete
