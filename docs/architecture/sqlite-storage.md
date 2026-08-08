@@ -402,7 +402,8 @@ CREATE INDEX query_views_lru
   ON query_views(last_accessed_at);
 
 -- ---------------------------------------------------------------------------
--- Contacts (read-only in MVP, for recipient autocomplete).
+-- Contacts (synced and mutated for address-book management, trust, and
+-- recipient autocomplete).
 --
 -- The implemented sync path is JMAP-Contacts when the session document
 -- advertises urn:ietf:params:jmap:contacts. CardDAV is supported in the
@@ -547,26 +548,37 @@ ORDER BY m.received_at DESC;
 
 ### Recipient autocomplete
 
-Compose typeahead, sourcing from both the contacts store (CardDAV / JMAP-Contacts) and from sender/recipient history (`message_addresses`).
+Compose typeahead sources candidates only from live ContactCards. A disposable
+`recipient_usage` table supplies count/recency boosts derived from the newest
+300 Sent messages; it cannot make a deleted or unsaved address suggestible.
 
 ```sql
-SELECT 'contact' AS source, c.display_name AS name, ce.email AS email
+SELECT c.display_name AS name,
+       ce.email,
+       ce.is_preferred,
+       coalesce(ru.send_count, 0) AS send_count,
+       ru.last_sent_at
 FROM contact_emails ce
 JOIN contacts c ON c.id = ce.contact_id
-WHERE ce.email_lower LIKE :prefix || '%'
-  AND c.account_id = :account_id
+LEFT JOIN recipient_usage ru
+  ON ru.account_id = c.account_id
+ AND ru.email_key = ce.email_key
+WHERE c.account_id = :account_id
   AND c.is_deleted = 0
-LIMIT 10
-UNION ALL
-SELECT 'history' AS source, ma.name, ma.email
-FROM message_addresses ma
-JOIN messages m ON m.id = ma.message_id
-WHERE ma.email LIKE :prefix || '%' COLLATE NOCASE
-  AND m.account_id = :account_id
-LIMIT 20;
+  AND ce.email_key >= :prefix
+  AND ce.email_key < :prefix_upper
+LIMIT 40;
 ```
 
-`contact_emails_lookup ON (email_lower, contact_id)` and `message_addresses_email ON (email COLLATE NOCASE)` both serve `LIKE :prefix || '%'` as range scans. The stored generated `email_lower` column on `contact_emails` is what makes the prefix match index-friendly across vCards regardless of original case.
+`contact_emails_key_lookup` drives exact and prefix address matching.
+`contact_search_tokens_prefix` supplies unordered word-prefix name matching.
+Autocomplete merges duplicate card rows by `addressKey`, applies match tier
+before preferred/recency/frequency boosts, and then cuts the list to ten.
+
+The usage cache is replaced transactionally at startup/reconnect and after a
+Sent change batch. Confirmed sends create missing ContactCards in the
+server-synchronized `Trusted senders` book through the mutation outbox; the
+cache itself never creates contacts.
 
 ### Search by sender
 

@@ -1,23 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import {
+  computed, nextTick, onMounted, ref, watch,
+} from 'vue';
 import { storeToRefs } from 'pinia';
+import { useVirtualizer } from '@tanstack/vue-virtual';
 import { BookUser, Pencil, Plus, Trash2, Users, X } from '@lucide/vue';
 
 import { useContactsStore } from '../stores/contacts-store';
 import type { AddressbookRow, ContactListRow } from '../types';
 import AppButton from './AppButton.vue';
 
+const props = defineProps({
+  filterQuery: { type: String, default: '' },
+});
+
 const contactsStore = useContactsStore();
-const { contacts, addressbooks, saving, deletingIds } = storeToRefs(contactsStore);
+const {
+  contacts, addressbooks, saving, deletingIds,
+} = storeToRefs(contactsStore);
 
-const filter = ref('');
 const showForm = ref(false);
-/** How many learned addresses the last clear removed; null before any. */
-const historyCleared = ref<number | null>(null);
-
-async function clearHistory(): Promise<void> {
-  historyCleared.value = await contactsStore.clearRecipientHistory();
-}
 
 const newName = ref('');
 // One entry per email input row; always at least one row. Each row
@@ -71,7 +73,7 @@ const filtered = computed(() => {
   if (selectedBookId.value != null) {
     list = list.filter((c) => (c.addressbook_ids ?? []).includes(selectedBookId.value!));
   }
-  const term = filter.value.trim().toLowerCase();
+  const term = props.filterQuery.trim().toLowerCase();
   if (term) {
     list = list.filter((c) =>
       (c.display_name ?? '').toLowerCase().includes(term)
@@ -79,6 +81,36 @@ const filtered = computed(() => {
   }
   return list;
 });
+
+// The 30px action controls, 10px vertical padding, and 1px divider set
+// the single-line row height used before measureElement observes it.
+const CONTACT_ROW_ESTIMATE = 51;
+const scrollEl = ref<HTMLElement | null>(null);
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: filtered.value.length,
+    getScrollElement: () => scrollEl.value,
+    estimateSize: () => CONTACT_ROW_ESTIMATE,
+    overscan: 8,
+    getItemKey: (index: number) => filtered.value[index]?.id ?? index,
+  })),
+);
+const totalSize = computed(() => virtualizer.value.getTotalSize());
+const renderedContacts = computed(() => virtualizer.value.getVirtualItems()
+  .map((virtualRow) => ({ virtualRow, contact: filtered.value[virtualRow.index] }))
+  .filter((entry) => entry.contact != null));
+const measureElement = (el: Element | null) => {
+  if (el) virtualizer.value.measureElement(el);
+};
+
+// Each filter and address-book result set starts from its first match.
+watch(
+  [() => props.filterQuery, selectedBookId],
+  async () => {
+    await nextTick();
+    if (scrollEl.value) virtualizer.value.scrollToOffset(0);
+  },
+);
 
 // New contacts land in the selected book, or the default book when
 // viewing "All contacts".
@@ -198,13 +230,6 @@ async function removeContact(contact: ContactListRow) {
       <header class="contacts__header">
         <h2>{{ selectedBook ? bookLabel(selectedBook) : 'All contacts' }}</h2>
         <div class="contacts__header-actions">
-          <input
-            type="search"
-            v-model="filter"
-            placeholder="Filter…"
-            class="contacts__filter"
-            aria-label="Filter contacts"
-          />
           <AppButton class="contacts__add" @click="openAddForm">
             <template #iconLeft>
               <Plus :size="16" :stroke-width="2" aria-hidden="true" />
@@ -213,25 +238,6 @@ async function removeContact(contact: ContactListRow) {
           </AppButton>
         </div>
       </header>
-
-      <!-- Learned addresses are not contacts and are not shown in this list,
-           so the control to forget them says what it acts on. It lives here
-           because this is where addresses are managed; there is no settings
-           surface to put it in. -->
-      <p class="contacts__history" role="status">
-        <span v-if="historyCleared === null">
-          Addresses you have written to are suggested in compose, and never
-          leave this device.
-        </span>
-        <span v-else-if="historyCleared === 0">No suggested addresses to forget.</span>
-        <span v-else>
-          Forgot {{ historyCleared }} suggested
-          {{ historyCleared === 1 ? 'address' : 'addresses' }}.
-        </span>
-        <button type="button" class="contacts__history-clear" @click="clearHistory">
-          Clear suggested addresses
-        </button>
-      </p>
 
       <form
         v-if="showForm"
@@ -301,36 +307,57 @@ async function removeContact(contact: ContactListRow) {
         </div>
       </form>
 
-      <ul v-if="filtered.length > 0" class="contacts__list">
-        <li v-for="c in filtered" :key="c.id" class="contacts__row">
-          <span class="name">{{ c.display_name || '(no name)' }}</span>
-          <span class="email">{{ c.email }}</span>
-          <span v-if="c.organization" class="org">{{ c.organization }}</span>
-          <span v-else class="org" aria-hidden="true" />
-          <div class="contacts__row-actions">
-            <button
-              class="contacts__row-action"
-              type="button"
-              :disabled="isDeleting(c)"
-              :title="`Edit ${c.display_name || c.email || 'contact'}`"
-              :aria-label="`Edit ${c.display_name || c.email || 'contact'}`"
-              @click="openEditForm(c)"
-            >
-              <Pencil :size="16" :stroke-width="1.75" aria-hidden="true" />
-            </button>
-            <button
-              class="contacts__row-action contacts__row-action--danger"
-              type="button"
-              :disabled="isDeleting(c)"
-              :title="`Remove ${c.display_name || c.email || 'contact'}`"
-              :aria-label="`Remove ${c.display_name || c.email || 'contact'}`"
-              @click="removeContact(c)"
-            >
-              <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
-            </button>
+      <div
+        v-if="filtered.length > 0"
+        ref="scrollEl"
+        class="contacts__list"
+        role="list"
+      >
+        <div
+          class="contacts__list-spacer"
+          role="presentation"
+          :style="{ height: `${totalSize}px` }"
+        >
+          <div
+            v-for="{ virtualRow, contact } in renderedContacts"
+            :key="String(virtualRow.key)"
+            :ref="measureElement"
+            :data-index="virtualRow.index"
+            class="contacts__row"
+            role="listitem"
+            :aria-posinset="virtualRow.index + 1"
+            :aria-setsize="filtered.length"
+            :style="{ transform: `translateY(${virtualRow.start}px)` }"
+          >
+            <span class="name">{{ contact.display_name || '(no name)' }}</span>
+            <span class="email">{{ contact.email }}</span>
+            <span v-if="contact.organization" class="org">{{ contact.organization }}</span>
+            <span v-else class="org" aria-hidden="true" />
+            <div class="contacts__row-actions">
+              <button
+                class="contacts__row-action"
+                type="button"
+                :disabled="isDeleting(contact)"
+                :title="`Edit ${contact.display_name || contact.email || 'contact'}`"
+                :aria-label="`Edit ${contact.display_name || contact.email || 'contact'}`"
+                @click="openEditForm(contact)"
+              >
+                <Pencil :size="16" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+              <button
+                class="contacts__row-action contacts__row-action--danger"
+                type="button"
+                :disabled="isDeleting(contact)"
+                :title="`Remove ${contact.display_name || contact.email || 'contact'}`"
+                :aria-label="`Remove ${contact.display_name || contact.email || 'contact'}`"
+                @click="removeContact(contact)"
+              >
+                <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+            </div>
           </div>
-        </li>
-      </ul>
+        </div>
+      </div>
       <p v-else class="contacts__empty">
         {{ contacts.length === 0 ? 'No contacts yet.' : 'No matches.' }}
       </p>
@@ -420,27 +447,6 @@ async function removeContact(contact: ContactListRow) {
   padding: 16px;
   border-bottom: 1px solid var(--border, #e3e6ee);
 }
-.contacts__history {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 0;
-  padding: 8px 16px;
-  font-size: 12px;
-  opacity: 0.8;
-  border-bottom: 1px solid var(--border, #e3e6ee);
-}
-.contacts__history-clear {
-  flex: none;
-  background: none;
-  border: none;
-  padding: 2px 4px;
-  font: inherit;
-  color: var(--accent, #0060df);
-  text-decoration: underline;
-  cursor: pointer;
-}
 .contacts h2 {
   margin: 0;
   font-size: 16px;
@@ -453,20 +459,6 @@ async function removeContact(contact: ContactListRow) {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.contacts__filter {
-  padding: 6px 10px;
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 8px;
-  font: inherit;
-  font-size: 13px;
-  width: 220px;
-  background: var(--panel, #fff);
-  color: var(--text, #1a1d24);
-}
-.contacts__filter:focus-visible {
-  outline: none;
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 
 /* Add contact is an AppButton; only keep it from wrapping. */
@@ -569,8 +561,22 @@ async function removeContact(contact: ContactListRow) {
   gap: 8px;
   flex-shrink: 0;
 }
-.contacts__list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+.contacts__list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.contacts__list-spacer {
+  position: relative;
+  width: 100%;
+}
 .contacts__row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   display: grid;
   grid-template-columns: 1.6fr 2fr 1fr auto;
   gap: 12px;
@@ -639,7 +645,6 @@ async function removeContact(contact: ContactListRow) {
 @media (max-width: 560px) {
   .contacts__header { flex-direction: column; align-items: stretch; }
   .contacts__header-actions { justify-content: space-between; }
-  .contacts__filter { width: auto; flex: 1 1 auto; }
   .contacts__row-action { opacity: 1; }
 }
 </style>

@@ -13,7 +13,9 @@ import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 
-const IDENTITY_PROPERTIES = ['id', 'name', 'email', 'replyTo', 'bcc', 'textSignature', 'htmlSignature', 'mayDelete'];
+const IDENTITY_PROPERTIES = [
+  'id', 'name', 'email', 'replyTo', 'textSignature', 'htmlSignature', 'mayDelete',
+];
 
 export async function syncIdentities({ transport, account, handlers, useWebSocket = false }) {
   const result = await callJmap(transport, {
@@ -41,7 +43,6 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
       name: id.name ?? null,
       email: id.email,
       replyToJson: id.replyTo ? JSON.stringify(id.replyTo) : null,
-      bccJson: id.bcc ? JSON.stringify(id.bcc) : null,
       rawJson: JSON.stringify(id),
     })),
   });

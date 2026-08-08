@@ -290,3 +290,27 @@ makes a non-default origin work locally.
       (CS-2.9)
 - [x] T702 Responsive CSS test coverage
 - [x] T703 Run checks; commit
+
+## Phase 8 — Explicit submission envelope (CS-1.1)
+
+- [x] T801 Build the `EmailSubmission` envelope in `runSend` as the
+      de-duplicated To, Cc, then Bcc union, reversing T103: server-side
+      derivation silently skips header addresses its sanitizer rejects
+      and delivers to the surviving subset
+- [x] T802 Fail a send carrying no envelope recipients before any
+      protocol call rather than sending `rcptTo: []`, which falls through
+      to header derivation
+- [x] T803 [P] Unit tests: envelope contents and ordering, Cc-only and
+      Bcc-only sends, canonical de-duplication keeping the first
+      addr-spec, atomic `invalidProperties` rejection without retry, and
+      envelope stability across a resume
+- [x] T804 Run checks; commit
+
+## Phase 9 — Automatic historical recipient promotion (CS-3.13)
+
+- [x] T901 Remove the Contacts import control and its RPC surface; run the
+      historical ContactCard promotion automatically after a non-empty
+      cached Sent-window refresh
+- [x] T902 Preserve the per-account at-most-once latch, defer completion for
+      an empty Sent window or failed mutation, and cover bootstrap retries
+      and deletion permanence in unit tests

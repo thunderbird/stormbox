@@ -8,6 +8,7 @@ import {
   listMailboxes,
   mailboxByRole,
   pickResponse,
+  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
 import {
   attachConsoleTail,
@@ -18,6 +19,7 @@ import {
 } from './helpers/shared-session.js';
 import {
   localStackEnabled,
+  SHARED_TEST_OIDC_EMAIL,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
@@ -29,6 +31,11 @@ import {
   readViewCacheForFolderRole,
   waitForPendingMutations,
 } from './helpers/ui.js';
+import {
+  composeSubject,
+  fillRecipient,
+  waitForIdentities,
+} from './helpers/compose.js';
 
 /**
  * Contacts management + Junk "Not junk" whitelist flows (junk-whitelist
@@ -43,6 +50,7 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 const JUNK_SUBJECT_PREFIX = 'JunkWhitelist e2e';
+const AUTO_TRUST_SUBJECT_PREFIX = 'AutoTrustRecipient e2e';
 const CONTACT_DOMAIN = 'contacts-e2e.example';
 
 // --- JMAP contacts helpers (jmapRequest omits the contacts capability,
@@ -90,6 +98,21 @@ async function destroyTestCards(jmap) {
   }
 }
 
+async function destroyCardsForEmail(jmap, email) {
+  const ids = (await listCards(jmap))
+    .filter((card) => cardEmails(card).some(
+      (address) => address.toLowerCase() === email.toLowerCase(),
+    ))
+    .map((card) => card.id);
+  if (ids.length > 0) {
+    await contactsRequest(jmap, [[
+      'ContactCard/set',
+      { accountId: jmap.accountId, destroy: ids },
+      'd',
+    ]]);
+  }
+}
+
 async function ensureJunkMailbox(jmap) {
   const mailboxes = await listMailboxes(jmap);
   const junk = mailboxByRole(mailboxes, 'junk');
@@ -114,9 +137,63 @@ test.describe('Contacts + Junk whitelist e2e', () => {
     // Tests may leave the app in the Contacts space; resetSharedSession
     // re-anchors the Mail folder tree, so switch back to Mail first.
     await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
-    await resetSharedSession(page, { extraSubjectPrefixes: [JUNK_SUBJECT_PREFIX] });
+    await resetSharedSession(page, {
+      extraSubjectPrefixes: [JUNK_SUBJECT_PREFIX, AUTO_TRUST_SUBJECT_PREFIX],
+    });
     const jmap = await connectJmap();
     await destroyTestCards(jmap);
+  });
+
+  test('confirmed sends create one synchronized trusted contact per recipient', async ({
+    sharedPage: page,
+  }, testInfo) => {
+    const jmap = await connectJmap();
+    const recipient = SHARED_TEST_OIDC_EMAIL;
+    const subjects = [
+      `${AUTO_TRUST_SUBJECT_PREFIX} ${Date.now()} one`,
+      `${AUTO_TRUST_SUBJECT_PREFIX} ${Date.now()} two`,
+    ];
+    try {
+      await destroyCardsForEmail(jmap, recipient);
+      for (const subject of subjects) {
+        await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
+        await page.keyboard.press('ControlOrMeta+n');
+        await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
+        await waitForIdentities(page);
+        await fillRecipient(page, 'To', recipient);
+        await composeSubject(page).fill(subject);
+        await page.locator('.compose-dialog').getByRole('button', { name: /^send$/i }).click();
+        await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
+        await waitForPendingMutations(page);
+      }
+
+      await expect.poll(async () => {
+        const cards = await listCards(jmap);
+        return cards.filter((card) =>
+          cardEmails(card).some((email) => email.toLowerCase() === recipient.toLowerCase()))
+          .length;
+      }, {
+        timeout: 30_000,
+        message: 'two sends to one recipient should produce exactly one ContactCard',
+      }).toBe(1);
+
+      await expect.poll(async () => {
+        const cached = await readContactsCache(page);
+        return (cached ?? []).filter(
+          (contact) => (contact.email ?? '').toLowerCase() === recipient.toLowerCase(),
+        ).length;
+      }, {
+        timeout: 30_000,
+        message: 'auto-trusted recipient should be present once in local contacts',
+      }).toBe(1);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      await destroyCardsForEmail(jmap, recipient);
+      await destroyTestCards(jmap);
+      await sweepOrphanTestMessages(jmap, {
+        subjectPrefix: AUTO_TRUST_SUBJECT_PREFIX,
+      });
+    }
   });
 
   test('Junk "Not junk" whitelists the sender and moves the message to the Inbox', async ({ sharedPage: page }, testInfo) => {

@@ -94,11 +94,6 @@ function emptyDraft(): Draft {
 /**
  * Identity `replyTo` per RFC 8621 §6: where replies to this identity
  * should go. Stored as JSON since it is a list.
- *
- * The Identity's `bcc` default is deliberately not applied. It is
- * persisted in the identity's `raw_json`, but silently adding a Bcc
- * recipient the user did not type is user-visible behaviour that needs a
- * product decision first (CS-2.8).
  */
 function identityReplyTo(identity: IdentityRow): ParsedAddress[] {
   if (!identity.reply_to_json) return [];

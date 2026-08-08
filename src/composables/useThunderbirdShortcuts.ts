@@ -16,6 +16,7 @@ import {
 import { useMailStore } from '../stores/mail-store';
 import { useComposeStore } from '../stores/compose-store';
 import {
+  isComposingKeyEvent,
   isDeleteKey,
   isEditableTarget,
   isModKey,
@@ -23,7 +24,7 @@ import {
 } from '../utils/keyboard';
 
 export interface UseThunderbirdShortcutsOptions {
-  /** Current app space ('mail' | 'contacts'). Shortcuts only run in mail. */
+  /** Current app space ('mail' | 'contacts'). */
   space: Ref<string>;
   /** When false, no shortcuts are handled (e.g. login gate). */
   enabled: Ref<boolean>;
@@ -119,6 +120,7 @@ export function useThunderbirdShortcuts({
   const composeStore = useComposeStore();
 
   async function onKeyDown(event: KeyboardEvent) {
+    if (isComposingKeyEvent(event)) return;
     if (!enabled.value) return;
     if (composeStore.isOpen) {
       if (event.key === 'Escape') {
@@ -149,13 +151,14 @@ export function useThunderbirdShortcuts({
       }
       return;
     }
-    if (space.value !== 'mail') return;
 
     if (matchesShortcut(event, { key: 'k', mod: true })) {
       event.preventDefault();
       focusQuickFilter?.();
       return;
     }
+
+    if (space.value !== 'mail') return;
 
     if (isEditableTarget(event.target)) return;
 

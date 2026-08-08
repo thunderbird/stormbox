@@ -54,6 +54,19 @@ function makeRow(id: number, overrides: Record<string, unknown> = {}) {
   };
 }
 
+function populatedDraft() {
+  return {
+    to: [{ name: 'Alice', email: 'alice@example.com' }],
+    cc: [{ email: 'carol@example.com' }],
+    bcc: [{ email: 'bob@example.com' }],
+    subject: 'Composed 日本語',
+    textBody: 'Plain body',
+    htmlBody: '<p>Plain body</p>',
+    inReplyTo: ['parent@example.com'],
+    references: ['thread@example.com', 'parent@example.com'],
+  };
+}
+
 function mountHarness(options: { focusQuickFilter?: () => void } = {}) {
   const space = ref('mail');
   const enabled = ref(true);
@@ -84,12 +97,14 @@ function openDialogWithCombobox() {
 }
 
 function fireKey(key: string, init: Partial<KeyboardEventInit> = {}) {
-  document.dispatchEvent(new KeyboardEvent('keydown', {
+  const event = new KeyboardEvent('keydown', {
     key,
     bubbles: true,
     cancelable: true,
     ...init,
-  }));
+  });
+  document.dispatchEvent(event);
+  return event;
 }
 
 beforeEach(() => {
@@ -148,9 +163,10 @@ describe('useThunderbirdShortcuts', () => {
     expect([...mailStore.selectedIds].sort()).toEqual([1, 2, 4]);
   });
 
-  it('Ctrl+K invokes the Quick Filter focus callback', () => {
+  it.each(['mail', 'contacts'])('Ctrl+K focuses the shared filter in the %s space', (activeSpace) => {
     const focusQuickFilter = vi.fn();
-    mountHarness({ focusQuickFilter });
+    const { space } = mountHarness({ focusQuickFilter });
+    space.value = activeSpace;
 
     const event = new KeyboardEvent('keydown', {
       key: 'k',
@@ -179,6 +195,16 @@ describe('useThunderbirdShortcuts', () => {
     input.remove();
 
     expect(focusQuickFilter).toHaveBeenCalledOnce();
+  });
+
+  it('leaves composing shortcuts to the input method', () => {
+    const focusQuickFilter = vi.fn();
+    mountHarness({ focusQuickFilter });
+
+    const event = fireKey('k', { ctrlKey: true, isComposing: true });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(focusQuickFilter).not.toHaveBeenCalled();
   });
 
   it('F and B move the viewed message', () => {
@@ -243,6 +269,24 @@ describe('useThunderbirdShortcuts', () => {
     expect(mailStore.selectedIds.size).toBe(0);
   });
 
+  it('does not run the archive shortcut in the Contacts space', async () => {
+    const { space } = mountHarness();
+    const mailStore = useMailStore() as any;
+    space.value = 'contacts';
+    mailStore.messages = [makeRow(1)];
+    mailStore.selectedMessageId = 1;
+    const archiveSpy = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+
+    fireKey('a');
+    await Promise.resolve();
+
+    expect(archiveSpy).not.toHaveBeenCalled();
+  });
+
   it('ignores shortcuts when compose is open', async () => {
     mountHarness();
     const mailStore = useMailStore() as any;
@@ -261,11 +305,45 @@ describe('useThunderbirdShortcuts', () => {
   it('Escape closes an open composer', () => {
     mountHarness();
     const composeStore = useComposeStore();
-    composeStore.open();
+    composeStore.open(populatedDraft());
 
     fireKey('Escape');
 
     expect(composeStore.isOpen).toBe(false);
+    expect(composeStore.draft.subject).toBe('');
+    expect(composeStore.draft.to).toEqual([]);
+  });
+
+  it('leaves a composing Escape and the draft to the input method', () => {
+    mountHarness();
+    const composeStore = useComposeStore();
+    const draft = populatedDraft();
+    composeStore.open(draft);
+
+    const event = fireKey('Escape', { isComposing: true });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(composeStore.isOpen).toBe(true);
+    expect(composeStore.draft).toMatchObject(draft);
+  });
+
+  it('ignores legacy IME key events forwarded from nested documents', () => {
+    mountHarness();
+    const composeStore = useComposeStore();
+    const draft = populatedDraft();
+    composeStore.open(draft);
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(event, 'keyCode', { value: 229 });
+
+    invokeThunderbirdShortcut(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(composeStore.isOpen).toBe(true);
+    expect(composeStore.draft).toMatchObject(draft);
   });
 
   it('leaves Escape to a recipient list that is showing', () => {

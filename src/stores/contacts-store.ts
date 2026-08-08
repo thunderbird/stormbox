@@ -19,6 +19,7 @@ import type { MutationType } from '../constants/states';
 import { TABLE_FAMILIES } from '../db/protocol';
 import type { AddressbookRow, ContactListRow } from '../types';
 import type { Repository } from '../db/repository';
+import { addressKey } from '../utils/address-key';
 
 interface PendingMutationInsert {
   accountId: number;
@@ -30,9 +31,9 @@ interface PendingMutationInsert {
 export interface AutocompleteCandidate {
   name?: string | null;
   email: string;
-  source: 'contact' | 'history';
+  source: 'contact';
   is_preferred?: 0 | 1;
-  /** History evidence (CS-3.3): how often and how recently this was written to. */
+  /** Ranking evidence derived from the latest bounded Sent window. */
   send_count?: number;
   last_sent_at?: number | null;
 }
@@ -57,9 +58,9 @@ function cleanEmailList(emails: string[]): { ok: boolean; list: string[] } {
     const addr = String(raw ?? '').trim();
     if (!addr) continue;
     if (!isValidEmail(addr)) return { ok: false, list: [] };
-    const lower = addr.toLowerCase();
-    if (seen.has(lower)) continue;
-    seen.add(lower);
+    const key = addressKey(addr);
+    if (seen.has(key)) continue;
+    seen.add(key);
     list.push(addr);
   }
   return { ok: true, list };
@@ -177,8 +178,7 @@ export const useContactsStore = defineStore('contacts', () => {
   }
 
   /**
-   * Resolve a typeahead prefix into a list of {name, email, source}
-   * candidates. `source` is 'contact' or 'history'.
+   * Resolve a typeahead prefix into ContactCard candidates.
    *
    * `exclude` carries the addresses already in To, Cc and Bcc. They are
    * dropped as candidates are gathered — before ranking, and before the count
@@ -193,25 +193,6 @@ export const useContactsStore = defineStore('contacts', () => {
       return [];
     }
     return repo.autocompleteContacts(authStore.accountId, prefix, limit, exclude);
-  }
-
-  /**
-   * Stop offering one learned address, and forget them all (CS-3.13).
-   *
-   * Contacts are not touched by either: an address the user has in their
-   * address book is not a suggestion the app invented, so removing it means
-   * editing the contact.
-   */
-  async function forgetRecipient(email: string): Promise<boolean> {
-    if (!repo || authStore.accountId == null || !email) return false;
-    const { suppressed } = await repo.suppressRecipientHistory(authStore.accountId, email);
-    return suppressed > 0;
-  }
-
-  async function clearRecipientHistory(): Promise<number> {
-    if (!repo || authStore.accountId == null) return 0;
-    const { cleared } = await repo.clearRecipientHistory(authStore.accountId);
-    return cleared;
   }
 
   /**
@@ -398,8 +379,6 @@ export const useContactsStore = defineStore('contacts', () => {
     listContacts,
     getContact,
     autocomplete,
-    forgetRecipient,
-    clearRecipientHistory,
     createContact,
     updateContact,
     deleteContact,

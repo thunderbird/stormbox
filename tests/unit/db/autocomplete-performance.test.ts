@@ -12,12 +12,12 @@ import { addressKey, nameTokens } from '../../../src/utils/address-key';
 
 /**
  * CS-3.14, at the numbers the requirement states: 50 ms at the 95th
- * percentile over 5,000 contacts and 20,000 learned recipients, measured
+ * percentile over 5,000 contacts carrying rolling usage evidence, measured
  * where the query runs rather than through the UI.
  *
  * A smaller fixture would leave the requirement untested rather than met,
  * which is why this one is as big as it is and why it is seeded with raw SQL
- * — going through the upsert handler for 25,000 rows would spend the test's
+ * — going through the upsert handler for every row would spend the test's
  * whole budget on setup.
  *
  * The prefixes are chosen to be hostile: short ones that match thousands of
@@ -27,7 +27,6 @@ import { addressKey, nameTokens } from '../../../src/utils/address-key';
  */
 
 const CONTACT_COUNT = 5_000;
-const HISTORY_COUNT = 20_000;
 const BUDGET_MS = 50;
 const SAMPLES = 200;
 
@@ -90,6 +89,11 @@ beforeEach(async () => {
          VALUES (?, 1, ?, ?, 0)`,
         [i + 1, work, addressKey(work)],
       );
+      await tx.run(
+        `INSERT INTO recipient_usage(account_id, email_key, send_count, last_sent_at)
+         VALUES (?, ?, ?, ?)`,
+        [ACCOUNT, addressKey(primary), (i % 30) + 1, i * 1000],
+      );
       for (const token of nameTokens(display, `${first} ${last}`, first, last, org)) {
         await tx.run(
           `INSERT OR IGNORE INTO contact_search_tokens(contact_id, account_id, token)
@@ -100,21 +104,6 @@ beforeEach(async () => {
     }
   });
 
-  await engine.transaction(async (tx: any) => {
-    for (let i = 0; i < HISTORY_COUNT; i += 1) {
-      const first = FIRST[i % FIRST.length];
-      const last = LAST[(i + 3) % LAST.length];
-      const email = `${first.toLowerCase()}${i}@history.example`;
-      const name = `${first} ${last}`;
-      await tx.run(
-        `INSERT INTO recipient_history(
-           account_id, email, email_key, name, name_key,
-           send_count, last_sent_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)`,
-        [ACCOUNT, email, email, name, name.toLowerCase(), (i % 30) + 1, i * 1000],
-      );
-    }
-  });
 }, 600_000);
 
 afterEach(async () => {
@@ -131,8 +120,7 @@ function percentile(values: number[], p: number): number {
 
 describe('autocomplete performance (CS-3.14)', () => {
   it(
-    `answers within ${BUDGET_MS}ms at p95 over ${CONTACT_COUNT} contacts `
-    + `and ${HISTORY_COUNT} learned recipients`,
+    `answers within ${BUDGET_MS}ms at p95 over ${CONTACT_COUNT} ranked contacts`,
     async () => {
       const prefixes: string[] = [];
       for (let i = 0; i < SAMPLES; i += 1) {
@@ -148,7 +136,9 @@ describe('autocomplete performance (CS-3.14)', () => {
           // Two words, which is an INTERSECT of two token scans.
           case 2: prefixes.push(`${first.toLowerCase()} ${last.slice(0, 3).toLowerCase()}`); break;
           // A full address, which must be found by equality.
-          case 3: prefixes.push(`${first.toLowerCase()}${i}@history.example`); break;
+          case 3: prefixes.push(
+            `${first.toLowerCase()}.${last.toLowerCase()}${i}@example.com`,
+          ); break;
           // Matches nothing, so every tier runs and none of them stops
           // early — the substring scan included.
           default: prefixes.push(`zzq${i}`); break;
@@ -182,7 +172,7 @@ describe('autocomplete performance (CS-3.14)', () => {
       expect(
         p95,
         `p95 was ${p95.toFixed(1)}ms (worst ${worst.toFixed(1)}ms) against `
-        + `${CONTACT_COUNT} contacts and ${HISTORY_COUNT} history rows`,
+        + `${CONTACT_COUNT} ranked contacts`,
       ).toBeLessThan(BUDGET_MS);
     },
     600_000,

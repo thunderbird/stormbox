@@ -750,15 +750,6 @@ function queryContacts(prefix: string, limit: number, exclude: string[]) {
 }
 
 /**
- * Stop offering a learned address (CS-3.13). Only learned addresses can be
- * removed from here — a contact goes on being a contact, and unwanted
- * contacts are edited in the Contacts space.
- */
-function forgetSuggestion(email: string) {
-  return contactsStore.forgetRecipient(email);
-}
-
-/**
  * The whole address book, for the browse path. The Contacts space is the
  * other place this list lives, and it is behind this dialog rather than
  * beside it, so the browse path stays in the field. No limit is passed:
@@ -878,7 +869,6 @@ function identityInitials(id: IdentityRow): string {
           :entries="recipientEntries[field]"
           :taken="takenElsewhere(field)"
           :query="queryContacts"
-          :forget="forgetSuggestion"
           :browse-all="browseAllContacts"
           @update:entries="(entries: RecipientEntry[]) => setEntries(field, entries)"
         />

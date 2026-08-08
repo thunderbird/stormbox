@@ -15,9 +15,8 @@
 -- application rather than derived in SQL. CS-3.1 requires both.
 --
 -- The fix is to stop asking SQLite to normalize. `email_key` is written by
--- `addressKey`, the same function the queries use and the same one behind
--- `recipient_history.email_key`, so one rule now governs both pools: NFC, an
--- IDNA-normalized domain, and a case-folded local part.
+-- `addressKey`, the same function recipient comparison and ranking use: NFC,
+-- an IDNA-normalized domain, and a case-folded local part.
 ALTER TABLE contact_emails ADD COLUMN email_key TEXT;
 
 -- Existing rows get the best SQL can do, which is what `email_lower` already

@@ -38,6 +38,14 @@ const quickFilterQuery = ref('');
 const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
 const composeActionSpotlight = ref(false);
+const quickFilterPlaceholder = computed(() =>
+  space.value === 'contacts' ? 'Filter Contacts' : 'Quick Filter',
+);
+const quickFilterAriaLabel = computed(() =>
+  space.value === 'contacts'
+    ? 'Filter Contacts by name or email address'
+    : 'Quick Filter messages by from, to, or subject',
+);
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
@@ -181,6 +189,7 @@ watch(showMessageView, () => {
 });
 
 watch(space, () => {
+  quickFilterQuery.value = '';
   applyResponsiveLayout();
   clampColumnWidths();
 });
@@ -217,7 +226,7 @@ function focusQuickFilterInput() {
 
 function updateQuickFilterQuery(next: string) {
   if (next === quickFilterQuery.value) return;
-  if (mailStore.selectedMessageId != null) {
+  if (space.value === 'mail' && mailStore.selectedMessageId != null) {
     mailStore.selectMessage(null);
   }
   quickFilterQuery.value = next;
@@ -644,8 +653,8 @@ function clamp(value: number, min: number, max: number) {
           class="quick-filter__input"
           type="search"
           :value="quickFilterQuery"
-          aria-label="Quick Filter messages by from, to, or subject"
-          :placeholder="quickFilterSpotlight ? '' : 'Quick Filter'"
+          :aria-label="quickFilterAriaLabel"
+          :placeholder="quickFilterSpotlight ? '' : quickFilterPlaceholder"
           autocomplete="off"
           spellcheck="false"
           @input="setQuickFilterQuery"
@@ -784,7 +793,10 @@ function clamp(value: number, min: number, max: number) {
         :spotlight-actions="composeActionSpotlight"
       />
     </template>
-    <ContactsView v-else-if="space === 'contacts'" />
+    <ContactsView
+      v-else-if="space === 'contacts'"
+      :filter-query="quickFilterQuery"
+    />
 
     <ComposeDialog />
     <StoreErrorToast />
@@ -1053,6 +1065,13 @@ html.light,
 .quick-filter__search--spotlight .quick-filter__input {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* .quick-filter__clear occupies the padding gutter, so the WebKit search
+   affordances would sit beside it as a second clear button. */
+.quick-filter__input::-webkit-search-cancel-button,
+.quick-filter__input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
 .quick-filter__input::placeholder {
   color: var(--muted);

@@ -121,6 +121,7 @@ async function insertSendMutation({
 /** A SEND row for processMutationRow, without touching the queue. */
 function sendRow({
   drafts, sent, identityId, id = 9001, phase = null, checkpoint = null, htmlBody = null,
+  to, cc, bcc,
 }: any) {
   return {
     id,
@@ -129,7 +130,9 @@ function sendRow({
     mutation_type: MUTATION_TYPES.SEND,
     request_json: JSON.stringify({
       identityId: identityId ?? 1,
-      to: [{ email: 'rcpt@example.com' }],
+      to: to ?? [{ email: 'rcpt@example.com' }],
+      ...(cc ? { cc } : {}),
+      ...(bcc ? { bcc } : {}),
       subject: 'Hello',
       textBody: 'Hi.',
       ...(htmlBody ? { htmlBody } : {}),
@@ -421,7 +424,7 @@ describe('drainOutbox', () => {
     expect(await engine.get('SELECT id FROM messages WHERE id = ?', [secondRow.id])).toBeNull();
   });
 
-  it('batches moveToFolders across multiple messageIds into a single Email/set', async () => {
+  it('batches all-alphabetic moves with one shared pointer patch', async () => {
     await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
       accountId: account.id,
       folders: [{ remoteId: 'mb-archive', name: 'Archive', role: 'archive' }],
@@ -466,11 +469,230 @@ describe('drainOutbox', () => {
     expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
     expect(setCalls).toHaveLength(1);
     // Both ids carried the same patch, sent in a single update map.
-    expect(Object.keys(setCalls[0].update).sort()).toEqual(['e-1', 'e-2']);
-    expect(setCalls[0].update['e-1']['mailboxIds/mb-archive']).toBe(true);
-    expect(setCalls[0].update['e-1']['mailboxIds/mb-inbox']).toBeNull();
-    expect(setCalls[0].update['e-2']['mailboxIds/mb-archive']).toBe(true);
-    expect(setCalls[0].update['e-2']['mailboxIds/mb-inbox']).toBeNull();
+    expect(setCalls[0]).toEqual({
+      accountId: 'acct-1',
+      update: {
+        'e-1': {
+          'mailboxIds/mb-archive': true,
+          'mailboxIds/mb-inbox': null,
+        },
+        'e-2': {
+          'mailboxIds/mb-archive': true,
+          'mailboxIds/mb-inbox': null,
+        },
+      },
+    });
+    expect(transport.requests.map((request) => request.methodCalls[0][0]))
+      .toEqual(['Email/set']);
+  });
+
+  it('preserves unrelated memberships when a numeric mailbox id requires replacement', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: '7', name: 'Numeric destination' },
+        { remoteId: 'mb-keep', name: 'Keep' },
+      ],
+    });
+    const numeric = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = '7'`,
+      [account.id],
+    );
+    const keep = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-keep'`,
+      [account.id],
+    );
+    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [{
+        messageId,
+        memberships: [
+          { folderId: inbox.id, remoteMembershipId: 'mb-inbox' },
+          { folderId: keep.id, remoteMembershipId: 'mb-keep' },
+        ],
+      }],
+    });
+
+    const transport = new MockTransport();
+    let getParams;
+    let setParams;
+    transport.handle('Email/get', (params) => {
+      getParams = params;
+      return {
+        list: [{
+          id: 'e-1',
+          mailboxIds: {
+            'mb-inbox': true,
+            'mb-keep': true,
+          },
+        }],
+        state: 'move-state-1',
+      };
+    });
+    transport.handle('Email/set', (params) => {
+      setParams = params;
+      return { updated: { 'e-1': null } };
+    });
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [numeric.id],
+          removeFolderIds: [inbox.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(getParams).toEqual({
+      accountId: 'acct-1',
+      ids: ['e-1'],
+      properties: ['id', 'mailboxIds'],
+    });
+    expect(setParams).toEqual({
+      accountId: 'acct-1',
+      update: {
+        'e-1': {
+          mailboxIds: {
+            '7': true,
+            'mb-keep': true,
+          },
+        },
+      },
+    });
+    expect(Object.keys(setParams.update['e-1']).some((key) =>
+      key.startsWith('mailboxIds/'))).toBe(false);
+    const memberships = await engine.all(
+      `SELECT f.remote_id
+         FROM folder_messages fm
+         JOIN folders f ON f.id = fm.folder_id
+        WHERE fm.message_id = ?
+        ORDER BY f.remote_id`,
+      [messageId],
+    );
+    expect(memberships.map((membership) => membership.remote_id))
+      .toEqual(['7', 'mb-keep']);
+  });
+
+  it('does not send an empty mailboxIds replacement for a move', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: '7', name: 'Numeric source' }],
+    });
+    const numeric = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = '7'`,
+      [account.id],
+    );
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => ({
+      list: [{ id: 'e-1', mailboxIds: { '7': true } }],
+      state: 'move-state-2',
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [],
+          removeFolderIds: [numeric.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.result.errors[String(messageId)]).toMatchObject({
+      type: 'invalidProperties',
+      properties: ['mailboxIds'],
+    });
+    expect(transport.requests.map((request) => request.methodCalls[0][0]))
+      .toEqual(['Email/get']);
+  });
+
+  it('fails numeric-id moves when current memberships cannot be fetched', async () => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: '7', name: 'Numeric destination' }],
+    });
+    const numeric = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = '7'`,
+      [account.id],
+    );
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => {
+      throw new Error('membership lookup failed');
+    });
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [numeric.id],
+          removeFolderIds: [inbox.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.result.errors[String(messageId)]).toEqual({
+      type: 'transport',
+      message: 'membership lookup failed',
+    });
+    expect(transport.requests.map((request) => request.methodCalls[0][0]))
+      .toEqual(['Email/get']);
+  });
+
+  it('treats a message deleted elsewhere as moved on the replacement path too', async () => {
+    // Both move paths have to agree that a message the server no longer
+    // holds satisfies a move out of a folder. Erroring instead would
+    // leave a conflicted row and a cache entry for a message that is
+    // gone, which the patch path avoids by reconciling.
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: '7', name: 'Numeric destination' }],
+    });
+    const numeric = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = '7'`,
+      [account.id],
+    );
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => ({ list: [], notFound: ['e-1'] }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [numeric.id],
+          removeFolderIds: [inbox.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.result.succeededIds).toEqual([messageId]);
+    expect(transport.requests.map((request) => request.methodCalls[0][0]))
+      .toEqual(['Email/get', 'Email/get']);
+    const memberships = await engine.all(
+      `SELECT folder_id FROM folder_messages WHERE message_id = ?`,
+      [messageId],
+    );
+    expect(memberships).toEqual([]);
   });
 
   it('can run one specific pending mutation without draining older rows first', async () => {
@@ -608,17 +830,100 @@ describe('drainOutbox', () => {
     // Email, not a back-reference into a chained create, so that the
     // checkpoint between the two survives a lost response.
     expect(submitParams.create.s1.emailId).toBe('em-new');
-    // No client-built envelope: RFC 8621 §7 has the server derive rcptTo
-    // from the Email's To + Cc + Bcc, verified against Stalwart v0.15.4
-    // for a separately stored Email including the Bcc-only case.
-    expect(submitParams.create.s1.envelope).toBeUndefined();
-    expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-sent']).toBe(true);
-    expect(submitParams.onSuccessUpdateEmail['#s1']['mailboxIds/mb-drafts']).toBeNull();
-    expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$draft']).toBeNull();
-    expect(submitParams.onSuccessUpdateEmail['#s1']['keywords/$seen']).toBe(true);
+    // RFC 8621 §7 carries the selected identity and complete recipient
+    // set in the explicit submission envelope.
+    expect(submitParams.create.s1.envelope).toEqual({
+      mailFrom: { email: 'tester@example.com' },
+      rcptTo: [{ email: 'rcpt@example.com' }],
+    });
+    const onSuccessUpdate = submitParams.onSuccessUpdateEmail['#s1'];
+    expect(onSuccessUpdate).toEqual({
+      mailboxIds: { 'mb-sent': true },
+      'keywords/$draft': null,
+      'keywords/$seen': true,
+    });
+    expect(Object.keys(onSuccessUpdate).some((key) =>
+      key.startsWith('mailboxIds/'))).toBe(false);
     // No inline images means no blob uploads and no attachments.
     expect(transport.uploads).toHaveLength(0);
     expect(setParams.create.c1.attachments).toBeUndefined();
+  });
+
+  it('files a send into a numeric Sent id with a full mailboxIds replacement', async () => {
+    const { drafts } = await seedSendScaffolding();
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: '7', name: 'Numeric Sent', role: 'sent' }],
+    });
+    const sent = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = '7'`,
+      [account.id],
+    );
+    const transport = new MockTransport();
+    let submitParams;
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-numeric-sent' } },
+    }));
+    transport.handle('EmailSubmission/set', (params) => {
+      submitParams = params;
+      return { created: { s1: { id: 'sub-numeric-sent' } } };
+    });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailInMailbox(id, '7')),
+      state: 'numeric-sent-state',
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: sendRow({ drafts, sent, id: 9101 }),
+    });
+
+    expect(result.ok).toBe(true);
+    const onSuccessUpdate = submitParams.onSuccessUpdateEmail['#s1'];
+    expect(onSuccessUpdate).toEqual({
+      mailboxIds: { '7': true },
+      'keywords/$draft': null,
+      'keywords/$seen': true,
+    });
+    expect(Object.keys(onSuccessUpdate).some((key) =>
+      key.startsWith('mailboxIds/'))).toBe(false);
+  });
+
+  it('omits mailboxIds when no Sent folder resolves', async () => {
+    const { drafts } = await seedSendScaffolding();
+    const transport = new MockTransport();
+    let submitParams;
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-without-sent' } },
+    }));
+    transport.handle('EmailSubmission/set', (params) => {
+      submitParams = params;
+      return { created: { s1: { id: 'sub-without-sent' } } };
+    });
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => emailInMailbox(id, 'mb-drafts')),
+      state: 'without-sent-state',
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: sendRow({
+        drafts,
+        sent: { id: 999_999 },
+        id: 9102,
+      }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(submitParams.onSuccessUpdateEmail['#s1']).toEqual({
+      'keywords/$draft': null,
+      'keywords/$seen': true,
+    });
+    expect(submitParams.onSuccessUpdateEmail['#s1']).not.toHaveProperty('mailboxIds');
   });
 
   it('uploads inline pasted images and sends them as cid attachments', async () => {
@@ -850,7 +1155,7 @@ describe('drainOutbox', () => {
     expect(err.description).toBe('too big');
   });
 
-  it('carries Cc and Bcc on the Email so the server can derive all recipients', async () => {
+  it('carries To, Cc, and Bcc in the complete submission envelope', async () => {
     const { drafts, sent } = await seedSendScaffolding();
     await insertSendMutation({
       drafts,
@@ -878,9 +1183,107 @@ describe('drainOutbox', () => {
     expect(setParams.create.c1.to).toEqual([{ email: 'to@example.com' }]);
     expect(setParams.create.c1.cc).toEqual([{ email: 'cc@example.com' }]);
     expect(setParams.create.c1.bcc).toEqual([{ email: 'bcc@example.com' }]);
-    // The server derives the envelope from these three fields, so no
-    // client-built rcptTo is sent.
-    expect(submitParams.create.s1.envelope).toBeUndefined();
+    expect(submitParams.create.s1.envelope).toEqual({
+      mailFrom: { email: 'tester@example.com' },
+      rcptTo: [
+        { email: 'to@example.com' },
+        { email: 'cc@example.com' },
+        { email: 'bcc@example.com' },
+      ],
+    });
+    const trust = await engine.get(
+      `SELECT request_json FROM pending_mutations
+        WHERE mutation_type = ?`,
+      [MUTATION_TYPES.WHITELIST_SENDER],
+    );
+    expect(JSON.parse(trust.request_json).senders).toEqual([
+      { email: 'to@example.com', name: null, sourceSentAt: expect.any(Number) },
+      { email: 'cc@example.com', name: null, sourceSentAt: expect.any(Number) },
+      { email: 'bcc@example.com', name: null, sourceSentAt: expect.any(Number) },
+    ]);
+  });
+
+  it.each([
+    ['Cc', { to: [], cc: [{ email: 'cc-only@example.com' }] }, 'cc-only@example.com'],
+    ['Bcc', { to: [], bcc: [{ email: 'bcc-only@example.com' }] }, 'bcc-only@example.com'],
+  ])('sends a non-empty envelope for a %s-only message', async (_field, request, email) => {
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({ drafts, sent, ...request });
+
+    const transport = new MockTransport();
+    let submitParams;
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
+    }));
+    transport.handle('EmailSubmission/set', (params) => {
+      submitParams = params;
+      return { created: { s1: { id: 'sub-1' } } };
+    });
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+
+    expect(summary.succeeded).toBe(1);
+    expect(submitParams.create.s1.envelope.rcptTo).toEqual([{ email }]);
+  });
+
+  it('deduplicates envelope recipients while preserving the first addr-spec', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({
+      drafts,
+      sent,
+      to: [{ name: 'Alice', email: 'Alice@Example.com' }],
+      cc: [
+        { name: 'Duplicate Alice', email: 'alice@example.com' },
+        { name: 'Bob', email: 'bob@example.com' },
+      ],
+    });
+
+    const transport = new MockTransport();
+    let submitParams;
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
+    }));
+    transport.handle('EmailSubmission/set', (params) => {
+      submitParams = params;
+      return { created: { s1: { id: 'sub-1' } } };
+    });
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+
+    const summary = await drainOutbox({ transport, account, handlers });
+
+    expect(summary.succeeded).toBe(1);
+    expect(submitParams.create.s1.envelope.rcptTo).toEqual([
+      { email: 'Alice@Example.com' },
+      { email: 'bob@example.com' },
+    ]);
+  });
+
+  it('rejects an empty envelope before issuing a protocol call', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    const calls: string[] = [];
+    const transport = tupleTransport((methodCalls) => {
+      calls.push(methodCalls[0][0]);
+      return [];
+    });
+
+    const result = await processMutationRow({
+      transport: transport as any,
+      account,
+      handlers,
+      row: sendRow({ drafts, sent, to: [] }),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      type: 'notSubmitted',
+      terminal: true,
+      detail: {
+        type: 'noRecipients',
+        description: 'At least one To, Cc, or Bcc recipient is required.',
+      },
+    });
+    expect(calls).toEqual([]);
   });
 
   it('threads a reply with In-Reply-To and References so other clients follow it', async () => {
@@ -1142,6 +1545,57 @@ describe('drainOutbox', () => {
     expect(result.error.terminal).toBeUndefined();
   });
 
+  it('surfaces an invalid envelope rejection without retrying or parking it', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    await insertSendMutation({
+      drafts,
+      sent,
+      to: [{ email: 'bob@mail.internal' }],
+    });
+    const description = 'Invalid e-mail address "bob@mail.internal".';
+    let submissionCalls = 0;
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
+    }));
+    transport.handle('EmailSubmission/set', () => {
+      submissionCalls += 1;
+      return {
+        notCreated: {
+          s1: {
+            type: 'invalidProperties',
+            description,
+            properties: ['envelope'],
+          },
+        },
+      };
+    });
+
+    const first = await drainOutbox({ transport, account, handlers });
+    const second = await drainOutbox({ transport, account, handlers });
+
+    expect(first).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(second).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+    expect(submissionCalls).toBe(1);
+    const row = await engine.get(
+      `SELECT local_status, phase, error_json
+         FROM pending_mutations
+        WHERE mutation_type = ?`,
+      [MUTATION_TYPES.SEND],
+    );
+    expect(row.local_status).toBe('conflicted');
+    expect(row.phase).toBe('created');
+    expect(JSON.parse(row.error_json)).toMatchObject({
+      type: 'notSubmitted',
+      terminal: true,
+      detail: {
+        type: 'invalidProperties',
+        description,
+        properties: ['envelope'],
+      },
+    });
+  });
+
   it('does not file into Sent when the server left the message in Drafts', async () => {
     // The submission succeeded, so the message is in transit and must
     // not be re-submitted. But onSuccessUpdateEmail failed to move it,
@@ -1263,6 +1717,10 @@ describe('drainOutbox', () => {
     expect(calls).not.toContain('EmailSubmission/set');
     expect(result.error.terminal).toBeUndefined();
     await expectNothingFiledInSent();
+    expect(await engine.get(
+      `SELECT id FROM pending_mutations WHERE mutation_type = ?`,
+      [MUTATION_TYPES.WHITELIST_SENDER],
+    )).toBeNull();
   });
 
   it('persists each phase before the call it guards', async () => {
@@ -1389,6 +1847,55 @@ describe('drainOutbox', () => {
     expect(result.ok).toBe(true);
     expect(createCalls, 'the Email must not be created twice').toBe(0);
     expect(submittedEmailId).toBe('em-from-earlier-attempt');
+  });
+
+  it('rebuilds the same envelope when resuming after Email creation', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    const envelopes = [];
+    const request = {
+      to: [{ name: 'Alice', email: 'Alice@Example.com' }],
+      cc: [{ email: 'alice@example.com' }, { email: 'cc@example.com' }],
+      bcc: [{ name: 'Hidden', email: 'bcc@example.com' }],
+    };
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({
+      created: { c1: { id: 'em-first', threadId: 'thr-new', size: 100 } },
+    }));
+    transport.handle('EmailSubmission/set', (params) => {
+      envelopes.push(params.create.s1.envelope);
+      return { created: { s1: { id: `sub-${envelopes.length}` } } };
+    });
+    transport.handle('Email/get', (params) => sentEmailGetResponse(params));
+
+    const first = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: sendRow({ drafts, sent, id: 4270, ...request }),
+    });
+    const resumed = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: sendRow({
+        drafts,
+        sent,
+        id: 4271,
+        ...request,
+        phase: 'created',
+        checkpoint: {
+          operationId: 'op-envelope-resume',
+          messageId: '<envelope@example.com>',
+          emailRemoteId: 'em-from-earlier-attempt',
+          submissionRemoteId: null,
+        },
+      }),
+    });
+
+    expect(first.ok).toBe(true);
+    expect(resumed.ok).toBe(true);
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes[1]).toEqual(envelopes[0]);
   });
 
   it('resumes after submission without submitting a second time', async () => {
@@ -2373,8 +2880,15 @@ describe('drainOutbox', () => {
    */
   function handlersFailingCheckpoint(phases: string[]) {
     const query = handlers[DB_RPC.QUERY];
+    const accept = handlers[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST];
     return {
       ...handlers,
+      [DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]: async (args: any) => {
+        if (phases.includes('submitted')) {
+          throw new Error('checkpoint write refused for phase submitted');
+        }
+        return accept(args);
+      },
       [DB_RPC.QUERY]: async (args: any) => {
         if (args?.sql?.includes('SET phase = ?') && phases.includes(args.params?.[0])) {
           throw new Error(`checkpoint write refused for phase ${args.params[0]}`);
@@ -2384,7 +2898,7 @@ describe('drainOutbox', () => {
     };
   }
 
-  it('reports a send whose acceptance could not be recorded as sent, not failed', async () => {
+  it('retries the atomic acceptance effect without replaying submission', async () => {
     // The server took the message and the write that records that fact
     // failed. The row still has to answer "sent": a failure here would put
     // Send back in front of the user for a message already in transit,
@@ -2405,8 +2919,8 @@ describe('drainOutbox', () => {
       row,
     });
 
-    expect(result.ok, 'filing is what failed, so the row keeps its retry').toBe(false);
-    expect(result.error.type).toBe('cacheReconcileFailed');
+    expect(result.ok).toBe(false);
+    expect(result.error.type).toBe('acceptanceCheckpointFailed');
     expect(
       result.error.result,
       'the composer reads this to report a send rather than a failure',
@@ -2414,10 +2928,9 @@ describe('drainOutbox', () => {
     expect(result.error.terminal, 'local filing is worth retrying').toBeUndefined();
   });
 
-  it('retires a delivered send whose row cannot be written to at all', async () => {
-    // Nothing local can be recorded, so there is no durable place to count
-    // a retry from. Retrying forever is worse than finishing: the message
-    // is out, and the Sent view is flagged for rebuild instead.
+  it('keeps retrying when the accepted-send checkpoint cannot be written', async () => {
+    // The row remains at `submitting`, whose retry path probes for evidence
+    // and retries only the atomic checkpoint/trust effect.
     const { drafts, sent, identity } = await seedSendScaffolding();
     const transport = new MockTransport();
     transport.handle('Email/set', () => ({ created: { c1: { id: 'em-new' } } }));
@@ -2433,8 +2946,11 @@ describe('drainOutbox', () => {
       row,
     });
 
-    expect(result.ok).toBe(true);
-    expect(result.result).toMatchObject({ filed: false, submissionRemoteId: 'sub-21' });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      type: 'acceptanceCheckpointFailed',
+      result: { submitted: true, filed: false, submissionRemoteId: 'sub-21' },
+    });
   });
 
   it('still warns when the park itself cannot be written', async () => {
@@ -2484,7 +3000,7 @@ describe('drainOutbox', () => {
     ).toBe('submitting');
   });
 
-  it('reports a resumed send whose proven acceptance could not be recorded as sent', async () => {
+  it('retries a resumed send whose proven acceptance could not be recorded', async () => {
     // Same rule on the recovery path: the evidence proved the message went
     // out, so a failed write is filing work, not a failed send.
     const { drafts, sent } = await seedSendScaffolding();
@@ -2516,7 +3032,7 @@ describe('drainOutbox', () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.error.type).toBe('cacheReconcileFailed');
+    expect(result.error.type).toBe('acceptanceCheckpointFailed');
     expect(result.error.result).toMatchObject({ submitted: true, submissionRemoteId: 'sub-22' });
   });
 
@@ -3674,7 +4190,7 @@ describe('account-aware message mutations', () => {
       list: params.ids.map((id) => ({
         ...emailFixture(id),
         mailboxIds: membershipAdded
-          ? { 'shared-team': true }
+          ? { 'shared-elsewhere': true, 'shared-team': true }
           : { 'shared-elsewhere': true },
       })),
       state: 'shared-es3',
@@ -3684,7 +4200,10 @@ describe('account-aware message mutations', () => {
         accountId: 'acct-shared',
         update: {
           'existing-copy': {
-            'mailboxIds/shared-team': true,
+            mailboxIds: {
+              'shared-elsewhere': true,
+              'shared-team': true,
+            },
           },
         },
       });
@@ -3725,6 +4244,60 @@ describe('account-aware message mutations', () => {
       `SELECT id FROM messages WHERE account_id = ? AND remote_id IN ('e-1','e-2','e-3')`,
       [account.id],
     )).toHaveLength(3);
+  });
+
+  it('skips Email/set when an existing copy is already in every destination', async () => {
+    const shared = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Shared',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-shared',
+      isPrimary: false,
+      isPersonal: false,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: shared.id,
+      folders: [{ remoteId: 'shared-team', name: 'Team' }],
+    });
+    const destination = await engine.get(
+      `SELECT id FROM folders WHERE account_id = ? AND remote_id = 'shared-team'`,
+      [shared.id],
+    );
+    const transport = new MockTransport();
+    transport.handle('Email/copy', () => ({
+      notCreated: {
+        'e-1': {
+          type: 'alreadyExists',
+          existingId: 'existing-copy',
+        },
+      },
+    }));
+    transport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        ...emailFixture(id),
+        mailboxIds: {
+          'shared-elsewhere': true,
+          'shared-team': true,
+        },
+      })),
+      state: 'already-filed-state',
+    }));
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: MUTATION_TYPES.COPY_TO_FOLDERS,
+        request_json: JSON.stringify({
+          messageIds: [messageId],
+          addFolderIds: [destination.id],
+        }),
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(transport.requests.filter((request) =>
+      request.methodCalls[0]?.[0] === 'Email/set')).toHaveLength(0);
   });
 
   it('does not retry a completed copy when destination Email/get is incomplete', async () => {

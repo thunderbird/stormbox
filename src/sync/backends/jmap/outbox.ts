@@ -11,7 +11,7 @@
  * Supported mutation_type values:
  *
  *   'setKeywords'      Email/set update with a keywords/$X patch
- *   'moveToFolders'    Email/set update with a mailboxIds/<id> patch
+ *   'moveToFolders'    Email/set update of mailbox memberships
  *   'destroy'          Email/set destroy
  *   'send'             Email/set create + EmailSubmission/set with
  *                      onSuccessUpdateEmail moving the email out of
@@ -48,6 +48,7 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
+import { addressKey } from '../../../utils/address-key';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse, pickResponseById } from './invoke';
 import {
@@ -884,6 +885,15 @@ function isRetryableMessageError(failure: any): boolean {
   return true;
 }
 
+/**
+ * RFC 6901 pointer tokens made only of digits are read as array indexes
+ * by servers with pre-0.16.5 parsing, so those mailbox ids require a
+ * full mailboxIds replacement.
+ */
+function hasNumericMailboxId(mailboxIds: string[]): boolean {
+  return mailboxIds.some((mailboxId) => /^\d+$/.test(mailboxId));
+}
+
 async function runOne(args) {
   return processMutationRow(args);
 }
@@ -943,21 +953,57 @@ async function runWhitelistSender({ transport, account, handlers, row, request, 
     const senders = Array.isArray(request?.senders)
       ? request.senders
       : [{ email: request?.email, name: request?.name }];
-    const result = await createTrustedContactCards({
-      transport, account, senders, useWebSocket,
+    const keys = [...new Set(senders.map((sender) => addressKey(sender?.email)).filter(Boolean))];
+    const deletedRows = keys.length === 0
+      ? []
+      : await handlers[DB_RPC.QUERY]({
+        sql: `SELECT ce.email_key, MAX(c.updated_at) AS deleted_at
+                FROM contact_emails ce
+                JOIN contacts c ON c.id = ce.contact_id
+               WHERE c.account_id = ?
+                 AND c.is_deleted = 1
+                 AND ce.email_key IN (${keys.map(() => '?').join(',')})
+               GROUP BY ce.email_key`,
+        params: [account.id, ...keys],
+      });
+    const deletedAt = new Map<string, number>(
+      deletedRows.map((record) => [
+        String(record.email_key),
+        Number(record.deleted_at),
+      ]),
+    );
+    const eligible = senders.filter((sender) => {
+      const sourceSentAt = Number(sender?.sourceSentAt);
+      if (!Number.isFinite(sourceSentAt)) return true;
+      return sourceSentAt > (deletedAt.get(addressKey(sender?.email)) ?? 0);
     });
-    if (!result.ok) {
-      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    if (eligible.length > 0) {
+      const result = await createTrustedContactCards({
+        transport, account, senders: eligible, useWebSocket,
+      });
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? { type: 'serverFail' } };
+      }
+      ids = result.ids;
+    } else {
+      ids = [];
     }
-    ids = result.ids;
   }
   // Pull only the newly-trusted card(s) into the local cache so they show
   // up in the contacts view without waiting for a StateChange push.
   // Targeted (not a full address-book resync) so a whitelist stays fast
   // regardless of contact count.
-  return reconcileOrReport({
+  const reconciled = await reconcileOrReport({
     transport, account, handlers, row, ids, useWebSocket, attempts: applied?.attempts ?? 0,
   });
+  if (reconciled.ok) {
+    try {
+      await handlers[DB_RPC.RECIPIENT_USAGE_REBUILD]({ accountId: account.id });
+    } catch (err: any) {
+      wlog.warn('jmap-outbox', `recipient usage not rebuilt: ${err?.message ?? err}`);
+    }
+  }
+  return reconciled;
 }
 
 /**
@@ -1225,26 +1271,119 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
     }
     const addRemote = addLocalIds.map((id) => folderContexts.get(id)!.remote_id);
     const removeRemote = removeLocalIds.map((id) => folderContexts.get(id)!.remote_id);
+    const requiresFullReplacement = hasNumericMailboxId([...addRemote, ...removeRemote]);
     const patch: Record<string, boolean | null> = {};
     for (const id of addRemote) patch[`mailboxIds/${id}`] = true;
     for (const id of removeRemote) patch[`mailboxIds/${id}`] = null;
-    for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {
+    const chunkSize = requiresFullReplacement
+      ? Math.min(maxObjectsInGet(transport), maxObjectsInSet(transport))
+      : maxObjectsInSet(transport);
+    for (const chunk of chunks(resolved, chunkSize)) {
+      let submitted = chunk;
+      let update: Record<
+        string,
+        Record<string, boolean | null> | { mailboxIds: Record<string, true> }
+      >;
+      if (requiresFullReplacement) {
+        let getRaw;
+        try {
+          getRaw = await callJmap(transport, {
+            using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+            methodCalls: [['Email/get', {
+              accountId: owner.remote_account_id,
+              ids: chunk.map((message) => message.remoteId),
+              properties: ['id', 'mailboxIds'],
+            }, 'g-move-memberships']],
+            useWebSocket,
+          });
+        } catch (error) {
+          const failure = transportFolderError(error);
+          for (const message of chunk) errors[String(message.localId)] = failure;
+          continue;
+        }
+        lastResponse = getRaw;
+        const getResponse = pickResponse(getRaw, 'Email/get');
+        if (!getResponse) {
+          const failure = extractMethodError(getRaw, { count: chunk.length });
+          for (const message of chunk) errors[String(message.localId)] = failure;
+          continue;
+        }
+        const returned = new Map<string, {
+          id: string;
+          mailboxIds?: Record<string, boolean>;
+        }>((getResponse.list ?? []).map((email) => [email.id, email]));
+        submitted = [];
+        update = {};
+        for (const message of chunk) {
+          const email = returned.get(message.remoteId);
+          if (!email) {
+            if (!(getResponse.notFound ?? []).includes(message.remoteId)) {
+              errors[String(message.localId)] = { type: 'moveMailboxStateUnavailable' };
+              continue;
+            }
+            // A message the server no longer has satisfies a move out of a
+            // folder, and reconciliation is what drops it from the local
+            // cache. Same outcome the patch path reaches through
+            // notUpdated, so both paths agree on a concurrent deletion.
+            const reconciled = await reconcileMessageFromServer({
+              transport,
+              account: owner,
+              handlers,
+              useWebSocket,
+              messageId: message.localId,
+              remoteId: message.remoteId,
+              removeRemoteFolderIds: removeRemote,
+            });
+            const moved = reconciled.gone || (
+              reconciled.email
+              && !removeRemote.some((id) => reconciled.email.mailboxIds?.[id] === true)
+            );
+            if (moved) succeededIds.push(message.localId);
+            else errors[String(message.localId)] = { type: 'notFound' };
+            continue;
+          }
+          const next = new Set(
+            Object.entries(email.mailboxIds ?? {})
+              .filter(([, included]) => included === true)
+              .map(([mailboxId]) => mailboxId),
+          );
+          for (const mailboxId of addRemote) next.add(mailboxId);
+          for (const mailboxId of removeRemote) next.delete(mailboxId);
+          if (next.size === 0) {
+            errors[String(message.localId)] = {
+              type: 'invalidProperties',
+              description: 'The move would leave the Email in no mailbox.',
+              properties: ['mailboxIds'],
+            };
+            continue;
+          }
+          const mailboxIds: Record<string, true> = {};
+          for (const mailboxId of next) mailboxIds[mailboxId] = true;
+          update[message.remoteId] = { mailboxIds };
+          submitted.push(message);
+        }
+        if (submitted.length === 0) continue;
+      } else {
+        update = Object.fromEntries(
+          chunk.map((message) => [message.remoteId, patch]),
+        );
+      }
       const raw = await callJmap(transport, {
         using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
         methodCalls: [['Email/set', {
           accountId: owner.remote_account_id,
-          update: Object.fromEntries(chunk.map((message) => [message.remoteId, patch])),
+          update,
         }, 's1']],
         useWebSocket,
       });
       lastResponse = raw;
       const response = pickResponse(raw, 'Email/set');
       if (!response) {
-        const failure = extractMethodError(raw, { count: chunk.length });
-        for (const message of chunk) errors[String(message.localId)] = failure;
+        const failure = extractMethodError(raw, { count: submitted.length });
+        for (const message of submitted) errors[String(message.localId)] = failure;
         continue;
       }
-      const confirmed = chunk.filter((message) =>
+      const confirmed = submitted.filter((message) =>
         Object.prototype.hasOwnProperty.call(response.updated ?? {}, message.remoteId));
       if (confirmed.length > 0) {
         await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
@@ -1255,7 +1394,7 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
         });
         succeededIds.push(...confirmed.map((message) => message.localId));
       }
-      for (const message of chunk) {
+      for (const message of submitted) {
         const failure = response.notUpdated?.[message.remoteId];
         if (!failure) {
           if (!Object.prototype.hasOwnProperty.call(response.updated ?? {}, message.remoteId)) {
@@ -1600,7 +1739,7 @@ async function ensureExistingCopiesInDestination({
     >(
       (response.list ?? []).map((email) => [email.id, email]),
     );
-    const update: Record<string, Record<string, true>> = {};
+    const update: Record<string, { mailboxIds: Record<string, true> }> = {};
     for (const id of ids) {
       const email = returned.get(id);
       if (!email) {
@@ -1610,14 +1749,17 @@ async function ensureExistingCopiesInDestination({
         });
         continue;
       }
-      const patch: Record<string, true> = {};
-      for (const mailboxId of destinationMailboxIds) {
-        if (email.mailboxIds?.[mailboxId] !== true) {
-          patch[`mailboxIds/${mailboxId}`] = true;
-        }
+      if (destinationMailboxIds.every((mailboxId) =>
+        email.mailboxIds?.[mailboxId] === true)) {
+        confirmCopies(id);
+        continue;
       }
-      if (Object.keys(patch).length > 0) update[id] = patch;
-      else confirmCopies(id);
+      const mailboxIds: Record<string, true> = {};
+      for (const [mailboxId, included] of Object.entries(email.mailboxIds ?? {})) {
+        if (included === true) mailboxIds[mailboxId] = true;
+      }
+      for (const mailboxId of destinationMailboxIds) mailboxIds[mailboxId] = true;
+      update[id] = { mailboxIds };
     }
 
     for (const updateIds of chunks(Object.keys(update), maxObjectsInSet(transport))) {
@@ -1909,6 +2051,28 @@ function collectMessageIds(row, request) {
 }
 
 /**
+ * Build the explicit RFC 8621 §7 envelope recipients in header order.
+ * Canonical keys de-duplicate addresses while each entry keeps the
+ * first-seen addr-spec that goes on the wire.
+ */
+function buildEnvelopeRecipients(request: any): Array<{ email: string }> {
+  const recipients: Array<{ email: string }> = [];
+  const seen = new Set<string>();
+  for (const recipient of [
+    ...(request?.to ?? []),
+    ...(request?.cc ?? []),
+    ...(request?.bcc ?? []),
+  ]) {
+    if (typeof recipient?.email !== 'string') continue;
+    const key = addressKey(recipient.email);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ email: recipient.email });
+  }
+  return recipients;
+}
+
+/**
  * Send a composed message. Writes Email/set + EmailSubmission/set in
  * one round trip, with onSuccessUpdateEmail moving the message out of
  * the Outbox/Drafts folder and into Sent on success.
@@ -2000,6 +2164,20 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   const identity = await resolveIdentity(handlers, account, request.identityId);
   if (!identity) {
     return { ok: false, error: { type: 'unknownIdentity' } };
+  }
+  // A SUBMITTING row is exempt: its submission may already have been
+  // accepted, so it has to reach the evidence probe below rather than be
+  // failed here. Rows past submission returned above, so every other
+  // phase reaching this point has sent nothing.
+  const rcptTo = buildEnvelopeRecipients(request);
+  if (rcptTo.length === 0 && resumePhase !== SEND_PHASE.SUBMITTING) {
+    return {
+      ok: false,
+      error: submissionError('notSubmitted', {
+        type: 'noRecipients',
+        description: 'At least one To, Cc, or Bcc recipient is required.',
+      }),
+    };
   }
 
   const folderRemoteIds = await resolveFolderRemoteIds(handlers, [
@@ -2116,8 +2294,7 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
   };
 
   const onSuccessUpdate = {
-    ...(sentRemoteId ? { [`mailboxIds/${sentRemoteId}`]: true } : {}),
-    ...(targetBox ? { [`mailboxIds/${targetBox}`]: null } : {}),
+    ...(sentRemoteId ? { mailboxIds: { [sentRemoteId]: true } } : {}),
     'keywords/$draft': null,
     'keywords/$seen': true,
   };
@@ -2159,19 +2336,22 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
         submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
         account,
         request,
+        allowMissing: row?.account_id == null,
       });
       if (recorded.err) {
-        return postSubmissionFailure({
-          handlers,
-          account,
-          rowId,
-          checkpoint,
-          createdRemoteId: checkpoint.emailRemoteId,
-          submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
-          sentRemoteId,
-          response: null,
-          err: recorded.err,
-        });
+        return {
+          ok: false,
+          error: {
+            type: 'acceptanceCheckpointFailed',
+            message: recorded.err?.message ?? String(recorded.err),
+            result: {
+              submitted: true,
+              filed: false,
+              createdRemoteId: checkpoint.emailRemoteId,
+              submissionRemoteId: evidence.submissionRemoteId ?? 'reconciled',
+            },
+          },
+        };
       }
       checkpoint = recorded.checkpoint;
     } else {
@@ -2312,17 +2492,13 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
               s1: {
                 identityId: identity.remote_id,
                 emailId: checkpoint.emailRemoteId,
-                // No envelope: RFC 8621 §7 has the server derive rcptTo
-                // from the Email's To + Cc + Bcc and strip Bcc on delivery.
-                // Verified against Stalwart v0.15.4 for a separately stored
-                // Email, including the Bcc-only case, so splitting creation
-                // from submission does not change this.
-                //
-                // Deriving server-side also keeps the server's own
-                // noRecipients check: an explicit `rcptTo: []` is accepted
-                // and files the message into Sent while delivering to
-                // nobody, which is a silent-loss path the client would then
-                // have to guard itself.
+                // RFC 8621 §§7 and 7.5: the explicit complete envelope makes
+                // the server validate every recipient before submitting
+                // instead of deriving it and silently skipping addresses.
+                envelope: {
+                  mailFrom: { email: identity.email },
+                  rcptTo,
+                },
               },
             },
             onSuccessUpdateEmail: { '#s1': onSuccessUpdate },
@@ -2416,20 +2592,28 @@ async function runSend({ transport, account, handlers, row, request, useWebSocke
     // problem, never a failed send — including this one, which is the
     // write that tells a resume not to submit again.
     const recorded = await recordAcceptedSubmission({
-      handlers, rowId, checkpoint, submissionRemoteId: accepted, account, request,
+      handlers,
+      rowId,
+      checkpoint,
+      submissionRemoteId: accepted,
+      account,
+      request,
+      allowMissing: row?.account_id == null,
     });
     if (recorded.err) {
-      return postSubmissionFailure({
-        handlers,
-        account,
-        rowId,
-        checkpoint,
-        createdRemoteId: checkpoint.emailRemoteId,
-        submissionRemoteId: accepted,
-        sentRemoteId,
-        response: result,
-        err: recorded.err,
-      });
+      return {
+        ok: false,
+        error: {
+          type: 'acceptanceCheckpointFailed',
+          message: recorded.err?.message ?? String(recorded.err),
+          result: {
+            submitted: true,
+            filed: false,
+            createdRemoteId: checkpoint.emailRemoteId,
+            submissionRemoteId: accepted,
+          },
+        },
+      };
     }
     checkpoint = recorded.checkpoint;
   }
@@ -2593,16 +2777,24 @@ async function parkUnknown(handlers, rowId, checkpoint) {
  * composer invite a second delivery.
  */
 async function recordAcceptedSubmission({
-  handlers, rowId, checkpoint, submissionRemoteId, account, request,
+  handlers, rowId, checkpoint, submissionRemoteId, account, request, allowMissing = false,
 }): Promise<{ checkpoint?: any; err?: any }> {
   try {
-    const saved = await saveCheckpoint(
-      handlers,
+    if (allowMissing) {
+      const saved = await saveCheckpoint(
+        handlers,
+        rowId,
+        { ...checkpoint, submissionRemoteId },
+        SEND_PHASE.SUBMITTED,
+      );
+      return { checkpoint: saved };
+    }
+    const saved = await handlers[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]({
+      accountId: account.id,
       rowId,
-      { ...checkpoint, submissionRemoteId },
-      SEND_PHASE.SUBMITTED,
-    );
-    await learnRecipients({ handlers, account, request });
+      checkpoint: { ...checkpoint, submissionRemoteId },
+      senders: trustedRecipients(request),
+    });
     return { checkpoint: saved };
   } catch (err: any) {
     return { err };
@@ -2610,33 +2802,25 @@ async function recordAcceptedSubmission({
 }
 
 /**
- * Teach autocomplete the addresses this send went to (CS-3.3).
+ * The canonical recipient set attached to a confirmed send.
  *
- * Called from the one place that knows the server accepted the submission,
- * which is what makes the history "confirmed sends" rather than "attempted
- * sends". It is called once per send: the caller reaches it only on first
- * observing acceptance, so a resumed row does not count the send twice.
- *
- * A failure here is swallowed. Learning a recipient is a convenience, and
- * the message has already gone out — letting it raise would turn a delivered
- * message into a reported failure, which is the outcome CS-1.10 exists to
- * prevent.
+ * The DB handler commits this set's mutation with the accepted checkpoint,
+ * closing the crash window between the irreversible send and its follow-up.
  */
-async function learnRecipients({ handlers, account, request }) {
-  const recipients = [
+function trustedRecipients(request): Array<{ email: string; name: string | null; sourceSentAt: number }> {
+  const byKey = new Map<string, { email: string; name: string | null }>();
+  for (const recipient of [
     ...(request?.to ?? []),
     ...(request?.cc ?? []),
     ...(request?.bcc ?? []),
-  ].filter((r) => r?.email);
-  if (recipients.length === 0) return;
-  try {
-    await handlers[DB_RPC.RECIPIENT_HISTORY_RECORD]({
-      accountId: account.id,
-      recipients: recipients.map((r) => ({ email: r.email, name: r.name ?? null })),
-    });
-  } catch (err: any) {
-    wlog.warn('jmap-outbox', `recipients not learned: ${err?.message ?? err}`);
+  ]) {
+    const email = String(recipient?.email ?? '').trim();
+    const key = addressKey(email);
+    if (!key || byKey.has(key)) continue;
+    byKey.set(key, { email, name: recipient?.name?.trim() || null });
   }
+  const sourceSentAt = Date.now();
+  return [...byKey.values()].map((recipient) => ({ ...recipient, sourceSentAt }));
 }
 
 /**

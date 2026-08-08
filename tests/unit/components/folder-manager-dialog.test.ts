@@ -758,6 +758,39 @@ describe('FolderManagerDialog row editor', () => {
     expect(wrapper.find('[data-folder-rename-input]').exists()).toBe(false);
   });
 
+  it('leaves Enter and Escape to an active input-method composition', async () => {
+    // Confirming an IME candidate in the rename field must not save the
+    // folder, and cancelling a conversion must not close the dialog and
+    // throw the typed name away.
+    const mailStore = useMailStore();
+    seed(mailStore);
+    mailStore.updateFolder = vi.fn(async () => ({ ok: true }));
+
+    const wrapper = mountDialog();
+    await nextTick();
+
+    await editButton(wrapper, 'Reports').trigger('click');
+    await nextTick();
+
+    const input = wrapper.find('[data-folder-rename-input]');
+    await input.setValue('四半期');
+    await input.trigger('keydown', { key: 'Enter', isComposing: true });
+    await nextTick();
+
+    expect(mailStore.updateFolder).not.toHaveBeenCalled();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', isComposing: true });
+    window.dispatchEvent(escape);
+    await nextTick();
+
+    expect(wrapper.find('[data-folder-rename-input]').exists()).toBe(true);
+
+    await input.trigger('keydown', { key: 'Enter' });
+    await nextTick();
+
+    expect(mailStore.updateFolder).toHaveBeenCalledWith(20, { name: '四半期' });
+  });
+
   it('moves a folder by selecting a new location', async () => {
     const mailStore = useMailStore();
     seed(mailStore);

@@ -3,7 +3,7 @@
 import {
   describe, it, expect, beforeEach, afterEach, vi,
 } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
@@ -14,6 +14,7 @@ vi.mock('../../../src/services/auth', () => ({
 
 import App from '../../../src/App.vue';
 import AppSpaces from '../../../src/components/AppSpaces.vue';
+import ContactsView from '../../../src/components/ContactsView.vue';
 import { AUTH_STATE } from '../../../src/constants/states';
 import {
   ACCOUNTS_URL,
@@ -29,6 +30,45 @@ import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository';
+import type { ContactListRow } from '../../../src/types';
+
+let repoContacts: ContactListRow[] = [];
+let restoreContactListLayout: (() => void) | null = null;
+
+function stubContactListLayout() {
+  const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+  const offsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+
+  // The contacts virtualizer needs viewport and row measurements because
+  // happy-dom does not calculate layout.
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.classList.contains('contacts__list')) return 510;
+      if (this.classList.contains('contacts__row')) return 51;
+      return 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('contacts__list') ? 800 : 0;
+    },
+  });
+
+  return () => {
+    if (offsetHeight) {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
+    } else {
+      delete (HTMLElement.prototype as any).offsetHeight;
+    }
+    if (offsetWidth) {
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidth);
+    } else {
+      delete (HTMLElement.prototype as any).offsetWidth;
+    }
+  };
+}
 
 function makeRepo() {
   return {
@@ -41,6 +81,7 @@ function makeRepo() {
     async getMessageBodyForDisplay() { return null; },
     async ensureFolderTree() { return { count: 0 }; },
     async listAddressbooks() { return []; },
+    async listContacts() { return repoContacts; },
     async listIdentities() { return []; },
   };
 }
@@ -60,7 +101,6 @@ function mountApp() {
         },
         MessageView: { template: '<section class="message-view">view</section>' },
         ComposeDialog: { template: '<div />' },
-        ContactsView: { template: '<section />' },
       },
     },
   });
@@ -118,6 +158,7 @@ function setElementRect(
 }
 
 beforeEach(() => {
+  repoContacts = [];
   setActivePinia(createPinia());
   __setRepositoryForTests(makeRepo());
   document.title = APP_TITLE;
@@ -133,6 +174,8 @@ afterEach(() => {
   for (const wrapper of mountedWrappers.splice(0)) {
     wrapper.unmount();
   }
+  restoreContactListLayout?.();
+  restoreContactListLayout = null;
   vi.useRealTimers();
   __resetRepositoryForTests();
 });
@@ -275,7 +318,7 @@ describe('App mail layout', () => {
     expect(wrapper.find('.welcome--spotlight-resetting').exists()).toBe(false);
   });
 
-  it('renders a centered quick filter above the mail columns and passes it to the message list', async () => {
+  it('filters messages from the shared header box in the Mail space', async () => {
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
 
@@ -290,6 +333,100 @@ describe('App mail layout', () => {
 
     expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('alice');
     expect(mailStore.selectedMessageId).toBeNull();
+  });
+
+  it('filters contacts from the shared header box in the Contacts space', async () => {
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [
+      {
+        id: 1,
+        remote_id: 'alice',
+        addressbook_ids: [],
+        display_name: 'Alice Example',
+        organization: null,
+        email: 'alice@example.com',
+      },
+      {
+        id: 2,
+        remote_id: 'bob',
+        addressbook_ids: [],
+        display_name: 'Bob Example',
+        organization: null,
+        email: 'bob@example.net',
+      },
+    ];
+    const wrapper = mountApp();
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.findAll('.contacts__row')).toHaveLength(2);
+    expect(wrapper.find('.contacts__filter').exists()).toBe(false);
+
+    await wrapper.get('.quick-filter__input').setValue('  ALICE  ');
+    await nextTick();
+
+    expect(wrapper.findAll('.contacts__row')).toHaveLength(1);
+    expect(wrapper.get('.contacts__row').text()).toContain('Alice Example');
+
+    await wrapper.get('.quick-filter__input').setValue('BOB@EXAMPLE.NET');
+    await nextTick();
+
+    expect(wrapper.findAll('.contacts__row')).toHaveLength(1);
+    expect(wrapper.get('.contacts__row').text()).toContain('Bob Example');
+  });
+
+  it('clears the shared query whenever the active space changes', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('.quick-filter__input').setValue('mail term');
+    expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('mail term');
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await nextTick();
+    expect((wrapper.get('.quick-filter__input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.getComponent(ContactsView).props('filterQuery')).toBe('');
+
+    await wrapper.get('.quick-filter__input').setValue('contact term');
+    expect(wrapper.getComponent(ContactsView).props('filterQuery')).toBe('contact term');
+
+    await wrapper.get('[aria-label="Mail"]').trigger('click');
+    await nextTick();
+    expect((wrapper.get('.quick-filter__input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('');
+  });
+
+  it('does not change mail selection when the Contacts filter query changes', async () => {
+    const mailStore = useMailStore();
+    mailStore.selectedMessageId = 42;
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await nextTick();
+    const selectMessageSpy = vi.spyOn(mailStore, 'selectMessage');
+
+    await wrapper.get('.quick-filter__input').setValue('alice');
+
+    expect(selectMessageSpy).not.toHaveBeenCalled();
+    expect(mailStore.selectedMessageId).toBe(42);
+  });
+
+  it('describes the shared filter for the active space', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+    const input = wrapper.get('.quick-filter__input');
+
+    expect(input.attributes('placeholder')).toBe('Quick Filter');
+    expect(input.attributes('aria-label')).toBe('Quick Filter messages by from, to, or subject');
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await nextTick();
+
+    expect(input.attributes('placeholder')).toBe('Filter Contacts');
+    expect(input.attributes('aria-label')).toBe('Filter Contacts by name or email address');
   });
 
   it('focuses and selects the quick filter with Ctrl+K', async () => {

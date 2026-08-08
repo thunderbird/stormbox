@@ -110,7 +110,7 @@ describe('migration 009 — learned recipients and searchable names', () => {
 
   it('treats one address written two ways as one learned recipient', async () => {
     const engine = await legacyEngine();
-    await engine.runMigrations();
+    await engine.runMigrations({ upTo: 9 });
 
     await engine.run(
       `INSERT INTO recipient_history(

@@ -684,10 +684,7 @@ describe('compose-store send safety', () => {
     expect(request.references).toEqual(['first@example.com', 'parent@example.com']);
   });
 
-  it('applies the identity Reply-To default and never its Bcc default', async () => {
-    // RFC 8621 §6.1 replyTo is applied; bcc is persisted on the identity
-    // but withheld, because silently Bcc-ing the user is user-visible
-    // behaviour that needs a product decision first (CS-2.8).
+  it('applies the identity Reply-To default without changing user Bcc', async () => {
     const composeStore = await composerWithOutcome(
       { attempted: 1, succeeded: 1, failed: 0, result: { filed: true } },
       undefined,
@@ -695,7 +692,6 @@ describe('compose-store send safety', () => {
         id: 1,
         email: 'me@example.com',
         reply_to_json: JSON.stringify([{ name: 'Replies', email: 'replies@example.com' }]),
-        raw_json: JSON.stringify({ bcc: [{ email: 'archive@example.com' }] }),
       })],
     );
     composeStore.open({ to: [{ email: 'alice@example.com' }] });

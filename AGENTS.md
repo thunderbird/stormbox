@@ -259,13 +259,21 @@ Measured directly against the local stack during the 004 compose work.
 Several of these contradict what seemed obvious, so re-measure before
 trusting an assumption rather than this list:
 
-- It **does** derive `rcptTo` from To + Cc + Bcc for a separately stored
-  Email, including the Bcc-only case. An earlier assumption to the contrary
-  was wrong; do not reintroduce a client-built envelope without
-  re-measuring.
-- An explicit `rcptTo: []` is **accepted**, files the message into Sent
-  and delivers to nobody. Omitting the envelope keeps the server's
-  `noRecipients` rejection, which is why omission is the safer default.
+- It derives `rcptTo` from To + Cc + Bcc when the envelope is omitted, but
+  it does so by running each header address through `sanitize_email` and
+  **silently skipping** the ones it rejects, delivering to whatever subset
+  survives. RFC 8621 §7.5 requires `invalidRecipients` instead. Send an
+  explicit complete envelope (CS-1.1): supplied addresses are validated
+  before submission, so an unsupported one fails the whole call with
+  `invalidProperties` naming it. Still true in v0.16.16.
+- An explicit `rcptTo: []` does **not** deliver to nobody: an empty list
+  falls through to header derivation, and `noRecipients` comes back only
+  when derivation is also empty. Build the recipient set client-side and
+  fail before submitting rather than sending an empty list.
+- Its sanitizer rejects domains without a public-suffix entry
+  (`user@mail.internal`, `user@host.local`) and domain literals
+  (`user@[10.0.0.7]`), and lowercases the local part. Stormbox's parser
+  accepts all of those, so they reach submission.
 - It emits the implicit `Email/set` from `onSuccessUpdateEmail` under the
   **submission's** call id, so `pickResponse` by name alone can never see
   it. Use `pickResponseById`.
@@ -386,9 +394,9 @@ docker exec stormbox-compose curl -s http://127.0.0.1:8787/__status
   current one does anything. Bind the assertion to the id the fault was
   recorded against, as `faultApplied` and `cacheRefusalsFor` do.
 - **A spec that needs the suggestion list open has to seed a contact.**
-  Suggestions come from the address book and from addresses this account has
-  written to, never from received mail (CS-3.3), and the e2e account is
-  seeded with mail rather than with an address book. Part of the account's
+  Suggestions come only from ContactCards; confirmed outgoing recipients are
+  collected there, while received mail never creates a candidate (CS-3.3).
+  The e2e account is seeded with mail rather than with an address book. Part of the account's
   own address will not do either — an owned address is suppressed until it is
   typed in full (CS-3.7). Three specs typed `e2e` and passed on suggestions
   drawn from received mail, which is the defect WP5 removed.

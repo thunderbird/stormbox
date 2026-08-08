@@ -16,6 +16,52 @@ beforeEach(async () => {
   h = makeHandlers(engine, broadcaster);
 });
 
+describe('accepted send trusted-recipient effect', () => {
+  it('checkpoints acceptance and queues trust atomically', async () => {
+    const account = await seedAccount();
+    const inserted = await h[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: 'send',
+      requestJson: '{}',
+    });
+    const checkpoint = {
+      operationId: 'op',
+      messageId: '<op@example.com>',
+      emailRemoteId: 'email',
+      submissionRemoteId: 'submission',
+      cacheAttempts: 0,
+      trustedRecipientsQueued: false,
+    };
+    const saved = await h[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]({
+      accountId: account.id,
+      rowId: inserted.id,
+      checkpoint,
+      senders: [{ email: 'recipient@example.com', sourceSentAt: 10 }],
+    });
+
+    expect(saved.trustedRecipientsQueued).toBe(true);
+    expect(await engine.get(
+      `SELECT phase, server_response_json FROM pending_mutations WHERE id = ?`,
+      [inserted.id],
+    )).toMatchObject({ phase: 'submitted' });
+    expect(await engine.get(
+      `SELECT COUNT(*) AS count FROM pending_mutations
+        WHERE mutation_type = 'whitelistSender'`,
+    )).toEqual({ count: 1 });
+
+    await expect(h[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]({
+      accountId: account.id,
+      rowId: 999_999,
+      checkpoint,
+      senders: [{ email: 'must-rollback@example.com' }],
+    })).rejects.toThrow(/not found/);
+    expect(await engine.get(
+      `SELECT COUNT(*) AS count FROM pending_mutations
+        WHERE mutation_type = 'whitelistSender'`,
+    )).toEqual({ count: 1 });
+  });
+});
+
 afterEach(async () => {
   await engine.close();
 });
@@ -1175,7 +1221,7 @@ describe('contacts and autocomplete', () => {
     expect(row.sync_generation).toBe(300);
   });
 
-  it('autocompletes from contacts and learned recipients, never from received mail', async () => {
+  it('autocompletes only from contacts, never from received mail', async () => {
     const account = await seedAccount();
     await h[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
       accountId: account.id,
@@ -1198,13 +1244,13 @@ describe('contacts and autocomplete', () => {
           displayName: 'Jay',
           emails: [{ email: 'jay@example.com' }],
         },
+        {
+          addressbookIds: [ab.id],
+          remoteId: 'c-jasmine',
+          displayName: 'Jasmine',
+          emails: [{ email: 'jasmine@contacts.example' }],
+        },
       ],
-    });
-
-    // Someone the user has written to: a confirmed send taught us this one.
-    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
-      accountId: account.id,
-      recipients: [{ email: 'jasmine@history.example', name: 'Jasmine' }],
     });
 
     // Someone who wrote to the user and was never written back to. This is
@@ -1235,11 +1281,9 @@ describe('contacts and autocomplete', () => {
     });
     const emails = matches.map((m) => m.email);
     expect(emails).toContain('Jane@Example.com');
-    expect(emails).toContain('jasmine@history.example');
+    expect(emails).toContain('jasmine@contacts.example');
     expect(emails).not.toContain('jarvis@stranger.example');
-    const sources = new Set(matches.map((m) => m.source));
-    expect(sources.has('contact')).toBe(true);
-    expect(sources.has('history')).toBe(true);
+    expect(new Set(matches.map((m) => m.source))).toEqual(new Set(['contact']));
   });
 
   it('finds a contact by a word of its name, not just by address (CS-3.1, CS-3.2)', async () => {
@@ -1329,8 +1373,7 @@ describe('contacts and autocomplete', () => {
       addressbooks: [{ remoteId: 'ab-default', isDefault: true, name: 'Default' }],
     });
     const ab = await engine.get('SELECT id FROM addressbooks WHERE remote_id = ?', ['ab-default']);
-    // One correspondent known three ways — two cards and a send — which is
-    // what a real address book accumulates over time.
+    // One correspondent known through two duplicate cards.
     await h[DB_RPC.CONTACT_UPSERT_MANY]({
       accountId: account.id,
       contacts: [
@@ -1348,11 +1391,6 @@ describe('contacts and autocomplete', () => {
         },
       ],
     });
-    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
-      accountId: account.id,
-      recipients: [{ email: 'dana@example.com', name: 'D.' }],
-    });
-
     const matches = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
       accountId: account.id,
       prefix: 'dana',
@@ -1361,8 +1399,7 @@ describe('contacts and autocomplete', () => {
     // Previously: two rows, one per stored display name — issue #58. The
     // addresses differ only by case, which CS-3.5 folds for comparison.
     expect(matches.map((m) => m.email)).toEqual(['dana@example.com']);
-    // Contact metadata beats a name learned from a send, and the preferred
-    // address beats the secondary one. Neither is a coin toss.
+    // The preferred card's metadata wins deterministically.
     expect(matches[0].name).toBe('Dana Smith');
     expect(matches[0].source).toBe('contact');
 
@@ -1392,36 +1429,22 @@ describe('contacts and autocomplete', () => {
         emails: [{ email: `team-${i}@example.com` }],
       });
     }
+    contacts.push({
+      addressbookIds: [ab.id],
+      remoteId: 'c-team-exact',
+      displayName: 'Team Exact',
+      emails: [{ email: 'team@example.com' }],
+    });
     await h[DB_RPC.CONTACT_UPSERT_MANY]({ accountId: account.id, contacts });
 
-    await h[DB_RPC.RECIPIENT_HISTORY_RECORD]({
-      accountId: account.id,
-      recipients: [{ email: 'team@example.com', name: 'Team' }],
-    });
-
-    // The user has typed the complete address of someone they have
-    // written to before, and there are exactly enough contacts sharing its
-    // prefix to fill the limit.
+    // There are enough contacts sharing the prefix to fill the limit.
     const matches = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
       accountId: account.id,
       prefix: 'team@example.com',
       limit: 8,
     });
-    // Previously: the contact query was issued with the caller's full
-    // limit, so history was left no budget and this address — the one thing
-    // the user had typed in full — could not be offered at all.
     expect(matches[0].email).toBe('team@example.com');
 
-    // It also has to survive a prefix that every contact shares, where the
-    // exact match competes with eight equally valid prefix matches.
-    const onPrefix = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
-      accountId: account.id,
-      prefix: 'team',
-      limit: 8,
-    });
-    expect(onPrefix.map((m) => m.email)).toContain('team@example.com');
-    // An exact match is a better match than a prefix match, so it leads.
-    expect(onPrefix[0].email).toBe('team@example.com');
   });
 });
 
