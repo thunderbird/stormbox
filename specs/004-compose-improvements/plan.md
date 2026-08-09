@@ -1,6 +1,6 @@
 # Implementation Plan: Compose Improvements
 
-**Branch**: `compose-improvements` | **Spec**:
+**Branch**: `004-review-verification` | **Spec**:
 [spec.md](./spec.md) | **Base**: `origin/main` at 6b7861b
 
 ---
@@ -14,7 +14,7 @@ for the authoritative checklist.
 ### Where the work lives
 
 - Worktree `/home/ec2-user/webmail/stormbox-compose`, branch
-  `compose-improvements`, based on `origin/main` at 6b7861b.
+  `004-review-verification`, based on `origin/main` at 6b7861b.
 - Dev container `stormbox-compose` (host port 3001 → container 3000).
   **Every** npm/node/playwright command runs inside it:
   `docker exec stormbox-compose bash -c 'cd /workspace && npm test'`.
@@ -55,13 +55,13 @@ explains.
 
 ## Summary
 
-Sending is currently unsafe in three independent ways: the submission
-envelope drops Cc and Bcc, method-level JMAP failures can pass as
-success, and an ambiguous outcome is retried automatically. Recipient
-autocomplete is unusable for its primary source, because contacts match
-on address prefix only. This plan fixes the safety defects first, then
-the recipient model, then makes the contact source trustworthy, then
-rebuilds autocomplete on top of it.
+At the plan baseline, sending was unsafe in three independent ways: the
+submission envelope dropped Cc and Bcc, method-level JMAP failures could
+pass as success, and an ambiguous outcome was retried automatically.
+Recipient autocomplete was unusable for its primary source because contacts
+matched on address prefix only. The work fixes the safety defects first, then
+the recipient model, then makes the contact source trustworthy, then rebuilds
+autocomplete on top of it.
 
 ## Technical context
 
@@ -80,7 +80,7 @@ RPC resolves.
 
 - **Cache-First, Server-Authoritative**: preserved. CS-1.4 tightens it,
   because filing an unsent message into the local Sent view is a
-  cache-ahead-of-server violation the current code commits.
+  cache-ahead-of-server violation the baseline code committed.
 - **Mutation Pipeline**: preserved and extended. Send gains explicit
   phases inside the existing `pending_mutations` row rather than a new
   parallel mechanism.
@@ -108,16 +108,17 @@ if (!response) {
 }
 ```
 
-`runSend` instead reads `submission?.notCreated` and treats a null
-response as success (outbox.ts:1852-1855), then derives
-`createdRemoteId` from the first `Email/set` tuple (:1862-1863), then
-calls `applySendLocally`, which early-returns on a falsy id (:1937) so
-the failure is silent.
+At the plan baseline, `runSend` instead read `submission?.notCreated` and
+treated a null response as success (outbox.ts:1852-1855), then derived
+`createdRemoteId` from the first `Email/set` tuple (:1862-1863), then called
+`applySendLocally`, which returned early on a falsy id (:1937) so the failure
+was silent.
 
 Changes:
 
-1. Drop the `envelope` from the `EmailSubmission/set` create
-   (outbox.ts:1836-1842) so the server derives recipients.
+1. Build an explicit `EmailSubmission/set` envelope from the selected
+   Identity and the complete, de-duplicated To, Cc, then Bcc union. Server
+   derivation silently skips addresses its sanitizer rejects.
 2. Add `pickResponseById(result, methodName, callId)` to
    [invoke.ts](../../src/sync/backends/jmap/invoke.ts). `pickResponse`
    returns the *first* tuple matching a name, so it cannot address the
@@ -132,8 +133,9 @@ Changes:
    unconfirmed instead of handing the row back for resubmission.
 4. Mark permanently-rejected submissions terminal using the existing
    `terminal: true` error flag that `outbox-runner.ts` honors
-   (outbox-runner.ts:428), rather than widening
-   `TERMINAL_ERROR_TYPES` for a type that can also be transient.
+   (outbox-runner.ts:428), destroy the phase-1 Email, clear its checkpoint
+   id, and rewind its durable phase to `queued`. Retryable rejections keep
+   the Email at `created`.
 5. Gate `applySendLocally` on confirmed submission, and take mailbox
    placement from the `Email/get` result instead of assuming the
    requested target.
@@ -203,8 +205,8 @@ shape.
 ### WP3 — Durable phased send
 
 The checkpoint lives in the existing `pending_mutations` row. A new
-migration adds a `phase` column plus an index for startup recovery;
-the operation id, Message-ID, Email id, and submission id go into
+v6 migration adds a `phase` column; the operation id, Message-ID, Email id,
+and submission id go into
 `server_response_json`, which already exists for this purpose.
 
 Phase transitions are the only place that writes `phase`, and each
@@ -220,9 +222,8 @@ Fix the state bug in
 generation column for mark-and-sweep, and mirror the folder rule
 FM-1.7 for contacts. Add an `addressbook_contacts` junction table with
 a backfill from the existing `contacts.addressbook_id`. Identity sync
-becomes a snapshot and gives `bcc` a first-class column and API field;
-today it survives only opaquely inside `raw_json`, with no typed column
-and no way for the store to read it.
+becomes a snapshot and persists `replyTo`. Identity-level Bcc remains
+outside product scope and is neither requested nor persisted (CS-2.8).
 
 #### What the review changed
 
@@ -240,12 +241,13 @@ change itself, in commit `f35aa7d`.
 
 ### WP5 — Autocomplete data
 
-New `recipient_history` table plus a search-token table for contacts,
-both populated through the existing DB handler layer. Rewrite
+The consolidated v7 contact migration adds application-written address keys
+and search tokens; v8 adds a rebuildable `recipient_usage` ranking cache.
+Rewrite
 `DB_RPC.CONTACT_AUTOCOMPLETE` in
-[handlers.ts](../../src/db/handlers.ts):2209 to query both pools, merge
+[handlers.ts](../../src/db/handlers.ts):2900 to query live ContactCards, merge
 by normalized address, and rank in SQL where possible so the limit
-applies after merging rather than per source.
+applies after merging.
 
 Historical ContactCard promotion runs automatically during bootstrap exactly
 once per account after a non-empty cached Sent-window refresh. An empty local
@@ -254,9 +256,10 @@ bootstrap, preserving the deletion guarantee in CS-3.13.
 
 ### WP6 — Recipient input control
 
-New `src/components/RecipientInput.vue` owning pills, keyboard, ARIA,
-paste, and the stale-response guard, used three times by
-`ComposeDialog.vue`.
+New `src/components/RecipientInput.vue` owning pills, keyboard, ARIA, and
+paste, used three times by `ComposeDialog.vue`. Suggestion debouncing,
+stale-response invalidation, list state, and browse lifecycle live in
+`src/composables/useRecipientSuggestions.ts`.
 
 **A typed comma commits only at the top level.** Gmail commits on every
 comma, which makes `"Smith, Alice"` untypeable — the name is cut in half and

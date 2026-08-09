@@ -1,21 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
+import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers';
+import { DB_RPC } from '../../../src/db/protocol';
 
 /**
- * The v7 rebuild of `contacts`, against the data it has to carry forward.
+ * The consolidated contact migration against released-v5 data.
  *
  * A migration that rewrites existing rows cannot be judged by the schema it
  * leaves behind. What matters is what survives it: a fresh database proves
- * nothing, so each case here builds a v6 database, fills it the way the old
- * code would have, and then runs the migration.
+ * nothing, so each case builds a v5 database, fills it with the rows the
+ * migration must carry forward, and upgrades through v8.
  */
 
-/** A v6 database with an account and two address books. */
+/** A v5 database with an account and two address books. */
 async function legacyEngine() {
-  const engine = await bootTestEngine({ upTo: 6 });
+  const engine = await bootTestEngine({ upTo: 5 });
   const version = await engine.get('PRAGMA user_version');
-  expect(Number(version?.user_version), 'the fixture must predate v7').toBe(6);
+  expect(Number(version?.user_version), 'the fixture must match the released schema').toBe(5);
 
   await engine.run(
     `INSERT INTO accounts(
@@ -34,17 +36,17 @@ async function legacyEngine() {
 }
 
 async function legacyContact(engine: any, {
-  id, book, remoteId, name, email, updatedAt = 0, isDeleted = 0,
+  id, account = 1, book, remoteId, name, email, updatedAt = 0, isDeleted = 0,
 }: {
-  id: number; book: number; remoteId: string; name: string;
+  id: number; account?: number; book: number; remoteId: string; name: string;
   email: string | null; updatedAt?: number; isDeleted?: number;
 }) {
   await engine.run(
     `INSERT INTO contacts(
        id, account_id, addressbook_id, remote_id, display_name, full_name,
        is_deleted, updated_at
-     ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
-    [id, book, remoteId, name, name, isDeleted, updatedAt],
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, account, book, remoteId, name, name, isDeleted, updatedAt],
   );
   if (email === null) return;
   await engine.run(
@@ -54,12 +56,254 @@ async function legacyContact(engine: any, {
   );
 }
 
-/** Apply everything from v7 onwards. */
+/** Apply the unreleased v6-v8 migrations. */
 async function upgrade(engine: any) {
   await engine.runMigrations();
 }
 
-describe('migration 007: contact membership', () => {
+describe('migration 007: consolidated contacts', () => {
+  it('upgrades duplicate v5 contacts without losing survivor data or memberships', async () => {
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100,
+      book: 10,
+      remoteId: 'card-current',
+      name: 'Deleted stale name',
+      email: 'stale@example.org',
+      updatedAt: 3_000,
+      isDeleted: 1,
+    });
+    await legacyContact(engine, {
+      id: 200,
+      book: 11,
+      remoteId: 'card-current',
+      name: 'Current name',
+      email: 'current@example.org',
+      updatedAt: 2_000,
+    });
+    await legacyContact(engine, {
+      id: 300,
+      book: 10,
+      remoteId: 'card-rescued',
+      name: 'Address source',
+      email: 'rescued@example.org',
+      updatedAt: 1_000,
+    });
+    await legacyContact(engine, {
+      id: 400,
+      book: 11,
+      remoteId: 'card-rescued',
+      name: 'Freshest row',
+      email: null,
+      updatedAt: 2_000,
+    });
+
+    await upgrade(engine);
+
+    expect(Number((await engine.get('PRAGMA user_version'))?.user_version)).toBe(8);
+    expect(await engine.all(
+      `SELECT c.id, c.remote_id, c.display_name, ce.email
+         FROM contacts c
+         LEFT JOIN contact_emails ce ON ce.contact_id = c.id
+        ORDER BY c.remote_id`,
+    )).toEqual([
+      {
+        id: 200,
+        remote_id: 'card-current',
+        display_name: 'Current name',
+        email: 'current@example.org',
+      },
+      {
+        id: 400,
+        remote_id: 'card-rescued',
+        display_name: 'Freshest row',
+        email: 'rescued@example.org',
+      },
+    ]);
+    expect(await engine.all(
+      `SELECT c.remote_id, ac.addressbook_id
+         FROM addressbook_contacts ac
+         JOIN contacts c ON c.id = ac.contact_id
+        ORDER BY c.remote_id, ac.addressbook_id`,
+    )).toEqual([
+      { remote_id: 'card-current', addressbook_id: 10 },
+      { remote_id: 'card-current', addressbook_id: 11 },
+      { remote_id: 'card-rescued', addressbook_id: 10 },
+      { remote_id: 'card-rescued', addressbook_id: 11 },
+    ]);
+    expect(await engine.all('PRAGMA foreign_key_check')).toEqual([]);
+    await engine.close();
+  });
+
+  it('carries each address account through a v5 upgrade', async () => {
+    // The same remote card id may exist in several accounts, so the copied
+    // address must take the account of its own contact rather than another
+    // survivor with the same remote id.
+    const engine = await legacyEngine();
+    await engine.run(
+      `INSERT INTO accounts(
+         id, display_name, primary_email, server_origin, remote_account_id,
+         created_at, updated_at
+       ) VALUES (2, 'Other', 'other@example.com', 'https://mail.example.com', 'acct-2', 0, 0)`,
+    );
+    await engine.run(
+      `INSERT INTO addressbooks(id, account_id, service_kind, remote_id, name, updated_at)
+       VALUES (20, 2, 'jmap_contacts', 'ab-20', 'Other book', 0)`,
+    );
+    await legacyContact(engine, {
+      id: 100,
+      account: 1,
+      book: 10,
+      remoteId: 'card-shared-id',
+      name: 'First account',
+      email: 'first@example.com',
+    });
+    await legacyContact(engine, {
+      id: 200,
+      account: 2,
+      book: 20,
+      remoteId: 'card-shared-id',
+      name: 'Second account',
+      email: 'second@example.com',
+    });
+
+    await upgrade(engine);
+
+    expect(await engine.all(
+      `SELECT c.account_id AS contact_account_id,
+              ce.account_id AS email_account_id,
+              ce.email
+         FROM contact_emails ce
+         JOIN contacts c ON c.id = ce.contact_id
+        ORDER BY c.account_id`,
+    )).toEqual([
+      {
+        contact_account_id: 1,
+        email_account_id: 1,
+        email: 'first@example.com',
+      },
+      {
+        contact_account_id: 2,
+        email_account_id: 2,
+        email: 'second@example.com',
+      },
+    ]);
+    await engine.close();
+  });
+
+  it('replaces the generated address key with the application-written key schema', async () => {
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100,
+      book: 10,
+      remoteId: 'card-a',
+      name: 'Ada',
+      email: 'ada@example.com',
+    });
+
+    await upgrade(engine);
+
+    const columns = (await engine.all('PRAGMA table_xinfo(contact_emails)'))
+      .map((column) => column.name);
+    expect(columns).toContain('account_id');
+    expect(columns).toContain('email_key');
+    expect(columns).not.toContain('email_lower');
+
+    const indexes = (await engine.all('PRAGMA index_list(contact_emails)'))
+      .map((index) => index.name);
+    expect(indexes).toContain('contact_emails_key_lookup');
+    expect(indexes).not.toContain('contact_emails_lookup');
+    const indexedColumns = (await engine.all('PRAGMA index_info(contact_emails_key_lookup)'))
+      .map((column) => column.name);
+    expect(indexedColumns).toEqual(['account_id', 'email_key', 'contact_id']);
+    await engine.close();
+  });
+
+  it('leaves migrated lookup representations pending for the full contact sync', async () => {
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100,
+      book: 10,
+      remoteId: 'card-unicode',
+      name: 'École Smith—Jane',
+      email: 'JOSÉ@example.com',
+    });
+
+    await upgrade(engine);
+
+    // SQLite cannot reproduce `addressKey()` or `nameTokens()`. Keeping the
+    // migrated representations empty makes the card invisible rather than
+    // assigning it a key or token the application would never produce.
+    expect(await engine.get(
+      'SELECT email, email_key FROM contact_emails WHERE contact_id = 100',
+    )).toEqual({ email: 'JOSÉ@example.com', email_key: null });
+    expect(await engine.all(
+      'SELECT token FROM contact_search_tokens WHERE contact_id = 100',
+    )).toEqual([]);
+
+    const handlers = makeHandlers(engine, noopBroadcaster());
+    expect(await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: 1,
+      prefix: 'josé@example.com',
+      limit: 10,
+    })).toEqual([]);
+    expect(await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: 1,
+      prefix: 'école',
+      limit: 10,
+    })).toEqual([]);
+    await engine.close();
+  });
+
+  it('repairs migrated lookup data through the real contact upsert handler', async () => {
+    const engine = await legacyEngine();
+    await legacyContact(engine, {
+      id: 100,
+      book: 10,
+      remoteId: 'card-unicode',
+      name: 'École Smith—Jane',
+      email: 'JOSÉ@example.com',
+    });
+    await upgrade(engine);
+
+    // Bootstrap's full contact sync uses this handler. Its Unicode key and
+    // token writes are the guarantee provided in place of SQL backfills.
+    const handlers = makeHandlers(engine, noopBroadcaster());
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: 1,
+      contacts: [{
+        addressbookIds: [10],
+        remoteId: 'card-unicode',
+        displayName: 'École Smith—Jane',
+        emails: [{ email: 'JOSÉ@example.com', isPreferred: true }],
+      }],
+    });
+
+    expect(await engine.get(
+      'SELECT email, email_key FROM contact_emails WHERE contact_id = 100',
+    )).toEqual({ email: 'JOSÉ@example.com', email_key: 'josé@example.com' });
+    expect((await engine.all(
+      'SELECT token FROM contact_search_tokens WHERE contact_id = 100 ORDER BY token',
+    )).map((row) => row.token)).toEqual(['jane', 'smith', 'école']);
+
+    expect((await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: 1,
+      prefix: 'josé@example.com',
+      limit: 10,
+    })).map((row) => row.email)).toEqual(['JOSÉ@example.com']);
+    expect((await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
+      accountId: 1,
+      prefix: 'école',
+      limit: 10,
+    })).map((row) => row.email)).toEqual(['JOSÉ@example.com']);
+
+    await engine.run('DELETE FROM contacts WHERE id = 100');
+    expect(await engine.all(
+      'SELECT contact_id FROM contact_search_tokens WHERE contact_id = 100',
+    )).toEqual([]);
+    await engine.close();
+  });
+
   it('keeps every contact and every address', async () => {
     const engine = await legacyEngine();
     await legacyContact(engine, {

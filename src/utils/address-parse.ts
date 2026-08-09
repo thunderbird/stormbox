@@ -206,15 +206,48 @@ function readDotAtom(cur: Cursor): string {
   }
 }
 
-/** Read domain-literal (§3.4.1): `[192.0.2.1]`, kept verbatim. */
-function readDomainLiteral(cur: Cursor): string | null {
+type DomainLiteralResult =
+  | { kind: 'valid'; value: string }
+  | { kind: 'closed-invalid' }
+  | { kind: 'unterminated' };
+
+/**
+ * Find the `]` that bounds an already-invalid domain-shaped construct.
+ * Quoted strings belong to the address text after the invalid content, so
+ * a `]` inside one cannot close the bracket recovery is scanning.
+ */
+function invalidDomainLiteralCloseAhead(cur: Cursor): number {
+  const scratch: Cursor = { src: cur.src, i: cur.i };
+  while (scratch.i < scratch.src.length) {
+    const ch = scratch.src[scratch.i];
+    if (ch === ']') return scratch.i;
+    if (ch === '[') return -1;
+    if (ch === '\\') {
+      scratch.i += 2;
+      continue;
+    }
+    if (ch === '"') {
+      if (!readQuotedString(scratch)) return -1;
+      continue;
+    }
+    scratch.i += 1;
+  }
+  return -1;
+}
+
+/**
+ * Read domain-literal (§3.4.1): `[192.0.2.1]`, kept verbatim. A closed
+ * invalid literal leaves the cursor after its `]`; an unterminated one
+ * restores it to `[`, because only the latter owns every comma that follows.
+ */
+function readDomainLiteral(cur: Cursor): DomainLiteralResult {
   const start = cur.i;
   cur.i += 1;
   for (;;) {
     const ch = cur.src[cur.i];
     if (ch === undefined || ch === '[') {
       cur.i = start;
-      return null;
+      return { kind: 'unterminated' };
     }
     if (ch === '\\') {
       cur.i += 2;
@@ -225,11 +258,16 @@ function readDomainLiteral(cur: Cursor): string | null {
     // which rejects the whole submission long after the field could have
     // said so.
     if (ch !== ']' && (ch === ' ' || ch === '\t' || ch < '\u0021' || ch === '\u007f')) {
-      cur.i = start;
-      return null;
+      const close = invalidDomainLiteralCloseAhead(cur);
+      if (close < 0) {
+        cur.i = start;
+        return { kind: 'unterminated' };
+      }
+      cur.i = close + 1;
+      return { kind: 'closed-invalid' };
     }
     cur.i += 1;
-    if (ch === ']') return cur.src.slice(start, cur.i);
+    if (ch === ']') return { kind: 'valid', value: cur.src.slice(start, cur.i) };
   }
 }
 
@@ -297,7 +335,14 @@ function readAddrSpec(cur: Cursor): string | null {
   if (cur.src[cur.i] !== '@') return null;
   cur.i += 1;
   if (!skipCfws(cur)) return null;
-  const domain = cur.src[cur.i] === '[' ? readDomainLiteral(cur) : readDotAtom(cur);
+  let domain: string;
+  if (cur.src[cur.i] === '[') {
+    const literal = readDomainLiteral(cur);
+    if (literal.kind !== 'valid') return null;
+    domain = literal.value;
+  } else {
+    domain = readDotAtom(cur);
+  }
   if (!domain) return null;
   // NFC per RFC 6532 §3.1: the accepted address is what goes on the wire,
   // and canonically equivalent spellings must leave here as one form.
@@ -305,33 +350,32 @@ function readAddrSpec(cur: Cursor): string | null {
 }
 
 /**
- * Whether any `>` follows the cursor. An unterminated `"`, `(`, or `[` owns
- * the rest of the text under the grammar's tokenization, but a `<` with no
- * `>` after it cannot be an angle-addr at all, and treating it as one takes
- * the valid addresses after the next comma down with the broken fragment.
- * Found from the end so the answer costs one pass per parse rather than one
- * per element.
+ * Index of the top-level `>` closing an angle section that opens here, or -1
+ * when none belongs to this element. Quoted strings hide their contents
+ * from every scan. Outside a group, comments and domain literals do too,
+ * and the scan stops at the list's comma. A group's commas separate members,
+ * so its recovery scan continues through them to the semicolon.
  */
-function hasAngleAhead(cur: Cursor): boolean {
+function angleCloseAhead(cur: Cursor, mayCrossComma: boolean): number {
   if (cur.lastAngle === undefined) cur.lastAngle = cur.src.lastIndexOf('>');
-  return cur.lastAngle > cur.i;
-}
+  if (cur.lastAngle <= cur.i) return -1;
 
-/**
- * Index of the top-level `>` closing an angle section that opens here, or
- * -1 when every `>` ahead sits inside a quoted string. `hasAngleAhead`'s
- * cache answers the common case of no `>` at all; this scan settles whether
- * one of them really terminates, because taking a quoted `>` for the
- * terminator resumes the element scan mid-string and swallows the addresses
- * after it.
- */
-function angleCloseAhead(cur: Cursor): number {
   const scratch: Cursor = { src: cur.src, i: cur.i + 1 };
   while (scratch.i < scratch.src.length) {
     const ch = scratch.src[scratch.i];
     if (ch === '>') return scratch.i;
+    if (ch === ',' && !mayCrossComma) return -1;
     if (ch === '"') {
       if (!readQuotedString(scratch)) return -1;
+      continue;
+    }
+    if (ch === '(' && !mayCrossComma) {
+      if (!skipCfws(scratch)) return -1;
+      continue;
+    }
+    if (ch === '[' && !mayCrossComma) {
+      const literal = readDomainLiteral(scratch);
+      if (literal.kind === 'unterminated') return -1;
       continue;
     }
     scratch.i += 1;
@@ -395,21 +439,24 @@ function skipToElementEnd(cur: Cursor, wasGroup: boolean): void {
       continue;
     }
     if (ch === '[') {
-      if (!readDomainLiteral(cur)) {
+      const literal = readDomainLiteral(cur);
+      if (literal.kind === 'unterminated') {
+        // An unterminated domain literal owns the remaining text. RFC 5322
+        // §3.4.1 dtext includes comma, so none inside it is a list separator.
         cur.i = cur.src.length;
         return;
       }
       continue;
     }
-    if (ch === '<' && hasAngleAhead(cur)) {
-      const close = angleCloseAhead(cur);
+    if (ch === '<') {
+      const close = angleCloseAhead(cur, wasGroup);
       if (close >= 0) {
         cur.i = close + 1;
         continue;
       }
-      // Every '>' ahead is quoted, so this '<' opens nothing: it is one
-      // ordinary character of a broken fragment, and falls through to the
-      // plain advance below.
+      // No `>` in this element closes the `<`, so it is one ordinary
+      // character of a broken fragment and falls through to the plain
+      // advance below.
     }
     cur.i += 1;
   }
@@ -644,10 +691,7 @@ export function endsInsideAddress(text: string): boolean {
       // display name may hold one, and reading `Alice [Work Group]` as an
       // unfinished address would suppress every comma after it. Genuinely
       // unclosed is the case that means "still being written".
-      if (!readDomainLiteral(cur)) {
-        if (!text.includes(']', cur.i + 1)) return true;
-        cur.i += 1;
-      }
+      if (readDomainLiteral(cur).kind === 'unterminated') return true;
       continue;
     }
     cur.i += 1;

@@ -138,22 +138,22 @@ Permanent destroy is reserved for messages already in Trash or
 explicit destroy flows.
 
 `destroyMessage` and `destroyMessages` share a single code path:
-each chunk is one `pending_mutations` row whose `request_json`
-carries `messageIds: [...]`, dispatched as one `Email/set` per
-outbox row. Move and destroy split into chunks of
-`BULK_OPERATION_BATCH_SIZE` (500) ids in the mail store before
-enqueueing; selections at or below that size go through as a single
-row, larger selections are dispatched as N sequential chunks while
-the `BulkOperationOverlay` shows progress and blocks other input.
+the store queues one semantic `pending_mutations` row whose
+`request_json` carries every `messageId`. The JMAP backend groups the
+targets by owning account and chunks `Email/set` calls against the
+live Session's `maxObjectsInSet`; protocol limits do not cross into
+the store. A selection above the store's separate 500-message
+progress threshold shows `BulkOperationOverlay` while that one
+semantic mutation runs.
+
 Each successful server chunk is mirrored by one SQLite transaction
 over the same confirmed ids, so the server write boundary and local
-cache apply boundary match exactly. Splitting matters because Stalwart silently drops a single
-`Email/set` that overflows its internal batch handler — the user
-previously saw a meaningless `noResponse` after eight backoff
-retries before the runner gave up. The outbox surfaces the JMAP
-method-level error (RFC 8620 §3.6.1) directly when the response
-slot is missing, so the user sees an actionable type
-(`requestTooLarge`, `limit`, …) instead of `noResponse`.
+cache apply boundary match exactly. Per-object and per-chunk outcomes
+are accumulated across the semantic mutation and returned to the
+store, which preserves already-applied successes and surfaces a
+partial count with the JMAP error type. This differs from R-3.14's
+still-outstanding requirement for one durable row per wire chunk and
+stopping after the first failed chunk.
 
 ## JMAP edge bridge
 

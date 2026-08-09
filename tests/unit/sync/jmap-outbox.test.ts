@@ -1382,20 +1382,29 @@ describe('drainOutbox', () => {
     });
   });
 
-  it('fails the send when a method-level error replaces the submission response', async () => {
+  it('destroys the created Email when a terminal method error rejects submission', async () => {
     const { drafts, sent } = await seedSendScaffolding();
     await insertSendMutation({ drafts, sent });
 
-    const transport = tupleTransport(() => [
-      ['Email/set', { created: { c1: { id: 'em-new' } } }, 'c1'],
-      ['error', { type: 'serverFail', description: 'submission blew up' }, 's1'],
-    ]);
+    const destroyedIds: string[][] = [];
+    const transport = tupleTransport((methodCalls) => {
+      const [name, params, callId] = methodCalls[0];
+      if (name === 'Email/set' && params.destroy) {
+        destroyedIds.push(params.destroy);
+        return [['Email/set', { destroyed: params.destroy }, callId]];
+      }
+      if (name === 'Email/set') {
+        return [['Email/set', { created: { c1: { id: 'em-new' } } }, callId]];
+      }
+      return [['error', { type: 'serverFail', description: 'submission blew up' }, callId]];
+    });
 
     const summary = await drainOutbox({ transport: transport as any, account, handlers });
     expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
 
     const row = await engine.get(
-      `SELECT local_status, phase, error_json FROM pending_mutations WHERE mutation_type = ?`,
+      `SELECT local_status, phase, server_response_json, error_json
+         FROM pending_mutations WHERE mutation_type = ?`,
       [MUTATION_TYPES.SEND],
     );
     expect(row.local_status).toBe('conflicted');
@@ -1409,6 +1418,8 @@ describe('drainOutbox', () => {
     expect(error.terminal).toBe(true);
     expect(error.description).toBe('submission blew up');
     expect(row.phase).not.toBe('unknown');
+    expect(destroyedIds).toEqual([['em-new']]);
+    expect(JSON.parse(row.server_response_json).emailRemoteId).toBeNull();
     await expectNothingFiledInSent();
   });
 
@@ -1442,15 +1453,13 @@ describe('drainOutbox', () => {
   });
 
   it('marks a permanently rejected submission terminal, not retryable', async () => {
-    // Every retry of a permanent rejection creates another Email before
-    // being rejected again, so eight attempts leave eight orphaned
-    // drafts. Unknown rejection types are terminal too: the allowlist
-    // only retries transient server failures.
+    // Unknown rejection types are terminal too: only the SetError
+    // allowlist admits a rejection whose Email may be resubmitted later.
     const { drafts, sent } = await seedSendScaffolding();
     const transport = new MockTransport();
-    transport.handle('Email/set', () => ({
-      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
-    }));
+    transport.handle('Email/set', (params) => (params.destroy
+      ? { destroyed: params.destroy }
+      : { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } }));
     transport.handle('EmailSubmission/set', () => ({
       notCreated: { s1: { type: 'forbiddenFrom' } },
     }));
@@ -1545,55 +1554,96 @@ describe('drainOutbox', () => {
     expect(result.error.terminal).toBeUndefined();
   });
 
-  it('surfaces an invalid envelope rejection without retrying or parking it', async () => {
+  it('destroys the created Email after a terminal invalid envelope rejection', async () => {
     const { drafts, sent } = await seedSendScaffolding();
-    await insertSendMutation({
+    const inserted = await insertSendMutation({
       drafts,
       sent,
       to: [{ email: 'bob@mail.internal' }],
     });
     const description = 'Invalid e-mail address "bob@mail.internal".';
-    let submissionCalls = 0;
+    const destroyedIds: string[][] = [];
     const transport = new MockTransport();
-    transport.handle('Email/set', () => ({
-      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
-    }));
-    transport.handle('EmailSubmission/set', () => {
-      submissionCalls += 1;
-      return {
-        notCreated: {
-          s1: {
-            type: 'invalidProperties',
-            description,
-            properties: ['envelope'],
-          },
-        },
-      };
+    transport.handle('Email/set', (params) => {
+      if (params.destroy) {
+        destroyedIds.push(params.destroy);
+        return { destroyed: params.destroy };
+      }
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
     });
-
-    const first = await drainOutbox({ transport, account, handlers });
-    const second = await drainOutbox({ transport, account, handlers });
-
-    expect(first).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
-    expect(second).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
-    expect(submissionCalls).toBe(1);
-    const row = await engine.get(
-      `SELECT local_status, phase, error_json
-         FROM pending_mutations
-        WHERE mutation_type = ?`,
-      [MUTATION_TYPES.SEND],
-    );
-    expect(row.local_status).toBe('conflicted');
-    expect(row.phase).toBe('created');
-    expect(JSON.parse(row.error_json)).toMatchObject({
+    transport.handle('EmailSubmission/set', () => ({
+      notCreated: {
+        s1: {
+          type: 'invalidProperties',
+          description,
+          properties: ['envelope'],
+        },
+      },
+    }));
+    const expectedError = {
       type: 'notSubmitted',
-      terminal: true,
       detail: {
         type: 'invalidProperties',
         description,
         properties: ['envelope'],
       },
+      terminal: true,
+    };
+    const pending = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [inserted.id]);
+    const result = await processMutationRow({ transport, account, handlers, row: pending });
+
+    // CS-1.5 retains the submission reason while removing the Email that
+    // has no purpose after the server definitively rejected submission.
+    expect(result).toEqual({ ok: false, error: expectedError });
+    expect(destroyedIds).toEqual([['em-new']]);
+    const row = await engine.get(
+      'SELECT phase, server_response_json FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    // Rewound past the create too: the row must not claim an Email that
+    // was just destroyed.
+    expect(row.phase).toBe('queued');
+    expect(JSON.parse(row.server_response_json).emailRemoteId).toBeNull();
+  });
+
+  it('returns the terminal submission error when cleanup destroy is rejected', async () => {
+    const { drafts, sent } = await seedSendScaffolding();
+    const inserted = await insertSendMutation({ drafts, sent });
+    let destroyCalls = 0;
+    const transport = tupleTransport((methodCalls) => {
+      const [name, params, callId] = methodCalls[0];
+      if (name === 'Email/set' && params.destroy) {
+        destroyCalls += 1;
+        return [['error', { type: 'serverFail', description: 'cleanup failed' }, callId]];
+      }
+      if (name === 'Email/set') {
+        return [['Email/set', { created: { c1: { id: 'em-cleanup-fails' } } }, callId]];
+      }
+      return [['error', { type: 'invalidArguments', description: 'bad identityId' }, callId]];
     });
+    const expectedError = {
+      type: 'invalidArguments',
+      description: 'bad identityId',
+      detail: { type: 'invalidArguments', description: 'bad identityId' },
+      terminal: true,
+    };
+    const pending = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [inserted.id]);
+    const result = await processMutationRow({
+      transport: transport as any,
+      account,
+      handlers,
+      row: pending,
+    });
+
+    // Cleanup is best-effort so its failure cannot hide the definitive
+    // submission reason the composer needs to present.
+    expect(result).toEqual({ ok: false, error: expectedError });
+    expect(destroyCalls).toBe(1);
+    const row = await engine.get(
+      'SELECT server_response_json FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    expect(JSON.parse(row.server_response_json).emailRemoteId).toBeNull();
   });
 
   it('does not file into Sent when the server left the message in Drafts', async () => {
@@ -1932,12 +1982,18 @@ describe('drainOutbox', () => {
     expect(result.result.submissionRemoteId).toBe('sub-earlier');
   });
 
-  it('parks the send as outcome-unknown when the submission response is missing', async () => {
+  it('parks a lost submission response without destroying the created Email', async () => {
     const { drafts, sent } = await seedSendScaffolding();
     const inserted = await insertSendMutation({ drafts, sent });
+    const destroyedIds: string[][] = [];
     const transport = tupleTransport((methodCalls) => {
-      if (methodCalls[0][0] === 'Email/set') {
-        return [['Email/set', { created: { c1: { id: 'em-orphan' } } }, 'c1']];
+      const [name, params, callId] = methodCalls[0];
+      if (name === 'Email/set' && params.destroy) {
+        destroyedIds.push(params.destroy);
+        return [['Email/set', { destroyed: params.destroy }, callId]];
+      }
+      if (name === 'Email/set') {
+        return [['Email/set', { created: { c1: { id: 'em-orphan' } } }, callId]];
       }
       // Server answered, but without reporting the submission.
       return [];
@@ -1969,6 +2025,9 @@ describe('drainOutbox', () => {
     const checkpoint = JSON.parse(row.server_response_json);
     expect(checkpoint.emailRemoteId).toBe('em-orphan');
     expect(checkpoint.messageId).toMatch(/@example\.com>$/);
+    // An unknown outcome may already be in transit; its Email remains as
+    // evidence until mailbox reconciliation can establish what happened.
+    expect(destroyedIds).toEqual([]);
     await expectNothingFiledInSent();
   });
 
@@ -2685,7 +2744,9 @@ describe('drainOutbox', () => {
     // it ran and found nothing, so this attempt creates one.
     transport.handle('Email/query', () => ({ ids: [], queryState: 'qs' }));
     transport.handle('Email/get', () => ({ list: [], state: 'es' }));
-    transport.handle('Email/set', () => ({ created: { c1: { id: 'em-13' } } }));
+    transport.handle('Email/set', (params) => (params.destroy
+      ? { destroyed: params.destroy }
+      : { created: { c1: { id: 'em-13' } } }));
     transport.handle('EmailSubmission/set', () => ({
       notCreated: { s1: { type: 'forbiddenFrom' } },
     }));
@@ -2697,10 +2758,10 @@ describe('drainOutbox', () => {
       'SELECT attempts, phase FROM pending_mutations WHERE id = ?',
       [rowId],
     );
-    // The server's notCreated is a definitive answer, so the row rewinds
-    // to `created` rather than sitting at `submitting` as if the call
-    // were still in flight.
-    expect(after.phase, 'the row stopped short of submission succeeding').toBe('created');
+    // The server's notCreated is a definitive answer, and forbiddenFrom is
+    // terminal, so the row rewinds past its destroyed Email to `queued`
+    // rather than sitting at `submitting` as if the call were in flight.
+    expect(after.phase, 'the row stopped short of submission succeeding').toBe('queued');
     expect(Number(after.attempts)).toBe(4);
   });
 
@@ -4613,10 +4674,17 @@ describe('send-state classification of definitive server answers', () => {
     await insertSendMutation({ drafts, sent });
 
     let submitCalls = 0;
+    let createCalls = 0;
+    const destroyedIds: string[][] = [];
     const transport = new MockTransport();
-    transport.handle('Email/set', () => ({
-      created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } },
-    }));
+    transport.handle('Email/set', (params) => {
+      if (params.destroy) {
+        destroyedIds.push(params.destroy);
+        return { destroyed: params.destroy };
+      }
+      createCalls += 1;
+      return { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } };
+    });
     transport.handle('EmailSubmission/set', () => {
       submitCalls += 1;
       // First attempt: refused (RFC 8620 §5.3 rateLimit, "It may work if
@@ -4640,10 +4708,14 @@ describe('send-state classification of definitive server answers', () => {
     // The rejection was definitive, so the phase must not claim an
     // in-flight submission.
     expect(row.phase).toBe('created');
+    expect(JSON.parse(row.server_response_json).emailRemoteId).toBe('em-new');
+    expect(destroyedIds).toEqual([]);
 
     const second = await processMutationRow({ transport, account, handlers, row });
     expect(second.ok).toBe(true);
     expect(submitCalls, 'the refused submission must be re-issued').toBe(2);
+    expect(createCalls, 'the retry must reuse the phase-1 Email').toBe(1);
+    expect(destroyedIds).toEqual([]);
   });
 
   it('retries the submission after an explicit serverUnavailable method error', async () => {
@@ -4702,7 +4774,11 @@ describe('send-state classification of definitive server answers', () => {
     const transport = tupleTransport((methodCalls) => {
       const [name] = methodCalls[0];
       if (name === 'Email/set') {
-        return [['Email/set', { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } }, 'c1']];
+        const [, params, callId] = methodCalls[0];
+        if (params.destroy) {
+          return [['Email/set', { destroyed: params.destroy }, callId]];
+        }
+        return [['Email/set', { created: { c1: { id: 'em-new', threadId: 'thr-new', size: 100 } } }, callId]];
       }
       if (name === 'EmailSubmission/set') {
         return [['error', { type: 'invalidArguments', description: 'bad identityId' }, 's1']];

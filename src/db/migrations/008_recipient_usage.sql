@@ -1,4 +1,4 @@
--- Contact-only recipient ranking (v11).
+-- Contact-only recipient ranking (v8).
 --
 -- ContactCards are the only autocomplete candidates. This table is a
 -- rebuildable ranking cache derived from the latest bounded Sent window; it
@@ -11,8 +11,3 @@ CREATE TABLE recipient_usage (
   last_sent_at INTEGER NOT NULL,
   PRIMARY KEY(account_id, email_key)
 );
-
-DROP TABLE recipient_history;
-
-DELETE FROM sync_states
- WHERE object_type = 'RecipientHistoryBackfill';

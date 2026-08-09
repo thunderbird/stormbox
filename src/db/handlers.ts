@@ -2781,14 +2781,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               const e = c.emails[i];
               await tx.run(
                 `INSERT INTO contact_emails(
-                   contact_id, position, email, email_key, label, is_preferred
-                 ) VALUES (?, ?, ?, ?, ?, ?)`,
+                   contact_id, account_id, position, email, email_key, label, is_preferred
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
                 // The address is stored verbatim for display and sending
                 // (CS-3.5); the key beside it is what lookups compare, and it
                 // is computed here rather than in SQL because SQLite's
                 // `lower()` folds ASCII only.
                 [
                   contactId,
+                  accountId,
                   i,
                   e.email,
                   addressKey(e.email),

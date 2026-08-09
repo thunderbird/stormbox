@@ -80,14 +80,16 @@ beforeEach(async () => {
       const primary = `${first.toLowerCase()}.${last.toLowerCase()}${i}@example.com`;
       const work = `${first.toLowerCase()}${i}@work.example`;
       await tx.run(
-        `INSERT INTO contact_emails(contact_id, position, email, email_key, is_preferred)
-         VALUES (?, 0, ?, ?, 1)`,
-        [i + 1, primary, addressKey(primary)],
+        `INSERT INTO contact_emails(
+           contact_id, account_id, position, email, email_key, is_preferred
+         ) VALUES (?, ?, 0, ?, ?, 1)`,
+        [i + 1, ACCOUNT, primary, addressKey(primary)],
       );
       await tx.run(
-        `INSERT INTO contact_emails(contact_id, position, email, email_key, is_preferred)
-         VALUES (?, 1, ?, ?, 0)`,
-        [i + 1, work, addressKey(work)],
+        `INSERT INTO contact_emails(
+           contact_id, account_id, position, email, email_key, is_preferred
+         ) VALUES (?, ?, 1, ?, ?, 0)`,
+        [i + 1, ACCOUNT, work, addressKey(work)],
       );
       await tx.run(
         `INSERT INTO recipient_usage(account_id, email_key, send_count, last_sent_at)
@@ -173,6 +175,64 @@ describe('autocomplete performance (CS-3.14)', () => {
         p95,
         `p95 was ${p95.toFixed(1)}ms (worst ${worst.toFixed(1)}ms) against `
         + `${CONTACT_COUNT} ranked contacts`,
+      ).toBeLessThan(BUDGET_MS);
+    },
+    600_000,
+  );
+
+  it(
+    `answers a worst-case substring query within ${BUDGET_MS}ms at p95`,
+    async () => {
+      // The prefix tiers are indexed; the substring tier is not, and
+      // `LIKE '%word%'` cannot seek. A term taken from the middle of a
+      // token reaches it, and two of them intersect two scans, which is
+      // the slowest shape the control can ask for. CS-3.14 makes measured
+      // latency the contract rather than a particular access path, so the
+      // budget only means anything if this shape is the one measured.
+      //
+      // `mit` sits inside Smith and Smithson, `ane` inside Jane, and both
+      // together match the contacts holding both names. `zzq` matches
+      // nothing, so that pair scans everything and returns none.
+      const terms: string[] = [];
+      for (let i = 0; i < SAMPLES; i += 1) {
+        switch (i % 3) {
+          case 0: terms.push('mit'); break;
+          case 1: terms.push('mit ane'); break;
+          default: terms.push('mit zzq'); break;
+        }
+      }
+
+      const durations: number[] = [];
+      let matched = 0;
+      for (const term of terms) {
+        const started = performance.now();
+        const rows = await h[DB_RPC.CONTACT_AUTOCOMPLETE]({
+          accountId: ACCOUNT, prefix: term, limit: 10,
+        });
+        durations.push(performance.now() - started);
+        if (rows.length > 0) matched += 1;
+      }
+
+      // Two shapes in three match, so a fixture that stopped matching
+      // fails here rather than reporting a fast p95 for an empty scan.
+      expect(
+        matched,
+        `only ${matched} of ${terms.length} substring terms matched anything`,
+      ).toBeGreaterThan(terms.length * 0.5);
+
+      const p95 = percentile(durations, 95);
+      const worst = Math.max(...durations);
+      // Reported on success too: CS-3.14's contract is a number, and a
+      // budget that only prints when it is breached leaves no record of
+      // how much headroom the substring tier actually has.
+      console.log(
+        `[CS-3.14] substring p95 ${p95.toFixed(1)}ms, worst ${worst.toFixed(1)}ms, `
+        + `over ${CONTACT_COUNT} contacts`,
+      );
+      expect(
+        p95,
+        `substring p95 was ${p95.toFixed(1)}ms (worst ${worst.toFixed(1)}ms) `
+        + `against ${CONTACT_COUNT} ranked contacts`,
       ).toBeLessThan(BUDGET_MS);
     },
     600_000,

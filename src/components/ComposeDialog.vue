@@ -32,15 +32,18 @@ import {
   type RecipientEntry,
   type RecipientField,
 } from '../stores/compose-store';
+import { getRepositoryAsync } from '../composables/useRepository';
+import { useAuthStore } from '../stores/auth-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
-import type { IdentityRow } from '../types/db';
+import type { ContactListRow, IdentityRow } from '../types/db';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 import RecipientInput from './RecipientInput.vue';
 
 const composeStore = useComposeStore();
+const authStore = useAuthStore();
 const contactsStore = useContactsStore();
 
 const editorEl = ref(null);
@@ -756,7 +759,10 @@ function queryContacts(prefix: string, limit: number, exclude: string[]) {
  * CS-3.12 requires every contact to be selectable from the browse list.
  */
 async function browseAllContacts() {
-  const contacts = await contactsStore.listContacts();
+  const accountId = authStore.accountId;
+  if (accountId == null) return [];
+  const repo = await getRepositoryAsync();
+  const contacts: ContactListRow[] = await repo.listContacts(accountId);
   return contacts
     .filter((contact) => !!contact.email)
     .map((contact) => ({
@@ -791,7 +797,13 @@ function identityInitials(id: IdentityRow): string {
 </script>
 
 <template>
-  <div v-if="composeStore.isOpen" class="compose-dialog" role="dialog" aria-label="Compose">
+    <div
+      v-if="composeStore.isOpen"
+      class="compose-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Compose"
+    >
     <div class="compose-dialog__card">
       <header>
         <h2>{{ composeStore.draft.subject || 'New Message' }}</h2>
@@ -1356,7 +1368,18 @@ function identityInitials(id: IdentityRow): string {
         </AppButton>
       </footer>
 
-      <p v-if="composeStore.error" class="compose-error">{{ composeStore.error }}</p>
+      <!-- role="alert" carries an implicit assertive live region, which is
+           announced on insertion. The element is conditional because the
+           card is a flex column with a gap, and a permanently rendered
+           container would hold that gap open under the footer whenever
+           there is no error. -->
+      <p
+        v-if="composeStore.error"
+        class="compose-error"
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="true"
+      >{{ composeStore.error }}</p>
     </div>
   </div>
 </template>

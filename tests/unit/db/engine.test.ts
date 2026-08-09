@@ -9,6 +9,7 @@ describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
     const row = await engine.get('PRAGMA user_version');
+    expect(LATEST_VERSION).toBe(8);
     expect(Number(row?.user_version)).toBe(LATEST_VERSION);
     await engine.close();
   });
@@ -34,10 +35,12 @@ describe('Engine migrations', () => {
       'accounts',
       'account_capabilities',
       'account_services',
+      'addressbook_contacts',
       'addressbooks',
       'body_parts',
       'body_values',
       'contact_emails',
+      'contact_search_tokens',
       'contacts',
       'folder_messages',
       'folders',
@@ -49,6 +52,7 @@ describe('Engine migrations', () => {
       'query_view_items',
       'query_view_ranges',
       'query_views',
+      'recipient_usage',
       'sync_jobs',
       'sync_states',
       'threads',
@@ -83,11 +87,15 @@ describe('Engine migrations', () => {
       'query_views_lru',
       'contacts_account_display_name',
       'contacts_account_uid',
-      'contact_emails_lookup',
+      'contacts_account_generation',
+      'contact_emails_key_lookup',
+      'addressbook_contacts_book',
+      'contact_search_tokens_prefix',
     ];
     for (const idx of requiredIndexes) {
       expect(indexNames).toContain(idx);
     }
+    expect(indexNames).not.toContain('pending_mutations_phase');
     await engine.close();
   });
 
