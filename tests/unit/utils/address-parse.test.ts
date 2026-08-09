@@ -32,6 +32,12 @@ describe('parseAddressList', () => {
       .toEqual([{ name: 'Alice Example', email: 'alice@example.com' }]);
     expect(parseAddressList('Alice <alice@example.com>').addresses)
       .toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(
+      parseAddressList('Alice <alice@example.com>, Bob <bob@example.com>').addresses,
+    ).toEqual([
+      { name: 'Alice', email: 'alice@example.com' },
+      { name: 'Bob', email: 'bob@example.com' },
+    ]);
   });
 
   it('keeps a comma inside a quoted display name out of the separator role', () => {
@@ -104,6 +110,8 @@ describe('parseAddressList', () => {
   it('parses a domain literal', () => {
     expect(parseAddressList('alice@[192.0.2.1]').addresses)
       .toEqual([{ email: 'alice@[192.0.2.1]' }]);
+    expect(parseAddressList('bob@[192.168.1.10]').addresses)
+      .toEqual([{ email: 'bob@[192.168.1.10]' }]);
     expect(parseAddressList('Alice <alice@[IPv6:2001:db8::1]>').addresses)
       .toEqual([{ name: 'Alice', email: 'alice@[IPv6:2001:db8::1]' }]);
   });
@@ -176,6 +184,13 @@ describe('parseAddressList', () => {
       addresses: [{ email: 'alice@example.com' }],
       rejected: ['"Bob <bob@example.com>'],
     });
+    // The comma remains quoted content while the string is open, so the
+    // whole input is one fragment.
+    const input = '"Smith, Alice <a@b.com>';
+    expect(parseAddressList(input)).toEqual({
+      addresses: [],
+      rejected: [input],
+    });
   });
 
   it('rejects an unclosed angle-addr', () => {
@@ -191,6 +206,16 @@ describe('parseAddressList', () => {
     });
     expect(parseAddressList('Team: alice@example.com').rejected)
       .toEqual(['Team: alice@example.com']);
+    // A failed group owns its member commas through the semicolon; the
+    // following list element remains independently readable.
+    expect(
+      parseAddressList(
+        'Team: Oops < typo, Bob <bob@example.com>;, carol@example.com',
+      ),
+    ).toEqual({
+      addresses: [{ email: 'carol@example.com' }],
+      rejected: ['Team: Oops < typo, Bob <bob@example.com>;'],
+    });
   });
 
   it('drops stray separators without reporting them', () => {
@@ -296,6 +321,13 @@ describe('parseAddressList', () => {
       addresses: [{ email: 'alice@example.com' }],
       rejected: ['(unfinished'],
     });
+    // The comma remains comment content while the comment is open, so it
+    // cannot split the rejection.
+    const input = 'Alice (team, Bob <bob@example.com>';
+    expect(parseAddressList(input)).toEqual({
+      addresses: [],
+      rejected: [input],
+    });
     // Closed comments are still just whitespace, wherever they sit.
     expect(parseAddressList('alice@example.com (Alice)').addresses)
       .toEqual([{ email: 'alice@example.com' }]);
@@ -365,16 +397,22 @@ describe('parseAddressList', () => {
       addresses: [{ email: 'real@example.com' }],
       rejected: ['Oops < typo'],
     });
-    // A `>` that does exist still bounds the address it belongs to, and a
-    // comma inside those brackets is still not a separator.
+    expect(parseAddressList('Oops < typo, Bob <bob@example.com>')).toEqual({
+      addresses: [{ name: 'Bob', email: 'bob@example.com' }],
+      rejected: ['Oops < typo'],
+    });
+    // A `>` reached before the list separator still bounds the angle
+    // section it belongs to.
     expect(parseAddressList('Alice <alice@example.com>, bob@example.com').addresses)
       .toEqual([
         { name: 'Alice', email: 'alice@example.com' },
         { email: 'bob@example.com' },
       ]);
+    // A comma reached before any closing `>` separates broken elements, so
+    // the unmatched pieces remain two verbatim rejections.
     expect(parseAddressList('broken <a, b>, bob@example.com')).toEqual({
       addresses: [{ email: 'bob@example.com' }],
-      rejected: ['broken <a, b>'],
+      rejected: ['broken <a', 'b>'],
     });
     // A `>` inside a quoted string closes nothing. Taking it for the
     // terminator resumes the element scan mid-string, where the string's
@@ -406,6 +444,37 @@ describe('parseAddressList', () => {
       .toEqual([{ email: 'a@[192.168.0.1]' }]);
     expect(parseAddressList('a@[IPv6:2001:db8::1]').addresses)
       .toEqual([{ email: 'a@[IPv6:2001:db8::1]' }]);
+  });
+
+  it('recovers after a closed invalid domain-shaped bracket', () => {
+    expect(
+      parseAddressList(
+        'alice@example.com, Bob [Team X], carol@example.com, dave@example.com',
+      ),
+    ).toEqual({
+      addresses: [
+        { email: 'alice@example.com' },
+        { email: 'carol@example.com' },
+        { email: 'dave@example.com' },
+      ],
+      rejected: ['Bob [Team X]'],
+    });
+    // A `]` inside a later quoted string cannot close the bracket; recovery
+    // continues to the unquoted `]` that bounds the invalid construct.
+    expect(parseAddressList('Bob [Team "X ] Y"], carol@example.com')).toEqual({
+      addresses: [{ email: 'carol@example.com' }],
+      rejected: ['Bob [Team "X ] Y"]'],
+    });
+  });
+
+  it('keeps an unterminated domain literal as one rejected fragment', () => {
+    // This pins the grammar boundary: RFC 5322 §3.4.1 includes comma in
+    // dtext, so splitting there would turn one open literal into two entries.
+    const input = 'bad@[foo, bob@example.com';
+    expect(parseAddressList(input)).toEqual({
+      addresses: [],
+      rejected: [input],
+    });
   });
 
   it('stays linear on a paste every element of which looks like a group', () => {

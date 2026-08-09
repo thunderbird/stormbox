@@ -233,14 +233,13 @@ function boostOf(c: Candidate, nowMs: number): number {
 
 /**
  * Half-open upper bound for a prefix range scan. For 'pers' returns 'pert';
- * for 'foo\uffff' returns the next code point. Returns the empty string
- * unchanged, and null when there is no representable next code point —
- * callers answer null with no rows, since a scan they cannot bound is a
- * scan they must not run.
+ * for 'foo\uffff' returns the next code point. Empty input and strings with
+ * no representable next code point return null; callers answer null with no
+ * rows, since a scan they cannot bound is a scan they must not run.
  */
 export function nextPrefix(prefix: string): string | null {
   if (!prefix) {
-    return prefix;
+    return null;
   }
   const codePoints = Array.from(prefix);
   for (let i = codePoints.length - 1; i >= 0; i -= 1) {
@@ -263,12 +262,10 @@ const CONTACT_USAGE_JOIN = `LEFT JOIN recipient_usage ru
 /**
  * `CROSS JOIN`, to fix the join order.
  *
- * Left to choose, SQLite drives these two queries from `contacts` by
- * `account_id` and looks up each contact's addresses in turn — which reads
- * the entire address book on every keystroke, and gets away with it on a
- * fixture of a few hundred. `CROSS JOIN` is SQLite's documented way to say
- * which table is the outer loop, and putting `contact_emails` there is what
- * makes the range over `email_key` the thing the index answers (CS-3.14).
+ * `CROSS JOIN` is SQLite's documented way to fix the outer loop. Driving
+ * from `contact_emails` makes `(account_id, email_key)` one bounded index
+ * range, then joins only the matching contacts rather than reading the
+ * address book one contact at a time (CS-3.14).
  *
  * The queries are exported so their plans can be asserted against the query
  * actually issued, rather than against a copy in a test that can drift from
@@ -278,7 +275,8 @@ export const CONTACT_ADDRESS_PREFIX_SQL = `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        CROSS JOIN contacts c ON c.id = ce.contact_id
        ${CONTACT_USAGE_JOIN}
-      WHERE c.account_id = ?
+      WHERE ce.account_id = ?
+        AND c.account_id = ce.account_id
         AND c.is_deleted = 0
         AND ce.email_key >= ?
         AND ce.email_key < ?
@@ -289,7 +287,10 @@ export const CONTACT_ADDRESS_EXACT_SQL = `SELECT ${CONTACT_COLUMNS}
        FROM contact_emails ce
        CROSS JOIN contacts c ON c.id = ce.contact_id
        ${CONTACT_USAGE_JOIN}
-      WHERE c.account_id = ? AND c.is_deleted = 0 AND ce.email_key = ?`;
+      WHERE ce.account_id = ?
+        AND c.account_id = ce.account_id
+        AND c.is_deleted = 0
+        AND ce.email_key = ?`;
 
 /** One word of a name, as a prefix range over the token index. */
 export const CONTACT_TOKEN_PREFIX_SQL = `SELECT contact_id FROM contact_search_tokens

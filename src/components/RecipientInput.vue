@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 
+import { useRecipientSuggestions } from '../composables/useRecipientSuggestions';
 import {
   endsInsideAddress,
   formatAddress,
@@ -59,37 +60,9 @@ const emit = defineEmits<{
   'update:entries': [RecipientEntry[]];
 }>();
 
-/** CS-3.12: a list, not the address book. */
-const SUGGESTION_LIMIT = 10;
-/** One letter matches most of a directory, which is not a suggestion. */
-const MIN_PREFIX = 2;
-
 const text = ref('');
-const suggestions = ref<AutocompleteCandidate[]>([]);
-const activeIndex = ref(-1);
-const expanded = ref(false);
-/** Whether the list currently holds the address book rather than matches. */
-const browsing = ref(false);
 const inputEl = ref<HTMLInputElement | null>(null);
 const pillsEl = ref<HTMLElement | null>(null);
-
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-/**
- * The query whose answer is still wanted. Answers arrive in whatever order
- * the worker returns them, and an earlier one landing later would replace
- * the list for what the user has since typed (CS-3.10).
- */
-let queryToken = 0;
-/**
- * What to say about a lookup that found nothing. An empty live region is not
- * an announcement — screen readers speak a change, not a clearing — so "no
- * matches" has to be said in words or the user is left waiting for a list
- * that is never coming.
- */
-const foundNothing = ref<string | null>(null);
-onUnmounted(() => {
-  if (debounceTimer) clearTimeout(debounceTimer);
-});
 
 function isInvalid(entry: RecipientEntry): boolean {
   return 'invalid' in entry;
@@ -185,10 +158,41 @@ function matchSegments(displayText: string): { text: string; hit: boolean }[] {
   return segments;
 }
 
-const countLabel = computed(() => {
-  const count = suggestions.value.length;
-  if (browsing.value) return count === 1 ? '1 contact' : `${count} contacts`;
-  return count === 1 ? '1 suggestion' : `${count} suggestions`;
+/**
+ * Everything already committed here or in a sibling field, keyed by
+ * `addressKey` (CS-3.5) so an NFD or punycode spelling of a committed
+ * address is recognized as the same recipient.
+ *
+ * This stays with recipient entries: the suggestion lifecycle only needs
+ * their canonical keys and does not need to know the pill data model.
+ */
+const takenEmails = computed(() => new Set([
+  ...props.entries
+    .filter((entry): entry is ParsedAddress => !('invalid' in entry))
+    .map((entry) => addressKey(entry.email)),
+  ...props.taken.map((email) => addressKey(email)),
+]));
+
+const {
+  suggestions,
+  activeIndex,
+  expanded,
+  browsing,
+  noMatches,
+  isPanelOpen,
+  resultSummary,
+  countLabel,
+  hasQueryPrefix,
+  runQuery,
+  scheduleQuery,
+  browseContacts,
+  closeList,
+} = useRecipientSuggestions({
+  text,
+  takenEmails,
+  getQuery: () => props.query,
+  getBrowseAll: () => props.browseAll,
+  getDebounceMs: () => props.debounceMs,
 });
 
 /**
@@ -204,159 +208,8 @@ async function scrollActiveOptionIntoView(): Promise<void> {
     ?.scrollIntoView({ block: 'nearest' });
 }
 
-/**
- * The typed text a completed lookup answered with nothing, kept so the
- * panel can say so where the user is looking — and say what still works:
- * Enter commits the text as an address regardless. A failed lookup never
- * lands here; "unavailable" must not read as "not in your address book".
- */
-const noMatches = ref<string | null>(null);
-
-const isListOpen = computed(() => expanded.value && suggestions.value.length > 0);
-
-/** The popup as a whole: the option list, or the visible no-matches state. */
-const isPanelOpen = computed(() => isListOpen.value || noMatches.value !== null);
-
-/**
- * Announced to a screen reader when the list changes, since a listbox
- * appearing below the field is not something a non-sighted user can see.
- */
-const resultSummary = computed(() => {
-  if (!isListOpen.value) {
-    // Silent on dismissal: the user who pressed Escape knows what it did.
-    return foundNothing.value ?? '';
-  }
-  const count = suggestions.value.length;
-  if (browsing.value) return `Showing ${count} contacts`;
-  return count === 1 ? '1 suggestion available' : `${count} suggestions available`;
-});
-
 function commitEntries(next: RecipientEntry[]): void {
   emit('update:entries', next);
-}
-
-/**
- * Everything already committed here or in a sibling field, keyed by
- * `addressKey` (CS-3.5) so an NFD or punycode spelling of a committed
- * address is recognized as the same recipient.
- */
-const takenEmails = computed(() => new Set([
-  ...props.entries
-    .filter((entry): entry is ParsedAddress => !('invalid' in entry))
-    .map((entry) => addressKey(entry.email)),
-  ...props.taken.map((email) => addressKey(email)),
-]));
-
-/**
- * Stop wanting a list, whatever the reason — dismissed, committed, or left.
- *
- * Invalidating the query is the whole point: an answer that arrives after
- * this reopens a list nobody asked for, under a field that may no longer
- * have focus, and an expanded combobox with focus elsewhere is a state the
- * dialog cannot be closed from — the shortcut handler stands down for it and
- * the control never receives the key. Cancelling the timer matters for the
- * same reason: picking a suggestion with the mouse deliberately does not
- * blur, so nothing else would.
- */
-function closeList(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = null;
-  queryToken += 1;
-  expanded.value = false;
-  activeIndex.value = -1;
-  suggestions.value = [];
-  browsing.value = false;
-  foundNothing.value = null;
-  noMatches.value = null;
-}
-
-/**
- * Show the address book itself, for a recipient the user cannot spell well
- * enough to find by typing. Ten matches is the right size for a typeahead
- * and no help at all when the name is half-remembered (CS-3.12).
- */
-async function browseContacts(): Promise<void> {
-  const browseAll = props.browseAll;
-  if (!browseAll) return;
-  if (debounceTimer) clearTimeout(debounceTimer);
-  const token = (queryToken += 1);
-  const { value: found, answered } = await ask(() => browseAll(), []);
-  if (token !== queryToken) return;
-  suggestions.value = notTaken(found);
-  activeIndex.value = -1;
-  browsing.value = true;
-  noMatches.value = null;
-  foundNothing.value = suggestions.value.length > 0
-    ? null
-    : (answered ? 'No contacts to show' : 'Contacts are unavailable');
-  expanded.value = suggestions.value.length > 0;
-  focusInput();
-}
-
-async function runQuery(prefix: string): Promise<void> {
-  const query = props.query;
-  const token = (queryToken += 1);
-  const excluded = [...takenEmails.value];
-  const { value: found, answered } = query
-    ? await ask(() => query(prefix, SUGGESTION_LIMIT, excluded), [])
-    : { value: [] as AutocompleteCandidate[], answered: true };
-  if (token !== queryToken) return;
-  // The query has already left these out. Filtering again costs nothing and
-  // covers a caller whose query ignores the argument.
-  suggestions.value = notTaken(found).slice(0, SUGGESTION_LIMIT);
-  activeIndex.value = -1;
-  browsing.value = false;
-  // An answered empty result keeps the panel open to say so, and to say
-  // what still works; a failure closes it, because "unavailable" offered
-  // where suggestions go would read as "not in your address book".
-  noMatches.value = suggestions.value.length === 0 && answered ? prefix : null;
-  expanded.value = suggestions.value.length > 0;
-  foundNothing.value = suggestions.value.length > 0
-    ? null
-    : (answered ? `No suggestions for ${prefix}` : 'Suggestions are unavailable');
-}
-
-/**
- * Run a lookup, and say whether it answered at all.
- *
- * A rejected query must not leave the previous list on screen with its
- * highlight intact: Enter would accept a suggestion for text the user had
- * since replaced — a wrong recipient, arrived at by pressing Enter. But it
- * must not read as "nothing matched" either, which is what the caller used to
- * show. A user told there are no matches stops typing a name their address
- * book really holds, and types the address out instead; one told the lookup
- * failed knows the difference.
- */
-async function ask<T>(
-  lookup: () => Promise<T>, onFailure: T,
-): Promise<{ value: T; answered: boolean }> {
-  try {
-    return { value: await lookup(), answered: true };
-  } catch {
-    return { value: onFailure, answered: false };
-  }
-}
-
-/** Offering an existing recipient wastes a row and would do nothing. */
-function notTaken(found: readonly AutocompleteCandidate[]): AutocompleteCandidate[] {
-  return found.filter((candidate) => !takenEmails.value.has(addressKey(candidate.email)));
-}
-
-function scheduleQuery(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
-  const prefix = text.value.trim();
-  if (prefix.length < MIN_PREFIX) {
-    // Nothing typed is not a query with no answers: dropping the token
-    // stops an answer for an earlier prefix from arriving into an empty
-    // field.
-    queryToken += 1;
-    closeList();
-    return;
-  }
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    void runQuery(prefix);
-  }, props.debounceMs);
 }
 
 function onInput(): void {
@@ -452,6 +305,10 @@ function focusInput(): void {
   inputEl.value?.focus();
 }
 
+async function browseContactsAndFocus(): Promise<void> {
+  if (await browseContacts()) focusInput();
+}
+
 /**
  * What has been written ahead of the caret, which is the address a typed
  * separator would land in. The whole field stands in where the browser will
@@ -475,8 +332,8 @@ function onKeydown(event: KeyboardEvent): void {
         if (event.key !== 'ArrowDown') return;
         event.preventDefault();
         const prefix = text.value.trim();
-        if (prefix.length >= MIN_PREFIX) void runQuery(prefix);
-        else void browseContacts();
+        if (hasQueryPrefix(prefix)) void runQuery(prefix);
+        else void browseContactsAndFocus();
         return;
       }
       event.preventDefault();
@@ -547,7 +404,6 @@ function onKeydown(event: KeyboardEvent): void {
  * failure this control has to avoid.
  */
 function onBlur(): void {
-  if (debounceTimer) clearTimeout(debounceTimer);
   commitText();
   closeList();
 }
@@ -681,7 +537,7 @@ function onPaste(event: ClipboardEvent): void {
         <span class="ac-key-hint"><kbd>↵</kbd> add it as typed</span>
       </div>
       <p v-if="browseAll && !browsing" class="autocomplete__browse">
-        <button type="button" @mousedown.prevent @click="browseContacts()">
+        <button type="button" @mousedown.prevent @click="browseContactsAndFocus()">
           Browse all contacts
         </button>
       </p>

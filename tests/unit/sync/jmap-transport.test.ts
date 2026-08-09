@@ -379,7 +379,7 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
     auth = vi.fn(async () => 'Bearer test-token');
   });
 
-  function makeTransport() {
+  function makeTransport(options: Record<string, any> = {}) {
     const fetchMock = makeFetch({
       'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
     });
@@ -388,6 +388,7 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
       getAuthHeader: auth,
       fetch: fetchMock,
       WebSocketImpl: FakeWebSocket,
+      ...options,
     });
   }
 
@@ -405,6 +406,69 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
     expect(enable['@type']).toBe('WebSocketPushEnable');
     expect(enable.dataTypes).toEqual(['Mailbox', 'Email']);
     expect(enable.pushState).toBe('aaa');
+  });
+
+  it('bounds a stalled opening handshake and allows a later retry', async () => {
+    // Every caller shares the opening promise, so its deadline must release
+    // all of them and clear the cache before another connection is attempted.
+    vi.useFakeTimers();
+    try {
+      const t = makeTransport({ wsRequestTimeoutMs: 25 });
+      const first = t.openWebSocket(['Email'], null);
+      const ws = await FakeWebSocket._waitForInstance();
+      const shared = t.openWebSocket(['Email'], null);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      const firstRejection = expect(first).rejects.toMatchObject({
+        type: 'wsRequestTimeout',
+        requestId: 'openWebSocket',
+        elapsedMs: 25,
+      });
+      const sharedRejection = expect(shared).rejects.toMatchObject({
+        type: 'wsRequestTimeout',
+        requestId: 'openWebSocket',
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      await firstRejection;
+      await sharedRejection;
+
+      expect(ws.readyState).toBe(FakeWebSocket.CLOSED);
+      expect(ws._listeners.get('open')?.size ?? 0).toBe(0);
+      expect(ws._listeners.get('error')?.size ?? 0).toBe(0);
+      expect(ws._listeners.get('close')?.size ?? 0).toBe(0);
+      expect((t as any)._wsReadyPromise).toBeNull();
+      expect((t as any)._ws).toBeNull();
+
+      const retry = t.openWebSocket(['Email'], null);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      const retrySocket = FakeWebSocket.instances[1];
+      retrySocket._open();
+      await retry;
+      expect(retrySocket.sent).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects when the socket closes before the opening handshake completes', async () => {
+    // A close event is the terminal handshake result even when the browser
+    // emits no error event beside it.
+    vi.useFakeTimers();
+    try {
+      const t = makeTransport({ wsRequestTimeoutMs: 60_000 });
+      const pending = t.openWebSocket(['Email'], null);
+      const ws = await FakeWebSocket._waitForInstance();
+
+      ws._close(1001, 'server shutdown');
+
+      await expect(pending).rejects.toThrow(/closed before open: server shutdown/i);
+      expect((t as any)._wsReadyPromise).toBeNull();
+      expect((t as any)._ws).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('correlates Request/Response by requestId', async () => {

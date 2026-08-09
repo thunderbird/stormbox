@@ -1,4 +1,4 @@
--- Contact membership and sweepable sync state (v7).
+-- Contact membership, sweepable sync state, and autocomplete keys (v7).
 --
 -- Two defects share one cause: a contact row was keyed to a single address
 -- book. RFC 9610 lets a card belong to several (`addressBookIds` is a map),
@@ -61,7 +61,9 @@ CREATE TABLE _contact_dupes AS
       ON s.account_id = c.account_id AND s.remote_id = c.remote_id;
 
 CREATE TABLE _contact_emails_keep AS
-  SELECT contact_id, position, email, label, is_preferred FROM contact_emails;
+  SELECT ce.contact_id, c.account_id, ce.position, ce.email, ce.label, ce.is_preferred
+    FROM contact_emails ce
+    JOIN contacts c ON c.id = ce.contact_id;
 
 CREATE TABLE contacts_v7 (
   id INTEGER PRIMARY KEY,
@@ -112,9 +114,12 @@ CREATE INDEX contacts_account_generation
 
 CREATE TABLE contact_emails (
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  -- Denormalized from `contacts` so an address lookup is one account-scoped
+  -- index range rather than a cross-account range filtered after the join.
+  account_id INTEGER NOT NULL,
   position INTEGER NOT NULL DEFAULT 0,
   email TEXT NOT NULL,
-  email_lower TEXT GENERATED ALWAYS AS (lower(email)) STORED,
+  email_key TEXT,
   label TEXT,
   is_preferred INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(contact_id, position)
@@ -135,14 +140,18 @@ CREATE TABLE _contact_email_source AS
    WHERE EXISTS (SELECT 1 FROM _contact_emails_keep e WHERE e.contact_id = d.old_id)
    GROUP BY keep_id;
 
-INSERT INTO contact_emails(contact_id, position, email, label, is_preferred)
-  SELECT s.keep_id, e.position, e.email, e.label, e.is_preferred
+INSERT INTO contact_emails(
+  contact_id, account_id, position, email, label, is_preferred
+)
+  SELECT s.keep_id, e.account_id, e.position, e.email, e.label, e.is_preferred
     FROM _contact_email_source s
     JOIN _contact_emails_keep e ON e.contact_id = s.source_id
    WHERE s.keep_id IN (SELECT id FROM contacts);
 
-CREATE INDEX contact_emails_lookup
-  ON contact_emails(email_lower, contact_id);
+-- The address-prefix range scan and exact lookup both use this index
+-- (CS-3.14).
+CREATE INDEX contact_emails_key_lookup
+  ON contact_emails(account_id, email_key, contact_id);
 
 CREATE TABLE addressbook_contacts (
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -159,6 +168,31 @@ INSERT OR IGNORE INTO addressbook_contacts(contact_id, addressbook_id)
 -- key, which orders by contact.
 CREATE INDEX addressbook_contacts_book
   ON addressbook_contacts(addressbook_id, contact_id);
+
+-- Names get a token table because an address-only query cannot find a
+-- contact called "Smith, Jane" at `jsmith@example.com` by "jane" (CS-3.1,
+-- CS-3.2). One row per word per contact makes each word an indexed range.
+CREATE TABLE contact_search_tokens (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  -- Denormalized from `contacts` so a prefix scan is one index range rather
+  -- than a join per candidate token.
+  account_id INTEGER NOT NULL,
+  token TEXT NOT NULL,
+  PRIMARY KEY(contact_id, token)
+);
+
+-- `contact_id` is in the index so a token scan answers "which contacts"
+-- without touching the table.
+CREATE INDEX contact_search_tokens_prefix
+  ON contact_search_tokens(account_id, token, contact_id);
+
+-- `email_key` and `contact_search_tokens` are written only by `addressKey()`
+-- and `nameTokens()`, whose Unicode rules SQLite cannot reproduce. Migrated
+-- addresses therefore keep a NULL key and migrated contacts keep no tokens.
+-- NULL never satisfies the exact or range address predicates, so such rows
+-- are invisible rather than wrongly keyed. Bootstrap runs a full contact
+-- sync on every start, which re-persists every card and populates both
+-- representations (CS-3.1, CS-3.2, CS-3.5).
 
 DROP TABLE _contact_emails_keep;
 DROP TABLE _contact_email_source;

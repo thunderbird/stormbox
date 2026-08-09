@@ -431,7 +431,6 @@ CREATE TABLE addressbooks (
 CREATE TABLE contacts (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  addressbook_id INTEGER NOT NULL REFERENCES addressbooks(id) ON DELETE CASCADE,
   remote_id TEXT NOT NULL,                    -- CardDAV href or JMAP ContactCard id
   uid TEXT,                                   -- vCard UID (cross-source identity)
   etag TEXT,
@@ -443,9 +442,10 @@ CREATE TABLE contacts (
   vcard_text TEXT,                            -- raw vCard 4.0 source if from CardDAV
   vcard_version TEXT,
   raw_json TEXT,                              -- JMAP ContactCard JSON when applicable
+  sync_generation INTEGER NOT NULL DEFAULT 0,
   is_deleted INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
-  UNIQUE(account_id, addressbook_id, remote_id)
+  UNIQUE(account_id, remote_id)
 );
 
 CREATE INDEX contacts_account_display_name
@@ -454,22 +454,54 @@ CREATE INDEX contacts_account_display_name
 CREATE INDEX contacts_account_uid
   ON contacts(account_id, uid) WHERE uid IS NOT NULL;
 
+CREATE INDEX contacts_account_generation
+  ON contacts(account_id, sync_generation);
+
 CREATE TABLE contact_emails (
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  account_id INTEGER NOT NULL,                    -- denormalized from contacts for account-scoped lookup
   position INTEGER NOT NULL DEFAULT 0,
   email TEXT NOT NULL,
-  email_lower TEXT GENERATED ALWAYS AS (lower(email)) STORED,
+  email_key TEXT,                             -- written by addressKey(), not SQL
   label TEXT,                                 -- 'home' | 'work' | ...
   is_preferred INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(contact_id, position)
 );
 
-CREATE INDEX contact_emails_lookup
-  ON contact_emails(email_lower, contact_id);
+CREATE INDEX contact_emails_key_lookup
+  ON contact_emails(account_id, email_key, contact_id);
+
+CREATE TABLE addressbook_contacts (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  addressbook_id INTEGER NOT NULL REFERENCES addressbooks(id) ON DELETE CASCADE,
+  PRIMARY KEY(contact_id, addressbook_id)
+);
+
+CREATE INDEX addressbook_contacts_book
+  ON addressbook_contacts(addressbook_id, contact_id);
+
+CREATE TABLE contact_search_tokens (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  account_id INTEGER NOT NULL,
+  token TEXT NOT NULL,                        -- written by nameTokens(), not SQL
+  PRIMARY KEY(contact_id, token)
+);
+
+CREATE INDEX contact_search_tokens_prefix
+  ON contact_search_tokens(account_id, token, contact_id);
+
+CREATE TABLE recipient_usage (
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  email_key TEXT NOT NULL,
+  send_count INTEGER NOT NULL,
+  last_sent_at INTEGER NOT NULL,
+  PRIMARY KEY(account_id, email_key)
+);
 ```
 
 Notes:
 
+- Migrated contact addresses keep `email_key = NULL` and migrated contacts have no search-token rows. Bootstrap's full contact sync writes both through the application tokenizer, avoiding SQLite's ASCII-only `lower()` and different punctuation rules.
 - If the selected wa-sqlite build lacks an extension we want, avoid depending on SQLite JSON functions for correctness. JSON columns are storage envelopes; hot query fields are normal columns.
 - FTS should not be in the first schema unless we decide local full-text search is in scope. The MVP scope says advanced search is out of scope.
 
@@ -563,14 +595,17 @@ JOIN contacts c ON c.id = ce.contact_id
 LEFT JOIN recipient_usage ru
   ON ru.account_id = c.account_id
  AND ru.email_key = ce.email_key
-WHERE c.account_id = :account_id
+WHERE ce.account_id = :account_id
+  AND c.account_id = ce.account_id
   AND c.is_deleted = 0
   AND ce.email_key >= :prefix
   AND ce.email_key < :prefix_upper
 LIMIT 40;
 ```
 
-`contact_emails_key_lookup` drives exact and prefix address matching.
+`contact_emails_key_lookup` drives exact and prefix address matching within
+one account; the denormalized `contact_emails.account_id` keeps those reads
+inside one bounded index range before joining the matching contacts.
 `contact_search_tokens_prefix` supplies unordered word-prefix name matching.
 Autocomplete merges duplicate card rows by `addressKey`, applies match tier
 before preferred/recency/frequency boosts, and then cuts the list to ten.

@@ -1016,10 +1016,16 @@ describe('contacts and autocomplete', () => {
       ],
     });
     let rows = await engine.all(
-      'SELECT email_lower FROM contact_emails WHERE contact_id = (SELECT id FROM contacts WHERE remote_id = ?) ORDER BY position',
+      `SELECT account_id, email_key
+         FROM contact_emails
+        WHERE contact_id = (SELECT id FROM contacts WHERE remote_id = ?)
+        ORDER BY position`,
       ['c-1'],
     );
-    expect(rows.map((r) => r.email_lower)).toEqual(['jane@example.com', 'jane.doe@work.example.com']);
+    expect(rows).toEqual([
+      { account_id: account.id, email_key: 'jane@example.com' },
+      { account_id: account.id, email_key: 'jane.doe@work.example.com' },
+    ]);
 
     await h[DB_RPC.CONTACT_UPSERT_MANY]({
       accountId: account.id,
@@ -1034,10 +1040,14 @@ describe('contacts and autocomplete', () => {
       ],
     });
     rows = await engine.all(
-      'SELECT email_lower FROM contact_emails WHERE contact_id = (SELECT id FROM contacts WHERE remote_id = ?)',
+      `SELECT account_id, email_key
+         FROM contact_emails
+        WHERE contact_id = (SELECT id FROM contacts WHERE remote_id = ?)`,
       ['c-1'],
     );
-    expect(rows.map((r) => r.email_lower)).toEqual(['jane@new.example.com']);
+    expect(rows).toEqual([
+      { account_id: account.id, email_key: 'jane@new.example.com' },
+    ]);
   });
 
   it('files one card in every book it belongs to', async () => {

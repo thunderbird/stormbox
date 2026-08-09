@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SERVICE_KIND } from '../../../src/constants/states';
-import { escapeLike } from '../../../src/db/autocomplete';
+import { escapeLike, nextPrefix } from '../../../src/db/autocomplete';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers, noopBroadcaster } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
@@ -149,5 +149,11 @@ describe('contact-only autocomplete ranking', () => {
 describe('autocomplete query helpers', () => {
   it('escapes SQL wildcard characters', () => {
     expect(escapeLike(String.raw`a%b_c\d`)).toBe(String.raw`a\%b\_c\\d`);
+  });
+
+  it('returns no range bound for an empty or maximal prefix', () => {
+    expect(nextPrefix('')).toBeNull();
+    expect(nextPrefix('\u{10ffff}')).toBeNull();
+    expect(nextPrefix('pers')).toBe('pert');
   });
 });

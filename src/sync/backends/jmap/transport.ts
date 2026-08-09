@@ -59,6 +59,9 @@ export const JMAP_CAPS = Object.freeze({
  * @property {typeof WebSocket} [WebSocketImpl]
  *                                     Optional WebSocket constructor. Defaults
  *                                     to globalThis.WebSocket.
+ * @property {number} [wsRequestTimeoutMs]
+ *                                     Upper bound for both the opening
+ *                                     handshake and each WebSocket request.
  */
 
 /**
@@ -70,6 +73,16 @@ export const JMAP_CAPS = Object.freeze({
 function abortedError(label: string, elapsedMs: number) {
   const err: any = new Error(`JMAP request ${label} was aborted`);
   err.type = 'transportAborted';
+  err.elapsedMs = elapsedMs;
+  return err;
+}
+
+function wsRequestTimeoutError(requestId: string, elapsedMs: number) {
+  const err: any = new Error(
+    `JMAP WebSocket request ${requestId} timed out after ${elapsedMs}ms`,
+  );
+  err.type = 'wsRequestTimeout';
+  err.requestId = requestId;
   err.elapsedMs = elapsedMs;
   return err;
 }
@@ -116,14 +129,13 @@ export class JmapTransport {
     this._closeListeners = new Set();
     this._nextWsId = 1;
     this._lastPushState = null;
-    // Per-wsRequest timeout. Without this a server that holds the
-    // TCP connection open but never sends a Response leaves the
-    // pending entry — and the awaiting caller — hung indefinitely
-    // (browser TCP keepalives can take minutes). 30s is a generous
-    // upper bound: typical Email/get + Email/query round trips
-    // finish in well under a second, and the slow paths (large
-    // folder indexer chunks against a contended Stalwart) finish
-    // in a few seconds.
+    // Opening the socket and every wsRequest share one deadline. A server
+    // can stall either the HTTP upgrade or an established connection
+    // without producing an event or Response, and browser TCP keepalives
+    // can take minutes to notice. 30s is a generous upper bound: typical
+    // Email/get + Email/query round trips finish in well under a second,
+    // and the slow paths (large folder indexer chunks against a contended
+    // Stalwart) finish in a few seconds.
     this._wsRequestTimeoutMs = options.wsRequestTimeoutMs ?? 30_000;
     // The HTTP leg needs the same protection for a different reason.
     // fetch() has no timeout of its own, so a server that accepts the
@@ -474,7 +486,7 @@ export class JmapTransport {
       wlog.info('jmap-transport', `openWebSocket via ${wsUrl.host}${wsUrl.pathname}`);
       const ws = new this._WebSocket(wsUrl.toString(), ['jmap']);
       this._ws = ws;
-      await waitForOpen(ws);
+      await waitForOpen(ws, this._wsRequestTimeoutMs);
       if (this._aborted) {
         try {
           ws.close(1000, 'transport aborted');
@@ -543,13 +555,7 @@ export class JmapTransport {
             this._wsPending.delete(requestId);
             const elapsedMs = Date.now() - started;
             wlog.warn('jmap-transport', `wsResponse ${requestId} timeout after ${elapsedMs}ms`);
-            const err: any = new Error(
-              `JMAP WebSocket request ${requestId} timed out after ${elapsedMs}ms`,
-            );
-            err.type = 'wsRequestTimeout';
-            err.requestId = requestId;
-            err.elapsedMs = elapsedMs;
-            reject(err);
+            reject(wsRequestTimeoutError(requestId, elapsedMs));
           }
         }, timeoutMs);
       }
@@ -699,22 +705,54 @@ export class JmapTransport {
   }
 }
 
-function waitForOpen(ws: WebSocket): Promise<void> {
+function waitForOpen(ws: WebSocket, timeoutMs: number): Promise<void> {
   if (ws.readyState === ws.OPEN) {
     return Promise.resolve();
   }
+  if (ws.readyState === ws.CLOSING || ws.readyState === ws.CLOSED) {
+    return Promise.reject(new Error('WebSocket closed before open'));
+  }
   return new Promise<void>((resolve, reject) => {
-    const onOpen = () => {
+    const started = Date.now();
+    let timeoutHandle: any = null;
+    const cleanup = () => {
       ws.removeEventListener('open', onOpen);
       ws.removeEventListener('error', onError);
+      ws.removeEventListener('close', onClose);
+      if (timeoutHandle != null) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    };
+    const onOpen = () => {
+      cleanup();
       resolve();
     };
     const onError = (event: any) => {
-      ws.removeEventListener('open', onOpen);
-      ws.removeEventListener('error', onError);
+      cleanup();
       reject(new Error(event?.message ?? 'WebSocket open failed'));
+    };
+    const onClose = (event: any) => {
+      cleanup();
+      const suffix = event?.reason ? `: ${event.reason}` : '';
+      reject(new Error(`WebSocket closed before open${suffix}`));
     };
     ws.addEventListener('open', onOpen);
     ws.addEventListener('error', onError);
+    ws.addEventListener('close', onClose);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timeoutHandle = null;
+        cleanup();
+        const elapsedMs = Date.now() - started;
+        wlog.warn('jmap-transport', `openWebSocket timeout after ${elapsedMs}ms`);
+        try {
+          ws.close(1000, 'open timeout');
+        } catch {
+          // The browser may already be tearing down the failed handshake.
+        }
+        reject(wsRequestTimeoutError('openWebSocket', elapsedMs));
+      }, timeoutMs);
+    }
   });
 }

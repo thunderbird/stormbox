@@ -149,8 +149,8 @@ makes a non-default origin work locally.
 - [x] T210 Set `inReplyTo` and extend `references` on the Email create
       from the cached parent values
 - [x] T211 Display Cc in the message detail view
-- [x] T212 Apply the Identity `replyTo` default on send; persist but do
-      not apply `bcc` pending a product decision
+- [x] T212 Apply and persist the Identity `replyTo` default on send; do
+      not request or persist Identity-level Bcc (CS-2.8)
 - [x] T213 E2E: Reply All against a message with Reply-To and Cc,
       asserting `In-Reply-To` and `References` over direct JMAP
 - [x] T214 E2E: reply audience and threading assertions against direct
@@ -159,8 +159,7 @@ makes a non-default origin work locally.
 
 ## Phase 3 — Durable phased send (CS-1.6 to CS-1.10, CS-1.13)
 
-- [x] T301 Migration: add `phase` to `pending_mutations` with a recovery
-      index
+- [x] T301 Migration 006: add `phase` to `pending_mutations`
 - [x] T302 Generate a stable per-operation Message-ID header and
       operation id, persisted before Email creation
 - [x] T303 Split `runSend` into create, submit, and reconcile phases,
@@ -209,8 +208,7 @@ makes a non-default origin work locally.
 - [x] T406 Stop reporting contact mutation success when cache
       reconciliation failed; checkpoint and retry reconciliation only
 - [x] T407 Apply `Identity/get` as a snapshot including the empty-list
-      case; give `replyTo` and `bcc` first-class columns and API fields
-      rather than leaving `bcc` opaque inside `raw_json`
+      case; persist `replyTo` and omit Identity-level Bcc (CS-2.8)
 - [x] T407b Apply `AddressBook/get` as an authoritative snapshot with
       deletion handling (CS-4.8)
 - [x] T408 Refresh identities on compose open and reconnect, painting
@@ -225,30 +223,29 @@ makes a non-default origin work locally.
 
 ## Phase 5 — Autocomplete data (CS-3.1 to CS-3.7, CS-3.13, CS-3.14)
 
-- [x] T501 Migration: `recipient_history` plus a contact search-token
-      table with indexes
-- [x] T502 Write recipient history only after a confirmed submission
-- [x] T503 Backfill history from Sent-folder messages whose From is an
-      owned address; exclude everything else. Bound the scan before
-      writing it: it runs once per account against a Sent folder that may
-      hold tens of thousands of messages, so read the newest N (start at
-      2,000) from the existing local cache rather than paging the server,
-      and run it off the compose path — a backfill must never be what the
-      first keystroke waits on. Record where it stopped so it resumes
-      rather than restarting.
+- [x] T501 Migrations: add application-written contact address keys and
+      search tokens in 007, plus the rebuildable recipient-usage cache in 008
+- [x] T502 Promote recipients to ContactCards only after a confirmed
+      submission
+- [x] T503 Promote recipients from the newest 300 cached Sent messages
+      whose From is an owned address; exclude everything else. Run the
+      bounded scan off the compose path so the first keystroke never waits
+      on it, and keep an empty or failed first pass pending for bootstrap
+      retry.
 - [x] T504 Populate search tokens for display name, full name, given and
       family names, organization, and nickname on contact persist
-- [x] T505 Rewrite `DB_RPC.CONTACT_AUTOCOMPLETE`: query both pools, merge
-      by normalized address, rank deterministically, apply the limit
-      after merging
+- [x] T505 Rewrite `DB_RPC.CONTACT_AUTOCOMPLETE`: query live ContactCards,
+      join recipient-usage boosts, merge by normalized address, rank
+      deterministically, and apply the limit after merging
 - [x] T506 [P] Unit-test matching and ranking: name and token-order
-      matches, exact history outranking a weak contact substring,
+      matches, exact address outranking a weak contact substring,
       one row per address, deterministic display-name winner
 - [x] T507 Exclude addresses already entered across To, Cc, and Bcc, and
       suppress owned addresses
-- [x] T508 Add remove-suggestion and clear-history controls
+- [x] T508 Make normal ContactCard deletion remove the suggestion while
+      keeping ranking refreshes read-only
 - [x] T509 [P] Performance test against CS-3.14's budget as written: 50 ms
-      at the 95th percentile over 5,000 contacts and 20,000 history rows,
+      at the 95th percentile over 5,000 contacts carrying usage evidence,
       measured in the worker rather than through the UI. Those are the
       numbers the requirement states; an easier fixture would leave the
       requirement untested rather than met.

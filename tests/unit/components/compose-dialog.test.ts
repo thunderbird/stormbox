@@ -13,7 +13,12 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
+import {
+  __resetRepositoryForTests,
+  __setRepositoryForTests,
+} from '../../../src/composables/useRepository';
 import { COMPOSE_STATE } from '../../../src/constants/states';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
 
@@ -78,11 +83,13 @@ async function pasteImageIntoEditor(editor, composeStore) {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  __resetRepositoryForTests();
 });
 
 afterEach(() => {
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
+  __resetRepositoryForTests();
 });
 
 describe('ComposeDialog rich text toolbar', () => {
@@ -295,6 +302,17 @@ describe('ComposeDialog recipient fields', () => {
     return input;
   }
 
+  it('announces itself as a modal dialog', async () => {
+    // Without aria-modal a screen reader keeps offering the mail list
+    // behind the composer as ordinary page content, so the user can read
+    // and act on it while a message is open.
+    const { wrapper } = await mountOpenCompose();
+    const dialog = wrapper.get('.compose-dialog');
+    expect(dialog.attributes('role')).toBe('dialog');
+    expect(dialog.attributes('aria-modal')).toBe('true');
+    expect(dialog.attributes('aria-label')).toBe('Compose');
+  });
+
   it('opens with To only, and offers both Cc and Bcc toggles inline', async () => {
     // Three empty fields on every new message is why Cc and Bcc were left
     // out to begin with; they appear when there is a reason for them. Both
@@ -461,6 +479,87 @@ describe('ComposeDialog recipient fields', () => {
       .map((el: any) => el.text());
     expect(offered).toEqual(['bobbie@example.com']);
   });
+
+  it('leaves the Contacts view collection untouched when browse opens', async () => {
+    // Compose needs a snapshot of the address book, while the store array
+    // remains the reactive collection rendered by the Contacts space.
+    const authStore = useAuthStore();
+    authStore.accountId = 7;
+    const contactsStore = useContactsStore();
+    contactsStore.contacts = [{
+      id: 1,
+      remote_id: 'page-row',
+      addressbook_ids: [10],
+      display_name: 'Page row',
+      organization: null,
+      email: 'page@example.com',
+    }];
+    const sharedContacts = contactsStore.contacts;
+    __setRepositoryForTests({
+      listContacts: vi.fn(async () => [{
+        id: 2,
+        remote_id: 'browse-row',
+        addressbook_ids: [10],
+        display_name: 'Browse row',
+        organization: null,
+        email: 'browse@example.com',
+      }]),
+    });
+    const { wrapper } = await mountOpenCompose();
+
+    await recipientInput(wrapper, 'To').trigger('keydown', { key: 'ArrowDown' });
+    await flushPromises();
+    await nextTick();
+
+    expect(contactsStore.contacts).toBe(sharedContacts);
+    expect(contactsStore.contacts.map((contact) => contact.remote_id)).toEqual(['page-row']);
+  });
+
+  it('shows the repository browse rows in their existing order and shape', async () => {
+    // CONTACT_LIST supplies display order and the preferred address; compose
+    // preserves both while omitting cards that have no address to select.
+    const authStore = useAuthStore();
+    authStore.accountId = 7;
+    const listContacts = vi.fn(async () => [
+      {
+        id: 3,
+        remote_id: 'zed',
+        addressbook_ids: [10],
+        display_name: 'Zed',
+        organization: null,
+        email: 'zed@example.com',
+      },
+      {
+        id: 4,
+        remote_id: 'no-address',
+        addressbook_ids: [10],
+        display_name: 'No address',
+        organization: null,
+        email: null,
+      },
+      {
+        id: 5,
+        remote_id: 'ada',
+        addressbook_ids: [10],
+        display_name: 'Ada',
+        organization: null,
+        email: 'ada@example.com',
+      },
+    ]);
+    __setRepositoryForTests({ listContacts });
+    const { wrapper } = await mountOpenCompose();
+
+    await recipientInput(wrapper, 'To').trigger('keydown', { key: 'ArrowDown' });
+    await flushPromises();
+    await nextTick();
+
+    expect(listContacts).toHaveBeenCalledWith(7);
+    expect(wrapper.findAll('.autocomplete__option').map((option) =>
+      option.attributes('aria-label'))).toEqual([
+      'Zed <zed@example.com>',
+      'Ada <ada@example.com>',
+    ]);
+  });
 });
 
 describe('ComposeDialog send control', () => {
@@ -485,6 +584,29 @@ describe('ComposeDialog send control', () => {
     expect(footerButtons(wrapper)).toContain('Send');
     expect(footerButtons(wrapper)).toContain('Discard');
     expect(wrapper.get('.compose-error').text()).toMatch(/check your sent folder/i);
+  });
+
+  it('announces a send error from an assertive live region', async () => {
+    // A failed send is the one moment the user must not miss, and
+    // StoreErrorToast stays silent while compose is open, so the inline
+    // message carries the announcement itself.
+    const { wrapper, composeStore } = await mountOpenCompose();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+
+    composeStore.error = 'The message could not be sent.';
+    await nextTick();
+
+    const alert = wrapper.get('[role="alert"]');
+    expect(alert.text()).toBe('The message could not be sent.');
+    expect(alert.attributes('aria-live')).toBe('assertive');
+    expect(alert.attributes('aria-atomic')).toBe('true');
+
+    // Nothing is rendered without an error: the card is a flex column with
+    // a gap, so an always-present region would leave a space under the
+    // footer in the state the composer is usually in.
+    composeStore.error = null;
+    await nextTick();
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 });
 

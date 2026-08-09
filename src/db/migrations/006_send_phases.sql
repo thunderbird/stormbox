@@ -31,10 +31,3 @@
 -- invitation for the runner to guess.
 
 ALTER TABLE pending_mutations ADD COLUMN phase TEXT;
-
--- Startup recovery scans for rows parked in a send phase, which is a
--- small subset of the table, so a partial index keeps it cheap without
--- competing with pending_mutations_ready for the drain path.
-CREATE INDEX pending_mutations_phase
-  ON pending_mutations(account_id, phase)
-  WHERE phase IS NOT NULL;
