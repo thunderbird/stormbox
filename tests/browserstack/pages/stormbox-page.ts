@@ -5,6 +5,7 @@ import {
   STORMBOX_BASE_URL,
   ACCTS_OIDC_PWORD,
   ACCTS_OIDC_EMAIL,
+  TIMEOUT_1_SECOND,
   TIMEOUT_2_SECONDS,
   TIMEOUT_10_SECONDS,
   TIMEOUT_30_SECONDS,
@@ -57,6 +58,12 @@ export class StormboxPage {
   readonly welcomeDialog: Locator;
   readonly getStartedButton: Locator;
   readonly manageFoldersButton: Locator;
+  readonly manageFoldersDialog: Locator;
+  readonly manageFoldersDialogHdr: Locator;
+  readonly manageFoldersDialogText: Locator;
+  readonly manageFoldersDialogSearchInput: Locator;
+  readonly manageFoldersDialogCloseBtn: Locator;
+  readonly manageFoldersDialogExpandBtn: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -102,6 +109,12 @@ export class StormboxPage {
     this.welcomeDialog = page.getByRole('dialog', { name: /welcome to thundermail/i });
     this.getStartedButton = page.getByRole('button', { name: /^get started$/i });
     this.manageFoldersButton = page.getByRole('button', { name: 'Manage Folders' });
+    this.manageFoldersDialog = page.getByRole('dialog', { name: 'Manage Folders' });
+    this.manageFoldersDialogHdr = this.manageFoldersDialog.getByRole('heading', { name: 'Manage Folders', level: 2 });
+    this.manageFoldersDialogText = this.manageFoldersDialog.getByText('Drag a folder to move it, or select several to delete them');
+    this.manageFoldersDialogSearchInput = this.manageFoldersDialog.locator('.folder-subs__search-input');
+    this.manageFoldersDialogCloseBtn = this.manageFoldersDialog.getByRole('button', { name: 'Close manage folders' });
+    this.manageFoldersDialogExpandBtn = this.manageFoldersDialog.getByRole('button', { name: 'Expand default folders' });
   }
 
   async navigate() {
@@ -183,6 +196,7 @@ export class StormboxPage {
     await this.exerciseFolderListToggle(projectName);
     await this.exerciseComposeDialog();
     await this.exerciseFolderNavigation();
+    await this.exerciseManageFoldersDialog();
     await this.exerciseContactsView();
     await this.exerciseWelcomeModal();
     await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN);
@@ -279,6 +293,36 @@ export class StormboxPage {
 
     await this.clickFolder('Inbox');
     await this.page.waitForTimeout(TIMEOUT_2_SECONDS / 2);
+  }
+
+  private async exerciseManageFoldersDialog() {
+    // we need the folders list panel to be open in order to click the manage folders button
+    // on mobile the folders list panel is closed by default, on desktop open by default
+    if (await this.showFolderListButton.isVisible().catch(() => false)) {
+      await this.showFolderList();
+    }
+
+    // now open the manage folders dialog and exercise the basic controls (just a smoke test)
+    // actually adding/modifying/deleting folders will be done in a separate folders test
+    await expect(this.manageFoldersButton).toBeVisible();
+    await this.manageFoldersButton.click();
+    await expect(this.manageFoldersDialog).toBeVisible();
+    await expect(this.manageFoldersDialogHdr).toBeVisible();
+    await expect(this.manageFoldersDialogText).toBeVisible();
+    await expect(this.manageFoldersDialogSearchInput).toBeVisible();
+
+    // click the button to expand/view the default folders and verify
+    await this.manageFoldersDialogExpandBtn.click();
+    await this.page.waitForTimeout(TIMEOUT_1_SECOND); // so can capture on BrowserStack video
+    for (const folderName of FOLDER_NAMES_TO_EXERCISE) {
+      await expect(this.page.locator('.folder-subs__name', { hasText: folderName })).toBeVisible();
+    }
+
+    // finished, close the manage folders dialog
+    await expect(this.manageFoldersDialogCloseBtn).toBeVisible();
+    await this.manageFoldersDialogCloseBtn.click();
+    await this.page.waitForTimeout(TIMEOUT_2_SECONDS);
+    await expect(this.manageFoldersDialog).not.toBeVisible();
   }
 
   private async exerciseContactsView() {
