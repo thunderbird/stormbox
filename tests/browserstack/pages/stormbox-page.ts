@@ -42,6 +42,7 @@ export class StormboxPage {
   readonly logOutMenuItem: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
+  readonly inboxEmptyText: Locator;
   readonly messageCount: Locator;
   readonly messageRefreshButton: Locator;
   readonly loadingInboxMessage: Locator;
@@ -55,6 +56,7 @@ export class StormboxPage {
   readonly cancelContactButton: Locator;
   readonly welcomeDialog: Locator;
   readonly getStartedButton: Locator;
+  readonly manageFoldersButton: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -83,6 +85,7 @@ export class StormboxPage {
     this.logOutMenuItem = page.getByRole('menuitem', { name: /log out/i });
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
+    this.inboxEmptyText = page.getByText('Inbox is empty');
     this.messageCount = page.locator('.msg-list__count');
     this.messageRefreshButton = page.locator('.msg-list__refresh');
     this.loadingInboxMessage = page.locator('.msg-list__loader, .msg-list__placeholder')
@@ -98,6 +101,7 @@ export class StormboxPage {
     this.cancelContactButton = page.locator('.contacts__form').getByRole('button', { name: /^cancel$/i });
     this.welcomeDialog = page.getByRole('dialog', { name: /welcome to thundermail/i });
     this.getStartedButton = page.getByRole('button', { name: /^get started$/i });
+    this.manageFoldersButton = page.getByRole('button', { name: 'Manage Folders' });
   }
 
   async navigate() {
@@ -193,8 +197,12 @@ export class StormboxPage {
     await this.assertAccountMenuItemsVisible();
     await expect(this.selectAllMessagesCheckbox).toBeVisible();
     await expect(this.unreadFilterButton).toBeVisible();
-    await expect(this.messageCount).toHaveText(/\d+\s+messages?/i, { timeout: TIMEOUT_60_SECONDS });
     await expect(this.messageRefreshButton).toBeVisible();
+
+    // the inbox might have messages and might not; if there are messages check for message count
+    if (! await this.isInboxEmptyTextVisible(TIMEOUT_10_SECONDS)) {
+      await expect(this.messageCount).toHaveText(/\d+\s+messages?/i, { timeout: TIMEOUT_60_SECONDS });
+    }
   }
 
   private async exerciseQuickFilter() {
@@ -431,6 +439,15 @@ export class StormboxPage {
     try {
       await expect(this.thundermailMenu).toBeVisible({ timeout });
       await expect(this.quickFilter).toBeVisible({ timeout });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isInboxEmptyTextVisible(timeout: number) {
+    try {
+      await expect(this.inboxEmptyText).toBeVisible({ timeout });
       return true;
     } catch {
       return false;
