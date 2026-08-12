@@ -35,7 +35,7 @@ jobs:
     name: ${{ inputs.job_name }}
     runs-on: ubuntu-latest
     environment:
-      name: production
+      name: prod
       deployment: false
     env:
       ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
