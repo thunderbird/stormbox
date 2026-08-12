@@ -102,7 +102,7 @@ export default defineConfig({
   
       /* Test against mobile viewports. */
     {
-      name: 'Google-Pixel-7-View',
+      name: 'android-viewport',
       use: {
         ...devices['Pixel 7'],
         screenshot: 'only-on-failure',

@@ -45,7 +45,7 @@ These commands run the UI smoke test on your machine against the deployed `STORM
 npm run e2e:desktop:firefox:smoke
 npm run e2e:desktop:chrome:smoke
 npm run e2e:desktop:safari:smoke
-npm run e2e:mobile:google:pixel:viewport:smoke
+npm run e2e:mobile:android:viewport:smoke
 ```
 
 ## UI Smoke Test BrowserStack Runs
@@ -67,7 +67,7 @@ These commands run all of the UI E2E tests on your machine against the deployed 
 npm run e2e:desktop:firefox
 npm run e2e:desktop:chrome
 npm run e2e:desktop:safari
-npm run e2e:mobile:google:pixel:viewport
+npm run e2e:mobile:android:viewport
 ```
 
 ## Entire Suite BrowserStack Runs
@@ -81,4 +81,4 @@ npm run e2e:browserstack:desktop:safari
 npm run e2e:browserstack:mobile:android:chrome
 ```
 
-Desktop runs authenticate once in `tests/desktop/auth.desktop.ts` and save `test-results/.auth/user.json`. Android mobile runs sign in through the UI for each test because BrowserStack mobile contexts cannot use the saved desktop auth state.
+Desktop runs authenticate once in `tests/auth.desktop.ts` and save `test-results/.auth/user.json`. Android mobile runs sign in through the UI for each test because BrowserStack mobile contexts cannot use the saved desktop auth state.
