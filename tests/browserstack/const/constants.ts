@@ -10,7 +10,6 @@ export const PLAYWRIGHT_TAG_MOBILE = '@stormbox-mobile';
 export const PLAYWRIGHT_TAG_DESKTOP_SMOKE = '@stormbox-smoke-desktop';
 export const PLAYWRIGHT_TAG_MOBILE_SMOKE = '@stormbox-smoke-mobile';
 
-export const TIMEOUT_1_SECOND = 1_000;
 export const TIMEOUT_2_SECONDS = 2_000;
 export const TIMEOUT_5_SECONDS = 5_000;
 export const TIMEOUT_10_SECONDS = 10_000;
