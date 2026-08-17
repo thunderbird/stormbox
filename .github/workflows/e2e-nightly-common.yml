@@ -15,6 +15,17 @@ on:
       npm_script:
         required: true
         type: string
+    secrets:
+      E2E_ACCTS_OIDC_EMAIL:
+        required: true
+      E2E_ACCTS_OIDC_PWORD:
+        required: true
+      E2E_PRIMARY_THUNDERMAIL_EMAIL:
+        required: true
+      BROWSERSTACK_USERNAME:
+        required: true
+      BROWSERSTACK_ACCESS_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -24,7 +35,7 @@ jobs:
     name: ${{ inputs.job_name }}
     runs-on: ubuntu-latest
     environment:
-      name: production
+      name: prod
       deployment: false
     env:
       ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
