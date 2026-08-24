@@ -122,6 +122,24 @@ async function readEmail(jmap, emailId) {
   return pickResponse(payload, 'Email/get')?.list?.[0] ?? null;
 }
 
+/** Threading fields persisted in the signed-in account's local SQLite row. */
+async function readCachedThreading(page, emailId) {
+  return page.evaluate(async (remoteId) => {
+    if (!globalThis.__repo) return null;
+    const accounts = await globalThis.__repo.listAccounts();
+    const accountId = accounts?.[0]?.id;
+    if (accountId == null) return null;
+    const rows = await globalThis.__repo.call('db.query', {
+      sql: `SELECT rfc822_message_id, in_reply_to_json, references_json
+              FROM messages
+             WHERE account_id = ? AND remote_id = ?
+             LIMIT 1`,
+      params: [accountId, remoteId],
+    });
+    return rows?.[0] ?? null;
+  }, emailId);
+}
+
 /**
  * Find a message by exact subject among the newest rows of a mailbox.
  *
@@ -254,6 +272,25 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       expect(reply.inReplyTo, 'In-Reply-To must name the parent').toEqual([parentMessageId]);
       expect(reply.references, 'References must include the parent')
         .toContain(parentMessageId);
+
+      // The cache leg of CS-5.4: the same fields must survive the
+      // server-to-SQLite mapping rather than existing only on the wire.
+      await expect.poll(async () => {
+        const cached = await readCachedThreading(page, replyId);
+        if (!cached) return null;
+        return {
+          messageId: cached.rfc822_message_id,
+          inReplyTo: JSON.parse(cached.in_reply_to_json ?? 'null'),
+          references: JSON.parse(cached.references_json ?? 'null'),
+        };
+      }, {
+        timeout: 30_000,
+        message: 'the local Sent row should preserve the reply threading fields',
+      }).toEqual({
+        messageId: reply.messageId?.[0],
+        inReplyTo: reply.inReplyTo,
+        references: reply.references,
+      });
 
       // And the copy that arrived carries them too, which is what another
       // client threads on.

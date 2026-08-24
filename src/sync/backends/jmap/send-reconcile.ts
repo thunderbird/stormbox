@@ -26,7 +26,7 @@ import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 
 /** How many recent messages to scan when matching a Message-ID. */
-const MESSAGE_ID_SCAN_LIMIT = 50;
+const MESSAGE_ID_SCAN_LIMIT = 100;
 
 function bareMessageId(messageId: string): string {
   return messageId.replace(/^<|>$/g, '');

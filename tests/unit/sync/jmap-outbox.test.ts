@@ -1720,6 +1720,22 @@ describe('drainOutbox', () => {
     transport.handle('Email/query', () => ({
       ids: ['em-new'], position: 0, total: 1, queryState: 'qs2',
     }));
+    transport.handle('Mailbox/get', (params) => {
+      expect(params).toMatchObject({
+        ids: ['mb-sent'],
+        properties: ['id', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'],
+      });
+      return {
+        list: [{
+          id: 'mb-sent',
+          totalEmails: 11,
+          unreadEmails: 4,
+          totalThreads: 8,
+          unreadThreads: 3,
+        }],
+        state: 'ms2',
+      };
+    });
 
     const result = await processMutationRow({
       transport,
@@ -1740,6 +1756,16 @@ describe('drainOutbox', () => {
       [account.id],
     );
     expect(Number(inView.n)).toBe(1);
+    expect(await engine.get(
+      `SELECT total_emails, unread_emails, total_threads, unread_threads
+         FROM folders WHERE id = ?`,
+      [sent.id],
+    )).toEqual({
+      total_emails: 11,
+      unread_emails: 4,
+      total_threads: 8,
+      unread_threads: 3,
+    });
   });
 
   it('never issues a submission when the create response is missing', async () => {

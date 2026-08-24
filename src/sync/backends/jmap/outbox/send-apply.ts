@@ -234,11 +234,14 @@ export async function applySendLocally({
   if (mailbox && mailbox.id === sentRemoteId) {
     await handlers[DB_RPC.QUERY]({
       sql: `UPDATE folders
-               SET total_emails = ?, unread_emails = ?, updated_at = ?
+               SET total_emails = ?, unread_emails = ?,
+                   total_threads = ?, unread_threads = ?, updated_at = ?
              WHERE account_id = ? AND remote_id = ?`,
       params: [
         Number(mailbox.totalEmails ?? 0),
         Number(mailbox.unreadEmails ?? 0),
+        Number(mailbox.totalThreads ?? 0),
+        Number(mailbox.unreadThreads ?? 0),
         Date.now(),
         account.id,
         sentRemoteId,

@@ -129,6 +129,19 @@ describe('findEmailByMessageId', () => {
     return transport;
   }
 
+  it('bounds reconciliation to the newest 100 messages', async () => {
+    const transport = new MockTransport();
+    transport.handle('Email/query', (params) => {
+      expect(params.limit).toBe(100);
+      return { ids: [], queryState: 'qs' };
+    });
+    transport.handle('Email/get', () => ({ list: [], state: 'es' }));
+
+    await findEmailByMessageId({
+      transport, account, mailboxId: 'mb-drafts', messageId,
+    });
+  });
+
   it('finds the message it stamped, ignoring the angle brackets', async () => {
     // Servers are inconsistent about whether messageId values carry them.
     const transport = scan([

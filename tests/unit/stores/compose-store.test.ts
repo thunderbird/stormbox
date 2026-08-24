@@ -580,6 +580,19 @@ describe('compose-store send safety', () => {
     return JSON.parse(lastRepo.insertPendingMutation.mock.calls[0][0].requestJson);
   }
 
+  it('queues at most one mutation while a send is in flight', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+
+    const firstSend = composeStore.send();
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    await expect(firstSend).resolves.toBe(true);
+    expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
+  });
+
   it('sends a message addressed only in Cc', async () => {
     // Any of the three fields carries the message; requiring To refuses a
     // send the user has every right to make (CS-2.2).
