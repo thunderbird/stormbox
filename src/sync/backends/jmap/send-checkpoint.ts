@@ -77,19 +77,37 @@ export function makeMessageId(identityEmail: string | null | undefined): string 
  * generators to keep them ASCII so the id survives non-6532 handling,
  * which is what this does.
  *
- * `URL` performs IDNA for us in both the worker and Node. A domain it
- * cannot parse is dropped rather than guessed at, leaving the caller's
+ * ASCII input is checked directly against the `id-right` grammar. `URL`
+ * performs IDNA for an internationalised domain in both the worker and
+ * Node, after which the ASCII result is checked by the same grammar. An
+ * invalid domain is dropped rather than guessed at, leaving the caller's
  * fallback to produce a syntactically valid id.
  */
 function asciiDomain(domain: string): string {
   if (!domain) return '';
-  if (isAscii(domain)) return domain;
+  if (isAscii(domain)) return isMessageIdRight(domain) ? domain : '';
   try {
-    const { hostname } = new URL(`http://${domain}`);
-    return isAscii(hostname) ? hostname : '';
+    const parsed = new URL(`http://${domain}`);
+    if (parsed.username || parsed.password || parsed.port
+        || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+      return '';
+    }
+    return isAscii(parsed.hostname) && isMessageIdRight(parsed.hostname)
+      ? parsed.hostname
+      : '';
   } catch {
     return '';
   }
+}
+
+/** RFC 5322 §3.6.4 `id-right`: dot-atom-text or no-fold-literal. */
+function isMessageIdRight(value: string): boolean {
+  if (value.startsWith('[') && value.endsWith(']')) {
+    return /^[\x21-\x5a\x5e-\x7e]*$/.test(value.slice(1, -1));
+  }
+  return value.split('.').every(
+    (atom) => atom.length > 0 && /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]+$/.test(atom),
+  );
 }
 
 function isAscii(value: string): boolean {

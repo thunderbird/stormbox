@@ -750,35 +750,24 @@ describe('OutboxRunner replay safety', () => {
     await runner.stop();
   });
 
-  it('conflicts a stranded send that recorded no phase', async () => {
-    // Written before checkpoints existed, so there is no evidence of how
-    // far it got and a replay could deliver a second copy.
+  it('resumes a stranded send that never recorded its first phase', async () => {
+    // The first checkpoint precedes Email creation and submission, so a
+    // phaseless row cannot conceal an irreversible send.
     const mutationId = await insertSend();
     await strand(mutationId);
 
-    const attempted = [];
     const runner = new OutboxRunner({
       accountId,
       handlers,
-      processRow: async (row) => {
-        attempted.push(row.id);
-        return { ok: true };
-      },
+      processRow: async () => ({ ok: true }),
       options: { notifyDelayMs: 0, ...PHASE_POLICY },
     });
     await runner.recoverStranded();
 
     const row = await loadRow(mutationId);
-    expect(row.local_status).toBe('conflicted');
-    const error = JSON.parse(row.error_json);
-    expect(error.type).toBe('outcomeUnknown');
-    expect(error.terminal).toBe(true);
-    // The request payload is still there for recovery.
+    expect(row.local_status).toBe('pending');
+    expect(row.error_json).toBeNull();
     expect(JSON.parse(row.request_json).to[0].email).toBe('a@b.test');
-
-    // A drain must not pick it back up.
-    await runner.drain();
-    expect(attempted).toEqual([]);
     await runner.stop();
   });
 
@@ -855,7 +844,7 @@ describe('OutboxRunner replay safety', () => {
     await runner.stop();
   });
 
-  it('recovers a stranded non-send row while conflicting a phaseless send', async () => {
+  it('recovers stranded non-send and phaseless-send rows together', async () => {
     const localMsg = await seedMessage('e-2');
     const keywordsId = await insertSetKeywords({ targetMessageId: localMsg });
     const sendId = await insertSend();
@@ -871,7 +860,7 @@ describe('OutboxRunner replay safety', () => {
     await runner.recoverStranded();
 
     expect((await loadRow(keywordsId)).local_status).toBe('pending');
-    expect((await loadRow(sendId)).local_status).toBe('conflicted');
+    expect((await loadRow(sendId)).local_status).toBe('pending');
     await runner.stop();
   });
 

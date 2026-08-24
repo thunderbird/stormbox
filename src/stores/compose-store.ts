@@ -603,6 +603,7 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   async function send(): Promise<boolean> {
+    if (status.value === COMPOSE_STATE.SENDING) return false;
     if (!repo || authStore.accountId == null) return failSend('Not connected.');
     const identity = fromIdentity.value;
     if (!identity) return failSend('No identities are configured.');

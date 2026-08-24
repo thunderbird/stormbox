@@ -87,7 +87,9 @@ export async function clearRecipients(page, label) {
   for (let remaining = await pills.count(); remaining > 0; remaining -= 1) {
     await pills.first().locator('.pill__remove').click();
   }
-  await recipientInput(page, label).fill('');
+  const input = recipientInput(page, label);
+  // Empty Cc/Bcc rows collapse after their last pill is removed.
+  if (await input.count() > 0) await input.fill('');
 }
 
 /**

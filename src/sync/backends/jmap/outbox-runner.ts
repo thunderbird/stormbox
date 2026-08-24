@@ -206,11 +206,14 @@ export class OutboxRunner {
    *   - before that point (`replayablePhases`): nothing irreversible
    *     happened, and the checkpoint says exactly what to skip, so the
    *     row is replayable.
-   *   - anything else, including no phase at all: the outcome is
-   *     unknowable, so it becomes conflicted for the user to decide —
-   *     the same choice Thunderbird and Roundcube make for an ambiguous
-   *     send. This covers a crash while the submission was in flight,
-   *     which is indistinguishable from a delivered message.
+   *   - no phase: the worker died before recording the first checkpoint,
+   *     which precedes Email creation and submission, so the row is safe
+   *     to replay from the start.
+   *   - any other recorded phase: the outcome is unknowable, so it becomes
+   *     conflicted for the user to decide — the same choice Thunderbird
+   *     and Roundcube make for an ambiguous send. This covers a crash while
+   *     the submission was in flight, which is indistinguishable from a
+   *     delivered message.
    *
    * `attempts` is deliberately preserved so a row that already burned
    * retries keeps aging toward the cap instead of starting over.
@@ -231,7 +234,7 @@ export class OutboxRunner {
                  AND local_status = 'in_flight'
                  AND mutation_type IN (${types})
                  ${resumable.length > 0
-                    ? `AND (phase IS NULL OR phase NOT IN (${resumable.map(() => '?').join(',')}))`
+                    ? `AND phase NOT IN (${resumable.map(() => '?').join(',')})`
                     : ''}`,
         params: [
           // `outcomeUnknown` is the type every park path records, here and
