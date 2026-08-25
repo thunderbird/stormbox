@@ -331,10 +331,11 @@ non-throttled call goes through.
 
 ## Authentication and secure context
 
-The dev server runs on HTTPS with a self-signed cert
-(`@vitejs/plugin-basic-ssl`). Browsers gate SharedWorker, IndexedDB
-transactions, and SubtleCrypto on a secure context (HTTPS or
-`http://localhost`); a plain HTTP origin silently disables them.
+The dev server runs on `http://localhost:3000`. Browsers gate SharedWorker,
+IndexedDB transactions, and SubtleCrypto on a secure context (HTTPS or
+loopback), so those APIs are available there; a plain HTTP origin on any
+other hostname silently disables them, which is what `VITE_DEV_HTTPS=1`
+and its self-signed cert (`@vitejs/plugin-basic-ssl`) are for.
 
 Authentication has two paths: Keycloak OIDC on hosted/development
 flows, and basic username/password for self-hosters. Both feed

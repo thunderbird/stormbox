@@ -7,7 +7,7 @@ import {
 
 const APP_ORIGIN = new URL(
   process.env.PLAYWRIGHT_BASE_URL
-    ?? `https://localhost:${process.env.PLAYWRIGHT_PORT ?? 3000}`,
+    ?? `http://localhost:${process.env.PLAYWRIGHT_PORT ?? 3000}`,
 ).origin;
 
 /**
@@ -62,7 +62,7 @@ export async function loginViaOidc(page) {
   // through to form fill.
   await signInBtn.click();
 
-  // Keycloak login is proxied at /realms/tbpro on the Vite HTTPS origin.
+  // Keycloak login is proxied at /realms/tbpro on the Vite origin.
   await page.waitForURL(/\/realms\/tbpro/, { timeout: 15_000 });
 
   if (/\/realms\/tbpro/.test(page.url())) {

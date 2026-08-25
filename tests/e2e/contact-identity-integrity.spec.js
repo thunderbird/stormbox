@@ -219,14 +219,14 @@ test.describe('Contact and identity integrity', () => {
       await expect.poll(async () => {
         const found = await findDelivered(recipient, inbox.id, subject);
         deliveredId = found?.id ?? deliveredId;
-        return found?.from?.[0]?.email ?? null;
+        return found?.from?.[0] ?? null;
       }, {
         // Under the per-test budget: delivery inside the local stack is
         // immediate, so a slow poll here only hides the failure behind a
         // timeout that says nothing.
         timeout: 30_000,
-        message: 'the message should arrive addressed from the alias',
-      }).toBe(alias);
+        message: 'the message should arrive with the selected identity name and address',
+      }).toEqual({ name: 'Alias E2E', email: alias });
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (deliveredId) {

@@ -4,7 +4,7 @@ This directory defines the local Docker service used for Stormbox development.
 It can be attached to as a VS Code/Cursor devcontainer, but it is also useful as
 a plain Docker Compose service. The running container is named
 `thundermail-dev`, mounts the project at `/workspace`, and exposes Vite on
-`https://localhost:3000`.
+`http://localhost:3000`.
 
 ## Quick Start
 
@@ -17,7 +17,9 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run dev'
 ```
 
-Open **https://localhost:3000** and accept the self-signed certificate once.
+Open **http://localhost:3000**. Loopback is a secure context, so no certificate
+setup is required. Set `VITE_DEV_HTTPS=1` only when browsing through a
+non-loopback hostname.
 
 `./scripts/local-stack-up.sh` starts the minimal local auth/mail stack
 (Keycloak, Keycloak's Postgres, and Stalwart), starts `thundermail-dev`, runs
@@ -26,7 +28,7 @@ auth proxy inside the container. Stalwart stores local mail in RocksDB; Postgres
 is only for Keycloak unless you opt into the Thunderbird Accounts UI with
 `WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`. Dev defaults live in
 `.env.development` and route Keycloak, Stalwart JMAP, WebSocket auth, and sender
-avatar requests through the HTTPS Vite origin.
+avatar requests through the HTTP Vite origin.
 
 ## Optional Devcontainer Attach
 
@@ -79,7 +81,7 @@ VITE_JMAP_SERVER_URL=https://jmap.stage-thundermail.com
 ## Troubleshooting
 
 - Verify Docker is running with `docker ps`.
-- If `https://localhost:3000` is unavailable, check whether `thundermail-dev` is
+- If `http://localhost:3000` is unavailable, check whether `thundermail-dev` is
   running and whether another process already owns port `3000`.
 - If local-stack auth or JMAP calls fail, re-run `./scripts/local-stack-up.sh`.
 - If dependencies are missing after starting with plain Docker Compose, run

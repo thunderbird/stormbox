@@ -160,8 +160,9 @@ jobs:
           done
 
       # PLAYWRIGHT_NO_REUSE=1 makes playwright.config.js spawn
-      # `npm run dev` against the self-signed HTTPS dev origin. LOCAL_STACK=1
-      # runs the live Keycloak/Stalwart specs instead of the smoke-only lane.
+      # `npm run dev` against the certificate-free HTTP loopback origin.
+      # LOCAL_STACK=1 runs the live Keycloak/Stalwart specs instead of the
+      # smoke-only lane.
       - name: Run Playwright local-stack tests
         env:
           PLAYWRIGHT_NO_REUSE: "1"

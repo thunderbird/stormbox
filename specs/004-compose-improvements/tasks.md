@@ -1,13 +1,13 @@
 # Tasks: Compose Improvements
 
-**Input**: [spec.md](./spec.md), [plan.md](./plan.md)
+**Input**: [spec.md](./spec.md)
 **Format**: `[ID] [P?] Description` — `[P]` means parallelizable with the
 task above it.
 
 **Landing order is 1, 3, 2, 6, 4, 5, 7** — durable send phases come
-before the recipient model, per the sequencing rationale in
-[plan.md](./plan.md). Phase numbers match work-package numbers, not
-landing order.
+before the recipient model so Cc/Bcc is not exposed before unknown send
+outcomes stop safely. Phase numbers match work-package numbers, not landing
+order.
 
 All `npm` and `playwright` commands run inside the `stormbox-compose`
 container. Git runs on the **host**: the worktree's `.git` file points
@@ -32,11 +32,11 @@ same origin and a Keycloak client registered for it:
 
 ```bash
 docker exec -d stormbox-compose bash -c 'cd /workspace && \
-  VITE_LOCAL_PUBLIC_ORIGIN=https://localhost:3001 \
-  VITE_OIDC_ISSUER=https://localhost:3001/realms/tbpro \
+  VITE_LOCAL_PUBLIC_ORIGIN=http://localhost:3001 \
+  VITE_OIDC_ISSUER=http://localhost:3001/realms/tbpro \
   VITE_OIDC_CLIENT_ID=stormbox-compose \
-  VITE_JMAP_SERVER_URL=https://localhost:3001/stalwart-jmap \
-  VITE_SENDER_AVATAR_PROXY_URL=https://localhost:3001/sender-avatar \
+  VITE_JMAP_SERVER_URL=http://localhost:3001/stalwart-jmap \
+  VITE_SENDER_AVATAR_PROXY_URL=http://localhost:3001/sender-avatar \
   npm run dev > /tmp/vite.log 2>&1'
 ```
 
@@ -50,7 +50,7 @@ makes a non-default origin work locally.
 ## Phase 0 — Specification
 
 - [x] T001 Write `specs/004-compose-improvements/spec.md`
-- [x] T002 Write `specs/004-compose-improvements/plan.md`
+- [x] T002 Define the implementation approach and work-package order
 - [x] T003 Write `specs/004-compose-improvements/tasks.md`
 - [x] T004 Amend R-4.4 in `specs/001-mvp-scope/spec.md` so a durable
       checkpoint between Email creation and submission is permitted, and

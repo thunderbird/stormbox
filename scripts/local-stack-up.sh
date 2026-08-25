@@ -101,7 +101,7 @@ echo "[local-stack] ensuring local JMAP WebSocket auth proxy"
 cat <<'EOF'
 [local-stack] ready
 
-Open Stormbox at https://localhost:3000 after starting the dev server:
+Open Stormbox at http://localhost:3000 after starting the dev server:
   docker compose -f .devcontainer/docker-compose.yml exec app bash -c 'cd /workspace && npm run dev'
 EOF
 

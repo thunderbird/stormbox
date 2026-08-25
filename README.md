@@ -18,9 +18,11 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run dev'
 ```
 
-Open **https://localhost:3000**. The dev server uses a self-signed certificate
-so browser APIs required by Stormbox, including `SharedWorker` and local storage
-APIs, are available.
+Open **http://localhost:3000**. Loopback counts as a secure context, so the
+browser APIs Stormbox requires, including `SharedWorker` and local storage
+APIs, are available without a certificate. Reaching the dev server through a
+non-loopback hostname needs `VITE_DEV_HTTPS=1`, which serves the same port over
+self-signed HTTPS.
 
 ## Local Mail Stack
 
@@ -58,9 +60,9 @@ E2E tests seed their own baseline inbox/archive data as needed.
 ## Configuration
 
 The app defaults to the local stack during development through
-`.env.development`: Vite keeps Stormbox on self-signed HTTPS and reverse-proxies
-Keycloak, Stalwart JMAP HTTP (`/stalwart-jmap`), the local WebSocket auth
-bridge (`/jmap/ws`), and sender avatar lookups through `https://localhost:3000`.
+`.env.development`: Vite reverse-proxies Keycloak, Stalwart JMAP HTTP
+(`/stalwart-jmap`), the local WebSocket auth bridge (`/jmap/ws`), and sender
+avatar lookups through `http://localhost:3000`.
 
 Hosted stage/prod builds use a single Cloudflare Worker at `infra/jmap-bridge/`
 by default. That bridge fronts both halves of JMAP transport on

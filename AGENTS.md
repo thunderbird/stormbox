@@ -185,13 +185,14 @@ Stormbox-local setup should be handled from this repo (for example
 via `tests/fixtures/configure-*`) so the parent repo can remain
 pinned to an upstream submodule commit.
 
-Stormbox stays on **HTTPS with a self-signed cert**
-(`@vitejs/plugin-basic-ssl`) so the secure-context APIs Stormbox
-relies on (SharedWorker, IndexedDB, SubtleCrypto) work. Keycloak
-(:8999) and Stalwart JMAP (:8081) are plain HTTP on the host; when
-`VITE_LOCAL_STACK=1`, Vite reverse-proxies them through
-`https://localhost:3000` (`/realms/*`, `/stalwart-jmap/*`, `/jmap/ws`
-→ local WS proxy).
+Stormbox serves **plain HTTP on `http://localhost:3000`**. Loopback is a
+secure context, so the APIs Stormbox relies on (SharedWorker, IndexedDB,
+SubtleCrypto) work there; a non-loopback hostname over http does not
+qualify, and `VITE_DEV_HTTPS=1` switches to a self-signed cert
+(`@vitejs/plugin-basic-ssl`) for that case. Keycloak (:8999) and Stalwart
+JMAP (:8081) are plain HTTP on the host; when `VITE_LOCAL_STACK=1`, Vite
+reverse-proxies them through `http://localhost:3000` (`/realms/*`,
+`/stalwart-jmap/*`, `/jmap/ws` → local WS proxy).
 
 ```bash
 # 1. Start Keycloak + Stalwart + Accounts (host or dev container with Docker)
