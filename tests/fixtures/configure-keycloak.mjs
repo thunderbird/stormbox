@@ -18,7 +18,7 @@ function stackHost() {
 const host = stackHost();
 const KEYCLOAK_BASE = process.env.KEYCLOAK_BASE_URL ?? `http://${host}:8999`;
 const REALM = process.env.KEYCLOAK_REALM ?? 'tbpro';
-const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? 'https://localhost:3000';
+const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? 'http://localhost:3000';
 const ADMIN_USER = process.env.KEYCLOAK_ADMIN_USER ?? 'admin';
 const ADMIN_PASSWORD = process.env.KEYCLOAK_ADMIN_PASSWORD ?? 'admin';
 const DEV_OIDC_USERNAME = process.env.DEV_OIDC_USERNAME ?? 'admin@example.org';

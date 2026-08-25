@@ -5,22 +5,20 @@ import zlib from "node:zlib";
 /**
  * Vite dev-server proxies for LOCAL_STACK=1.
  *
- * Stormbox must stay on HTTPS (self-signed via @vitejs/plugin-basic-ssl) so
- * OPFS / SharedWorker / SubtleCrypto work. Keycloak and Stalwart speak plain
- * HTTP on the docker host, so we reverse-proxy them through the Vite origin
- * and rewrite Keycloak's advertised URLs to this worktree's own public
- * origin, which is `VITE_LOCAL_PUBLIC_ORIGIN` and defaults to
- * https://localhost:3000.
+ * Keycloak and Stalwart speak plain HTTP on the docker host, so we
+ * reverse-proxy them through the Vite origin and rewrite Keycloak's
+ * advertised URLs to this worktree's own public origin, which is
+ * `VITE_LOCAL_PUBLIC_ORIGIN` and defaults to http://localhost:3000.
  */
 
-const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? "https://localhost:3000";
+const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? "http://localhost:3000";
 // The shared Keycloak realm pins `frontendUrl` to one origin, and Keycloak
 // honours that over X-Forwarded-* headers, so every worktree that is not
 // served on that origin receives a discovery document pointing at another
 // worktree's port. Rewriting it here — per worktree, in this proxy — lets
 // several dev instances share one realm without any of them mutating
 // realm-wide state that the others depend on.
-const KEYCLOAK_FRONTEND_ORIGIN = process.env.KEYCLOAK_FRONTEND_ORIGIN ?? "https://localhost:3000";
+const KEYCLOAK_FRONTEND_ORIGIN = process.env.KEYCLOAK_FRONTEND_ORIGIN ?? "http://localhost:3000";
 const EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
 
 function publicOriginParts() {
@@ -32,7 +30,7 @@ function publicOriginParts() {
       proto: url.protocol.replace(":", ""),
     };
   } catch {
-    return { host: "localhost:3000", port: "3000", proto: "https" };
+    return { host: "localhost:3000", port: "3000", proto: "http" };
   }
 }
 

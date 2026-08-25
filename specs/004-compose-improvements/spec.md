@@ -263,3 +263,21 @@ later work has a home rather than being absorbed silently:
 - **Compose warnings** for empty subject or body, duplicate recipients,
   and large visible recipient lists.
 - **Contact groups and organization-directory suggestion sources.**
+
+## Open review follow-ups
+
+These are the remaining actionable items from the compose reviews. They do
+not change the requirement status overview above unless a requirement id is
+named explicitly.
+
+| ID | Priority | Follow-up |
+|:--|:--|:--|
+| S10 | Low — investigate | Determine whether an uncaught local database exception can reach the outbox runner's catch-all and be mislabeled as a `transport` failure. The review did not identify a concrete escaping call site. |
+| P4 | Low — CS-2.3 | Reject an unpaired UTF-16 surrogate in an unquoted display-name atom without rejecting valid astral characters represented by a surrogate pair. |
+| P5 | Low | Quote a display name such as `Alice B. Smith` when emitting it as a strict RFC 5322 phrase rather than relying on obsolete phrase syntax. |
+| T1 | Medium — CS-1.1 | Add a live-Stalwart E2E case containing both supported and unsupported recipients, proving the explicit envelope rejects the submission atomically instead of delivering to only the supported subset. |
+| T2 | Blocked — CS-5.5 | Terminate a real SharedWorker while `EmailSubmission/set` is in flight and verify startup recovery conflicts the row without replaying submission. The current harness can simulate the durable state but cannot terminate the worker. |
+| T3 | Low — CS-4.2 | Test an out-of-order `AddressBook`/`ContactCard` StateChange and prove the unknown-book path withholds the contact sweep. |
+| T5 | Low | Test a missing initial Email object state and a failed `needsFullSync` catch-up, including an external send arriving during snapshot paging. |
+| T6 | Low — CS-2.3 | Add the parser regression cases for P4; quoted-string surrogate rejection is covered, but the unquoted-atom case is not. |
+| T10 | Planned — CS-5.7 | Add reusable upstream address-parser corpora and differential fuzzing against independent implementations while preserving Stormbox's rejected-fragment and group-flattening semantics. |

@@ -13,6 +13,7 @@ import {
 } from "./vite.local-stack.mjs";
 
 const localStack = process.env.VITE_LOCAL_STACK === "1";
+const devHttps = process.env.VITE_DEV_HTTPS === "1";
 const publicOrigin = localStackPublicOrigin();
 
 function appHtmlConfigPlugin() {
@@ -24,21 +25,24 @@ function appHtmlConfigPlugin() {
   };
 }
 
-// Self-signed HTTPS is required so the browser treats the dev origin
-// as a secure context. OPFS, SharedWorker isolation, and SubtleCrypto
-// all refuse to expose themselves over plain http:// from a
-// non-loopback hostname. The cert is generated on first run and cached
-// under node_modules/.vite; you'll need to accept the
-// "self-signed certificate" warning once per browser.
+// Dev serves plain http on port 3000. OPFS, SharedWorker isolation and
+// SubtleCrypto need a secure context, and loopback qualifies as one, so
+// http://localhost:3000 exposes them all.
 //
-// Local-stack e2e keeps HTTPS and reverse-proxies Keycloak + Stalwart
-// through the Vite origin (see vite.local-stack.mjs) so mixed-content
-// rules do not block OIDC discovery or JMAP session fetch.
+// Reaching the dev server through one of the non-loopback `allowedHosts`
+// below is not a secure context over http and those APIs disappear. Set
+// VITE_DEV_HTTPS=1 for self-signed HTTPS in that case; the cert is
+// generated on first run and cached under node_modules/.vite, and the
+// browser asks you to accept it once.
+//
+// Local-stack e2e reverse-proxies Keycloak + Stalwart through the Vite
+// origin (see vite.local-stack.mjs), which keeps OIDC discovery and the
+// JMAP session fetch same-origin whichever scheme is in use.
 export default defineConfig({
   plugins: [
     appHtmlConfigPlugin(),
     vue(),
-    basicSsl(),
+    ...(devHttps ? [basicSsl()] : []),
     ...(localStack ? [jmapWsDevProxyPlugin()] : []),
   ],
   base: "/",

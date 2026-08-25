@@ -14,7 +14,7 @@
  *   both  — default
  *
  * Env: STAGE_USERNAME, STAGE_PASSWORD (or SANCUS_STAGE_THUNDERMAIL),
- *      PLAYWRIGHT_BASE_URL (default https://localhost:3000)
+ *      PLAYWRIGHT_BASE_URL (default http://localhost:3000)
  *
  * Run:
  *   source ~/secrets.sh
@@ -25,7 +25,7 @@ import { chromium } from '@playwright/test';
 
 const USERNAME = process.env.STAGE_USERNAME || 'sancus@stage-thundermail.com';
 const PASSWORD = process.env.STAGE_PASSWORD || process.env.SANCUS_STAGE_THUNDERMAIL;
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || 'https://localhost:3000';
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000';
 const MODE = process.env.MODE || 'both';
 const DEEP_OFFSET = Number(process.env.DEEP_OFFSET || 1500);
 const PREFETCH_BATCH = Number(process.env.PREFETCH_BATCH || 25);

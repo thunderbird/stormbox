@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = process.env.PLAYWRIGHT_PORT ? Number(process.env.PLAYWRIGHT_PORT) : 3000;
 const LOCAL_STACK = process.env.LOCAL_STACK === '1' || process.env.LOCAL_STACK === 'true';
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `https://localhost:${PORT}`;
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${PORT}`;
 
 function stackProxyDefaults() {
   const inDocker = process.env.STORMBOX_IN_DOCKER === '1' || fs.existsSync('/.dockerenv');
@@ -19,10 +19,14 @@ const stackProxies = LOCAL_STACK ? stackProxyDefaults() : {};
 
 const localStackViteEnv = LOCAL_STACK
   ? {
-      VITE_JMAP_SERVER_URL: process.env.VITE_JMAP_SERVER_URL ?? `https://localhost:${PORT}/stalwart-jmap`,
-      VITE_OIDC_ISSUER: process.env.VITE_OIDC_ISSUER ?? `https://localhost:${PORT}/realms/tbpro`,
+      VITE_JMAP_SERVER_URL: process.env.VITE_JMAP_SERVER_URL ?? `${BASE_URL}/stalwart-jmap`,
+      VITE_OIDC_ISSUER: process.env.VITE_OIDC_ISSUER ?? `${BASE_URL}/realms/tbpro`,
       VITE_OIDC_CLIENT_ID: process.env.VITE_OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test',
-      VITE_SENDER_AVATAR_PROXY_URL: process.env.VITE_SENDER_AVATAR_PROXY_URL ?? `https://localhost:${PORT}/sender-avatar`,
+      VITE_SENDER_AVATAR_PROXY_URL: process.env.VITE_SENDER_AVATAR_PROXY_URL ?? `${BASE_URL}/sender-avatar`,
+      // The proxy rewrites Keycloak's advertised origin to this value, so a
+      // lane on a non-default port needs it to follow the lane rather than
+      // fall back to the dev default.
+      VITE_LOCAL_PUBLIC_ORIGIN: process.env.VITE_LOCAL_PUBLIC_ORIGIN ?? BASE_URL,
       VITE_LOCAL_STACK: '1',
     }
   : {};

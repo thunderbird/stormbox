@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { test, expect } from '@playwright/test';
 
 import {
@@ -58,22 +55,14 @@ async function contactsRequest(jmap, methodCalls) {
 }
 
 /**
- * Recorded walkthrough of the compose, send and recipient-autocomplete
- * surface — the scope of specs/004-compose-improvements.
+ * Integrated regression coverage for the compose, send and
+ * recipient-autocomplete surface — the scope of
+ * specs/004-compose-improvements.
  *
- * One test so Playwright produces a single continuous video, narrated
- * through test.step() so the report reads in recording order. Uses the
- * default `page` fixture rather than the suite's worker-scoped
- * `sharedPage`, because that fixture builds its own BrowserContext
- * without `recordVideo` and would silently discard the video option.
- *
- * Two classes of check:
- *   - Hard assertions for the guarantees this patch introduces
- *     (CS-1.1 to CS-1.5). A regression fails the run.
- *   - Recorded observations for behaviour the spec has accepted as not
- *     yet implemented. These are collected and attached to the report
- *     rather than asserted, so the walkthrough documents reality
- *     without freezing a known gap into an expectation.
+ * This remains one test so the ordered flow can reuse the messages and
+ * contacts it creates. Every claim is an assertion; Playwright's global
+ * retain-on-failure settings provide diagnostics without generating
+ * videos or screenshots for successful runs.
  *
  * Delivery is proved against a second account. Self-addressed delivery
  * is accepted for submission but never arrives on the pinned Stalwart
@@ -83,29 +72,8 @@ async function contactsRequest(jmap, methodCalls) {
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
-test.use({ video: 'on', viewport: { width: 1440, height: 900 } });
+test.use({ viewport: { width: 1440, height: 900 } });
 test.setTimeout(900_000);
-
-const findings = [];
-// Stills and the observation log are written here so the walkthrough
-// leaves reviewable artifacts next to its video, rather than only
-// inline report attachments that a non-HTML reporter discards.
-const ARTIFACT_DIR = path.join('test-results', 'walkthrough');
-let shotIndex = 0;
-
-function record(area, observation) {
-  findings.push({ area, observation });
-}
-
-async function shot(page, name) {
-  shotIndex += 1;
-  const file = path.join(
-    ARTIFACT_DIR,
-    `${String(shotIndex).padStart(2, '0')}-${name}.png`,
-  );
-  await page.screenshot({ path: file, fullPage: false });
-  return file;
-}
 
 function suggestions(page) {
   return page.locator('.compose-dialog [role="option"]');
@@ -371,15 +339,12 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
     const mine = [];
     let contactId = null;
     const theirs = [];
-    fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 
     try {
       await test.step('Sign in and load the mailbox', async () => {
         await loginViaOidc(page);
         await waitForFolderTreeReady(page);
         await expect(page.locator('.msg-list')).toBeVisible({ timeout: 30_000 });
-        await page.waitForTimeout(900);
-        await shot(page, 'mailbox-loaded');
       });
 
       await test.step('Seed a received message from an address never written to', async () => {
@@ -418,10 +383,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         // Revealing Bcc moved focus out of the untouched Cc, which collapsed
         // and returned its toggle.
         await expect(composeRow(page, 'Cc')).toHaveCount(0);
-        record('Cc/Bcc fields (R-4.7, CS-2.1)',
-          'Cc and Bcc are both offered inline with the To row; an untouched field collapses when focus moves on, and a reply-all opens with Cc already shown.');
-        await page.waitForTimeout(1_000);
-        await shot(page, 'compose-fields-cc-bcc');
         // Leaving the empty Bcc for the Subject collapses it the same way.
         await composeSubject(page).click();
         await expect(composeRow(page, 'Bcc')).toHaveCount(0);
@@ -433,39 +394,27 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
           name: `Tester Zephyr ${stamp}`,
           email: `zephyr-${stamp}@example.org`,
         });
-        record('Autocomplete sources (CS-3.1, CS-3.3)',
-          'One contact is created for these steps. Suggestions come from the '
-          + 'address book and from addresses this account has written to; the '
-          + 'seeded mail supplies neither.');
       });
 
       await test.step('One character does not open the suggestion list', async () => {
         await typeInTo(page, 'e');
         await expect(suggestions(page), 'one character is not a query').toHaveCount(0);
-        record('Autocomplete minimum length',
-          'A single character opens nothing: the list starts at two.');
       });
 
       await test.step('An address prefix produces suggestions', async () => {
         await typeInTo(page, 'zephyr');
         const rows = await settledSuggestions(page);
         expect(rows.length, 'the seeded contact is found by its address').toBeGreaterThan(0);
-        record('Autocomplete by address prefix',
-          `${rows.length} suggestion(s): ${rows.join(' | ')}`);
         // One address, one row, however many names it was stored under
         // (CS-3.4). This used to be issue #58.
         const unique = new Set(rows.map((r) => r.toLowerCase()));
         expect(unique.size, 'each address is offered once (CS-3.4)').toBe(rows.length);
-        await shot(page, 'autocomplete-address-prefix');
-        await page.waitForTimeout(800);
       });
 
       await test.step('An upper-case prefix behaves the same as lower case', async () => {
         await typeInTo(page, 'ZEPHYR');
         const count = (await settledSuggestions(page)).length;
         expect(count, 'case is not part of the query (CS-3.5)').toBeGreaterThan(0);
-        record('Autocomplete case handling',
-          `Upper-case prefix "ZEPHYR" produced ${count} suggestion(s).`);
       });
 
       await test.step('A display name finds the contact (CS-3.1, CS-3.2)', async () => {
@@ -474,11 +423,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await typeInTo(page, 'Tester');
         const rows = await settledSuggestions(page);
         expect(rows.length, 'a name is a way in, not only an address').toBeGreaterThan(0);
-        record('Autocomplete by name (CS-3.1, CS-3.2)',
-          `Typing a name produced ${rows.length} suggestion(s): ${rows.join(' | ')}. `
-          + 'Names are matched word by word, in any order, alongside addresses.');
-        await shot(page, 'autocomplete-name-match');
-        await page.waitForTimeout(800);
       });
 
       await test.step('An incoming sender is not offered as a recipient (CS-3.3)', async () => {
@@ -488,12 +432,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
           rows,
           'an address that only ever wrote to this account is not a suggestion',
         ).toEqual([]);
-        record('Suggestion provenance (CS-3.3)',
-          `${stranger} has sent mail to this account and is in the local message `
-          + 'store, and it produced no suggestions. History is drawn from confirmed '
-          + 'outgoing recipients and the Sent folder, not from received mail.');
-        await shot(page, 'autocomplete-incoming-sender-not-offered');
-        await page.waitForTimeout(800);
       });
 
       await test.step('Keyboard selection in the suggestion list (CS-3.8, CS-3.9)', async () => {
@@ -508,8 +446,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await expect(recipientPills(page, 'To'), 'Enter takes the highlighted suggestion')
           .toHaveCount(1);
         const committed = await recipientAddresses(page, 'To');
-        record('Keyboard and ARIA in the suggestion list (CS-3.8, CS-3.9)',
-          `ArrowDown then Enter committed ${JSON.stringify(committed)} as a pill. The field carries combobox semantics: aria-expanded, aria-controls and aria-activedescendant, with the option count announced.`);
+        expect(committed).toEqual([`zephyr-${stamp}@example.org`]);
         await clearRecipients(page, 'To');
       });
 
@@ -518,10 +455,9 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await expect(suggestions(page).first()).toBeVisible();
         await suggestions(page).first().click();
         await expect(recipientPills(page, 'To')).toHaveCount(1);
-        record('Applying a suggestion by mouse',
-          `Clicking the first suggestion committed ${JSON.stringify(await recipientAddresses(page, 'To'))}.`);
+        expect(await recipientAddresses(page, 'To'))
+          .toEqual([`zephyr-${stamp}@example.org`]);
         await clearRecipients(page, 'To');
-        await page.waitForTimeout(500);
       });
 
       // ---- Send guard ---------------------------------------------------
@@ -535,8 +471,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await expect(error).toHaveText(/Add at least one recipient\./);
         await expect(composeSubject(page)).toHaveValue('Walkthrough no recipients');
         expect(await countSentRows(page), 'nothing may be filed in Sent').toBe(sentBefore);
-        await shot(page, 'empty-recipients-refused');
-        await page.waitForTimeout(900);
         await closeCompose(page);
       });
 
@@ -547,8 +481,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await composeSubject(page).fill(subjects.to);
         const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
         await editor.click();
-        await page.keyboard.type('Recorded walkthrough of the send path.', { delay: 12 });
-        await page.waitForTimeout(500);
+        await page.keyboard.type('Integrated coverage of the send path.');
         await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
         await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
         await waitForPendingMutations(page);
@@ -563,9 +496,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         const serverId = await findBySubject(jmap, sent, subjects.to);
         expect(serverId, 'server should hold the message in Sent').not.toBeNull();
         mine.push(serverId);
-        await page.locator('.msg-list__item').filter({ hasText: subjects.to }).first().click();
-        await page.waitForTimeout(900);
-        await shot(page, 'sent-message-open');
       });
 
       await test.step('The other account actually received it', async () => {
@@ -633,8 +563,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
           async (id) => globalThis.__repo.getPendingMutationError(id),
           mutationId,
         );
-        record('Failed send bookkeeping (CS-1.3)',
-          `The mutation row survived with error ${JSON.stringify(error)}, so the message is recoverable rather than silently dropped.`);
+        expect(error, 'the failed mutation row should remain recoverable').not.toBeNull();
         const stillThere = await findBySubject(jmap, sent, `Walkthrough rejected ${stamp}`);
         expect(stillThere, 'a failed send must not appear in Sent on the server').toBeNull();
       });
@@ -646,8 +575,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         const ccRow = page.locator('.message-view__metadata-row').filter({ hasText: /^Cc/ });
         await expect(ccRow, 'the detail view shows Cc (CS-2.7)').toHaveCount(1);
         await expect(ccRow).toContainText('cc-watcher@example.org');
-        record('Cc in the message detail view (CS-2.7)',
-          'The open message shows its Cc recipient, so the audience is visible before replying.');
         await page.getByRole('button', { name: 'Reply', exact: true }).first().click();
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
         const to = await recipientAddresses(page, 'To');
@@ -655,10 +582,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         const body = await page.locator('.compose-dialog .editor[contenteditable]').innerText();
         expect(to, 'reply should address the original sender').toContain(stranger.toLowerCase());
         expect(subject, 'reply should carry an Re: subject').toMatch(/^Re: /);
-        record('Reply prefill',
-          `To=${JSON.stringify(to)}, Subject="${subject}", quoted body ${body.includes('Original message body') ? 'present' : 'MISSING'}.`);
-        await shot(page, 'reply-prefill');
-        await page.waitForTimeout(900);
+        expect(body, 'reply should quote the parent body').toContain('Original message body');
       });
 
       await test.step('Sending that reply threads it to its parent (CS-2.6)', async () => {
@@ -687,8 +611,6 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         expect(replyMail.inReplyTo?.length, 'a reply must name its parent').toBeGreaterThan(0);
         expect(replyMail.references?.length, 'a reply must carry a References chain')
           .toBeGreaterThan(0);
-        record('Reply threading headers (CS-2.6)',
-          `inReplyTo=${JSON.stringify(replyMail.inReplyTo)}, references=${JSON.stringify(replyMail.references)}, so other clients thread this on headers rather than on the subject.`);
       });
 
       await test.step('Reply All via keyboard carries the original Cc (issue #71)', async () => {
@@ -698,13 +620,11 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
           .toHaveCount(1);
         const to = await recipientAddresses(page, 'To');
         const cc = await recipientAddresses(page, 'Cc');
+        expect(to, 'reply-all should target the original sender')
+          .toContain(stranger.toLowerCase());
         expect(cc, 'the original Cc is part of the audience').toContain('cc-watcher@example.org');
         expect(cc, 'our own address is not a recipient of our reply')
           .not.toContain(selfEmail().toLowerCase());
-        record('Reply All audience (issue #71, CS-2.5)',
-          `Ctrl+Shift+R produced To=${JSON.stringify(to)}, Cc=${JSON.stringify(cc)}. The original To and Cc travel, our own addresses do not, and Bcc is never copied.`);
-        await shot(page, 'reply-all-carries-cc');
-        await page.waitForTimeout(900);
         await closeCompose(page);
         await expect(page.locator('.compose-dialog')).toBeHidden();
       });
@@ -716,23 +636,8 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         const subject = await composeSubject(page).inputValue();
         expect(to, 'forward should start with an empty recipient').toEqual([]);
         expect(subject).toMatch(/^Fwd: /);
-        record('Forward prefill', `Ctrl+L produced To=${JSON.stringify(to)}, Subject="${subject}".`);
-        await page.waitForTimeout(900);
         await closeCompose(page);
         await expect(page.locator('.compose-dialog')).toBeHidden();
-      });
-
-      await test.step('Summary of recorded observations', async () => {
-        const md = ['# Walkthrough observations', ''];
-        for (const f of findings) {
-          md.push(`## ${f.area}`, '', f.observation, '');
-        }
-        const body = md.join('\n');
-        fs.writeFileSync(path.join(ARTIFACT_DIR, 'observations.md'), body);
-        await testInfo.attach('walkthrough-observations.md', {
-          body,
-          contentType: 'text/markdown',
-        });
       });
     } finally {
       await attachConsoleTail(testInfo, consoleLines);
