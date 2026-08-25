@@ -52,7 +52,11 @@ test.describe('Refresh button nuke-and-rebuild', () => {
         async () => ((await page.locator('.folder-node.is-current').first().textContent()) ?? '').toLowerCase(),
         { timeout: 30_000, message: 'expected Inbox to be auto-selected' },
       ).toMatch(/inbox/);
-      await page.locator('.msg-list__refresh').click();
+      const refreshButton = page.locator('.msg-list__refresh');
+      await expect(refreshButton).toHaveAttribute('aria-label', 'Refresh', { timeout: 30_000 });
+      await refreshButton.click();
+      await expect(refreshButton).toHaveAttribute('aria-label', 'Refreshing');
+      await expect(refreshButton).toHaveAttribute('aria-label', 'Refresh', { timeout: 30_000 });
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: baselineSubject }).count(),
         { timeout: 30_000, message: 'baseline Inbox row should be visible before injecting ghost row' },
