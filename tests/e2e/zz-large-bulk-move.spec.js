@@ -6,6 +6,8 @@ import {
   createEmailsInMailbox,
   destroyEmails,
   ensureMailbox,
+  jmapRequest,
+  pickResponse,
   sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
 import { loginViaOidc } from './helpers/oidc-login.js';
@@ -84,6 +86,8 @@ test.describe('Large bulk move e2e', () => {
         }),
         { timeout: 60_000, message: `expected ${MOVE_COUNT} large-move messages in source mailbox` },
       ).toBe(MOVE_COUNT);
+      const sourceQuery = await readMailboxQuerySnapshot(jmap, source.id);
+      expect(sourceQuery.total).toBe(MOVE_COUNT);
       mark('server-source-count');
 
       await loginViaOidc(page);
@@ -97,6 +101,7 @@ test.describe('Large bulk move e2e', () => {
         subjectPrefix: SUBJECT_PREFIX,
         remoteIds,
         fromEmail,
+        queryState: sourceQuery.queryState,
       });
       expect(indexed.total).toBe(MOVE_COUNT);
       expect(indexed.covered).toBe(MOVE_COUNT);
@@ -217,8 +222,32 @@ test.describe('Large bulk move e2e', () => {
   });
 });
 
+async function readMailboxQuerySnapshot(jmap, mailboxId) {
+  const payload = await jmapRequest(jmap, [[
+    'Email/query',
+    {
+      accountId: jmap.accountId,
+      filter: { inMailbox: mailboxId },
+      sort: [{ property: 'receivedAt', isAscending: false }],
+      collapseThreads: false,
+      position: 0,
+      limit: 1,
+      calculateTotal: true,
+    },
+    'largeMoveQuery',
+  ]]);
+  const query = pickResponse(payload, 'Email/query');
+  if (!query?.queryState) {
+    throw new Error('Large-move source query did not return a queryState');
+  }
+  return {
+    queryState: query.queryState,
+    total: Number(query.total),
+  };
+}
+
 async function seedLocalSourceView(page, {
-  sourceName, destinationName, subjectPrefix, remoteIds, fromEmail,
+  sourceName, destinationName, subjectPrefix, remoteIds, fromEmail, queryState,
 }) {
   return page.evaluate(async ({
     sourceName: srcName,
@@ -226,6 +255,7 @@ async function seedLocalSourceView(page, {
     subjectPrefix: prefix,
     remoteIds: remotes,
     fromEmail: sender,
+    queryState: sourceQueryState,
   }) => {
     const repo = globalThis.__repo;
     const accounts = await repo.listAccounts();
@@ -276,7 +306,7 @@ async function seedLocalSourceView(page, {
                           stale = 0,
                           updated_at = excluded.updated_at,
                           last_accessed_at = excluded.last_accessed_at`,
-      params: [accountId, source.id, filterJson, sortJson, `large-move-${now}`, remotes.length, now, now, now],
+      params: [accountId, source.id, filterJson, sortJson, sourceQueryState, remotes.length, now, now, now],
     });
     const viewRows = await repo.call('db.query', {
       sql: `SELECT id FROM query_views
@@ -390,6 +420,7 @@ async function seedLocalSourceView(page, {
     subjectPrefix,
     remoteIds,
     fromEmail,
+    queryState,
   });
 }
 
