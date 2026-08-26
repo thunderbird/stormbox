@@ -401,16 +401,26 @@ describe('RecipientInput suggestions', () => {
     expect(pills(wrapper)).toEqual([]);
   });
 
-  it('commits what was typed when Enter finds nothing highlighted', async () => {
-    // CS-3.8: explicit input wins. Enter taking the first match instead
-    // silently addresses somebody the user did not choose.
+  it('takes the first suggestion on Enter before keyboard navigation', async () => {
     const query = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ query });
 
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+    expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+    expect(input(wrapper).attributes('aria-activedescendant')).toBeUndefined();
+
+    await input(wrapper).trigger('keydown', { key: 'Enter' });
+    await nextTick();
+
+    expect(pills(wrapper)).toEqual([{ text: 'Bob', invalid: false }]);
+  });
+
+  it('commits what was typed on Enter when there are no suggestions', async () => {
+    const wrapper = mountControl({ query: async () => [] });
+
     await type(wrapper, 'bob@elsewhere.example');
     await settle(wrapper);
-    expect(options(wrapper).length).toBeGreaterThan(0);
-
     await input(wrapper).trigger('keydown', { key: 'Enter' });
     await nextTick();
 
