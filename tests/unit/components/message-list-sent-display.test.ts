@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 /**
- * Sent-folder list rows show the recipient, not the sender (issue #98).
- * Inbox and other folders keep showing the sender.
+ * Sent- and Drafts-folder list rows show the recipient, not the sender
+ * (issue #98). Inbox and other folders keep showing the sender.
  */
 
 import {
@@ -89,7 +89,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('MessageList Sent correspondent column (issue #98)', () => {
+describe('MessageList outbox correspondent column (issue #98)', () => {
   it('shows the sender in Inbox', async () => {
     const { wrapper } = mountList();
     await nextTick();
@@ -101,6 +101,16 @@ describe('MessageList Sent correspondent column (issue #98)', () => {
   it('shows the recipient in Sent', async () => {
     const { wrapper } = mountList({
       folder: makeFolder(2, { name: 'Sent', role: 'sent' }),
+    });
+    await nextTick();
+
+    expect(wrapper.find('.msg-list__from').text()).toBe('Alice');
+    wrapper.unmount();
+  });
+
+  it('shows the recipient in Drafts', async () => {
+    const { wrapper } = mountList({
+      folder: makeFolder(3, { name: 'Drafts', role: 'drafts' }),
     });
     await nextTick();
 

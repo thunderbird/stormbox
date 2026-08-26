@@ -375,10 +375,11 @@ function onAvatarError(fromText) {
   failedAvatarDomains.value = new Set([...failedAvatarDomains.value, domain]);
 }
 
-/** Sent lists the people you wrote to, not yourself (Fixes #98). */
-const listShowsRecipients = computed(
-  () => mailStore.currentFolder?.role === 'sent',
-);
+/** Sent and Drafts list the people you wrote to, not yourself (Fixes #98). */
+const listShowsRecipients = computed(() => {
+  const role = mailStore.currentFolder?.role;
+  return role === 'sent' || role === 'drafts';
+});
 
 function rowCorrespondent(row) {
   return listShowsRecipients.value ? row?.to_text : row?.from_text;
