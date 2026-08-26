@@ -349,11 +349,10 @@ function onKeydown(event: KeyboardEvent): void {
       return;
     }
     case 'Enter': {
-      // CS-3.8: Enter takes a suggestion only while one is highlighted.
-      // Otherwise it commits what was typed, which is the only way an
-      // address the directory has never seen can be entered at all.
+      // Enter takes the highlighted suggestion, or the first visible
+      // suggestion before keyboard navigation starts.
       event.preventDefault();
-      const candidate = suggestions.value[activeIndex.value];
+      const candidate = suggestions.value[activeIndex.value] ?? suggestions.value[0];
       if (candidate) acceptSuggestion(candidate);
       else commitText();
       return;
