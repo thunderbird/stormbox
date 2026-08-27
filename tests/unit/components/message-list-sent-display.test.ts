@@ -71,7 +71,7 @@ function makeRow(id, overrides = {}) {
   } as any;
 }
 
-function mountList({ folder, rows = [makeRow(1)] } = {}) {
+function mountList({ folder, rows = [makeRow(1)] }: { folder?: any; rows?: any[] } = {}) {
   const resolvedFolder = folder ?? makeFolder(1, { name: 'Inbox' });
   const mailStore = useMailStore();
   mailStore.folders = [resolvedFolder];
