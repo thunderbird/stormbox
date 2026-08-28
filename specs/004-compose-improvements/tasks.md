@@ -361,6 +361,9 @@ makes a non-default origin work locally.
       failure recovery
 - [x] T1017 Run unit, typecheck, lint, and the two-browser live Stalwart lane;
       update CD-1 through CD-7 statuses from the verified results
+- [x] T1018 Save every persistable draft field while omitting invalid recipient
+      pills; keep the pill visible locally, show the non-blocking validation
+      message, and continue blocking send until it is resolved (CD-3.8)
 
 ## Phase 11 — Identity management (CS-4.9)
 
