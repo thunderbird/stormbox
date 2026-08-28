@@ -47,6 +47,8 @@ import { editSafeDraftHtml } from '../utils/compose-html';
 export type RecipientField = 'to' | 'cc' | 'bcc';
 
 export const RECIPIENT_FIELDS: readonly RecipientField[] = ['to', 'cc', 'bcc'];
+export const INVALID_RECIPIENT_MESSAGE =
+  'Fix invalid recipients before saving or sending this message.';
 
 /**
  * Text a user committed as a recipient that is not a readable address.
@@ -142,6 +144,10 @@ export interface ComposeSession {
   failedSaveMutationId: number | null;
   failedSaveSeedJson: string | null;
   failedSaveRequest: Record<string, any> | null;
+}
+
+function hasInvalidRecipientPills(session: ComposeSession): boolean {
+  return RECIPIENT_FIELDS.some((field) => session.rejectedRecipients[field].length > 0);
 }
 
 function assertNever(value: never): never {
@@ -730,6 +736,10 @@ export const useComposeStore = defineStore('compose', () => {
     session.rejectedRecipients[field] = session.recipientEntriesByField[field]
       .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
       .map((entry) => entry.text);
+    if (!hasInvalidRecipientPills(session)) {
+      if (session.saveError === INVALID_RECIPIENT_MESSAGE) session.saveError = null;
+      if (session.error === INVALID_RECIPIENT_MESSAGE) session.error = null;
+    }
     touchSession(session.id);
   }
 
@@ -917,7 +927,9 @@ export const useComposeStore = defineStore('compose', () => {
         .map((attachment) => ({ ...attachment }));
     }
     current.seedJson = capturedJson;
-    current.saveError = null;
+    current.saveError = hasInvalidRecipientPills(current)
+      ? INVALID_RECIPIENT_MESSAGE
+      : null;
     current.failedSaveMutationId = null;
     current.failedSaveSeedJson = null;
     current.failedSaveRequest = null;
@@ -1003,12 +1015,6 @@ export const useComposeStore = defineStore('compose', () => {
     }
     if (explicit) commitPendingRecipientText(session);
     else if (hasPendingRecipientText(session)) return false;
-    const rejected = RECIPIENT_FIELDS.flatMap((field) => session.rejectedRecipients[field]);
-    if (rejected.length > 0) {
-      session.saveError = 'Fix invalid recipients before saving this draft.';
-      if (explicit) session.error = session.saveError;
-      return false;
-    }
     clearAutosaveTimer(session.id);
     if (runtime.inFlight) {
       runtime.queued = true;
@@ -1573,12 +1579,7 @@ export const useComposeStore = defineStore('compose', () => {
     // for (CS-2.4).
     const rejected = RECIPIENT_FIELDS.flatMap((field) => session.rejectedRecipients[field]);
     if (rejected.length > 0) {
-      return failSend(
-        rejected.length === 1
-          ? `${rejected[0]} is not an email address.`
-          : `These are not email addresses: ${rejected.join(', ')}`,
-        session.id,
-      );
+      return failSend(INVALID_RECIPIENT_MESSAGE, session.id);
     }
     // Any of the three carries the message, so requiring To would refuse a
     // send the user has every right to make (CS-2.2).

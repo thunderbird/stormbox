@@ -18,7 +18,7 @@ remain controlling.
 |:--|--:|--:|--:|
 | CD-1 Compose sessions and presentation | 8 | — | — |
 | CD-2 Seed-relative dirtiness | 6 | — | — |
-| CD-3 Autosave scheduling | 7 | — | — |
+| CD-3 Autosave scheduling | 8 | — | — |
 | CD-4 Durable JMAP revisions | 12 | — | — |
 | CD-5 Close, save, and discard | 8 | — | — |
 | CD-6 Reopen and send interaction | 9 | 1 | — |
@@ -78,7 +78,7 @@ gets a new one.
 |:--|:--|
 | CD-2.1 🟩 Done | Dirtiness shall be computed from a canonical semantic payload containing From identity, ordered To/Cc/Bcc entries including invalid raw fragments, subject, editable HTML/body meaning, reply threading fields, and inline-media or attachment references. |
 | CD-2.2 🟩 Done | Opening a new, reply, forward, or server-draft session shall capture its seed only after all initial fields and editor content have been populated. Initial prefilling shall not make the session dirty. |
-| CD-2.3 🟩 Done | A successful draft revision shall replace the seed with the exact semantic payload that revision represents. Edits made while that save is in flight shall remain dirty against the newly confirmed seed. |
+| CD-2.3 🟩 Done | A successful draft revision shall replace the seed with the exact semantic payload captured by that save. Per CD-3.8, invalid recipient fragments are acknowledged as local-only state in that seed even though they cannot be represented in JMAP; this prevents an unchanged invalid pill from causing repeated no-op revisions. Edits made while that save is in flight shall remain dirty against the newly confirmed seed. |
 | CD-2.4 🟩 Done | Reverting every semantic field to the latest seed shall clear dirty state and cancel any save that has not begun. |
 | CD-2.5 🟩 Done | A new compose session shall be considered meaningfully non-empty only when it has a recipient or invalid recipient fragment, non-whitespace subject, semantic body content, or inline media/attachment. A default From identity alone shall not count. |
 | CD-2.6 🟩 Done | Empty new sessions shall never create server drafts. A reopened server draft remains a real saved draft even when its current semantic content is empty. |
@@ -94,6 +94,7 @@ gets a new one.
 | CD-3.5 🟩 Done | Autosave shall pause before send or discard enters the session's mutation lane and shall not enqueue a save after either operation has begun. |
 | CD-3.6 🟩 Done | An autosave failure shall leave the editor open and dirty, preserve every confirmed server revision, and expose a non-blocking failure state. One save action shall make no more than three automatic attempts, and an HTTP authentication rejection shall stop after its first attempt rather than enter backoff. An explicit retry shall use the durable revision state machine rather than enqueue a duplicate semantic revision. |
 | CD-3.7 🟩 Done | Closing the final application tab is not required to flush a debounce synchronously. Recovery covers revisions durably enqueued before shutdown, not edits that never reached a checkpoint. |
+| CD-3.8 🟩 Done | An invalid recipient pill shall not block autosave or explicit Save Draft. The JMAP draft revision shall omit only invalid fragments and shall preserve every persistable field, including valid recipients, subject, body, threading, inline media, and attachments. The invalid pill shall remain visible in the current compose session but is local-only and therefore shall not reappear when the server draft is reopened. After a save observes an invalid pill, the UI shall show “Fix invalid recipients before saving or sending this message.” as non-blocking validation feedback; draft saving still succeeds, but sending remains blocked until every invalid pill is fixed or removed. |
 
 ## CD-4 — Durable JMAP revisions
 

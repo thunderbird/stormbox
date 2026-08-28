@@ -652,7 +652,8 @@ describe('compose-store send safety', () => {
     ]);
 
     await expect(composeStore.send()).resolves.toBe(false);
-    expect(composeStore.error).toBe('not an address is not an email address.');
+    expect(composeStore.error)
+      .toBe('Fix invalid recipients before saving or sending this message.');
   });
 
   it('refuses a send whose recipients an unclosed comment hid', async () => {
@@ -666,11 +667,12 @@ describe('compose-store send safety', () => {
     ]);
 
     await expect(composeStore.send()).resolves.toBe(false);
-    expect(composeStore.error).toContain('bob@example.com');
+    expect(composeStore.error)
+      .toBe('Fix invalid recipients before saving or sending this message.');
     expect(composeStore.draft.to).toEqual([]);
   });
 
-  it('names every unreadable fragment when there is more than one', async () => {
+  it('uses one actionable message for multiple unreadable fragments', async () => {
     const composeStore = await composerWithOutcome({});
     composeStore.open();
     composeStore.setRecipientEntries('to', [
@@ -679,7 +681,8 @@ describe('compose-store send safety', () => {
     ]);
 
     await expect(composeStore.send()).resolves.toBe(false);
-    expect(composeStore.error).toBe('These are not email addresses: first bad, second@');
+    expect(composeStore.error)
+      .toBe('Fix invalid recipients before saving or sending this message.');
   });
 
   it('queues the recipients as addresses, not as text', async () => {
@@ -1192,17 +1195,31 @@ describe('compose-store sessions and draft autosave', () => {
     expect(composeStore.sessionById(sessionId)).toBeNull();
   });
 
-  it('does not report invalid recipient fragments as saved', async () => {
+  it('saves the message while omitting invalid recipient pills', async () => {
     const { composeStore, repo } = await autosaveStore();
-    const sessionId = composeStore.open();
+    const sessionId = composeStore.open({
+      subject: 'Keep this subject',
+      textBody: 'Keep this body',
+    });
     composeStore.setRecipientEntries('to', [
+      { email: 'valid@example.com' },
       { text: 'unfinished recipient', invalid: true },
     ], sessionId);
 
-    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
 
-    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
-    expect(composeStore.sessionById(sessionId)?.saveError).toMatch(/invalid recipients/i);
+    const request = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(request).toMatchObject({
+      to: [{ email: 'valid@example.com' }],
+      subject: 'Keep this subject',
+      textBody: 'Keep this body',
+    });
+    expect(composeStore.sessionById(sessionId)?.saveError)
+      .toBe('Fix invalid recipients before saving or sending this message.');
+    expect(composeStore.sessionById(sessionId)?.error).toBeNull();
+
+    composeStore.setRecipientEntries('to', [{ email: 'fixed@example.com' }], sessionId);
+    expect(composeStore.sessionById(sessionId)?.saveError).toBeNull();
   });
 
   it('recovers the confirmed revision when auto-drain retired the row first', async () => {

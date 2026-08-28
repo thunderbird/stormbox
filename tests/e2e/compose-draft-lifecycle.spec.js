@@ -263,6 +263,61 @@ test.describe('Compose draft lifecycle', () => {
     }
   });
 
+  test('saves message content while omitting an invalid recipient pill', async ({
+    sharedPage: page,
+  }, testInfo) => {
+    const jmap = await connectJmap();
+    const drafts = mailboxByRole(await listMailboxes(jmap), 'drafts');
+    if (!drafts) throw new Error('Drafts mailbox is required');
+    const subject = `${SUBJECT_PREFIX} invalid recipient ${Date.now()}`;
+    const createdIds = new Set();
+
+    try {
+      await openCompose(page);
+      const toInput = page.locator('.compose-dialog--expanded #compose-to');
+      await toInput.fill('unfinished recipient');
+      await toInput.press('Enter');
+      await page.locator('.compose-dialog--expanded .row')
+        .filter({ hasText: /^Subject$/ })
+        .locator('input')
+        .fill(subject);
+      await page.locator('.compose-dialog--expanded .editor')
+        .fill('This body must survive the invalid recipient.');
+
+      await expect(page.getByText(
+        'Fix invalid recipients before saving or sending this message.',
+        { exact: true },
+      )).toBeVisible({ timeout: 30_000 });
+
+      let savedDraft;
+      await expect.poll(async () => {
+        const matches = await emailsByExactSubject(jmap, drafts.id, subject);
+        savedDraft = matches[0] ?? null;
+        if (savedDraft?.id) createdIds.add(savedDraft.id);
+        return matches.length;
+      }, { timeout: 30_000 }).toBe(1);
+
+      await saveDraftAndClose(page);
+      await clickFolder(page, drafts.name);
+      await expectRowSoon(page, subject);
+      await page.locator('.msg-list__item').filter({ hasText: subject }).first().click();
+
+      const composer = page.locator('.compose-dialog--expanded');
+      await expect(composer).toBeVisible({ timeout: 30_000 });
+      await expect(composer.locator('.editor'))
+        .toContainText('This body must survive the invalid recipient.');
+      await expect(composer.getByRole('button', {
+        name: /unfinished recipient — not a valid address/,
+      })).toHaveCount(0);
+      await expect(composer.locator('#compose-to')).toHaveValue('');
+
+      await discardCompose(page);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      await destroyEmails(jmap, [...createdIds]);
+    }
+  });
+
   test('serializes autosave before send and cleans the saved draft', async ({
     sharedPage: page,
   }, testInfo) => {
