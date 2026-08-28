@@ -14,7 +14,7 @@ vi.mock('../../../src/services/auth', () => ({
 
 import ContactsView from '../../../src/components/ContactsView.vue';
 import { useContactsStore } from '../../../src/stores/contacts-store';
-import type { ContactListRow } from '../../../src/types';
+import type { ContactListRow, IdentityRow } from '../../../src/types';
 
 const CONTACT_ROW_HEIGHT = 51;
 const CONTACT_LIST_HEIGHT = 510;
@@ -31,6 +31,19 @@ function makeContact(index: number): ContactListRow {
     display_name: `Person ${suffix}`,
     organization: index % 3 === 0 ? `Organization ${suffix}` : null,
     email: `person${suffix}@example.com`,
+  };
+}
+
+function makeIdentity(index: number, mayDelete: boolean): IdentityRow {
+  return {
+    id: 100 + index,
+    account_id: 1,
+    remote_id: `identity-${index}`,
+    name: index === 0 ? 'Primary Sender' : 'Alias Sender',
+    email: index === 0 ? 'primary@example.com' : 'alias@example.com',
+    reply_to_json: null,
+    raw_json: JSON.stringify({ mayDelete }),
+    updated_at: 1,
   };
 }
 
@@ -196,5 +209,83 @@ describe('ContactsView', () => {
     await remove.trigger('click');
     await flushPromises();
     expect(deleteContact).toHaveBeenCalledWith(contact);
+  });
+
+  it('loads identities through the contact list when the rail button is activated', async () => {
+    const { store, wrapper } = mountContacts([makeContact(0)]);
+    const identityList = [makeIdentity(0, false), makeIdentity(1, true)];
+    store.identities = identityList;
+    const listIdentities = vi.spyOn(store, 'listIdentities')
+      .mockResolvedValue(identityList);
+
+    const manageIdentityButton = wrapper.findAll('button')
+      .find((button) => button.text().includes('Manage identities'))!;
+    expect(manageIdentityButton.exists()).toBe(true);
+    expect(wrapper.get('.contacts__rail').element.lastElementChild)
+      .toBe(wrapper.get('.contacts__identity-section').element);
+
+    await manageIdentityButton.trigger('click');
+    await settleVirtualizer();
+
+    expect(listIdentities).toHaveBeenCalledWith({ refreshServer: true });
+    expect(wrapper.get('.contacts__header h2').text()).toBe('Identities');
+    expect(wrapper.get('.contacts__add').text()).toContain('Add identity');
+    expect(wrapper.get('.contacts__list').attributes('role')).toBe('list');
+    expect(wrapper.findAll('.contacts__row').map((row) => row.text()))
+      .toEqual([
+        expect.stringContaining('Primary Sender'),
+        expect.stringContaining('Alias Sender'),
+      ]);
+
+    await wrapper.setProps({ filterQuery: 'alias@example.com' });
+    await settleVirtualizer();
+    expect(wrapper.findAll('.contacts__row')).toHaveLength(1);
+    expect(wrapper.get('.contacts__row').text()).toContain('Alias Sender');
+  });
+
+  it('creates, edits, and removes identities while protecting non-deletable rows', async () => {
+    const { store, wrapper } = mountContacts([]);
+    const primary = makeIdentity(0, false);
+    const alias = makeIdentity(1, true);
+    store.identities = [primary, alias];
+    vi.spyOn(store, 'listIdentities').mockResolvedValue(store.identities);
+    const createIdentity = vi.spyOn(store, 'createIdentity').mockResolvedValue({ ok: true });
+    const updateIdentity = vi.spyOn(store, 'updateIdentity').mockResolvedValue({ ok: true });
+    const deleteIdentity = vi.spyOn(store, 'deleteIdentity').mockResolvedValue({ ok: true });
+
+    await wrapper.findAll('button')
+      .find((button) => button.text().includes('Manage identities'))!
+      .trigger('click');
+    await settleVirtualizer();
+
+    const protectedRemove = wrapper.get('button[aria-label="Primary Sender cannot be removed"]');
+    expect(protectedRemove.attributes('disabled')).toBeDefined();
+
+    await wrapper.get('.contacts__add').trigger('click');
+    await wrapper.get('input[type="text"]').setValue('New Alias');
+    await wrapper.get('input[type="email"]').setValue('new-alias@example.com');
+    await wrapper.get('.contacts__form').trigger('submit');
+    await flushPromises();
+    expect(createIdentity).toHaveBeenCalledWith({
+      name: 'New Alias',
+      email: 'new-alias@example.com',
+    });
+
+    const editAlias = wrapper.get('button[aria-label="Edit Alias Sender"]');
+    await editAlias.trigger('click');
+    expect(wrapper.get('input[type="email"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.findAll('.contacts__field-label').map((label) => label.text()))
+      .toContain('Email (cannot be changed)');
+    await wrapper.get('input[type="text"]').setValue('Renamed Alias');
+    await wrapper.get('.contacts__form').trigger('submit');
+    await flushPromises();
+    expect(updateIdentity).toHaveBeenCalledWith({
+      remoteId: alias.remote_id,
+      name: 'Renamed Alias',
+    });
+
+    await wrapper.get('button[aria-label="Remove Alias Sender"]').trigger('click');
+    await flushPromises();
+    expect(deleteIdentity).toHaveBeenCalledWith(alias);
   });
 });

@@ -14,10 +14,18 @@ import { ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
+import {
+  IDENTITY_ERROR,
+  IDENTITY_ERROR_MESSAGE,
+} from '../constants/identity-errors';
+import type {
+  IdentityActionResult,
+  IdentityError,
+} from '../constants/identity-errors';
 import { MUTATION_TYPE } from '../constants/states';
 import type { MutationType } from '../constants/states';
 import { TABLE_FAMILIES } from '../db/protocol';
-import type { AddressbookRow, ContactListRow } from '../types';
+import type { AddressbookRow, ContactListRow, IdentityRow } from '../types';
 import type { Repository } from '../db/repository';
 import { addressKey } from '../utils/address-key';
 
@@ -26,6 +34,11 @@ interface PendingMutationInsert {
   mutationType: MutationType;
   targetMessageId: number | null;
   requestJson: string;
+}
+
+interface MutationExecution {
+  ok: boolean;
+  errorType?: string;
 }
 
 export interface AutocompleteCandidate {
@@ -88,9 +101,11 @@ export const useContactsStore = defineStore('contacts', () => {
   const authStore = useAuthStore();
   const addressbooks = ref<AddressbookRow[]>([]);
   const contacts = ref<ContactListRow[]>([]);
+  const identities = ref<IdentityRow[]>([]);
   const error = ref<string | null>(null);
   const saving = ref(false);
   const deletingIds = ref<number[]>([]);
+  const deletingIdentityIds = ref<number[]>([]);
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
 
@@ -127,21 +142,29 @@ export const useContactsStore = defineStore('contacts', () => {
   function $reset(): void {
     addressbooks.value = [];
     contacts.value = [];
+    identities.value = [];
     error.value = null;
     saving.value = false;
     deletingIds.value = [];
+    deletingIdentityIds.value = [];
   }
 
   function onTablesTouched(tables: string[]): void {
-    if (!tables.includes(TABLE_FAMILIES.CONTACTS)) return;
     if (authStore.accountId == null) return;
-    refresh().catch((err) => {
-      console.warn('[contacts-store] refresh after broadcast failed', err);
-    });
+    if (tables.includes(TABLE_FAMILIES.CONTACTS)) {
+      Promise.all([refreshAddressbooks(), refreshContacts()]).catch((err) => {
+        console.warn('[contacts-store] contact refresh after broadcast failed', err);
+      });
+    }
+    if (tables.includes(TABLE_FAMILIES.IDENTITIES)) {
+      refreshIdentities().catch((err) => {
+        console.warn('[contacts-store] identity refresh after broadcast failed', err);
+      });
+    }
   }
 
   async function refresh(): Promise<void> {
-    await Promise.all([refreshAddressbooks(), refreshContacts()]);
+    await Promise.all([refreshAddressbooks(), refreshContacts(), refreshIdentities()]);
   }
 
   async function refreshAddressbooks(): Promise<void> {
@@ -168,6 +191,18 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
+  async function refreshIdentities(): Promise<void> {
+    if (!repo || authStore.accountId == null) {
+      identities.value = [];
+      return;
+    }
+    try {
+      identities.value = await repo.listIdentities(authStore.accountId);
+    } catch (err: any) {
+      error.value = err?.message ?? String(err);
+    }
+  }
+
   /**
    * Read-through accessor so callers that just want the current list
    * can `await store.listContacts()` without depending on the watch
@@ -176,6 +211,21 @@ export const useContactsStore = defineStore('contacts', () => {
   async function listContacts(options: { limit?: number } = {}): Promise<ContactListRow[]> {
     await refreshContacts(options);
     return contacts.value;
+  }
+
+  async function listIdentities(
+    options: { refreshServer?: boolean } = {},
+  ): Promise<IdentityRow[]> {
+    await refreshIdentities();
+    if (options.refreshServer && repo && authStore.accountId != null) {
+      try {
+        await repo.ensureIdentities(authStore.accountId);
+        await refreshIdentities();
+      } catch (err: any) {
+        error.value = err?.message ?? String(err);
+      }
+    }
+    return identities.value;
   }
 
   /**
@@ -204,14 +254,23 @@ export const useContactsStore = defineStore('contacts', () => {
    * the already-succeeded race where runMutation reports
    * `attempted: 0, succeeded: 1`.
    */
-  async function queueAndRun(mutation: PendingMutationInsert): Promise<boolean> {
-    if (!repo || authStore.accountId == null) return false;
+  async function queueAndRunResult(
+    mutation: PendingMutationInsert,
+  ): Promise<MutationExecution> {
+    if (!repo || authStore.accountId == null) return { ok: false };
     const inserted = await repo.insertPendingMutation(mutation);
     const result = typeof repo.runMutation === 'function' && inserted?.id != null
       ? await repo.runMutation(authStore.accountId, inserted.id)
       : await repo.drainOutbox(authStore.accountId);
-    return (result?.failed ?? 0) === 0
-      && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0);
+    return {
+      ok: (result?.failed ?? 0) === 0
+        && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0),
+      ...(typeof result?.errorType === 'string' ? { errorType: result.errorType } : {}),
+    };
+  }
+
+  async function queueAndRun(mutation: PendingMutationInsert): Promise<boolean> {
+    return (await queueAndRunResult(mutation)).ok;
   }
 
   /**
@@ -365,23 +424,163 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
+  function identityErrorForMutation(errorType?: string): IdentityError {
+    switch (errorType) {
+      case IDENTITY_ERROR.ADDRESS_NOT_ALLOWED:
+        return IDENTITY_ERROR.ADDRESS_NOT_ALLOWED;
+      case IDENTITY_ERROR.INVALID_EMAIL:
+        return IDENTITY_ERROR.INVALID_EMAIL;
+      case 'invalidName':
+        return IDENTITY_ERROR.INVALID_NAME;
+      case 'notFound':
+      case 'unknownIdentity':
+        return IDENTITY_ERROR.NOT_FOUND;
+      case 'accountNotFound':
+      case 'accountNotSupportedByMethod':
+      case 'accountReadOnly':
+      case 'forbidden':
+        return IDENTITY_ERROR.PERMISSION_DENIED;
+      case 'cacheReconcileFailed':
+        return IDENTITY_ERROR.CACHE_RECONCILIATION_FAILED;
+      case 'noResponse':
+      case 'rateLimit':
+      case 'serverFail':
+      case 'serverUnavailable':
+      case 'stopped':
+      case 'transport':
+        return IDENTITY_ERROR.SERVER_UNAVAILABLE;
+      default:
+        return IDENTITY_ERROR.UNKNOWN;
+    }
+  }
+
+  function identityFailure(code: IdentityError): IdentityActionResult {
+    error.value = IDENTITY_ERROR_MESSAGE[code];
+    return { ok: false, error: code };
+  }
+
+  async function createIdentity(
+    input: { name?: string | null; email: string },
+  ): Promise<IdentityActionResult> {
+    error.value = null;
+    const name = input.name?.trim() ?? '';
+    const { ok, list } = cleanEmailList([input.email]);
+    if (!name) {
+      return identityFailure(IDENTITY_ERROR.NAME_REQUIRED);
+    }
+    if (!ok || list.length !== 1) {
+      return identityFailure(IDENTITY_ERROR.INVALID_EMAIL);
+    }
+    if (!repo || authStore.accountId == null) {
+      return identityFailure(IDENTITY_ERROR.NOT_CONNECTED);
+    }
+    saving.value = true;
+    try {
+      const result = await queueAndRunResult({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.CREATE_IDENTITY,
+        targetMessageId: null,
+        requestJson: JSON.stringify({ name, email: list[0] }),
+      });
+      if (!result.ok) {
+        return identityFailure(identityErrorForMutation(result.errorType));
+      }
+      await refreshIdentities();
+      return { ok: true };
+    } catch {
+      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  async function updateIdentity(
+    input: { remoteId: string; name?: string | null },
+  ): Promise<IdentityActionResult> {
+    error.value = null;
+    const name = input.name?.trim() ?? '';
+    if (!name) {
+      return identityFailure(IDENTITY_ERROR.NAME_REQUIRED);
+    }
+    if (!repo || authStore.accountId == null) {
+      return identityFailure(IDENTITY_ERROR.NOT_CONNECTED);
+    }
+    saving.value = true;
+    try {
+      const result = await queueAndRunResult({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.UPDATE_IDENTITY,
+        targetMessageId: null,
+        requestJson: JSON.stringify({
+          remoteId: input.remoteId,
+          name,
+        }),
+      });
+      if (!result.ok) {
+        return identityFailure(identityErrorForMutation(result.errorType));
+      }
+      await refreshIdentities();
+      return { ok: true };
+    } catch {
+      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  async function deleteIdentity(identity: IdentityRow): Promise<IdentityActionResult> {
+    error.value = null;
+    if (!repo || authStore.accountId == null) {
+      return identityFailure(IDENTITY_ERROR.NOT_CONNECTED);
+    }
+    deletingIdentityIds.value = [...deletingIdentityIds.value, identity.id];
+    const previous = identities.value;
+    identities.value = previous.filter((entry) => entry.id !== identity.id);
+    try {
+      const result = await queueAndRunResult({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.DELETE_IDENTITY,
+        targetMessageId: null,
+        requestJson: JSON.stringify({ remoteId: identity.remote_id }),
+      });
+      if (!result.ok) {
+        await refreshIdentities();
+        return identityFailure(identityErrorForMutation(result.errorType));
+      }
+      return { ok: true };
+    } catch {
+      await refreshIdentities();
+      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
+    } finally {
+      deletingIdentityIds.value = deletingIdentityIds.value
+        .filter((id) => id !== identity.id);
+    }
+  }
+
   return {
     addressbooks,
     contacts,
+    identities,
     error,
     saving,
     deletingIds,
+    deletingIdentityIds,
     $reset,
     attach,
     detach,
     refresh,
     refreshAddressbooks,
     refreshContacts,
+    refreshIdentities,
     listContacts,
+    listIdentities,
     getContact,
     autocomplete,
     createContact,
     updateContact,
     deleteContact,
+    createIdentity,
+    updateIdentity,
+    deleteIdentity,
   };
 });

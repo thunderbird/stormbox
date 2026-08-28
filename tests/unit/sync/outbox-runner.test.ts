@@ -80,7 +80,7 @@ async function insertDestroy({ targetMessageId = null } = {}) {
   return r.id;
 }
 
-async function insertContactWrite(mutationType = 'whitelistSender') {
+async function insertTargetlessWrite(mutationType = 'whitelistSender') {
   const result = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
     accountId,
     mutationType,
@@ -277,7 +277,7 @@ describe('OutboxRunner per-target serialization', () => {
   it('serializes account-wide ContactCard writes with null message targets', async () => {
     const firstBlocked = deferred();
     const order = [];
-    const firstId = await insertContactWrite('whitelistSender');
+    const firstId = await insertTargetlessWrite('whitelistSender');
     const runner = new OutboxRunner({
       accountId,
       handlers,
@@ -289,7 +289,39 @@ describe('OutboxRunner per-target serialization', () => {
       },
       options: { notifyDelayMs: 0 },
     });
-    const secondId = await insertContactWrite('createContact');
+    const secondId = await insertTargetlessWrite('createContact');
+    const drainPromise = runner.drain();
+
+    await waitFor(() => order.includes(`start:${firstId}`));
+    expect(order).not.toContain(`start:${secondId}`);
+    firstBlocked.resolve();
+    await drainPromise;
+
+    expect(order).toEqual([
+      `start:${firstId}`,
+      `end:${firstId}`,
+      `start:${secondId}`,
+      `end:${secondId}`,
+    ]);
+    await runner.stop();
+  });
+
+  it('serializes account-wide Identity writes with null message targets', async () => {
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertTargetlessWrite('createIdentity');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.id}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.id}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const secondId = await insertTargetlessWrite('updateIdentity');
     const drainPromise = runner.drain();
 
     await waitFor(() => order.includes(`start:${firstId}`));

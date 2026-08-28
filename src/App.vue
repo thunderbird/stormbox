@@ -39,11 +39,11 @@ const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
 const composeActionSpotlight = ref(false);
 const quickFilterPlaceholder = computed(() =>
-  space.value === 'contacts' ? 'Filter Contacts' : 'Quick Filter',
+  space.value === 'contacts' ? 'Filter contacts or identities' : 'Quick Filter',
 );
 const quickFilterAriaLabel = computed(() =>
   space.value === 'contacts'
-    ? 'Filter Contacts by name or email address'
+    ? 'Filter contacts or identities by name or email address'
     : 'Quick Filter messages by from, to, or subject',
 );
 
