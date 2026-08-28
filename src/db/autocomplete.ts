@@ -49,6 +49,7 @@ function poolSize(limit: number): number {
 interface RawCandidate {
   email: string;
   name: string | null;
+  organization: string | null;
   source: 'contact';
   isPreferred: boolean;
   sendCount: number;
@@ -75,6 +76,7 @@ export async function autocompleteRecipients(
   { accountId, prefix, limit = DEFAULT_LIMIT, exclude = [], nowMs = Date.now() }: AutocompleteParams,
 ): Promise<{
   name: string | null;
+  organization: string | null;
   email: string;
   source: string;
   is_preferred: 0 | 1;
@@ -128,6 +130,7 @@ export async function autocompleteRecipients(
   // independent suggestion source.
   return ranked.slice(0, limit).map((c) => ({
     name: c.name,
+    organization: c.organization,
     email: c.email,
     source: c.source,
     is_preferred: c.isPreferred ? 1 : 0,
@@ -166,11 +169,15 @@ function mergeCandidate(
       && compareNames(row.name, existing.name) < 0)) {
     existing.name = row.name;
     existing.email = row.email;
+    existing.organization = row.organization;
     existing.isPreferred = row.isPreferred;
   } else if (row.isPreferred) {
     // The name loses but the flag is still true of the address, and it is a
     // ranking input.
     existing.isPreferred = true;
+  }
+  if (!existing.organization && row.organization) {
+    existing.organization = row.organization;
   }
 }
 
@@ -253,6 +260,7 @@ export function nextPrefix(prefix: string): string | null {
 }
 
 const CONTACT_COLUMNS = `c.display_name AS display_name, c.full_name AS full_name,
+       c.organization AS organization,
        ce.email AS email, ce.is_preferred AS is_preferred,
        COALESCE(ru.send_count, 0) AS send_count,
        ru.last_sent_at AS last_sent_at`;
@@ -300,6 +308,7 @@ function contactRow(row: any): RawCandidate {
   return {
     email: row.email,
     name: row.display_name || row.full_name || null,
+    organization: row.organization ?? null,
     source: 'contact',
     isPreferred: row.is_preferred === 1,
     sendCount: Number(row.send_count ?? 0),

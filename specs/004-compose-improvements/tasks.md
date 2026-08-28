@@ -311,3 +311,53 @@ makes a non-default origin work locally.
 - [x] T902 Preserve the per-account at-most-once latch, defer completion for
       an empty Sent window or failed mutation, and cover bootstrap retries
       and deletion permanence in unit tests
+
+## Phase 10 — Draft lifecycle (CD-1 through CD-7)
+
+- [x] T1001 Add multi-session compose state keyed by local UUID, with an
+      exhaustively handled `expanded | minimized` presentation state and
+      exactly one expanded session
+- [x] T1002 Add minimize, bottom-right dock bars, restore/swap behavior,
+      accessible controls, and expanded-only shortcut suppression while
+      keeping each Squire editor mounted
+- [x] T1003 [P] Unit-test presentation invariants, mounted editor state,
+      sending guards, and minimize/restore behavior
+- [x] T1004 Add canonical compose snapshots, initial and confirmed-revision
+      seeds, meaningful-empty detection, and seed-relative dirty state
+- [x] T1005 Add the per-session two-second debounce, thirty-second typing
+      ceiling, one in-flight save, and one coalesced latest-payload follow-up
+- [x] T1006 [P] Unit-test initial seed capture, revert-to-clean, edits during
+      save, empty-draft suppression, debounce, ceiling, and coalescing
+- [x] T1007 Extract shared Email body, inline-image, and attachment
+      construction from send so draft and final Email creation use one
+      canonical builder
+- [x] T1008 Add `saveDraft` and `discardDraft` pending mutation types, durable
+      revision checkpoints, and a compose-session outbox lock shared with send
+- [x] T1009 Implement create-only draft revision writes, exact response
+      validation, lost-response Message-ID reconciliation, complete paginated
+      fallback scans, and conservative duplicate handling
+- [x] T1010 Re-fetch and reconcile the confirmed successor, including
+      revision-scoped body-part blob handles, before a separately acknowledged
+      exact-id predecessor destroy
+- [x] T1011 Split local apply into confirmed-successor persistence and
+      confirmed-predecessor removal, updating Drafts query views and Mailbox
+      counters after each server fact
+- [x] T1012 Add themed Save draft / Don't Save / Cancel close handling,
+      direct X-close for empty messages, the header Save Draft / Discard menu,
+      exact revision destruction, IME-safe Escape behavior, and failure recovery
+- [x] T1013 Route selection of a Drafts Email into a seeded, edit-safe compose
+      session; restore an already-open session and exclude Emails claimed by
+      active or ambiguous send checkpoints
+- [x] T1014 Serialize send with autosave, create a fresh final Email, and
+      clean only checkpoint-owned revisions after confirmed submission without
+      ever replaying submission for cleanup
+- [x] T1015 [P] Add unit and protocol tests for revision phases, exact-id
+      cleanup, fresh Message-IDs, create rejection, ambiguous create,
+      idempotent destroy, and the reopened attachment/blob lifecycle
+- [x] T1016 Add Chromium and Firefox Playwright coverage asserting UI,
+      including direct empty close and the non-empty header action menu,
+      `window.__repo`, and direct JMAP state for autosave, minimize/restore,
+      Save draft, Don't Save, Discard, reopen, send cleanup, and Stalwart
+      failure recovery
+- [x] T1017 Run unit, typecheck, lint, and the two-browser live Stalwart lane;
+      update CD-1 through CD-7 statuses from the verified results

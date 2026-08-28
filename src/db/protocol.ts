@@ -106,10 +106,13 @@ export const DB_RPC = Object.freeze({
   PENDING_MUTATION_INSERT_MANY: 'pendingMutation.insertMany',
   PENDING_MUTATION_LIST_PENDING: 'pendingMutation.listPending',
   PENDING_MUTATION_GET_ERROR: 'pendingMutation.getError',
+  PENDING_MUTATION_RETRY: 'pendingMutation.retry',
+  PENDING_MUTATION_ABANDON_DRAFT: 'pendingMutation.abandonDraft',
   SYNC_JOB_INSERT: 'syncJob.insert',
   SYNC_JOB_NEXT_BATCH: 'syncJob.nextBatch',
 
   SYNC_START_ACCOUNT: 'sync.startAccount',
+  SYNC_UPDATE_ACCOUNT_AUTH: 'sync.updateAccountAuth',
   SYNC_STOP_ACCOUNT: 'sync.stopAccount',
   SYNC_ENSURE_FOLDER_TREE: 'sync.ensureFolderTree',
   SYNC_ENSURE_FOLDER_WINDOW: 'sync.ensureFolderWindow',

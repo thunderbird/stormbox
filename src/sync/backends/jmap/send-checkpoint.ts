@@ -19,6 +19,9 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { SEND_PHASE, type SendPhase } from '../../../constants/states';
+import { makeMessageId, makeOperationId } from '../../../utils/message-id';
+
+export { makeMessageId } from '../../../utils/message-id';
 
 export interface SendCheckpoint {
   /** Identifies this send attempt across retries and worker restarts. */
@@ -39,82 +42,6 @@ export interface SendCheckpoint {
   cacheAttempts: number;
   /** The accepted-send checkpoint and trusted-recipient mutation committed together. */
   trustedRecipientsQueued: boolean;
-}
-
-function randomToken(): string {
-  const cryptoRef = globalThis.crypto;
-  if (cryptoRef?.randomUUID) {
-    return cryptoRef.randomUUID().replaceAll('-', '');
-  }
-  if (cryptoRef?.getRandomValues) {
-    const bytes = cryptoRef.getRandomValues(new Uint8Array(16));
-    return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-  }
-  // Worker environments always provide one of the above; this branch only
-  // keeps the helper usable in a bare test runner.
-  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
-}
-
-/**
- * Build an RFC 5322 §3.6.4 msg-id. The local part is random rather than
- * derived from the message: a hash of body or recipients would leak both
- * to anyone who can see the header, and would collide for a user who
- * legitimately sends the same text twice.
- *
- * The domain is taken from the sending identity so the id is globally
- * unique without needing a registry.
- */
-export function makeMessageId(identityEmail: string | null | undefined): string {
-  const at = String(identityEmail ?? '').lastIndexOf('@');
-  const domain = at > -1 ? String(identityEmail).slice(at + 1).trim() : '';
-  return `<${randomToken()}@${asciiDomain(domain) || 'localhost'}>`;
-}
-
-/**
- * RFC 5322 §3.6.4 `id-right` is ASCII, so an internationalised identity
- * domain has to be punycoded before it can appear in a Message-ID.
- * RFC 6532 §3.2 does extend Message-IDs to UTF-8, but §3.3 advises
- * generators to keep them ASCII so the id survives non-6532 handling,
- * which is what this does.
- *
- * ASCII input is checked directly against the `id-right` grammar. `URL`
- * performs IDNA for an internationalised domain in both the worker and
- * Node, after which the ASCII result is checked by the same grammar. An
- * invalid domain is dropped rather than guessed at, leaving the caller's
- * fallback to produce a syntactically valid id.
- */
-function asciiDomain(domain: string): string {
-  if (!domain) return '';
-  if (isAscii(domain)) return isMessageIdRight(domain) ? domain : '';
-  try {
-    const parsed = new URL(`http://${domain}`);
-    if (parsed.username || parsed.password || parsed.port
-        || parsed.pathname !== '/' || parsed.search || parsed.hash) {
-      return '';
-    }
-    return isAscii(parsed.hostname) && isMessageIdRight(parsed.hostname)
-      ? parsed.hostname
-      : '';
-  } catch {
-    return '';
-  }
-}
-
-/** RFC 5322 §3.6.4 `id-right`: dot-atom-text or no-fold-literal. */
-function isMessageIdRight(value: string): boolean {
-  if (value.startsWith('[') && value.endsWith(']')) {
-    return /^[\x21-\x5a\x5e-\x7e]*$/.test(value.slice(1, -1));
-  }
-  return value.split('.').every(
-    (atom) => atom.length > 0 && /^[A-Za-z0-9!#$%&'*+\-/=?^_`{|}~]+$/.test(atom),
-  );
-}
-
-function isAscii(value: string): boolean {
-  for (let i = 0; i < value.length; i += 1) {
-    if (value.charCodeAt(i) > 0x7f) return false;
-  }
-  return true;
 }
 
 /** Read the checkpoint off a pending_mutations row, if it has one. */
@@ -142,7 +69,7 @@ export function readCheckpoint(row: any): SendCheckpoint | null {
 
 export function newCheckpoint(identityEmail: string | null | undefined): SendCheckpoint {
   return {
-    operationId: randomToken(),
+    operationId: makeOperationId(),
     messageId: makeMessageId(identityEmail),
     emailRemoteId: null,
     submissionRemoteId: null,

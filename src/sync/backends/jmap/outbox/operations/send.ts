@@ -1,8 +1,8 @@
-import { SEND_PHASE } from '../../../../../constants/states';
+import { MUTATION_TYPE, SEND_PHASE } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import { addressKey } from '../../../../../utils/address-key';
-import { base64ToBytes, extractDataUriImages } from '../../../../../utils/inline-images';
+import { prepareComposeEmail } from '../../compose-email';
 import { callJmap, pickResponse, pickResponseById } from '../../invoke';
 import {
   newCheckpoint,
@@ -20,6 +20,7 @@ import {
   submissionError,
 } from '../errors';
 import { resolveFolderRemoteIds, resolveIdentity } from '../resolve';
+import { dropDraftPredecessors } from '../draft-apply';
 import { fileSentCopy, markFolderViewsStale } from '../send-apply';
 import { rejectedSendOutcome } from '../send-outcome';
 import type { SendOutcome } from '../send-outcome';
@@ -151,6 +152,8 @@ async function runSend({
       rowId,
       checkpoint,
       sentFolderId: request.sentFolderId,
+      draftsFolderId: request.draftsFolderId,
+      request,
     });
   }
 
@@ -182,17 +185,16 @@ async function runSend({
   const outboxRemoteId = folderRemoteIds[2];
 
   const targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
-  const hasHtml = !!(request.htmlBody && /\S/.test(request.htmlBody));
-
-  // Inline pasted images arrive as base64 data: URLs embedded in the
-  // HTML. JMAP cannot carry binary in the Email/set body, so upload each
-  // one as a blob and rewrite the HTML to reference it via cid:.
-  const extracted = hasHtml
-    ? extractDataUriImages(request.htmlBody)
-    : { html: request.htmlBody ?? '', images: [] };
-  let inlineAttachments;
+  let emailCreate;
   try {
-    inlineAttachments = await uploadInlineImages({ transport, account, images: extracted.images });
+    emailCreate = await prepareComposeEmail({
+      transport,
+      account,
+      identity,
+      request,
+      mailboxRemoteId: targetBox,
+      isDraft: targetBox === draftsRemoteId,
+    });
   } catch (err: any) {
     // A stalled or aborted upload is terminal. Retrying it is safe —
     // nothing has been submitted, and a re-uploaded blob is just
@@ -210,78 +212,6 @@ async function runSend({
     };
     return rejectedSendOutcome(error, !terminal);
   }
-
-  let bodyFields;
-  if (hasHtml && inlineAttachments.length > 0) {
-    // Inline images must be multipart/related to the HTML part or the
-    // recipient cannot resolve the cid: reference (it shows a broken
-    // image). The JMAP convenience `attachments` property does not
-    // guarantee this — Stalwart places those parts in a multipart/mixed
-    // sibling of the body — so build the structure explicitly:
-    //   multipart/related
-    //     multipart/alternative
-    //       text/plain
-    //       text/html  (references cid:)
-    //     image/*      (blobId + cid + disposition:inline)
-    bodyFields = {
-      bodyStructure: {
-        type: 'multipart/related',
-        subParts: [
-          {
-            type: 'multipart/alternative',
-            subParts: [
-              { type: 'text/plain', partId: 'p1' },
-              { type: 'text/html', partId: 'h1' },
-            ],
-          },
-          ...inlineAttachments,
-        ],
-      },
-      bodyValues: {
-        p1: { value: request.textBody ?? '' },
-        h1: { value: extracted.html },
-      },
-    };
-  } else if (hasHtml) {
-    bodyFields = {
-      bodyStructure: {
-        type: 'multipart/alternative',
-        subParts: [
-          { type: 'text/plain', partId: 'p1' },
-          { type: 'text/html', partId: 'h1' },
-        ],
-      },
-      bodyValues: {
-        p1: { value: request.textBody ?? '' },
-        h1: { value: extracted.html },
-      },
-    };
-  } else {
-    bodyFields = {
-      bodyStructure: { type: 'text/plain', partId: 'p1' },
-      bodyValues: { p1: { value: request.textBody ?? '' } },
-    };
-  }
-
-  const emailCreate = {
-    ...(targetBox ? { mailboxIds: { [targetBox]: true } } : {}),
-    ...(targetBox === draftsRemoteId ? { keywords: { $draft: true } } : {}),
-    from: [{
-      ...(identity.name ? { name: identity.name } : {}),
-      email: identity.email,
-    }],
-    to: request.to ?? [],
-    ...(request.cc?.length ? { cc: request.cc } : {}),
-    ...(request.bcc?.length ? { bcc: request.bcc } : {}),
-    ...(request.replyTo?.length ? { replyTo: request.replyTo } : {}),
-    // Bare msg-ids, as RFC 8621 §4.1.3 defines these properties and as the
-    // cache holds them. Set here rather than at create time so a resumed
-    // row rebuilds the same message it first tried to send.
-    ...(request.inReplyTo?.length ? { inReplyTo: request.inReplyTo } : {}),
-    ...(request.references?.length ? { references: request.references } : {}),
-    subject: request.subject ?? '',
-    ...bodyFields,
-  };
 
   const onSuccessUpdate = {
     ...(sentRemoteId ? { mailboxIds: { [sentRemoteId]: true } } : {}),
@@ -639,6 +569,8 @@ async function runSend({
     createdRemoteId,
     submissionRemoteId,
     sentRemoteId,
+    draftsRemoteId,
+    request,
   });
 }
 
@@ -719,6 +651,7 @@ async function rewindDefinitiveSubmissionRejection({
  */
 async function resumeCacheReconciliation({
   transport, account, handlers, useWebSocket, rowId, checkpoint, sentFolderId,
+  draftsFolderId, request,
 }): Promise<SendOutcome> {
   if (!checkpoint.emailRemoteId || !checkpoint.submissionRemoteId) {
     await parkUnknown(handlers, rowId, checkpoint);
@@ -735,7 +668,10 @@ async function resumeCacheReconciliation({
   const createdRemoteId = checkpoint.emailRemoteId;
   const submissionRemoteId = checkpoint.submissionRemoteId;
   try {
-    const sentRemoteId = (await resolveFolderRemoteIds(handlers, [sentFolderId]))[0];
+    const [sentRemoteId, draftsRemoteId] = await resolveFolderRemoteIds(
+      handlers,
+      [sentFolderId, draftsFolderId],
+    );
     return await reconcileSentLocally({
       transport,
       account,
@@ -750,6 +686,8 @@ async function resumeCacheReconciliation({
       createdRemoteId,
       submissionRemoteId,
       sentRemoteId,
+      draftsRemoteId,
+      request,
     });
   } catch (err: any) {
     // Resolving the folder is local bookkeeping, but it is bookkeeping
@@ -765,6 +703,7 @@ async function resumeCacheReconciliation({
       sentRemoteId: null,
       response: null,
       err,
+      request,
     });
   }
 }
@@ -787,13 +726,23 @@ async function resumeCacheReconciliation({
  */
 async function reconcileSentLocally(args): Promise<SendOutcome> {
   const {
-    handlers, account, rowId, checkpoint, result, createdRemoteId, submissionRemoteId, sentRemoteId,
+    transport, handlers, account, rowId, checkpoint, result, createdRemoteId,
+    submissionRemoteId, sentRemoteId, draftsRemoteId, request, useWebSocket,
   } = args;
   try {
     const saved = rowId != null && checkpoint
       ? await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CACHE_PENDING)
       : checkpoint;
-    return await fileSentCopy({ ...args, checkpoint: saved });
+    const outcome = await fileSentCopy({ ...args, checkpoint: saved });
+    await cleanupDraftsAfterSend({
+      transport,
+      account,
+      handlers,
+      draftsRemoteId,
+      draftEmailIds: request?.draftEmailIds ?? [],
+      useWebSocket,
+    });
+    return outcome;
   } catch (err: any) {
     return postSubmissionFailure({
       handlers,
@@ -805,6 +754,7 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
       sentRemoteId,
       response: result,
       err,
+      request,
     });
   }
 }
@@ -867,6 +817,49 @@ async function recordAcceptedSubmission({
   }
 }
 
+async function cleanupDraftsAfterSend({
+  transport,
+  account,
+  handlers,
+  draftsRemoteId,
+  draftEmailIds,
+  useWebSocket,
+}) {
+  const ids = [...new Set(
+    (Array.isArray(draftEmailIds) ? draftEmailIds : [])
+      .filter((id) => typeof id === 'string' && id),
+  )];
+  if (ids.length === 0) return;
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [[
+      'Email/set',
+      { accountId: account.remote_account_id, destroy: ids },
+      'sd1',
+    ]],
+    useWebSocket,
+  });
+  const response = pickResponseById(result, 'Email/set', 'sd1');
+  if (!response) throw new Error('Sent draft cleanup returned no Email/set response');
+  const destroyed = new Set<string>(response.destroyed ?? []);
+  const confirmed = ids.filter((id) =>
+    destroyed.has(id) || response.notDestroyed?.[id]?.type === 'notFound');
+  if (confirmed.length > 0) {
+    await dropDraftPredecessors({
+      transport,
+      account,
+      handlers,
+      draftsRemoteId,
+      remoteIds: confirmed,
+      useWebSocket,
+    });
+  }
+  const remaining = ids.filter((id) => !confirmed.includes(id));
+  if (remaining.length > 0) {
+    throw new Error(`Sent draft cleanup was not confirmed for ${remaining.length} draft(s)`);
+  }
+}
+
 /**
  * The canonical recipient set attached to a confirmed send.
  *
@@ -908,7 +901,7 @@ function trustedRecipients(request): Array<{ email: string; name: string | null;
  */
 async function postSubmissionFailure({
   handlers, account, rowId, checkpoint, createdRemoteId, submissionRemoteId, sentRemoteId,
-  response, err,
+  response, err, request,
 }): Promise<SendOutcome> {
   wlog.warn(
     'jmap-outbox',
@@ -947,6 +940,12 @@ async function postSubmissionFailure({
       };
     }
   }
+  await queueDraftCleanupRepair({ handlers, account, request }).catch((queueError) => {
+    wlog.warn(
+      'jmap-outbox',
+      `could not queue sent draft cleanup: ${queueError?.message ?? queueError}`,
+    );
+  });
   await markFolderViewsStale(handlers, account.id, sentRemoteId).catch(() => {});
   return {
     outcome: 'confirmed',
@@ -957,33 +956,23 @@ async function postSubmissionFailure({
   };
 }
 
-/**
- * Upload each inline pasted image to the JMAP blob endpoint and return
- * the EmailBodyPart attachment descriptors (blobId + cid + inline
- * disposition) the Email/set create references. Returns [] when there
- * are no images. Throws if any upload fails or returns no blobId so the
- * caller can fail the whole send and keep the draft for retry.
- */
-async function uploadInlineImages({ transport, account, images }) {
-  const attachments = [];
-  for (const image of images) {
-    const result = await transport.upload({
-      accountId: account.remote_account_id,
-      type: image.type,
-      body: base64ToBytes(image.base64),
-    });
-    const blobId = result?.blobId;
-    if (!blobId) {
-      throw new Error('JMAP upload returned no blobId');
-    }
-    attachments.push({
-      blobId,
-      type: image.type,
-      cid: image.cid,
-      disposition: 'inline',
-    });
-  }
-  return attachments;
+async function queueDraftCleanupRepair({ handlers, account, request }) {
+  const draftEmailIds = [...new Set(
+    (Array.isArray(request?.draftEmailIds) ? request.draftEmailIds : [])
+      .filter((id) => typeof id === 'string' && id),
+  )];
+  if (draftEmailIds.length === 0) return;
+  await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+    accountId: account.id,
+    mutationType: MUTATION_TYPE.DISCARD_DRAFT,
+    targetMessageId: null,
+    requestJson: JSON.stringify({
+      draftSessionId: request.draftSessionId,
+      draftsFolderId: request.draftsFolderId ?? null,
+      draftEmailIds,
+    }),
+    optimisticPatchJson: null,
+  });
 }
 
 export { runSend };

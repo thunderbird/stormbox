@@ -70,6 +70,9 @@ function onShowWelcomeModal() {
 .account-menu {
   position: relative;
 }
+.account-menu:not([open]) > :not(summary) {
+  display: none;
+}
 
 .account-menu__button {
   display: inline-flex;

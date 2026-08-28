@@ -88,7 +88,7 @@ describe('useRecipientSuggestions', () => {
     harness.scope.stop();
   });
 
-  it('does not query below the two-character threshold', async () => {
+  it('queries after the first character', async () => {
     const query = vi.fn(async () => CONTACTS);
     const harness = makeHarness({ query });
 
@@ -96,9 +96,10 @@ describe('useRecipientSuggestions', () => {
     harness.scheduleQuery();
     await vi.runAllTimersAsync();
 
-    expect(query).not.toHaveBeenCalled();
-    expect(harness.suggestions.value).toEqual([]);
-    expect(harness.isPanelOpen.value).toBe(false);
+    expect(query).toHaveBeenCalledWith('b', 10, []);
+    expect(harness.suggestions.value).toEqual(CONTACTS);
+    expect(harness.activeIndex.value).toBe(0);
+    expect(harness.isPanelOpen.value).toBe(true);
     harness.scope.stop();
   });
 

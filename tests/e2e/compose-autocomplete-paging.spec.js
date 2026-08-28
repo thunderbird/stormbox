@@ -9,6 +9,7 @@ import {
   localStackEnabled,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
+import { discardCompose } from './helpers/compose.js';
 import { waitForShellReady } from './helpers/ui.js';
 
 /**
@@ -246,7 +247,7 @@ test.describe('Autocomplete across contact pages', () => {
       ).toBeVisible();
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
-      await page.locator('.compose-dialog header button.icon').click().catch(() => {});
+      await discardCompose(page).catch(() => {});
       await destroyCards(jmap, created);
       // Leave the cache as the rest of the lane expects to find it.
       await resyncContacts(page).catch(() => {});

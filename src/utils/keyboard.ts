@@ -7,6 +7,14 @@ export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 }
 
+export function shortcutModifierLabel(): '⌘' | 'Ctrl' {
+  return isMacPlatform() ? '⌘' : 'Ctrl';
+}
+
+export function shortcutModifierAria(): 'Meta' | 'Control' {
+  return isMacPlatform() ? 'Meta' : 'Control';
+}
+
 /** Primary modifier: Ctrl on Windows/Linux, Meta (Cmd) on macOS. */
 export function isModKey(event: KeyboardEvent): boolean {
   return isMacPlatform() ? event.metaKey : event.ctrlKey;

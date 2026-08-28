@@ -28,6 +28,7 @@ import {
 import {
   clearRecipients,
   composeRow,
+  discardCompose,
   fillRecipient,
   composeSubject,
   invalidRecipients,
@@ -66,9 +67,7 @@ function sendButton(page) {
 async function closeCompose(page) {
   const dialog = page.locator('.compose-dialog');
   if (await dialog.count() === 0) return;
-  await page.locator('.compose-dialog header button.icon')
-    .click({ timeout: 5_000 })
-    .catch(() => {});
+  await discardCompose(page).catch(() => {});
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
 

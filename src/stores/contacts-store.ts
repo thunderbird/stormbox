@@ -30,6 +30,7 @@ interface PendingMutationInsert {
 
 export interface AutocompleteCandidate {
   name?: string | null;
+  organization?: string | null;
   email: string;
   source: 'contact';
   is_preferred?: 0 | 1;

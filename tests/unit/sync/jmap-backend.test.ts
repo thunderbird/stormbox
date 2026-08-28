@@ -1327,9 +1327,12 @@ describe('JmapBackend StateChange dispatch', () => {
       'ContactCard/get': () => ({ list: [], state: 'cc' }),
     };
     const fetchMock = vi.fn(makeJmapHandlers(scenario));
+    let bearerToken = 'initial-token';
     const transport = new JmapTransport({
       sessionUrl: 'https://mail.example.com/.well-known/jmap',
-      getAuthHeader: async () => 'Bearer test',
+      getAuthHeader: async () => `Bearer ${bearerToken}`,
+      getWsCredential: async () => ({ kind: 'bearer', token: bearerToken }),
+      wsProxyUrl: 'wss://proxy.example.com/jmap/ws',
       fetch: fetchMock,
       WebSocketImpl: FakeWebSocket,
     });
@@ -1347,6 +1350,11 @@ describe('JmapBackend StateChange dispatch', () => {
     await startPromise;
     await backend.bootstrapped();
     const ws1 = await FakeWebSocket._waitForInstance();
+    expect(new URL(ws1.url).searchParams.get('access_token')).toBe('initial-token');
+
+    bearerToken = 'rotated-token';
+    backend.authenticationUpdated();
+    expect(FakeWebSocket.instances).toHaveLength(1);
 
     // Establish a pushState so the reopen handshake should resume
     // from it. The transport stores _lastPushState from incoming
@@ -1378,6 +1386,7 @@ describe('JmapBackend StateChange dispatch', () => {
     const enable = JSON.parse(ws2.sent[0]);
     expect(enable['@type']).toBe('WebSocketPushEnable');
     expect(enable.pushState).toBe('push-original');
+    expect(new URL(ws2.url).searchParams.get('access_token')).toBe('rotated-token');
 
     await backend.stop();
   });

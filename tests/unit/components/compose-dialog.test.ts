@@ -13,6 +13,7 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
+import ComposeManager from '../../../src/components/ComposeManager.vue';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -184,6 +185,46 @@ describe('ComposeDialog rich text toolbar', () => {
     expect(wrapper.get('[aria-label="Italic"]').classes()).toContain('active');
   });
 
+  it('advertises every formatting command that has a keyboard shortcut', async () => {
+    const { wrapper } = await mountOpenCompose();
+    const shortcuts = [
+      ['Bold', 'Control+B', 'Bold (Ctrl+B)'],
+      ['Italic', 'Control+I', 'Italic (Ctrl+I)'],
+      ['Underline', 'Control+U', 'Underline (Ctrl+U)'],
+      ['Insert or remove link', 'Control+K', 'Insert or remove link (Ctrl+K)'],
+      ['Undo', 'Control+Z', 'Undo (Ctrl+Z)'],
+      [
+        'Redo',
+        'Control+Y Control+Shift+Z',
+        'Redo (Ctrl+Y / Ctrl+Shift+Z)',
+      ],
+    ];
+
+    shortcuts.forEach(([label, ariaKeyShortcuts, title]) => {
+      const control = wrapper.get(`[aria-label="${label}"]`);
+      expect(control.attributes('aria-keyshortcuts')).toBe(ariaKeyShortcuts);
+      expect(control.attributes('title')).toBe(title);
+    });
+  });
+
+  it('advertises macOS shortcuts with the Command modifier', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    try {
+      const { wrapper } = await mountOpenCompose();
+
+      expect(wrapper.get('[aria-label="Bold"]').attributes()).toMatchObject({
+        'aria-keyshortcuts': 'Meta+B',
+        title: 'Bold (⌘+B)',
+      });
+      expect(wrapper.get('[aria-label="Redo"]').attributes()).toMatchObject({
+        'aria-keyshortcuts': 'Meta+Y Meta+Shift+Z',
+        title: 'Redo (⌘+Y / ⌘+Shift+Z)',
+      });
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
   it('inlines a pasted image as a data: URL via the squire pasteImage hook', async () => {
     const { wrapper, composeStore } = await mountOpenCompose('<p>hello</p>');
     const editor = wrapper.get('.editor').element as HTMLElement;
@@ -310,7 +351,8 @@ describe('ComposeDialog recipient fields', () => {
     const dialog = wrapper.get('.compose-dialog');
     expect(dialog.attributes('role')).toBe('dialog');
     expect(dialog.attributes('aria-modal')).toBe('true');
-    expect(dialog.attributes('aria-label')).toBe('Compose');
+    expect(dialog.attributes('aria-labelledby')).toBe('compose-title');
+    expect(wrapper.get('#compose-title').text()).toBe('New Message');
   });
 
   it('opens with To only, and offers both Cc and Bcc toggles inline', async () => {
@@ -567,7 +609,7 @@ describe('ComposeDialog send control', () => {
 
   it('offers Send while the outcome of the draft is still open', async () => {
     const { wrapper } = await mountOpenCompose();
-    expect(footerButtons(wrapper)).toContain('Send');
+    expect(footerButtons(wrapper)).toEqual(['Send']);
   });
 
   it('keeps Send offered while an unconfirmed send holds the draft open', async () => {
@@ -581,8 +623,7 @@ describe('ComposeDialog send control', () => {
       + 'Check your Sent folder before sending it again.';
     await nextTick();
 
-    expect(footerButtons(wrapper)).toContain('Send');
-    expect(footerButtons(wrapper)).toContain('Discard');
+    expect(footerButtons(wrapper)).toEqual(['Send']);
     expect(wrapper.get('.compose-error').text()).toMatch(/check your sent folder/i);
   });
 
@@ -607,6 +648,26 @@ describe('ComposeDialog send control', () => {
     composeStore.error = null;
     await nextTick();
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+  });
+
+  it('keeps Discard available but disables conflicting actions while saving', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const session = composeStore.activeSession!;
+    session.saveError = 'Draft autosave failed.';
+    await nextTick();
+
+    const status = wrapper.get('.compose-save-error');
+    expect(status.text()).toContain('Draft autosave failed');
+
+    session.isSaving = true;
+    await nextTick();
+    expect(wrapper.get('[aria-label="Close options"]').attributes('aria-disabled')).toBeUndefined();
+    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeDefined();
+    const closeItems = wrapper.findAll('[role="menuitem"]');
+    expect(closeItems.find((item) => item.text() === 'Discard')!.attributes('disabled'))
+      .toBeUndefined();
+    expect(closeItems.find((item) => item.text() === 'Save Draft')!.attributes('disabled'))
+      .toBeDefined();
   });
 });
 
@@ -648,5 +709,221 @@ describe('ComposeDialog opening focus', () => {
     await flushPromises();
 
     expect(document.activeElement?.id).not.toBe('compose-to');
+  });
+});
+
+describe('ComposeDialog accessibility', () => {
+  it('names the dialog, subject, and message body', async () => {
+    const { wrapper } = await mountOpenCompose();
+    const dialog = wrapper.get('[role="dialog"]');
+    const heading = wrapper.get('h2');
+    const subject = wrapper.get('#compose-subject');
+    const body = wrapper.get('.editor');
+
+    expect(dialog.attributes('aria-labelledby')).toBe(heading.attributes('id'));
+    expect(wrapper.get('label[for="compose-subject"]').text()).toBe('Subject');
+    expect(subject.attributes('type')).toBe('text');
+    expect(body.attributes()).toMatchObject({
+      role: 'textbox',
+      'aria-label': 'Message body',
+      'aria-multiline': 'true',
+    });
+  });
+
+  it('keeps the Save Draft menu label stable while autosaving', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    composeStore.activeSession!.isSaving = true;
+    await nextTick();
+
+    const saveDraft = wrapper.findAll('[role="menuitem"]')
+      .find((item) => item.text() === 'Save Draft')!;
+    expect(saveDraft.text()).toBe('Save Draft');
+    expect(saveDraft.attributes('disabled')).toBeDefined();
+    expect(wrapper.get('footer').text()).toBe('Send');
+  });
+
+  it('keeps Tab focus inside the composer and its close prompt', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const dialog = wrapper.get('[role="dialog"]');
+    const windowButtons = wrapper.findAll('.compose-dialog__window-actions button');
+    const first = windowButtons[0].element as HTMLButtonElement;
+    const send = wrapper.findAll('footer button').at(-1)!.element as HTMLButtonElement;
+    send.focus();
+
+    send.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(document.activeElement).toBe(send);
+
+    await wrapper.get('#compose-subject').setValue('Unsaved');
+    const close = wrapper.get('[aria-label="Close options"]');
+    await close.trigger('pointerdown');
+    composeStore.requestClose(composeStore.activeSessionId);
+    await nextTick();
+    await flushPromises();
+    const prompt = wrapper.get('[role="alertdialog"]');
+    const promptButtons = prompt.findAll('button');
+    const promptTitle = prompt.get('#compose-close-title');
+    expect(document.activeElement).toBe(promptTitle.element);
+    expect(promptButtons.some((button) => button.element === document.activeElement)).toBe(false);
+
+    promptTitle.element.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(document.activeElement).toBe(promptButtons[0].element);
+
+    const save = promptButtons.at(-1)!.element as HTMLButtonElement;
+    save.focus();
+    save.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    }));
+    expect(document.activeElement).toBe(promptButtons[0].element);
+    expect(dialog.attributes('role')).toBe('dialog');
+  });
+
+  it('shows initial action focus when Close is activated from the keyboard', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    await wrapper.get('#compose-subject').setValue('Unsaved');
+    const close = wrapper.get('[aria-label="Close options"]');
+
+    await close.trigger('keydown', { key: 'Enter' });
+    composeStore.requestClose(composeStore.activeSessionId);
+    await nextTick();
+    await flushPromises();
+
+    const prompt = wrapper.get('[role="alertdialog"]');
+    expect(document.activeElement).toBe(prompt.findAll('button')[0].element);
+  });
+});
+
+describe('ComposeManager window presentation', () => {
+  it('shows one expanded session and docks every minimized session', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const firstId = composeStore.open({ subject: 'First draft' });
+    const secondId = composeStore.open({ subject: 'Second draft' });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+
+    expect(wrapper.findAll('.compose-dialog')).toHaveLength(2);
+    expect(wrapper.findAll('.compose-dialog--expanded')).toHaveLength(1);
+    expect(wrapper.get('.compose-dialog--expanded h2').text()).toBe('Second draft');
+    expect(wrapper.findAll('.compose-dock__item')).toHaveLength(1);
+    expect(wrapper.get('.compose-dock__title').text()).toBe('First draft');
+
+    await wrapper.get(`[aria-label="Restore First draft"]`).trigger('click');
+    await nextTick();
+    expect(composeStore.activeSessionId).toBe(firstId);
+    expect(composeStore.sessionById(secondId)?.presentation).toBe('minimized');
+    expect(wrapper.get('.compose-dialog--expanded h2').text()).toBe('First draft');
+    wrapper.unmount();
+    composeStore.$reset();
+  });
+
+  it('keeps the same editor mounted across minimize and restore', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const sessionId = composeStore.open({ htmlBody: '<p>Keep this</p>' });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+    const editor = wrapper.get('.editor').element;
+
+    await wrapper.get('[aria-label="Minimize"]').trigger('click');
+    await nextTick();
+    expect(editor.isConnected).toBe(true);
+    expect(wrapper.findAll('.editor').map((node) => node.element)).toContain(editor);
+
+    await wrapper.get('[aria-label="Restore New message"]').trigger('click');
+    await nextTick();
+    expect(composeStore.activeSessionId).toBe(sessionId);
+    expect(wrapper.get('.editor').element).toBe(editor);
+    expect(wrapper.get('.editor').html()).toContain('Keep this');
+    wrapper.unmount();
+    composeStore.$reset();
+  });
+
+  it('closes an empty message directly from the X', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose('');
+    const sessionId = composeStore.activeSessionId!;
+    await flushPromises();
+
+    const close = wrapper.get('[aria-label="Close"]');
+    await close.trigger('click');
+    await nextTick();
+
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+    expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false);
+  });
+
+  it('offers Discard and Save Draft from the close menu', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const sessionId = composeStore.open({ subject: 'Draft' });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+    await flushPromises();
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    composeStore.sessionById(sessionId)!.draft.textBody = `${editor.innerText}\n`;
+
+    const closeMenu = wrapper.get('.compose-close-menu');
+    const closeTrigger = closeMenu.get('summary');
+    expect(closeTrigger.attributes()).toMatchObject({
+      role: 'button',
+      'aria-haspopup': 'menu',
+      'aria-label': 'Close options',
+    });
+    await closeTrigger.trigger('click');
+    await nextTick();
+    expect(closeMenu.attributes('open')).toBeDefined();
+    expect(closeMenu.findAll('[role="menuitem"]').map((item) => item.text()))
+      .toEqual(['Discard', 'Save Draft']);
+
+    await closeMenu.findAll('[role="menuitem"]')[0].trigger('click');
+    await flushPromises();
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false);
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+    wrapper.unmount();
+    composeStore.$reset();
+  });
+
+  it('retains the dirty-close prompt for keyboard and dock close requests', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const sessionId = composeStore.open();
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+
+    const subjectRow = wrapper.findAll('.row')
+      .find((row) => row.find('label').text() === 'Subject')!;
+    await subjectRow.get('input').setValue('Unsaved subject');
+    composeStore.requestClose(sessionId);
+    await nextTick();
+
+    const prompt = wrapper.get('[role="alertdialog"]');
+    expect(prompt.text()).toContain('Save draft');
+    expect(prompt.text()).toContain("Don't Save");
+    expect(wrapper.findAll('footer button').map((button) => button.text()))
+      .toEqual(['Send']);
+
+    await prompt.findAll('button').find((button) => button.text() === "Don't Save")!.trigger('click');
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+    wrapper.unmount();
+    composeStore.$reset();
   });
 });

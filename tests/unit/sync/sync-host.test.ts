@@ -105,8 +105,12 @@ const SCENARIO = {
   },
 };
 
-function makeFetch(trackBodyGets = null) {
+function makeFetch(trackBodyGets = null, trackAuthHeaders = null) {
   return vi.fn(async (url, init) => {
+    const authorization = init?.headers?.Authorization;
+    if (trackAuthHeaders && typeof authorization === 'string') {
+      trackAuthHeaders.push(authorization);
+    }
     if (!init || init.method !== 'POST') {
       return jsonResponse(SESSION);
     }
@@ -162,6 +166,95 @@ afterEach(async () => {
 });
 
 describe('SYNC_START_ACCOUNT', () => {
+  it('uses rotated bearer credentials without restarting the backend', async () => {
+    const authHeaders = [];
+    handlers = makeHandlers(engine);
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers,
+      fetch: makeFetch(null, authHeaders) as any,
+      WebSocketImpl: FakeWebSocket as any,
+    });
+    allHandlers = { ...handlers, ...syncHandlers };
+
+    const { accountId } = await allHandlers[DB_RPC.SYNC_START_ACCOUNT]({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      serverOrigin: 'https://mail.example.com',
+      auth: {
+        kind: 'bearer',
+        token: 'initial-token',
+        issuedAt: 1_000,
+        expiresAt: 61_000,
+      },
+      useWebSocket: false,
+    });
+    expect(authHeaders).toContain('Bearer initial-token');
+
+    await expect(allHandlers[DB_RPC.SYNC_UPDATE_ACCOUNT_AUTH]({
+      accountId,
+      token: 'rotated-token',
+      issuedAt: 2_000,
+      expiresAt: 62_000,
+    })).resolves.toEqual({ updated: true, applied: true });
+    await expect(allHandlers[DB_RPC.SYNC_UPDATE_ACCOUNT_AUTH]({
+      accountId,
+      token: 'stale-token',
+      issuedAt: 1_500,
+      expiresAt: 61_500,
+    })).resolves.toEqual({ updated: true, applied: false });
+    authHeaders.length = 0;
+
+    await allHandlers[DB_RPC.SYNC_ENSURE_IDENTITIES]({ accountId });
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every((header) => header === 'Bearer rotated-token')).toBe(true);
+
+    await allHandlers[DB_RPC.SYNC_STOP_ACCOUNT]({ accountId });
+  });
+
+  it('reuses a repeated account start without accepting older bearer state', async () => {
+    const authHeaders = [];
+    const fetchMock = makeFetch(null, authHeaders);
+    handlers = makeHandlers(engine);
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers,
+      fetch: fetchMock as any,
+      WebSocketImpl: FakeWebSocket as any,
+    });
+    allHandlers = { ...handlers, ...syncHandlers };
+    const input = {
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      serverOrigin: 'https://mail.example.com',
+      auth: {
+        kind: 'bearer',
+        token: 'newer-token',
+        issuedAt: 2_000,
+        expiresAt: 62_000,
+      },
+      useWebSocket: false,
+    };
+
+    const [first, second] = await Promise.all([
+      allHandlers[DB_RPC.SYNC_START_ACCOUNT](input),
+      allHandlers[DB_RPC.SYNC_START_ACCOUNT]({
+        ...input,
+        auth: {
+          kind: 'bearer',
+          token: 'older-token',
+          issuedAt: 1_000,
+          expiresAt: 61_000,
+        },
+      }),
+    ]);
+    expect(second.accountId).toBe(first.accountId);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method !== 'POST')).toHaveLength(1);
+    authHeaders.length = 0;
+
+    await allHandlers[DB_RPC.SYNC_ENSURE_IDENTITIES]({ accountId: first.accountId });
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every((header) => header === 'Bearer newer-token')).toBe(true);
+
+    await allHandlers[DB_RPC.SYNC_STOP_ACCOUNT]({ accountId: first.accountId });
+  });
+
   it('boots a JmapBackend and returns the local account id', async () => {
     const startPromise = allHandlers[DB_RPC.SYNC_START_ACCOUNT]({
       sessionUrl: 'https://mail.example.com/.well-known/jmap',
@@ -253,7 +346,7 @@ describe('SYNC_MESSAGE_BODY_FOR_DISPLAY', () => {
       messageId: message.id,
     });
 
-    expect(body).toEqual({ text: 'cached plain', html: '', attachments: [] });
+    expect(body).toMatchObject({ text: 'cached plain', html: '', attachments: [] });
     expect(bodyGets).toHaveLength(0);
 
     await allHandlers[DB_RPC.SYNC_STOP_ACCOUNT]({ accountId });
@@ -287,14 +380,14 @@ describe('SYNC_MESSAGE_BODY_FOR_DISPLAY', () => {
       accountId,
       messageId: message.id,
     });
-    expect(first).toEqual({ text: 'body for e-1', html: '', attachments: [] });
+    expect(first).toMatchObject({ text: 'body for e-1', html: '', attachments: [] });
     expect(bodyGets).toEqual([['e-1']]);
 
     const second = await allHandlers[DB_RPC.SYNC_MESSAGE_BODY_FOR_DISPLAY]({
       accountId,
       messageId: message.id,
     });
-    expect(second).toEqual({ text: 'body for e-1', html: '', attachments: [] });
+    expect(second).toMatchObject({ text: 'body for e-1', html: '', attachments: [] });
     expect(bodyGets).toEqual([['e-1']]);
 
     await allHandlers[DB_RPC.SYNC_STOP_ACCOUNT]({ accountId });

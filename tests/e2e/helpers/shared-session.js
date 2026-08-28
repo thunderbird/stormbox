@@ -8,6 +8,7 @@ import {
   mailboxByRole,
   sweepOrphanTestMessages,
 } from './jmap-client.js';
+import { discardCompose } from './compose.js';
 import { loginViaOidc } from './oidc-login.js';
 import { selfEmail } from './stack-env.js';
 import {
@@ -139,12 +140,41 @@ export async function resetSharedSession(page, {
   await sweepOrphanTestMessages(jmap, {
     subjectPrefixes: [...SIMPLE_SPEC_SUBJECT_PREFIXES, ...extraSubjectPrefixes],
   });
-  await page.keyboard.press('Escape').catch(() => {});
   await dismissWelcomeModal(page);
-  const composeOpen = await page.locator('.compose-dialog').count();
-  if (composeOpen > 0) {
-    await page.getByRole('button', { name: /^discard$/i }).click().catch(() => {});
-    await page.locator('.compose-dialog').waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  let reloaded = false;
+  for (let remaining = 20; remaining > 0; remaining -= 1) {
+    const before = await page.locator('.compose-dialog').count();
+    if (before === 0) break;
+    if (await page.getByRole('alertdialog', { name: 'Save this draft?' }).count() > 0) {
+      reloaded = true;
+      break;
+    }
+    const expanded = page.locator('.compose-dialog--expanded');
+    if (await expanded.count() > 0) {
+      await discardCompose(page).catch(() => {
+        reloaded = true;
+      });
+      await expect.poll(
+        async () => page.locator('.compose-dialog').count(),
+        { timeout: 5_000 },
+      ).toBeLessThan(before).catch(() => {
+        reloaded = true;
+      });
+    } else {
+      const restore = page.locator('.compose-dock__restore').first();
+      if (await restore.count() === 0) {
+        reloaded = true;
+      } else {
+        await restore.click({ timeout: 1_000 }).catch(() => {
+          reloaded = true;
+        });
+      }
+    }
+    if (reloaded) break;
+  }
+  if (reloaded || await page.locator('.compose-dialog').count() > 0) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForFolderTreeReady(page);
   }
   await returnToMailSpace(page);
   await clickFolder(page, 'Inbox');

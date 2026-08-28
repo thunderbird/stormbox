@@ -19,7 +19,7 @@ import LoginGate from './components/LoginGate.vue';
 import FolderTree from './components/FolderTree.vue';
 import MessageList from './components/MessageList.vue';
 import MessageView from './components/MessageView.vue';
-import ComposeDialog from './components/ComposeDialog.vue';
+import ComposeManager from './components/ComposeManager.vue';
 import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
 import StoreErrorToast from './components/StoreErrorToast.vue';
@@ -798,7 +798,7 @@ function clamp(value: number, min: number, max: number) {
       :filter-query="quickFilterQuery"
     />
 
-    <ComposeDialog />
+    <ComposeManager />
     <StoreErrorToast />
     <BulkOperationOverlay />
     <WelcomeModal
@@ -917,6 +917,9 @@ html.light,
   position: relative;
   z-index: 30;
   margin-left: -7px;
+}
+.app-menu:not([open]) > :not(summary) {
+  display: none;
 }
 .quick-filter > .quick-filter__search {
   justify-self: center;

@@ -483,9 +483,11 @@ describe('thread + message + membership handlers', () => {
     });
 
     const body = await h[DB_RPC.MESSAGE_BODY_READ]({ messageId });
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       text: 'plain body',
       html: '<p>html body</p>',
+      isComplete: true,
+      truncatedParts: [],
       attachments: [{
         part_id: 'att-1',
         blob_id: null,
@@ -496,6 +498,10 @@ describe('thread + message + membership handlers', () => {
         cid: null,
       }],
     });
+    expect(body.bodyParts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'text', value: 'plain body', isTruncated: false }),
+      expect.objectContaining({ kind: 'html', value: '<p>html body</p>', isTruncated: false }),
+    ]));
     expect(await h[DB_RPC.MESSAGE_BODY_READ]({ messageId: messageId + 999 })).toBeNull();
   });
 

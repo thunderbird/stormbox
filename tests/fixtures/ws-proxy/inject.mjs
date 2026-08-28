@@ -62,6 +62,11 @@ export const SUBMISSION_FAULTS = {
   DROP: 'stormbox-drop-submission',
 };
 
+export const DRAFT_FAULTS = {
+  LOSE_CREATE: 'stormbox-lose-draft-create',
+  LOSE_CLEANUP: 'stormbox-lose-draft-cleanup',
+};
+
 /**
  * Break the read-back after a contact write the server accepted, for the
  * spec that covers a stale cache (CS-4.4).
@@ -104,6 +109,8 @@ export const KNOWN_FAULT_MODES = Object.freeze([
   'LOSE',
   'DROP',
   'CONTACT_CACHE',
+  'DRAFT_CREATE',
+  'DRAFT_CLEANUP',
 ]);
 
 /**
@@ -270,6 +277,9 @@ export function createInjector({ applied = [] } = {}) {
   const broken = new Map();
   /** requestId of a marked card create -> creations awaiting their ids. */
   const pendingCards = new Map();
+  const pendingDraftCreates = new Map();
+  const brokenDraftCleanup = new Map();
+  let cleanupArmed = false;
   /** Card ids whose next read-back is to fail. */
   // cardId -> refusals still to serve. More than one because a single
   // refusal makes the state under test unobservable in practice: the client
@@ -329,6 +339,30 @@ export function createInjector({ applied = [] } = {}) {
       }
     }
 
+    for (const [mode, marker] of Object.entries(DRAFT_FAULTS)) {
+      if (!raw.includes(marker)) continue;
+      const creations = markedCreations(frame, marker)
+        .filter(({ callId, creationKey }) => {
+          const call = frame.methodCalls.find(([, , id]) => id === callId);
+          return call?.[1]?.create?.[creationKey]?.keywords?.$draft === true;
+        });
+      if (creations.length > 0) {
+        pendingDraftCreates.set(frame.id, { mode, creations });
+        return { action: 'forward', kind: mode };
+      }
+    }
+
+    if (cleanupArmed) {
+      const destroysDraft = frame.methodCalls.some(
+        ([name, params]) => name === 'Email/set' && Array.isArray(params?.destroy),
+      );
+      if (destroysDraft) {
+        cleanupArmed = false;
+        brokenDraftCleanup.set(frame.id, true);
+        return { action: 'forward', kind: 'DRAFT_CLEANUP' };
+      }
+    }
+
     const mode = findFault(raw);
     if (mode) {
       const creations = markedCreations(frame, SUBMISSION_FAULTS[mode]);
@@ -369,6 +403,35 @@ export function createInjector({ applied = [] } = {}) {
         armedCards.set(id, CONTACT_CACHE_REFUSALS);
       }
       return { action: 'forward' };
+    }
+
+    const pendingDraft = pendingDraftCreates.get(frame.requestId);
+    if (pendingDraft != null) {
+      pendingDraftCreates.delete(frame.requestId);
+      const [emailId] = createdIdsFor(frame, pendingDraft.creations);
+      if (pendingDraft.mode === 'LOSE_CLEANUP' && emailId) {
+        cleanupArmed = true;
+        return { action: 'forward' };
+      }
+      if (pendingDraft.mode === 'LOSE_CREATE' && emailId) {
+        record('DRAFT_CREATE', emailId, 'responseBlanked');
+        return {
+          action: 'replace',
+          kind: 'DRAFT_CREATE',
+          response: { '@type': 'Response', requestId: frame.requestId, methodResponses: [] },
+        };
+      }
+      return { action: 'forward' };
+    }
+
+    if (brokenDraftCleanup.has(frame.requestId)) {
+      brokenDraftCleanup.delete(frame.requestId);
+      record('DRAFT_CLEANUP', 'predecessor', 'responseBlanked');
+      return {
+        action: 'replace',
+        kind: 'DRAFT_CLEANUP',
+        response: { '@type': 'Response', requestId: frame.requestId, methodResponses: [] },
+      };
     }
 
     const pending = pendingCreates.get(frame.requestId);

@@ -96,6 +96,16 @@ export const SEND_PHASE = {
 } as const;
 export type SendPhase = (typeof SEND_PHASE)[keyof typeof SEND_PHASE];
 
+export const DRAFT_PHASE = {
+  QUEUED: 'draft_queued',
+  CREATED: 'draft_created',
+  CACHE_PENDING: 'draft_cache_pending',
+  CLEANUP_PENDING: 'draft_cleanup_pending',
+  CONFLICT: 'draft_conflict',
+} as const;
+export type DraftPhase = (typeof DRAFT_PHASE)[keyof typeof DRAFT_PHASE];
+export type MutationPhase = SendPhase | DraftPhase;
+
 export const SYNC_JOB_STATUS = {
   PENDING: 'pending',
   IN_FLIGHT: 'in_flight',
@@ -129,6 +139,8 @@ export const MUTATION_TYPE = {
   COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  SAVE_DRAFT: 'saveDraft',
+  DISCARD_DRAFT: 'discardDraft',
   WHITELIST_SENDER: 'whitelistSender',
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',

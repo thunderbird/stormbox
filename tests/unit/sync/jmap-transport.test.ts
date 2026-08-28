@@ -53,6 +53,16 @@ describe('JmapTransport HTTP', () => {
     auth = vi.fn(async () => FAKE_BASIC_AUTH);
   });
 
+  it('reports a WebSocket as closed before one exists', () => {
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: vi.fn(),
+    });
+
+    expect(t.isWebSocketOpen()).toBe(false);
+  });
+
   it('fetches and caches the session document', async () => {
     const fetchMock = makeFetch({
       'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
@@ -92,7 +102,11 @@ describe('JmapTransport HTTP', () => {
       getAuthHeader: auth,
       fetch: fetchMock,
     });
-    await expect(t.fetchSession()).rejects.toThrow(/401/);
+    await expect(t.fetchSession()).rejects.toMatchObject({
+      type: 'httpError',
+      status: 401,
+      message: expect.stringMatching(/401/),
+    });
   });
 
   it('issues a method-call request with the provided using/methodCalls', async () => {
@@ -509,7 +523,11 @@ describe('JmapTransport WebSocket (RFC 8887)', () => {
       status: 400,
       detail: 'something is wrong',
     });
-    await expect(pending).rejects.toThrow(/something is wrong/);
+    await expect(pending).rejects.toMatchObject({
+      type: 'urn:ietf:params:jmap:error:notRequest',
+      status: 400,
+      message: 'something is wrong',
+    });
   });
 
   it('delivers StateChange to subscribers and updates lastPushState', async () => {

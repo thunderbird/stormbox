@@ -26,19 +26,19 @@ import {
   readRecentMutations,
   readViewCacheForFolderRole,
 } from './helpers/ui.js';
+import { discardCompose } from './helpers/compose.js';
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
-// One parameterised spec that exercises the Delete-button path from
-// both Drafts and Inbox. Both flows enqueue MOVE_TO_FOLDERS through
-// the outbox; the only intentional difference is the source mailbox
-// role and the JMAP helper used to seed the message. Both cases run
-// in the same shared session — no per-test BrowserContext.
+// One parameterised spec exercises explicit removal from Drafts and Inbox.
+// Composer Discard permanently destroys a draft; message Delete moves an
+// Inbox Email to Trash.
 const CASES = [
   {
-    name: 'delete moves a real server-side draft to Trash',
+    name: 'composer Discard permanently destroys a real server-side draft',
     sourceRole: 'drafts',
     subjectPrefix: 'Delete e2e',
+    expectedState: 'missing',
     createMessage: async (jmap, { sourceMailbox, fromEmail, subject }) => createDraft(jmap, {
       draftsId: sourceMailbox.id,
       fromEmail,
@@ -49,6 +49,7 @@ const CASES = [
     name: 'delete moves a real server-side Inbox message to Trash',
     sourceRole: 'inbox',
     subjectPrefix: 'Delete inbox e2e',
+    expectedState: 'trash',
     createMessage: async (jmap, { sourceMailbox, fromEmail, subject }) => createEmailInMailbox(jmap, {
       mailboxId: sourceMailbox.id,
       fromEmail,
@@ -62,7 +63,9 @@ test.describe('Delete message e2e', () => {
     await resetSharedSession(sharedPage);
   });
 
-  for (const { name, sourceRole, createMessage, subjectPrefix } of CASES) {
+  for (const {
+    name, sourceRole, createMessage, subjectPrefix, expectedState,
+  } of CASES) {
     test(name, async ({ sharedPage: page }, testInfo) => {
       const jmap = await connectJmap();
       const mailboxes = await listMailboxes(jmap);
@@ -96,9 +99,13 @@ test.describe('Delete message e2e', () => {
         await expectRowSoon(page, subject);
 
         await page.locator('.msg-list__item').filter({ hasText: subject }).first().click();
-        await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
-
-        await page.getByTitle('Delete').click();
+        if (sourceRole === 'drafts') {
+          await expect(page.locator('.compose-dialog--expanded')).toBeVisible({ timeout: 30_000 });
+          await discardCompose(page);
+        } else {
+          await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
+          await page.getByTitle('Delete').click();
+        }
 
         await expect.poll(
           async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
@@ -115,8 +122,13 @@ test.describe('Delete message e2e', () => {
               await getEmailMailboxIds(jmap, createdId),
               { source, trash },
             ),
-            { timeout: 30_000, message: `server should report the deleted message in Trash, not ${source.name}` },
-          ).toBe('trash');
+            {
+              timeout: 30_000,
+              message: sourceRole === 'drafts'
+                ? 'server should report the discarded draft as destroyed'
+                : `server should report the deleted message in Trash, not ${source.name}`,
+            },
+          ).toBe(expectedState);
         } catch (err) {
           const mutationRows = await readRecentMutations(page);
           await testInfo.attach('recent-mutations.json', {

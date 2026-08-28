@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import {
+  computed, nextTick, ref, watch,
+} from 'vue';
 
 import { useRecipientSuggestions } from '../composables/useRecipientSuggestions';
 import {
@@ -58,9 +60,11 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:entries': [RecipientEntry[]];
+  'update:pending-text': [string];
 }>();
 
 const text = ref('');
+watch(text, (value) => emit('update:pending-text', value));
 const inputEl = ref<HTMLInputElement | null>(null);
 const pillsEl = ref<HTMLElement | null>(null);
 
@@ -93,10 +97,21 @@ const listboxId = computed(() => `${props.inputId}-listbox`);
 const statusId = computed(() => `${props.inputId}-status`);
 const optionId = (idx: number) => `${props.inputId}-option-${idx}`;
 
+function suggestionContext(candidate: AutocompleteCandidate): string | null {
+  const query = text.value.trim().toLocaleLowerCase();
+  const organization = candidate.organization?.trim();
+  if (!query || !organization) return null;
+  if (candidate.name?.toLocaleLowerCase().includes(query)
+      || candidate.email.toLocaleLowerCase().includes(query)) return null;
+  return organization.toLocaleLowerCase().includes(query) ? organization : null;
+}
+
 /** The option's accessible name: who it is, not the row's decorations. */
 function optionLabel(candidate: AutocompleteCandidate): string {
   const name = candidate.name?.trim();
-  return name ? `${name} <${candidate.email}>` : candidate.email;
+  const address = name ? `${name} <${candidate.email}>` : candidate.email;
+  const context = suggestionContext(candidate);
+  return context ? `${address}, ${context}` : address;
 }
 
 /**
@@ -340,8 +355,8 @@ function onKeydown(event: KeyboardEvent): void {
       expanded.value = true;
       const step = event.key === 'ArrowDown' ? 1 : -1;
       const count = suggestions.value.length;
-      // From nothing highlighted, Down goes to the first and Up to the
-      // last; past either end it wraps.
+      // Results initially highlight the first option, so Down advances to
+      // the second. Past either end, navigation wraps.
       activeIndex.value = activeIndex.value < 0
         ? (step === 1 ? 0 : count - 1)
         : (activeIndex.value + step + count) % count;
@@ -349,8 +364,8 @@ function onKeydown(event: KeyboardEvent): void {
       return;
     }
     case 'Enter': {
-      // Enter takes the highlighted suggestion, or the first visible
-      // suggestion before keyboard navigation starts.
+      // Enter takes the highlighted suggestion. The fallback covers a
+      // transient list update before its initial highlight is installed.
       event.preventDefault();
       const candidate = suggestions.value[activeIndex.value] ?? suggestions.value[0];
       if (candidate) acceptSuggestion(candidate);
@@ -519,6 +534,15 @@ function onPaste(event: ClipboardEvent): void {
             </span>
             <span class="ac-email" :class="{ 'ac-email--primary': !candidate.name?.trim() }">
               <template v-for="(seg, sidx) in matchSegments(candidate.email)" :key="sidx">
+                <span v-if="seg.hit" class="ac-match">{{ seg.text }}</span>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </span>
+            <span v-if="suggestionContext(candidate)" class="ac-context">
+              <template
+                v-for="(seg, sidx) in matchSegments(suggestionContext(candidate) ?? '')"
+                :key="sidx"
+              >
                 <span v-if="seg.hit" class="ac-match">{{ seg.text }}</span>
                 <template v-else>{{ seg.text }}</template>
               </template>
@@ -742,6 +766,14 @@ function onPaste(event: ClipboardEvent): void {
 
 .ac-email {
   font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-context {
+  font-size: 11px;
   line-height: 1.3;
   color: var(--muted, #6b7280);
   overflow: hidden;

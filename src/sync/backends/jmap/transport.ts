@@ -29,6 +29,23 @@ export const JMAP_CAPS = Object.freeze({
   WEBSOCKET: JMAP_WEBSOCKET_CAP,
 });
 
+function httpResponseError(
+  label: string,
+  response: { status: number; statusText: string },
+  detail = '',
+) {
+  const error: any = new Error(
+    `${label}: ${response.status} ${response.statusText}${detail ? `\n${detail}` : ''}`,
+  );
+  error.type = 'httpError';
+  error.status = response.status;
+  return error;
+}
+
+export function isAuthenticationError(error: any): boolean {
+  return error?.status === 401 || error?.status === 403;
+}
+
 /**
  * @typedef {object} WsCredential
  * @property {'bearer'|'basic'} kind  How to encode the credential in
@@ -155,6 +172,10 @@ export class JmapTransport {
     this._aborted = false;
   }
 
+  isWebSocketOpen(): boolean {
+    return this._ws != null && this._ws.readyState === this._ws.OPEN;
+  }
+
   /**
    * Cancel every HTTP request that has not settled and reject every
    * pending WebSocket request, without closing the socket.
@@ -277,7 +298,7 @@ export class JmapTransport {
       label: 'session',
       consume: async (response) => {
         if (!response.ok) {
-          throw new Error(`JMAP session fetch failed: ${response.status} ${response.statusText}`);
+          throw httpResponseError('JMAP session fetch failed', response);
         }
         return response.json();
       },
@@ -329,9 +350,7 @@ export class JmapTransport {
           wlog.info('jmap-transport', `httpResponse ${summary} status=${response.status}`);
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
-            throw new Error(
-              `JMAP request failed: ${response.status} ${response.statusText}\n${detail}`,
-            );
+            throw httpResponseError('JMAP request failed', response, detail);
           }
           return response.json();
         },
@@ -382,9 +401,7 @@ export class JmapTransport {
       consume: async (response) => {
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
-          throw new Error(
-            `JMAP upload failed: ${response.status} ${response.statusText}\n${detail}`,
-          );
+          throw httpResponseError('JMAP upload failed', response, detail);
         }
         return response.json();
       },
@@ -432,9 +449,7 @@ export class JmapTransport {
       consume: async (response) => {
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
-          throw new Error(
-            `JMAP download failed: ${response.status} ${response.statusText}\n${detail}`,
-          );
+          throw httpResponseError('JMAP download failed', response, detail);
         }
         return new Uint8Array(await response.arrayBuffer());
       },
@@ -656,7 +671,14 @@ export class JmapTransport {
         const pending = this._wsPending.get(payload.requestId);
         if (pending) {
           this._wsPending.delete(payload.requestId);
-          pending.reject(new Error(payload.detail || payload.type || 'JMAP RequestError'));
+          const error: any = new Error(
+            payload.detail || payload.type || 'JMAP RequestError',
+          );
+          error.type = payload.type ?? 'jmapRequestError';
+          if (Number.isFinite(payload.status)) {
+            error.status = Number(payload.status);
+          }
+          pending.reject(error);
         }
         return;
       }

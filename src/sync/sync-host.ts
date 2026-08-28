@@ -17,13 +17,27 @@ import { SyncClient } from './sync-client';
 import { JmapTransport } from './backends/jmap/transport';
 import { JmapBackend } from './backends/jmap/backend';
 
+type ConnectAuth =
+  | {
+      kind: 'bearer';
+      token: string;
+      issuedAt: number | null;
+      expiresAt: number | null;
+    }
+  | { kind: 'basic'; username: string; password: string };
+
+interface MutableAuth {
+  current: ConnectAuth;
+}
+
 /**
  * @typedef {object} StartAccountInput
  * @property {string} sessionUrl    Absolute URL of the JMAP session document
  *                                  (e.g. https://mail.example.com/.well-known/jmap).
  * @property {string} serverOrigin  Origin of the JMAP server.
  * @property {{ kind: 'basic', username: string, password: string }
- *           | { kind: 'bearer', token: string }} auth
+ *           | { kind: 'bearer', token: string, issuedAt?: number,
+ *               expiresAt?: number }} auth
  *                                  Auth handed to the transport's getAuthHeader.
  *                                  bearer tokens are the OIDC happy path; basic
  *                                  tokens cover self-host setups.
@@ -65,6 +79,8 @@ export function makeSyncRpcHandlers({
   const syncClient = new SyncClient();
   /** @type {Map<number, JmapBackend>} */
   const backends = new Map();
+  const authByBackend = new WeakMap<JmapBackend, MutableAuth>();
+  const bearerStarts = new Map<string, Promise<void>>();
 
   if (outboxNotifier) {
     outboxNotifier.dispatch = (accountId, _mutationId) => {
@@ -75,11 +91,29 @@ export function makeSyncRpcHandlers({
 
   return {
     [DB_RPC.SYNC_START_ACCOUNT]: async (input) => {
+      let releaseBearerStart: (() => void) | null = null;
+      if (input.auth?.kind === 'bearer') {
+        for (;;) {
+          const existing = findBearerBackend(backends, authByBackend, input.serverOrigin);
+          if (existing) {
+            updateBackendBearer(existing, authByBackend, copyAuth(input.auth));
+            return { accountId: existing.account.id };
+          }
+          const pending = bearerStarts.get(input.serverOrigin);
+          if (!pending) break;
+          await pending;
+        }
+        const startGate = new Promise<void>((resolve) => {
+          releaseBearerStart = resolve;
+        });
+        bearerStarts.set(input.serverOrigin, startGate);
+      }
       wlog.info('sync-host', `startAccount ${input.serverOrigin} (auth=${input.auth?.kind}, wsProxy=${input.wsProxyUrl ?? 'none'})`);
+      const mutableAuth: MutableAuth = { current: copyAuth(input.auth) };
       const transport = new JmapTransport({
         sessionUrl: input.sessionUrl,
-        getAuthHeader: makeAuthHeader(input.auth),
-        getWsCredential: makeWsCredential(input.auth),
+        getAuthHeader: makeAuthHeader(() => mutableAuth.current),
+        getWsCredential: makeWsCredential(() => mutableAuth.current),
         wsProxyUrl: input.wsProxyUrl ?? null,
         fetch: boundFetch,
         WebSocketImpl: wsCtor,
@@ -91,25 +125,65 @@ export function makeSyncRpcHandlers({
         options: { useWebSocket: input.useWebSocket ?? true },
       });
       try {
-        await backend.start();
-      } catch (err) {
-        wlog.error('sync-host', 'backend.start() threw', err);
-        throw err;
+        try {
+          await backend.start();
+        } catch (err) {
+          wlog.error('sync-host', 'backend.start() threw', err);
+          throw err;
+        }
+        const existing = backends.get(backend.account.id);
+        if (existing && existing !== backend) {
+          updateBackendBearer(existing, authByBackend, mutableAuth.current);
+          await backend.stop();
+          return { accountId: existing.account.id };
+        }
+        backends.set(backend.account.id, backend);
+        authByBackend.set(backend, mutableAuth);
+        syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_MAIL, backend);
+        if (backend.services.some((s) => s.serviceKind === SERVICE_KIND.JMAP_CONTACTS)) {
+          syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_CONTACTS, backend);
+        }
+        // Shared accounts ride on the same backend/transport; register
+        // their local ids too so folder-scoped sync RPCs (e.g.
+        // ensureFolderWindow for a shared folder) route to it.
+        for (const shared of backend.sharedAccounts ?? []) {
+          backends.set(shared.id, backend);
+          syncClient.registerBackend(shared.id, SERVICE_KIND.JMAP_MAIL, backend);
+        }
+        wlog.info('sync-host', `startAccount complete; accountId=${backend.account.id}, services=${backend.services.map((s) => s.serviceKind).join(',')}`);
+        return { accountId: backend.account.id };
+      } finally {
+        if (releaseBearerStart) {
+          if (bearerStarts.get(input.serverOrigin)) {
+            bearerStarts.delete(input.serverOrigin);
+          }
+          releaseBearerStart();
+        }
       }
-      backends.set(backend.account.id, backend);
-      syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_MAIL, backend);
-      if (backend.services.some((s) => s.serviceKind === SERVICE_KIND.JMAP_CONTACTS)) {
-        syncClient.registerBackend(backend.account.id, SERVICE_KIND.JMAP_CONTACTS, backend);
+    },
+
+    [DB_RPC.SYNC_UPDATE_ACCOUNT_AUTH]: async ({
+      accountId, token, issuedAt, expiresAt,
+    }) => {
+      const backend = backends.get(accountId);
+      const mutableAuth = backend ? authByBackend.get(backend) : null;
+      if (!mutableAuth) return { updated: false };
+      if (mutableAuth.current.kind !== 'bearer'
+          || typeof token !== 'string'
+          || !token
+          || !Number.isFinite(issuedAt)
+          || !Number.isFinite(expiresAt)) {
+        return { updated: false };
       }
-      // Shared accounts ride on the same backend/transport; register
-      // their local ids too so folder-scoped sync RPCs (e.g.
-      // ensureFolderWindow for a shared folder) route to it.
-      for (const shared of backend.sharedAccounts ?? []) {
-        backends.set(shared.id, backend);
-        syncClient.registerBackend(shared.id, SERVICE_KIND.JMAP_MAIL, backend);
-      }
-      wlog.info('sync-host', `startAccount complete; accountId=${backend.account.id}, services=${backend.services.map((s) => s.serviceKind).join(',')}`);
-      return { accountId: backend.account.id };
+      const next = copyAuth({
+        kind: 'bearer',
+        token,
+        issuedAt,
+        expiresAt,
+      });
+      const applied = applyBearerUpdate(mutableAuth, next);
+      if (applied) backend.authenticationUpdated();
+      return { updated: true, applied };
     },
 
     [DB_RPC.SYNC_STOP_ACCOUNT]: async ({ accountId }) => {
@@ -195,15 +269,72 @@ export function makeSyncRpcHandlers({
   };
 }
 
-function makeAuthHeader(auth) {
-  if (auth?.kind === 'bearer') {
-    return async () => `Bearer ${auth.token}`;
+function findBearerBackend(
+  backends: Map<number, JmapBackend>,
+  authByBackend: WeakMap<JmapBackend, MutableAuth>,
+  serverOrigin: string,
+): JmapBackend | null {
+  for (const backend of new Set(backends.values())) {
+    const auth = authByBackend.get(backend)?.current;
+    if (backend.serverOrigin === serverOrigin && auth?.kind === 'bearer') {
+      return backend;
+    }
   }
-  if (auth?.kind === 'basic') {
-    const encoded = base64Utf8(`${auth.username}:${auth.password}`);
-    return async () => `Basic ${encoded}`;
+  return null;
+}
+
+function updateBackendBearer(
+  backend: JmapBackend,
+  authByBackend: WeakMap<JmapBackend, MutableAuth>,
+  next: ConnectAuth,
+): boolean {
+  const holder = authByBackend.get(backend);
+  if (!holder) return false;
+  const applied = applyBearerUpdate(holder, next);
+  if (applied) backend.authenticationUpdated();
+  return applied;
+}
+
+function copyAuth(auth: any): ConnectAuth {
+  if (auth?.kind === 'bearer' && typeof auth.token === 'string' && auth.token) {
+    return {
+      kind: 'bearer',
+      token: auth.token,
+      issuedAt: Number.isFinite(auth.issuedAt) ? Number(auth.issuedAt) : null,
+      expiresAt: Number.isFinite(auth.expiresAt) ? Number(auth.expiresAt) : null,
+    };
+  }
+  if (auth?.kind === 'basic'
+      && typeof auth.username === 'string'
+      && typeof auth.password === 'string') {
+    return { kind: 'basic', username: auth.username, password: auth.password };
   }
   throw new Error(`Unsupported auth kind: ${auth?.kind}`);
+}
+
+function applyBearerUpdate(holder: MutableAuth, next: ConnectAuth): boolean {
+  if (holder.current.kind !== 'bearer' || next.kind !== 'bearer') return false;
+  if (next.issuedAt == null || next.expiresAt == null) return false;
+  const current = holder.current;
+  if (current.issuedAt != null) {
+    if (next.issuedAt < current.issuedAt) return false;
+    if (next.issuedAt === current.issuedAt
+        && current.expiresAt != null
+        && next.expiresAt < current.expiresAt) return false;
+  }
+  if (next.token === current.token
+      && next.issuedAt === current.issuedAt
+      && next.expiresAt === current.expiresAt) return false;
+  holder.current = next;
+  return true;
+}
+
+function makeAuthHeader(getAuth: () => ConnectAuth) {
+  return async () => {
+    const auth = getAuth();
+    if (auth.kind === 'bearer') return `Bearer ${auth.token}`;
+    return `Basic ${base64Utf8(`${auth.username}:${auth.password}`)}`;
+  };
 }
 
 /**
@@ -211,15 +342,15 @@ function makeAuthHeader(auth) {
  * jmap-bridge is in front of Stalwart. The bridge turns this into
  * a proper Authorization header on the upstream upgrade request.
  */
-function makeWsCredential(auth) {
-  if (auth?.kind === 'bearer') {
-    return async () => ({ kind: 'bearer', token: auth.token });
-  }
-  if (auth?.kind === 'basic') {
-    const encoded = base64Utf8(`${auth.username}:${auth.password}`);
-    return async () => ({ kind: 'basic', token: encoded });
-  }
-  return async () => null;
+function makeWsCredential(getAuth: () => ConnectAuth) {
+  return async () => {
+    const auth = getAuth();
+    if (auth.kind === 'bearer') return { kind: 'bearer', token: auth.token };
+    return {
+      kind: 'basic',
+      token: base64Utf8(`${auth.username}:${auth.password}`),
+    };
+  };
 }
 
 function base64Utf8(input) {

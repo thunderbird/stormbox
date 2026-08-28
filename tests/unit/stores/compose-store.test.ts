@@ -11,9 +11,13 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import { __resetRepositoryForTests, __setRepositoryForTests } from '../../../src/composables/useRepository';
-import { COMPOSE_STATE } from '../../../src/constants/states';
+import { COMPOSE_STATE, MUTATION_TYPE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
-import { useComposeStore } from '../../../src/stores/compose-store';
+import { useMailStore } from '../../../src/stores/mail-store';
+import {
+  COMPOSE_PRESENTATION,
+  useComposeStore,
+} from '../../../src/stores/compose-store';
 import type { IdentityRow } from '../../../src/types';
 
 function identity(overrides: Partial<IdentityRow>): IdentityRow {
@@ -295,6 +299,22 @@ describe('compose-store recipient fields', () => {
     expect(composeStore.recipientEntries('to')).toEqual([
       { name: 'Smith, Alice', email: 'alice@example.com' },
       { text: 'rubbish', invalid: true },
+    ]);
+  });
+
+  it('preserves the order of valid and invalid recipient entries', () => {
+    const composeStore = useComposeStore();
+    const sessionId = composeStore.open();
+    composeStore.setRecipientEntries('to', [
+      { email: 'first@example.com' },
+      { text: 'unfinished', invalid: true },
+      { email: 'last@example.com' },
+    ], sessionId);
+
+    expect(composeStore.recipientEntries('to', sessionId)).toEqual([
+      { email: 'first@example.com' },
+      { text: 'unfinished', invalid: true },
+      { email: 'last@example.com' },
     ]);
   });
 
@@ -905,5 +925,703 @@ describe('compose-store send safety', () => {
     composeStore.open({ to: [{ email: 'other@example.com' }] });
     expect(composeStore.error).toBeNull();
     expect(composeStore.status).toBe(COMPOSE_STATE.EDITING);
+  });
+});
+
+describe('compose-store sessions and draft autosave', () => {
+  async function autosaveStore(
+    runMutationImpl?: (accountId: number, id: number) => Promise<any>,
+  ) {
+    let mutationId = 0;
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({
+        id: 1,
+        remote_id: 'identity-1',
+        email: 'me@example.com',
+      })]),
+      ensureIdentities: vi.fn(async () => {}),
+      insertPendingMutation: vi.fn(async (_input: any) => ({ id: ++mutationId })),
+      findMessageByRfc822MessageId: vi.fn(async () => null),
+      getMessageBodyForDisplay: vi.fn(async () => null),
+      retryPendingDraftMutation: vi.fn(async () => ({ retried: 1 })),
+      abandonPendingDraftMutation: vi.fn(async () => ({ abandoned: 1 })),
+      runMutation: vi.fn(runMutationImpl ?? (async (_accountId: number, id: number) => ({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          draftSessionId: 'session',
+          revision: id,
+          emailId: `draft-${id}`,
+          localMessageId: id,
+          messageId: `<revision-${id}@example.com>`,
+          payloadHash: `hash-${id}`,
+        },
+      }))),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const mailStore = useMailStore();
+    mailStore.folders = [{
+      id: 10,
+      account_id: 1,
+      remote_id: 'mb-drafts',
+      role: 'drafts',
+      name: 'Drafts',
+    } as any];
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+    return { composeStore, repo };
+  }
+
+  it('keeps multiple sessions with exactly one expanded', () => {
+    const composeStore = useComposeStore();
+    const firstId = composeStore.open({ subject: 'First' });
+    const secondId = composeStore.open({ subject: 'Second' });
+
+    expect(composeStore.sessions).toHaveLength(2);
+    expect(composeStore.sessionById(firstId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(composeStore.sessionById(secondId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.EXPANDED);
+    expect(composeStore.activeSessionId).toBe(secondId);
+
+    expect(composeStore.restore(firstId)).toBe(true);
+    expect(composeStore.sessionById(firstId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.EXPANDED);
+    expect(composeStore.sessionById(secondId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.MINIMIZED);
+  });
+
+  it('refuses to minimize or replace a sending session', () => {
+    const composeStore = useComposeStore();
+    const sessionId = composeStore.open({ subject: 'Sending' });
+    const session = composeStore.sessionById(sessionId)!;
+    session.status = COMPOSE_STATE.SENDING;
+
+    expect(composeStore.minimize(sessionId)).toBe(false);
+    expect(composeStore.open({ subject: 'Other' })).toBe(sessionId);
+    expect(composeStore.sessions).toHaveLength(1);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
+  });
+
+  it('computes dirty state relative to the initialized seed', () => {
+    const composeStore = useComposeStore();
+    const sessionId = composeStore.open({ subject: 'Seed' });
+    const session = composeStore.sessionById(sessionId)!;
+
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    session.draft.subject = 'Changed';
+    expect(composeStore.isSessionDirty(sessionId)).toBe(true);
+    session.draft.subject = 'Seed';
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+  });
+
+  it('treats Squire trailing newlines as the initialized text body', () => {
+    const composeStore = useComposeStore();
+    const emptyId = composeStore.open();
+    composeStore.sessionById(emptyId)!.draft.textBody = '\n';
+    expect(composeStore.isSessionDirty(emptyId)).toBe(false);
+
+    const quotedId = composeStore.open({ textBody: 'Quoted body' });
+    composeStore.sessionById(quotedId)!.draft.textBody = 'Quoted body\r\n';
+    expect(composeStore.isSessionDirty(quotedId)).toBe(false);
+  });
+
+  it('does not consider a default From identity meaningful content', async () => {
+    const { composeStore } = await autosaveStore();
+    const sessionId = composeStore.open();
+
+    expect(composeStore.isSessionMeaningfullyNonEmpty(sessionId)).toBe(false);
+    composeStore.sessionById(sessionId)!.draft.subject = ' ';
+    expect(composeStore.isSessionMeaningfullyNonEmpty(sessionId)).toBe(false);
+  });
+
+  it('autosaves two seconds after a semantic edit and not before', async () => {
+    vi.useFakeTimers();
+    try {
+      const { composeStore, repo } = await autosaveStore();
+      const sessionId = composeStore.open();
+      composeStore.sessionById(sessionId)!.draft.subject = 'Autosave me';
+      composeStore.touchSession(sessionId);
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await waitForAsyncWatchers();
+
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+      expect(repo.insertPendingMutation.mock.calls[0][0].mutationType)
+        .toBe(MUTATION_TYPE.SAVE_DRAFT);
+      expect(composeStore.sessionById(sessionId)?.confirmedRevision?.emailId)
+        .toBe('draft-1');
+      expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never autosaves an empty new session', async () => {
+    vi.useFakeTimers();
+    try {
+      const { composeStore, repo } = await autosaveStore();
+      const sessionId = composeStore.open();
+      composeStore.touchSession(sessionId);
+
+      await vi.advanceTimersByTimeAsync(35_000);
+
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('autosaves at the thirty-second ceiling during continuous editing', async () => {
+    vi.useFakeTimers();
+    try {
+      const { composeStore, repo } = await autosaveStore();
+      const sessionId = composeStore.open();
+      const session = composeStore.sessionById(sessionId)!;
+      session.draft.subject = 'Edit 0';
+      composeStore.touchSession(sessionId);
+
+      for (let second = 1; second < 30; second += 1) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        session.draft.subject = `Edit ${second}`;
+        composeStore.touchSession(sessionId);
+      }
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await waitForAsyncWatchers();
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson).subject)
+        .toBe('Edit 29');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces edits during a save into one latest follow-up', async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseFirst: (result: any) => void = () => {};
+      let calls = 0;
+      const { composeStore, repo } = await autosaveStore(async (_accountId, id) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => { releaseFirst = resolve; });
+        }
+        return {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          result: {
+            revision: 2,
+            emailId: 'draft-2',
+            localMessageId: 2,
+            messageId: '<revision-2@example.com>',
+            payloadHash: 'hash-2',
+          },
+        };
+      });
+      const sessionId = composeStore.open();
+      const session = composeStore.sessionById(sessionId)!;
+      session.draft.subject = 'First payload';
+      composeStore.touchSession(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(repo.runMutation).toHaveBeenCalledTimes(1);
+
+      session.draft.subject = 'Latest payload';
+      composeStore.touchSession(sessionId);
+      releaseFirst({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'draft-1',
+          localMessageId: 1,
+          messageId: '<revision-1@example.com>',
+          payloadHash: 'hash-1',
+        },
+      });
+      await waitForAsyncWatchers();
+      await waitForAsyncWatchers();
+
+      expect(repo.runMutation).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(repo.insertPendingMutation.mock.calls[1][0].requestJson).subject)
+        .toBe('Latest payload');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens the close prompt only for dirty content', async () => {
+    const composeStore = useComposeStore();
+    const cleanId = composeStore.open();
+    expect(composeStore.requestClose(cleanId)).toBe(true);
+
+    const dirtyId = composeStore.open();
+    composeStore.sessionById(dirtyId)!.draft.subject = 'Unsaved';
+    expect(composeStore.requestClose(dirtyId)).toBe(false);
+    expect(composeStore.sessionById(dirtyId)?.closePromptOpen).toBe(true);
+
+    composeStore.cancelClose(dirtyId);
+    expect(composeStore.sessionById(dirtyId)?.closePromptOpen).toBe(false);
+    await expect(composeStore.closeWithoutSaving(dirtyId)).resolves.toBe(true);
+  });
+
+  it('explicitly saves a meaningful seed-clean prefill before closing', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open({
+      subject: 'Prefilled forward',
+      textBody: 'Quoted body',
+    });
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+
+    await expect(composeStore.saveAndClose(sessionId)).resolves.toBe(true);
+
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+    expect(repo.insertPendingMutation.mock.calls[0][0].mutationType)
+      .toBe(MUTATION_TYPE.SAVE_DRAFT);
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+  });
+
+  it('does not report invalid recipient fragments as saved', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open();
+    composeStore.setRecipientEntries('to', [
+      { text: 'unfinished recipient', invalid: true },
+    ], sessionId);
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+
+    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+    expect(composeStore.sessionById(sessionId)?.saveError).toMatch(/invalid recipients/i);
+  });
+
+  it('recovers the confirmed revision when auto-drain retired the row first', async () => {
+    const { composeStore, repo } = await autosaveStore(async () => ({
+      attempted: 0,
+      succeeded: 1,
+      failed: 0,
+    }));
+    repo.findMessageByRfc822MessageId.mockResolvedValue({
+      id: 91,
+      remote_id: 'auto-drained-draft',
+    });
+    repo.getMessageBodyForDisplay.mockResolvedValue({ attachments: [] });
+    const sessionId = composeStore.open({ subject: 'Save despite race' });
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+
+    expect(repo.findMessageByRfc822MessageId).toHaveBeenCalled();
+    expect(composeStore.sessionById(sessionId)?.confirmedRevision).toMatchObject({
+      emailId: 'auto-drained-draft',
+      localMessageId: 91,
+    });
+  });
+
+  it('retries the original durable mutation after an automatic save stops', async () => {
+    let attempt = 0;
+    const { composeStore, repo } = await autosaveStore(async () => {
+      attempt += 1;
+      if (attempt === 1) {
+        return { attempted: 1, succeeded: 0, failed: 1 };
+      }
+      return {
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'recovered-draft',
+          localMessageId: 44,
+          messageId: '<retry@example.com>',
+          payloadHash: 'retry-hash',
+        },
+      };
+    });
+    const sessionId = composeStore.open({ subject: 'Retry this save' });
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+    expect(composeStore.sessionById(sessionId)?.isSaving).toBe(false);
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+    expect(repo.retryPendingDraftMutation).toHaveBeenCalledWith(1, 1);
+    expect(composeStore.sessionById(sessionId)?.confirmedRevision?.emailId)
+      .toBe('recovered-draft');
+  });
+
+  it('carries reopened attachments into the final send mutation', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open({
+      to: [{ email: 'recipient@example.com' }],
+      subject: 'Attachment send',
+      attachments: [{
+        part_id: 'a1',
+        blob_id: 'current-part-blob',
+        name: 'report.pdf',
+        mime_type: 'application/pdf',
+        size: 123,
+        disposition: 'attachment',
+        cid: null,
+      }],
+    });
+
+    await composeStore.send(sessionId);
+
+    const queued = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(queued.attachments).toEqual([
+      expect.objectContaining({ blob_id: 'current-part-blob', name: 'report.pdf' }),
+    ]);
+  });
+
+  it('installs refreshed attachment handles without creating save churn', async () => {
+    const { composeStore, repo } = await autosaveStore(async () => ({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        revision: 1,
+        emailId: 'draft-with-new-parts',
+        localMessageId: 55,
+        messageId: '<parts@example.com>',
+        payloadHash: 'parts-hash',
+        attachments: [{
+          part_id: 'a1',
+          blob_id: 'refreshed-part-blob',
+          name: 'report.pdf',
+          mime_type: 'application/pdf',
+          size: 123,
+          disposition: 'attachment',
+          cid: null,
+        }],
+      },
+    }));
+    const sessionId = composeStore.open({
+      subject: 'Attachment draft',
+      attachments: [{
+        part_id: 'old',
+        blob_id: 'predecessor-part-blob',
+        name: 'report.pdf',
+        mime_type: 'application/pdf',
+        size: 123,
+        disposition: 'attachment',
+        cid: null,
+      }],
+    });
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+
+    expect(composeStore.sessionById(sessionId)?.draft.attachments[0]?.blob_id)
+      .toBe('refreshed-part-blob');
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it('reopens a server draft as a clean edit-safe compose session', async () => {
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({
+        id: 1,
+        remote_id: 'identity-1',
+        email: 'me@example.com',
+      })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => false),
+      listMessageAddresses: vi.fn(async () => [
+        { kind: 'from', position: 0, name: 'Me', email: 'me@example.com' },
+        { kind: 'to', position: 0, name: 'Alice', email: 'alice@example.com' },
+        { kind: 'cc', position: 0, name: null, email: 'cc@example.com' },
+      ]),
+      downloadBlob: vi.fn(async () => ({ type: 'image/png', base64: 'iVBORw0KGgo=' })),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const sessionId = await composeStore.prepareDraftFromMessage({
+      ...sourceMessage({
+        id: 77,
+        remote_id: 'remote-draft',
+        is_draft: 1,
+        rfc822_message_id: 'draft-message@example.com',
+      }),
+      account_id: 1,
+    }, {
+      text: 'Draft text',
+      html: '<style>body{position:fixed}</style>'
+        + '<p id="cover" style="position:fixed;color:red" onclick="steal()">'
+        + 'Draft<img src="cid:image-1"></p><script>steal()</script>',
+      attachments: [{
+        part_id: 'image',
+        blob_id: 'part-blob',
+        name: 'image.png',
+        mime_type: 'image/png',
+        size: 12,
+        disposition: 'inline',
+        cid: 'image-1',
+      }],
+    });
+
+    const session = composeStore.sessionById(sessionId);
+    expect(session?.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(session?.draft.cc).toEqual([{ email: 'cc@example.com' }]);
+    expect(session?.draft.htmlBody).toContain('data:image/png;base64,');
+    expect(session?.draft.htmlBody).toContain('color: red');
+    expect(session?.draft.htmlBody).not.toMatch(/script|onclick|position|id="cover"/i);
+    expect(session?.draft.attachments).toEqual([]);
+    expect(session?.confirmedRevision?.emailId).toBe('remote-draft');
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+  });
+
+  it('downloads a complete body before opening a truncated draft for editing', async () => {
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => false),
+      listMessageAddresses: vi.fn(async () => [
+        { kind: 'from', position: 0, name: null, email: 'me@example.com' },
+      ]),
+      downloadBlob: vi.fn(async () => ({
+        type: 'text/plain',
+        base64: btoa('The complete draft body'),
+      })),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const sessionId = await composeStore.prepareDraftFromMessage({
+      ...sourceMessage({ id: 90, remote_id: 'large-draft', is_draft: 1 }),
+      account_id: 1,
+    }, {
+      text: 'The complete',
+      isComplete: false,
+      truncatedParts: [{
+        kind: 'text',
+        blob_id: 'full-text-part',
+        mime_type: 'text/plain',
+      }],
+    });
+
+    expect(sessionId).toBeTruthy();
+    expect(composeStore.sessionById(sessionId)?.draft.textBody)
+      .toBe('The complete draft body');
+  });
+
+  it('refuses to replace a multi-part body it cannot reproduce losslessly', async () => {
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => false),
+      listMessageAddresses: vi.fn(async () => []),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const opened = await composeStore.prepareDraftFromMessage({
+      ...sourceMessage({ id: 93, remote_id: 'multipart-draft', is_draft: 1 }),
+      account_id: 1,
+    }, {
+      text: 'first',
+      bodyParts: [
+        {
+          kind: 'text',
+          value: 'first',
+          isTruncated: false,
+          blob_id: 'one',
+          mime_type: 'text/plain',
+          charset: 'utf-8',
+        },
+        {
+          kind: 'text',
+          value: 'second',
+          isTruncated: false,
+          blob_id: 'two',
+          mime_type: 'text/plain',
+          charset: 'utf-8',
+        },
+      ],
+    });
+
+    expect(opened).toBeNull();
+    expect(composeStore.sessions).toHaveLength(0);
+    expect(composeStore.notice).toMatch(/could not be loaded completely/i);
+  });
+
+  it('drops a stale draft reopen after another compose gesture wins', async () => {
+    let releaseAddresses: (rows: any[]) => void = () => {};
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => false),
+      listMessageAddresses: vi.fn(() =>
+        new Promise<any[]>((resolve) => { releaseAddresses = resolve; })),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const stale = composeStore.prepareDraftFromMessage({
+      ...sourceMessage({ id: 91, remote_id: 'stale-draft', is_draft: 1 }),
+      account_id: 1,
+    }, { text: 'Stale' });
+    await waitForAsyncWatchers();
+    const wantedId = composeStore.open({ subject: 'The compose the user wanted' });
+    releaseAddresses([]);
+
+    await expect(stale).resolves.toBeNull();
+    expect(composeStore.activeSessionId).toBe(wantedId);
+    expect(composeStore.draft.subject).toBe('The compose the user wanted');
+  });
+
+  it('requires an explicit identity choice for an unavailable draft sender', async () => {
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => false),
+      listMessageAddresses: vi.fn(async () => [
+        { kind: 'from', position: 0, name: 'Old alias', email: 'gone@example.com' },
+      ]),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const sessionId = await composeStore.prepareDraftFromMessage({
+      ...sourceMessage({ id: 92, remote_id: 'alias-draft', is_draft: 1 }),
+      account_id: 1,
+    }, { text: 'Alias draft' });
+
+    expect(composeStore.sessionById(sessionId)?.unresolvedFrom?.email)
+      .toBe('gone@example.com');
+    composeStore.sessionById(sessionId)!.draft.subject = 'Edited alias draft';
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+    expect(composeStore.sessionById(sessionId)?.saveError).toMatch(/From identity/i);
+  });
+
+  it('does not open a draft claimed by an unresolved send', async () => {
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+      ensureIdentities: vi.fn(async () => {}),
+      isEmailClaimedBySend: vi.fn(async () => true),
+      listMessageAddresses: vi.fn(async () => []),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+
+    const opened = await composeStore.prepareDraftFromMessage({
+      ...sourceMessage({ id: 88, remote_id: 'send-draft', is_draft: 1 }),
+      account_id: 1,
+    }, {});
+
+    expect(opened).toBeNull();
+    expect(composeStore.sessions).toHaveLength(0);
+    expect(composeStore.notice).toMatch(/send whose outcome/i);
+  });
+
+  it('waits for autosave and carries its exact draft id into send cleanup', async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseSave: (result: any) => void = () => {};
+      const { composeStore, repo } = await autosaveStore(async (_accountId, id) => {
+        if (id === 1) return new Promise((resolve) => { releaseSave = resolve; });
+        return {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          result: { submitted: true, filed: true },
+        };
+      });
+      const sessionId = composeStore.open({ to: [{ email: 'recipient@example.com' }] });
+      const session = composeStore.sessionById(sessionId)!;
+      session.draft.subject = 'Save before send';
+      composeStore.touchSession(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+
+      const sending = composeStore.send(sessionId);
+      await waitForAsyncWatchers();
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+      releaseSave({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'saved-draft',
+          localMessageId: 14,
+          messageId: '<saved@example.com>',
+          payloadHash: 'saved-hash',
+        },
+      });
+      await expect(sending).resolves.toBe(true);
+
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(2);
+      const sendInput = repo.insertPendingMutation.mock.calls[1][0];
+      expect(sendInput.mutationType).toBe(MUTATION_TYPE.SEND);
+      expect(JSON.parse(sendInput.requestJson).draftEmailIds).toEqual(['saved-draft']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('permanently destroys the confirmed revision when Discard is chosen', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open({ subject: 'Saved draft' });
+    const session = composeStore.sessionById(sessionId)!;
+    session.confirmedRevision = {
+      emailId: 'draft-to-destroy',
+      localMessageId: 23,
+      revision: 1,
+      messageId: '<draft@example.com>',
+      payloadHash: 'hash',
+    };
+
+    await expect(composeStore.discardDraft(sessionId)).resolves.toBe(true);
+
+    const input = repo.insertPendingMutation.mock.calls[0][0];
+    expect(input.mutationType).toBe(MUTATION_TYPE.DISCARD_DRAFT);
+    expect(JSON.parse(input.requestJson).draftEmailIds).toEqual(['draft-to-destroy']);
+    expect(composeStore.sessionById(sessionId)).toBeNull();
   });
 });

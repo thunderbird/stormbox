@@ -29,6 +29,7 @@ import {
 } from '../utils/message-html';
 import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { formatAddressList } from '../utils/address-parse';
+import { shortcutModifierLabel } from '../utils/keyboard';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -50,6 +51,7 @@ defineProps<{
 
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
+const shortcutModifier = shortcutModifierLabel();
 
 const bodyRef = ref(null);
 const htmlShellRef = ref(null);
@@ -201,6 +203,21 @@ watch([body, bodyColorScheme], ([next, colorScheme]) => {
 watch(() => mailStore.selectedMessageId, () => {
   forceLightBody.value = false;
 });
+
+let openingDraftId: number | null = null;
+watch([message, body], ([selected, selectedBody]) => {
+  if (!selected || Number(selected.is_draft) !== 1 || !selectedBody) return;
+  if (openingDraftId === selected.id) return;
+  openingDraftId = selected.id;
+  void composeStore.prepareDraftFromMessage(selected, selectedBody).then((sessionId) => {
+    if (sessionId && mailStore.selectedMessageId === selected.id) {
+      mailStore.selectMessage(null);
+      mailStore.clearSelection();
+    }
+  }).finally(() => {
+    if (openingDraftId === selected.id) openingDraftId = null;
+  });
+}, { immediate: true });
 
 // Only offered in dark mode for HTML bodies; plain text already follows the
 // readable app theme.
@@ -534,13 +551,13 @@ function closeMessageView() {
         <button class="message-view__action message-view__action--danger" type="button" tabindex="-1" title="Delete (Del)">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Reply (Ctrl+R)">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Reply (${shortcutModifier}+R)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Reply All (Ctrl+Shift+R)">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Reply All (${shortcutModifier}+Shift+R)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" title="Forward (Ctrl+L)">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Forward (${shortcutModifier}+L)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </button>
       </header>
@@ -579,13 +596,13 @@ function closeMessageView() {
         <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="reply" title="Reply (Ctrl+R)" aria-label="Reply">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="replyAll" title="Reply All (Ctrl+Shift+R)" aria-label="Reply All">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
         </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="forward" title="Forward (Ctrl+L)" aria-label="Forward">
+        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </button>
         <button
