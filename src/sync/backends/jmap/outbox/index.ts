@@ -19,6 +19,8 @@
  *   'setMailboxSubscription' / 'createMailbox' / 'updateMailbox' /
  *   'destroyMailbox'   Mailbox/set subscription toggle, create,
  *                      rename/move, and destroy (RFC 8621 §2.5)
+ *   'createIdentity' / 'updateIdentity' / 'deleteIdentity'
+ *                      Identity/set writes with authoritative read-back
  *
  * Move and destroy delegate the cache effect to the protocol-neutral
  * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
@@ -56,6 +58,11 @@ import {
   runUpdateContact,
   runWhitelistSender,
 } from './operations/contacts';
+import {
+  runCreateIdentity,
+  runDeleteIdentity,
+  runUpdateIdentity,
+} from './operations/identities';
 import { runDestroy } from './operations/destroy';
 import { runDestroyMailbox } from './operations/destroy-mailbox';
 import { runDiscardDraft, runSaveDraft } from './operations/drafts';
@@ -82,6 +89,9 @@ export const MUTATION_TYPES = Object.freeze({
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  CREATE_IDENTITY: 'createIdentity',
+  UPDATE_IDENTITY: 'updateIdentity',
+  DELETE_IDENTITY: 'deleteIdentity',
   SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
   CREATE_MAILBOX: 'createMailbox',
   UPDATE_MAILBOX: 'updateMailbox',
@@ -167,6 +177,12 @@ export async function processMutationRow({
       return runUpdateContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DELETE_CONTACT:
       return runDeleteContact({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.CREATE_IDENTITY:
+      return runCreateIdentity({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.UPDATE_IDENTITY:
+      return runUpdateIdentity({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.DELETE_IDENTITY:
+      return runDeleteIdentity({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
       return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.CREATE_MAILBOX:

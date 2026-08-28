@@ -33,8 +33,8 @@ directly and its statuses are read alongside them.
 | 1 | Submission correctness and durability | 14 | — | — | — |
 | 2 | Recipients, reply audience, and threading | 8 | 1 | — | 1 |
 | 3 | Recipient autocomplete | 16 | — | — | — |
-| 4 | Contact and identity source integrity | 7 | 1 | — | — |
-| 5 | Verification | 6 | — | 1 | — |
+| 4 | Contact and identity source integrity | 8 | 1 | — | — |
+| 5 | Verification | 7 | — | 1 | — |
 
 CS-2.10 records a deliberate non-goal rather than outstanding work.
 
@@ -192,6 +192,7 @@ the full owned-address set, not on the currently selected From identity.
 | CS-4.6 🟩 Done | The system shall paint cached identities immediately when compose opens and refresh them in the background on compose open and on reconnect, so an alias added since the last sync appears without requiring an app restart. |
 | CS-4.7 🟩 Done | Identity fidelity shall be verified at the protocol level: the selected local identity shall map to the expected JMAP Identity id, Email `from` name and address, and the From header of the externally received message. Reported alias and display-name defects shall be diagnosed from a captured transaction before assigning a cause to Stormbox or to the server. |
 | CS-4.8 🟩 Done | `AddressBook/get` shall be applied as an authoritative snapshot with deletion handling, on the same reasoning as CS-4.2. `syncAddressBooks()` persists the result with `snapshot: true`, retiring live local rows omitted by the complete server list so removed books are no longer offered as filing targets. |
+| CS-4.9 🟩 Done | Identity management shall live in the Contacts space behind a **Manage identities** button at the bottom of the address-book rail. Identities shall reuse the contact list's filtering and virtualization path rather than maintain a second list implementation. Create, update, and permitted delete actions shall use durable `Identity/set` outbox rows; once a server write is confirmed, retries shall repeat only authoritative `Identity/get` cache reconciliation and shall not replay the write. An Identity whose `mayDelete` property is not true shall expose no enabled remove action. Stalwart's `invalidProperties` response for an email not configured on the account shall be normalized at the JMAP boundary into a stable address-not-allowed outcome, distinct from invalid syntax and generic failures, while preserving the original response as diagnostic detail. |
 
 ## 5. Verification
 
@@ -204,6 +205,7 @@ the full owned-address set, not on the currently selected From identity.
 | CS-5.5 🟩 Done | Send failure shall be covered by three distinct cases, because they have different correct outcomes. **Server-rejected** (a method-level error, or a rejection before submission): no delivery, no Sent copy, exactly one or zero Emails, the draft recoverable, and the failure surfaced. **Accepted but response lost**: exactly one delivery, and reconciliation resolving to success — a Sent copy here is correct, not a defect. **Genuinely ambiguous** (no evidence either way survives): at most one delivery, no automatic retry, and the durable no-automatic-retry record of CS-1.9 with its mailbox-based resolution rather than a plain Retry. A SharedWorker terminated and reloaded while its submission was in flight belongs to the third case, per CS-1.8: startup recovery conflicts it rather than resolving it from evidence. The second case covers a response lost to a worker that survives it. |
 | CS-5.6 🟩 Done | Delivery shall be asserted against a second account, never against the sending account. On the pinned Stalwart v0.15.4 a self-addressed message is accepted for submission and never arrives (issue #77), so a self-delivery assertion would test the server's defect rather than this client. |
 | CS-5.7 🟧 Planned | The RFC 5322/6532 address-list parser shall be tested against reusable upstream corpora from independent implementations and with differential fuzzing. Comparisons shall preserve intentional Stormbox semantics, including ordered rejected-fragment reporting and group flattening. This requirement applies only to email address parsing; it does not require fuzzing sending, synchronization, autocomplete, UI, or the outbox state machine. |
+| CS-5.8 🟩 Done | Identity management shall be covered by component tests for the shared list, protected deletion, and form actions; protocol tests for `Identity/set`, enumerated rejection outcomes, authoritative cache read-back, and cache-only retry; and live Stalwart tests that create and edit an alias in Contacts, send from it, verify the delivered From header, remove it through the same UI, and distinguish an address not configured for the account. |
 
 ## Prior art
 

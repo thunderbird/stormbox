@@ -11,13 +11,19 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { JMAP_CAPS } from './transport';
-import { callJmap, pickResponse } from './invoke';
+import { callJmap, pickResponse, requireResponse } from './invoke';
 
 const IDENTITY_PROPERTIES = [
   'id', 'name', 'email', 'replyTo', 'textSignature', 'htmlSignature', 'mayDelete',
 ];
 
-export async function syncIdentities({ transport, account, handlers, useWebSocket = false }) {
+export async function syncIdentities({
+  transport,
+  account,
+  handlers,
+  useWebSocket = false,
+  requireSnapshot = false,
+}) {
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.SUBMISSION],
     methodCalls: [[
@@ -27,11 +33,16 @@ export async function syncIdentities({ transport, account, handlers, useWebSocke
     ]],
     useWebSocket,
   });
-  const response = pickResponse(result, 'Identity/get');
+  const response = requireSnapshot
+    ? requireResponse(result, 'Identity/get')
+    : pickResponse(result, 'Identity/get');
   // An unreadable response is not an account without identities, and
   // neither is a readable one carrying no list. Applying either as a
   // snapshot would empty the From picker over a bad reply.
   if (!response || !Array.isArray(response.list)) {
+    if (requireSnapshot) {
+      throw new Error('JMAP Identity/get returned an unreadable snapshot');
+    }
     return { count: 0, removed: 0 };
   }
   const list = response.list;

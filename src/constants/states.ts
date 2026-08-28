@@ -69,9 +69,9 @@ export type MutationStatus = (typeof MUTATION_STATUS)[keyof typeof MUTATION_STAT
  * to have succeeded, written before the next protocol call is issued, so
  * a resume can skip work that already happened. Only CREATED and
  * SUBMITTED describe irreversible server state; the rest are local
- * bookkeeping. Contact writes reuse CACHE_PENDING for their own
- * server-applied-cache-behind window (see checkpointContactWrite); every
- * other mutation type leaves phase NULL.
+ * bookkeeping. Contact and Identity writes reuse CACHE_PENDING for their own
+ * server-applied-cache-behind windows; every other mutation type leaves
+ * phase NULL.
  *
  * UNKNOWN is terminal for automation on purpose: it means a response was
  * lost and reconciliation could not decide, so the choice belongs to the
@@ -145,6 +145,9 @@ export const MUTATION_TYPE = {
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  CREATE_IDENTITY: 'createIdentity',
+  UPDATE_IDENTITY: 'updateIdentity',
+  DELETE_IDENTITY: 'deleteIdentity',
   SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
   CREATE_MAILBOX: 'createMailbox',
   UPDATE_MAILBOX: 'updateMailbox',

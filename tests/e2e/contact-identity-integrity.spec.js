@@ -162,11 +162,9 @@ test.describe('Contact and identity integrity', () => {
     await waitForShellReady(page);
   });
 
-  test('an alias added after login can be sent from, and arrives as itself', async ({ sharedPage: page }, testInfo) => {
-    // CS-4.6 and #60/#86: the identity list used to be read once at login,
-    // so an alias added anywhere else could not be used without restarting
-    // the app — and the address a recipient sees is the only proof that the
-    // selected identity was the one actually used.
+  test('an identity managed in Contacts can be sent from, and arrives as itself', async ({ sharedPage: page }, testInfo) => {
+    // CS-4.9: the managed identity must reach both the shared list and the
+    // From picker, and the recipient's copy proves which identity was used.
     const jmap = await connectJmap();
     // Self-addressed mail cannot prove delivery here: the client writes the
     // Sent copy first, and Stalwart's ingest drops the inbound copy as a
@@ -183,14 +181,33 @@ test.describe('Contact and identity integrity', () => {
     let deliveredId = null;
     try {
       await patchPrincipalEmails('addItem', alias);
-      const created = await identitySet(jmap, {
-        create: { a1: { name: 'Alias E2E', email: alias } },
-      });
-      identityId = created.created?.a1?.id ?? null;
-      expect(identityId, 'the server should accept a new identity').toBeTruthy();
+      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+      await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
+      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await expect(page.getByRole('heading', { name: 'Identities' })).toBeVisible();
+      await page.getByRole('button', { name: 'Add identity' }).click();
+      const form = page.locator('.contacts__form');
+      await form.locator('input[type="text"]').fill('Alias E2E');
+      await form.locator('input[type="email"]').fill(alias);
+      await form.getByRole('button', { name: 'Save identity' }).click();
 
-      // The app has been running since before the alias existed. Opening
-      // the composer is what has to notice it.
+      await expect.poll(async () => {
+        const ids = await identityIds(jmap, alias);
+        identityId = ids[0] ?? null;
+        return ids.length;
+      }, {
+        timeout: 30_000,
+        message: 'the identity created in Contacts should exist on the server',
+      }).toBe(1);
+      const aliasRow = page.locator('.contacts__row').filter({ hasText: alias });
+      await expect(aliasRow).toContainText('Alias E2E');
+
+      await aliasRow.getByRole('button', { name: 'Edit Alias E2E' }).click();
+      await form.locator('input[type="text"]').fill('Alias E2E Updated');
+      await form.getByRole('button', { name: 'Save changes' }).click();
+      await expect(aliasRow).toContainText('Alias E2E Updated');
+
+      await page.getByRole('button', { name: 'Mail', exact: true }).click();
       await page.keyboard.press('ControlOrMeta+n');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       const picker = page.locator('.compose-dialog [data-compose-from]');
@@ -209,7 +226,7 @@ test.describe('Contact and identity integrity', () => {
       await composeSubject(page).fill(subject);
       await page.locator('.compose-dialog .editor[contenteditable]').first().click();
       await page.keyboard.type('Sent from an alias.');
-      await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
       await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 30_000 });
 
       // What the recipient received is the assertion: a From header the
@@ -226,7 +243,22 @@ test.describe('Contact and identity integrity', () => {
         // timeout that says nothing.
         timeout: 30_000,
         message: 'the message should arrive with the selected identity name and address',
-      }).toEqual({ name: 'Alias E2E', email: alias });
+      }).toEqual({ name: 'Alias E2E Updated', email: alias });
+
+      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.locator('.contacts__row')
+        .filter({ hasText: alias })
+        .getByRole('button', { name: 'Remove Alias E2E Updated' })
+        .click();
+      await expect.poll(
+        async () => (await identityIds(jmap, alias)).length,
+        {
+          timeout: 30_000,
+          message: 'removing the identity in Contacts should destroy it on the server',
+        },
+      ).toBe(0);
+      identityId = null;
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (deliveredId) {
@@ -236,6 +268,33 @@ test.describe('Contact and identity integrity', () => {
       }
       if (identityId) await identitySet(jmap, { destroy: [identityId] }).catch(() => {});
       await patchPrincipalEmails('removeItem', alias).catch(() => {});
+    }
+  });
+
+  test('explains when an identity address is not configured for the account', async ({ sharedPage: page }, testInfo) => {
+    const jmap = await connectJmap();
+    const address = `not-owned-${Date.now()}@example.net`;
+    try {
+      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+      await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
+      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: 'Add identity' }).click();
+      const form = page.locator('.contacts__form');
+      await form.locator('input[type="text"]').fill('Unavailable Address');
+      await form.locator('input[type="email"]').fill(address);
+      await form.getByRole('button', { name: 'Save identity' }).click();
+
+      await expect(form).toBeVisible();
+      await expect(page.locator('.store-error-toast')).toContainText(
+        'You can’t send from this email address. Add it to your account before creating an identity.',
+      );
+      expect(await identityIds(jmap, address)).toEqual([]);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      await page.locator('.contacts__form')
+        .getByRole('button', { name: 'Cancel' })
+        .click()
+        .catch(() => {});
     }
   });
 

@@ -425,8 +425,9 @@ describe('App mail layout', () => {
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
 
-    expect(input.attributes('placeholder')).toBe('Filter Contacts');
-    expect(input.attributes('aria-label')).toBe('Filter Contacts by name or email address');
+    expect(input.attributes('placeholder')).toBe('Filter contacts or identities');
+    expect(input.attributes('aria-label'))
+      .toBe('Filter contacts or identities by name or email address');
   });
 
   it('focuses and selects the quick filter with Ctrl+K', async () => {

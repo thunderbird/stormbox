@@ -361,3 +361,18 @@ makes a non-default origin work locally.
       failure recovery
 - [x] T1017 Run unit, typecheck, lint, and the two-browser live Stalwart lane;
       update CD-1 through CD-7 statuses from the verified results
+
+## Phase 11 — Identity management (CS-4.9)
+
+- [x] T1101 Add Manage identities at the bottom of the Contacts address-book
+      rail and render identities through the contact list's filter and
+      virtualization path
+- [x] T1102 Load cached identities immediately, refresh them from the server
+      when opened, and add create, edit, and mayDelete-gated remove actions
+- [x] T1103 Route Identity/set writes through durable outbox mutations and
+      checkpoint accepted writes before authoritative Identity/get read-back
+- [x] T1104 Cover the shared UI, protected deletion, outbox/cache retry, and
+      live create-edit-send-delete lifecycle with unit and Playwright tests
+- [x] T1105 Preserve typed Identity action failures through the outbox and
+      show actionable copy when the requested email is not configured for
+      the account
