@@ -77,6 +77,9 @@ test.describe('Compose on a phone-sized viewport', () => {
     // edge sits within the drawer's 240px. This is where the bug showed.
     const card = page.locator('.compose-dialog__card');
     const cardBox = await card.boundingBox();
+    const fromBox = await page.locator('.compose-dialog .from-picker').boundingBox();
+    expect(fromBox.x + fromBox.width, 'the From picker stays inside the compose card')
+      .toBeLessThanOrEqual(cardBox.x + cardBox.width + 0.5);
     const x = cardBox.x + 12;
     const y = cardBox.y + cardBox.height / 2;
     expect(x, 'the sample point must be one the drawer also covers')

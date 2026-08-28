@@ -70,6 +70,7 @@ export class OutboxRunner {
   _handlers: Record<string, (p: any) => Promise<any>>;
   _processRow: (row: any) => Promise<{ ok: boolean; error?: any; result?: any }>;
   _maxAttempts: number;
+  _maxAttemptsByType: Map<string, number>;
   _notifyDelayMs: number;
   _backoffBaseMs: number;
   _backoffCapMs: number;
@@ -121,6 +122,11 @@ export class OutboxRunner {
     this._replayablePhases = new Set(options.replayablePhases ?? []);
     this._completedPhases = new Set(options.completedPhases ?? []);
     this._maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    this._maxAttemptsByType = new Map(
+      Object.entries(options.maxAttemptsByType ?? {})
+        .map(([type, limit]) => [type, Number(limit)] as const)
+        .filter(([, limit]) => Number.isInteger(limit) && limit > 0),
+    );
     this._notifyDelayMs = options.notifyDelayMs ?? DEFAULT_NOTIFY_DELAY_MS;
     this._backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this._backoffCapMs = options.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS;
@@ -492,11 +498,28 @@ export class OutboxRunner {
       || row.mutation_type === MUTATION_TYPE.CREATE_CONTACT
       || row.mutation_type === MUTATION_TYPE.UPDATE_CONTACT
       || row.mutation_type === MUTATION_TYPE.DELETE_CONTACT;
+    let draftSessionId: string | null = null;
+    if (row.mutation_type === MUTATION_TYPE.SAVE_DRAFT
+        || row.mutation_type === MUTATION_TYPE.DISCARD_DRAFT
+        || row.mutation_type === MUTATION_TYPE.SEND) {
+      try {
+        const request = JSON.parse(row.request_json);
+        draftSessionId = typeof request?.draftSessionId === 'string'
+          ? request.draftSessionId
+          : null;
+      } catch {
+        draftSessionId = null;
+      }
+    }
     const key = contactWrite
       ? 'contact-writes'
-      : (row.target_message_id == null
-        ? `row:${row.id}`
-        : `target:${Number(row.target_message_id)}`);
+      : (draftSessionId && row.target_message_id != null
+        ? `draft-target:${Number(row.target_message_id)}`
+        : (draftSessionId
+          ? `draft-session:${draftSessionId}`
+        : (row.target_message_id == null
+          ? `row:${row.id}`
+          : `target:${Number(row.target_message_id)}`)));
     const prev = this._targetLocks.get(key) ?? Promise.resolve();
     // suppressed-rejection chain: if row N for target T fails, row
     // N+1 for the same target should still get a chance to run.
@@ -541,12 +564,22 @@ export class OutboxRunner {
         // guessing. Positive reconciliation (matching the operation's
         // Message-ID against the server) is what will let these resume
         // automatically.
+        const status = (err as any)?.status;
+        const authenticationFailed = status === 401;
+        const authorizationFailed = status === 403;
         result = {
           ok: false,
           error: {
-            type: 'transport',
+            type: authenticationFailed
+              ? 'authenticationFailed'
+              : authorizationFailed
+                ? 'authorizationFailed'
+                : 'transport',
             message: err?.message ?? String(err),
-            ...(this._unsafeToReplayTypes.has(row.mutation_type)
+            ...(status != null ? { status } : {}),
+            ...((authenticationFailed
+              || authorizationFailed
+              || this._unsafeToReplayTypes.has(row.mutation_type))
               ? { terminal: true }
               : {}),
           },
@@ -562,9 +595,10 @@ export class OutboxRunner {
       return;
     }
     const errorType = result?.error?.type ?? 'unknown';
+    const maxAttempts = this._maxAttemptsByType.get(row.mutation_type) ?? this._maxAttempts;
     const terminal = result?.error?.terminal === true
       || TERMINAL_ERROR_TYPES.has(errorType)
-      || attemptNumber >= this._maxAttempts;
+      || attemptNumber >= maxAttempts;
     if (terminal) {
       await this._markConflicted(row.id, result?.error);
       this._resolveAwaiters(row.id, {

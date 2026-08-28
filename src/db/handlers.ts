@@ -1594,11 +1594,13 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       // newlines into one unformatted block (issue #25). Preferring
       // media_type heals those rows without a re-fetch.
       const values = await engine.all(
-        `SELECT bv.kind, bv.value, bv.is_truncated, bp.media_type
+        `SELECT bv.kind, bv.value, bv.is_truncated, bv.part_id,
+                bp.media_type, bp.blob_id, bp.charset
            FROM body_values bv
            LEFT JOIN body_parts bp
              ON bp.message_id = bv.message_id AND bp.part_id = bv.part_id
-          WHERE bv.message_id = ?`,
+          WHERE bv.message_id = ?
+          ORDER BY bp.position, bv.part_id`,
         [messageId],
       );
       const attachments = await engine.all(
@@ -1619,7 +1621,30 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       };
       const text = values.find((r) => !isHtmlValue(r))?.value ?? '';
       const html = values.find((r) => isHtmlValue(r))?.value ?? '';
-      return { text, html, attachments };
+      const bodyParts = values.map((row) => ({
+        kind: isHtmlValue(row) ? 'html' : 'text',
+        value: row.value ?? '',
+        isTruncated: Number(row.is_truncated) === 1,
+        blob_id: row.blob_id ?? null,
+        mime_type: row.media_type ?? null,
+        charset: row.charset ?? null,
+      }));
+      const truncatedParts = values
+        .filter((row) => Number(row.is_truncated) === 1)
+        .map((row) => ({
+          kind: isHtmlValue(row) ? 'html' : 'text',
+          blob_id: row.blob_id ?? null,
+          mime_type: row.media_type ?? null,
+          charset: row.charset ?? null,
+        }));
+      return {
+        text,
+        html,
+        attachments,
+        isComplete: truncatedParts.length === 0,
+        bodyParts,
+        truncatedParts,
+      };
     },
 
     [DB_RPC.MESSAGE_FIND_BY_RFC822_MESSAGE_ID]: async ({ accountId, rfc822MessageId }) =>
@@ -3122,6 +3147,48 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [mutationId],
       );
       return row ?? null;
+    },
+
+    [DB_RPC.PENDING_MUTATION_RETRY]: async ({ accountId, mutationId }) => {
+      const ts = now();
+      const result = await engine.run(
+        `UPDATE pending_mutations
+            SET local_status = 'retry',
+                attempts = 0,
+                not_before = NULL,
+                error_json = NULL,
+                updated_at = ?
+          WHERE id = ?
+            AND account_id = ?
+            AND mutation_type = 'saveDraft'
+            AND local_status IN ('failed','conflicted','retry')`,
+        [ts, mutationId, accountId],
+      );
+      if ((result.changes ?? 0) > 0) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        try {
+          const maybePromise = onMutationInserted({ accountId, mutationId });
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            maybePromise.catch(() => {});
+          }
+        } catch {
+          // The durable retry row is enough; a later runner pass will pick it up.
+        }
+      }
+      return { retried: result.changes ?? 0 };
+    },
+
+    [DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]: async ({ accountId, mutationId }) => {
+      const result = await engine.run(
+        `DELETE FROM pending_mutations
+          WHERE id = ?
+            AND account_id = ?
+            AND mutation_type = 'saveDraft'
+            AND local_status != 'in_flight'`,
+        [mutationId, accountId],
+      );
+      if ((result.changes ?? 0) > 0) broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      return { abandoned: result.changes ?? 0 };
     },
 
     [DB_RPC.SYNC_JOB_INSERT]: async (input) => {

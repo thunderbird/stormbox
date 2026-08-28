@@ -72,6 +72,7 @@ const ACTIVE_VIEW_REFRESH_LIMIT = 5;
 // folder into backoff over a few ticks instead of issuing one failing
 // round trip per folder per tick.
 const INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK = 3;
+const DRAFT_SAVE_MAX_ATTEMPTS = 3;
 
 // Concurrent account starts can briefly create overlapping backend instances.
 // The shared handler map identifies one local database, so automatic historical
@@ -282,6 +283,10 @@ export class JmapBackend {
     // Stalwart.
     const runnerOptions = {
       ...(this._outboxRunnerOptions ?? {}),
+      maxAttemptsByType: {
+        [MUTATION_TYPES.SAVE_DRAFT]: DRAFT_SAVE_MAX_ATTEMPTS,
+        ...(this._outboxRunnerOptions?.maxAttemptsByType ?? {}),
+      },
       // A send that was in flight when the worker died may already have
       // been submitted, so it is never replayed blindly. Its checkpoint
       // phase decides: before submission the row can safely resume,
@@ -482,6 +487,14 @@ export class JmapBackend {
       });
     }
     this._scheduleMetadataIndexer(1_000);
+  }
+
+  authenticationUpdated() {
+    if (!this._started
+        || !this.useWebSocket
+        || !this._unsubClose
+        || this.transport.isWebSocketOpen()) return;
+    this._onTransportClose({});
   }
 
   async stop() {

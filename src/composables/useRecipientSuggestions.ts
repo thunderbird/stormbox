@@ -19,8 +19,8 @@ export interface UseRecipientSuggestionsOptions {
 
 /** CS-3.12: a suggestion list is capped independently of address-book browsing. */
 const SUGGESTION_LIMIT = 10;
-/** One letter matches most of a directory, which is not a suggestion. */
-const MIN_PREFIX = 2;
+/** CS-3.15: autocomplete starts with the first non-whitespace character. */
+const MIN_PREFIX = 1;
 
 export function useRecipientSuggestions({
   text,
@@ -135,7 +135,7 @@ export function useRecipientSuggestions({
     const { value: found, answered } = await ask(() => browseAll(), []);
     if (token !== queryToken) return false;
     suggestions.value = notTaken(found);
-    activeIndex.value = -1;
+    activeIndex.value = suggestions.value.length > 0 ? 0 : -1;
     browsing.value = true;
     noMatches.value = null;
     foundNothing.value = suggestions.value.length > 0
@@ -156,7 +156,7 @@ export function useRecipientSuggestions({
     // The query receives these exclusions, and filtering again also covers a
     // caller whose implementation does not honor that argument.
     suggestions.value = notTaken(found).slice(0, SUGGESTION_LIMIT);
-    activeIndex.value = -1;
+    activeIndex.value = suggestions.value.length > 0 ? 0 : -1;
     browsing.value = false;
     // An answered empty result keeps the panel open to say what still works;
     // a failed lookup closes it so unavailable is not presented as no match.

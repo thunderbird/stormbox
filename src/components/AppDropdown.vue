@@ -128,6 +128,9 @@ onUnmounted(unlisten);
   cursor: default;
   opacity: 0.55;
 }
+.app-dropdown:not([open]) > :not(summary) {
+  display: none;
+}
 .app-dropdown__summary {
   list-style: none;
   cursor: pointer;

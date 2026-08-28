@@ -103,3 +103,33 @@ export async function waitForIdentities(page) {
     { timeout: 30_000, message: 'identity sync should populate the From picker' },
   ).toBeGreaterThan(0);
 }
+
+/** Open the expanded composer's close-actions menu. */
+export async function openComposeCloseOptions(page) {
+  const dialog = page.locator('.compose-dialog--expanded');
+  const menu = dialog.getByRole('menu', { name: 'Close options' });
+  if (!await menu.isVisible()) {
+    await dialog.getByRole('button', { name: 'Close options' }).click();
+  }
+  return menu;
+}
+
+/** Close an empty composer directly; otherwise discard it through the menu. */
+export async function discardCompose(page) {
+  const dialog = page.locator('.compose-dialog--expanded');
+  const directClose = dialog.getByRole('button', { name: 'Close', exact: true });
+  if (await directClose.isVisible()) {
+    await directClose.click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
+    return;
+  }
+  const menu = await openComposeCloseOptions(page);
+  await menu.getByRole('menuitem', { name: 'Discard', exact: true }).click();
+  await expect(dialog).toBeHidden({ timeout: 30_000 });
+}
+
+/** Save and close the expanded composer through its close-actions menu. */
+export async function saveDraftAndClose(page) {
+  const menu = await openComposeCloseOptions(page);
+  await menu.getByRole('menuitem', { name: 'Save Draft', exact: true }).click();
+}

@@ -28,6 +28,7 @@ import {
   clearRecipients,
   composeRow,
   composeSubject,
+  discardCompose,
   fillRecipient,
   recipientAddresses,
   recipientInput,
@@ -105,7 +106,7 @@ async function openCompose(page) {
 async function closeCompose(page) {
   const dialog = page.locator('.compose-dialog');
   if (await dialog.count() === 0) return;
-  await page.locator('.compose-dialog header button.icon').click().catch(() => {});
+  await discardCompose(page).catch(() => {});
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
 
@@ -396,9 +397,10 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         });
       });
 
-      await test.step('One character does not open the suggestion list', async () => {
-        await typeInTo(page, 'e');
-        await expect(suggestions(page), 'one character is not a query').toHaveCount(0);
+      await test.step('One character opens the suggestion list (CS-3.15)', async () => {
+        await typeInTo(page, 'z');
+        const rows = await settledSuggestions(page);
+        expect(rows.length, 'the first character starts autocomplete').toBeGreaterThan(0);
       });
 
       await test.step('An address prefix produces suggestions', async () => {
@@ -434,16 +436,21 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         ).toEqual([]);
       });
 
-      await test.step('Keyboard selection in the suggestion list (CS-3.8, CS-3.9)', async () => {
+      await test.step('The first suggestion starts selected and Enter takes it (CS-3.8)', async () => {
         await clearRecipients(page, 'To');
         await typeInTo(page, 'zephyr');
+        let rows = await settledSuggestions(page);
+        if (rows.length === 0) {
+          await typeInTo(page, 'zephyr');
+          rows = await settledSuggestions(page);
+        }
+        expect(rows.length, 'the seeded contact is available for Enter').toBeGreaterThan(0);
         const field = recipientInput(page, 'To');
         await expect(field).toHaveAttribute('aria-expanded', 'true');
-        await page.keyboard.press('ArrowDown');
-        await expect(field, 'the highlighted option is named for a reader')
-          .toHaveAttribute('aria-activedescendant', /compose-to-option-\d+/);
+        await expect(field).toHaveAttribute('aria-activedescendant', 'compose-to-option-0');
+        await expect(suggestions(page).first()).toHaveAttribute('aria-selected', 'true');
         await page.keyboard.press('Enter');
-        await expect(recipientPills(page, 'To'), 'Enter takes the highlighted suggestion')
+        await expect(recipientPills(page, 'To'), 'Enter takes the first visible suggestion')
           .toHaveCount(1);
         const committed = await recipientAddresses(page, 'To');
         expect(committed).toEqual([`zephyr-${stamp}@example.org`]);

@@ -291,7 +291,7 @@ describe('useThunderbirdShortcuts', () => {
     mountHarness();
     const mailStore = useMailStore() as any;
     const composeStore = useComposeStore();
-    composeStore.isOpen = true;
+    composeStore.open();
     mailStore.messages = [makeRow(1)];
     mailStore.selectedMessageId = 1;
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);

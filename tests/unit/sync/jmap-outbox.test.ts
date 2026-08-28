@@ -2674,6 +2674,21 @@ describe('drainOutbox', () => {
         cacheAttempts: 2,
       },
     });
+    const parked = await engine.get(
+      'SELECT request_json FROM pending_mutations WHERE id = ?',
+      [rowId],
+    );
+    await engine.run(
+      'UPDATE pending_mutations SET request_json = ? WHERE id = ?',
+      [
+        JSON.stringify({
+          ...JSON.parse(parked.request_json),
+          draftSessionId: 'compose-repair',
+          draftEmailIds: ['autosaved-draft'],
+        }),
+        rowId,
+      ],
+    );
 
     const transport = new MockTransport();
     transport.handle('Email/get', () => {
@@ -2700,6 +2715,14 @@ describe('drainOutbox', () => {
       [account.id],
     );
     expect(Number(view.stale)).toBe(1);
+    const repair = await engine.get(
+      `SELECT request_json FROM pending_mutations
+        WHERE mutation_type = 'discardDraft'`,
+    );
+    expect(JSON.parse(repair.request_json)).toMatchObject({
+      draftSessionId: 'compose-repair',
+      draftEmailIds: ['autosaved-draft'],
+    });
   });
 
   it('restarts the give-up budget once the message is out', async () => {

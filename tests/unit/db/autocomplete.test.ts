@@ -123,7 +123,12 @@ describe('contact-only autocomplete ranking', () => {
     });
 
     expect((await suggest('jane smi')).map((row) => row.email)).toEqual(['jsmith@example.com']);
-    expect((await suggest('acme')).map((row) => row.email)).toEqual(['jsmith@example.com']);
+    expect(await suggest('acme')).toEqual([
+      expect.objectContaining({
+        email: 'jsmith@example.com',
+        organization: 'Acme Widgets',
+      }),
+    ]);
     expect((await suggest('mith')).map((row) => row.email)).toEqual(['jsmith@example.com']);
   });
 

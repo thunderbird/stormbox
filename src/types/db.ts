@@ -8,7 +8,7 @@
  */
 
 import type {
-  MailboxRole, MutationStatus, MutationType, SendPhase, ServiceKind, SyncJobStatus,
+  MailboxRole, MutationPhase, MutationStatus, MutationType, ServiceKind, SyncJobStatus,
 } from '../constants/states';
 
 export interface AccountRow {
@@ -114,6 +114,21 @@ export interface MessageBody {
   text: string;
   html: string;
   attachments: BodyAttachmentRow[];
+  isComplete?: boolean;
+  bodyParts?: Array<{
+    kind: 'text' | 'html';
+    value: string;
+    isTruncated: boolean;
+    blob_id: string | null;
+    mime_type: string | null;
+    charset: string | null;
+  }>;
+  truncatedParts?: Array<{
+    kind: 'text' | 'html';
+    blob_id: string | null;
+    mime_type: string | null;
+    charset?: string | null;
+  }>;
 }
 
 export interface AddressbookRow {
@@ -156,8 +171,8 @@ export interface PendingMutationRow {
   attempts: number;
   last_attempt_at: number | null;
   not_before: number | null;
-  /** SendPhase for SEND rows; contact writes reuse 'cache_pending', the rest stay null. */
-  phase: SendPhase | null;
+  /** Durable phase for send/draft rows; contact writes also reuse cache_pending. */
+  phase: MutationPhase | null;
   created_at: number;
   updated_at: number;
 }

@@ -22,6 +22,7 @@ import {
 import { clickFolder } from './helpers/ui.js';
 import {
   composeSubject,
+  discardCompose,
   fillRecipient,
   recipientAddresses,
   waitForIdentities,
@@ -263,7 +264,7 @@ test.describe('Compose send: method-level JMAP error', () => {
           });
         }, mutationId).catch(() => {});
       }
-      await page.locator('.compose-dialog header button.icon').click().catch(() => {});
+      await discardCompose(page).catch(() => {});
       // Defensive: if the injection did not take effect the send
       // succeeded, and the message must not be left on the server.
       strayId = await findByExactSubject(jmap, sent, subject).catch(() => null);

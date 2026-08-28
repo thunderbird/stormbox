@@ -122,8 +122,13 @@ export function useThunderbirdShortcuts({
   async function onKeyDown(event: KeyboardEvent) {
     if (isComposingKeyEvent(event)) return;
     if (!enabled.value) return;
-    if (composeStore.isOpen) {
+    if (composeStore.isExpanded) {
       if (event.key === 'Escape') {
+        if (composeStore.activeSession?.closePromptOpen) {
+          event.preventDefault();
+          composeStore.cancelClose(composeStore.activeSessionId);
+          return;
+        }
         // A combobox showing its list owns Escape: dismissing the list is
         // what the user meant, and closing the whole message instead throws
         // away a draft over a keypress. This handler runs in the capture
@@ -143,11 +148,13 @@ export function useThunderbirdShortcuts({
         // the editor on purpose, so the menu is open while focus sits
         // elsewhere. The widget's own capture listener registers after
         // this one, so standing down is what lets it act.
-        if (document.querySelector('.compose-dialog details[data-dropdown-group][open]')) {
+        if (document.querySelector(
+          '.compose-dialog--expanded details[data-dropdown-group][open]',
+        )) {
           return;
         }
         event.preventDefault();
-        composeStore.close();
+        composeStore.requestClose(composeStore.activeSessionId);
       }
       return;
     }

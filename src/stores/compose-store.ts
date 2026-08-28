@@ -14,7 +14,12 @@ import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
 import type { ComposeState, MailboxRole } from '../constants/states';
-import type { FolderRow, IdentityRow, MessageRow } from '../types';
+import type {
+  BodyAttachmentRow,
+  FolderRow,
+  IdentityRow,
+  MessageRow,
+} from '../types';
 import type { Repository } from '../db/repository';
 import { TABLE_FAMILIES } from '../db/protocol';
 import {
@@ -29,10 +34,15 @@ import {
   makeReplySubject,
 } from '../utils/compose-quote';
 import {
+  parseAddressEntries,
   parseAddressList,
   type ParsedAddress,
 } from '../utils/address-parse';
 import { buildReplyAudience, buildThreadHeaders } from '../utils/reply';
+import { addressKey } from '../utils/address-key';
+import { isInlineImageType } from '../utils/message-html';
+import { makeMessageId, makeOperationId } from '../utils/message-id';
+import { editSafeDraftHtml } from '../utils/compose-html';
 
 export type RecipientField = 'to' | 'cc' | 'bcc';
 
@@ -53,7 +63,7 @@ export interface InvalidRecipient {
 /** One committed recipient: an address, or text that is not one. */
 export type RecipientEntry = ParsedAddress | InvalidRecipient;
 
-interface Draft {
+export interface Draft {
   fromIdx: number;
   /**
    * Recipients as addresses rather than as text. A recipient list is a
@@ -67,6 +77,7 @@ interface Draft {
   subject: string;
   textBody: string;
   htmlBody: string;
+  attachments: BodyAttachmentRow[];
   /** Threading for a reply, per RFC 5322 §3.6.4. Empty for a new message. */
   inReplyTo: string[];
   references: string[];
@@ -86,9 +97,102 @@ function emptyDraft(): Draft {
     subject: '',
     textBody: '',
     htmlBody: '',
+    attachments: [],
     inReplyTo: [],
     references: [],
   };
+}
+
+export const COMPOSE_PRESENTATION = {
+  EXPANDED: 'expanded',
+  MINIMIZED: 'minimized',
+} as const;
+
+export type ComposePresentation =
+  (typeof COMPOSE_PRESENTATION)[keyof typeof COMPOSE_PRESENTATION];
+
+export interface ConfirmedDraftRevision {
+  emailId: string;
+  localMessageId: number | null;
+  revision: number;
+  messageId: string;
+  payloadHash: string;
+}
+
+export interface ComposeSession {
+  id: string;
+  presentation: ComposePresentation;
+  status: ComposeState;
+  error: string | null;
+  saveError: string | null;
+  isSaving: boolean;
+  isDiscarding: boolean;
+  closePromptOpen: boolean;
+  draft: Draft;
+  recipientEntriesByField: Record<RecipientField, RecipientEntry[]>;
+  rejectedRecipients: Record<RecipientField, string[]>;
+  pendingRecipientText: Record<RecipientField, string>;
+  draftEpoch: number;
+  generation: number;
+  seedJson: string;
+  revision: number;
+  confirmedRevision: ConfirmedDraftRevision | null;
+  sourceMessageId: number | null;
+  unresolvedFrom: ParsedAddress | null;
+  failedSaveMutationId: number | null;
+  failedSaveSeedJson: string | null;
+  failedSaveRequest: Record<string, any> | null;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled compose presentation: ${String(value)}`);
+}
+
+export function isExpandedPresentation(presentation: ComposePresentation): boolean {
+  switch (presentation) {
+    case COMPOSE_PRESENTATION.EXPANDED:
+      return true;
+    case COMPOSE_PRESENTATION.MINIMIZED:
+      return false;
+    default:
+      return assertNever(presentation);
+  }
+}
+
+function makeSessionId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `compose-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function cloneDraft(prefill: Partial<Draft> = {}): Draft {
+  return {
+    ...emptyDraft(),
+    ...prefill,
+    to: [...(prefill.to ?? [])].map((entry) => ({ ...entry })),
+    cc: [...(prefill.cc ?? [])].map((entry) => ({ ...entry })),
+    bcc: [...(prefill.bcc ?? [])].map((entry) => ({ ...entry })),
+    attachments: [...(prefill.attachments ?? [])].map((attachment) => ({ ...attachment })),
+    inReplyTo: [...(prefill.inReplyTo ?? [])],
+    references: [...(prefill.references ?? [])],
+  };
+}
+
+function emptyRejectedRecipients(): Record<RecipientField, string[]> {
+  return { to: [], cc: [], bcc: [] };
+}
+
+function parseStringArray(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -149,19 +253,20 @@ export const useComposeStore = defineStore('compose', () => {
   const authStore = useAuthStore();
   const mailStore = useMailStore();
 
-  const status = ref<ComposeState>(COMPOSE_STATE.IDLE);
-  const error = ref<string | null>(null);
   // Transient send confirmation, rendered by StoreErrorToast after the
   // dialog has closed. Cleared on a timer the same way mail-store's
   // notice is, so it never lingers over a later screen.
   const notice = ref<string | null>(null);
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  const isOpen = ref(false);
-  // Bumped by every open() and $reset(). send() captures it and drops its
-  // own result if it no longer matches, so a slow send settling after a
-  // logout or after the user opened a new message cannot write status,
-  // error, or close over the composer that replaced it.
-  let composeGeneration = 0;
+  const sessions = ref<ComposeSession[]>([]);
+  const activeSessionId = ref<string | null>(null);
+  const fallbackDraft = reactive<Draft>(emptyDraft());
+  const fallbackRejectedRecipients = reactive<Record<RecipientField, string[]>>(
+    emptyRejectedRecipients(),
+  );
+  const fallbackStatus = ref<ComposeState>(COMPOSE_STATE.IDLE);
+  const fallbackError = ref<string | null>(null);
+  let sessionGeneration = 0;
   // Bumped by every prefill gesture, every open(), and $reset(). A reply has
   // to read the parent's addresses before it can open, so two quick gestures
   // settle in completion order rather than in the order they were made: the
@@ -170,39 +275,87 @@ export const useComposeStore = defineStore('compose', () => {
   let prefillGeneration = 0;
   const identities = ref<IdentityRow[]>([]);
   const accountPrimaryEmail = ref<string | null>(null);
-  const draft = reactive<Draft>(emptyDraft());
-  /**
-   * Fragments of a recipient field that are not addresses, per field.
-   *
-   * Kept out of the draft because they are not part of the message: they
-   * are what the user still has to fix. Send refuses while any is present,
-   * so a typed address is never silently dropped or passed to the server
-   * as though it were one (CS-2.4).
-   */
-  const rejectedRecipients = reactive<Record<RecipientField, string[]>>({
-    to: [],
-    cc: [],
-    bcc: [],
-  });
-  /**
-   * Bumped whenever the draft is replaced wholesale — opened, prefilled by
-   * a reply, closed, reset. A control that edits recipients as text uses it
-   * to know when to re-read them, which it cannot do by watching the
-   * addresses themselves: those change on every keystroke it causes, and
-   * re-rendering them mid-word would rewrite what the user is typing.
-   */
-  const draftEpoch = ref(0);
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
 
+  function sessionById(id: string | null | undefined): ComposeSession | null {
+    if (!id) return null;
+    return sessions.value.find((session) => session.id === id) ?? null;
+  }
+
+  const activeSession = computed(() => sessionById(activeSessionId.value));
+  const isOpen = computed(() => sessions.value.length > 0);
+  const isExpanded = computed(() => {
+    const session = activeSession.value;
+    return !!session && isExpandedPresentation(session.presentation);
+  });
+  const draft = computed(() => activeSession.value?.draft ?? fallbackDraft);
+  const rejectedRecipients = computed(() =>
+    activeSession.value?.rejectedRecipients ?? fallbackRejectedRecipients);
+  const draftEpoch = computed(() => activeSession.value?.draftEpoch ?? 0);
+  const status = computed<ComposeState>({
+    get: () => activeSession.value?.status ?? fallbackStatus.value,
+    set: (value) => {
+      const session = activeSession.value;
+      if (session) session.status = value;
+      else fallbackStatus.value = value;
+    },
+  });
+  const error = computed<string | null>({
+    get: () => activeSession.value?.error ?? fallbackError.value,
+    set: (value) => {
+      const session = activeSession.value;
+      if (session) session.error = value;
+      else fallbackError.value = value;
+    },
+  });
+
   const fromIdentity = computed<IdentityRow | null>(() =>
-    identities.value[draft.fromIdx] ?? identities.value[0] ?? null,
+    identities.value[draft.value.fromIdx] ?? identities.value[0] ?? null,
   );
 
   /** Recipients across all three fields; any of them can carry a send. */
   const recipientCount = computed(() =>
-    RECIPIENT_FIELDS.reduce((total, field) => total + draft[field].length, 0),
+    RECIPIENT_FIELDS.reduce((total, field) => total + draft.value[field].length, 0),
   );
+  const autosaveRuntime = new Map<string, {
+    timer: ReturnType<typeof setTimeout> | null;
+    firstDirtyAt: number | null;
+    inFlight: Promise<boolean> | null;
+    queued: boolean;
+    blocked: boolean;
+  }>();
+  const AUTOSAVE_DEBOUNCE_MS = 2_000;
+  const AUTOSAVE_MAX_DELAY_MS = 30_000;
+
+  function runtimeFor(sessionId: string) {
+    let runtime = autosaveRuntime.get(sessionId);
+    if (!runtime) {
+      runtime = {
+        timer: null,
+        firstDirtyAt: null,
+        inFlight: null,
+        queued: false,
+        blocked: false,
+      };
+      autosaveRuntime.set(sessionId, runtime);
+    }
+    return runtime;
+  }
+
+  function clearAutosaveTimer(sessionId: string): void {
+    const runtime = autosaveRuntime.get(sessionId);
+    if (!runtime?.timer) return;
+    clearTimeout(runtime.timer);
+    runtime.timer = null;
+  }
+
+  function disposeSessionRuntime(sessionId: string): void {
+    clearAutosaveTimer(sessionId);
+    const runtime = autosaveRuntime.get(sessionId);
+    if (runtime) runtime.blocked = true;
+    autosaveRuntime.delete(sessionId);
+  }
 
   async function attach(): Promise<void> {
     if (repo) return;
@@ -237,19 +390,22 @@ export const useComposeStore = defineStore('compose', () => {
 
   /**
    * Drop every piece of session-scoped state the store holds:
-   * identity list, draft contents, status, error, and the open
-   * flag. Used by the accountId watch on logout and exposed as
+   * identity list, compose sessions, status, and error. Used by the
+   * accountId watch on logout and exposed as
    * $reset for explicit callers (tests, account switching).
    */
   function $reset(): void {
-    composeGeneration += 1;
+    sessionGeneration += 1;
     prefillGeneration += 1;
+    for (const sessionId of autosaveRuntime.keys()) disposeSessionRuntime(sessionId);
     identities.value = [];
     accountPrimaryEmail.value = null;
-    resetDraft();
-    isOpen.value = false;
-    status.value = COMPOSE_STATE.IDLE;
-    error.value = null;
+    sessions.value = [];
+    activeSessionId.value = null;
+    Object.assign(fallbackDraft, emptyDraft());
+    Object.assign(fallbackRejectedRecipients, emptyRejectedRecipients());
+    fallbackStatus.value = COMPOSE_STATE.IDLE;
+    fallbackError.value = null;
     clearNotice();
   }
 
@@ -298,28 +454,140 @@ export const useComposeStore = defineStore('compose', () => {
     });
   }
 
-  function reconcileFromIdxAfterIdentityRefresh(previousIdentity: IdentityRow | null): void {
+  function identityForSession(session: ComposeSession | null): IdentityRow | null {
+    if (!session) return null;
+    if (session.unresolvedFrom) return null;
+    return identities.value[session.draft.fromIdx] ?? identities.value[0] ?? null;
+  }
+
+  function semanticHtml(html: string): string {
+    const compact = String(html ?? '').trim();
+    if (/^<(?:p|div)><br\s*\/?><\/(?:p|div)>$/i.test(compact)) return '';
+    return compact;
+  }
+
+  function semanticText(text: string): string {
+    return String(text ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+  }
+
+  function canonicalSessionJson(session: ComposeSession): string {
+    const identity = identityForSession(session);
+    const recipients = (field: RecipientField) => ({
+      entries: session.recipientEntriesByField[field].map((entry) =>
+        'email' in entry
+          ? { email: entry.email, name: entry.name ?? '' }
+          : { invalid: true, text: entry.text }),
+      pending: session.pendingRecipientText[field],
+    });
+    return JSON.stringify({
+      identity: session.unresolvedFrom?.email
+        ?? identity?.remote_id
+        ?? identity?.email
+        ?? session.draft.fromIdx,
+      to: recipients('to'),
+      cc: recipients('cc'),
+      bcc: recipients('bcc'),
+      subject: session.draft.subject,
+      textBody: semanticText(session.draft.textBody),
+      htmlBody: semanticHtml(session.draft.htmlBody),
+      inReplyTo: [...session.draft.inReplyTo],
+      references: [...session.draft.references],
+      attachments: session.draft.attachments.map((attachment) => ({
+        name: attachment.name,
+        type: attachment.mime_type,
+        size: attachment.size,
+        disposition: attachment.disposition,
+        cid: attachment.cid,
+      })),
+    });
+  }
+
+  function payloadHash(value: string): string {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function isSessionDirty(sessionId: string | null = activeSessionId.value): boolean {
+    const session = sessionById(sessionId);
+    return !!session && canonicalSessionJson(session) !== session.seedJson;
+  }
+
+  function isSessionMeaningfullyNonEmpty(
+    sessionId: string | null = activeSessionId.value,
+  ): boolean {
+    const session = sessionById(sessionId);
+    if (!session) return false;
+    const hasRecipients = RECIPIENT_FIELDS.some((field) =>
+      session.draft[field].length > 0
+      || session.rejectedRecipients[field].length > 0
+      || session.pendingRecipientText[field].trim().length > 0);
+    const html = semanticHtml(session.draft.htmlBody);
+    const htmlText = html
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;|&#160;/gi, ' ')
+      .trim();
+    return hasRecipients
+      || session.draft.subject.trim().length > 0
+      || session.draft.textBody.trim().length > 0
+      || htmlText.length > 0
+      || /<(?:img|video|audio)\b/i.test(html)
+      || session.draft.attachments.length > 0;
+  }
+
+  function reconcileFromIdxAfterIdentityRefresh(
+    session: ComposeSession,
+    previousIdentity: IdentityRow | null,
+  ): void {
     if (identities.value.length === 0) {
-      draft.fromIdx = 0;
+      session.draft.fromIdx = 0;
+      return;
+    }
+    if (session.unresolvedFrom) {
+      const unresolved = addressKey(session.unresolvedFrom.email);
+      const resolvedIdx = identities.value.findIndex(
+        (identity) => addressKey(identity.email) === unresolved,
+      );
+      if (resolvedIdx >= 0) {
+        session.draft.fromIdx = resolvedIdx;
+        session.unresolvedFrom = null;
+      }
       return;
     }
 
     const preservedIdx = findMatchingIdentityIndex(identities.value, previousIdentity);
     if (preservedIdx >= 0) {
-      draft.fromIdx = preservedIdx;
+      session.draft.fromIdx = preservedIdx;
       return;
     }
 
-    if (isOpen.value || draft.fromIdx >= identities.value.length) {
-      draft.fromIdx = defaultFromIdx();
+    if (!previousIdentity || session.draft.fromIdx >= identities.value.length) {
+      session.draft.fromIdx = defaultFromIdx();
     }
   }
 
   async function refreshIdentities(): Promise<void> {
     if (!repo || authStore.accountId == null) return;
-    const previousIdentity = fromIdentity.value;
+    const previousIdentities = new Map(
+      sessions.value.map((session) => [session.id, identityForSession(session)]),
+    );
+    const cleanSessions = new Set(
+      sessions.value
+        .filter((session) => canonicalSessionJson(session) === session.seedJson)
+        .map((session) => session.id),
+    );
     identities.value = await repo.listIdentities(authStore.accountId);
-    reconcileFromIdxAfterIdentityRefresh(previousIdentity);
+    for (const session of sessions.value) {
+      reconcileFromIdxAfterIdentityRefresh(
+        session,
+        previousIdentities.get(session.id) ?? null,
+      );
+      if (cleanSessions.has(session.id)) session.seedJson = canonicalSessionJson(session);
+    }
   }
 
   /**
@@ -340,64 +608,105 @@ export const useComposeStore = defineStore('compose', () => {
     void repo.ensureIdentities(authStore.accountId).catch(() => {});
   }
 
-  /**
-   * Return the draft and the recipient state to empty.
-   *
-   * The recipient arrays are replaced rather than emptied in place so a
-   * prefill's array cannot be aliased by the draft and mutated by later
-   * editing.
-   */
-  function resetDraft(prefill: Partial<Draft> = {}): void {
-    draftEpoch.value += 1;
-    Object.assign(draft, emptyDraft(), prefill);
-    for (const field of RECIPIENT_FIELDS) {
-      draft[field] = [...(prefill[field] ?? [])];
-      rejectedRecipients[field] = [];
-    }
-    draft.inReplyTo = [...(prefill.inReplyTo ?? [])];
-    draft.references = [...(prefill.references ?? [])];
-  }
-
-  function open(prefill: Partial<Draft> = {}): void {
-    composeGeneration += 1;
+  function open(prefill: Partial<Draft> = {}): string {
     prefillGeneration += 1;
-    resetDraft(prefill);
+    const expanded = activeSession.value;
+    if (expanded?.status === COMPOSE_STATE.SENDING) return expanded.id;
+    if (expanded) expanded.presentation = COMPOSE_PRESENTATION.MINIMIZED;
+
+    const nextDraft = cloneDraft(prefill);
     if (!Object.prototype.hasOwnProperty.call(prefill, 'fromIdx')) {
-      draft.fromIdx = defaultFromIdx();
+      nextDraft.fromIdx = defaultFromIdx();
     }
-    isOpen.value = true;
-    status.value = COMPOSE_STATE.EDITING;
-    error.value = null;
+    const id = makeSessionId();
+    sessionGeneration += 1;
+    const session: ComposeSession = reactive({
+      id,
+      presentation: COMPOSE_PRESENTATION.EXPANDED,
+      status: COMPOSE_STATE.EDITING,
+      error: null,
+      saveError: null,
+      isSaving: false,
+      isDiscarding: false,
+      closePromptOpen: false,
+      draft: nextDraft,
+      recipientEntriesByField: {
+        to: nextDraft.to.map((entry) => ({ ...entry })),
+        cc: nextDraft.cc.map((entry) => ({ ...entry })),
+        bcc: nextDraft.bcc.map((entry) => ({ ...entry })),
+      },
+      rejectedRecipients: emptyRejectedRecipients(),
+      pendingRecipientText: { to: '', cc: '', bcc: '' },
+      draftEpoch: 1,
+      generation: sessionGeneration,
+      seedJson: '',
+      revision: 0,
+      confirmedRevision: null,
+      sourceMessageId: null,
+      unresolvedFrom: null,
+      failedSaveMutationId: null,
+      failedSaveSeedJson: null,
+      failedSaveRequest: null,
+    });
+    session.seedJson = canonicalSessionJson(session);
+    sessions.value.push(session);
+    activeSessionId.value = id;
     clearNotice();
     refreshIdentitiesFromServer();
+    return id;
   }
 
-  /**
-   * Discard the composer and its draft.
-   *
-   * Refused while a send is in flight. The queued mutation keeps running
-   * in the worker after the dialog closes, and its request payload is
-   * the only durable copy of the message, so wiping the draft here would
-   * leave the user with nothing to recover if the send then failed.
-   * Returns false when the request was refused.
-   */
-  function close(): boolean {
-    if (status.value === COMPOSE_STATE.SENDING) return false;
-    isOpen.value = false;
-    status.value = COMPOSE_STATE.IDLE;
-    resetDraft();
-    error.value = null;
+  function close(sessionId: string | null = activeSessionId.value): boolean {
+    const session = sessionById(sessionId);
+    if (!session) return true;
+    if (session.status === COMPOSE_STATE.SENDING
+        || session.isSaving
+        || session.isDiscarding) return false;
+    session.generation += 1;
+    disposeSessionRuntime(session.id);
+    sessions.value = sessions.value.filter((candidate) => candidate.id !== session.id);
+    if (activeSessionId.value === session.id) activeSessionId.value = null;
     return true;
   }
 
-  function selectFromIndex(value: number | string): void {
+  function minimize(sessionId: string | null = activeSessionId.value): boolean {
+    const session = sessionById(sessionId);
+    if (!session
+        || session.status === COMPOSE_STATE.SENDING
+        || session.isSaving
+        || session.isDiscarding) return false;
+    session.presentation = COMPOSE_PRESENTATION.MINIMIZED;
+    if (activeSessionId.value === session.id) activeSessionId.value = null;
+    return true;
+  }
+
+  function restore(sessionId: string): boolean {
+    const session = sessionById(sessionId);
+    if (!session) return false;
+    const expanded = activeSession.value;
+    if (expanded?.id === session.id) return true;
+    if (expanded?.status === COMPOSE_STATE.SENDING) return false;
+    if (expanded) expanded.presentation = COMPOSE_PRESENTATION.MINIMIZED;
+    session.presentation = COMPOSE_PRESENTATION.EXPANDED;
+    activeSessionId.value = session.id;
+    return true;
+  }
+
+  function selectFromIndex(
+    value: number | string,
+    sessionId: string | null = activeSessionId.value,
+  ): void {
+    const session = sessionById(sessionId);
+    if (!session) return;
     const parsed = typeof value === 'number' ? value : Number(value);
     const maxIdx = identities.value.length - 1;
     const nextIdx = Number.isFinite(parsed)
       ? Math.min(Math.max(Math.trunc(parsed), 0), Math.max(maxIdx, 0))
       : 0;
-    draft.fromIdx = nextIdx;
-    rememberIdentity(authStore.accountId, fromIdentity.value);
+    session.draft.fromIdx = nextIdx;
+    session.unresolvedFrom = null;
+    rememberIdentity(authStore.accountId, identityForSession(session));
+    touchSession(session.id);
   }
 
   /**
@@ -410,13 +719,29 @@ export const useComposeStore = defineStore('compose', () => {
   function setRecipientEntries(
     field: RecipientField,
     entries: readonly RecipientEntry[],
+    sessionId: string | null = activeSessionId.value,
   ): void {
-    draft[field] = entries
+    const session = sessionById(sessionId);
+    if (!session) return;
+    session.recipientEntriesByField[field] = entries.map((entry) => ({ ...entry }));
+    session.draft[field] = session.recipientEntriesByField[field]
       .filter((entry): entry is ParsedAddress => 'email' in entry)
       .map((entry) => ({ ...entry }));
-    rejectedRecipients[field] = entries
+    session.rejectedRecipients[field] = session.recipientEntriesByField[field]
       .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
       .map((entry) => entry.text);
+    touchSession(session.id);
+  }
+
+  function setPendingRecipientText(
+    field: RecipientField,
+    value: string,
+    sessionId: string | null = activeSessionId.value,
+  ): void {
+    const session = sessionById(sessionId);
+    if (!session) return;
+    session.pendingRecipientText[field] = value;
+    touchSession(session.id);
   }
 
   /**
@@ -426,11 +751,430 @@ export const useComposeStore = defineStore('compose', () => {
    * recoverable and does not exist yet: a reply's audience is addresses
    * alone, and a fragment only arrives once someone types one.
    */
-  function recipientEntries(field: RecipientField): RecipientEntry[] {
-    return [
-      ...draft[field].map((address) => ({ ...address })),
-      ...rejectedRecipients[field].map((text) => ({ text, invalid: true as const })),
-    ];
+  function recipientEntries(
+    field: RecipientField,
+    sessionId: string | null = activeSessionId.value,
+  ): RecipientEntry[] {
+    const session = sessionById(sessionId);
+    if (!session) return [];
+    return session.recipientEntriesByField[field].map((entry) => ({ ...entry }));
+  }
+
+  function hasPendingRecipientText(session: ComposeSession): boolean {
+    return RECIPIENT_FIELDS.some((field) => session.pendingRecipientText[field].trim());
+  }
+
+  function commitPendingRecipientText(session: ComposeSession): void {
+    let changed = false;
+    for (const field of RECIPIENT_FIELDS) {
+      const text = session.pendingRecipientText[field].trim();
+      if (!text) continue;
+      const parsed = parseAddressEntries(text);
+      const additions: RecipientEntry[] = [];
+      if (parsed.length === 0) {
+        additions.push({ text, invalid: true });
+      }
+      for (const entry of parsed) {
+        if ('address' in entry) additions.push({ ...entry.address });
+        else additions.push({ text: entry.rejected, invalid: true });
+      }
+      session.recipientEntriesByField[field].push(...additions);
+      session.draft[field] = session.recipientEntriesByField[field]
+        .filter((entry): entry is ParsedAddress => 'email' in entry)
+        .map((entry) => ({ ...entry }));
+      session.rejectedRecipients[field] = session.recipientEntriesByField[field]
+        .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
+        .map((entry) => entry.text);
+      session.pendingRecipientText[field] = '';
+      changed = true;
+    }
+    if (changed) session.draftEpoch += 1;
+  }
+
+  function scheduleAutosave(sessionId: string): void {
+    const session = sessionById(sessionId);
+    if (!session) return;
+    const runtime = runtimeFor(sessionId);
+    if (runtime.blocked || session.status === COMPOSE_STATE.SENDING || session.isDiscarding) return;
+    if (hasPendingRecipientText(session)) {
+      clearAutosaveTimer(sessionId);
+      runtime.firstDirtyAt = null;
+      return;
+    }
+    if (!isSessionDirty(sessionId)
+        || (!session.confirmedRevision && !isSessionMeaningfullyNonEmpty(sessionId))) {
+      clearAutosaveTimer(sessionId);
+      runtime.firstDirtyAt = null;
+      runtime.queued = false;
+      return;
+    }
+    const now = Date.now();
+    runtime.firstDirtyAt ??= now;
+    const dueAt = Math.min(now + AUTOSAVE_DEBOUNCE_MS, runtime.firstDirtyAt + AUTOSAVE_MAX_DELAY_MS);
+    clearAutosaveTimer(sessionId);
+    runtime.timer = setTimeout(() => {
+      runtime.timer = null;
+      runtime.firstDirtyAt = null;
+      void saveDraft(sessionId);
+    }, Math.max(0, dueAt - now));
+  }
+
+  function touchSession(sessionId: string | null = activeSessionId.value): void {
+    if (!sessionId) return;
+    scheduleAutosave(sessionId);
+  }
+
+  function draftMutationRequest(
+    session: ComposeSession,
+    identity: IdentityRow,
+    capturedJson: string,
+  ) {
+    const folders = mailStore.folders as FolderRow[];
+    const drafts = folders.find((folder) => folder.role === 'drafts');
+    return {
+      operationId: makeOperationId(),
+      draftSessionId: session.id,
+      revision: session.revision + 1,
+      revisionMessageId: makeMessageId(identity.email),
+      payloadHash: payloadHash(capturedJson),
+      identityId: identity.id,
+      to: session.draft.to.map((address) => ({ ...address })),
+      cc: session.draft.cc.map((address) => ({ ...address })),
+      bcc: session.draft.bcc.map((address) => ({ ...address })),
+      replyTo: identityReplyTo(identity),
+      subject: session.draft.subject,
+      textBody: session.draft.textBody,
+      htmlBody: session.draft.htmlBody,
+      attachments: session.draft.attachments.map((attachment) => ({ ...attachment })),
+      inReplyTo: [...session.draft.inReplyTo],
+      references: [...session.draft.references],
+      draftsFolderId: drafts?.id ?? null,
+      draftEmailIds: session.confirmedRevision
+        ? [session.confirmedRevision.emailId]
+        : [],
+    };
+  }
+
+  async function applyDraftSaveResult(
+    session: ComposeSession,
+    request: Record<string, any>,
+    capturedJson: string,
+    result: any,
+  ): Promise<boolean> {
+    let detail = result?.result;
+    if (result?.succeeded > 0
+        && result?.failed === 0
+        && typeof detail?.emailId !== 'string'
+        && repo
+        && authStore.accountId != null) {
+      const recovered = await repo.findMessageByRfc822MessageId(
+        authStore.accountId,
+        request.revisionMessageId.replace(/^<|>$/g, ''),
+      );
+      if (recovered?.remote_id) {
+        const recoveredBody = await repo.getMessageBodyForDisplay(
+          authStore.accountId,
+          recovered.id,
+        );
+        detail = {
+          revision: request.revision,
+          emailId: recovered.remote_id,
+          localMessageId: recovered.id,
+          messageId: request.revisionMessageId,
+          payloadHash: request.payloadHash,
+          attachments: recoveredBody?.attachments ?? [],
+        };
+      }
+    }
+    if (!(result?.succeeded > 0 && result?.failed === 0)
+        || typeof detail?.emailId !== 'string') {
+      session.saveError = 'Draft could not be saved.';
+      return false;
+    }
+    const current = sessionById(session.id);
+    if (!current) return true;
+    current.revision = Number.isInteger(detail.revision)
+      ? detail.revision
+      : request.revision;
+    current.confirmedRevision = {
+      emailId: detail.emailId,
+      localMessageId: Number.isInteger(detail.localMessageId)
+        ? detail.localMessageId
+        : null,
+      revision: current.revision,
+      messageId: String(detail.messageId ?? request.revisionMessageId),
+      payloadHash: String(detail.payloadHash ?? request.payloadHash),
+    };
+    if (Array.isArray(detail.attachments)) {
+      current.draft.attachments = detail.attachments
+        .filter((attachment) => {
+          const cid = attachment?.cid?.replace(/^<|>$/g, '');
+          return attachment?.disposition !== 'inline'
+            || !cid
+            || new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i')
+              .test(current.draft.htmlBody);
+        })
+        .map((attachment) => ({ ...attachment }));
+    }
+    current.seedJson = capturedJson;
+    current.saveError = null;
+    current.failedSaveMutationId = null;
+    current.failedSaveSeedJson = null;
+    current.failedSaveRequest = null;
+    return true;
+  }
+
+  async function retryFailedDraftSave(
+    session: ComposeSession,
+    runtime: ReturnType<typeof runtimeFor>,
+  ): Promise<boolean> {
+    if (!repo
+        || authStore.accountId == null
+        || session.failedSaveMutationId == null
+        || !session.failedSaveSeedJson
+        || !session.failedSaveRequest) {
+      return false;
+    }
+    runtime.blocked = false;
+    session.isSaving = true;
+    session.error = null;
+    const task = (async () => {
+      try {
+        await repo!.retryPendingDraftMutation(
+          authStore.accountId!,
+          session.failedSaveMutationId!,
+        );
+        const result = await repo!.runMutation(
+          authStore.accountId!,
+          session.failedSaveMutationId!,
+        );
+        return applyDraftSaveResult(
+          session,
+          session.failedSaveRequest!,
+          session.failedSaveSeedJson!,
+          result,
+        );
+      } catch (retryError: any) {
+        session.saveError = retryError?.message ?? 'Draft could not be saved.';
+        session.error = session.saveError;
+        return false;
+      }
+    })();
+    runtime.inFlight = task;
+    const saved = await task;
+    runtime.inFlight = null;
+    session.isSaving = false;
+    if (!saved) {
+      runtime.blocked = true;
+      session.error = session.saveError;
+      return false;
+    }
+    if (isSessionDirty(session.id)) {
+      return saveDraft(session.id, { explicit: true });
+    }
+    return true;
+  }
+
+  async function abandonFailedDraftSave(session: ComposeSession): Promise<void> {
+    if (!repo
+        || authStore.accountId == null
+        || session.failedSaveMutationId == null) return;
+    await repo.abandonPendingDraftMutation(
+      authStore.accountId,
+      session.failedSaveMutationId,
+    );
+    session.failedSaveMutationId = null;
+    session.failedSaveSeedJson = null;
+    session.failedSaveRequest = null;
+  }
+
+  async function saveDraft(
+    sessionId: string | null = activeSessionId.value,
+    { explicit = false } = {},
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session) return false;
+    const runtime = runtimeFor(session.id);
+    if (session.status === COMPOSE_STATE.SENDING || session.isDiscarding) {
+      return false;
+    }
+    if (runtime.blocked) {
+      return explicit ? retryFailedDraftSave(session, runtime) : false;
+    }
+    if (explicit) commitPendingRecipientText(session);
+    else if (hasPendingRecipientText(session)) return false;
+    const rejected = RECIPIENT_FIELDS.flatMap((field) => session.rejectedRecipients[field]);
+    if (rejected.length > 0) {
+      session.saveError = 'Fix invalid recipients before saving this draft.';
+      if (explicit) session.error = session.saveError;
+      return false;
+    }
+    clearAutosaveTimer(session.id);
+    if (runtime.inFlight) {
+      runtime.queued = true;
+      const prior = await runtime.inFlight;
+      if (!prior && explicit) return false;
+      const current = sessionById(session.id);
+      if (!current || !isSessionDirty(session.id)) return prior;
+      return saveDraft(session.id, { explicit });
+    }
+    const needsInitialExplicitSave = explicit
+      && !session.confirmedRevision
+      && isSessionMeaningfullyNonEmpty(session.id);
+    if (!isSessionDirty(session.id) && !needsInitialExplicitSave) return true;
+    if (!session.confirmedRevision && !isSessionMeaningfullyNonEmpty(session.id)) return true;
+    if (!repo || authStore.accountId == null) {
+      session.saveError = 'Draft could not be saved while disconnected.';
+      if (explicit) session.error = session.saveError;
+      return false;
+    }
+    const identity = identityForSession(session);
+    if (!identity) {
+      session.saveError = 'Draft could not be saved without a From identity.';
+      if (explicit) session.error = session.saveError;
+      return false;
+    }
+
+    const capturedJson = canonicalSessionJson(session);
+    const request = draftMutationRequest(session, identity, capturedJson);
+    session.isSaving = true;
+    session.saveError = null;
+    if (explicit) session.error = null;
+    const task = (async () => {
+      try {
+        const mutation = await repo!.insertPendingMutation({
+          accountId: authStore.accountId!,
+          mutationType: MUTATION_TYPE.SAVE_DRAFT,
+          targetMessageId: session.confirmedRevision?.localMessageId ?? null,
+          requestJson: JSON.stringify(request),
+          optimisticPatchJson: null,
+        });
+        session.failedSaveMutationId = mutation?.id ?? null;
+        session.failedSaveSeedJson = capturedJson;
+        session.failedSaveRequest = request;
+        const result = typeof repo!.runMutation === 'function' && mutation?.id != null
+          ? await repo!.runMutation(authStore.accountId!, mutation.id)
+          : await repo!.drainOutbox(authStore.accountId!);
+        const saved = await applyDraftSaveResult(session, request, capturedJson, result);
+        if (!saved && explicit) session.error = session.saveError;
+        return saved;
+      } catch (saveError: any) {
+        const current = sessionById(session.id);
+        if (current) {
+          current.saveError = saveError?.message ?? 'Draft could not be saved.';
+          if (explicit) current.error = current.saveError;
+        }
+        return false;
+      }
+    })();
+    runtime.inFlight = task;
+    const saved = await task;
+    runtime.inFlight = null;
+    session.isSaving = false;
+    const needsFollowUp = runtime.queued || isSessionDirty(session.id);
+    runtime.queued = false;
+    if (saved && needsFollowUp && !runtime.blocked) {
+      void saveDraft(session.id);
+    } else if (!saved) {
+      runtime.blocked = true;
+    }
+    return saved;
+  }
+
+  async function saveAndClose(sessionId: string | null = activeSessionId.value): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session) return false;
+    const saved = await saveDraft(session.id, { explicit: true });
+    if (!saved) return false;
+    return close(session.id);
+  }
+
+  function requestClose(sessionId: string | null = activeSessionId.value): boolean {
+    const session = sessionById(sessionId);
+    if (!session
+        || session.status === COMPOSE_STATE.SENDING
+        || session.isSaving
+        || session.isDiscarding) return false;
+    if (!isSessionDirty(session.id)) return close(session.id);
+    if (!isExpandedPresentation(session.presentation) && !restore(session.id)) return false;
+    session.closePromptOpen = true;
+    return false;
+  }
+
+  function cancelClose(sessionId: string | null = activeSessionId.value): void {
+    const session = sessionById(sessionId);
+    if (session) session.closePromptOpen = false;
+  }
+
+  async function closeWithoutSaving(
+    sessionId: string | null = activeSessionId.value,
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session) return true;
+    const runtime = runtimeFor(session.id);
+    runtime.blocked = true;
+    clearAutosaveTimer(session.id);
+    if (runtime.inFlight) await runtime.inFlight;
+    if (!sessionById(session.id)) return true;
+    await abandonFailedDraftSave(session);
+    session.closePromptOpen = false;
+    return close(session.id);
+  }
+
+  async function discardDraft(
+    sessionId: string | null = activeSessionId.value,
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session || session.status === COMPOSE_STATE.SENDING || session.isDiscarding) return false;
+    const runtime = runtimeFor(session.id);
+    runtime.blocked = true;
+    clearAutosaveTimer(session.id);
+    if (runtime.inFlight) await runtime.inFlight;
+    const current = sessionById(session.id);
+    if (!current) return true;
+    const emailIds = current.confirmedRevision ? [current.confirmedRevision.emailId] : [];
+    if (emailIds.length === 0) {
+      await abandonFailedDraftSave(current);
+      return close(current.id);
+    }
+    if (!repo || authStore.accountId == null) {
+      current.error = 'Draft could not be discarded while disconnected.';
+      runtime.blocked = false;
+      return false;
+    }
+    const drafts = (mailStore.folders as FolderRow[]).find((folder) => folder.role === 'drafts');
+    current.isDiscarding = true;
+    current.error = null;
+    try {
+      const mutation = await repo.insertPendingMutation({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.DISCARD_DRAFT,
+        targetMessageId: current.confirmedRevision?.localMessageId ?? null,
+        requestJson: JSON.stringify({
+          draftSessionId: current.id,
+          draftsFolderId: drafts?.id ?? null,
+          draftEmailIds: emailIds,
+        }),
+        optimisticPatchJson: null,
+      });
+      const result = typeof repo.runMutation === 'function' && mutation?.id != null
+        ? await repo.runMutation(authStore.accountId, mutation.id)
+        : await repo.drainOutbox(authStore.accountId);
+      if (!(result?.succeeded > 0 && result?.failed === 0)) {
+        current.error = 'Draft could not be discarded.';
+        runtime.blocked = false;
+        return false;
+      }
+      await abandonFailedDraftSave(current);
+      current.isDiscarding = false;
+      return close(current.id);
+    } catch (discardError: any) {
+      current.error = discardError?.message ?? 'Draft could not be discarded.';
+      runtime.blocked = false;
+      return false;
+    } finally {
+      current.isDiscarding = false;
+    }
   }
 
   /** Every address this account can send as, for excluding from a reply. */
@@ -550,9 +1294,217 @@ export const useComposeStore = defineStore('compose', () => {
     });
   }
 
-  function failSend(message: string): false {
-    status.value = COMPOSE_STATE.FAILED;
-    error.value = message;
+  async function editableDraftHtml(
+    html: string,
+    attachments: BodyAttachmentRow[],
+  ): Promise<{ html: string; resolvedCids: Set<string> }> {
+    let editable = String(html ?? '');
+    const resolvedCids = new Set<string>();
+    if (!repo || authStore.accountId == null) {
+      return { html: editSafeDraftHtml(editable), resolvedCids };
+    }
+    for (const attachment of attachments) {
+      const cid = attachment.cid?.replace(/^<|>$/g, '');
+      if (!cid || !attachment.blob_id || !isInlineImageType(attachment.mime_type)) continue;
+      try {
+        const blob = await repo.downloadBlob(authStore.accountId, {
+          blobId: attachment.blob_id,
+          type: attachment.mime_type,
+          name: attachment.name,
+        });
+        if (!blob?.base64 || !blob?.type || !isInlineImageType(blob.type)) continue;
+        const escaped = cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const next = editable.replace(
+          new RegExp(`cid:(?:%3C|<)?${escaped}(?:%3E|>)?(?=["'\\s>])`, 'gi'),
+          `data:${blob.type};base64,${blob.base64}`,
+        );
+        if (next !== editable) {
+          editable = next;
+          resolvedCids.add(cid.toLowerCase());
+        }
+      } catch {
+        // The body stays editable; an unresolved cid remains visibly broken.
+      }
+    }
+    return { html: editSafeDraftHtml(editable), resolvedCids };
+  }
+
+  async function completeDraftBody(body: {
+    html?: string | null;
+    text?: string | null;
+    attachments?: BodyAttachmentRow[];
+    isComplete?: boolean;
+    bodyParts?: Array<{
+      kind: 'text' | 'html';
+      value: string;
+      isTruncated: boolean;
+      blob_id: string | null;
+      mime_type: string | null;
+      charset: string | null;
+    }>;
+    truncatedParts?: Array<{
+      kind: 'text' | 'html';
+      blob_id: string | null;
+      mime_type: string | null;
+      charset?: string | null;
+    }>;
+  }) {
+    const completed = {
+      ...body,
+      html: body.html ?? '',
+      text: body.text ?? '',
+    };
+    const bodyParts = Array.isArray(body.bodyParts) ? body.bodyParts : [];
+    for (const kind of ['text', 'html'] as const) {
+      const matching = bodyParts.filter((part) => part.kind === kind);
+      if (matching.length > 1) return null;
+      if (matching.length === 1) completed[kind] = matching[0].value;
+    }
+    const truncated = Array.isArray(body.truncatedParts) ? body.truncatedParts : [];
+    if (body.isComplete !== false && truncated.length === 0) return completed;
+    if (!repo || authStore.accountId == null) return null;
+    for (const part of truncated) {
+      if (!part.blob_id) return null;
+      try {
+        const blob = await repo.downloadBlob(authStore.accountId, {
+          blobId: part.blob_id,
+          type: part.mime_type,
+          name: `draft-${part.kind}`,
+        });
+        if (!blob?.base64) return null;
+        const bytes = Uint8Array.from(atob(blob.base64), (character) => character.charCodeAt(0));
+        completed[part.kind] = new TextDecoder(part.charset || 'utf-8', { fatal: true })
+          .decode(bytes);
+      } catch {
+        return null;
+      }
+    }
+    return completed;
+  }
+
+  async function prepareDraftFromMessage(
+    message: MessageRow,
+    body: {
+      html?: string | null;
+      text?: string | null;
+      attachments?: BodyAttachmentRow[];
+      isComplete?: boolean;
+      bodyParts?: Array<{
+        kind: 'text' | 'html';
+        value: string;
+        isTruncated: boolean;
+        blob_id: string | null;
+        mime_type: string | null;
+        charset: string | null;
+      }>;
+      truncatedParts?: Array<{
+        kind: 'text' | 'html';
+        blob_id: string | null;
+        mime_type: string | null;
+        charset?: string | null;
+      }>;
+    } = {},
+  ): Promise<string | null> {
+    const gesture = (prefillGeneration += 1);
+    const existing = sessions.value.find((session) =>
+      session.sourceMessageId === message.id
+      || session.confirmedRevision?.emailId === message.remote_id);
+    if (existing) {
+      return restore(existing.id) ? existing.id : null;
+    }
+    if (!repo || authStore.accountId == null) return null;
+    if (activeSession.value?.status === COMPOSE_STATE.SENDING) {
+      setNotice('Finish the current send before opening another draft.');
+      return null;
+    }
+    const accountId = authStore.accountId;
+    const stillCurrent = () =>
+      gesture === prefillGeneration && authStore.accountId === accountId;
+    if (typeof repo.isEmailClaimedBySend === 'function'
+        && await repo.isEmailClaimedBySend(accountId, message.remote_id)) {
+      setNotice('This draft belongs to a send whose outcome is still being resolved.');
+      return null;
+    }
+    if (!stillCurrent()) return null;
+    const completedBody = await completeDraftBody(body);
+    if (!stillCurrent()) return null;
+    if (!completedBody) {
+      setNotice('This draft body could not be loaded completely, so it was not opened for editing.');
+      return null;
+    }
+    const addressRows = await repo.listMessageAddresses(message.id);
+    if (!stillCurrent()) return null;
+    const byKind = (kind: RecipientField) => addressRows
+      .filter((row) => row.kind === kind && row.email)
+      .sort((left, right) => left.position - right.position)
+      .map((row) => ({
+        ...(row.name ? { name: row.name } : {}),
+        email: row.email,
+      }));
+    const from = addressRows.find((row) => row.kind === 'from' && row.email);
+    const fromKey = addressKey(from?.email);
+    const fromIdx = fromKey
+      ? identities.value.findIndex((identity) => addressKey(identity.email) === fromKey)
+      : -1;
+    const attachments = Array.isArray(completedBody.attachments)
+      ? completedBody.attachments.map((attachment) => ({ ...attachment }))
+      : [];
+    const editable = await editableDraftHtml(completedBody.html, attachments);
+    if (!stillCurrent()) return null;
+    const retainedAttachments = attachments.filter((attachment) => {
+      const cid = attachment.cid?.replace(/^<|>$/g, '').toLowerCase();
+      return !cid || !editable.resolvedCids.has(cid);
+    });
+    const sessionId = open({
+      ...(fromIdx >= 0 ? { fromIdx } : {}),
+      to: byKind('to'),
+      cc: byKind('cc'),
+      bcc: byKind('bcc'),
+      subject: message.subject ?? '',
+      textBody: completedBody.text,
+      htmlBody: editable.html,
+      attachments: retainedAttachments,
+      inReplyTo: parseStringArray(message.in_reply_to_json),
+      references: parseStringArray(message.references_json),
+    });
+    const session = sessionById(sessionId);
+    if (!session) return null;
+    session.sourceMessageId = message.id;
+    if (fromKey && fromIdx < 0 && from?.email) {
+      session.unresolvedFrom = {
+        ...(from.name ? { name: from.name } : {}),
+        email: from.email,
+      };
+    }
+    session.revision = 0;
+    session.confirmedRevision = {
+      emailId: message.remote_id,
+      localMessageId: message.id,
+      revision: 0,
+      messageId: message.rfc822_message_id
+        ? `<${message.rfc822_message_id.replace(/^<|>$/g, '')}>`
+        : '',
+      payloadHash: '',
+    };
+    session.seedJson = canonicalSessionJson(session);
+    session.confirmedRevision.payloadHash = payloadHash(session.seedJson);
+    return session.id;
+  }
+
+  function failSend(message: string, sessionId: string | null = activeSessionId.value): false {
+    const session = sessionById(sessionId);
+    if (session) {
+      session.status = COMPOSE_STATE.FAILED;
+      session.error = message;
+      const runtime = autosaveRuntime.get(session.id);
+      if (runtime) {
+        runtime.blocked = false;
+        scheduleAutosave(session.id);
+      }
+    } else {
+      fallbackStatus.value = COMPOSE_STATE.FAILED;
+      fallbackError.value = message;
+    }
     return false;
   }
 
@@ -602,26 +1554,39 @@ export const useComposeStore = defineStore('compose', () => {
     }
   }
 
-  async function send(): Promise<boolean> {
-    if (status.value === COMPOSE_STATE.SENDING) return false;
-    if (!repo || authStore.accountId == null) return failSend('Not connected.');
-    const identity = fromIdentity.value;
-    if (!identity) return failSend('No identities are configured.');
+  async function send(sessionId: string | null = activeSessionId.value): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session
+        || session.status === COMPOSE_STATE.SENDING
+        || session.isDiscarding) return false;
+    if (runtimeFor(session.id).blocked && session.saveError) {
+      return failSend('Resolve the draft save failure before sending.', session.id);
+    }
+    if (!repo || authStore.accountId == null) return failSend('Not connected.', session.id);
+    const identity = identityForSession(session);
+    if (!identity) return failSend('No identities are configured.', session.id);
+    commitPendingRecipientText(session);
+    const sessionDraft = session.draft;
     // Report what could not be read before anything else: a fragment left
     // in a recipient field is a recipient the user believes they added, and
     // sending without it delivers to a smaller audience than they asked
     // for (CS-2.4).
-    const rejected = RECIPIENT_FIELDS.flatMap((field) => rejectedRecipients[field]);
+    const rejected = RECIPIENT_FIELDS.flatMap((field) => session.rejectedRecipients[field]);
     if (rejected.length > 0) {
       return failSend(
         rejected.length === 1
           ? `${rejected[0]} is not an email address.`
           : `These are not email addresses: ${rejected.join(', ')}`,
+        session.id,
       );
     }
     // Any of the three carries the message, so requiring To would refuse a
     // send the user has every right to make (CS-2.2).
-    if (recipientCount.value === 0) return failSend('Add at least one recipient.');
+    const sessionRecipientCount = RECIPIENT_FIELDS.reduce(
+      (total, field) => total + sessionDraft[field].length,
+      0,
+    );
+    if (sessionRecipientCount === 0) return failSend('Add at least one recipient.', session.id);
 
     const folders = mailStore.folders as FolderRow[];
     const findByRole = (role: MailboxRole) => folders.find((f) => f.role === role);
@@ -635,14 +1600,21 @@ export const useComposeStore = defineStore('compose', () => {
     // semantics.
     const outbox = folders.find((f) => f.role === ('outbox' as MailboxRole));
 
-    status.value = COMPOSE_STATE.SENDING;
-    error.value = null;
+    const sessionRuntime = runtimeFor(session.id);
+    clearAutosaveTimer(session.id);
+    sessionRuntime.blocked = true;
+    if (sessionRuntime.inFlight) await sessionRuntime.inFlight;
+    if (!sessionById(session.id)) return false;
+    session.presentation = COMPOSE_PRESENTATION.EXPANDED;
+    activeSessionId.value = session.id;
+    session.status = COMPOSE_STATE.SENDING;
+    session.error = null;
     // The composer this send belongs to. Logout ($reset) and opening
     // another message both bump the counter, and neither waits for an
     // in-flight send, so the result below has to prove it is still
     // relevant before touching shared state.
-    const generation = composeGeneration;
-    const stillCurrent = () => generation === composeGeneration;
+    const generation = session.generation;
+    const stillCurrent = () => sessionById(session.id)?.generation === generation;
     try {
       // Mutation payload carries local row ids only; the JMAP outbox
       // resolves identity and folder remote ids at dispatch time, the
@@ -653,21 +1625,26 @@ export const useComposeStore = defineStore('compose', () => {
       const mutation = await repo.insertPendingMutation({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SEND,
-        targetMessageId: null,
+        targetMessageId: session.confirmedRevision?.localMessageId ?? null,
         requestJson: JSON.stringify({
+          draftSessionId: session.id,
           identityId: identity.id,
-          to: draft.to,
-          cc: draft.cc,
-          bcc: draft.bcc,
+          to: sessionDraft.to,
+          cc: sessionDraft.cc,
+          bcc: sessionDraft.bcc,
           replyTo: identityReplyTo(identity),
-          subject: draft.subject,
-          textBody: draft.textBody,
-          htmlBody: draft.htmlBody,
-          inReplyTo: draft.inReplyTo,
-          references: draft.references,
+          subject: sessionDraft.subject,
+          textBody: sessionDraft.textBody,
+          htmlBody: sessionDraft.htmlBody,
+          attachments: sessionDraft.attachments.map((attachment) => ({ ...attachment })),
+          inReplyTo: sessionDraft.inReplyTo,
+          references: sessionDraft.references,
           draftsFolderId: drafts?.id ?? null,
           sentFolderId: sent?.id ?? null,
           outboxFolderId: outbox?.id ?? null,
+          draftEmailIds: session.confirmedRevision
+            ? [session.confirmedRevision.emailId]
+            : [],
         }),
         optimisticPatchJson: null,
       });
@@ -705,8 +1682,8 @@ export const useComposeStore = defineStore('compose', () => {
           // tell which, but the mailbox itself will as it syncs, so the
           // composer closes and says where to look rather than holding
           // the draft behind a state only Discard could leave (CS-1.9).
-          status.value = COMPOSE_STATE.IDLE;
-          close();
+          session.status = COMPOSE_STATE.IDLE;
+          close(session.id);
           setNotice(
             'Could not confirm this send. If it went out it is in your '
             + 'Sent folder; if not, the message is in Drafts.',
@@ -721,13 +1698,14 @@ export const useComposeStore = defineStore('compose', () => {
           return failSend(
             'Could not confirm whether this message was sent. Check your '
             + 'Sent folder before sending it again.',
+            session.id,
           );
         }
-        return failSend('Send failed; the message stays in your outbox.');
+        return failSend('Send failed; the message stays in your outbox.', session.id);
       }
       if (!stillCurrent()) return true;
-      status.value = COMPOSE_STATE.SENT;
-      close();
+      session.status = COMPOSE_STATE.SENT;
+      close(session.id);
       // Confirmation is deliberately about acceptance, not arrival: the
       // server has taken the message, and nothing the client can observe
       // proves it reached the recipient (CS-1.13).
@@ -737,7 +1715,7 @@ export const useComposeStore = defineStore('compose', () => {
       return true;
     } catch (err: any) {
       if (!stillCurrent()) return false;
-      return failSend(err?.message ?? String(err));
+      return failSend(err?.message ?? String(err), session.id);
     }
   }
 
@@ -746,7 +1724,11 @@ export const useComposeStore = defineStore('compose', () => {
     error,
     notice,
     clearNotice,
+    sessions,
+    activeSessionId,
+    activeSession,
     isOpen,
+    isExpanded,
     identities,
     draft,
     draftEpoch,
@@ -757,15 +1739,30 @@ export const useComposeStore = defineStore('compose', () => {
     attach,
     detach,
     refreshIdentities,
+    sessionById,
+    identityForSession,
     open,
     close,
+    minimize,
+    restore,
+    isSessionDirty,
+    isSessionMeaningfullyNonEmpty,
+    touchSession,
+    saveDraft,
+    saveAndClose,
+    requestClose,
+    cancelClose,
+    closeWithoutSaving,
+    discardDraft,
     selectFromIndex,
     setRecipientEntries,
+    setPendingRecipientText,
     recipientEntries,
     prepareReply,
     prepareReplyFromMessage,
     prepareReplyAll,
     prepareForward,
+    prepareDraftFromMessage,
     send,
   };
 });

@@ -19,7 +19,7 @@ import {
   type Ref,
 } from 'vue';
 
-import { isMacPlatform } from '../utils/keyboard';
+import { isMacPlatform, shortcutModifierLabel } from '../utils/keyboard';
 import AppButton from './AppButton.vue';
 import ThundermailLogo from './ThundermailLogo.vue';
 
@@ -44,7 +44,7 @@ const activeSpotlight = ref<SpotlightId | null>(null);
 const spotlightBaseRect = ref<DOMRect | null>(null);
 const spotlightTransform = ref('translateY(-220px)');
 const composeToolbarTransform = ref('translate(0, -180px)');
-const modifierKey = computed(() => (isMacPlatform() ? 'Cmd' : 'Ctrl'));
+const modifierKey = computed(shortcutModifierLabel);
 const deleteKey = computed(() => (isMacPlatform() ? 'Backspace' : 'Delete'));
 const SPOTLIGHT_DURATION_MS = 2600;
 const LONG_SPOTLIGHT_DURATION_MS = 4200;

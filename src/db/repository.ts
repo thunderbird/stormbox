@@ -334,6 +334,44 @@ export class Repository {
     return this.call(DB_RPC.PENDING_MUTATION_GET_ERROR, { mutationId });
   }
 
+  retryPendingDraftMutation(accountId, mutationId) {
+    return this.call(DB_RPC.PENDING_MUTATION_RETRY, { accountId, mutationId });
+  }
+
+  abandonPendingDraftMutation(accountId, mutationId) {
+    return this.call(DB_RPC.PENDING_MUTATION_ABANDON_DRAFT, { accountId, mutationId });
+  }
+
+  async isEmailClaimedBySend(accountId, remoteId) {
+    const rows = await this.call<any[]>(DB_RPC.QUERY, {
+      sql: `SELECT local_status, phase, request_json, server_response_json
+              FROM pending_mutations
+             WHERE account_id = ?
+               AND mutation_type = 'send'
+               AND local_status IN ('pending','retry','in_flight','conflicted')
+               AND (server_response_json IS NOT NULL OR request_json IS NOT NULL)`,
+      params: [accountId],
+    });
+    return rows.some((row) => {
+      try {
+        const checkpoint = row.server_response_json
+          ? JSON.parse(row.server_response_json)
+          : null;
+        if (checkpoint?.emailRemoteId === remoteId) return true;
+        const request = row.request_json ? JSON.parse(row.request_json) : null;
+        const cleanupIds = Array.isArray(request?.draftEmailIds)
+          ? request.draftEmailIds
+          : [];
+        const cleanupCanStillRun = row.local_status !== 'conflicted'
+          || row.phase === 'submitted'
+          || row.phase === 'cache_pending';
+        return cleanupCanStillRun && cleanupIds.includes(remoteId);
+      } catch {
+        return false;
+      }
+    });
+  }
+
   insertSyncJob(input) {
     return this.call(DB_RPC.SYNC_JOB_INSERT, input);
   }
@@ -346,6 +384,15 @@ export class Repository {
 
   startSyncAccount(input) {
     return this.call(DB_RPC.SYNC_START_ACCOUNT, input);
+  }
+
+  updateSyncAccountAuth(accountId, { token, issuedAt, expiresAt }) {
+    return this.call(DB_RPC.SYNC_UPDATE_ACCOUNT_AUTH, {
+      accountId,
+      token,
+      issuedAt,
+      expiresAt,
+    });
   }
 
   stopSyncAccount(accountId) {

@@ -58,6 +58,7 @@ import {
 } from './operations/contacts';
 import { runDestroy } from './operations/destroy';
 import { runDestroyMailbox } from './operations/destroy-mailbox';
+import { runDiscardDraft, runSaveDraft } from './operations/drafts';
 import { runMoveToFolders } from './operations/move-to-folders';
 import { runSend } from './operations/send';
 import { runSetKeywords } from './operations/set-keywords';
@@ -75,6 +76,8 @@ export const MUTATION_TYPES = Object.freeze({
   COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  SAVE_DRAFT: 'saveDraft',
+  DISCARD_DRAFT: 'discardDraft',
   WHITELIST_SENDER: 'whitelistSender',
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
@@ -152,6 +155,10 @@ export async function processMutationRow({
       return toProcessResult(
         await runSend({ transport, account, handlers, row, request, useWebSocket }),
       );
+    case MUTATION_TYPES.SAVE_DRAFT:
+      return runSaveDraft({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.DISCARD_DRAFT:
+      return runDiscardDraft({ transport, account, handlers, request, useWebSocket });
     case MUTATION_TYPES.WHITELIST_SENDER:
       return runWhitelistSender({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.CREATE_CONTACT:

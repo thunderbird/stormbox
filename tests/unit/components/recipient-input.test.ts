@@ -366,8 +366,8 @@ describe('RecipientInput suggestions', () => {
     await type(wrapper, 'bo');
     await settle(wrapper);
     expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+    expect(input(wrapper).attributes('aria-activedescendant')).toBe('compose-to-option-0');
 
-    await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await input(wrapper).trigger('keydown', { key: 'ArrowDown' });
     await input(wrapper).trigger('keydown', { key: 'Enter' });
     await nextTick();
@@ -382,7 +382,6 @@ describe('RecipientInput suggestions', () => {
     await type(wrapper, 'bo');
     await settle(wrapper);
     const field = input(wrapper);
-    await field.trigger('keydown', { key: 'ArrowDown' });
     const event = new window.KeyboardEvent('keydown', {
       key: 'Enter',
       bubbles: true,
@@ -401,19 +400,38 @@ describe('RecipientInput suggestions', () => {
     expect(pills(wrapper)).toEqual([]);
   });
 
-  it('takes the first suggestion on Enter before keyboard navigation', async () => {
+  it('automatically highlights and takes the first suggestion on Enter', async () => {
     const query = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ query });
 
     await type(wrapper, 'bo');
     await settle(wrapper);
     expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
-    expect(input(wrapper).attributes('aria-activedescendant')).toBeUndefined();
+    expect(input(wrapper).attributes('aria-activedescendant')).toBe('compose-to-option-0');
+    expect(wrapper.findAll('[role="option"]')[0].attributes('aria-selected')).toBe('true');
 
     await input(wrapper).trigger('keydown', { key: 'Enter' });
     await nextTick();
 
     expect(pills(wrapper)).toEqual([{ text: 'Bob', invalid: false }]);
+  });
+
+  it('shows the organization when it explains an otherwise hidden match', async () => {
+    const wrapper = mountControl({
+      query: async () => [{
+        name: 'Frances Lovelace',
+        organization: 'Harbor Systems',
+        email: 'frances@example.com',
+        source: 'contact',
+      }],
+    });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+
+    const option = optionRows(wrapper)[0];
+    expect(option.get('.ac-context').text()).toBe('Harbor Systems');
+    expect(option.attributes('aria-label')).toContain('Harbor Systems');
   });
 
   it('commits what was typed on Enter when there are no suggestions', async () => {
@@ -447,10 +465,8 @@ describe('RecipientInput suggestions', () => {
     await settle(wrapper);
 
     const field = input(wrapper);
-    expect(field.attributes('aria-activedescendant')).toBeUndefined();
-
-    await field.trigger('keydown', { key: 'ArrowDown' });
     expect(field.attributes('aria-activedescendant')).toBe('compose-to-option-0');
+
     await field.trigger('keydown', { key: 'ArrowDown' });
     expect(field.attributes('aria-activedescendant')).toBe('compose-to-option-1');
     await field.trigger('keydown', { key: 'ArrowDown' });
@@ -511,15 +527,15 @@ describe('RecipientInput suggestions', () => {
     expect(query).toHaveBeenCalledWith('bob', 10, []);
   });
 
-  it('asks for nothing until there are two characters to ask about', async () => {
+  it('starts querying after the first character', async () => {
     const query = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ query });
 
     await type(wrapper, 'b');
     await settle(wrapper);
 
-    expect(query).not.toHaveBeenCalled();
-    expect(wrapper.get('[role="status"]').text()).toBe('');
+    expect(query).toHaveBeenCalledWith('b', 10, []);
+    expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
   });
 
   it('discards an answer that is no longer the question', async () => {

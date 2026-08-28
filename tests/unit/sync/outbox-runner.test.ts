@@ -90,6 +90,16 @@ async function insertContactWrite(mutationType = 'whitelistSender') {
   return result.id;
 }
 
+async function insertComposeMutation(mutationType, draftSessionId, targetMessageId = null) {
+  const result = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+    accountId,
+    mutationType,
+    targetMessageId,
+    requestJson: JSON.stringify({ draftSessionId }),
+  });
+  return result.id;
+}
+
 async function loadRow(id) {
   const rows = await engine.all(
     'SELECT * FROM pending_mutations WHERE id = ?',
@@ -194,6 +204,76 @@ describe('OutboxRunner auto-drain', () => {
 });
 
 describe('OutboxRunner per-target serialization', () => {
+  it('serializes different sessions that claim the same draft row', async () => {
+    const target = await seedMessage('shared-draft');
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertComposeMutation('saveDraft', 'tab-one', target);
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.id}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.id}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const secondId = await insertComposeMutation('saveDraft', 'tab-two', target);
+
+    const draining = runner.drain();
+    await waitFor(() => order.includes(`start:${firstId}`));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).not.toContain(`start:${secondId}`);
+    firstBlocked.resolve();
+    await draining;
+
+    expect(order).toEqual([
+      `start:${firstId}`,
+      `end:${firstId}`,
+      `start:${secondId}`,
+      `end:${secondId}`,
+    ]);
+    await runner.stop();
+  });
+
+  it('serializes save, discard, and send in one compose-session lane', async () => {
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertComposeMutation('saveDraft', 'compose-1');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.mutation_type}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.mutation_type}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    await insertComposeMutation('discardDraft', 'compose-1');
+    await insertComposeMutation('send', 'compose-1');
+
+    const draining = runner.drain();
+    await waitFor(() => order.includes('start:saveDraft'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(order).toEqual(['start:saveDraft']);
+
+    firstBlocked.resolve();
+    await draining;
+    expect(order).toEqual([
+      'start:saveDraft',
+      'end:saveDraft',
+      'start:discardDraft',
+      'end:discardDraft',
+      'start:send',
+      'end:send',
+    ]);
+    await runner.stop();
+  });
+
   it('serializes account-wide ContactCard writes with null message targets', async () => {
     const firstBlocked = deferred();
     const order = [];
@@ -363,6 +443,90 @@ describe('OutboxRunner exponential backoff', () => {
     expect(row.local_status).toBe('conflicted');
     expect(Number(row.attempts)).toBe(4);
     expect(row.error_json).toMatch(/serverFail/);
+    await runner.stop();
+  });
+
+  it('applies a smaller retry cap to draft saves', async () => {
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        return { ok: false, error: { type: 'serverFail' } };
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 8,
+        maxAttemptsByType: { saveDraft: 3 },
+      },
+    });
+    const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+    const result = await runner.runMutation(mutationId);
+
+    expect(result).toMatchObject({ succeeded: 0, failed: 1 });
+    expect(attempts).toBe(3);
+    expect(Number((await loadRow(mutationId)).attempts)).toBe(3);
+    await runner.stop();
+  });
+
+  it('does not retry an HTTP authentication failure', async () => {
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        const error: any = new Error('JMAP request failed: 401 Unauthorized');
+        error.status = 401;
+        throw error;
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 8,
+      },
+    });
+    const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+    await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      errorType: 'authenticationFailed',
+    });
+    expect(attempts).toBe(1);
+    expect(Number((await loadRow(mutationId)).attempts)).toBe(1);
+    await runner.stop();
+  });
+
+  it('does not retry an HTTP authorization failure', async () => {
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        const error: any = new Error('JMAP request failed: 403 Forbidden');
+        error.status = 403;
+        throw error;
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 8,
+      },
+    });
+    const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+    await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      errorType: 'authorizationFailed',
+    });
+    expect(attempts).toBe(1);
+    expect(Number((await loadRow(mutationId)).attempts)).toBe(1);
     await runner.stop();
   });
 

@@ -13,6 +13,8 @@ import {
   Quote,
   Redo2,
   RemoveFormatting,
+  Save,
+  Send as SendIcon,
   Strikethrough,
   Subscript,
   Superscript,
@@ -20,6 +22,7 @@ import {
   TextAlignEnd,
   TextAlignJustify,
   TextAlignStart,
+  Trash2,
   Underline,
   Undo2,
 } from '@lucide/vue';
@@ -27,8 +30,10 @@ import DOMPurify from 'dompurify';
 import Squire from 'squire-rte';
 
 import {
+  COMPOSE_PRESENTATION,
   RECIPIENT_FIELDS,
   useComposeStore,
+  type ComposeSession,
   type RecipientEntry,
   type RecipientField,
 } from '../stores/compose-store';
@@ -37,15 +42,51 @@ import { useAuthStore } from '../stores/auth-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
 import type { ContactListRow, IdentityRow } from '../types/db';
+import { shortcutModifierAria, shortcutModifierLabel } from '../utils/keyboard';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 import RecipientInput from './RecipientInput.vue';
 
+const props = defineProps<{
+  sessionId?: string;
+}>();
+
 const composeStore = useComposeStore();
 const authStore = useAuthStore();
 const contactsStore = useContactsStore();
+const shortcutModifier = shortcutModifierLabel();
+const ariaShortcutModifier = shortcutModifierAria();
+const session = computed<ComposeSession | null>(() =>
+  props.sessionId
+    ? composeStore.sessionById(props.sessionId)
+    : composeStore.activeSession);
+const draft = computed(() => session.value?.draft ?? composeStore.draft);
+const sessionStatus = computed(() => session.value?.status ?? COMPOSE_STATE.IDLE);
+const sessionError = computed(() => session.value?.error ?? null);
+const fromIdentity = computed(() => composeStore.identityForSession(session.value));
+const isExpanded = computed(() =>
+  session.value?.presentation === COMPOSE_PRESENTATION.EXPANDED);
 
+function fieldId(field: RecipientField): string {
+  return isExpanded.value ? `compose-${field}` : `compose-${session.value?.id}-${field}`;
+}
+
+const fromLabelId = computed(() =>
+  isExpanded.value ? 'compose-from-label' : `compose-${session.value?.id}-from-label`);
+const subjectInputId = computed(() =>
+  isExpanded.value ? 'compose-subject' : `compose-${session.value?.id}-subject`);
+const dialogTitleId = computed(() =>
+  isExpanded.value ? 'compose-title' : `compose-${session.value?.id}-title`);
+const closeTriggerLabel = computed(() =>
+  session.value && composeStore.isSessionMeaningfullyNonEmpty(session.value.id)
+    ? 'Close options'
+    : 'Close');
+
+const dialogEl = ref<HTMLElement | null>(null);
+const closePromptEl = ref<HTMLElement | null>(null);
+const closePromptTitleEl = ref<HTMLElement | null>(null);
+const closeMenuTriggerEl = ref<HTMLElement | null>(null);
 const editorEl = ref(null);
 const toolbarEl = ref(null);
 const toolbarState = ref({
@@ -74,7 +115,17 @@ let squire = null;
 let lastSelection = null;
 let toolbarResizeObserver = null;
 let isResizingImage = false;
+let closeReturnFocus: HTMLElement | null = null;
+let lastInputWasKeyboard = false;
 const toolbarGroupWidths = new Map();
+const FOCUSABLE_SELECTOR = [
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'summary',
+  '[contenteditable="true"]',
+  '[href]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 const defaultTextColor = '#e5e7eb';
 const defaultHighlightColor = '#fef3c7';
@@ -142,8 +193,9 @@ function isToolbarGroupVisible(group) {
 
 function syncDraftFromEditor() {
   if (!squire || !editorEl.value) return;
-  composeStore.draft.htmlBody = squire.getHTML();
-  composeStore.draft.textBody = editorEl.value.innerText;
+  draft.value.htmlBody = squire.getHTML();
+  draft.value.textBody = editorEl.value.innerText;
+  composeStore.touchSession(session.value?.id ?? null);
 }
 
 function rememberSelection() {
@@ -251,7 +303,8 @@ function handleEditorInput() {
 
 function handleResizeHandlePointerDown(event: PointerEvent) {
   const target = event.target as Element | null;
-  if (target?.closest?.('.squire-resize-handle')) {
+  const handle = target?.closest?.('.squire-resize-handle');
+  if (handle && editorEl.value?.contains(handle)) {
     isResizingImage = true;
   }
 }
@@ -391,6 +444,33 @@ const fontSizeLabel = computed(() =>
 function closeDropdown(event: Event) {
   const details = (event.currentTarget as HTMLElement).closest('details');
   if (details) details.open = false;
+}
+
+function activateCloseTrigger(event: MouseEvent) {
+  const sessionId = session.value?.id;
+  if (!sessionId || composeStore.isSessionMeaningfullyNonEmpty(sessionId)) return;
+  event.preventDefault();
+  composeStore.close(sessionId);
+}
+
+async function discardFromCloseMenu(event: Event) {
+  const sessionId = session.value?.id;
+  if (!sessionId) return;
+  closeDropdown(event);
+  if (!await composeStore.discardDraft(sessionId)) {
+    await nextTick();
+    closeMenuTriggerEl.value?.focus();
+  }
+}
+
+async function saveFromCloseMenu(event: Event) {
+  const sessionId = session.value?.id;
+  if (!sessionId) return;
+  closeDropdown(event);
+  if (!await composeStore.saveAndClose(sessionId)) {
+    await nextTick();
+    closeMenuTriggerEl.value?.focus();
+  }
 }
 
 function pickFontFace(value: string, event: Event) {
@@ -590,11 +670,11 @@ function destroyEditor() {
 }
 
 function initEditor() {
-  if (!editorEl.value) return;
+  if (!editorEl.value || !session.value) return;
   destroyEditor();
   ensureSquireSanitizer();
   squire = new Squire(editorEl.value);
-  squire.setHTML(composeStore.draft.htmlBody || '<p><br></p>');
+  squire.setHTML(draft.value.htmlBody || '<p><br></p>');
   registerKeyboardShortcuts();
   squire.addEventListener('input', handleEditorInput);
   squire.addEventListener('pasteImage', handlePasteImage);
@@ -620,44 +700,115 @@ function initEditor() {
  * Called after the open/remount tick, so the target exists.
  */
 function focusFreshDraft() {
-  if (!composeStore.isOpen) return;
-  if (composeStore.draft.to.length === 0) {
-    document.getElementById('compose-to')?.focus();
+  if (!session.value || !isExpanded.value) return;
+  if (draft.value.to.length === 0) {
+    document.getElementById(fieldId('to'))?.focus();
   } else {
     squire?.focus();
   }
 }
 
+function focusableElements(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+    .filter((element) => {
+      if (element.closest('details:not([open])')) return false;
+      if (element.closest('[hidden], [aria-hidden="true"]')) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+}
+
+function trapDialogFocus(event: KeyboardEvent) {
+  if (event.key !== 'Tab') return;
+  const container = session.value?.closePromptOpen ? closePromptEl.value : dialogEl.value;
+  const focusable = focusableElements(container);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const activeIsFocusable = active instanceof HTMLElement && focusable.includes(active);
+  if (!activeIsFocusable) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function rememberPointerInput() {
+  lastInputWasKeyboard = false;
+}
+
+function rememberKeyboardInput() {
+  lastInputWasKeyboard = true;
+}
+
 onMounted(() => {
   window.addEventListener('resize', scheduleToolbarOverflowUpdate);
-  if (composeStore.isOpen) {
+  window.addEventListener('pointerdown', rememberPointerInput, true);
+  window.addEventListener('keydown', rememberKeyboardInput, true);
+  if (session.value) {
     void nextTick().then(() => {
       initEditor();
-      focusFreshDraft();
+      if (isExpanded.value) focusFreshDraft();
     });
   }
 });
 
-watch(() => composeStore.isOpen, (open) => {
-  if (open) {
+watch(() => session.value?.id, (nextId, previousId) => {
+  if (nextId && nextId !== previousId) {
     void nextTick().then(() => {
       initEditor();
-      focusFreshDraft();
+      if (isExpanded.value) focusFreshDraft();
     });
-  } else {
+  } else if (!nextId) {
     destroyEditor();
+  }
+});
+
+watch(isExpanded, (expanded) => {
+  if (expanded) void nextTick().then(focusFreshDraft);
+});
+
+watch(() => session.value?.closePromptOpen, (open) => {
+  if (open) {
+    closeReturnFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    void nextTick().then(() => {
+      const target = lastInputWasKeyboard
+        ? focusableElements(closePromptEl.value)[0]
+        : closePromptTitleEl.value;
+      target?.focus();
+    });
+    return;
+  }
+  if (closeReturnFocus?.isConnected) {
+    const target = closeReturnFocus;
+    closeReturnFocus = null;
+    void nextTick().then(() => target.focus());
   }
 });
 
 onUnmounted(() => {
   window.removeEventListener('resize', scheduleToolbarOverflowUpdate);
+  window.removeEventListener('pointerdown', rememberPointerInput, true);
+  window.removeEventListener('keydown', rememberKeyboardInput, true);
   destroyEditor();
 });
 
-// Discard and Close are withheld while the send mutation is in flight:
+// Draft exit actions are withheld while the send mutation is in flight:
 // the queued request payload is the only durable copy of the message, so
 // erasing the draft here could lose it if the send then fails.
-const isSending = computed(() => composeStore.status === COMPOSE_STATE.SENDING);
+const isSending = computed(() => sessionStatus.value === COMPOSE_STATE.SENDING);
 
 /**
  * The committed recipients of each field, as the control shows them.
@@ -688,13 +839,15 @@ const visibleRecipientFields = computed<RecipientField[]>(() => [
 ]);
 
 watch(
-  () => composeStore.draftEpoch,
+  () => [session.value?.id, session.value?.draftEpoch] as const,
   () => {
+    const sessionId = session.value?.id;
+    if (!sessionId) return;
     for (const field of RECIPIENT_FIELDS) {
-      recipientEntries[field] = composeStore.recipientEntries(field);
+      recipientEntries[field] = composeStore.recipientEntries(field, sessionId);
     }
-    showCc.value = composeStore.draft.cc.length > 0;
-    showBcc.value = composeStore.draft.bcc.length > 0;
+    showCc.value = draft.value.cc.length > 0;
+    showBcc.value = draft.value.bcc.length > 0;
     // A draft replacing the current one while the dialog is open (reply
     // taken from the message view, say) restarts writing too. No-op while
     // closed; the recipient controls remount on the epoch, hence the tick.
@@ -705,14 +858,14 @@ watch(
 
 function setEntries(field: RecipientField, entries: RecipientEntry[]) {
   recipientEntries[field] = entries;
-  composeStore.setRecipientEntries(field, entries);
+  composeStore.setRecipientEntries(field, entries, session.value?.id ?? null);
 }
 
 /** Reveal Cc or Bcc and put the cursor in it. */
 function revealField(field: 'cc' | 'bcc') {
   if (field === 'cc') showCc.value = true;
   else showBcc.value = true;
-  void nextTick().then(() => document.getElementById(`compose-${field}`)?.focus());
+  void nextTick().then(() => document.getElementById(fieldId(field))?.focus());
 }
 
 /**
@@ -745,7 +898,7 @@ function onRecipientFocusOut(field: RecipientField, event: FocusEvent) {
 function takenElsewhere(field: RecipientField): string[] {
   return RECIPIENT_FIELDS
     .filter((other) => other !== field)
-    .flatMap((other) => composeStore.draft[other].map((address) => address.email));
+    .flatMap((other) => draft.value[other].map((address) => address.email));
 }
 
 function queryContacts(prefix: string, limit: number, exclude: string[]) {
@@ -767,18 +920,19 @@ async function browseAllContacts() {
     .filter((contact) => !!contact.email)
     .map((contact) => ({
       ...(contact.display_name ? { name: contact.display_name } : {}),
+      ...(contact.organization ? { organization: contact.organization } : {}),
       email: contact.email as string,
       source: 'contact' as const,
     }));
 }
 
 async function send() {
-  await composeStore.send();
+  await composeStore.send(session.value?.id ?? null);
 }
 
 function pickFromIdentity(idx: number, event: Event) {
   closeDropdown(event);
-  composeStore.selectFromIndex(idx);
+  composeStore.selectFromIndex(idx, session.value?.id ?? null);
 }
 
 function identityLabel(id: IdentityRow | null): string {
@@ -798,43 +952,95 @@ function identityInitials(id: IdentityRow): string {
 
 <template>
     <div
-      v-if="composeStore.isOpen"
+      v-if="session"
+      v-show="isExpanded"
+      ref="dialogEl"
       class="compose-dialog"
+      :class="{ 'compose-dialog--expanded': isExpanded }"
       role="dialog"
       aria-modal="true"
-      aria-label="Compose"
+      :aria-labelledby="dialogTitleId"
+      @keydown.capture="trapDialogFocus"
     >
     <div class="compose-dialog__card">
       <header>
-        <h2>{{ composeStore.draft.subject || 'New Message' }}</h2>
-        <button
-          type="button"
-          class="icon"
-          :disabled="isSending"
-          :title="isSending ? 'Sending — please wait' : 'Close'"
-          aria-label="Close"
-          @click="composeStore.close()"
-        >×</button>
+        <h2 :id="dialogTitleId">{{ draft.subject || 'New Message' }}</h2>
+        <div class="compose-dialog__window-actions">
+          <button
+            type="button"
+            class="icon icon--minimize"
+            :disabled="isSending || session.isSaving || session.isDiscarding"
+            :title="isSending ? 'Sending — please wait' : 'Minimize'"
+            aria-label="Minimize"
+            @click="composeStore.minimize(session.id)"
+          >−</button>
+          <AppDropdown
+            class="compose-close-menu"
+            :disabled="isSending || session.isDiscarding"
+          >
+            <summary
+              ref="closeMenuTriggerEl"
+              class="icon compose-close-menu__trigger"
+              role="button"
+              aria-haspopup="menu"
+              :title="isSending ? 'Sending — please wait' : closeTriggerLabel"
+              :aria-label="closeTriggerLabel"
+              :aria-disabled="isSending || session.isDiscarding
+                ? 'true'
+                : undefined"
+              :tabindex="isSending || session.isDiscarding ? -1 : undefined"
+              @click="activateCloseTrigger"
+            >×</summary>
+            <div
+              class="app-dropdown__menu compose-close-menu__menu"
+              role="menu"
+              aria-label="Close options"
+            >
+              <button
+                type="button"
+                class="app-dropdown__item compose-close-menu__discard"
+                role="menuitem"
+                :disabled="isSending || session.isDiscarding"
+                @click="discardFromCloseMenu"
+              >
+                <Trash2 :size="15" aria-hidden="true" />
+                <span>Discard</span>
+              </button>
+              <button
+                type="button"
+                class="app-dropdown__item"
+                role="menuitem"
+                :disabled="isSending || session.isSaving || session.isDiscarding"
+                @click="saveFromCloseMenu"
+              >
+                <Save :size="15" aria-hidden="true" />
+                <span>Save Draft</span>
+              </button>
+            </div>
+          </AppDropdown>
+        </div>
       </header>
 
       <div class="row">
-        <label id="compose-from-label">From</label>
+        <label :id="fromLabelId">From</label>
         <!-- An identity is a person with an address, so its rows wear the
              same avatar-and-two-lines dress the suggestion list and the
              message list use: one look for one kind of thing. -->
         <AppDropdown class="from-picker" data-compose-from>
           <summary
             class="app-dropdown__summary from-picker__summary"
-            aria-labelledby="compose-from-label"
+            :aria-labelledby="fromLabelId"
           >
             <span
-              v-if="composeStore.fromIdentity"
+              v-if="fromIdentity"
               class="from-picker__avatar"
               aria-hidden="true"
-              :style="identityAvatarStyle(composeStore.fromIdentity)"
-            >{{ identityInitials(composeStore.fromIdentity) }}</span>
+              :style="identityAvatarStyle(fromIdentity)"
+            >{{ identityInitials(fromIdentity) }}</span>
             <span class="from-picker__summary-text">
-              {{ identityLabel(composeStore.fromIdentity) }}
+              {{ session.unresolvedFrom
+                ? `Unavailable identity: ${session.unresolvedFrom.email}`
+                : identityLabel(fromIdentity) }}
             </span>
           </summary>
           <div class="app-dropdown__menu from-picker__menu" role="menu" aria-label="From identity">
@@ -844,7 +1050,7 @@ function identityInitials(id: IdentityRow): string {
               type="button"
               class="app-dropdown__item from-picker__option"
               role="menuitemradio"
-              :aria-checked="idx === composeStore.draft.fromIdx"
+              :aria-checked="idx === draft.fromIdx"
               @click="pickFromIdentity(idx, $event)"
             >
               <span
@@ -858,7 +1064,7 @@ function identityInitials(id: IdentityRow): string {
                   {{ id.email }}
                 </span>
               </span>
-              <Check v-if="idx === composeStore.draft.fromIdx" :size="15" class="from-picker__check" />
+              <Check v-if="idx === draft.fromIdx" :size="15" class="from-picker__check" />
             </button>
           </div>
         </AppDropdown>
@@ -873,16 +1079,18 @@ function identityInitials(id: IdentityRow): string {
         :class="{ 'row--to': field === 'to' }"
         @focusout="onRecipientFocusOut(field, $event)"
       >
-        <label :for="`compose-${field}`">{{ RECIPIENT_LABELS[field] }}</label>
+        <label :for="fieldId(field)">{{ RECIPIENT_LABELS[field] }}</label>
         <RecipientInput
-          :key="`${field}-${composeStore.draftEpoch}`"
-          :input-id="`compose-${field}`"
+          :key="`${session.id}-${field}-${session.draftEpoch}`"
+          :input-id="fieldId(field)"
           :label="RECIPIENT_LABELS[field]"
           :entries="recipientEntries[field]"
           :taken="takenElsewhere(field)"
           :query="queryContacts"
           :browse-all="browseAllContacts"
           @update:entries="(entries: RecipientEntry[]) => setEntries(field, entries)"
+          @update:pending-text="(value: string) =>
+            composeStore.setPendingRecipientText(field, value, session.id)"
         />
         <!-- Cc/Bcc live at the right of To, both offered at once. Each
              reveals its field; an empty field hides again on blur, so the
@@ -904,8 +1112,13 @@ function identityInitials(id: IdentityRow): string {
       </div>
 
       <div class="row">
-        <label>Subject</label>
-        <input type="text" v-model="composeStore.draft.subject" />
+        <label :for="subjectInputId">Subject</label>
+        <input
+          :id="subjectInputId"
+          type="text"
+          v-model="draft.subject"
+          @input="composeStore.touchSession(session.id)"
+        />
       </div>
 
       <div ref="toolbarEl" class="compose-toolbar" role="toolbar" aria-label="Rich text formatting" @pointerdown.capture="rememberSelection">
@@ -915,7 +1128,8 @@ function identityInitials(id: IdentityRow): string {
             class="toolbar-button"
             :class="{ active: toolbarState.bold }"
             aria-label="Bold"
-            title="Bold"
+            :aria-keyshortcuts="`${ariaShortcutModifier}+B`"
+            :title="`Bold (${shortcutModifier}+B)`"
             @mousedown.prevent
             @click="toggleFormat('B')"
           >
@@ -926,7 +1140,8 @@ function identityInitials(id: IdentityRow): string {
             class="toolbar-button"
             :class="{ active: toolbarState.italic }"
             aria-label="Italic"
-            title="Italic"
+            :aria-keyshortcuts="`${ariaShortcutModifier}+I`"
+            :title="`Italic (${shortcutModifier}+I)`"
             @mousedown.prevent
             @click="toggleFormat('I')"
           >
@@ -937,7 +1152,8 @@ function identityInitials(id: IdentityRow): string {
             class="toolbar-button"
             :class="{ active: toolbarState.underline }"
             aria-label="Underline"
-            title="Underline"
+            :aria-keyshortcuts="`${ariaShortcutModifier}+U`"
+            :title="`Underline (${shortcutModifier}+U)`"
             @mousedown.prevent
             @click="toggleFormat('U')"
           >
@@ -1043,7 +1259,8 @@ function identityInitials(id: IdentityRow): string {
             class="toolbar-button"
             :class="{ active: toolbarState.link }"
             aria-label="Insert or remove link"
-            title="Insert or remove link"
+            :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
+            :title="`Insert or remove link (${shortcutModifier}+K)`"
             @mousedown.prevent
             @click="promptForLink"
           >
@@ -1188,6 +1405,9 @@ function identityInitials(id: IdentityRow): string {
                 class="toolbar-menu-button"
                 :class="{ active: toolbarState.link }"
                 role="menuitem"
+                aria-label="Insert or remove link"
+                :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
+                :title="`Insert or remove link (${shortcutModifier}+K)`"
                 @mousedown.prevent
                 @click="promptForLink"
               >
@@ -1328,6 +1548,9 @@ function identityInitials(id: IdentityRow): string {
               class="toolbar-menu-button"
               :disabled="!toolbarState.canUndo"
               role="menuitem"
+              aria-label="Undo"
+              :aria-keyshortcuts="`${ariaShortcutModifier}+Z`"
+              :title="`Undo (${shortcutModifier}+Z)`"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.undo())"
             >
@@ -1339,6 +1562,9 @@ function identityInitials(id: IdentityRow): string {
               class="toolbar-menu-button"
               :disabled="!toolbarState.canRedo"
               role="menuitem"
+              aria-label="Redo"
+              :aria-keyshortcuts="`${ariaShortcutModifier}+Y ${ariaShortcutModifier}+Shift+Z`"
+              :title="`Redo (${shortcutModifier}+Y / ${shortcutModifier}+Shift+Z)`"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.redo())"
             >
@@ -1351,22 +1577,39 @@ function identityInitials(id: IdentityRow): string {
       </div>
 
       <div class="editor-wrap">
-        <div ref="editorEl" class="editor" contenteditable="true" />
+        <div
+          ref="editorEl"
+          class="editor"
+          contenteditable="true"
+          role="textbox"
+          aria-label="Message body"
+          aria-multiline="true"
+        />
       </div>
 
       <footer>
         <AppButton
-          variant="outline"
-          :disabled="isSending"
-          @click="composeStore.close()"
-        >Discard</AppButton>
-        <AppButton
-          :disabled="isSending"
+          :disabled="isSending || session.isDiscarding"
           @click="send"
         >
+          <template #iconLeft>
+            <SendIcon
+              class="compose-send-icon"
+              :size="16"
+              :stroke-width="2"
+              aria-hidden="true"
+            />
+          </template>
           {{ isSending ? 'Sending…' : 'Send' }}
         </AppButton>
       </footer>
+
+      <p
+        v-if="session.saveError && session.saveError !== sessionError"
+        class="compose-save-error"
+        role="status"
+        aria-live="polite"
+      >{{ session.saveError }}</p>
 
       <!-- role="alert" carries an implicit assertive live region, which is
            announced on insertion. The element is conditional because the
@@ -1374,12 +1617,49 @@ function identityInitials(id: IdentityRow): string {
            container would hold that gap open under the footer whenever
            there is no error. -->
       <p
-        v-if="composeStore.error"
+        v-if="sessionError"
         class="compose-error"
         role="alert"
         aria-live="assertive"
         aria-atomic="true"
-      >{{ composeStore.error }}</p>
+      >{{ sessionError }}</p>
+
+      <div
+        v-if="session.closePromptOpen"
+        class="compose-confirm-backdrop"
+      >
+        <section
+          ref="closePromptEl"
+          class="compose-confirm"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="compose-close-title"
+          aria-describedby="compose-close-description"
+        >
+          <h3
+            id="compose-close-title"
+            ref="closePromptTitleEl"
+            tabindex="-1"
+          >Save this draft?</h3>
+          <p id="compose-close-description">
+            Save your latest changes before closing this compose window.
+          </p>
+          <div class="compose-confirm__actions">
+            <AppButton
+              variant="outline"
+              @click="composeStore.cancelClose(session.id)"
+            >Cancel</AppButton>
+            <AppButton
+              variant="outline"
+              @click="composeStore.closeWithoutSaving(session.id)"
+            >Don't Save</AppButton>
+            <AppButton
+              :disabled="session.isSaving"
+              @click="composeStore.saveAndClose(session.id)"
+            >Save draft</AppButton>
+          </div>
+        </section>
+      </div>
     </div>
   </div>
 </template>
@@ -1394,6 +1674,7 @@ function identityInitials(id: IdentityRow): string {
   z-index: 50;
 }
 .compose-dialog__card {
+  position: relative;
   width: min(960px, 96vw);
   height: min(640px, 90vh);
   background: var(--surface, #fff);
@@ -1409,6 +1690,11 @@ function identityInitials(id: IdentityRow): string {
   align-items: baseline;
 }
 .compose-dialog__card header h2 { margin: 0; font-size: 16px; }
+.compose-dialog__window-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .icon {
   background: transparent;
   border: 0;
@@ -1416,32 +1702,66 @@ function identityInitials(id: IdentityRow): string {
   cursor: pointer;
   color: inherit;
 }
+.icon--minimize {
+  font-size: 20px;
+}
+.compose-close-menu__trigger {
+  display: grid;
+  place-items: center;
+  list-style: none;
+}
+.compose-close-menu__trigger::-webkit-details-marker {
+  display: none;
+}
+.compose-close-menu__menu {
+  top: calc(100% + 1px);
+  right: 0;
+  left: auto;
+  min-width: 160px;
+  line-height: normal;
+}
+.compose-close-menu__menu .app-dropdown__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.compose-close-menu__discard:hover:not(:disabled),
+.compose-close-menu__discard:focus-visible {
+  color: #ff6b6b;
+}
+.compose-send-icon {
+  transform: translateY(-1.4px);
+}
 .row {
   display: grid;
   grid-template-columns: 70px 1fr;
   gap: 8px;
   align-items: center;
+  font-size: var(--txt-default, 0.875rem);
 }
 .row label {
-  font-size: 12px;
-  color: var(--muted, #6b7388);
+  color: var(--colour-ti-secondary, var(--text, #111827));
+  font-size: inherit;
 }
 .row input {
+  min-width: 0;
   padding: 7px 10px;
   border: 1px solid var(--border, #d6d9e2);
   border-radius: 8px;
-  font-size: 14px;
+  font: inherit;
+}
+.from-picker {
+  min-width: 0;
 }
 /* The field look of .row input, on a summary; the chevron rides the
    right edge. */
 .from-picker__summary {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 8px;
   padding: 5px 10px;
   border: 1px solid var(--border, #d6d9e2);
   border-radius: 8px;
-  font-size: 14px;
   background: var(--panel, transparent);
 }
 .from-picker__summary::after {
@@ -1521,8 +1841,8 @@ function identityInitials(id: IdentityRow): string {
   border: 1px solid var(--border, #d6d9e2);
   border-radius: 6px;
   background: none;
-  color: var(--muted, #6b7388);
-  font-size: 12px;
+  color: var(--colour-ti-secondary, var(--text, #111827));
+  font: inherit;
   cursor: pointer;
 }
 .recipient-toggle:hover {
@@ -1748,4 +2068,43 @@ footer {
   gap: 8px;
 }
 .compose-error { color: #b3261e; font-size: 13px; }
+.compose-save-error {
+  margin: 0;
+  color: var(--colour-ti-warning, #8a4b00);
+  font-size: var(--txt-small, 0.8125rem);
+}
+.compose-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  border-radius: inherit;
+  background: rgba(13, 22, 42, 0.48);
+}
+.compose-confirm {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+.compose-confirm h3 {
+  margin: 0 0 8px;
+  font-size: var(--txt-large, 1rem);
+}
+.compose-confirm h3:focus {
+  outline: none;
+}
+.compose-confirm p {
+  margin: 0 0 20px;
+  color: var(--colour-ti-secondary, var(--text, #111827));
+}
+.compose-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 </style>

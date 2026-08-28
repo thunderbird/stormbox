@@ -18,6 +18,7 @@ import {
   SUBMISSION_FAULTS,
   CONTACT_CACHE_FAULT,
   CONTACT_CACHE_REFUSALS,
+  DRAFT_FAULTS,
 } from '../../fixtures/ws-proxy/inject.mjs';
 
 function requestFrame(methodCalls: any[], id = 'r7') {
@@ -274,6 +275,77 @@ describe('ws-proxy submission fault injection', () => {
     ));
     expect(applied).toEqual([
       { mode: 'LOSE', emailId: 'em-9', effect: 'responseBlanked', at: expect.any(Number) },
+    ]);
+  });
+});
+
+describe('ws-proxy draft fault injection', () => {
+  function draftCreate(marker: string) {
+    return requestFrame([[
+      'Email/set',
+      {
+        create: {
+          draft: {
+            keywords: { $draft: true },
+            subject: `Probe ${marker}`,
+          },
+        },
+      },
+      'dc1',
+    ]], 'draft-create');
+  }
+
+  it('forwards a draft create and blanks its successful response once', () => {
+    const applied: any[] = [];
+    const injector = createInjector({ applied });
+    expect(injector.onClientFrame(draftCreate(DRAFT_FAULTS.LOSE_CREATE)))
+      .toMatchObject({ action: 'forward', kind: 'LOSE_CREATE' });
+
+    const decision = injector.onServerFrame(responseFrame(
+      [['Email/set', { created: { draft: { id: 'draft-new' } } }, 'dc1']],
+      'draft-create',
+    ));
+
+    expect(decision).toMatchObject({ action: 'replace', kind: 'DRAFT_CREATE' });
+    expect(applied).toEqual([
+      {
+        mode: 'DRAFT_CREATE',
+        emailId: 'draft-new',
+        effect: 'responseBlanked',
+        at: expect.any(Number),
+      },
+    ]);
+  });
+
+  it('blanks the first cleanup response after a marked replacement', () => {
+    const applied: any[] = [];
+    const injector = createInjector({ applied });
+    injector.onClientFrame(draftCreate(DRAFT_FAULTS.LOSE_CLEANUP));
+    expect(injector.onServerFrame(responseFrame(
+      [['Email/set', { created: { draft: { id: 'draft-new' } } }, 'dc1']],
+      'draft-create',
+    ))).toEqual({ action: 'forward' });
+
+    const destroy = requestFrame([[
+      'Email/set',
+      { destroy: ['draft-old'] },
+      'dd1',
+    ]], 'draft-destroy');
+    expect(injector.onClientFrame(destroy))
+      .toMatchObject({ action: 'forward', kind: 'DRAFT_CLEANUP' });
+    const decision = injector.onServerFrame(responseFrame(
+      [['Email/set', { destroyed: ['draft-old'] }, 'dd1']],
+      'draft-destroy',
+    ));
+
+    expect(decision).toMatchObject({ action: 'replace', kind: 'DRAFT_CLEANUP' });
+    expect(applied).toEqual([
+      {
+        mode: 'DRAFT_CLEANUP',
+        emailId: 'predecessor',
+        effect: 'responseBlanked',
+        at: expect.any(Number),
+      },
     ]);
   });
 });

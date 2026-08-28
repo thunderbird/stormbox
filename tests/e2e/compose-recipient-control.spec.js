@@ -10,6 +10,7 @@ import {
 import {
   clearRecipients,
   composeSubject,
+  discardCompose,
   waitForIdentities,
   invalidRecipients,
   recipientAddresses,
@@ -32,7 +33,8 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 function sendButton(page) {
-  return page.locator('.compose-dialog button.primary', { hasText: /^Send$/ });
+  return page.locator('.compose-dialog--expanded')
+    .getByRole('button', { name: 'Send', exact: true });
 }
 
 async function openCompose(page) {
@@ -44,7 +46,7 @@ async function openCompose(page) {
 async function closeCompose(page) {
   const dialog = page.locator('.compose-dialog');
   if (await dialog.count() === 0) return;
-  await page.locator('.compose-dialog header button.icon').click().catch(() => {});
+  await discardCompose(page).catch(() => {});
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
 
@@ -195,8 +197,7 @@ test.describe('Recipient control', () => {
       await expect(page.locator('.compose-dialog #compose-to-status'))
         .toHaveText(/\d+ suggestions? available/);
 
-      await page.keyboard.press('ArrowDown');
-      await expect(field).toHaveAttribute('aria-activedescendant', /compose-to-option-\d+/);
+      await expect(field).toHaveAttribute('aria-activedescendant', 'compose-to-option-0');
       const active = await field.getAttribute('aria-activedescendant');
       await expect(page.locator(`#${active}`)).toHaveAttribute('aria-selected', 'true');
 
@@ -228,6 +229,46 @@ test.describe('Recipient control', () => {
     }
   });
 
+  test('names compose fields and traps focus in each modal layer', async ({ sharedPage: page }) => {
+    try {
+      await openCompose(page);
+      await expect(page.getByRole('textbox', { name: 'Subject' })).toBeVisible();
+      await expect(page.getByRole('textbox', { name: 'Message body' })).toBeVisible();
+      await expect(page.locator('.toolbar-dropdown:not([open]) .toolbar-more__menu').first())
+        .toBeHidden();
+
+      await sendButton(page).focus();
+      await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Minimize' })).toBeFocused();
+
+      await composeSubject(page).fill('Focus trap check');
+      await page.getByRole('button', { name: 'Close options' }).click();
+      const closeMenu = page.getByRole('menu', { name: 'Close options' });
+      expect(await closeMenu.getByRole('menuitem').allTextContents())
+        .toEqual(['Discard', 'Save Draft']);
+      await page.keyboard.press('Escape');
+      await expect(closeMenu).toBeHidden();
+
+      await page.getByRole('button', { name: 'Minimize' }).click();
+      await page.getByRole('button', { name: 'Close Focus trap check' }).click();
+      const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
+      const cancel = prompt.getByRole('button', { name: 'Cancel' });
+      await expect(prompt.getByRole('heading', { name: 'Save this draft?' })).toBeFocused();
+      await expect(cancel).not.toBeFocused();
+
+      await page.keyboard.press('Tab');
+      await expect(cancel).toBeFocused();
+
+      await prompt.getByRole('button', { name: 'Save draft' }).focus();
+      await page.keyboard.press('Tab');
+      await expect(cancel).toBeFocused();
+      await prompt.getByRole('button', { name: "Don't Save" }).click();
+      await expect(page.locator('.compose-dialog')).toBeHidden();
+    } finally {
+      await closeCompose(page);
+    }
+  });
+
   test('leaves Escape able to close the message', async ({ sharedPage: page }) => {
     // A list left open on a field the user has moved away from used to make
     // the whole dialog unclosable: the shortcut handler stands down for an
@@ -253,6 +294,9 @@ test.describe('Recipient control', () => {
       ).toHaveCount(0);
 
       await page.keyboard.press('Escape');
+      const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
+      await expect(prompt).toBeVisible();
+      await prompt.getByRole('button', { name: "Don't Save" }).click();
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 10_000 });
     } finally {
       await closeCompose(page);
