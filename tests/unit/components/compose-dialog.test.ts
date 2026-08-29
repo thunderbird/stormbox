@@ -23,29 +23,6 @@ import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
 
-function firstTextNode(node) {
-  if (node.nodeType === Node.TEXT_NODE) return node;
-  for (const child of node.childNodes) {
-    const match = firstTextNode(child);
-    if (match) return match;
-  }
-  return null;
-}
-
-function selectEditorText(editor, start = 0, end = 5) {
-  const text = firstTextNode(editor);
-  expect(text?.nodeValue).toBeTruthy();
-
-  editor.focus();
-  const range = document.createRange();
-  range.setStart(text, start);
-  range.setEnd(text, end);
-
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-
 async function mountOpenCompose(htmlBody = 'hello world') {
   const composeStore = useComposeStore();
   composeStore.identities = [{
@@ -60,28 +37,6 @@ async function mountOpenCompose(htmlBody = 'hello world') {
   return { wrapper, composeStore };
 }
 
-async function pasteImageIntoEditor(editor, composeStore) {
-  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-  const file = new File([bytes], 'paste.png', { type: 'image/png' });
-  const clipboardData = {
-    items: [{ kind: 'file', type: 'image/png', getAsFile: () => file }],
-    types: ['Files'],
-    getData: () => '',
-  };
-  // Squire's real paste handler detects the image-only clipboard,
-  // preventDefaults, and fires its 'pasteImage' custom event, which our
-  // component listens for. Drive that whole path with a paste event.
-  const pasteEvent = new window.Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(pasteEvent, 'clipboardData', { value: clipboardData });
-  editor.dispatchEvent(pasteEvent);
-
-  // FileReader.readAsDataURL is async; poll until the draft picks it up.
-  for (let i = 0; i < 50 && !/<img[^>]+src="data:image\/png/i.test(composeStore.draft.htmlBody); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await nextTick();
-  }
-}
-
 beforeEach(() => {
   setActivePinia(createPinia());
   __resetRepositoryForTests();
@@ -93,8 +48,8 @@ afterEach(() => {
   __resetRepositoryForTests();
 });
 
-describe('ComposeDialog rich text toolbar', () => {
-  it('initializes Squire when compose opens after the component is already mounted', async () => {
+describe('ComposeDialog rich text integration', () => {
+  it('mounts the editor after opening and syncs paired body values', async () => {
     const composeStore = useComposeStore();
     composeStore.identities = [{
       id: 1,
@@ -103,202 +58,128 @@ describe('ComposeDialog rich text toolbar', () => {
     } as any];
 
     const wrapper = mount(ComposeDialog, { attachTo: document.body });
+    const touchSession = vi.spyOn(composeStore, 'touchSession');
     composeStore.open({ htmlBody: 'hello world' });
     await nextTick();
     await nextTick();
 
-    const editor = wrapper.get('.editor').element;
-    selectEditorText(editor);
-    await wrapper.get('[aria-label="Bold"]').trigger('pointerdown');
-    await wrapper.get('[aria-label="Bold"]').trigger('click');
+    expect(touchSession).not.toHaveBeenCalled();
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    editor.innerHTML = '<div>first line<br>second line</div><div>third line</div>';
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
 
-    expect(composeStore.draft.htmlBody).toMatch(/<b\b[^>]*>hello<\/b>/i);
+    expect(composeStore.draft.htmlBody)
+      .toBe('<div>first line<br>second line</div><div>third line</div>');
+    expect(composeStore.draft.textBody).toBe('first line\nsecond line\nthird line');
+    expect(touchSession).toHaveBeenCalledTimes(1);
+    expect(touchSession).toHaveBeenCalledWith(composeStore.activeSessionId);
   });
 
-  it('applies inline formatting to the selected editor text from toolbar buttons', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose();
-    const editor = wrapper.get('.editor').element;
-
-    selectEditorText(editor);
-    await wrapper.get('[aria-label="Bold"]').trigger('pointerdown');
-    await wrapper.get('[aria-label="Bold"]').trigger('click');
-    await nextTick();
-
-    expect(composeStore.draft.htmlBody).toMatch(/<b\b[^>]*>hello<\/b>/i);
-  });
-
-  it('depresses toolbar buttons when selected text already has that format', async () => {
-    const { wrapper } = await mountOpenCompose('<p><b>hello</b> world</p>');
-    const editor = wrapper.get('.editor').element;
-
-    selectEditorText(editor);
-    await nextTick();
-
-    expect(wrapper.get('[aria-label="Bold"]').classes()).toContain('active');
-  });
-
-  it('formats root-level text typed into an empty editor', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose('');
-    const editor = wrapper.get('.editor').element;
-    editor.textContent = 'hello world';
-
-    selectEditorText(editor);
-    await wrapper.get('[aria-label="Bold"]').trigger('pointerdown');
-    await wrapper.get('[aria-label="Bold"]').trigger('click');
-    await nextTick();
-
-    expect(composeStore.draft.htmlBody).toMatch(/<div><b\b[^>]*>hello<\/b> world<\/div>/i);
-  });
-
-  it('keeps the selected range when applying color controls', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose();
-    const editor = wrapper.get('.editor').element;
-    const colorInput = wrapper.get('input[aria-label="Text color"]');
-
-    selectEditorText(editor);
-    await colorInput.trigger('pointerdown');
-    (colorInput.element as HTMLInputElement).value = '#ff0000';
-    await colorInput.trigger('input');
-    await nextTick();
-
-    expect(composeStore.draft.htmlBody).toContain('color:#ff0000');
-    expect(composeStore.draft.htmlBody).toContain('hello');
-  });
-
-  it('supports basic word-style keyboard shortcuts', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose();
-    const editor = wrapper.get('.editor').element;
-
-    selectEditorText(editor);
-    const event = new window.KeyboardEvent('keydown', {
-      key: 'i',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    editor.dispatchEvent(event);
-    await nextTick();
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(composeStore.draft.htmlBody).toMatch(/<i\b[^>]*>hello<\/i>/i);
-    expect(wrapper.get('[aria-label="Italic"]').classes()).toContain('active');
-  });
-
-  it('advertises every formatting command that has a keyboard shortcut', async () => {
-    const { wrapper } = await mountOpenCompose();
-    const shortcuts = [
-      ['Bold', 'Control+B', 'Bold (Ctrl+B)'],
-      ['Italic', 'Control+I', 'Italic (Ctrl+I)'],
-      ['Underline', 'Control+U', 'Underline (Ctrl+U)'],
-      ['Insert or remove link', 'Control+K', 'Insert or remove link (Ctrl+K)'],
-      ['Undo', 'Control+Z', 'Undo (Ctrl+Z)'],
-      [
-        'Redo',
-        'Control+Y Control+Shift+Z',
-        'Redo (Ctrl+Y / Ctrl+Shift+Z)',
-      ],
+  it('updates the mounted editor in place when From replaces a signature', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [
+      {
+        id: 1,
+        remote_id: 'first',
+        name: 'First',
+        email: 'first@example.com',
+        bcc: [{ name: 'First archive', email: 'first-archive@example.com' }],
+        html_signature: '<p>First signature</p>',
+        text_signature: 'First signature',
+      } as any,
+      {
+        id: 2,
+        remote_id: 'second',
+        name: 'Second',
+        email: 'second@example.com',
+        bcc: [{ name: 'Second archive', email: 'second-archive@example.com' }],
+        html_signature: '<p>Second signature</p>',
+        text_signature: 'Second signature',
+      } as any,
     ];
-
-    shortcuts.forEach(([label, ariaKeyShortcuts, title]) => {
-      const control = wrapper.get(`[aria-label="${label}"]`);
-      expect(control.attributes('aria-keyshortcuts')).toBe(ariaKeyShortcuts);
-      expect(control.attributes('title')).toBe(title);
-    });
-  });
-
-  it('advertises macOS shortcuts with the Command modifier', async () => {
-    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
-    try {
-      const { wrapper } = await mountOpenCompose();
-
-      expect(wrapper.get('[aria-label="Bold"]').attributes()).toMatchObject({
-        'aria-keyshortcuts': 'Meta+B',
-        title: 'Bold (⌘+B)',
-      });
-      expect(wrapper.get('[aria-label="Redo"]').attributes()).toMatchObject({
-        'aria-keyshortcuts': 'Meta+Y Meta+Shift+Z',
-        title: 'Redo (⌘+Y / ⌘+Shift+Z)',
-      });
-    } finally {
-      platform.mockRestore();
-    }
-  });
-
-  it('inlines a pasted image as a data: URL via the squire pasteImage hook', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose('<p>hello</p>');
+    const sessionId = composeStore.open({ fromIdx: 0 });
+    const wrapper = mount(ComposeDialog, { attachTo: document.body });
+    await nextTick();
     const editor = wrapper.get('.editor').element as HTMLElement;
-
-    await pasteImageIntoEditor(editor, composeStore);
-
-    expect(composeStore.draft.htmlBody).toMatch(/<img[^>]+src="data:image\/png;base64,/i);
-    // Pasted images default to centered, applied to the containing block
-    // (text-align) so the toolbar alignment buttons can re-align them.
-    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*center/i);
-  });
-
-  it('re-aligns a pasted image with the toolbar alignment buttons', async () => {
-    const { wrapper, composeStore } = await mountOpenCompose('<p>hello</p>');
-    const editor = wrapper.get('.editor').element as HTMLElement;
-
-    await pasteImageIntoEditor(editor, composeStore);
-    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*center/i);
-
-    await wrapper.get('[aria-label="Align right"]').trigger('pointerdown');
-    await wrapper.get('[aria-label="Align right"]').trigger('click');
+    editor.innerHTML = editor.innerHTML.replace(
+      '<div><br></div>',
+      '<p>User paragraph</p>',
+    );
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
+    const userText = editor.querySelector('p')!.firstChild!;
+    editor.focus();
+    const range = document.createRange();
+    range.setStart(userText, 4);
+    range.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
 
-    expect(composeStore.draft.htmlBody).toMatch(/text-align:\s*right/i);
-    expect(composeStore.draft.htmlBody).not.toMatch(/text-align:\s*center/i);
-  });
-
-  it('opens one toolbar dropdown at a time', async () => {
-    // Font, Size, and More are AppDropdowns in the default group, so
-    // opening any of them closes whichever was open.
-    const { wrapper } = await mountOpenCompose();
-    const dropdowns = wrapper.get('.compose-toolbar').findAll('details');
-    expect(dropdowns.length).toBeGreaterThanOrEqual(3);
-    const [font, size] = dropdowns;
-
-    font.element.open = true;
-    await font.trigger('toggle');
-    size.element.open = true;
-    await size.trigger('toggle');
-
-    expect(size.element.open).toBe(true);
-    expect(font.element.open, 'opening Size closed Font').toBe(false);
-  });
-
-  it('moves rightmost toolbar groups into More as width shrinks', async () => {
-    const { wrapper } = await mountOpenCompose();
-    const toolbar = wrapper.get('.compose-toolbar').element;
-    const groupWidths = {
-      style: 116,
-      font: 180,
-      insert: 70,
-      lists: 130,
-      alignment: 130,
-    };
-
-    Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 500 });
-    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
-      group.getBoundingClientRect = () => ({
-        width: groupWidths[group.dataset.toolbarGroup as keyof typeof groupWidths],
-      } as DOMRect);
-    });
-    (wrapper.get('.toolbar-more').element as any).getBoundingClientRect = () => ({ width: 70 } as DOMRect);
-
-    window.dispatchEvent(new Event('resize'));
+    composeStore.selectFromIndex(1, sessionId);
     await nextTick();
     await nextTick();
 
-    expect(wrapper.find('[data-toolbar-group="alignment"]').exists()).toBe(false);
-    expect(wrapper.find('[data-toolbar-group="lists"]').exists()).toBe(false);
-    expect(wrapper.find('[data-toolbar-group="insert"]').exists()).toBe(true);
-    // Scoped to the More control: the font and size dropdowns reuse the
-    // same menu classes for their own popups.
-    expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Align left');
-    expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Bulleted list');
+    expect(wrapper.get('.editor').element).toBe(editor);
+    expect(editor.innerHTML).toContain('Second signature');
+    expect(editor.innerHTML).not.toContain('First signature');
+    expect(document.activeElement).toBe(editor);
+    expect(selection.anchorNode).toBe(userText);
+    expect(selection.anchorOffset).toBe(4);
+    expect(composeStore.draft.bcc).toEqual([
+      { name: 'Second archive', email: 'second-archive@example.com' },
+    ]);
+    expect(composeStore.draft.htmlBody).not.toContain('data-stormbox-');
+  });
+
+  it('does not reset an unrelated minimized editor on a From change', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [
+      {
+        id: 1,
+        remote_id: 'first',
+        name: 'First',
+        email: 'first@example.com',
+        bcc: [],
+        html_signature: '<p>First signature</p>',
+        text_signature: 'First signature',
+      } as any,
+      {
+        id: 2,
+        remote_id: 'second',
+        name: 'Second',
+        email: 'second@example.com',
+        bcc: [],
+        html_signature: '<p>Second signature</p>',
+        text_signature: 'Second signature',
+      } as any,
+    ];
+    const firstId = composeStore.open({ fromIdx: 0, subject: 'Minimized' });
+    const secondId = composeStore.open({ fromIdx: 0, subject: 'Expanded' });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+    const dialogFor = (title: string) => wrapper.findAll('.compose-dialog')
+      .find((dialog) => dialog.get('h2').text() === title)!;
+    const minimizedEditor = dialogFor('Minimized').get('.editor').element as HTMLElement;
+    const expandedEditor = dialogFor('Expanded').get('.editor').element as HTMLElement;
+    minimizedEditor.innerHTML = minimizedEditor.innerHTML.replace(
+      '<div><br></div>',
+      '<p>Minimized user text</p>',
+    );
+    minimizedEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    const minimizedHtml = minimizedEditor.innerHTML;
+
+    composeStore.selectFromIndex(1, secondId);
+    await nextTick();
+    await nextTick();
+
+    expect(composeStore.sessionById(firstId)?.presentation).toBe('minimized');
+    expect(dialogFor('Minimized').get('.editor').element).toBe(minimizedEditor);
+    expect(minimizedEditor.innerHTML).toBe(minimizedHtml);
+    expect(dialogFor('Expanded').get('.editor').element).toBe(expandedEditor);
+    expect(expandedEditor.innerHTML).toContain('Second signature');
   });
 });
 
@@ -533,7 +414,6 @@ describe('ComposeDialog recipient fields', () => {
       remote_id: 'page-row',
       addressbook_ids: [10],
       display_name: 'Page row',
-      organization: null,
       email: 'page@example.com',
     }];
     const sharedContacts = contactsStore.contacts;
@@ -543,7 +423,6 @@ describe('ComposeDialog recipient fields', () => {
         remote_id: 'browse-row',
         addressbook_ids: [10],
         display_name: 'Browse row',
-        organization: null,
         email: 'browse@example.com',
       }]),
     });
@@ -568,7 +447,6 @@ describe('ComposeDialog recipient fields', () => {
         remote_id: 'zed',
         addressbook_ids: [10],
         display_name: 'Zed',
-        organization: null,
         email: 'zed@example.com',
       },
       {
@@ -576,7 +454,6 @@ describe('ComposeDialog recipient fields', () => {
         remote_id: 'no-address',
         addressbook_ids: [10],
         display_name: 'No address',
-        organization: null,
         email: null,
       },
       {
@@ -584,7 +461,6 @@ describe('ComposeDialog recipient fields', () => {
         remote_id: 'ada',
         addressbook_ids: [10],
         display_name: 'Ada',
-        organization: null,
         email: 'ada@example.com',
       },
     ]);
@@ -774,11 +650,10 @@ describe('ComposeDialog accessibility', () => {
     await flushPromises();
     const prompt = wrapper.get('[role="alertdialog"]');
     const promptButtons = prompt.findAll('button');
-    const promptTitle = prompt.get('#compose-close-title');
-    expect(document.activeElement).toBe(promptTitle.element);
+    expect(document.activeElement).toBe(prompt.element);
     expect(promptButtons.some((button) => button.element === document.activeElement)).toBe(false);
 
-    promptTitle.element.dispatchEvent(new KeyboardEvent('keydown', {
+    prompt.element.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Tab',
       bubbles: true,
       cancelable: true,
@@ -796,8 +671,10 @@ describe('ComposeDialog accessibility', () => {
     expect(dialog.attributes('role')).toBe('dialog');
   });
 
-  it('shows initial action focus when Close is activated from the keyboard', async () => {
+  it('does not visually preselect an action when Close is activated from the keyboard', async () => {
     const { wrapper, composeStore } = await mountOpenCompose();
+    const sessionId = composeStore.activeSessionId;
+    const save = vi.spyOn(composeStore, 'saveAndClose').mockResolvedValue(true);
     await wrapper.get('#compose-subject').setValue('Unsaved');
     const close = wrapper.get('[aria-label="Close options"]');
 
@@ -807,7 +684,15 @@ describe('ComposeDialog accessibility', () => {
     await flushPromises();
 
     const prompt = wrapper.get('[role="alertdialog"]');
-    expect(document.activeElement).toBe(prompt.findAll('button')[0].element);
+    expect(document.activeElement).toBe(prompt.element);
+    expect(prompt.findAll('button').some((button) =>
+      button.element === document.activeElement)).toBe(false);
+    prompt.element.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    }));
+    expect(save).toHaveBeenCalledWith(sessionId);
   });
 });
 
@@ -831,6 +716,48 @@ describe('ComposeManager window presentation', () => {
     expect(composeStore.activeSessionId).toBe(firstId);
     expect(composeStore.sessionById(secondId)?.presentation).toBe('minimized');
     expect(wrapper.get('.compose-dialog--expanded h2').text()).toBe('First draft');
+    wrapper.unmount();
+    composeStore.$reset();
+  });
+
+  it('keeps body state and draft sync isolated while switching sessions', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const firstId = composeStore.open({
+      subject: 'First draft',
+      htmlBody: '<p>First body</p>',
+    });
+    const secondId = composeStore.open({
+      subject: 'Second draft',
+      htmlBody: '<p>Second body</p>',
+    });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+    const dialogFor = (title: string) => wrapper.findAll('.compose-dialog')
+      .find((dialog) => dialog.get('h2').text() === title)!;
+    const firstEditor = dialogFor('First draft').get('.editor').element as HTMLElement;
+    const secondEditor = dialogFor('Second draft').get('.editor').element as HTMLElement;
+
+    secondEditor.innerHTML = '<div>Second edit</div>';
+    secondEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    expect(composeStore.sessionById(secondId)?.draft).toMatchObject({
+      htmlBody: '<div>Second edit</div>',
+      textBody: secondEditor.innerText,
+    });
+    expect(composeStore.sessionById(firstId)?.draft.htmlBody).toBe('<p>First body</p>');
+
+    await wrapper.get('[aria-label="Restore First draft"]').trigger('click');
+    await nextTick();
+    expect(wrapper.get('.compose-dialog--expanded .editor').element).toBe(firstEditor);
+    expect(firstEditor.innerHTML).toContain('First body');
+    expect(secondEditor.isConnected).toBe(true);
+
+    firstEditor.innerHTML = '<div>First edit</div>';
+    firstEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    expect(composeStore.sessionById(firstId)?.draft.textBody).toBe(firstEditor.innerText);
+    expect(composeStore.sessionById(secondId)?.draft.htmlBody).toBe('<div>Second edit</div>');
     wrapper.unmount();
     composeStore.$reset();
   });
@@ -868,6 +795,31 @@ describe('ComposeManager window presentation', () => {
 
     expect(composeStore.sessionById(sessionId)).toBeNull();
     expect(wrapper.find('[role="menu"]').exists()).toBe(false);
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false);
+  });
+
+  it('treats automatic Bcc and signature defaults as empty for the X', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{
+      id: 1,
+      remote_id: 'sender',
+      name: 'Sender',
+      email: 'sender@example.com',
+      bcc: [{ name: 'Archive', email: 'archive@example.com' }],
+      html_signature: '<p>Automatic signature</p>',
+      text_signature: 'Automatic signature',
+    } as any];
+    const sessionId = composeStore.open();
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    await nextTick();
+    await flushPromises();
+
+    expect(wrapper.find('[aria-label="Close"]').exists()).toBe(true);
+    expect(wrapper.findAll('.pill__text').map((pill) => pill.text())).toContain('Archive');
+    await wrapper.get('[aria-label="Close"]').trigger('click');
+    await nextTick();
+
+    expect(composeStore.sessionById(sessionId)).toBeNull();
     expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false);
   });
 

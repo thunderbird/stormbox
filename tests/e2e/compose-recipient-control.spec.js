@@ -68,7 +68,7 @@ async function seedFindableContact(page, word) {
   const email = `${word.toLowerCase()}-${stamp}@example.org`;
   await page.getByRole('button', { name: 'Contacts', exact: true }).click();
   await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'Add contact' }).click();
+  await page.getByRole('button', { name: 'New Contact' }).click();
   const form = page.locator('.contacts__form');
   await expect(form).toBeVisible();
   await form.locator('input[type="text"]').first().fill(name);
@@ -83,8 +83,14 @@ async function seedFindableContact(page, word) {
 /** Undo `seedFindableContact`; the shared session resets, the server does not. */
 async function forgetContact(page, name) {
   await page.getByRole('button', { name: 'Contacts', exact: true }).click().catch(() => {});
-  await page.locator('.contacts__row').filter({ hasText: name })
-    .getByRole('button', { name: /^Remove / })
+  const row = page.locator('.contacts__row').filter({ hasText: name });
+  await row.click({ timeout: 10_000 }).catch(() => {});
+  await page.locator('.contact-detail')
+    .getByRole('button', { name: 'Delete', exact: true })
+    .click({ timeout: 10_000 })
+    .catch(() => {});
+  await page.getByRole('alertdialog')
+    .getByRole('button', { name: 'Delete', exact: true })
     .click({ timeout: 10_000 })
     .catch(() => {});
   await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
@@ -357,7 +363,7 @@ test.describe('Recipient control', () => {
     try {
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
       await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'Add contact' }).click();
+      await page.getByRole('button', { name: 'New Contact' }).click();
       const form = page.locator('.contacts__form');
       await expect(form).toBeVisible();
       await form.locator('input[type="text"]').first().fill(contactName);
@@ -404,8 +410,14 @@ test.describe('Recipient control', () => {
       // session is reset per test but the server's cards are not.
       await page.getByRole('button', { name: 'Contacts', exact: true }).click()
         .catch(() => {});
-      await page.locator('.contacts__row').filter({ hasText: contactName })
-        .getByRole('button', { name: /^Remove / })
+      const contactRow = page.locator('.contacts__row').filter({ hasText: contactName });
+      await contactRow.click({ timeout: 10_000 }).catch(() => {});
+      await page.locator('.contact-detail')
+        .getByRole('button', { name: 'Delete', exact: true })
+        .click({ timeout: 10_000 })
+        .catch(() => {});
+      await page.getByRole('alertdialog')
+        .getByRole('button', { name: 'Delete', exact: true })
         .click({ timeout: 10_000 })
         .catch(() => {});
       await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});

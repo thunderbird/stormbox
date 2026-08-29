@@ -43,6 +43,20 @@ import { addressKey } from '../utils/address-key';
 import { isInlineImageType } from '../utils/message-html';
 import { makeMessageId, makeOperationId } from '../utils/message-id';
 import { editSafeDraftHtml } from '../utils/compose-html';
+import { textSignatureToHtml } from '../utils/identity-fields';
+import { sanitizeRichTextHtml } from '../utils/rich-text';
+import {
+  IDENTITY_SIGNATURE_ORIGIN,
+  insertBeforeQuotedContent,
+  removeTrackedOriginRegion,
+  replaceTrackedOriginHtml,
+  stripInternalProvenanceHtml,
+  trackedHtmlPlainText,
+  trackedOriginState,
+  wrapQuotedContent,
+  wrapTrackedOrigin,
+  type TrackedOriginState,
+} from '../utils/compose-provenance';
 
 export type RecipientField = 'to' | 'cc' | 'bcc';
 
@@ -76,6 +90,7 @@ export interface Draft {
   to: ParsedAddress[];
   cc: ParsedAddress[];
   bcc: ParsedAddress[];
+  replyTo: ParsedAddress[];
   subject: string;
   textBody: string;
   htmlBody: string;
@@ -96,6 +111,7 @@ function emptyDraft(): Draft {
     to: [],
     cc: [],
     bcc: [],
+    replyTo: [],
     subject: '',
     textBody: '',
     htmlBody: '',
@@ -112,6 +128,37 @@ export const COMPOSE_PRESENTATION = {
 
 export type ComposePresentation =
   (typeof COMPOSE_PRESENTATION)[keyof typeof COMPOSE_PRESENTATION];
+
+export const COMPOSE_OPEN_ORIGIN = {
+  NEW: 'new',
+  REPLY: 'reply',
+  REPLY_ALL: 'reply-all',
+  FORWARD: 'forward',
+  SERVER_DRAFT: 'server-draft',
+} as const;
+
+export type ComposeOpenOrigin =
+  (typeof COMPOSE_OPEN_ORIGIN)[keyof typeof COMPOSE_OPEN_ORIGIN];
+
+export type ComposeOpenOptions =
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.NEW }
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.REPLY }
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.REPLY_ALL }
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.FORWARD }
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.SERVER_DRAFT };
+
+export interface AutomaticBccOrigin {
+  slot: number;
+  address: ParsedAddress;
+  touched: boolean;
+}
+
+export interface AutomaticSignatureOrigin {
+  id: typeof IDENTITY_SIGNATURE_ORIGIN;
+  html: string;
+  text: string;
+  touched: boolean;
+}
 
 export interface ConfirmedDraftRevision {
   emailId: string;
@@ -144,6 +191,12 @@ export interface ComposeSession {
   failedSaveMutationId: number | null;
   failedSaveSeedJson: string | null;
   failedSaveRequest: Record<string, any> | null;
+  openOrigin: ComposeOpenOrigin;
+  automaticBccOrigins: AutomaticBccOrigin[];
+  automaticSignatureOrigin: AutomaticSignatureOrigin | null;
+  editorHtmlBody: string;
+  bodyVersion: number;
+  recipientVersion: number;
 }
 
 function hasInvalidRecipientPills(session: ComposeSession): boolean {
@@ -152,6 +205,10 @@ function hasInvalidRecipientPills(session: ComposeSession): boolean {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled compose presentation: ${String(value)}`);
+}
+
+function assertNeverOpenOrigin(value: never): never {
+  throw new Error(`Unhandled compose open origin: ${String(value)}`);
 }
 
 export function isExpandedPresentation(presentation: ComposePresentation): boolean {
@@ -179,10 +236,129 @@ function cloneDraft(prefill: Partial<Draft> = {}): Draft {
     to: [...(prefill.to ?? [])].map((entry) => ({ ...entry })),
     cc: [...(prefill.cc ?? [])].map((entry) => ({ ...entry })),
     bcc: [...(prefill.bcc ?? [])].map((entry) => ({ ...entry })),
+    replyTo: [...(prefill.replyTo ?? [])].map((entry) => ({ ...entry })),
     attachments: [...(prefill.attachments ?? [])].map((attachment) => ({ ...attachment })),
     inReplyTo: [...(prefill.inReplyTo ?? [])],
     references: [...(prefill.references ?? [])],
   };
+}
+
+function identityAddress(entry: { name: string | null; email: string }): ParsedAddress {
+  return {
+    ...(entry.name !== null ? { name: entry.name } : {}),
+    email: entry.email,
+  };
+}
+
+function sameAutomaticAddress(
+  left: Pick<ParsedAddress, 'name' | 'email'>,
+  right: Pick<ParsedAddress, 'name' | 'email'>,
+): boolean {
+  return addressKey(left.email) === addressKey(right.email)
+    && (left.name ?? null) === (right.name ?? null);
+}
+
+function sameRecipientEntry(left: RecipientEntry, right: RecipientEntry): boolean {
+  if ('invalid' in left || 'invalid' in right) {
+    return 'invalid' in left && 'invalid' in right && left.text === right.text;
+  }
+  return sameAutomaticAddress(left, right);
+}
+
+function sameRecipientEntries(
+  left: readonly RecipientEntry[],
+  right: readonly RecipientEntry[],
+): boolean {
+  return left.length === right.length
+    && left.every((entry, index) => sameRecipientEntry(entry, right[index]));
+}
+
+function identityBcc(identity: IdentityRow | null): ParsedAddress[] {
+  return (identity?.bcc ?? [])
+    .filter((entry) => !!addressKey(entry.email))
+    .map(identityAddress);
+}
+
+interface IdentitySignatureDefault {
+  html: string;
+  text: string;
+}
+
+function identitySignature(identity: IdentityRow | null): IdentitySignatureDefault | null {
+  if (!identity) return null;
+  const text = identity.text_signature ?? '';
+  const storedHtml = stripInternalProvenanceHtml(identity.html_signature ?? '');
+  const sourceHtml = storedHtml.trim() ? storedHtml : textSignatureToHtml(text);
+  const html = sanitizeRichTextHtml(sourceHtml);
+  return html.trim() || text ? { html, text } : null;
+}
+
+function originAllowsIdentityDefaults(origin: ComposeOpenOrigin): boolean {
+  switch (origin) {
+    case COMPOSE_OPEN_ORIGIN.NEW:
+    case COMPOSE_OPEN_ORIGIN.REPLY:
+    case COMPOSE_OPEN_ORIGIN.REPLY_ALL:
+    case COMPOSE_OPEN_ORIGIN.FORWARD:
+      return true;
+    case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
+      return false;
+    default:
+      return assertNeverOpenOrigin(origin);
+  }
+}
+
+function editorHtmlForOpen(html: string, origin: ComposeOpenOrigin): string {
+  const clean = stripInternalProvenanceHtml(html);
+  switch (origin) {
+    case COMPOSE_OPEN_ORIGIN.NEW:
+    case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
+      return clean;
+    case COMPOSE_OPEN_ORIGIN.REPLY:
+    case COMPOSE_OPEN_ORIGIN.REPLY_ALL:
+    case COMPOSE_OPEN_ORIGIN.FORWARD:
+      return clean ? `<div><br></div>${wrapQuotedContent(clean)}` : clean;
+    default:
+      return assertNeverOpenOrigin(origin);
+  }
+}
+
+function initialTextWithSignature(
+  text: string,
+  signature: IdentitySignatureDefault,
+  origin: ComposeOpenOrigin,
+): string {
+  if (!signature.text) return text;
+  switch (origin) {
+    case COMPOSE_OPEN_ORIGIN.NEW:
+      return text ? `${text.replace(/\n*$/u, '')}\n\n${signature.text}` : signature.text;
+    case COMPOSE_OPEN_ORIGIN.REPLY:
+    case COMPOSE_OPEN_ORIGIN.REPLY_ALL:
+    case COMPOSE_OPEN_ORIGIN.FORWARD:
+      return `${signature.text}${text}`;
+    case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
+      return text;
+    default:
+      return assertNeverOpenOrigin(origin);
+  }
+}
+
+function signatureTextOccurrence(
+  text: string,
+  signatureText: string,
+  origin: ComposeOpenOrigin,
+): number {
+  switch (origin) {
+    case COMPOSE_OPEN_ORIGIN.NEW:
+      return text.lastIndexOf(signatureText);
+    case COMPOSE_OPEN_ORIGIN.REPLY:
+    case COMPOSE_OPEN_ORIGIN.REPLY_ALL:
+    case COMPOSE_OPEN_ORIGIN.FORWARD:
+      return text.indexOf(signatureText);
+    case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
+      return -1;
+    default:
+      return assertNeverOpenOrigin(origin);
+  }
 }
 
 function emptyRejectedRecipients(): Record<RecipientField, string[]> {
@@ -206,19 +382,29 @@ function parseStringArray(value: string | null | undefined): string[] {
  * should go. Stored as JSON since it is a list.
  */
 function identityReplyTo(identity: IdentityRow): ParsedAddress[] {
-  if (!identity.reply_to_json) return [];
-  try {
-    const parsed = JSON.parse(identity.reply_to_json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((entry) => entry && typeof entry.email === 'string')
-      .map((entry) => ({
-        ...(typeof entry.name === 'string' && entry.name.trim() ? { name: entry.name } : {}),
-        email: entry.email,
-      }));
-  } catch {
-    return [];
-  }
+  return (identity.reply_to ?? []).map((entry) => ({
+    ...(entry.name ? { name: entry.name } : {}),
+    email: entry.email,
+  }));
+}
+
+function sameAddressDefaults(
+  left: readonly ParsedAddress[],
+  right: readonly ParsedAddress[],
+): boolean {
+  return left.length === right.length
+    && left.every((address, index) => sameAutomaticAddress(address, right[index]));
+}
+
+function sameIdentitySignatureDefault(
+  left: IdentityRow | null,
+  right: IdentityRow | null,
+): boolean {
+  if (!left || !right) return left === right;
+  const leftSignature = identitySignature(left);
+  const rightSignature = identitySignature(right);
+  return leftSignature?.html === rightSignature?.html
+    && leftSignature?.text === rightSignature?.text;
 }
 
 const FROM_IDENTITY_STORAGE_PREFIX = 'stormbox.compose.fromIdentity';
@@ -466,8 +652,316 @@ export const useComposeStore = defineStore('compose', () => {
     return identities.value[session.draft.fromIdx] ?? identities.value[0] ?? null;
   }
 
+  function replyToForSession(
+    session: ComposeSession,
+    identity: IdentityRow | null,
+  ): ParsedAddress[] {
+    switch (session.openOrigin) {
+      case COMPOSE_OPEN_ORIGIN.NEW:
+      case COMPOSE_OPEN_ORIGIN.REPLY:
+      case COMPOSE_OPEN_ORIGIN.REPLY_ALL:
+      case COMPOSE_OPEN_ORIGIN.FORWARD:
+        return identity ? identityReplyTo(identity) : [];
+      case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
+        return session.draft.replyTo.map((address) => ({ ...address }));
+      default:
+        return assertNeverOpenOrigin(session.openOrigin);
+    }
+  }
+
+  function reconcileAutomaticBccOrigins(
+    session: ComposeSession,
+    entries: readonly RecipientEntry[],
+  ): void {
+    for (const origin of session.automaticBccOrigins) {
+      if (origin.touched) continue;
+      const remainsExact = entries.some(
+        (entry) => 'email' in entry && sameAutomaticAddress(entry, origin.address),
+      );
+      if (!remainsExact) origin.touched = true;
+    }
+  }
+
+  function replaceAutomaticBccDefaults(
+    session: ComposeSession,
+    identity: IdentityRow | null,
+  ): boolean {
+    const current = session.recipientEntriesByField.bcc;
+    reconcileAutomaticBccOrigins(session, current);
+    const defaults = identityBcc(identity);
+    const originsBySlot = new Map(
+      session.automaticBccOrigins.map((origin) => [origin.slot, origin]),
+    );
+    const claimedOriginSlots = new Set<number>();
+    const automaticEntrySlots = new Map<number, number>();
+
+    for (let entryIndex = 0; entryIndex < current.length; entryIndex += 1) {
+      const entry = current[entryIndex];
+      if (!('email' in entry)) continue;
+      const origin = session.automaticBccOrigins.find((candidate) =>
+        !candidate.touched
+        && !claimedOriginSlots.has(candidate.slot)
+        && sameAutomaticAddress(entry, candidate.address));
+      if (!origin) continue;
+      claimedOriginSlots.add(origin.slot);
+      automaticEntrySlots.set(entryIndex, origin.slot);
+    }
+
+    const manualEntries = current
+      .filter((_, index) => !automaticEntrySlots.has(index))
+      .map((entry) => ({ ...entry }));
+    const firstAutomaticIndex = automaticEntrySlots.size > 0
+      ? Math.min(...automaticEntrySlots.keys())
+      : current.length;
+    const insertionIndex = current
+      .slice(0, firstAutomaticIndex)
+      .filter((_, index) => !automaticEntrySlots.has(index))
+      .length;
+    const occupied = new Set<string>();
+    for (const field of ['to', 'cc'] as const) {
+      for (const address of session.draft[field]) occupied.add(addressKey(address.email));
+    }
+    for (const entry of manualEntries) {
+      if ('email' in entry) occupied.add(addressKey(entry.email));
+    }
+
+    const nextOrigins: AutomaticBccOrigin[] = session.automaticBccOrigins
+      .filter((origin) => origin.touched)
+      .map((origin) => ({
+        slot: origin.slot,
+        address: { ...origin.address },
+        touched: true,
+      }));
+    const automaticEntries: RecipientEntry[] = [];
+    for (let slot = 0; slot < defaults.length; slot += 1) {
+      if (originsBySlot.get(slot)?.touched) continue;
+      const address = defaults[slot];
+      const key = addressKey(address.email);
+      if (!key) continue;
+      if (occupied.has(key)) {
+        nextOrigins.push({ slot, address: { ...address }, touched: true });
+        continue;
+      }
+      occupied.add(key);
+      automaticEntries.push({ ...address });
+      nextOrigins.push({ slot, address: { ...address }, touched: false });
+    }
+    const nextEntries = [...manualEntries];
+    nextEntries.splice(insertionIndex, 0, ...automaticEntries);
+
+    nextOrigins.sort((left, right) => left.slot - right.slot);
+    session.automaticBccOrigins = nextOrigins;
+    const changed = !sameRecipientEntries(current, nextEntries);
+    if (!changed) return false;
+    session.recipientEntriesByField.bcc = nextEntries;
+    session.draft.bcc = nextEntries
+      .filter((entry): entry is ParsedAddress => 'email' in entry)
+      .map((entry) => ({ ...entry }));
+    session.rejectedRecipients.bcc = nextEntries
+      .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
+      .map((entry) => entry.text);
+    session.recipientVersion += 1;
+    return true;
+  }
+
+  function replacedAutomaticSignatureText(
+    session: ComposeSession,
+    currentOrigin: AutomaticSignatureOrigin | null,
+    nextSignature: IdentitySignatureDefault | null,
+    nextHtml: string,
+  ): string {
+    const nextText = nextSignature?.text ?? '';
+    if (!currentOrigin) {
+      return nextSignature
+        ? initialTextWithSignature(session.draft.textBody, nextSignature, session.openOrigin)
+        : session.draft.textBody;
+    }
+
+    const sentinel = '\u0001stormbox-signature-origin\u0002';
+    if (!session.draft.textBody.includes(sentinel)
+        && !session.editorHtmlBody.includes(sentinel)) {
+      const positioned = trackedHtmlPlainText(
+        session.editorHtmlBody,
+        new Map([[currentOrigin.id, sentinel]]),
+      );
+      const start = positioned.indexOf(sentinel);
+      const expected = start >= 0
+        ? positioned.replace(sentinel, currentOrigin.text)
+        : '';
+      if (start >= 0 && expected === session.draft.textBody) {
+        return session.draft.textBody.slice(0, start)
+          + nextText
+          + session.draft.textBody.slice(start + currentOrigin.text.length);
+      }
+    }
+
+    if (currentOrigin.text) {
+      const start = signatureTextOccurrence(
+        session.draft.textBody,
+        currentOrigin.text,
+        session.openOrigin,
+      );
+      if (start >= 0) {
+        return session.draft.textBody.slice(0, start)
+          + nextText
+          + session.draft.textBody.slice(start + currentOrigin.text.length);
+      }
+    } else if (!nextText) {
+      return session.draft.textBody;
+    }
+
+    return trackedHtmlPlainText(
+      nextHtml,
+      nextSignature
+        ? new Map([[IDENTITY_SIGNATURE_ORIGIN, nextText]])
+        : new Map(),
+    );
+  }
+
+  function replaceAutomaticSignature(
+    session: ComposeSession,
+    identity: IdentityRow | null,
+  ): boolean {
+    const nextSignature = identitySignature(identity);
+    const currentOrigin = session.automaticSignatureOrigin;
+    if (currentOrigin) {
+      const state = trackedOriginState(session.editorHtmlBody, currentOrigin.id);
+      if (currentOrigin.touched || state.touched || !state.present) {
+        currentOrigin.touched = true;
+        return false;
+      }
+      if (nextSignature
+          && nextSignature.html === currentOrigin.html
+          && nextSignature.text === currentOrigin.text) {
+        currentOrigin.html = nextSignature.html;
+        currentOrigin.text = nextSignature.text;
+        return false;
+      }
+    }
+
+    let nextHtml = session.editorHtmlBody;
+    if (currentOrigin) {
+      const replacement = replaceTrackedOriginHtml(
+        nextHtml,
+        currentOrigin.id,
+        nextSignature
+          ? wrapTrackedOrigin(IDENTITY_SIGNATURE_ORIGIN, nextSignature.html)
+          : null,
+      );
+      if (!replacement.replaced) {
+        currentOrigin.touched = true;
+        return false;
+      }
+      nextHtml = replacement.html;
+    } else if (nextSignature) {
+      const base = session.openOrigin === COMPOSE_OPEN_ORIGIN.NEW && !nextHtml
+        ? '<div><br></div>'
+        : nextHtml;
+      nextHtml = insertBeforeQuotedContent(
+        base,
+        wrapTrackedOrigin(IDENTITY_SIGNATURE_ORIGIN, nextSignature.html),
+      );
+    } else {
+      return false;
+    }
+
+    const nextText = replacedAutomaticSignatureText(
+      session,
+      currentOrigin,
+      nextSignature,
+      nextHtml,
+    );
+    session.automaticSignatureOrigin = nextSignature
+      ? {
+          id: IDENTITY_SIGNATURE_ORIGIN,
+          html: nextSignature.html,
+          text: nextSignature.text,
+          touched: false,
+        }
+      : null;
+    const htmlChanged = nextHtml !== session.editorHtmlBody;
+    const textChanged = nextText !== session.draft.textBody;
+    if (!htmlChanged && !textChanged) return false;
+    if (htmlChanged) {
+      session.editorHtmlBody = nextHtml;
+      session.draft.htmlBody = stripInternalProvenanceHtml(nextHtml);
+      session.bodyVersion += 1;
+    }
+    session.draft.textBody = nextText;
+    return true;
+  }
+
+  function applyIdentityDefaultsForChange(
+    session: ComposeSession,
+    identity: IdentityRow | null,
+  ): boolean {
+    if (!originAllowsIdentityDefaults(session.openOrigin)) return false;
+    const bccChanged = replaceAutomaticBccDefaults(session, identity);
+    const signatureChanged = replaceAutomaticSignature(session, identity);
+    return bccChanged || signatureChanged;
+  }
+
+  function applyIdentityDefaultsAfterRefresh(
+    session: ComposeSession,
+    previousIdentity: IdentityRow | null,
+    nextIdentity: IdentityRow | null,
+  ): void {
+    if (!originAllowsIdentityDefaults(session.openOrigin)) return;
+    const remoteIdentityChanged = previousIdentity?.remote_id !== nextIdentity?.remote_id;
+    const bccChanged = !sameAddressDefaults(
+      identityBcc(previousIdentity),
+      identityBcc(nextIdentity),
+    );
+    const signatureChanged = !sameIdentitySignatureDefault(previousIdentity, nextIdentity);
+    const replyToChanged = !sameAddressDefaults(
+      previousIdentity ? identityReplyTo(previousIdentity) : [],
+      nextIdentity ? identityReplyTo(nextIdentity) : [],
+    );
+    if (!remoteIdentityChanged && !bccChanged && !signatureChanged && !replyToChanged) return;
+    if (remoteIdentityChanged) {
+      applyIdentityDefaultsForChange(session, nextIdentity);
+      return;
+    }
+    if (bccChanged) replaceAutomaticBccDefaults(session, nextIdentity);
+    if (signatureChanged) replaceAutomaticSignature(session, nextIdentity);
+  }
+
+  function updateTrackedOrigins(
+    states: readonly TrackedOriginState[],
+    sessionId: string | null = activeSessionId.value,
+  ): void {
+    const session = sessionById(sessionId);
+    const signature = session?.automaticSignatureOrigin;
+    if (!signature) return;
+    const state = states.find((candidate) => candidate.id === signature.id);
+    if (state && (state.touched || !state.present)) signature.touched = true;
+  }
+
+  function setBodyContent(
+    content: { html: string; text: string },
+    sessionId: string | null = activeSessionId.value,
+    { touch = true }: { touch?: boolean } = {},
+  ): void {
+    const session = sessionById(sessionId);
+    if (!session) return;
+    const signature = session.automaticSignatureOrigin;
+    if (signature) {
+      const state = trackedOriginState(content.html, signature.id);
+      if (state.touched || !state.present) signature.touched = true;
+    }
+    session.editorHtmlBody = content.html;
+    session.draft.htmlBody = stripInternalProvenanceHtml(content.html);
+    session.draft.textBody = signature && !signature.touched
+      ? trackedHtmlPlainText(
+          content.html,
+          new Map([[signature.id, signature.text]]),
+        )
+      : content.text;
+    if (touch) touchSession(session.id);
+  }
+
   function semanticHtml(html: string): string {
-    const compact = String(html ?? '').trim();
+    const compact = stripInternalProvenanceHtml(html).trim();
     if (/^<(?:p|div)><br\s*\/?><\/(?:p|div)>$/i.test(compact)) return '';
     return compact;
   }
@@ -493,6 +987,10 @@ export const useComposeStore = defineStore('compose', () => {
       to: recipients('to'),
       cc: recipients('cc'),
       bcc: recipients('bcc'),
+      replyTo: replyToForSession(session, identity).map((address) => ({
+        email: address.email,
+        name: address.name ?? '',
+      })),
       subject: session.draft.subject,
       textBody: semanticText(session.draft.textBody),
       htmlBody: semanticHtml(session.draft.htmlBody),
@@ -522,24 +1020,58 @@ export const useComposeStore = defineStore('compose', () => {
     return !!session && canonicalSessionJson(session) !== session.seedJson;
   }
 
+  function automaticBccEntryIndexes(session: ComposeSession): Set<number> {
+    const indexes = new Set<number>();
+    const claimedSlots = new Set<number>();
+    for (let index = 0; index < session.recipientEntriesByField.bcc.length; index += 1) {
+      const entry = session.recipientEntriesByField.bcc[index];
+      if (!('email' in entry)) continue;
+      const origin = session.automaticBccOrigins.find((candidate) =>
+        !candidate.touched
+        && !claimedSlots.has(candidate.slot)
+        && sameAutomaticAddress(entry, candidate.address));
+      if (!origin) continue;
+      claimedSlots.add(origin.slot);
+      indexes.add(index);
+    }
+    return indexes;
+  }
+
+  function userRecipientCount(session: ComposeSession): number {
+    const automaticBcc = automaticBccEntryIndexes(session);
+    return session.draft.to.length
+      + session.draft.cc.length
+      + session.recipientEntriesByField.bcc.reduce(
+        (count, entry, index) => count + ('email' in entry && !automaticBcc.has(index) ? 1 : 0),
+        0,
+      );
+  }
+
   function isSessionMeaningfullyNonEmpty(
     sessionId: string | null = activeSessionId.value,
   ): boolean {
     const session = sessionById(sessionId);
     if (!session) return false;
-    const hasRecipients = RECIPIENT_FIELDS.some((field) =>
-      session.draft[field].length > 0
-      || session.rejectedRecipients[field].length > 0
-      || session.pendingRecipientText[field].trim().length > 0);
-    const html = semanticHtml(session.draft.htmlBody);
+    const hasRecipients = userRecipientCount(session) > 0
+      || RECIPIENT_FIELDS.some((field) =>
+        session.rejectedRecipients[field].length > 0
+        || session.pendingRecipientText[field].trim().length > 0);
+    const signature = session.automaticSignatureOrigin;
+    const htmlWithoutIntactSignature = signature && !signature.touched
+      ? removeTrackedOriginRegion(session.editorHtmlBody, signature.id)
+      : session.editorHtmlBody;
+    const html = semanticHtml(htmlWithoutIntactSignature);
     const htmlText = html
       .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
       .replace(/<[^>]+>/g, '')
       .replace(/&nbsp;|&#160;/gi, ' ')
       .trim();
+    const bodyText = signature && !signature.touched
+      ? trackedHtmlPlainText(htmlWithoutIntactSignature)
+      : session.draft.textBody;
     return hasRecipients
       || session.draft.subject.trim().length > 0
-      || session.draft.textBody.trim().length > 0
+      || bodyText.trim().length > 0
       || htmlText.length > 0
       || /<(?:img|video|audio)\b/i.test(html)
       || session.draft.attachments.length > 0;
@@ -578,21 +1110,31 @@ export const useComposeStore = defineStore('compose', () => {
 
   async function refreshIdentities(): Promise<void> {
     if (!repo || authStore.accountId == null) return;
-    const previousIdentities = new Map(
-      sessions.value.map((session) => [session.id, identityForSession(session)]),
-    );
-    const cleanSessions = new Set(
-      sessions.value
-        .filter((session) => canonicalSessionJson(session) === session.seedJson)
-        .map((session) => session.id),
-    );
-    identities.value = await repo.listIdentities(authStore.accountId);
+    const snapshots = new Map(sessions.value.map((session) => {
+      const canonical = canonicalSessionJson(session);
+      return [session.id, {
+        identity: identityForSession(session),
+        canonical,
+        clean: canonical === session.seedJson,
+      }];
+    }));
+    const refreshed = await repo.listIdentities(authStore.accountId);
+    const stillClean = new Set(sessions.value
+      .filter((session) => {
+        const snapshot = snapshots.get(session.id);
+        return snapshot?.clean && canonicalSessionJson(session) === snapshot.canonical;
+      })
+      .map((session) => session.id));
+    identities.value = refreshed;
     for (const session of sessions.value) {
+      const previousIdentity = snapshots.get(session.id)?.identity ?? null;
       reconcileFromIdxAfterIdentityRefresh(
         session,
-        previousIdentities.get(session.id) ?? null,
+        previousIdentity,
       );
-      if (cleanSessions.has(session.id)) session.seedJson = canonicalSessionJson(session);
+      const nextIdentity = identityForSession(session);
+      applyIdentityDefaultsAfterRefresh(session, previousIdentity, nextIdentity);
+      if (stillClean.has(session.id)) session.seedJson = canonicalSessionJson(session);
     }
   }
 
@@ -614,7 +1156,10 @@ export const useComposeStore = defineStore('compose', () => {
     void repo.ensureIdentities(authStore.accountId).catch(() => {});
   }
 
-  function open(prefill: Partial<Draft> = {}): string {
+  function open(
+    prefill: Partial<Draft> = {},
+    options: ComposeOpenOptions = { origin: COMPOSE_OPEN_ORIGIN.NEW },
+  ): string {
     prefillGeneration += 1;
     const expanded = activeSession.value;
     if (expanded?.status === COMPOSE_STATE.SENDING) return expanded.id;
@@ -624,6 +1169,9 @@ export const useComposeStore = defineStore('compose', () => {
     if (!Object.prototype.hasOwnProperty.call(prefill, 'fromIdx')) {
       nextDraft.fromIdx = defaultFromIdx();
     }
+    const initialTextBody = nextDraft.textBody;
+    const initialEditorHtml = editorHtmlForOpen(nextDraft.htmlBody, options.origin);
+    nextDraft.htmlBody = stripInternalProvenanceHtml(initialEditorHtml);
     const id = makeSessionId();
     sessionGeneration += 1;
     const session: ComposeSession = reactive({
@@ -653,7 +1201,25 @@ export const useComposeStore = defineStore('compose', () => {
       failedSaveMutationId: null,
       failedSaveSeedJson: null,
       failedSaveRequest: null,
+      openOrigin: options.origin,
+      automaticBccOrigins: [],
+      automaticSignatureOrigin: null,
+      editorHtmlBody: initialEditorHtml,
+      bodyVersion: 0,
+      recipientVersion: 0,
     });
+    const initialIdentity = identityForSession(session);
+    applyIdentityDefaultsForChange(session, initialIdentity);
+    const initialSignature = originAllowsIdentityDefaults(options.origin)
+      ? identitySignature(initialIdentity)
+      : null;
+    if (initialSignature && session.automaticSignatureOrigin) {
+      session.draft.textBody = initialTextWithSignature(
+        initialTextBody,
+        initialSignature,
+        options.origin,
+      );
+    }
     session.seedJson = canonicalSessionJson(session);
     sessions.value.push(session);
     activeSessionId.value = id;
@@ -709,8 +1275,12 @@ export const useComposeStore = defineStore('compose', () => {
     const nextIdx = Number.isFinite(parsed)
       ? Math.min(Math.max(Math.trunc(parsed), 0), Math.max(maxIdx, 0))
       : 0;
+    const previousIdx = session.draft.fromIdx;
+    const hadUnresolvedFrom = !!session.unresolvedFrom;
     session.draft.fromIdx = nextIdx;
     session.unresolvedFrom = null;
+    if (nextIdx === previousIdx && !hadUnresolvedFrom) return;
+    applyIdentityDefaultsForChange(session, identityForSession(session));
     rememberIdentity(authStore.accountId, identityForSession(session));
     touchSession(session.id);
   }
@@ -729,6 +1299,7 @@ export const useComposeStore = defineStore('compose', () => {
   ): void {
     const session = sessionById(sessionId);
     if (!session) return;
+    if (field === 'bcc') reconcileAutomaticBccOrigins(session, entries);
     session.recipientEntriesByField[field] = entries.map((entry) => ({ ...entry }));
     session.draft[field] = session.recipientEntriesByField[field]
       .filter((entry): entry is ParsedAddress => 'email' in entry)
@@ -851,10 +1422,10 @@ export const useComposeStore = defineStore('compose', () => {
       to: session.draft.to.map((address) => ({ ...address })),
       cc: session.draft.cc.map((address) => ({ ...address })),
       bcc: session.draft.bcc.map((address) => ({ ...address })),
-      replyTo: identityReplyTo(identity),
+      replyTo: replyToForSession(session, identity),
       subject: session.draft.subject,
       textBody: session.draft.textBody,
-      htmlBody: session.draft.htmlBody,
+      htmlBody: stripInternalProvenanceHtml(session.draft.htmlBody),
       attachments: session.draft.attachments.map((attachment) => ({ ...attachment })),
       inReplyTo: [...session.draft.inReplyTo],
       references: [...session.draft.references],
@@ -1199,7 +1770,7 @@ export const useComposeStore = defineStore('compose', () => {
       subject: subject ?? '',
       htmlBody: html ?? '',
       textBody: text ?? '',
-    });
+    }, { origin: COMPOSE_OPEN_ORIGIN.REPLY });
   }
 
   /**
@@ -1261,6 +1832,8 @@ export const useComposeStore = defineStore('compose', () => {
         subject: message.subject,
         text: body.text,
       }),
+    }, {
+      origin: all ? COMPOSE_OPEN_ORIGIN.REPLY_ALL : COMPOSE_OPEN_ORIGIN.REPLY,
     });
   }
 
@@ -1297,7 +1870,7 @@ export const useComposeStore = defineStore('compose', () => {
         subject: message.subject,
         text: body.text,
       }),
-    });
+    }, { origin: COMPOSE_OPEN_ORIGIN.FORWARD });
   }
 
   async function editableDraftHtml(
@@ -1440,7 +2013,7 @@ export const useComposeStore = defineStore('compose', () => {
     }
     const addressRows = await repo.listMessageAddresses(message.id);
     if (!stillCurrent()) return null;
-    const byKind = (kind: RecipientField) => addressRows
+    const byKind = (kind: RecipientField | 'replyTo') => addressRows
       .filter((row) => row.kind === kind && row.email)
       .sort((left, right) => left.position - right.position)
       .map((row) => ({
@@ -1466,13 +2039,14 @@ export const useComposeStore = defineStore('compose', () => {
       to: byKind('to'),
       cc: byKind('cc'),
       bcc: byKind('bcc'),
+      replyTo: byKind('replyTo'),
       subject: message.subject ?? '',
       textBody: completedBody.text,
       htmlBody: editable.html,
       attachments: retainedAttachments,
       inReplyTo: parseStringArray(message.in_reply_to_json),
       references: parseStringArray(message.references_json),
-    });
+    }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
     const session = sessionById(sessionId);
     if (!session) return null;
     session.sourceMessageId = message.id;
@@ -1583,10 +2157,7 @@ export const useComposeStore = defineStore('compose', () => {
     }
     // Any of the three carries the message, so requiring To would refuse a
     // send the user has every right to make (CS-2.2).
-    const sessionRecipientCount = RECIPIENT_FIELDS.reduce(
-      (total, field) => total + sessionDraft[field].length,
-      0,
-    );
+    const sessionRecipientCount = userRecipientCount(session);
     if (sessionRecipientCount === 0) return failSend('Add at least one recipient.', session.id);
 
     const folders = mailStore.folders as FolderRow[];
@@ -1633,10 +2204,10 @@ export const useComposeStore = defineStore('compose', () => {
           to: sessionDraft.to,
           cc: sessionDraft.cc,
           bcc: sessionDraft.bcc,
-          replyTo: identityReplyTo(identity),
+          replyTo: replyToForSession(session, identity),
           subject: sessionDraft.subject,
           textBody: sessionDraft.textBody,
-          htmlBody: sessionDraft.htmlBody,
+          htmlBody: stripInternalProvenanceHtml(sessionDraft.htmlBody),
           attachments: sessionDraft.attachments.map((attachment) => ({ ...attachment })),
           inReplyTo: sessionDraft.inReplyTo,
           references: sessionDraft.references,
@@ -1748,6 +2319,8 @@ export const useComposeStore = defineStore('compose', () => {
     restore,
     isSessionDirty,
     isSessionMeaningfullyNonEmpty,
+    setBodyContent,
+    updateTrackedOrigins,
     touchSession,
     saveDraft,
     saveAndClose,
