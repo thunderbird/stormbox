@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Check, X } from '@lucide/vue';
 
+import { useModalFocus } from '../composables/useModalFocus';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { FolderRow } from '../types';
@@ -21,7 +22,12 @@ const emit = defineEmits<{ close: [] }>();
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
+const dialogEl = ref<HTMLElement | null>(null);
 const nameEl = ref<HTMLInputElement | null>(null);
+useModalFocus(dialogEl, {
+  initialFocus: nameEl,
+  onDefault: submit,
+});
 const name = ref('');
 const parentFolderId = ref<number | null>(props.initialParentId);
 const failure = ref<string | null>(null);
@@ -147,7 +153,6 @@ function onWindowKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  nameEl.value?.focus();
   window.addEventListener('keydown', onWindowKeydown);
 });
 
@@ -162,10 +167,12 @@ onBeforeUnmount(() => {
   <Teleport to="body">
   <div class="folder-create" role="presentation" @click.self="emit('close')">
     <section
+      ref="dialogEl"
       class="folder-create__panel"
       role="dialog"
       aria-modal="true"
       aria-labelledby="folder-create-title"
+      tabindex="-1"
     >
       <header class="folder-create__header">
         <h2 id="folder-create-title">New folder</h2>

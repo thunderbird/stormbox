@@ -41,27 +41,27 @@ withDefaults(
 /* Both selectors are doubled up with .base (services-ui's own class) so we
    outrank its scoped .base[data-v] rules regardless of stylesheet order. */
 .base.app-button {
-  /* Squarer corners in the Thunderbird desktop style, rather than
-     services-ui's rounder 0.5rem default. */
+  align-items: center;
   border-radius: 3px;
-  /* Icon-to-label gap matching our original buttons (services-ui: 8px). */
   gap: 6px;
 }
-/* Bold label; 600 matches the weight our original buttons used. */
 .base.app-button :deep(.text) {
   font-weight: 600;
 }
-/* services-ui clamps slot icons to 0.75rem (12px); our original buttons
-   drew them at 16px, matching the label height. The translateY optically
-   centers the icon on the label's ink: glyph ink sits ~1.4px below the
-   geometric line-box centre (descenders reach further below the midline
-   than caps rise above it), and a box-centred icon reads as too high. */
 .base.app-button :deep(.icon) {
+  display: inline-flex;
   width: 16px;
   height: 16px;
-  transform: translateY(1.4px);
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transform: none;
 }
-/* Matches the height of our original pre-services-ui buttons. */
+.base.app-button :deep(.icon > svg) {
+  display: block;
+  transform: none;
+}
 .base.app-button--compact {
   height: 34px;
 }

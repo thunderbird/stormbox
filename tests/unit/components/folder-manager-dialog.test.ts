@@ -403,6 +403,31 @@ describe('FolderManagerDialog multi-select + bulk delete', () => {
     expect(wrapper.find('[data-folder-bulkbar]').exists()).toBe(false);
   });
 
+  it('uses Cancel as the Enter default for destructive confirmation', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+    mailStore.deleteFolders = vi.fn(async () => ({ ok: true, succeededIds: [] }));
+    const wrapper = mountDialog();
+    await nextTick();
+
+    await selectBox(wrapper, 'Projects').trigger('click');
+    await nextTick();
+    await wrapper.find('[data-folder-bulk-delete]').trigger('click');
+    await nextTick();
+    expect(wrapper.find('[data-folder-bulk-confirm]').exists()).toBe(true);
+
+    wrapper.get('[role="dialog"]').element.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    }));
+    await nextTick();
+
+    expect(wrapper.find('[data-folder-bulk-confirm]').exists()).toBe(false);
+    expect(mailStore.deleteFolders).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-folder-bulkbar]').text()).toContain('3 selected');
+  });
+
   it('escalates when folders still contain mail and retries with removeEmails', async () => {
     const mailStore = useMailStore();
     seed(mailStore);

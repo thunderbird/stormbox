@@ -13,12 +13,12 @@ import {
   computed,
   nextTick,
   onBeforeUnmount,
-  onMounted,
   ref,
   type ComponentPublicInstance,
   type Ref,
 } from 'vue';
 
+import { useModalFocus } from '../composables/useModalFocus';
 import { isMacPlatform, shortcutModifierLabel } from '../utils/keyboard';
 import AppButton from './AppButton.vue';
 import ThundermailLogo from './ThundermailLogo.vue';
@@ -32,7 +32,8 @@ const emit = defineEmits<{
 
 type SpotlightId = 'quickFilter' | 'resizeLayout' | 'composeActions';
 
-const closeButtonEl = ref<HTMLButtonElement | null>(null);
+const panelEl = ref<HTMLElement | null>(null);
+useModalFocus(panelEl, { onDefault: dismiss });
 const featureElements: Record<SpotlightId, Ref<HTMLElement | null>> = {
   quickFilter: ref(null),
   resizeLayout: ref(null),
@@ -306,10 +307,6 @@ function composeToolbarTargetRect() {
   }, buttons[0].getBoundingClientRect());
 }
 
-onMounted(() => {
-  closeButtonEl.value?.focus();
-});
-
 onBeforeUnmount(() => {
   if (spotlightTimer != null) {
     window.clearTimeout(spotlightTimer);
@@ -335,14 +332,15 @@ onBeforeUnmount(() => {
     role="presentation"
   >
     <section
+      ref="panelEl"
       class="welcome__panel"
       role="dialog"
       aria-modal="true"
       aria-labelledby="welcome-title"
       aria-describedby="welcome-summary"
+      tabindex="-1"
     >
       <button
-        ref="closeButtonEl"
         class="welcome__close"
         type="button"
         aria-label="Close welcome"
