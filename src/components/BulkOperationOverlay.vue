@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, toRef } from 'vue';
 
-import { useMailStore } from '../stores/mail-store';
+import { useModalFocus } from '../composables/useModalFocus';
 
 /**
  * Modal progress overlay for large semantic move/destroy operations.
@@ -18,28 +18,40 @@ import { useMailStore } from '../stores/mail-store';
  * in-flight Email/set without leaving the cache half-applied; that
  * is out of MVP scope.
  */
-const mailStore = useMailStore();
+const props = defineProps<{
+  active: boolean;
+  itemLabel: string;
+  label: string;
+  singularItemLabel: string;
+  total: number;
+}>();
 
-const state = computed(() => mailStore.bulkOperation);
+const overlayEl = ref<HTMLElement | null>(null);
+useModalFocus(overlayEl, { active: toRef(props, 'active') });
+
 const subText = computed(() => {
-  const { total } = state.value;
+  const { total } = props;
   if (total <= 0) return '';
-  return `${total.toLocaleString()} messages`;
+  return `${total.toLocaleString()} ${total === 1
+    ? props.singularItemLabel
+    : props.itemLabel}`;
 });
 </script>
 
 <template>
   <Teleport to="body">
     <div
-      v-if="state.active"
+      v-if="active"
+      ref="overlayEl"
       class="bulk-overlay"
       role="dialog"
       aria-modal="true"
       aria-live="polite"
-      :aria-label="state.label"
+      :aria-label="label"
+      tabindex="-1"
     >
       <div class="bulk-overlay__card">
-        <div class="bulk-overlay__title">{{ state.label }}…</div>
+        <div class="bulk-overlay__title">{{ label }}…</div>
         <div
           class="bulk-overlay__progress"
           role="progressbar"

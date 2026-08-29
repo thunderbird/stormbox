@@ -258,6 +258,36 @@ body {
   transition: background-color 0.18s ease, color 0.18s ease;
 }
 
+html .dp--theme-light,
+html .dp--theme-dark {
+  --dp-font-family: var(--font-sans);
+  --dp-font-size: 13px;
+  --dp-border-radius: 6px;
+  --dp-cell-border-radius: 4px;
+  --dp-background-color: var(--panel);
+  --dp-text-color: var(--text);
+  --dp-hover-color: var(--rowHover);
+  --dp-hover-text-color: var(--text);
+  --dp-hover-icon-color: var(--text);
+  --dp-primary-color: var(--accent);
+  --dp-primary-disabled-color: color-mix(in srgb, var(--accent) 48%, transparent);
+  --dp-primary-text-color: #fff;
+  --dp-secondary-color: var(--muted);
+  --dp-border-color: var(--border);
+  --dp-menu-border-color: var(--border);
+  --dp-border-color-hover: var(--accent);
+  --dp-border-color-focus: var(--accent);
+  --dp-disabled-color: color-mix(in srgb, var(--panel) 82%, var(--muted));
+  --dp-disabled-color-text: var(--muted);
+  --dp-scroll-bar-background: var(--panel2);
+  --dp-scroll-bar-color: var(--muted);
+  --dp-icon-color: var(--muted);
+  --dp-danger-color: var(--error-fg);
+  --dp-marker-color: var(--error-fg);
+  --dp-tooltip-color: var(--panel2);
+  --dp-highlight-color: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
 /* The shell layout lives in App.vue; #app just needs to fill the
  * viewport so the grid can size itself. */
 #app {
@@ -290,6 +320,12 @@ button {
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Initial modal focus belongs to the surface, not an action button. */
+[role="dialog"][aria-modal="true"]:focus,
+[role="alertdialog"][aria-modal="true"]:focus {
+  outline: none;
 }
 
 /* Global input styles */

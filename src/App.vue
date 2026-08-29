@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue';
 import { onClickOutside, useTitle } from '@vueuse/core';
 import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 import AppButton from './components/AppButton.vue';
@@ -33,7 +40,15 @@ const mailStore = useMailStore();
 const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
 
-const space = ref('mail');
+type AppSpace = 'contacts' | 'mail';
+
+interface ContactsViewHandle {
+  requestFilterChange: (next: string) => Promise<boolean>;
+  requestLeave: () => Promise<boolean>;
+}
+
+const space = ref<AppSpace>('mail');
+const contactsViewEl = ref<ContactsViewHandle | null>(null);
 const quickFilterQuery = ref('');
 const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
@@ -212,11 +227,11 @@ function startCompose() {
 
 function setQuickFilterQuery(event: Event) {
   const next = (event.target as HTMLInputElement | null)?.value ?? '';
-  updateQuickFilterQuery(next);
+  void updateQuickFilterQuery(next);
 }
 
 function clearQuickFilterQuery() {
-  updateQuickFilterQuery('');
+  void updateQuickFilterQuery('');
 }
 
 function focusQuickFilterInput() {
@@ -224,12 +239,41 @@ function focusQuickFilterInput() {
   quickFilterInputEl.value?.select();
 }
 
-function updateQuickFilterQuery(next: string) {
+async function updateQuickFilterQuery(next: string) {
   if (next === quickFilterQuery.value) return;
+  if (
+    space.value === 'contacts'
+    && contactsViewEl.value
+    && !await contactsViewEl.value.requestFilterChange(next)
+  ) {
+    await nextTick();
+    if (quickFilterInputEl.value) {
+      quickFilterInputEl.value.value = quickFilterQuery.value;
+    }
+    return;
+  }
   if (space.value === 'mail' && mailStore.selectedMessageId != null) {
     mailStore.selectMessage(null);
   }
   quickFilterQuery.value = next;
+}
+
+async function requestSpaceChange(next: string) {
+  if (next !== 'mail' && next !== 'contacts') return;
+  if (next === space.value) return;
+  if (
+    space.value === 'contacts'
+    && contactsViewEl.value
+    && !await contactsViewEl.value.requestLeave()
+  ) return;
+  space.value = next;
+}
+
+function restoreContactsFilter(value: string) {
+  quickFilterQuery.value = value;
+  void nextTick(() => {
+    if (quickFilterInputEl.value) quickFilterInputEl.value.value = value;
+  });
 }
 
 function toggleFolderList() {
@@ -711,7 +755,7 @@ function clamp(value: number, min: number, max: number) {
       :unread-count="inboxUnread"
       :folder-list-hidden="folderListHidden"
       :show-folder-list-toggle="space === 'mail'"
-      @change="space = $event"
+      @change="requestSpaceChange"
       @toggle-folder-list="toggleFolderList"
     />
 
@@ -795,12 +839,20 @@ function clamp(value: number, min: number, max: number) {
     </template>
     <ContactsView
       v-else-if="space === 'contacts'"
+      ref="contactsViewEl"
       :filter-query="quickFilterQuery"
+      @restore-filter="restoreContactsFilter"
     />
 
     <ComposeManager />
     <StoreErrorToast />
-    <BulkOperationOverlay />
+    <BulkOperationOverlay
+      :active="mailStore.bulkOperation.active"
+      item-label="messages"
+      :label="mailStore.bulkOperation.label"
+      singular-item-label="message"
+      :total="mailStore.bulkOperation.total"
+    />
     <WelcomeModal
       v-if="showWelcomeModal"
       @dismiss="dismissWelcomeModal"

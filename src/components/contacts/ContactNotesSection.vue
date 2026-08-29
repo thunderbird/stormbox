@@ -1,0 +1,142 @@
+<script setup lang="ts">
+import { Plus, X } from '@lucide/vue';
+
+import {
+  createContactEditorNote,
+  type ContactEditorNote,
+} from './contact-editor';
+
+const props = defineProps<{
+  modelValue: ContactEditorNote[];
+}>();
+
+const emit = defineEmits<{
+  'update:modelValue': [notes: ContactEditorNote[]];
+}>();
+
+function addNote(): void {
+  const note = createContactEditorNote();
+  note.position = props.modelValue.length;
+  emit('update:modelValue', [...props.modelValue, note]);
+}
+
+function updateNote(formKey: string, value: string): void {
+  emit(
+    'update:modelValue',
+    props.modelValue.map((note) =>
+      note.formKey === formKey ? { ...note, value } : note),
+  );
+}
+
+function removeNote(formKey: string): void {
+  emit(
+    'update:modelValue',
+    props.modelValue.filter((note) => note.formKey !== formKey),
+  );
+}
+</script>
+
+<template>
+  <fieldset class="contact-notes">
+    <legend>Notes</legend>
+    <div
+      v-for="note in modelValue"
+      :key="note.formKey"
+      class="contact-notes__row"
+      :data-field-key="note.formKey"
+    >
+      <textarea
+        class="contact-editor__input contact-notes__input"
+        :value="note.value"
+        rows="3"
+        aria-label="Contact note"
+        @input="updateNote(
+          note.formKey,
+          ($event.target as HTMLTextAreaElement).value,
+        )"
+      />
+      <button
+        class="contact-editor__remove"
+        type="button"
+        aria-label="Remove note"
+        @click="removeNote(note.formKey)"
+      >
+        <X :size="15" :stroke-width="2" aria-hidden="true" />
+      </button>
+    </div>
+    <button class="contact-editor__add" type="button" @click="addNote">
+      <Plus :size="14" :stroke-width="2" aria-hidden="true" />
+      <span>Add note</span>
+    </button>
+  </fieldset>
+</template>
+
+<style scoped>
+.contact-notes {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.contact-notes legend {
+  margin-bottom: 7px;
+  color: var(--muted, #6b7388);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.contact-notes__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+}
+
+.contact-notes__input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+}
+
+.contact-editor__remove,
+.contact-editor__add {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted, #6b7388);
+  font: inherit;
+  cursor: pointer;
+}
+
+.contact-editor__remove {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.contact-editor__add {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+  padding: 4px 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.contact-editor__remove:hover,
+.contact-editor__remove:focus-visible,
+.contact-editor__add:hover,
+.contact-editor__add:focus-visible {
+  background: var(--rowHover, #f0f1f6);
+  outline: none;
+}
+</style>
