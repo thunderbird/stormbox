@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import {
-  computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchPostEffect,
+  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
-  Paperclip, Star, RefreshCw, MailOpen, Mail, Trash2, X,
+  Paperclip, Star, RefreshCw, MailOpen, Mail, Trash2,
 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
@@ -15,6 +15,7 @@ import { SENDER_AVATAR_PROXY_URL } from '../defines';
 import { senderAvatarFor, shortFrom } from '../utils/sender-avatar';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
+import SelectableListHeader from './SelectableListHeader.vue';
 
 const mailStore = useMailStore();
 
@@ -105,7 +106,6 @@ const CARD_LAYOUT_WIDTH = 360;
 const ROW_HEIGHT = 64;
 const CARD_ROW_HEIGHT = 112;
 const msgListEl = ref<HTMLElement | null>(null);
-const selectAllEl = ref<HTMLInputElement | null>(null);
 const scrollEl = ref(null);
 const listWidth = ref(0);
 const failedAvatarDomains = ref<Set<string>>(new Set());
@@ -405,12 +405,6 @@ const allLoadedSelected = computed(() => {
   return true;
 });
 
-watchPostEffect(() => {
-  if (!selectAllEl.value) return;
-  selectAllEl.value.checked = allLoadedSelected.value;
-  selectAllEl.value.indeterminate = hasSelection.value && !allLoadedSelected.value;
-});
-
 function selectAllForCurrentFilter() {
   if (quickFilterActive.value) {
     const next = new Set<number>();
@@ -554,30 +548,21 @@ function normalizeFilterText(value) {
     :class="{ 'msg-list--card': cardLayout }"
     aria-label="Messages"
   >
-    <header class="msg-list__header">
-      <label
-        class="msg-list__select-all"
-        :class="{ 'is-disabled': rowCount === 0 }"
-        :title="rowCount === 0 ? 'No messages to select' : (allLoadedSelected ? 'Deselect all' : 'Select all loaded')"
-      >
-        <input
-          ref="selectAllEl"
-          type="checkbox"
-          :checked="allLoadedSelected"
-          :disabled="rowCount === 0"
-          :indeterminate.prop="hasSelection && !allLoadedSelected"
-          @change="toggleSelectAll"
-        />
-      </label>
-      <!-- Multi-select swaps the filter buttons for the bulk actions:
-           the filters make no sense mid-selection and must not be
-           toggled while one is active. -->
-      <div
-        v-if="hasSelection"
-        class="msg-list__bulk-actions"
-        role="group"
-        aria-label="Selection actions"
-      >
+    <SelectableListHeader
+      class="msg-list__header"
+      :all-selected="allLoadedSelected"
+      clear-class="msg-list__bulk-action msg-list__bulk-action--ghost"
+      count-class="msg-list__count"
+      item-label="messages"
+      select-all-class="msg-list__select-all"
+      selection-actions-class="msg-list__bulk-actions"
+      singular-item-label="message"
+      :selected-count="selectionCount"
+      :total-count="rowCount"
+      @clear-selection="selectNone"
+      @toggle-all="toggleSelectAll"
+    >
+      <template #selection-actions>
         <button
           v-if="canWhitelistInJunk"
           class="msg-list__bulk-action msg-list__bulk-action--whitelist"
@@ -604,37 +589,32 @@ function normalizeFilterText(value) {
         <button class="msg-list__bulk-action" type="button" @click="bulkMarkUnread" title="Mark as unread" aria-label="Mark as unread">
           <Mail :size="16" :stroke-width="1.75" />
         </button>
-        <button class="msg-list__bulk-action msg-list__bulk-action--ghost" type="button" @click="selectNone" title="Clear selection" aria-label="Clear selection">
-          <X :size="16" :stroke-width="1.75" />
-        </button>
-      </div>
-      <div v-else class="msg-list__filters" role="group" aria-label="Message filters">
+      </template>
+      <template #normal-actions>
+        <div class="msg-list__filters" role="group" aria-label="Message filters">
+          <button
+            class="msg-list__filter"
+            :class="{ 'is-active': unreadOnly }"
+            type="button"
+            :aria-pressed="unreadOnly"
+            @click="toggleUnreadFilter"
+          >
+            Unread
+          </button>
+        </div>
+      </template>
+      <template #trailing>
         <button
-          class="msg-list__filter"
-          :class="{ 'is-active': unreadOnly }"
+          class="msg-list__refresh"
           type="button"
-          :aria-pressed="unreadOnly"
-          @click="toggleUnreadFilter"
+          :aria-label="mailStore.isLoading ? 'Refreshing' : 'Refresh'"
+          :title="mailStore.isLoading ? 'Refreshing…' : 'Refresh'"
+          @click="mailStore.refresh()"
         >
-          Unread
+          <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': mailStore.isLoading }" />
         </button>
-      </div>
-      <span v-if="hasSelection" class="msg-list__count">
-        {{ selectionCount }} selected
-      </span>
-      <span v-else-if="rowCount > 0" class="msg-list__count">
-        {{ rowCount }} {{ rowCount === 1 ? 'message' : 'messages' }}
-      </span>
-      <button
-        class="msg-list__refresh"
-        type="button"
-        :aria-label="mailStore.isLoading ? 'Refreshing' : 'Refresh'"
-        :title="mailStore.isLoading ? 'Refreshing…' : 'Refresh'"
-        @click="mailStore.refresh()"
-      >
-        <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': mailStore.isLoading }" />
-      </button>
-    </header>
+      </template>
+    </SelectableListHeader>
 
     <div
       v-if="rowCount > 0"
@@ -785,35 +765,6 @@ function normalizeFilterText(value) {
   min-height: 0;
   height: 100%;
 }
-.msg-list__header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 57px;
-  padding: 11px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.msg-list__select-all {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  cursor: pointer;
-}
-.msg-list__select-all.is-disabled {
-  cursor: default;
-  opacity: 0.72;
-}
-.msg-list__select-all input {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent);
-}
-.msg-list__select-all input:disabled {
-  cursor: default;
-}
 .msg-list__filters {
   flex: 1;
   min-width: 0;
@@ -847,17 +798,6 @@ function normalizeFilterText(value) {
   border-color: color-mix(in srgb, var(--accent) 80%, #000);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent);
 }
-.msg-list__bulk-actions {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 4px;
-  /* Sit next to the select-all checkbox, with a little breathing
-     room beyond the header's own gap. */
-  margin-inline-start: 8px;
-}
 .msg-list__bulk-action {
   display: inline-grid;
   place-items: center;
@@ -880,7 +820,6 @@ function normalizeFilterText(value) {
   background: rgba(255, 107, 107, 0.12);
   color: #ff6b6b;
 }
-.msg-list__bulk-action--ghost { color: var(--muted); }
 /* "Not junk" is the contextual, Junk-only primary action; a filled
    accent button set apart from the icon buttons, matching the same
    action in the open-message toolbar. */
@@ -930,13 +869,6 @@ function normalizeFilterText(value) {
 }
 .msg-list__bulk-icon--folder :deep([fill="context-stroke"]) {
   fill: currentColor;
-}
-.msg-list__count {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 .msg-list__refresh {
   background: transparent;

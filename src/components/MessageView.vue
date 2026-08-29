@@ -36,6 +36,7 @@ import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
+import AppIconButton from './AppIconButton.vue';
 
 // Minimum logical width we lay HTML email out at before scaling down.
 // Reflowing typical marketing HTML below this gets visually messy
@@ -542,24 +543,24 @@ function closeMessageView() {
            removed from the tab order rather than announced as six
            working actions that do nothing. -->
       <header class="message-view__header" aria-hidden="true">
-        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" tabindex="-1" title="Back">
+        <AppIconButton class="message-view__action message-view__action--back" tabindex="-1" title="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </button>
-        <button class="message-view__action" type="button" tabindex="-1" title="Archive (A)">
+        </AppIconButton>
+        <AppIconButton class="message-view__action" tabindex="-1" title="Archive (A)">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-        </button>
-        <button class="message-view__action message-view__action--danger" type="button" tabindex="-1" title="Delete (Del)">
+        </AppIconButton>
+        <AppIconButton class="message-view__action" danger tabindex="-1" title="Delete (Del)">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Reply (${shortcutModifier}+R)`">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Reply (${shortcutModifier}+R)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Reply All (${shortcutModifier}+Shift+R)`">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Reply All (${shortcutModifier}+Shift+R)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" tabindex="-1" :title="`Forward (${shortcutModifier}+L)`">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Forward (${shortcutModifier}+L)`">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
-        </button>
+        </AppIconButton>
       </header>
       <div class="message-view__empty">
         <p>Select a message to read it.</p>
@@ -570,9 +571,9 @@ function closeMessageView() {
     </div>
     <article v-else class="message-view__article">
       <header class="message-view__header">
-        <button class="message-view__action message-view__action--ghost message-view__action--back" type="button" @click="closeMessageView" title="Back" aria-label="Back">
+        <AppIconButton class="message-view__action message-view__action--back" @click="closeMessageView" title="Back" aria-label="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </button>
+        </AppIconButton>
         <!-- Contextual: only in the Junk folder. Labeled and set apart at
              the leading edge so it reads as a folder-specific action,
              not one of the always-present icon buttons. -->
@@ -587,28 +588,27 @@ function closeMessageView() {
         >
           <span class="message-view__whitelist-label">Not junk</span>
         </button>
-        <button class="message-view__action" type="button" @click="archive" title="Archive (A)" aria-label="Archive">
+        <AppIconButton class="message-view__action" @click="archive" title="Archive (A)" aria-label="Archive">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-        </button>
-        <button v-if="!isInJunkFolder" class="message-view__action" type="button" @click="junk" title="Junk" aria-label="Mark as junk">
+        </AppIconButton>
+        <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
-        </button>
-        <button class="message-view__action message-view__action--danger" type="button" @click="destroy" title="Delete (Del)" aria-label="Delete">
+        </AppIconButton>
+        <AppIconButton class="message-view__action" danger @click="destroy" title="Delete (Del)" aria-label="Delete">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
-        </button>
-        <button class="message-view__action message-view__action--compose-spotlight" type="button" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
+        </AppIconButton>
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
-        </button>
-        <button
+        </AppIconButton>
+        <AppIconButton
           v-if="canForceLightBody"
           class="message-view__action message-view__action--view-mode"
-          type="button"
           :aria-pressed="forceLightBody"
           :title="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
           :aria-label="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
@@ -616,7 +616,7 @@ function closeMessageView() {
         >
           <Moon v-if="forceLightBody" :size="16" :stroke-width="1.75" />
           <Sun v-else :size="16" :stroke-width="1.75" />
-        </button>
+        </AppIconButton>
       </header>
       <section class="message-view__details" aria-label="Message header">
         <dl class="message-view__metadata">
@@ -759,22 +759,6 @@ function closeMessageView() {
   white-space: normal;
 }
 .message-view__date { font-variant-numeric: tabular-nums; }
-.message-view__action {
-  display: inline-grid;
-  place-items: center;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border-radius: 8px;
-  cursor: pointer;
-  font: inherit;
-  flex-shrink: 0;
-}
-.message-view__action:hover { background: var(--rowHover); color: var(--text); }
-.message-view__action--danger:hover { background: rgba(255, 107, 107, 0.12); color: #ff6b6b; }
 /* Whitelist ("Not junk") is a contextual, Junk-only action. It leads
    the action group at the toolbar's leading edge, set apart from the
    always-present icon buttons by a trailing margin. Styled as a filled
@@ -811,14 +795,6 @@ function closeMessageView() {
   background: var(--accent);
   color: #fff;
 }
-.message-view__action:disabled,
-.message-view__action:disabled:hover {
-  background: transparent;
-  color: var(--muted);
-  opacity: 0.35;
-  cursor: default;
-}
-.message-view__action--ghost { color: var(--muted); }
 .message-view__action--back { margin-right: 12px; }
 /* View option, not a mail action — sits at the trailing edge. */
 .message-view__action--view-mode { margin-left: auto; }

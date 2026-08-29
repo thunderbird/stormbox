@@ -14,6 +14,10 @@ import {
 } from '@lucide/vue';
 import { SwitchToggle } from '@thunderbirdops/services-ui';
 
+import {
+  focusModalSurface,
+  useModalFocus,
+} from '../composables/useModalFocus';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { AccountRow, FolderRow } from '../types';
@@ -27,7 +31,8 @@ const emit = defineEmits<{ close: [] }>();
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
-const closeButtonEl = ref<HTMLButtonElement | null>(null);
+const dialogEl = ref<HTMLElement | null>(null);
+useModalFocus(dialogEl, { onDefault: chooseDefaultAction });
 const scrollEl = ref<HTMLElement | null>(null);
 const searchText = ref('');
 const showCreateDialog = ref(false);
@@ -718,6 +723,18 @@ const editorError = ref<string | null>(null);
 const deleteStage = ref<'confirm' | 'escalate' | null>(null);
 const editorBusy = ref(false);
 
+watch(
+  [bulkStage, deleteStage],
+  ([nextBulk, nextDelete], [previousBulk, previousDelete]) => {
+    if (
+      (nextBulk != null && nextBulk !== previousBulk)
+      || (nextDelete != null && nextDelete !== previousDelete)
+    ) {
+      void nextTick(() => focusModalSurface(dialogEl.value));
+    }
+  },
+);
+
 function openEditor(row: DialogFolderRow) {
   editingFolderId.value = row.folder.id;
   editorName.value = row.folder.name ?? '';
@@ -867,6 +884,18 @@ function editedMessageCount(row: DialogFolderRow): number {
   return Number(row.folder.total_emails ?? 0);
 }
 
+function chooseDefaultAction(): void {
+  if (deleteStage.value != null) {
+    deleteStage.value = null;
+    return;
+  }
+  if (bulkStage.value != null) {
+    bulkStage.value = null;
+    return;
+  }
+  emit('close');
+}
+
 // Escape must close the dialog even when focus has drifted to <body>
 // (e.g. after a toggled control is briefly disabled while its mutation
 // is in flight), so listen at the window level instead of relying on
@@ -893,7 +922,6 @@ function onWindowKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  closeButtonEl.value?.focus();
   window.addEventListener('keydown', onWindowKeydown);
 });
 
@@ -912,15 +940,16 @@ onBeforeUnmount(() => {
   <Teleport to="body">
   <div class="folder-subs" role="presentation" @click.self="emit('close')">
     <section
+      ref="dialogEl"
       class="folder-subs__panel"
       role="dialog"
       aria-modal="true"
       aria-labelledby="folder-subs-title"
+      tabindex="-1"
     >
       <header class="folder-subs__header">
         <h2 id="folder-subs-title">Manage Folders</h2>
         <button
-          ref="closeButtonEl"
           type="button"
           class="folder-subs__close"
           aria-label="Close manage folders"
