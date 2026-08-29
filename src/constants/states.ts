@@ -96,6 +96,11 @@ export const SEND_PHASE = {
 } as const;
 export type SendPhase = (typeof SEND_PHASE)[keyof typeof SEND_PHASE];
 
+export const IDENTITY_PHASE = {
+  CREATE_SUBMITTING: 'identity_create_submitting',
+} as const;
+export type IdentityPhase = (typeof IDENTITY_PHASE)[keyof typeof IDENTITY_PHASE];
+
 export const DRAFT_PHASE = {
   QUEUED: 'draft_queued',
   CREATED: 'draft_created',
@@ -104,7 +109,7 @@ export const DRAFT_PHASE = {
   CONFLICT: 'draft_conflict',
 } as const;
 export type DraftPhase = (typeof DRAFT_PHASE)[keyof typeof DRAFT_PHASE];
-export type MutationPhase = SendPhase | DraftPhase;
+export type MutationPhase = SendPhase | DraftPhase | IdentityPhase;
 
 export const SYNC_JOB_STATUS = {
   PENDING: 'pending',
@@ -145,6 +150,7 @@ export const MUTATION_TYPE = {
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  CONTACT_BATCH: 'contactBatch',
   CREATE_IDENTITY: 'createIdentity',
   UPDATE_IDENTITY: 'updateIdentity',
   DELETE_IDENTITY: 'deleteIdentity',

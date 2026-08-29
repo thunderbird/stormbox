@@ -14,16 +14,6 @@ function normalizeEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
 }
 
-function rawJsonMayDelete(rawJson: string | null): boolean | null {
-  if (!rawJson) return null;
-  try {
-    const parsed = JSON.parse(rawJson);
-    return typeof parsed?.mayDelete === 'boolean' ? parsed.mayDelete : null;
-  } catch {
-    return null;
-  }
-}
-
 function indexByRemoteId(identities: IdentityRow[], remoteId: string | null | undefined): number {
   if (!remoteId) return -1;
   return identities.findIndex((identity) => identity.remote_id === remoteId);
@@ -60,7 +50,7 @@ export function resolveComposeIdentityIndex(
   const primaryEmailMatch = indexByEmail(identities, primaryEmail);
   if (primaryEmailMatch >= 0) return primaryEmailMatch;
 
-  const nonDeletableMatch = identities.findIndex((identity) => rawJsonMayDelete(identity.raw_json) === false);
+  const nonDeletableMatch = identities.findIndex((identity) => identity.may_delete === 0);
   if (nonDeletableMatch >= 0) return nonDeletableMatch;
 
   const thundermailMatch = identities.findIndex((identity) =>
