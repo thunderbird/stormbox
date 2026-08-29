@@ -17,12 +17,12 @@ remain controlling.
 | Area | 🟩 Done | 🟨 Partial | 🟧 Planned |
 |:--|--:|--:|--:|
 | CD-1 Compose sessions and presentation | 8 | — | — |
-| CD-2 Seed-relative dirtiness | 6 | — | — |
+| CD-2 Seed-relative dirtiness | 7 | — | — |
 | CD-3 Autosave scheduling | 8 | — | — |
 | CD-4 Durable JMAP revisions | 12 | — | — |
 | CD-5 Close, save, and discard | 8 | — | — |
-| CD-6 Reopen and send interaction | 9 | 1 | — |
-| CD-7 Security and verification | 6 | 1 | — |
+| CD-6 Reopen and send interaction | 10 | 1 | — |
+| CD-7 Security and verification | 7 | 1 | — |
 
 ## Terminology and model
 
@@ -82,6 +82,7 @@ gets a new one.
 | CD-2.4 🟩 Done | Reverting every semantic field to the latest seed shall clear dirty state and cancel any save that has not begun. |
 | CD-2.5 🟩 Done | A new compose session shall be considered meaningfully non-empty only when it has a recipient or invalid recipient fragment, non-whitespace subject, semantic body content, or inline media/attachment. A default From identity alone shall not count. |
 | CD-2.6 🟩 Done | Empty new sessions shall never create server drafts. A reopened server draft remains a real saved draft even when its current semantic content is empty. |
+| CD-2.7 🟩 Done | New, reply, and forward sessions shall materialize the selected Identity's Bcc and paired HTML/text signature before capturing the initial seed. These defaults are initial content but shall not alone make the session dirty or schedule autosave. Session-only provenance and internal HTML markers are runtime state, are excluded from canonical content, and never enter a JMAP request. |
 
 ## CD-3 — Autosave scheduling
 
@@ -154,6 +155,7 @@ treated as an earlier phase that permits another create or deletion.
 | CD-6.8 🟩 Done | A rejected or ambiguous send shall retain the latest confirmed draft according to CS-1.5 through CS-1.10. Draft cleanup shall never be used as evidence that delivery was cancelled. |
 | CD-6.9 🟩 Done | Local Drafts and Sent query views and Mailbox counters shall reflect each confirmed server fact before its mutation resolves, including successor creation, predecessor cleanup, discard, and post-send cleanup. |
 | CD-6.10 🟩 Done | Inline-image and attachment construction shall be shared by draft creation and send. A revision shall not destroy the Email that owns a part blob until the successor's corresponding blob handles have been confirmed. |
+| CD-6.11 🟩 Done | Changing From shall replace an automatic Bcc or signature only while the exact auto-added value remains intact; manual recipients and body edits shall survive. Reopened server drafts, including one whose content happens to equal an Identity default, shall never infer provenance or receive defaults. Signature data URLs shall use the existing inline-image upload and CID construction path. |
 
 ## CD-7 — Security and verification
 
@@ -166,6 +168,7 @@ treated as an earlier phase that permits another create or deletion.
 | CD-7.5 🟩 Done | Playwright tests on Chromium and Firefox shall assert the visible UI, including direct close for an empty message and the non-empty header action menu, browser-local SQLite state through `window.__repo`, and direct JMAP state for autosave, minimize/restore, Save draft, Don't Save, Discard, reopen, and send cleanup. |
 | CD-7.6 🟨 Partial | Live Stalwart tests exercise create rejection, lost create response, lost cleanup response with idempotent retry, and attachment replacement without relying on Cyrus ordering. Complete paginated reconciliation is covered with a server-faithful unit transport rather than by filling the live account with more than one server page of drafts. |
 | CD-7.7 🟩 Done | Tests shall seed unique subjects and clean server artifacts in `finally`, and shall never use self-delivery as proof of submission. |
+| CD-7.8 🟩 Done | Unit and live tests shall cover Identity defaults on new/reply/forward, untouched replacement on From changes, manual edit preservation, reopened-draft exclusion, marker-free autosave/send payloads, and signature data-URL conversion to resolvable inline parts. |
 
 ## Protocol decision and prior art
 

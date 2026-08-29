@@ -419,6 +419,30 @@ describe('JMAP draft replacement', () => {
     );
     expect(oldDraft).toBeNull();
   });
+
+  it('stores a marker-free CID body for a draft with a default image', async () => {
+    const request = requestFor(1);
+    request.textBody = 'Image signature';
+    request.htmlBody = '<p>Image signature'
+      + '<img src="data:image/png;base64,iVBORw0KGgo="></p>';
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SAVE_DRAFT,
+      targetMessageId: null,
+      requestJson: JSON.stringify(request),
+    });
+
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    const saved = serverEmails.get('draft-1');
+    const html = saved.bodyValues.h1.value;
+    expect(html).toContain('Image signature');
+    expect(html).toMatch(/src="cid:[^"]+@stormbox"/);
+    expect(html).not.toContain('data:image/');
+    expect(html).not.toContain('data-stormbox-');
+    expect(saved.bodyStructure.type).toBe('multipart/related');
+  });
 });
 
 describe('draft attachment preparation', () => {
@@ -453,6 +477,38 @@ describe('draft attachment preparation', () => {
     }));
     expect(JSON.stringify(prepared.bodyStructure)).toContain('blob-refreshed');
     expect(JSON.stringify(prepared.bodyStructure)).not.toContain('part-blob-on-old-draft');
+  });
+
+  it('uploads a default data image from a marker-free draft request', async () => {
+    const upload = vi.fn(async () => ({ blobId: 'signature-image-blob' }));
+    const prepared = await prepareComposeEmail({
+      transport: { download: vi.fn(), upload },
+      account: { remote_account_id: 'account-1' },
+      identity: { email: 'writer@example.com' },
+      mailboxRemoteId: 'mb-drafts',
+      isDraft: true,
+      request: {
+        to: [{ email: 'recipient@example.com' }],
+        subject: 'Signature image',
+        textBody: 'Image signature',
+        htmlBody: '<p>Image signature'
+          + '<img src="data:image/png;base64,iVBORw0KGgo="></p>',
+        attachments: [],
+      },
+    });
+
+    expect(upload).toHaveBeenCalledTimes(1);
+    const html = prepared.bodyValues.h1.value;
+    expect(html).toContain('Image signature');
+    expect(html).toMatch(/src="cid:[^"]+@stormbox"/);
+    expect(html).not.toContain('data:image/');
+    expect(html).not.toContain('data-stormbox-');
+    expect(prepared.bodyStructure.type).toBe('multipart/related');
+    expect(prepared.bodyStructure.subParts).toContainEqual(expect.objectContaining({
+      blobId: 'signature-image-blob',
+      type: 'image/png',
+      disposition: 'inline',
+    }));
   });
 });
 

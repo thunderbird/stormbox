@@ -1,4 +1,5 @@
 import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
+import { hasInternalProvenanceAttribute } from '../../../utils/compose-provenance';
 
 interface ComposeAttachment {
   blob_id?: string | null;
@@ -148,7 +149,11 @@ export async function prepareComposeEmail({
   mailboxRemoteId: string | null;
   isDraft: boolean;
 }) {
-  const extracted = extractDataUriImages(request.htmlBody ?? '');
+  const sourceHtml = String(request.htmlBody ?? '');
+  if (hasInternalProvenanceAttribute(sourceHtml)) {
+    throw new Error('Compose HTML contains an internal provenance attribute');
+  }
+  const extracted = extractDataUriImages(sourceHtml);
   const [dataAttachments, existingAttachments] = await Promise.all([
     uploadDataImages({ transport, account, images: extracted.images }),
     refreshExistingAttachments({

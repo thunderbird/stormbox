@@ -15,6 +15,7 @@ import { COMPOSE_STATE, MUTATION_TYPE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 import {
+  COMPOSE_OPEN_ORIGIN,
   COMPOSE_PRESENTATION,
   useComposeStore,
 } from '../../../src/stores/compose-store';
@@ -25,9 +26,15 @@ function identity(overrides: Partial<IdentityRow>): IdentityRow {
     id: overrides.id ?? 1,
     account_id: overrides.account_id ?? 1,
     remote_id: overrides.remote_id ?? `id-${overrides.id ?? 1}`,
-    name: overrides.name ?? null,
+    name: overrides.name ?? '',
     email: overrides.email ?? 'user@example.com',
     reply_to_json: overrides.reply_to_json ?? null,
+    bcc_json: overrides.bcc_json ?? null,
+    text_signature: overrides.text_signature ?? null,
+    html_signature: overrides.html_signature ?? null,
+    may_delete: overrides.may_delete ?? null,
+    reply_to: overrides.reply_to ?? null,
+    bcc: overrides.bcc ?? null,
     raw_json: overrides.raw_json ?? null,
     updated_at: overrides.updated_at ?? 0,
   };
@@ -493,6 +500,613 @@ describe('compose-store from identity selection', () => {
   });
 });
 
+describe('compose-store identity defaults and provenance', () => {
+  async function storeWithIdentityDefaults(initialIdentities: IdentityRow[]) {
+    let currentIdentities = initialIdentities;
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: initialIdentities[0]?.email ?? null })),
+      listIdentities: vi.fn(async () => currentIdentities),
+      ensureIdentities: vi.fn(async () => {}),
+      listMessageAddresses: vi.fn(async () => sourceAddresses()),
+      insertPendingMutation: vi.fn(async () => ({ id: 1 })),
+      runMutation: vi.fn(async () => ({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'draft-1',
+          localMessageId: 1,
+          messageId: '<draft-1@example.com>',
+          payloadHash: 'hash-1',
+        },
+      })),
+      setIdentities(next: IdentityRow[]) {
+        currentIdentities = next;
+      },
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await waitForAsyncWatchers();
+    return { composeStore, repo };
+  }
+
+  const defaultIdentity = () => identity({
+    id: 1,
+    remote_id: 'default',
+    email: 'me@example.com',
+    bcc: [
+      { name: 'Archive', email: 'archive@example.com' },
+      { name: null, email: 'audit@example.com' },
+    ],
+    html_signature: '<p>Kind regards,<br><b>Andrei</b></p>',
+    text_signature: 'Kind regards,\nAndrei',
+  });
+
+  it('materializes automatic defaults before a clean, empty seed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { composeStore, repo } = await storeWithIdentityDefaults([defaultIdentity()]);
+
+      const sessionId = composeStore.open();
+      const session = composeStore.sessionById(sessionId)!;
+
+      expect(session.draft.bcc).toEqual([
+        { name: 'Archive', email: 'archive@example.com' },
+        { email: 'audit@example.com' },
+      ]);
+      expect(session.draft.htmlBody).toContain('Kind regards');
+      expect(session.draft.textBody).toBe('Kind regards,\nAndrei');
+      expect(session.editorHtmlBody).toContain('data-stormbox-origin="identity-signature"');
+      expect(session.draft.htmlBody).not.toContain('data-stormbox-');
+      expect(session.seedJson).not.toContain('data-stormbox-');
+      expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+      expect(composeStore.isSessionMeaningfullyNonEmpty(sessionId)).toBe(false);
+      await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+
+      composeStore.touchSession(sessionId);
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not add automatic Bcc addresses already present in any field', async () => {
+    const configured = identity({
+      id: 1,
+      remote_id: 'default',
+      email: 'me@example.com',
+      bcc: [
+        { name: 'Duplicate To', email: 'DUPLICATE@example.com' },
+        { name: 'Unique display', email: 'unique@example.com' },
+        { name: 'Repeated unique', email: 'UNIQUE@example.com' },
+      ],
+    });
+    const replacement = identity({
+      id: 2,
+      remote_id: 'replacement',
+      email: 'replacement-sender@example.com',
+      bcc: [
+        { name: 'Duplicate Cc', email: 'cc@example.com' },
+        { name: 'Replacement unique', email: 'replacement-unique@example.com' },
+      ],
+    });
+    const { composeStore } = await storeWithIdentityDefaults([configured, replacement]);
+
+    composeStore.open({
+      to: [{ name: 'Manual recipient', email: 'duplicate@example.com' }],
+      cc: [{ email: 'CC@example.com' }],
+    });
+
+    expect(composeStore.draft.bcc).toEqual([
+      { name: 'Unique display', email: 'unique@example.com' },
+    ]);
+    composeStore.selectFromIndex(1);
+    expect(composeStore.draft.bcc).toEqual([
+      { name: 'Replacement unique', email: 'replacement-unique@example.com' },
+    ]);
+  });
+
+  it('retains a suppressed Bcc slot across two no-op broadcasts and switch-back', async () => {
+    const configured = identity({
+      id: 1,
+      remote_id: 'configured',
+      email: 'me@example.com',
+      bcc: [{ name: 'Archive', email: 'duplicate@example.com' }],
+    });
+    const unsigned = identity({
+      id: 2,
+      remote_id: 'unsigned',
+      email: 'other@example.com',
+    });
+    const { composeStore, repo } = await storeWithIdentityDefaults([configured, unsigned]);
+    const sessionId = composeStore.open({
+      to: [{ name: 'Manual recipient', email: 'DUPLICATE@example.com' }],
+    });
+    const session = composeStore.sessionById(sessionId)!;
+    expect(session.draft.bcc).toEqual([]);
+    expect(session.automaticBccOrigins).toEqual([{
+      slot: 0,
+      address: { name: 'Archive', email: 'duplicate@example.com' },
+      touched: true,
+    }]);
+    const suppressedOrigin = session.automaticBccOrigins[0];
+
+    composeStore.open({ subject: 'Another composer' });
+    repo.setIdentities([configured, unsigned]);
+    await composeStore.refreshIdentities();
+    await composeStore.refreshIdentities();
+    expect(session.automaticBccOrigins[0]).toBe(suppressedOrigin);
+
+    composeStore.setRecipientEntries('to', [], sessionId);
+    composeStore.selectFromIndex(1, sessionId);
+    composeStore.selectFromIndex(0, sessionId);
+    expect(session.draft.bcc).toEqual([]);
+  });
+
+  it('does not recreate automatic Bcc provenance on a no-op refresh', async () => {
+    const configured = defaultIdentity();
+    const { composeStore, repo } = await storeWithIdentityDefaults([configured]);
+    const sessionId = composeStore.open();
+    const session = composeStore.sessionById(sessionId)!;
+    const origins = session.automaticBccOrigins;
+
+    composeStore.open({ subject: 'Another composer' });
+    repo.setIdentities([configured]);
+    await composeStore.refreshIdentities();
+
+    expect(session.automaticBccOrigins).toBe(origins);
+    expect(session.draft.bcc).toEqual([
+      { name: 'Archive', email: 'archive@example.com' },
+      { email: 'audit@example.com' },
+    ]);
+  });
+
+  it('does not apply the Identity storage limit to the expanded compose body', async () => {
+    const longSignature = 'x'.repeat(3_000);
+    const { composeStore } = await storeWithIdentityDefaults([identity({
+      id: 1,
+      remote_id: 'long-signature',
+      email: 'me@example.com',
+      html_signature: `<p>${longSignature}</p>`,
+      text_signature: longSignature,
+    })]);
+
+    composeStore.open();
+
+    expect(composeStore.draft.htmlBody).toContain(longSignature);
+    expect(composeStore.draft.textBody).toBe(longSignature);
+  });
+
+  it('places signatures before quoted content for reply, reply-all, and forward', async () => {
+    const { composeStore } = await storeWithIdentityDefaults([defaultIdentity()]);
+    const origins = [
+      COMPOSE_OPEN_ORIGIN.REPLY,
+      COMPOSE_OPEN_ORIGIN.REPLY_ALL,
+      COMPOSE_OPEN_ORIGIN.FORWARD,
+    ] as const;
+
+    for (const origin of origins) {
+      const sessionId = composeStore.open({
+        htmlBody: '<div class="moz-cite-prefix">Quoted header</div>'
+          + '<blockquote type="cite"><p>Quoted body</p></blockquote>',
+        textBody: '\n\nQuoted header\n\n> Quoted body\n',
+      }, { origin });
+      const session = composeStore.sessionById(sessionId)!;
+      expect(session.editorHtmlBody.indexOf('Kind regards'))
+        .toBeLessThan(session.editorHtmlBody.indexOf('Quoted header'));
+      expect(session.draft.textBody.indexOf('Kind regards'))
+        .toBeLessThan(session.draft.textBody.indexOf('Quoted header'));
+      expect(session.openOrigin).toBe(origin);
+      expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    }
+  });
+
+  it('replaces intact defaults while preserving surrounding text and manual Bcc', async () => {
+    const first = defaultIdentity();
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      bcc: [
+        { name: 'New archive', email: 'new-archive@example.com' },
+        { name: 'New audit', email: 'new-audit@example.com' },
+      ],
+      html_signature: '<p>Second signature</p>',
+      text_signature: 'Second signature',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const sessionId = composeStore.open();
+    const session = composeStore.sessionById(sessionId)!;
+    composeStore.setRecipientEntries('bcc', [
+      ...composeStore.recipientEntries('bcc', sessionId),
+      { name: 'Manual copy', email: 'manual@example.com' },
+    ], sessionId);
+    const editedOutside = session.editorHtmlBody
+      .replace('<div><br></div>', '<p>Before signature</p>')
+      .concat('<p>After signature</p>');
+    composeStore.setBodyContent({
+      html: editedOutside,
+      text: 'Before signature\nKind regards,\nAndrei\nAfter signature',
+    }, sessionId, { touch: false });
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(session.draft.bcc).toEqual([
+      { name: 'New archive', email: 'new-archive@example.com' },
+      { name: 'New audit', email: 'new-audit@example.com' },
+      { name: 'Manual copy', email: 'manual@example.com' },
+    ]);
+    expect(session.draft.htmlBody).toContain('Before signature');
+    expect(session.draft.htmlBody).toContain('Second signature');
+    expect(session.draft.htmlBody).toContain('After signature');
+    expect(session.draft.htmlBody).not.toContain('Kind regards');
+    expect(session.draft.htmlBody).not.toContain('data-stormbox-');
+  });
+
+  it('keeps the configured text signature paired while HTML is edited outside it', async () => {
+    const first = identity({
+      id: 1,
+      remote_id: 'first',
+      email: 'me@example.com',
+      html_signature: '<p>Rendered first</p>',
+      text_signature: 'Plain first',
+    });
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      html_signature: '<p>Rendered second</p>',
+      text_signature: 'Plain second',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const sessionId = composeStore.open();
+    const session = composeStore.sessionById(sessionId)!;
+    composeStore.setBodyContent({
+      html: session.editorHtmlBody.replace(
+        '<div><br></div>',
+        '<p>User-authored text</p>',
+      ),
+      text: 'User-authored text\nRendered first',
+    }, sessionId, { touch: false });
+
+    expect(session.draft.textBody).toContain('User-authored text');
+    expect(session.draft.textBody).toContain('Plain first');
+    expect(session.draft.textBody).not.toContain('Rendered first');
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(session.draft.textBody).toContain('User-authored text');
+    expect(session.draft.textBody).toContain('Plain second');
+    expect(session.draft.textBody).not.toContain('Plain first');
+    expect(session.draft.htmlBody).toContain('Rendered second');
+  });
+
+  it('preserves the exact quoted text while replacing a paired signature', async () => {
+    const first = identity({
+      id: 1,
+      remote_id: 'first',
+      email: 'me@example.com',
+      html_signature: '<p>Rendered first</p>',
+      text_signature: 'Plain first',
+    });
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      html_signature: '<p>Rendered second</p>',
+      text_signature: 'Plain second',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const quotedText = '\n\nOn Tuesday, Alice wrote:\n> Exact quoted line\n';
+    const sessionId = composeStore.open({
+      htmlBody: '<div>On Tuesday, Alice wrote:</div><blockquote>Quoted line</blockquote>',
+      textBody: quotedText,
+    }, { origin: COMPOSE_OPEN_ORIGIN.REPLY });
+    const session = composeStore.sessionById(sessionId)!;
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(session.draft.textBody).toBe(`Plain second${quotedText}`);
+  });
+
+  it('updates paired signature text when two identities share the same HTML', async () => {
+    const sharedHtml = '<p>Shared rendered signature</p>';
+    const { composeStore } = await storeWithIdentityDefaults([
+      identity({
+        id: 1,
+        remote_id: 'first',
+        email: 'me@example.com',
+        html_signature: sharedHtml,
+        text_signature: 'First text signature',
+      }),
+      identity({
+        id: 2,
+        remote_id: 'second',
+        email: 'other@example.com',
+        html_signature: sharedHtml,
+        text_signature: 'Second text signature',
+      }),
+    ]);
+    const sessionId = composeStore.open();
+    const session = composeStore.sessionById(sessionId)!;
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(session.draft.textBody).toBe('Second text signature');
+    expect(session.draft.htmlBody).toContain('Shared rendered signature');
+  });
+
+  it('preserves edited or removed automatic Bcc slots across a From change', async () => {
+    const first = defaultIdentity();
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      bcc: [
+        { name: 'Replacement archive', email: 'replacement@example.com' },
+        { name: 'Replacement audit', email: 'replacement-audit@example.com' },
+      ],
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const sessionId = composeStore.open();
+    composeStore.setRecipientEntries('bcc', [
+      { name: 'Edited archive', email: 'archive@example.com' },
+      { email: 'audit@example.com' },
+      { email: 'manual@example.com' },
+      { text: 'unfinished address', invalid: true },
+    ], sessionId);
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(composeStore.recipientEntries('bcc', sessionId)).toEqual([
+      { name: 'Edited archive', email: 'archive@example.com' },
+      { name: 'Replacement audit', email: 'replacement-audit@example.com' },
+      { email: 'manual@example.com' },
+      { text: 'unfinished address', invalid: true },
+    ]);
+
+    const removedId = composeStore.open({ fromIdx: 0 });
+    composeStore.setRecipientEntries('bcc', [], removedId);
+    composeStore.selectFromIndex(1, removedId);
+    expect(composeStore.recipientEntries('bcc', removedId)).toEqual([]);
+  });
+
+  it('keeps replacement defaults ordered after Bcc pills are reordered', async () => {
+    const first = defaultIdentity();
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      bcc: [
+        { name: 'First replacement', email: 'first-replacement@example.com' },
+        { name: 'Second replacement', email: 'second-replacement@example.com' },
+      ],
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const sessionId = composeStore.open();
+    composeStore.setRecipientEntries('bcc', [
+      { email: 'audit@example.com' },
+      { email: 'manual@example.com' },
+      { name: 'Archive', email: 'archive@example.com' },
+    ], sessionId);
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(composeStore.recipientEntries('bcc', sessionId)).toEqual([
+      { name: 'First replacement', email: 'first-replacement@example.com' },
+      { name: 'Second replacement', email: 'second-replacement@example.com' },
+      { email: 'manual@example.com' },
+    ]);
+  });
+
+  it('does not replace an edited or removed automatic signature', async () => {
+    const first = defaultIdentity();
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      html_signature: '<p>Second signature</p>',
+      text_signature: 'Second signature',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const editedId = composeStore.open();
+    const edited = composeStore.sessionById(editedId)!;
+    const editedHtml = edited.editorHtmlBody.replace('Kind regards', 'Personal sign-off');
+    composeStore.updateTrackedOrigins([{
+      id: 'identity-signature',
+      present: true,
+      touched: true,
+    }], editedId);
+    composeStore.setBodyContent({
+      html: editedHtml,
+      text: 'Personal sign-off,\nAndrei',
+    }, editedId, { touch: false });
+
+    composeStore.selectFromIndex(1, editedId);
+    expect(edited.draft.htmlBody).toContain('Personal sign-off');
+    expect(edited.draft.htmlBody).not.toContain('Second signature');
+
+    const removedId = composeStore.open({ fromIdx: 0 });
+    const removed = composeStore.sessionById(removedId)!;
+    composeStore.setBodyContent({ html: '<p>User body</p>', text: 'User body' }, removedId, {
+      touch: false,
+    });
+    composeStore.selectFromIndex(1, removedId);
+    expect(removed.draft.htmlBody).toBe('<p>User body</p>');
+  });
+
+  it('adds a first signature after user text and before an intact quote', async () => {
+    const first = identity({
+      id: 1,
+      remote_id: 'plain',
+      email: 'me@example.com',
+    });
+    const second = identity({
+      id: 2,
+      remote_id: 'signed',
+      email: 'signed@example.com',
+      html_signature: '<p>Added signature</p>',
+      text_signature: 'Added signature',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([first, second]);
+    const sessionId = composeStore.open({
+      htmlBody: '<div class="moz-cite-prefix">Quoted header</div>'
+        + '<blockquote type="cite">Quoted body</blockquote>',
+      textBody: '\n\nQuoted header\n> Quoted body',
+    }, { origin: COMPOSE_OPEN_ORIGIN.REPLY });
+    const session = composeStore.sessionById(sessionId)!;
+    composeStore.setBodyContent({
+      html: session.editorHtmlBody.replace('<div><br></div>', '<p>User introduction</p>'),
+      text: 'User introduction\n\nQuoted header\n> Quoted body',
+    }, sessionId, { touch: false });
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    const html = session.editorHtmlBody;
+    expect(html.indexOf('User introduction')).toBeLessThan(html.indexOf('Added signature'));
+    expect(html.indexOf('Added signature')).toBeLessThan(html.indexOf('Quoted header'));
+  });
+
+  it('preserves exact reply text when an identity arrives late', async () => {
+    const { composeStore, repo } = await storeWithIdentityDefaults([]);
+    const originalText = '\n\nOn Tuesday, Alice wrote:\n> Exact quote\n';
+    const sessionId = composeStore.open({
+      htmlBody: '<div>On Tuesday, Alice wrote:</div><blockquote>Exact quote</blockquote>',
+      textBody: originalText,
+    }, { origin: COMPOSE_OPEN_ORIGIN.REPLY });
+    repo.setIdentities([identity({
+      id: 1,
+      remote_id: 'late',
+      email: 'me@example.com',
+      html_signature: '<p>Late rendered signature</p>',
+      text_signature: 'Late text signature',
+    })]);
+
+    await composeStore.refreshIdentities();
+
+    const session = composeStore.sessionById(sessionId)!;
+    expect(session.draft.textBody).toBe(`Late text signature${originalText}`);
+    expect(session.draft.htmlBody).toContain('Late rendered signature');
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+  });
+
+  it('uses initial text splicing when switching from unsigned to signed', async () => {
+    const unsigned = identity({
+      id: 1,
+      remote_id: 'unsigned',
+      email: 'me@example.com',
+    });
+    const signed = identity({
+      id: 2,
+      remote_id: 'signed',
+      email: 'other@example.com',
+      html_signature: '<p>Rendered signature</p>',
+      text_signature: 'Text signature',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([unsigned, signed]);
+    const originalText = '\n\nQuoted prefix\n> Exact quote\n';
+    const sessionId = composeStore.open({
+      htmlBody: '<div>Quoted prefix</div><blockquote>Exact quote</blockquote>',
+      textBody: originalText,
+    }, { origin: COMPOSE_OPEN_ORIGIN.REPLY });
+
+    composeStore.selectFromIndex(1, sessionId);
+
+    expect(composeStore.sessionById(sessionId)?.draft.textBody)
+      .toBe(`Text signature${originalText}`);
+  });
+
+  it('never infers defaults for an explicitly reopened server draft', async () => {
+    const second = identity({
+      id: 2,
+      remote_id: 'second',
+      email: 'other@example.com',
+      bcc: [{ name: 'Other archive', email: 'other-archive@example.com' }],
+      html_signature: '<p>Other signature</p>',
+      text_signature: 'Other signature',
+    });
+    const { composeStore } = await storeWithIdentityDefaults([defaultIdentity(), second]);
+    const sessionId = composeStore.open({
+      bcc: [
+        { name: 'Archive', email: 'archive@example.com' },
+        { email: 'audit@example.com' },
+      ],
+      htmlBody: '<p>Kind regards,<br><b>Andrei</b></p>',
+      textBody: 'Kind regards,\nAndrei',
+    }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
+    const session = composeStore.sessionById(sessionId)!;
+
+    expect(session.automaticBccOrigins).toEqual([]);
+    expect(session.automaticSignatureOrigin).toBeNull();
+    expect(session.editorHtmlBody).not.toContain('data-stormbox-');
+    composeStore.selectFromIndex(1, sessionId);
+    expect(session.draft.bcc).toEqual([
+      { name: 'Archive', email: 'archive@example.com' },
+      { email: 'audit@example.com' },
+    ]);
+    expect(session.draft.htmlBody).toContain('Kind regards');
+    expect(session.draft.htmlBody).not.toContain('Other signature');
+  });
+
+  it('keeps provenance aligned when the selected identity refreshes and reorders', async () => {
+    const first = defaultIdentity();
+    const other = identity({
+      id: 2,
+      remote_id: 'other',
+      email: 'other@example.com',
+    });
+    const { composeStore, repo } = await storeWithIdentityDefaults([first, other]);
+    const sessionId = composeStore.open();
+    repo.setIdentities([
+      other,
+      identity({
+        ...first,
+        bcc: [{ name: 'Refreshed archive', email: 'refreshed@example.com' }],
+        html_signature: '<p>Refreshed signature</p>',
+        text_signature: 'Refreshed signature',
+      }),
+    ]);
+
+    await composeStore.refreshIdentities();
+
+    const session = composeStore.sessionById(sessionId)!;
+    expect(session.draft.fromIdx).toBe(1);
+    expect(session.draft.bcc).toEqual([
+      { name: 'Refreshed archive', email: 'refreshed@example.com' },
+    ]);
+    expect(session.draft.htmlBody).toContain('Refreshed signature');
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+  });
+
+  it('does not reseed a Bcc removal made while identity refresh is in flight', async () => {
+    const first = defaultIdentity();
+    const { composeStore, repo } = await storeWithIdentityDefaults([first]);
+    const sessionId = composeStore.open();
+    let releaseRefresh: (identities: IdentityRow[]) => void = () => {};
+    repo.listIdentities.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseRefresh = resolve; }),
+    );
+
+    const refreshing = composeStore.refreshIdentities();
+    composeStore.setRecipientEntries('bcc', [], sessionId);
+    releaseRefresh([identity({
+      ...first,
+      bcc: [{ name: 'Refreshed archive', email: 'refreshed@example.com' }],
+    })]);
+    await refreshing;
+
+    expect(composeStore.sessionById(sessionId)?.draft.bcc).toEqual([]);
+    expect(composeStore.isSessionDirty(sessionId)).toBe(true);
+  });
+});
+
 describe('compose-store send safety', () => {
   it('refuses to discard the draft while a send is in flight', () => {
     // The queued mutation keeps running in the worker after the dialog
@@ -633,6 +1247,23 @@ describe('compose-store send safety', () => {
     await expect(composeStore.send()).resolves.toBe(true);
   });
 
+  it('does not treat an automatic Bcc as a user-selected recipient', async () => {
+    const composeStore = await composerWithOutcome(
+      {},
+      undefined,
+      [identity({
+        id: 1,
+        email: 'me@example.com',
+        bcc: [{ name: 'Archive', email: 'archive@example.com' }],
+      })],
+    );
+    composeStore.open({ subject: 'Automatic copy only' });
+
+    await expect(composeStore.send()).resolves.toBe(false);
+    expect(composeStore.error).toBe('Add at least one recipient.');
+    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
   it('still refuses a send addressed to nobody', async () => {
     const composeStore = await composerWithOutcome({});
     composeStore.open({ subject: 'Nobody' });
@@ -727,7 +1358,7 @@ describe('compose-store send safety', () => {
       [identity({
         id: 1,
         email: 'me@example.com',
-        reply_to_json: JSON.stringify([{ name: 'Replies', email: 'replies@example.com' }]),
+        reply_to: [{ name: 'Replies', email: 'replies@example.com' }],
       })],
     );
     composeStore.open({ to: [{ email: 'alice@example.com' }] });
@@ -934,16 +1565,17 @@ describe('compose-store send safety', () => {
 describe('compose-store sessions and draft autosave', () => {
   async function autosaveStore(
     runMutationImpl?: (accountId: number, id: number) => Promise<any>,
+    configuredIdentities: IdentityRow[] = [identity({
+      id: 1,
+      remote_id: 'identity-1',
+      email: 'me@example.com',
+    })],
   ) {
     let mutationId = 0;
     const repo = {
       subscribe: vi.fn(() => () => {}),
       getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
-      listIdentities: vi.fn(async () => [identity({
-        id: 1,
-        remote_id: 'identity-1',
-        email: 'me@example.com',
-      })]),
+      listIdentities: vi.fn(async () => configuredIdentities),
       ensureIdentities: vi.fn(async () => {}),
       insertPendingMutation: vi.fn(async (_input: any) => ({ id: ++mutationId })),
       findMessageByRfc822MessageId: vi.fn(async () => null),
@@ -1022,6 +1654,68 @@ describe('compose-store sessions and draft autosave', () => {
     expect(composeStore.isSessionDirty(sessionId)).toBe(true);
     session.draft.subject = 'Seed';
     expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+  });
+
+  it('keeps a server draft Reply-To through From changes, save, and send', async () => {
+    const customReplyTo = [{ name: 'Draft replies', email: 'draft-replies@example.com' }];
+    const { composeStore, repo } = await autosaveStore(undefined, [
+      identity({
+        id: 1,
+        remote_id: 'first',
+        email: 'first@example.com',
+        reply_to: [{ name: 'First replies', email: 'first-replies@example.com' }],
+      }),
+      identity({
+        id: 2,
+        remote_id: 'second',
+        email: 'second@example.com',
+        reply_to: [{ name: 'Second replies', email: 'second-replies@example.com' }],
+      }),
+    ]);
+    const sessionId = composeStore.open({
+      to: [{ email: 'recipient@example.com' }],
+      subject: 'Stored draft',
+      replyTo: customReplyTo,
+    }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
+    const session = composeStore.sessionById(sessionId)!;
+    composeStore.selectFromIndex(1, sessionId);
+    expect(session.draft.replyTo).toEqual(customReplyTo);
+    session.draft.replyTo = [{ email: 'changed-draft-replies@example.com' }];
+    expect(composeStore.isSessionDirty(sessionId)).toBe(true);
+    session.draft.replyTo = customReplyTo;
+
+    await composeStore.saveDraft(sessionId, { explicit: true });
+    const saveInput = repo.insertPendingMutation.mock.calls
+      .map(([input]) => input)
+      .find((input) => input.mutationType === MUTATION_TYPE.SAVE_DRAFT);
+    expect(JSON.parse(saveInput.requestJson).replyTo).toEqual(customReplyTo);
+
+    await composeStore.send(sessionId);
+    const sendInput = repo.insertPendingMutation.mock.calls
+      .map(([input]) => input)
+      .find((input) => input.mutationType === MUTATION_TYPE.SEND);
+    expect(JSON.parse(sendInput.requestJson).replyTo).toEqual(customReplyTo);
+  });
+
+  it('does not add Identity Reply-To to a server draft that stored none', async () => {
+    const { composeStore, repo } = await autosaveStore(undefined, [identity({
+      id: 1,
+      remote_id: 'identity',
+      email: 'sender@example.com',
+      reply_to: [{ name: 'Identity replies', email: 'identity-replies@example.com' }],
+    })]);
+    const sessionId = composeStore.open({
+      to: [{ email: 'recipient@example.com' }],
+      subject: 'No Reply-To draft',
+      replyTo: [],
+    }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
+
+    await composeStore.send(sessionId);
+
+    const input = repo.insertPendingMutation.mock.calls
+      .map(([queued]) => queued)
+      .find((queued) => queued.mutationType === MUTATION_TYPE.SEND);
+    expect(JSON.parse(input.requestJson).replyTo).toEqual([]);
   });
 
   it('treats Squire trailing newlines as the initialized text body', () => {
@@ -1164,6 +1858,107 @@ describe('compose-store sessions and draft autosave', () => {
     }
   });
 
+  it('keeps recipient and body edits made while an automatic save is in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseFirst: (result: any) => void = () => {};
+      let calls = 0;
+      const configuredIdentity = identity({
+        id: 1,
+        remote_id: 'identity-1',
+        email: 'me@example.com',
+        bcc: [{ name: 'Archive', email: 'archive@example.com' }],
+        html_signature: '<p>Automatic signature</p>',
+        text_signature: 'Automatic signature',
+      });
+      const { composeStore, repo } = await autosaveStore(async (_accountId, id) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => { releaseFirst = resolve; });
+        }
+        return {
+          attempted: 1,
+          succeeded: 1,
+          failed: 0,
+          result: {
+            revision: id,
+            emailId: `draft-${id}`,
+            localMessageId: id,
+            messageId: `<revision-${id}@example.com>`,
+            payloadHash: `hash-${id}`,
+          },
+        };
+      }, [configuredIdentity]);
+      const sessionId = composeStore.open();
+      const session = composeStore.sessionById(sessionId)!;
+      session.draft.subject = 'First payload';
+      composeStore.touchSession(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(repo.runMutation).toHaveBeenCalledTimes(1);
+
+      composeStore.setRecipientEntries('bcc', [
+        ...composeStore.recipientEntries('bcc', sessionId),
+        { name: 'Manual copy', email: 'manual@example.com' },
+      ], sessionId);
+      composeStore.setBodyContent({
+        html: session.editorHtmlBody.replace('<div><br></div>', '<p>Latest body</p>'),
+        text: 'Latest body\nAutomatic signature',
+      }, sessionId);
+      releaseFirst({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'draft-1',
+          localMessageId: 1,
+          messageId: '<revision-1@example.com>',
+          payloadHash: 'hash-1',
+        },
+      });
+      await waitForAsyncWatchers();
+      await waitForAsyncWatchers();
+
+      expect(repo.runMutation).toHaveBeenCalledTimes(2);
+      const latest = JSON.parse(repo.insertPendingMutation.mock.calls[1][0].requestJson);
+      expect(latest.bcc).toEqual([
+        { name: 'Archive', email: 'archive@example.com' },
+        { name: 'Manual copy', email: 'manual@example.com' },
+      ]);
+      expect(latest.htmlBody).toContain('Latest body');
+      expect(latest.htmlBody).toContain('Automatic signature');
+      expect(latest.htmlBody).not.toContain('data-stormbox-');
+      expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('queues marker-free signature HTML for send without changing data images', async () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+    const configuredIdentity = identity({
+      id: 1,
+      remote_id: 'identity-1',
+      email: 'me@example.com',
+      html_signature: `<p>Image signature<img src="${dataUrl}"></p>`,
+      text_signature: 'Image signature',
+    });
+    const { composeStore, repo } = await autosaveStore(async () => ({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { submitted: true, filed: true },
+    }), [configuredIdentity]);
+    const sessionId = composeStore.open({ to: [{ email: 'recipient@example.com' }] });
+
+    await expect(composeStore.send(sessionId)).resolves.toBe(true);
+
+    const request = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(request.htmlBody).toContain(dataUrl);
+    expect(request.htmlBody).toContain('Image signature');
+    expect(request.htmlBody).not.toContain('data-stormbox-');
+  });
+
   it('opens the close prompt only for dirty content', async () => {
     const composeStore = useComposeStore();
     const cleanId = composeStore.open();
@@ -1193,6 +1988,24 @@ describe('compose-store sessions and draft autosave', () => {
     expect(repo.insertPendingMutation.mock.calls[0][0].mutationType)
       .toBe(MUTATION_TYPE.SAVE_DRAFT);
     expect(composeStore.sessionById(sessionId)).toBeNull();
+  });
+
+  it('ignores injected provenance in equality and strips it from a draft request', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open({
+      htmlBody: '<p>Durable body</p>',
+      textBody: 'Durable body',
+    });
+    const session = composeStore.sessionById(sessionId)!;
+    session.draft.htmlBody = '<div data-stormbox-origin="injected" '
+      + 'data-stormbox-extra="value"><p>Durable body</p></div>';
+
+    expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+
+    const request = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(request.htmlBody).toContain('Durable body');
+    expect(request.htmlBody).not.toContain('data-stormbox-');
   });
 
   it('saves the message while omitting invalid recipient pills', async () => {
@@ -1351,6 +2164,9 @@ describe('compose-store sessions and draft autosave', () => {
         id: 1,
         remote_id: 'identity-1',
         email: 'me@example.com',
+        bcc: [{ name: 'Archive', email: 'archive@example.com' }],
+        html_signature: '<p>Must not be added</p>',
+        text_signature: 'Must not be added',
       })]),
       ensureIdentities: vi.fn(async () => {}),
       isEmailClaimedBySend: vi.fn(async () => false),
@@ -1358,6 +2174,7 @@ describe('compose-store sessions and draft autosave', () => {
         { kind: 'from', position: 0, name: 'Me', email: 'me@example.com' },
         { kind: 'to', position: 0, name: 'Alice', email: 'alice@example.com' },
         { kind: 'cc', position: 0, name: null, email: 'cc@example.com' },
+        { kind: 'replyTo', position: 0, name: 'Draft replies', email: 'draft@example.com' },
       ]),
       downloadBlob: vi.fn(async () => ({ type: 'image/png', base64: 'iVBORw0KGgo=' })),
     };
@@ -1395,12 +2212,31 @@ describe('compose-store sessions and draft autosave', () => {
     const session = composeStore.sessionById(sessionId);
     expect(session?.draft.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
     expect(session?.draft.cc).toEqual([{ email: 'cc@example.com' }]);
+    expect(session?.draft.bcc).toEqual([]);
+    expect(session?.draft.replyTo).toEqual([
+      { name: 'Draft replies', email: 'draft@example.com' },
+    ]);
     expect(session?.draft.htmlBody).toContain('data:image/png;base64,');
     expect(session?.draft.htmlBody).toContain('color: red');
+    expect(session?.draft.htmlBody).not.toContain('Must not be added');
+    expect(session?.automaticBccOrigins).toEqual([]);
+    expect(session?.automaticSignatureOrigin).toBeNull();
     expect(session?.draft.htmlBody).not.toMatch(/script|onclick|position|id="cover"/i);
     expect(session?.draft.attachments).toEqual([]);
     expect(session?.confirmedRevision?.emailId).toBe('remote-draft');
     expect(composeStore.isSessionDirty(sessionId)).toBe(false);
+
+    repo.listIdentities.mockResolvedValueOnce([identity({
+      id: 1,
+      remote_id: 'identity-1',
+      email: 'me@example.com',
+      bcc: [{ name: 'Refreshed archive', email: 'refreshed-archive@example.com' }],
+      html_signature: '<p>Refreshed default</p>',
+      text_signature: 'Refreshed default',
+    })]);
+    await composeStore.refreshIdentities();
+    expect(session?.draft.bcc).toEqual([]);
+    expect(session?.draft.htmlBody).not.toContain('Refreshed default');
   });
 
   it('downloads a complete body before opening a truncated draft for editing', async () => {
