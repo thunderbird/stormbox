@@ -32,60 +32,68 @@
  * inserting `undefined` into the selection set.
  */
 
-import { computed, ref } from 'vue';
+import {
+  computed,
+  ref,
+  shallowRef,
+  type Ref,
+} from 'vue';
 
-/**
- * @typedef {object} UseListSelectionOptions
- * @property {import('vue').Ref<Array<{id:unknown}|undefined>>} rows
- * @property {import('vue').Ref<number>} total
- * @property {import('vue').Ref<Set<unknown>>} [selectedIds]
- *   Optional externally-owned selection set (mail-store).
- * @property {import('vue').Ref<unknown>} [focusedId]
- *   Optional externally-owned keyboard cursor, as a stable row id.
- *   When the caller keeps the cursor in a Pinia store (so other panes
- *   and a scroll-follow watcher can read it), pass the same ref here
- *   and the composable writes the cursor's id on arrow nav. If
- *   omitted, the composable owns a local ref. The cursor is kept as an
- *   id rather than an index so it survives rows loading, filtering, or
- *   being removed underneath the virtualized window; the positional
- *   `focusedIndex` is derived from it on demand.
- */
+type SelectionRows<Row> = Readonly<Ref<readonly (Row | undefined)[]>>;
 
-export function useListSelection({
-  rows,
-  total,
-  selectedIds: externalSelectedIds,
-  focusedId: externalFocusedId,
-}: {
-  rows: any;
-  total: any;
-  selectedIds?: any;
-  focusedId?: any;
-}) {
-  const selectedIds = externalSelectedIds ?? ref(new Set());
+export interface UseListSelectionOptions<Row, Key> {
+  focusedId?: Ref<Key | null>;
+  getKey?: (row: Row) => Key | null | undefined;
+  rows: SelectionRows<Row>;
+  selectedIds?: Ref<Set<Key>>;
+  total: Readonly<Ref<number>>;
+}
+
+interface ListSelectionKeyEvent {
+  ctrlKey?: boolean;
+  key: string;
+  metaKey?: boolean;
+  preventDefault: () => void;
+  shiftKey?: boolean;
+}
+
+function defaultRowKey<Row, Key>(row: Row): Key | null {
+  if (row == null || typeof row !== 'object' || !('id' in row)) return null;
+  return (row as { id?: Key }).id ?? null;
+}
+
+export function useListSelection<Row, Key = unknown>(
+  options: UseListSelectionOptions<Row, Key>,
+) {
+  const {
+    rows,
+    total,
+    selectedIds: externalSelectedIds,
+    focusedId: externalFocusedId,
+  } = options;
+  const getKey = options.getKey
+    ?? ((row: Row) => defaultRowKey<Row, Key>(row));
+  const selectedIds = externalSelectedIds ?? shallowRef(new Set<Key>());
   // Canonical cursor is an id; the index is derived. -1 when the cursor
   // is unset or its row isn't currently in `rows` (e.g. scrolled out of
   // a sparse window or filtered away).
-  const focusedId = externalFocusedId ?? ref(null);
+  const focusedId = externalFocusedId ?? shallowRef<Key | null>(null);
   const focusedIndex = computed(() => (focusedId.value == null
     ? -1
-    : rows.value.findIndex((row) => row?.id === focusedId.value)));
+    : rows.value.findIndex((row) =>
+        row !== undefined && getKey(row) === focusedId.value)));
   const anchorIndex = ref(-1);
 
   const selectionCount = computed(() => selectedIds.value.size);
   const hasSelection = computed(() => selectionCount.value > 0);
 
-  function _bump() {
-    selectedIds.value = new Set(selectedIds.value);
-  }
-
-  function isSelected(id) {
+  function isSelected(id: Key | null | undefined) {
     return id != null && selectedIds.value.has(id);
   }
 
-  function _idAt(index) {
+  function _idAt(index: number): Key | null {
     const row = rows.value[index];
-    return row?.id ?? null;
+    return row === undefined ? null : getKey(row) ?? null;
   }
 
   /**
@@ -93,7 +101,7 @@ export function useListSelection({
    * Returns the id at the new focused index (or null if it's a
    * placeholder).
    */
-  function setFocused(index) {
+  function setFocused(index: number): Key | null {
     if (index < 0 || index >= rows.value.length) return null;
     const id = _idAt(index);
     focusedId.value = id;
@@ -106,16 +114,17 @@ export function useListSelection({
    * NOT change `focusedIndex` — Fastmail's checkbox doesn't move the
    * viewer.
    */
-  function toggleAt(index) {
+  function toggleAt(index: number): void {
     const id = _idAt(index);
     if (id == null) return;
-    if (selectedIds.value.has(id)) {
-      selectedIds.value.delete(id);
+    const next = new Set(selectedIds.value);
+    if (next.has(id)) {
+      next.delete(id);
     } else {
-      selectedIds.value.add(id);
+      next.add(id);
     }
     anchorIndex.value = index;
-    _bump();
+    selectedIds.value = next;
   }
 
   /**
@@ -126,14 +135,14 @@ export function useListSelection({
    * Mail/Fastmail and lets a shrinking shift-click correctly drop the
    * tail of the prior range.
    */
-  function extendRange(index, fallbackAnchorIndex = index) {
+  function extendRange(index: number, fallbackAnchorIndex = index): void {
     if (index < 0 || index >= rows.value.length) return;
     const hadAnchor = anchorIndex.value >= 0;
     const fallback = Number.isFinite(fallbackAnchorIndex) ? fallbackAnchorIndex : index;
     const anchor = hadAnchor ? anchorIndex.value : Math.max(0, Math.min(rows.value.length - 1, fallback));
     const lo = Math.min(index, anchor);
     const hi = Math.max(index, anchor) + 1;
-    const next = new Set();
+    const next = new Set<Key>();
     const upper = Math.min(rows.value.length, hi);
     for (let i = Math.max(0, lo); i < upper; i += 1) {
       const id = _idAt(i);
@@ -147,7 +156,11 @@ export function useListSelection({
    * Click handler for a checkbox. Shift-click extends the range from
    * the anchor; everything else just toggles.
    */
-  function handleCheckboxClick(index, event, fallbackAnchorIndex = index) {
+  function handleCheckboxClick(
+    index: number,
+    event: { shiftKey?: boolean } | null | undefined,
+    fallbackAnchorIndex = index,
+  ): void {
     if (event && event.shiftKey) {
       extendRange(index, fallbackAnchorIndex);
     } else {
@@ -162,7 +175,7 @@ export function useListSelection({
    * react (e.g. to drive the preview pane on plain Arrow moves):
    *   { consumed: bool, focusChanged: bool, focusedId: id|null }
    */
-  function handleKeyDown(event) {
+  function handleKeyDown(event: ListSelectionKeyEvent) {
     const meta = event.metaKey || event.ctrlKey;
     const len = rows.value.length;
     const result = { consumed: false, focusChanged: false, focusedId: null };
@@ -227,7 +240,7 @@ export function useListSelection({
     return result;
   }
 
-  function selectAllLoaded() {
+  function selectAllLoaded(): void {
     const upper = Math.min(rows.value.length, total.value || rows.value.length);
     const next = new Set(selectedIds.value);
     let changed = 0;
@@ -242,13 +255,12 @@ export function useListSelection({
     if (upper > 0) anchorIndex.value = 0;
   }
 
-  function selectNone() {
-    if (selectedIds.value.size === 0) return;
-    selectedIds.value = new Set();
+  function selectNone(): void {
+    if (selectedIds.value.size > 0) selectedIds.value = new Set<Key>();
     anchorIndex.value = -1;
   }
 
-  function pruneRemoved(removedIds) {
+  function pruneRemoved(removedIds: Iterable<Key> | null | undefined): number {
     if (!removedIds) return 0;
     const next = new Set(selectedIds.value);
     let removed = 0;
@@ -259,9 +271,9 @@ export function useListSelection({
     return removed;
   }
 
-  function retainOnly(allowedIds) {
+  function retainOnly(allowedIds: Iterable<Key>): number {
     const allow = allowedIds instanceof Set ? allowedIds : new Set(allowedIds);
-    const next = new Set();
+    const next = new Set<Key>();
     let removed = 0;
     for (const id of selectedIds.value) {
       if (allow.has(id)) {
