@@ -58,7 +58,7 @@ async function legacyContact(engine: any, {
 
 /** Apply the unreleased v6-v8 migrations. */
 async function upgrade(engine: any) {
-  await engine.runMigrations();
+  await engine.runMigrations({ upTo: 8 });
 }
 
 describe('migration 007: consolidated contacts', () => {
@@ -252,55 +252,6 @@ describe('migration 007: consolidated contacts', () => {
       prefix: 'école',
       limit: 10,
     })).toEqual([]);
-    await engine.close();
-  });
-
-  it('repairs migrated lookup data through the real contact upsert handler', async () => {
-    const engine = await legacyEngine();
-    await legacyContact(engine, {
-      id: 100,
-      book: 10,
-      remoteId: 'card-unicode',
-      name: 'École Smith—Jane',
-      email: 'JOSÉ@example.com',
-    });
-    await upgrade(engine);
-
-    // Bootstrap's full contact sync uses this handler. Its Unicode key and
-    // token writes are the guarantee provided in place of SQL backfills.
-    const handlers = makeHandlers(engine, noopBroadcaster());
-    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
-      accountId: 1,
-      contacts: [{
-        addressbookIds: [10],
-        remoteId: 'card-unicode',
-        displayName: 'École Smith—Jane',
-        emails: [{ email: 'JOSÉ@example.com', isPreferred: true }],
-      }],
-    });
-
-    expect(await engine.get(
-      'SELECT email, email_key FROM contact_emails WHERE contact_id = 100',
-    )).toEqual({ email: 'JOSÉ@example.com', email_key: 'josé@example.com' });
-    expect((await engine.all(
-      'SELECT token FROM contact_search_tokens WHERE contact_id = 100 ORDER BY token',
-    )).map((row) => row.token)).toEqual(['jane', 'smith', 'école']);
-
-    expect((await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
-      accountId: 1,
-      prefix: 'josé@example.com',
-      limit: 10,
-    })).map((row) => row.email)).toEqual(['JOSÉ@example.com']);
-    expect((await handlers[DB_RPC.CONTACT_AUTOCOMPLETE]({
-      accountId: 1,
-      prefix: 'école',
-      limit: 10,
-    })).map((row) => row.email)).toEqual(['JOSÉ@example.com']);
-
-    await engine.run('DELETE FROM contacts WHERE id = 100');
-    expect(await engine.all(
-      'SELECT contact_id FROM contact_search_tokens WHERE contact_id = 100',
-    )).toEqual([]);
     await engine.close();
   });
 

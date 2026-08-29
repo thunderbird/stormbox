@@ -56,15 +56,63 @@ export interface FolderRow {
   index_percent?: number;
 }
 
+export interface IdentityAddress {
+  name: string | null;
+  email: string;
+}
+
 export interface IdentityRow {
   id: number;
   account_id: number;
   remote_id: string;
-  name: string | null;
+  name: string;
   email: string;
   reply_to_json: string | null;
+  bcc_json: string | null;
+  text_signature: string | null;
+  html_signature: string | null;
+  may_delete: 0 | 1 | null;
   raw_json: string | null;
   updated_at: number;
+  /** Protocol-neutral values decoded from reply_to_json by the repository handler. */
+  reply_to: IdentityAddress[] | null;
+  /** Protocol-neutral values decoded from bcc_json by the repository handler. */
+  bcc: IdentityAddress[] | null;
+}
+
+export interface IdentityMutableFields {
+  name?: string;
+  replyTo?: IdentityAddress[] | null;
+  bcc?: IdentityAddress[] | null;
+  textSignature?: string | null;
+  htmlSignature?: string | null;
+}
+
+export interface CreateIdentityMutationRequest extends IdentityMutableFields {
+  operationId: string;
+  email: string;
+}
+
+export interface UpdateIdentityMutationRequest extends IdentityMutableFields {
+  operationId: string;
+  remoteId: string;
+}
+
+export interface DeleteIdentityMutationRequest {
+  operationId: string;
+  remoteId: string;
+}
+
+export interface IdentityUpsertInput {
+  remoteId: string;
+  name: string;
+  email: string;
+  replyTo: IdentityAddress[] | null;
+  bcc: IdentityAddress[] | null;
+  textSignature: string | null;
+  htmlSignature: string | null;
+  mayDelete: boolean | null;
+  rawJson: string;
 }
 
 export interface MessageRow {
@@ -140,6 +188,7 @@ export interface AddressbookRow {
   description: string | null;
   is_default: 0 | 1;
   is_subscribed: 0 | 1;
+  may_write?: 0 | 1 | null;
   ctag: string | null;
   sync_token: string | null;
   raw_json: string | null;
@@ -150,11 +199,170 @@ export interface AddressbookRow {
 export interface ContactListRow {
   id: number;
   remote_id: string | null;
+  /** Durable create identity when the server exposes a valid contact uid. */
+  uid?: string | null;
   /** Every address book the card is filed in; a card may be in several. */
   addressbook_ids: number[];
   display_name: string | null;
-  organization: string | null;
   email: string | null;
+}
+
+export type ContactContext = 'private' | 'work';
+
+export type ContactPhoneFeature =
+  | 'fax'
+  | 'main-number'
+  | 'mobile'
+  | 'pager'
+  | 'text'
+  | 'textphone'
+  | 'video'
+  | 'voice';
+
+export type ContactAnniversaryKind = 'birth' | 'death' | 'wedding';
+
+export interface ContactPartialDate {
+  kind: 'partial';
+  year: number | null;
+  month: number | null;
+  day: number | null;
+}
+
+export interface ContactTimestampDate {
+  kind: 'timestamp';
+  utc: string;
+}
+
+export type ContactAnniversaryDate = ContactPartialDate | ContactTimestampDate;
+
+export interface ContactDetailResource {
+  /** Stable JSContact map key. Legacy unkeyed values remain null. */
+  mapKey: string | null;
+  position: number;
+  value: string;
+  label: string | null;
+  contexts: ContactContext[];
+  pref: number | null;
+}
+
+export interface ContactDetailEmail extends ContactDetailResource {
+  isPreferred: boolean;
+}
+
+export interface ContactDetailPhone extends ContactDetailResource {
+  features: ContactPhoneFeature[];
+}
+
+export type ContactDetailLink = ContactDetailResource;
+
+export interface ContactDetailAnniversary {
+  mapKey: string | null;
+  position: number;
+  kind: ContactAnniversaryKind;
+  date: ContactAnniversaryDate;
+}
+
+export interface ContactDetailNote {
+  mapKey: string | null;
+  position: number;
+  value: string;
+}
+
+export interface ContactDetailOrganizationUnit {
+  position: number;
+  value: string;
+}
+
+export interface ContactDetailOrganization {
+  mapKey: string | null;
+  /**
+   * Form-local identity for a new organization. Titles may reference this
+   * through organizationFormId until mutation preparation mints a map key.
+   */
+  formId?: string | null;
+  position: number;
+  name: string | null;
+  contexts: ContactContext[];
+  units: ContactDetailOrganizationUnit[];
+}
+
+export type ContactTitleKind = 'role' | 'title';
+
+export interface ContactDetailTitle {
+  mapKey: string | null;
+  position: number;
+  value: string;
+  kind: ContactTitleKind;
+  organizationMapKey: string | null;
+  /** Form-local organization identity; never serialized as a JSContact property. */
+  organizationFormId?: string | null;
+}
+
+export interface ContactDetail {
+  id: number;
+  remote_id: string | null;
+  addressbook_ids: number[];
+  display_name: string | null;
+  full_name: string | null;
+  emails: ContactDetailEmail[];
+  phones: ContactDetailPhone[];
+  links: ContactDetailLink[];
+  anniversaries: ContactDetailAnniversary[];
+  notes: ContactDetailNote[];
+  organizations: ContactDetailOrganization[];
+  titles: ContactDetailTitle[];
+}
+
+export interface ContactMutationFields {
+  fullName: string | null;
+  emails: ContactDetailEmail[];
+  phones: ContactDetailPhone[];
+  links: ContactDetailLink[];
+  anniversaries: ContactDetailAnniversary[];
+  notes: ContactDetailNote[];
+  organizations: ContactDetailOrganization[];
+  titles: ContactDetailTitle[];
+}
+
+export interface CreateContactMutationRequest extends ContactMutationFields {
+  uid: string;
+  /** Local address-book ids; the sync backend resolves protocol ids. */
+  addressbookIds: number[];
+}
+
+export interface UpdateContactMutationRequest {
+  /** Local contact id; the sync backend resolves the protocol id. */
+  contactId: number;
+  baseline: ContactMutationFields;
+  contact: ContactMutationFields;
+}
+
+export type ContactBatchMutationRequest =
+  | {
+      operation: 'move';
+      /** Local ids only; JMAP ids are resolved in the worker. */
+      contactIds: number[];
+      sourceAddressbookId: number;
+      targetAddressbookId: number;
+    }
+  | {
+      operation: 'scoped-delete';
+      /** `null` identifies the All Contacts permanent-delete scope. */
+      sourceAddressbookId: number | null;
+      contactIds: number[];
+    };
+
+export interface ContactBatchFailure {
+  contactId: number;
+  errorType: string;
+  message?: string;
+}
+
+export interface ContactBatchMutationResult {
+  succeededContactIds: number[];
+  updatedContactIds: number[];
+  destroyedContactIds: number[];
+  failures: ContactBatchFailure[];
 }
 
 export interface PendingMutationRow {

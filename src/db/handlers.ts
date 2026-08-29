@@ -13,7 +13,12 @@
  */
 
 import { addressKey, nameTokens } from '../utils/address-key';
-import { MUTATION_TYPE, SEND_PHASE } from '../constants/states';
+import { IDENTITY_ERROR } from '../constants/identity-errors';
+import { decodeIdentityAddresses, hasOwn } from '../utils/identity-fields';
+import {
+  MUTATION_TYPE,
+  SEND_PHASE,
+} from '../constants/states';
 import { autocompleteRecipients, ownedAddressKeys } from './autocomplete';
 import {
   batchResult,
@@ -22,6 +27,16 @@ import {
   placeholdersFor,
 } from './batch-helpers';
 import { DB_RPC, TABLE_FAMILIES } from './protocol';
+
+function identityRowFromDatabase(row: any) {
+  if (!row) return null;
+  return {
+    ...row,
+    name: typeof row.name === 'string' ? row.name : '',
+    reply_to: decodeIdentityAddresses(row.reply_to_json),
+    bcc: decodeIdentityAddresses(row.bcc_json),
+  };
+}
 
 async function destroyMessagesByRemoteIdsInTransaction(
   tx: any,
@@ -891,11 +906,21 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return batchResult(applied);
     },
 
-    [DB_RPC.IDENTITY_LIST]: async ({ accountId }) =>
-      engine.all(
+    [DB_RPC.IDENTITY_LIST]: async ({ accountId }) => {
+      const rows = await engine.all(
         `SELECT * FROM identities WHERE account_id = ? ORDER BY name COLLATE NOCASE, email COLLATE NOCASE`,
         [accountId],
-      ),
+      );
+      return rows.map(identityRowFromDatabase);
+    },
+
+    [DB_RPC.IDENTITY_GET_BY_REMOTE]: async ({ accountId, remoteId }) => {
+      const row = await engine.get(
+        `SELECT * FROM identities WHERE account_id = ? AND remote_id = ?`,
+        [accountId, remoteId],
+      );
+      return identityRowFromDatabase(row);
+    },
 
     /**
      * @param {object} args
@@ -915,23 +940,40 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       let removed = 0;
       await engine.transaction(async (tx) => {
         for (const id of identities ?? []) {
+          const replyToJson = hasOwn(id, 'replyTo')
+            ? (id.replyTo === null ? null : JSON.stringify(id.replyTo))
+            : id.replyToJson ?? null;
+          const bccJson = hasOwn(id, 'bcc')
+            ? (id.bcc === null ? null : JSON.stringify(id.bcc))
+            : id.bccJson ?? null;
+          const mayDelete = hasOwn(id, 'mayDelete')
+            ? (typeof id.mayDelete === 'boolean' ? Number(id.mayDelete) : null)
+            : id.mayDeleteValue ?? null;
           await tx.run(
             `INSERT INTO identities(
-                account_id, remote_id, name, email, reply_to_json,
-                raw_json, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                account_id, remote_id, name, email, reply_to_json, bcc_json,
+                text_signature, html_signature, may_delete, raw_json, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id, remote_id) DO UPDATE SET
                 name = excluded.name,
                 email = excluded.email,
                 reply_to_json = excluded.reply_to_json,
+                bcc_json = excluded.bcc_json,
+                text_signature = excluded.text_signature,
+                html_signature = excluded.html_signature,
+                may_delete = excluded.may_delete,
                 raw_json = excluded.raw_json,
                 updated_at = excluded.updated_at`,
             [
               accountId,
               id.remoteId,
-              id.name ?? null,
+              typeof id.name === 'string' ? id.name : '',
               id.email,
-              id.replyToJson ?? null,
+              replyToJson,
+              bccJson,
+              id.textSignature ?? null,
+              id.htmlSignature ?? null,
+              mayDelete,
               id.rawJson ?? null,
               ts,
             ],
@@ -953,6 +995,17 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       });
       broadcaster.touch(TABLE_FAMILIES.IDENTITIES);
       return { upserted: identities?.length ?? 0, removed };
+    },
+
+    [DB_RPC.IDENTITY_DELETE_LOCAL]: async ({ accountId, remoteId }) => {
+      const result = await engine.run(
+        `DELETE FROM identities WHERE account_id = ? AND remote_id = ?`,
+        [accountId, remoteId],
+      );
+      if ((result.changes ?? 0) > 0) {
+        broadcaster.touch(TABLE_FAMILIES.IDENTITIES);
+      }
+      return { removed: result.changes ?? 0 };
     },
 
     [DB_RPC.THREAD_UPSERT_MANY]: async ({ accountId, threads }) => {
@@ -2618,7 +2671,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      *   An empty snapshot is meaningful and removes everything.
      */
     [DB_RPC.ADDRESSBOOK_UPSERT_MANY]: async ({
-      accountId, serviceKind, addressbooks, snapshot = false,
+      accountId, serviceKind, addressbooks, snapshot = false, broadcast = true,
     }) => {
       if (!addressbooks?.length && !snapshot) {
         return { upserted: 0 };
@@ -2630,14 +2683,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           await tx.run(
             `INSERT INTO addressbooks(
                 account_id, service_kind, remote_id, name, description,
-                is_default, is_subscribed, ctag, sync_token,
+                is_default, is_subscribed, may_write, ctag, sync_token,
                 raw_json, is_deleted, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id, service_kind, remote_id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
                 is_default = excluded.is_default,
                 is_subscribed = excluded.is_subscribed,
+                may_write = excluded.may_write,
                 ctag = excluded.ctag,
                 sync_token = excluded.sync_token,
                 raw_json = excluded.raw_json,
@@ -2651,6 +2705,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               ab.description ?? null,
               ab.isDefault ? 1 : 0,
               ab.isSubscribed === false ? 0 : 1,
+              ab.mayWrite === true ? 1 : (ab.mayWrite === false ? 0 : null),
               ab.ctag ?? null,
               ab.syncToken ?? null,
               ab.rawJson ?? null,
@@ -2670,7 +2725,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         );
         retired = result?.changes ?? 0;
       });
-      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      if (broadcast) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { upserted: addressbooks?.length ?? 0, retired };
     },
 
@@ -2685,8 +2740,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const rows = await engine.all(
         `SELECT c.id,
                 c.remote_id,
+                c.uid,
                 c.display_name,
-                c.organization,
                 (SELECT email FROM contact_emails ce
                   WHERE ce.contact_id = c.id
                   ORDER BY is_preferred DESC, position
@@ -2706,20 +2761,56 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     },
 
     /**
-     * Fetch a single contact plus its full ordered email list, for the
-     * edit form (which needs every address, not just the preferred one).
+     * Fetch the protocol-neutral normalized detail model for one contact.
      */
     [DB_RPC.CONTACT_GET]: async ({ accountId, contactId }) => {
       const row = await engine.get(
-        `SELECT id, remote_id, display_name, full_name, organization
+        `SELECT id, remote_id, display_name, full_name
            FROM contacts
           WHERE id = ? AND account_id = ? AND is_deleted = 0`,
         [contactId, accountId],
       );
       if (!row) return null;
-      const emails = await engine.all(
-        `SELECT email, label, is_preferred, position
+      const emailRows = await engine.all(
+        `SELECT map_key, position, email, label, contexts_json, pref, is_preferred
            FROM contact_emails WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const phoneRows = await engine.all(
+        `SELECT map_key, position, value, label, contexts_json, features_json, pref
+           FROM contact_phones WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const linkRows = await engine.all(
+        `SELECT map_key, position, value, label, contexts_json, pref
+           FROM contact_links WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const anniversaryRows = await engine.all(
+        `SELECT map_key, position, kind, date_kind, date_year, date_month, date_day, date_utc
+           FROM contact_anniversaries WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const noteRows = await engine.all(
+        `SELECT map_key, position, value
+           FROM contact_notes WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const organizationRows = await engine.all(
+        `SELECT map_key, position, name, contexts_json
+           FROM contact_organizations WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const unitRows = await engine.all(
+        `SELECT organization_position, position, value
+           FROM contact_organization_units
+          WHERE contact_id = ?
+          ORDER BY organization_position, position`,
+        [contactId],
+      );
+      const titleRows = await engine.all(
+        `SELECT map_key, position, value, kind, organization_map_key
+           FROM contact_titles WHERE contact_id = ? ORDER BY position`,
         [contactId],
       );
       const books = await engine.all(
@@ -2727,7 +2818,77 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           WHERE contact_id = ? ORDER BY addressbook_id`,
         [contactId],
       );
-      return { ...row, emails, addressbook_ids: books.map((book) => book.addressbook_id) };
+      const emails = emailRows.map((email) => ({
+        mapKey: email.map_key ?? null,
+        position: Number(email.position),
+        value: email.email,
+        label: email.label ?? null,
+        contexts: parseStringArray(email.contexts_json),
+        pref: email.pref == null ? null : Number(email.pref),
+        isPreferred: Number(email.is_preferred) === 1,
+      }));
+      const phones = phoneRows.map((phone) => ({
+        mapKey: phone.map_key ?? null,
+        position: Number(phone.position),
+        value: phone.value,
+        label: phone.label ?? null,
+        contexts: parseStringArray(phone.contexts_json),
+        features: parseStringArray(phone.features_json),
+        pref: phone.pref == null ? null : Number(phone.pref),
+      }));
+      const links = linkRows.map((link) => ({
+        mapKey: link.map_key ?? null,
+        position: Number(link.position),
+        value: link.value,
+        label: link.label ?? null,
+        contexts: parseStringArray(link.contexts_json),
+        pref: link.pref == null ? null : Number(link.pref),
+      }));
+      const anniversaries = anniversaryRows.map((anniversary) => ({
+        mapKey: anniversary.map_key ?? null,
+        position: Number(anniversary.position),
+        kind: anniversary.kind,
+        date: anniversary.date_kind === 'timestamp'
+          ? { kind: 'timestamp', utc: anniversary.date_utc }
+          : {
+              kind: 'partial',
+              year: anniversary.date_year == null ? null : Number(anniversary.date_year),
+              month: anniversary.date_month == null ? null : Number(anniversary.date_month),
+              day: anniversary.date_day == null ? null : Number(anniversary.date_day),
+            },
+      }));
+      const notes = noteRows.map((note) => ({
+        mapKey: note.map_key ?? null,
+        position: Number(note.position),
+        value: note.value,
+      }));
+      const organizations = organizationRows.map((organization) => ({
+        mapKey: organization.map_key ?? null,
+        position: Number(organization.position),
+        name: organization.name ?? null,
+        contexts: parseStringArray(organization.contexts_json),
+        units: unitRows
+          .filter((unit) => Number(unit.organization_position) === Number(organization.position))
+          .map((unit) => ({ position: Number(unit.position), value: unit.value })),
+      }));
+      const titles = titleRows.map((title) => ({
+        mapKey: title.map_key ?? null,
+        position: Number(title.position),
+        value: title.value,
+        kind: title.kind,
+        organizationMapKey: title.organization_map_key ?? null,
+      }));
+      return {
+        ...row,
+        emails,
+        phones,
+        links,
+        anniversaries,
+        notes,
+        organizations,
+        titles,
+        addressbook_ids: books.map((book) => book.addressbook_id),
+      };
     },
 
     /**
@@ -2736,12 +2897,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      *   that saw it, so `CONTACT_SWEEP_STALE` can afterwards tell the rows
      *   the server still has from the ones it no longer does.
      */
-    [DB_RPC.CONTACT_UPSERT_MANY]: async ({ accountId, contacts, generation = null }) => {
+    [DB_RPC.CONTACT_UPSERT_MANY]: async ({
+      accountId, contacts, generation = null, broadcast = true,
+    }) => {
       if (!contacts?.length) {
         return { upserted: 0 };
       }
       const ts = now();
       await engine.transaction(async (tx) => {
+        const preparedContacts = [];
         for (const c of contacts) {
           await tx.run(
             `INSERT INTO contacts(
@@ -2788,6 +2952,28 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
             [accountId, c.remoteId],
           );
           const contactId = contactRow.id;
+          preparedContacts.push({ c, contactId });
+        }
+        const detailTables = [
+          ['contact_emails', 'emails'],
+          ['contact_phones', 'phones'],
+          ['contact_links', 'links'],
+          ['contact_anniversaries', 'anniversaries'],
+          ['contact_notes', 'notes'],
+          ['contact_organizations', 'organizations'],
+          ['contact_titles', 'titles'],
+        ];
+        for (const [table, property] of detailTables) {
+          const ids = preparedContacts
+            .filter(({ c }) => Array.isArray(c[property]))
+            .map(({ contactId }) => contactId);
+          if (ids.length === 0) continue;
+          await tx.run(
+            `DELETE FROM ${table} WHERE contact_id IN (${ids.map(() => '?').join(',')})`,
+            ids,
+          );
+        }
+        for (const { c, contactId } of preparedContacts) {
           // Membership is replaced, not added to: a card removed from a
           // book must leave it, and the card names every book it is in.
           if (c.addressbookIds) {
@@ -2800,14 +2986,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               );
             }
           }
-          if (c.emails) {
-            await tx.run(`DELETE FROM contact_emails WHERE contact_id = ?`, [contactId]);
+          if (Array.isArray(c.emails)) {
             for (let i = 0; i < c.emails.length; i += 1) {
               const e = c.emails[i];
               await tx.run(
                 `INSERT INTO contact_emails(
-                   contact_id, account_id, position, email, email_key, label, is_preferred
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                   contact_id, account_id, position, email, email_key, label, is_preferred,
+                   map_key, contexts_json, pref
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 // The address is stored verbatim for display and sending
                 // (CS-3.5); the key beside it is what lookups compare, and it
                 // is computed here rather than in SQL because SQLite's
@@ -2820,6 +3006,137 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                   addressKey(e.email),
                   e.label ?? null,
                   e.isPreferred ? 1 : 0,
+                  e.mapKey ?? null,
+                  JSON.stringify(e.contexts ?? []),
+                  e.pref ?? null,
+                ],
+              );
+            }
+          }
+
+          if (Array.isArray(c.phones)) {
+            for (let i = 0; i < c.phones.length; i += 1) {
+              const phone = c.phones[i];
+              await tx.run(
+                `INSERT INTO contact_phones(
+                   contact_id, position, map_key, value, label,
+                   contexts_json, features_json, pref
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  phone.mapKey ?? null,
+                  phone.value,
+                  phone.label ?? null,
+                  JSON.stringify(phone.contexts ?? []),
+                  JSON.stringify(phone.features ?? []),
+                  phone.pref ?? null,
+                ],
+              );
+            }
+          }
+
+          if (Array.isArray(c.links)) {
+            for (let i = 0; i < c.links.length; i += 1) {
+              const link = c.links[i];
+              await tx.run(
+                `INSERT INTO contact_links(
+                   contact_id, position, map_key, value, label, contexts_json, pref
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  link.mapKey ?? null,
+                  link.value,
+                  link.label ?? null,
+                  JSON.stringify(link.contexts ?? []),
+                  link.pref ?? null,
+                ],
+              );
+            }
+          }
+
+          if (Array.isArray(c.anniversaries)) {
+            for (let i = 0; i < c.anniversaries.length; i += 1) {
+              const anniversary = c.anniversaries[i];
+              const partial = anniversary.date.kind === 'partial' ? anniversary.date : null;
+              const timestamp = anniversary.date.kind === 'timestamp' ? anniversary.date : null;
+              await tx.run(
+                `INSERT INTO contact_anniversaries(
+                   contact_id, position, map_key, kind, date_kind,
+                   date_year, date_month, date_day, date_utc
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  anniversary.mapKey ?? null,
+                  anniversary.kind,
+                  anniversary.date.kind,
+                  partial?.year ?? null,
+                  partial?.month ?? null,
+                  partial?.day ?? null,
+                  timestamp?.utc ?? null,
+                ],
+              );
+            }
+          }
+
+          if (Array.isArray(c.notes)) {
+            for (let i = 0; i < c.notes.length; i += 1) {
+              const note = c.notes[i];
+              await tx.run(
+                `INSERT INTO contact_notes(contact_id, position, map_key, value)
+                 VALUES (?, ?, ?, ?)`,
+                [contactId, i, note.mapKey ?? null, note.value],
+              );
+            }
+          }
+
+          if (Array.isArray(c.organizations)) {
+            for (let i = 0; i < c.organizations.length; i += 1) {
+              const organization = c.organizations[i];
+              await tx.run(
+                `INSERT INTO contact_organizations(
+                   contact_id, position, map_key, name, contexts_json
+                 ) VALUES (?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  organization.mapKey ?? null,
+                  organization.name ?? null,
+                  JSON.stringify(organization.contexts ?? []),
+                ],
+              );
+              for (
+                let unitIndex = 0;
+                unitIndex < (organization.units ?? []).length;
+                unitIndex += 1
+              ) {
+                const unit = organization.units[unitIndex];
+                await tx.run(
+                  `INSERT INTO contact_organization_units(
+                     contact_id, organization_position, position, value
+                   ) VALUES (?, ?, ?, ?)`,
+                  [contactId, i, unitIndex, unit.value],
+                );
+              }
+            }
+          }
+
+          if (Array.isArray(c.titles)) {
+            for (let i = 0; i < c.titles.length; i += 1) {
+              const title = c.titles[i];
+              await tx.run(
+                `INSERT INTO contact_titles(
+                   contact_id, position, map_key, value, kind, organization_map_key
+                 ) VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  title.mapKey ?? null,
+                  title.value,
+                  title.kind,
+                  title.organizationMapKey ?? null,
                 ],
               );
             }
@@ -2831,6 +3148,11 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           if (!c.isDeleted) {
             const tokens = nameTokens(
               c.displayName, c.fullName, c.givenName, c.familyName, c.organization,
+              ...(c.organizations ?? []).flatMap((organization) => [
+                organization.name,
+                ...(organization.units ?? []).map((unit) => unit.value),
+              ]),
+              ...(c.titles ?? []).map((title) => title.value),
               ...(c.nicknames ?? []),
             );
             for (const token of tokens) {
@@ -2843,7 +3165,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           }
         }
       });
-      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      if (broadcast) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { upserted: contacts.length };
     },
 
@@ -2899,9 +3221,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * filter on is_deleted; the search tokens go in the same transaction,
      * because a deleted card is not a suggestion (CS-3.2).
      */
-    [DB_RPC.CONTACT_DELETE_LOCAL]: async ({ accountId, remoteId = null, remoteIds = null }) => {
+    [DB_RPC.CONTACT_DELETE_LOCAL]: async ({
+      accountId, remoteId = null, remoteIds = null, broadcast = true,
+    }) => {
       const ids = remoteIds ?? (remoteId == null ? [] : [remoteId]);
-      if (ids.length === 0) return { deleted: 0 };
+      if (ids.length === 0) {
+        if (broadcast) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+        return { deleted: 0 };
+      }
       const placeholders = ids.map(() => '?').join(',');
       const deleted = await engine.transaction(async (tx) => {
         const result = await tx.run(
@@ -2919,7 +3246,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         );
         return result?.changes ?? 0;
       });
-      broadcaster.touch(TABLE_FAMILIES.CONTACTS);
+      if (broadcast) broadcaster.touch(TABLE_FAMILIES.CONTACTS);
       return { deleted };
     },
 
@@ -3012,6 +3339,179 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [accountId, objectType, scope, state, ts],
       );
       broadcaster.touch(TABLE_FAMILIES.SYNC);
+    },
+
+    [DB_RPC.IDENTITY_MUTATION_ENSURE]: async (input) => {
+      const identityMutationTypes = new Set([
+        MUTATION_TYPE.CREATE_IDENTITY,
+        MUTATION_TYPE.UPDATE_IDENTITY,
+        MUTATION_TYPE.DELETE_IDENTITY,
+      ]);
+      if (
+        !identityMutationTypes.has(input.mutationType)
+        || typeof input.operationId !== 'string'
+        || !input.operationId
+      ) {
+        throw new Error('identity.ensureMutation requires an Identity mutation operation');
+      }
+
+      const ts = now();
+      let ensured: {
+        id: number;
+        reused: boolean;
+        requestMatches: boolean;
+        storedRequestJson: string;
+        errorType?: string;
+      } | null = null;
+      await engine.transaction(async (tx) => {
+        const rows = await tx.all(
+          `SELECT *
+             FROM pending_mutations
+            WHERE account_id = ?
+              AND mutation_type = ?
+              AND local_status IN ('pending','retry','in_flight','conflicted')
+            ORDER BY id`,
+          [input.accountId, input.mutationType],
+        );
+        for (const row of rows) {
+          let request;
+          try {
+            request = JSON.parse(row.request_json);
+          } catch {
+            continue;
+          }
+          if (request?.operationId !== input.operationId) continue;
+          const requestMatches = JSON.stringify(request) === JSON.stringify(
+            JSON.parse(input.requestJson),
+          );
+          const prewrite = row.phase == null || row.phase === SEND_PHASE.QUEUED;
+          if (
+            prewrite
+            && !requestMatches
+            && ['pending', 'retry', 'failed', 'conflicted'].includes(row.local_status)
+          ) {
+            await tx.run(
+              `UPDATE pending_mutations
+                  SET local_status = 'pending',
+                      request_json = ?,
+                      attempts = 0,
+                      not_before = NULL,
+                      error_json = NULL,
+                      updated_at = ?
+                WHERE id = ?`,
+              [input.requestJson, ts, row.id],
+            );
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches: true,
+              storedRequestJson: input.requestJson,
+            };
+            return;
+          }
+          if (row.local_status !== 'conflicted') {
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches,
+              storedRequestJson: row.request_json,
+            };
+            return;
+          }
+          let recordedError;
+          try {
+            recordedError = JSON.parse(row.error_json ?? 'null');
+          } catch {
+            recordedError = null;
+          }
+          const errorType = typeof recordedError?.type === 'string'
+            ? recordedError.type
+            : undefined;
+          const recoverable = row.phase === SEND_PHASE.CACHE_PENDING
+            || (prewrite && recordedError && recordedError.terminal !== true);
+          if (!recoverable) {
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches,
+              storedRequestJson: row.request_json,
+              ...(errorType ? { errorType } : {}),
+            };
+            return;
+          }
+          let checkpoint;
+          try {
+            checkpoint = JSON.parse(row.server_response_json ?? 'null');
+          } catch {
+            checkpoint = null;
+          }
+          const validCheckpoint = row.phase !== SEND_PHASE.CACHE_PENDING
+            || typeof checkpoint?.identityRemoteId === 'string';
+          if (!validCheckpoint) {
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches,
+              storedRequestJson: row.request_json,
+              errorType: IDENTITY_ERROR.AMBIGUOUS_CREATE,
+            };
+            return;
+          }
+          if (row.phase === SEND_PHASE.CACHE_PENDING) checkpoint.attempts = 0;
+          await tx.run(
+            `UPDATE pending_mutations
+                SET local_status = 'retry',
+                    attempts = 0,
+                    not_before = NULL,
+                    error_json = NULL,
+                    server_response_json = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [
+              row.phase === SEND_PHASE.CACHE_PENDING
+                ? JSON.stringify(checkpoint)
+                : row.server_response_json,
+              ts,
+              row.id,
+            ],
+          );
+          ensured = {
+            id: Number(row.id),
+            reused: true,
+            requestMatches,
+            storedRequestJson: row.request_json,
+          };
+          return;
+        }
+
+        const inserted = await tx.run(
+          `INSERT INTO pending_mutations(
+              account_id, mutation_type, local_status, target_message_id,
+              request_json, optimistic_patch_json, server_response_json, error_json,
+              created_at, updated_at
+           ) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL, NULL, ?, ?)`,
+          [input.accountId, input.mutationType, input.requestJson, ts, ts],
+        );
+        ensured = {
+          id: Number(inserted.lastInsertRowid),
+          reused: false,
+          requestMatches: true,
+          storedRequestJson: input.requestJson,
+        };
+      });
+      broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      try {
+        const maybePromise = onMutationInserted({
+          accountId: input.accountId,
+          mutationId: ensured!.id,
+        });
+        if (maybePromise && typeof maybePromise.then === 'function') {
+          maybePromise.catch(() => {});
+        }
+      } catch {
+        // The durable row is sufficient; another outbox wake will find it.
+      }
+      return ensured;
     },
 
     [DB_RPC.PENDING_MUTATION_INSERT]: async (input) => {
@@ -3233,6 +3733,18 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 function splitIds(concatenated: unknown): number[] {
   if (typeof concatenated !== 'string' || concatenated === '') return [];
   return concatenated.split(',').map(Number);
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 interface RecipientUsage {

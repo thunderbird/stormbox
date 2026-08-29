@@ -7,6 +7,30 @@
  * write are published on the broadcast channel as { tables: string[] }.
  */
 
+export type {
+  ContactAnniversaryDate,
+  ContactDetail,
+  ContactDetailAnniversary,
+  ContactDetailEmail,
+  ContactDetailLink,
+  ContactDetailNote,
+  ContactDetailOrganization,
+  ContactDetailPhone,
+  ContactDetailTitle,
+  ContactBatchFailure,
+  ContactBatchMutationRequest,
+  ContactBatchMutationResult,
+  ContactMutationFields,
+  CreateContactMutationRequest,
+  CreateIdentityMutationRequest,
+  DeleteIdentityMutationRequest,
+  IdentityAddress,
+  IdentityMutableFields,
+  IdentityUpsertInput,
+  UpdateContactMutationRequest,
+  UpdateIdentityMutationRequest,
+} from '../types/db';
+
 export const SHARED_WORKER_NAME = 'stormbox-db';
 
 export const BROADCAST_CHANNEL = 'stormbox.tables-touched';
@@ -38,7 +62,10 @@ export const DB_RPC = Object.freeze({
   FOLDER_SET_STARRED_MANY: 'folder.setStarredMany',
 
   IDENTITY_LIST: 'identity.list',
+  IDENTITY_GET_BY_REMOTE: 'identity.getByRemote',
   IDENTITY_UPSERT_MANY: 'identity.upsertMany',
+  IDENTITY_DELETE_LOCAL: 'identity.deleteLocal',
+  IDENTITY_MUTATION_ENSURE: 'identity.ensureMutation',
 
   THREAD_UPSERT_MANY: 'thread.upsertMany',
 
