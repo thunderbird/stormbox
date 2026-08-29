@@ -9,7 +9,7 @@ describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
     const row = await engine.get('PRAGMA user_version');
-    expect(LATEST_VERSION).toBe(8);
+    expect(LATEST_VERSION).toBe(10);
     expect(Number(row?.user_version)).toBe(LATEST_VERSION);
     await engine.close();
   });

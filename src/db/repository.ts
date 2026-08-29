@@ -7,6 +7,12 @@
  * and shared across all stores.
  */
 
+import type {
+  ContactDetail,
+  ContactListRow,
+  IdentityRow,
+  IdentityUpsertInput,
+} from '../types/db';
 import { assertSupportedBrowser } from './availability';
 import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol';
 import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch';
@@ -138,12 +144,27 @@ export class Repository {
 
   // Identities ---------------------------------------------------------
 
-  listIdentities(accountId) {
-    return this.call(DB_RPC.IDENTITY_LIST, { accountId });
+  listIdentities(accountId): Promise<IdentityRow[]> {
+    return this.call<IdentityRow[]>(DB_RPC.IDENTITY_LIST, { accountId });
   }
 
-  upsertIdentities(accountId, identities) {
+  getIdentityByRemote(accountId, remoteId): Promise<IdentityRow | null> {
+    return this.call<IdentityRow | null>(DB_RPC.IDENTITY_GET_BY_REMOTE, {
+      accountId,
+      remoteId,
+    });
+  }
+
+  upsertIdentities(accountId, identities: IdentityUpsertInput[]) {
     return this.call(DB_RPC.IDENTITY_UPSERT_MANY, { accountId, identities });
+  }
+
+  deleteLocalIdentity(accountId, remoteId) {
+    return this.call(DB_RPC.IDENTITY_DELETE_LOCAL, { accountId, remoteId });
+  }
+
+  ensureIdentityMutation(input) {
+    return this.call(DB_RPC.IDENTITY_MUTATION_ENSURE, input);
   }
 
   // Threads ------------------------------------------------------------
@@ -291,12 +312,15 @@ export class Repository {
    * view. Components must go through this rather than speaking SQL
    * to the worker.
    */
-  listContacts(accountId, options = {}) {
-    return this.call(DB_RPC.CONTACT_LIST, { accountId, ...options });
+  listContacts(
+    accountId: number,
+    options: { limit?: number } = {},
+  ): Promise<ContactListRow[]> {
+    return this.call<ContactListRow[]>(DB_RPC.CONTACT_LIST, { accountId, ...options });
   }
 
-  getContact(accountId, contactId) {
-    return this.call(DB_RPC.CONTACT_GET, { accountId, contactId });
+  getContact(accountId: number, contactId: number): Promise<ContactDetail | null> {
+    return this.call<ContactDetail | null>(DB_RPC.CONTACT_GET, { accountId, contactId });
   }
 
   autocompleteContacts(accountId, prefix, limit = 20, exclude = []) {
