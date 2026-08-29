@@ -25,7 +25,11 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
-import { SEND_PHASE, SERVICE_KIND } from '../../../constants/states';
+import {
+  IDENTITY_PHASE,
+  SEND_PHASE,
+  SERVICE_KIND,
+} from '../../../constants/states';
 import { wlog } from '../../../db/worker-log';
 import { ingestSession } from './session';
 import { syncMailboxes, syncMailboxChanges } from './mailboxes';
@@ -47,6 +51,7 @@ import { OutboxRunner } from './outbox-runner';
 import { maxObjectsInGet } from './limits';
 import { bytesToBase64 } from '../../../utils/inline-images';
 import { addressKey } from '../../../utils/address-key';
+import { createContactUid } from '../../../utils/contact-uid';
 
 const SUBSCRIBED_TYPES = [
   'Mailbox',
@@ -287,13 +292,14 @@ export class JmapBackend {
         [MUTATION_TYPES.SAVE_DRAFT]: DRAFT_SAVE_MAX_ATTEMPTS,
         ...(this._outboxRunnerOptions?.maxAttemptsByType ?? {}),
       },
-      // A send that was in flight when the worker died may already have
-      // been submitted, so it is never replayed blindly. Its checkpoint
-      // phase decides: before submission the row can safely resume,
-      // after submission the message is already gone and the row is
-      // finished.
-      unsafeToReplayTypes: [MUTATION_TYPES.SEND],
-      replayablePhases: [SEND_PHASE.QUEUED, SEND_PHASE.CREATED],
+      // Sends and Identity creates have irreversible calls. Their phases
+      // route a recovered row through reconciliation instead of blind replay.
+      unsafeToReplayTypes: [MUTATION_TYPES.SEND, MUTATION_TYPES.CREATE_IDENTITY],
+      replayablePhases: [
+        SEND_PHASE.QUEUED,
+        SEND_PHASE.CREATED,
+        IDENTITY_PHASE.CREATE_SUBMITTING,
+      ],
       completedPhases: [SEND_PHASE.SUBMITTED, SEND_PHASE.CACHE_PENDING],
       onForegroundChange: (delta) => {
         this._foregroundFolderWindowCount = Math.max(
@@ -1138,7 +1144,10 @@ export class JmapBackend {
       list.push(row);
       byMessage.set(messageId, list);
     }
-    const recipients = new Map<string, { email: string; name: string | null }>();
+    const recipients = new Map<
+      string,
+      { email: string; name: string | null; uid: string }
+    >();
     for (const addresses of byMessage.values()) {
       if (!addresses.some((row) => row.kind === 'from' && owned.has(addressKey(row.email)))) {
         continue;
@@ -1150,6 +1159,7 @@ export class JmapBackend {
         recipients.set(key, {
           email: String(row.email).trim(),
           name: row.name?.trim() || null,
+          uid: createContactUid(),
         });
       }
     }

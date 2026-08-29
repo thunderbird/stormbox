@@ -53,6 +53,7 @@ import { deleteRow, markFailed, markRow } from './batch';
 import { runCopyToFolders } from './operations/copy-to-folders';
 import { runCreateMailbox } from './operations/create-mailbox';
 import {
+  runContactBatch,
   runCreateContact,
   runDeleteContact,
   runUpdateContact,
@@ -89,6 +90,7 @@ export const MUTATION_TYPES = Object.freeze({
   CREATE_CONTACT: 'createContact',
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
+  CONTACT_BATCH: 'contactBatch',
   CREATE_IDENTITY: 'createIdentity',
   UPDATE_IDENTITY: 'updateIdentity',
   DELETE_IDENTITY: 'deleteIdentity',
@@ -151,8 +153,20 @@ export async function drainOutbox({
 export async function processMutationRow({
   transport, account, handlers, row, useWebSocket = false,
 }): Promise<{ ok: boolean; error?: any; response?: any; result?: any }> {
-  const request = JSON.parse(row.request_json);
-  switch (row.mutation_type) {
+  const identityWrite = row.mutation_type === MUTATION_TYPES.CREATE_IDENTITY
+    || row.mutation_type === MUTATION_TYPES.UPDATE_IDENTITY
+    || row.mutation_type === MUTATION_TYPES.DELETE_IDENTITY;
+  const checkpointedWrite = identityWrite
+    || row.mutation_type === MUTATION_TYPES.CONTACT_BATCH;
+  const currentRows = checkpointedWrite
+    ? await handlers[DB_RPC.QUERY]({
+        sql: 'SELECT * FROM pending_mutations WHERE id = ? LIMIT 1',
+        params: [row.id],
+      })
+    : [];
+  const currentRow = currentRows[0] ?? row;
+  const request = JSON.parse(currentRow.request_json);
+  switch (currentRow.mutation_type) {
     case MUTATION_TYPES.SET_KEYWORDS:
       return runSetKeywords({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.MOVE_TO_FOLDERS:
@@ -177,12 +191,22 @@ export async function processMutationRow({
       return runUpdateContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DELETE_CONTACT:
       return runDeleteContact({ transport, account, handlers, row, request, useWebSocket });
+    case MUTATION_TYPES.CONTACT_BATCH:
+      return runContactBatch({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
     case MUTATION_TYPES.CREATE_IDENTITY:
-      return runCreateIdentity({ transport, account, handlers, row, request, useWebSocket });
+      return runCreateIdentity({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
     case MUTATION_TYPES.UPDATE_IDENTITY:
-      return runUpdateIdentity({ transport, account, handlers, row, request, useWebSocket });
+      return runUpdateIdentity({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
     case MUTATION_TYPES.DELETE_IDENTITY:
-      return runDeleteIdentity({ transport, account, handlers, row, request, useWebSocket });
+      return runDeleteIdentity({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
     case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
       return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.CREATE_MAILBOX:
@@ -192,7 +216,10 @@ export async function processMutationRow({
     case MUTATION_TYPES.DESTROY_MAILBOX:
       return runDestroyMailbox({ transport, handlers, request, useWebSocket });
     default:
-      return { ok: false, error: { type: 'unsupportedMutation', mutation_type: row.mutation_type } };
+      return {
+        ok: false,
+        error: { type: 'unsupportedMutation', mutation_type: currentRow.mutation_type },
+      };
   }
 }
 async function runOne(args) {

@@ -2444,7 +2444,11 @@ describe('JmapBackend recent recipient import', () => {
         WHERE mutation_type = 'whitelistSender'`,
     );
     expect(JSON.parse(mutation.request_json).senders).toEqual([
-      { email: 'recent@example.com', name: 'Recent' },
+      {
+        email: 'recent@example.com',
+        name: 'Recent',
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
     ]);
     expect(await handlers[DB_RPC.SYNC_STATE_GET]({
       accountId: account.id,

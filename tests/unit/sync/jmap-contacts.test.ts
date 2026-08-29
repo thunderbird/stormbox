@@ -4,6 +4,8 @@ import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
+import type { ContactMutationFields } from '../../../src/types/db';
+import { withContactDetailKeys } from '../../../src/utils/contact-fields';
 import {
   syncAddressBooks,
   syncContacts,
@@ -32,6 +34,22 @@ function countMethod(transport, name) {
   ).length;
 }
 
+function contactFields(
+  overrides: Partial<ContactMutationFields> = {},
+): ContactMutationFields {
+  return {
+    fullName: null,
+    emails: [],
+    phones: [],
+    links: [],
+    anniversaries: [],
+    notes: [],
+    organizations: [],
+    titles: [],
+    ...overrides,
+  };
+}
+
 let engine;
 let handlers;
 let account;
@@ -57,8 +75,20 @@ describe('syncAddressBooks', () => {
     const transport = new MockTransport();
     transport.handle('AddressBook/get', () => ({
       list: [
-        { id: 'ab-default', name: 'Default', isDefault: true, isSubscribed: true },
-        { id: 'ab-shared', name: 'Shared', isDefault: false, isSubscribed: true },
+        {
+          id: 'ab-default',
+          name: 'Default',
+          isDefault: true,
+          isSubscribed: true,
+          myRights: { mayWrite: true },
+        },
+        {
+          id: 'ab-shared',
+          name: 'Shared',
+          isDefault: false,
+          isSubscribed: true,
+          myRights: { mayWrite: false },
+        },
       ],
       state: 'ab-1',
     }));
@@ -69,6 +99,10 @@ describe('syncAddressBooks', () => {
     for (const ab of list) {
       expect(ab.service_kind).toBe(SERVICE_KIND.JMAP_CONTACTS);
     }
+    expect(list.map((ab: any) => [ab.remote_id, ab.may_write])).toEqual([
+      ['ab-default', 1],
+      ['ab-shared', 0],
+    ]);
     const stateRow = await handlers[DB_RPC.SYNC_STATE_GET]({
       accountId: account.id,
       objectType: 'AddressBook',
@@ -375,6 +409,226 @@ describe('syncContacts', () => {
     expect(row.remote_id).toBe('d');
     expect(row.email).toBe('ada@example.com');
     expect(Number(row.is_preferred)).toBe(1);
+  });
+
+  it('persists complete cards and normalizes keyed surfaced fields independently', async () => {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.JMAP_CONTACTS,
+      addressbooks: [{ remoteId: 'book-e', name: 'Contacts', isDefault: true }],
+    });
+    const card = {
+      '@type': 'Card',
+      version: '1.0',
+      id: 'details',
+      uid: 'uid-details',
+      kind: 'individual',
+      addressBookIds: { 'book-e': true },
+      name: { full: 'Detail Person' },
+      emails: {
+        email1: {
+          '@type': 'EmailAddress',
+          address: 'detail@example.com',
+          contexts: { work: true, 'x-team': true },
+          pref: 1,
+          label: 'Primary',
+          'x-entry': 'kept',
+        },
+        broken: { '@type': 'Phone', address: 'wrong-type@example.com' },
+      },
+      phones: {
+        phone1: {
+          '@type': 'Phone',
+          number: 'tel:+15551234',
+          contexts: { private: true },
+          features: { voice: true, 'x-satellite': true },
+          label: 'Desk',
+          pref: 2,
+        },
+        broken: { '@type': 'Phone', number: 42 },
+      },
+      links: {
+        site1: {
+          '@type': 'Link',
+          uri: 'https://example.com',
+          label: 'Site',
+          contexts: { work: true },
+          pref: 3,
+        },
+      },
+      anniversaries: {
+        born: {
+          '@type': 'Anniversary',
+          kind: 'birth',
+          date: { '@type': 'PartialDate', year: 2000, month: 2, day: 29 },
+        },
+        died: {
+          kind: 'death',
+          date: { '@type': 'Timestamp', utc: '2050-01-02T03:04:05.6Z' },
+        },
+        monthOnly: {
+          kind: 'wedding',
+          date: { '@type': 'PartialDate', month: 5 },
+        },
+        broken: {
+          kind: 'birth',
+          date: { month: 2, day: 30 },
+        },
+      },
+      notes: {
+        note1: { '@type': 'Note', note: 'One', author: { name: 'Server' } },
+        note2: { note: 'Two' },
+      },
+      organizations: {
+        org1: {
+          '@type': 'Organization',
+          name: 'Example Corp',
+          contexts: { work: true },
+          units: [{ name: 'Engineering' }, { name: 'Platform' }],
+        },
+        org2: { name: 'Community Group' },
+        hiddenOrg: {
+          '@type': 'Organization',
+          contexts: { work: true },
+          sortAs: 'Hidden',
+        },
+      },
+      titles: {
+        title1: {
+          '@type': 'Title',
+          name: 'Engineer',
+          kind: 'title',
+          organizationId: 'org1',
+        },
+        role1: { name: 'Mentor', kind: 'role', organizationId: 'org2' },
+        hiddenTitle: { name: 'Hidden role', kind: 'role', organizationId: 'hiddenOrg' },
+        absentTitle: { name: 'Absent role', kind: 'role', organizationId: 'missingOrg' },
+        invalidTitle: { name: 'Invalid role', kind: 'role', organizationId: 'bad key' },
+      },
+      'x-unknown': { nested: ['must', 'survive'] },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({
+      ids: ['details'],
+      total: 1,
+      queryState: 'qs-details',
+    }));
+    let getParams: any = null;
+    transport.handle('ContactCard/get', (params) => {
+      getParams = params;
+      return { list: [card], state: 'cc-details' };
+    });
+    nothingChanged(transport);
+
+    await syncContacts({ transport, account, handlers });
+
+    expect(getParams).not.toHaveProperty('properties');
+    const row = await engine.get(
+      'SELECT id, raw_json FROM contacts WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'details'],
+    );
+    expect(JSON.parse(row.raw_json)).toEqual(card);
+    const detail = await handlers[DB_RPC.CONTACT_GET]({
+      accountId: account.id,
+      contactId: row.id,
+    });
+    expect(detail.emails).toEqual([expect.objectContaining({
+      mapKey: 'email1',
+      value: 'detail@example.com',
+      contexts: ['work'],
+      pref: 1,
+      label: 'Primary',
+    })]);
+    expect(detail.phones).toEqual([expect.objectContaining({
+      mapKey: 'phone1',
+      value: 'tel:+15551234',
+      contexts: ['private'],
+      features: ['voice'],
+      pref: 2,
+    })]);
+    expect(detail.links).toEqual([expect.objectContaining({
+      mapKey: 'site1',
+      value: 'https://example.com',
+    })]);
+    expect(detail.anniversaries).toEqual([
+      expect.objectContaining({
+        mapKey: 'born',
+        kind: 'birth',
+        date: { kind: 'partial', year: 2000, month: 2, day: 29 },
+      }),
+      expect.objectContaining({
+        mapKey: 'died',
+        kind: 'death',
+        date: { kind: 'timestamp', utc: '2050-01-02T03:04:05.6Z' },
+      }),
+      expect.objectContaining({
+        mapKey: 'monthOnly',
+        kind: 'wedding',
+        date: { kind: 'partial', year: null, month: 5, day: null },
+      }),
+    ]);
+    expect(detail.notes.map((note) => [note.mapKey, note.value])).toEqual([
+      ['note1', 'One'],
+      ['note2', 'Two'],
+    ]);
+    expect(detail.organizations).toEqual([
+      expect.objectContaining({
+        mapKey: 'org1',
+        name: 'Example Corp',
+        contexts: ['work'],
+        units: [
+          { position: 0, value: 'Engineering' },
+          { position: 1, value: 'Platform' },
+        ],
+      }),
+      expect.objectContaining({
+        mapKey: 'org2',
+        name: 'Community Group',
+      }),
+      expect.objectContaining({
+        mapKey: 'hiddenOrg',
+        name: null,
+        contexts: ['work'],
+        units: [],
+      }),
+    ]);
+    expect(detail.titles.map((title) => ({
+      mapKey: title.mapKey,
+      value: title.value,
+      kind: title.kind,
+      organizationMapKey: title.organizationMapKey,
+    }))).toEqual([
+      {
+        mapKey: 'title1',
+        value: 'Engineer',
+        kind: 'title',
+        organizationMapKey: 'org1',
+      },
+      {
+        mapKey: 'role1',
+        value: 'Mentor',
+        kind: 'role',
+        organizationMapKey: 'org2',
+      },
+      {
+        mapKey: 'hiddenTitle',
+        value: 'Hidden role',
+        kind: 'role',
+        organizationMapKey: 'hiddenOrg',
+      },
+      {
+        mapKey: 'absentTitle',
+        value: 'Absent role',
+        kind: 'role',
+        organizationMapKey: null,
+      },
+      {
+        mapKey: 'invalidTitle',
+        value: 'Invalid role',
+        kind: 'role',
+        organizationMapKey: null,
+      },
+    ]);
   });
 
   it('removes a contact the server no longer has', async () => {
@@ -965,8 +1219,11 @@ describe('createContactCard', () => {
     });
     expect(result).toEqual({ ok: true, id: 'new-1' });
     expect(created.addressBookIds).toEqual({ 'book-default': true });
-    expect(created.emails.e1.address).toBe('grace@example.com');
+    expect(Object.values(created.emails)[0]).toMatchObject({
+      address: 'grace@example.com',
+    });
     expect(created.name.full).toBe('Grace Hopper');
+    expect(created.uid).toMatch(/^urn:uuid:/);
   });
 
   it('builds a multi-email map from the address list', async () => {
@@ -993,11 +1250,17 @@ describe('createContactCard', () => {
     transport.handle('AddressBook/get', () => ({
       list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
     }));
-    transport.handle('ContactCard/query', () => ({ ids: ['existing'], total: 1 }));
+    transport.handle('ContactCard/query', (params) => (
+      params.filter?.uid
+        ? { ids: [], total: 0 }
+        : { ids: ['existing'], total: 1 }
+    ));
     transport.handle('ContactCard/get', () => ({
+      state: 'contacts-state',
       list: [{
         id: 'existing',
         addressBookIds: { 'book-trusted': true },
+        name: { full: 'Promoted', 'x-phonetic': 'Pro-mo-ted' },
         emails: { e1: { '@type': 'EmailAddress', address: 'dup@example.com' } },
       }],
     }));
@@ -1010,12 +1273,371 @@ describe('createContactCard', () => {
       transport, account, emails: ['dup@example.com'], name: 'Promoted',
     });
     expect(result).toEqual({ ok: true, id: 'existing', alreadyExists: true });
-    expect(update.existing.addressBookIds).toEqual({
-      'book-trusted': true,
-      'book-default': true,
+    expect(update.existing['addressBookIds/book-default']).toBe(true);
+    expect(update.existing.name).toBeUndefined();
+    expect(update.existing['name/full']).toBeUndefined();
+    expect(update.existing.emails).toBeUndefined();
+  });
+
+  it('creates an email-less card with the exact durable keyed detail payload', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0 }));
+    let created: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      created = params.create.c1;
+      return { created: { c1: { id: 'email-less' } } };
     });
-    expect(update.existing.name.full).toBe('Promoted');
-    expect(update.existing.emails.e1.address).toBe('dup@example.com');
+    const uid = 'urn:uuid:11111111-2222-4333-8444-555555555555';
+    const contact = contactFields({
+      fullName: 'Email Less',
+      phones: [{
+        mapKey: 'phone1',
+        position: 0,
+        value: 'tel:+15551234',
+        label: 'Direct',
+        contexts: ['work'],
+        features: ['voice'],
+        pref: 1,
+      }],
+      links: [{
+        mapKey: 'site1',
+        position: 0,
+        value: 'https://example.com',
+        label: null,
+        contexts: ['private'],
+        pref: null,
+      }],
+      anniversaries: [{
+        mapKey: 'born',
+        position: 0,
+        kind: 'birth',
+        date: { kind: 'partial', year: null, month: 2, day: 29 },
+      }],
+      notes: [{ mapKey: 'note1', position: 0, value: 'A note' }],
+      organizations: [
+        {
+          mapKey: 'org1',
+          position: 0,
+          name: 'Example',
+          contexts: ['work'],
+          units: [{ position: 0, value: 'Engineering' }],
+        },
+        {
+          mapKey: 'org2',
+          position: 1,
+          name: 'Community',
+          contexts: [],
+          units: [],
+        },
+      ],
+      titles: [
+        {
+          mapKey: 'title1',
+          position: 0,
+          value: 'Engineer',
+          kind: 'title',
+          organizationMapKey: 'org1',
+        },
+        {
+          mapKey: 'role1',
+          position: 1,
+          value: 'Mentor',
+          kind: 'role',
+          organizationMapKey: 'org2',
+        },
+      ],
+    });
+
+    const result = await createContactCard({
+      transport,
+      account,
+      uid,
+      contact,
+      addressBookIds: ['book-a', 'book-b'],
+    });
+
+    expect(result).toEqual({ ok: true, id: 'email-less' });
+    expect(created).toEqual({
+      '@type': 'Card',
+      version: '1.0',
+      uid,
+      kind: 'individual',
+      addressBookIds: { 'book-a': true, 'book-b': true },
+      name: { full: 'Email Less' },
+      phones: {
+        phone1: {
+          '@type': 'Phone',
+          number: 'tel:+15551234',
+          contexts: { work: true },
+          features: { voice: true },
+          pref: 1,
+          label: 'Direct',
+        },
+      },
+      links: {
+        site1: {
+          '@type': 'Link',
+          uri: 'https://example.com',
+          contexts: { private: true },
+        },
+      },
+      anniversaries: {
+        born: {
+          '@type': 'Anniversary',
+          kind: 'birth',
+          date: {
+            '@type': 'PartialDate',
+            month: 2,
+            day: 29,
+          },
+        },
+      },
+      notes: { note1: { '@type': 'Note', note: 'A note' } },
+      organizations: {
+        org1: {
+          '@type': 'Organization',
+          name: 'Example',
+          contexts: { work: true },
+          units: [{ '@type': 'OrgUnit', name: 'Engineering' }],
+        },
+        org2: { '@type': 'Organization', name: 'Community' },
+      },
+      titles: {
+        title1: {
+          '@type': 'Title',
+          name: 'Engineer',
+          kind: 'title',
+          organizationId: 'org1',
+        },
+        role1: {
+          '@type': 'Title',
+          name: 'Mentor',
+          kind: 'role',
+          organizationId: 'org2',
+        },
+      },
+    });
+    expect(created).not.toHaveProperty('emails');
+    expect(created.links.site1).not.toHaveProperty('kind');
+    expect(created.anniversaries.born).not.toHaveProperty('label');
+  });
+
+  it('creates a month-only PartialDate without inventing a day or year', async () => {
+    const transport = new MockTransport();
+    let created: any = null;
+    transport.handle('ContactCard/set', ({ create }) => {
+      created = create.c1;
+      return { created: { c1: { id: 'month-only' } } };
+    });
+
+    const result = await createContactCard({
+      transport,
+      account,
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      contact: contactFields({
+        anniversaries: [{
+          mapKey: 'birth-month',
+          position: 0,
+          kind: 'birth',
+          date: { kind: 'partial', year: null, month: 5, day: null },
+        }],
+      }),
+      addressBookIds: ['book-a'],
+    });
+
+    expect(result).toEqual({ ok: true, id: 'month-only' });
+    expect(created.anniversaries['birth-month'].date).toEqual({
+      '@type': 'PartialDate',
+      month: 5,
+    });
+  });
+
+  it('emits a keyed empty organization for a title-only affiliation', async () => {
+    const transport = new MockTransport();
+    let created: any = null;
+    transport.handle('ContactCard/set', ({ create }) => {
+      created = create.c1;
+      return { created: { c1: { id: 'organization-title' } } };
+    });
+    const result = await createContactCard({
+      transport,
+      account,
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      contact: contactFields({
+        organizations: [{
+          mapKey: null,
+          formId: 'new-organization',
+          position: 0,
+          name: null,
+          contexts: ['work'],
+          units: [],
+        }],
+        titles: [{
+          mapKey: null,
+          position: 0,
+          value: 'Engineer',
+          kind: 'title',
+          organizationMapKey: null,
+          organizationFormId: 'new-organization',
+        }],
+      }),
+      addressBookIds: ['book-a'],
+    });
+
+    expect(result).toEqual({ ok: true, id: 'organization-title' });
+    const organizationKey = Object.keys(created.organizations)[0];
+    expect(organizationKey).toMatch(/^organization-/);
+    expect(created.organizations[organizationKey]).toEqual({
+      '@type': 'Organization',
+      contexts: { work: true },
+    });
+    expect(Object.values(created.titles)[0]).toMatchObject({
+      organizationId: organizationKey,
+    });
+    expect(JSON.stringify(created)).not.toContain('organizationFormId');
+  });
+
+  it('rejects an empty card and invalid anniversary without a server request', async () => {
+    const emptyTransport = new MockTransport();
+    const empty = await createContactCard({
+      transport: emptyTransport,
+      account,
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      contact: contactFields(),
+      addressBookIds: ['book-a'],
+    });
+    expect(empty).toMatchObject({ ok: false, error: { type: 'invalidArguments' } });
+    expect(emptyTransport.requests).toHaveLength(0);
+
+    const invalidTransport = new MockTransport();
+    const invalid = await createContactCard({
+      transport: invalidTransport,
+      account,
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      contact: contactFields({
+        anniversaries: [{
+          mapKey: 'bad-date',
+          position: 0,
+          kind: 'birth',
+          date: { kind: 'partial', year: 2023, month: 2, day: 29 },
+        }],
+      }),
+      addressBookIds: ['book-a'],
+    });
+    expect(invalid).toMatchObject({ ok: false, error: { type: 'invalidArguments' } });
+    expect(invalidTransport.requests).toHaveLength(0);
+  });
+
+  it('reconciles an ambiguous create by uid before repeating ContactCard/set', async () => {
+    const transport = new MockTransport();
+    let exists = false;
+    transport.handle('ContactCard/query', ({ filter }) => ({
+      ids: filter?.uid && exists ? ['created-on-lost-response'] : [],
+      total: exists ? 1 : 0,
+    }));
+    transport.handle('ContactCard/get', ({ ids }) => ({
+      list: ids.map((id) => ({ id, uid })),
+    }));
+    let writes = 0;
+    transport.handle('ContactCard/set', () => {
+      writes += 1;
+      exists = true;
+      return null;
+    });
+    const uid = 'urn:uuid:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const args = {
+      transport,
+      account,
+      uid,
+      contact: contactFields({ fullName: 'Recovered' }),
+      addressBookIds: ['book-a'],
+    };
+
+    const first = await createContactCard(args);
+    const retry = await createContactCard({ ...args, recoverCreate: true });
+
+    expect(first.ok).toBe(false);
+    expect(retry).toEqual({
+      ok: true,
+      id: 'created-on-lost-response',
+      alreadyExists: true,
+    });
+    expect(writes).toBe(1);
+    const uidQueries = jmapCalls(transport, 'ContactCard/query');
+    expect(uidQueries.map((query) => query.filter?.uid)).toEqual([uid]);
+  });
+
+  it('does not require uid filtering before the first create attempt', async () => {
+    const transport = new MockTransport();
+    transport.handleError('ContactCard/query', {
+      type: 'unsupportedFilter',
+      description: 'uid is not supported',
+    });
+    let writes = 0;
+    transport.handle('ContactCard/set', () => {
+      writes += 1;
+      return { created: { c1: { id: 'created' } } };
+    });
+
+    const result = await createContactCard({
+      transport,
+      account,
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      contact: contactFields({ fullName: 'First attempt' }),
+      addressBookIds: ['book-a'],
+    });
+
+    expect(result).toEqual({ ok: true, id: 'created' });
+    expect(countMethod(transport, 'ContactCard/query')).toBe(0);
+    expect(writes).toBe(1);
+  });
+
+  it('fails closed when a recovery uid probe is unsupported or ignored', async () => {
+    const uid = 'urn:uuid:11111111-2222-4333-8444-555555555555';
+    const args = {
+      account,
+      uid,
+      contact: contactFields({ fullName: 'Recovery' }),
+      addressBookIds: ['book-a'],
+      recoverCreate: true,
+    };
+    const unsupported = new MockTransport();
+    unsupported.handleError('ContactCard/query', { type: 'unsupportedFilter' });
+    unsupported.handle('ContactCard/set', () => {
+      throw new Error('must not create');
+    });
+
+    const unsupportedResult = await createContactCard({
+      ...args,
+      transport: unsupported,
+    });
+    expect(unsupportedResult).toMatchObject({
+      ok: false,
+      error: { type: 'uidProbeInconclusive' },
+    });
+    expect(countMethod(unsupported, 'ContactCard/set')).toBe(0);
+
+    const ignored = new MockTransport();
+    ignored.handle('ContactCard/query', () => ({
+      ids: ['unrelated-1', 'unrelated-2'],
+      total: 2,
+    }));
+    ignored.handle('ContactCard/get', ({ ids }) => ({
+      list: ids.map((id) => ({ id, uid: `uid-for-${id}` })),
+    }));
+    ignored.handle('ContactCard/set', () => {
+      throw new Error('must not create');
+    });
+
+    const ignoredResult = await createContactCard({ ...args, transport: ignored });
+    expect(ignoredResult).toMatchObject({
+      ok: false,
+      error: {
+        type: 'uidProbeInconclusive',
+        message: 'the server ignored the uid filter',
+      },
+    });
+    expect(countMethod(ignored, 'ContactCard/set')).toBe(0);
   });
 });
 
@@ -1052,10 +1674,13 @@ describe('createTrustedContactCards', () => {
     expect(result.created).toBe(2);
 
     const created = getCreated();
-    expect(Object.values(created).map((c: any) => c.emails.e1.address))
+    expect(Object.values(created).map(
+      (c: any) => (Object.values(c.emails)[0] as any).address,
+    ))
       .toEqual(['a@x.com', 'b@y.com']);
     Object.values(created).forEach((c: any) => {
       expect(c.addressBookIds).toEqual({ 'book-trusted': true });
+      expect(c.uid).toMatch(/^urn:uuid:/);
     });
 
     // Proper batch: one book lookup and one create regardless of N.
@@ -1076,7 +1701,9 @@ describe('createTrustedContactCards', () => {
     });
     expect(result.ok).toBe(true);
     expect(result.created).toBe(1);
-    expect(Object.values(getCreated()).map((c: any) => c.emails.e1.address)).toEqual(['b@y.com']);
+    expect(Object.values(getCreated()).map(
+      (c: any) => (Object.values(c.emails)[0] as any).address,
+    )).toEqual(['b@y.com']);
   });
 
   it('checks every email on every returned card with the canonical NFC/IDNA key', async () => {
@@ -1156,6 +1783,45 @@ describe('createTrustedContactCards', () => {
     expect(result.error.type).toBe('invalidArguments');
     expect(transport.requests).toHaveLength(0);
   });
+
+  it('uses trusted-sender uids to recover an uncertain batched create', async () => {
+    const transport = new MockTransport();
+    const uid = 'urn:uuid:11111111-2222-4333-8444-555555555555';
+    let exists = false;
+    let writes = 0;
+    transport.handle('ContactCard/query', ({ filter }) => ({
+      ids: filter?.uid && exists ? ['trusted-recovered'] : [],
+      total: exists ? 1 : 0,
+    }));
+    transport.handle('ContactCard/get', ({ ids }) => ({
+      list: ids.map((id) => ({ id, uid })),
+    }));
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-trusted', name: 'Trusted senders', isDefault: false }],
+    }));
+    transport.handle('ContactCard/set', () => {
+      writes += 1;
+      exists = true;
+      return null;
+    });
+    const args = {
+      transport,
+      account,
+      senders: [{ email: 'trusted@example.com', name: 'Trusted', uid }],
+    };
+
+    const first = await createTrustedContactCards(args);
+    const retry = await createTrustedContactCards({ ...args, recoverCreate: true });
+
+    expect(first.ok).toBe(false);
+    expect(retry).toMatchObject({
+      ok: true,
+      created: 0,
+      alreadyTrusted: true,
+      ids: ['trusted-recovered'],
+    });
+    expect(writes).toBe(1);
+  });
 });
 
 describe('updateContactCard', () => {
@@ -1179,7 +1845,7 @@ describe('updateContactCard', () => {
   function withCard(card: any) {
     const transport = new MockTransport();
     let update: any = null;
-    transport.handle('ContactCard/get', () => ({ list: [card] }));
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [card] }));
     transport.handle('ContactCard/set', (params) => {
       update = params.update;
       return { updated: { d: null } };
@@ -1198,12 +1864,14 @@ describe('updateContactCard', () => {
     });
     expect(result).toEqual({ ok: true });
 
-    const emails = Object.values(getUpdate().d.emails) as any[];
-    const kept = emails.find((e) => e.address === 'keep@example.com');
-    expect(kept.contexts).toEqual({ work: true });
-    expect(kept.pref).toBe(1);
-    expect(emails.some((e) => e.address === 'fresh@example.com')).toBe(true);
-    expect(emails.some((e) => e.address === 'drop@example.com')).toBe(false);
+    const patch = getUpdate().d;
+    expect(patch['emails/e1']).toBeUndefined();
+    expect(patch['emails/e2']).toBeNull();
+    expect(Object.entries(patch).some(
+      ([key, value]: [string, any]) => (
+        key.startsWith('emails/') && value?.address === 'fresh@example.com'
+      ),
+    )).toBe(true);
   });
 
   it('never includes untouched fields in the patch (no silent erasure)', async () => {
@@ -1211,10 +1879,7 @@ describe('updateContactCard', () => {
     await updateContactCard({
       transport, account, remoteId: 'd', emails: ['keep@example.com'], name: 'Old Name',
     });
-    // PatchObject only carries `emails`; name is unchanged so it is
-    // omitted, and phones/organizations/addressBookIds are never sent,
-    // so the server leaves them intact.
-    expect(Object.keys(getUpdate().d)).toEqual(['emails']);
+    expect(getUpdate().d).toEqual({ 'emails/e2': null });
   });
 
   it('changes only name.full and preserves other name components', async () => {
@@ -1222,7 +1887,388 @@ describe('updateContactCard', () => {
     await updateContactCard({
       transport, account, remoteId: 'd', emails: ['keep@example.com'], name: 'New Name',
     });
-    expect(getUpdate().d.name).toEqual({ full: 'New Name', given: 'Old', surname: 'Name' });
+    expect(getUpdate().d['name/full']).toBe('New Name');
+    expect(getUpdate().d.name).toBeUndefined();
+  });
+
+  it('sparsely edits stable keys while preserving metadata and concurrent additions', async () => {
+    const baseline = contactFields({
+      fullName: 'Old Name',
+      emails: [
+        {
+          mapKey: 'email1',
+          position: 0,
+          value: 'old@example.com',
+          label: 'Old label',
+          contexts: ['work'],
+          pref: 2,
+          isPreferred: true,
+        },
+        {
+          mapKey: 'email2',
+          position: 1,
+          value: 'remove@example.com',
+          label: null,
+          contexts: [],
+          pref: null,
+          isPreferred: false,
+        },
+      ],
+      phones: [{
+        mapKey: 'phone1',
+        position: 0,
+        value: 'tel:+15550001',
+        label: null,
+        contexts: ['work'],
+        features: ['voice'],
+        pref: null,
+      }],
+      links: [{
+        mapKey: 'link1',
+        position: 0,
+        value: 'https://old.example.com',
+        label: null,
+        contexts: ['work'],
+        pref: null,
+      }],
+      anniversaries: [{
+        mapKey: 'born',
+        position: 0,
+        kind: 'birth',
+        date: { kind: 'partial', year: 2000, month: 2, day: 29 },
+      }],
+      notes: [{ mapKey: 'note1', position: 0, value: 'Old note' }],
+      organizations: [
+        {
+          mapKey: 'org1',
+          position: 0,
+          name: 'Old Corp',
+          contexts: ['work'],
+          units: [{ position: 0, value: 'Old Department' }],
+        },
+        {
+          mapKey: 'org2',
+          position: 1,
+          name: 'Second Corp',
+          contexts: ['work'],
+          units: [],
+        },
+      ],
+      titles: [
+        {
+          mapKey: 'title1',
+          position: 0,
+          value: 'Old Title',
+          kind: 'title',
+          organizationMapKey: 'org1',
+        },
+        {
+          mapKey: 'role2',
+          position: 1,
+          value: 'Existing Role',
+          kind: 'role',
+          organizationMapKey: 'org2',
+        },
+      ],
+    });
+    const desired = contactFields({
+      ...baseline,
+      fullName: 'New Name',
+      emails: [
+        {
+          ...baseline.emails[0],
+          value: 'new@example.com',
+          label: 'Custom',
+          contexts: ['private'],
+          pref: 1,
+        },
+        {
+          mapKey: 'email3',
+          position: 1,
+          value: 'added@example.com',
+          label: null,
+          contexts: ['work'],
+          pref: null,
+          isPreferred: false,
+        },
+      ],
+      phones: [{
+        ...baseline.phones[0],
+        features: ['text'],
+      }],
+      links: [{
+        ...baseline.links[0],
+        value: 'https://new.example.com',
+      }],
+      anniversaries: [{
+        ...baseline.anniversaries[0],
+        date: { kind: 'partial', year: 2004, month: 2, day: 29 },
+      }],
+      notes: [{ ...baseline.notes[0], value: 'New note' }],
+      organizations: [
+        {
+          ...baseline.organizations[0],
+          name: 'New Corp',
+          units: [{ position: 0, value: 'New Department' }],
+        },
+        baseline.organizations[1],
+      ],
+      titles: [
+        { ...baseline.titles[0], value: 'New Title' },
+        baseline.titles[1],
+        {
+          mapKey: 'newRole',
+          position: 2,
+          value: 'New Role',
+          kind: 'role',
+          organizationMapKey: 'org1',
+        },
+      ],
+    });
+    const current = {
+      '@type': 'Card',
+      id: 'd',
+      name: {
+        '@type': 'Name',
+        full: 'Old Name',
+        components: [{ kind: 'given', value: 'Old' }],
+        'x-name': true,
+      },
+      emails: {
+        email1: {
+          '@type': 'EmailAddress',
+          address: 'old@example.com',
+          label: 'Old label',
+          contexts: { work: true, 'x-team': true },
+          pref: 2,
+          'x-entry': 'preserve',
+        },
+        email2: { address: 'remove@example.com' },
+        concurrentEmail: { address: 'concurrent@example.com', 'x-new': true },
+      },
+      phones: {
+        phone1: {
+          '@type': 'Phone',
+          number: 'tel:+15550001',
+          contexts: { work: true },
+          features: { voice: true, 'x-satellite': true },
+          'x-phone': true,
+        },
+        concurrentPhone: { number: 'tel:+15559999' },
+      },
+      links: {
+        link1: {
+          '@type': 'Link',
+          kind: 'website',
+          uri: 'https://old.example.com',
+          contexts: { work: true },
+          'x-link': true,
+        },
+        concurrentLink: { uri: 'https://concurrent.example.com' },
+      },
+      anniversaries: {
+        born: {
+          '@type': 'Anniversary',
+          kind: 'birth',
+          label: 'Birthday',
+          date: {
+            '@type': 'PartialDate',
+            year: 2000,
+            month: 2,
+            day: 29,
+            calendarScale: 'gregory',
+          },
+          place: { full: 'Somewhere' },
+        },
+      },
+      notes: {
+        note1: {
+          '@type': 'Note',
+          note: 'Old note',
+          author: { name: 'Remote' },
+        },
+      },
+      organizations: {
+        org1: {
+          '@type': 'Organization',
+          name: 'Old Corp',
+          contexts: { work: true },
+          units: [{ '@type': 'OrgUnit', name: 'Old Department', sortAs: 'Department' }],
+          sortAs: 'Corp, Old',
+        },
+        org2: { name: 'Second Corp', contexts: { work: true } },
+        concurrentOrg: { name: 'Concurrent Corp', 'x-new': true },
+      },
+      titles: {
+        title1: {
+          '@type': 'Title',
+          name: 'Old Title',
+          kind: 'title',
+          organizationId: 'org1',
+          'x-title': true,
+        },
+        role2: { name: 'Existing Role', kind: 'role', organizationId: 'org2' },
+        concurrentTitle: { name: 'Concurrent Title', kind: 'title' },
+      },
+      'x-top': { preserve: true },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ state: 'fresh-state', list: [current] }));
+    let setParams: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      setParams = params;
+      return { updated: { d: null } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      baseline,
+      contact: desired,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(setParams.ifInState).toBe('fresh-state');
+    const patch = setParams.update.d;
+    expect(patch['name/full']).toBe('New Name');
+    expect(patch).not.toHaveProperty('emails');
+    expect(patch['emails/email2']).toBeNull();
+    expect(patch).not.toHaveProperty('emails/concurrentEmail');
+    expect(patch['emails/email1']).toEqual({
+      ...current.emails.email1,
+      address: 'new@example.com',
+      label: 'Custom',
+      contexts: { 'x-team': true, private: true },
+      pref: 1,
+    });
+    expect(patch['emails/email3']).toMatchObject({
+      '@type': 'EmailAddress',
+      address: 'added@example.com',
+      contexts: { work: true },
+    });
+    expect(patch['phones/phone1']).toEqual({
+      ...current.phones.phone1,
+      features: { 'x-satellite': true, text: true },
+    });
+    expect(patch).not.toHaveProperty('phones/concurrentPhone');
+    expect(patch['links/link1']).toEqual({
+      '@type': 'Link',
+      uri: 'https://new.example.com',
+      contexts: { work: true },
+      kind: 'website',
+      'x-link': true,
+    });
+    expect(patch['anniversaries/born']).toEqual({
+      '@type': 'Anniversary',
+      kind: 'birth',
+      label: 'Birthday',
+      date: {
+        '@type': 'PartialDate',
+        year: 2004,
+        month: 2,
+        day: 29,
+        calendarScale: 'gregory',
+      },
+      place: { full: 'Somewhere' },
+    });
+    expect(patch['notes/note1']).toEqual({
+      ...current.notes.note1,
+      note: 'New note',
+    });
+    expect(patch['organizations/org1']).toEqual({
+      ...current.organizations.org1,
+      name: 'New Corp',
+      units: [{
+        '@type': 'OrgUnit',
+        name: 'New Department',
+        sortAs: 'Department',
+      }],
+    });
+    expect(patch).not.toHaveProperty('organizations/org2');
+    expect(patch).not.toHaveProperty('organizations/concurrentOrg');
+    expect(patch['titles/title1']).toEqual({
+      ...current.titles.title1,
+      name: 'New Title',
+    });
+    expect(patch['titles/newRole']).toEqual({
+      '@type': 'Title',
+      name: 'New Role',
+      kind: 'role',
+      organizationId: 'org1',
+    });
+    expect(patch).not.toHaveProperty('titles/concurrentTitle');
+    expect(patch).not.toHaveProperty('x-top');
+  });
+
+  it('only replaces a detail map when the fresh card has no parent map', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({
+      state: 'fresh-state',
+      list: [{ id: 'd', name: { full: 'Name' } }],
+    }));
+    let patch: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      patch = params.update.d;
+      return { updated: { d: null } };
+    });
+    const baseline = contactFields({ fullName: 'Name' });
+    const desired = contactFields({
+      fullName: 'Name',
+      phones: [{
+        mapKey: 'phone1',
+        position: 0,
+        value: '+1 555 1234',
+        label: null,
+        contexts: [],
+        features: ['voice'],
+        pref: null,
+      }],
+    });
+
+    await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      baseline,
+      contact: desired,
+    });
+
+    expect(patch).toEqual({
+      phones: {
+        phone1: {
+          '@type': 'Phone',
+          number: '+1 555 1234',
+          features: { voice: true },
+        },
+      },
+    });
+  });
+
+  it('surfaces stateMismatch so the outbox can refetch and retry', async () => {
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({
+      state: 'fresh-state',
+      list: [cardWithExtras()],
+    }));
+    let ifInState: string | null = null;
+    transport.handle('ContactCard/set', (params) => {
+      ifInState = params.ifInState;
+      return { notUpdated: { d: { type: 'stateMismatch' } } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      emails: ['changed@example.com'],
+    });
+
+    expect(ifInState).toBe('fresh-state');
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: 'stateMismatch' },
+    });
   });
 
   it('reports notFound when the card no longer exists', async () => {
@@ -1251,7 +2297,7 @@ describe('updateContactCard', () => {
 
   it('reports an error when the server refuses the update', async () => {
     const transport = new MockTransport();
-    transport.handle('ContactCard/get', () => ({ list: [cardWithExtras()] }));
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [cardWithExtras()] }));
     transport.handle('ContactCard/set', () => ({
       updated: {},
       notUpdated: { d: { type: 'forbidden' } },
@@ -1261,6 +2307,313 @@ describe('updateContactCard', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error.type).toBe('notUpdated');
+  });
+
+  it('rejects an update that would leave the contact empty', async () => {
+    const transport = new MockTransport();
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      contact: contactFields(),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: 'invalidArguments', message: 'contact card is empty' },
+    });
+    expect(transport.requests).toHaveLength(0);
+  });
+
+  it('resolves migrated email keys by canonical value after positions change', async () => {
+    const email = (value: string, position: number) => ({
+      mapKey: null,
+      position,
+      value,
+      label: null,
+      contexts: [],
+      pref: null,
+      isPreferred: position === 0,
+    });
+    const baseline = contactFields({
+      fullName: 'Legacy',
+      emails: [email('First@Example.com', 0), email('second@example.com', 1)],
+    });
+    const desired = contactFields({
+      fullName: 'Legacy',
+      emails: [email('second@example.com', 0)],
+    });
+    const current = {
+      id: 'legacy',
+      name: { full: 'Legacy' },
+      emails: {
+        remoteFirst: {
+          address: 'first@example.com',
+          contexts: { work: true },
+          'x-remote': 'first',
+        },
+        remoteSecond: {
+          address: 'second@example.com',
+          contexts: { private: true },
+          'x-remote': 'second',
+        },
+      },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [current] }));
+    let patch: any = null;
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update.legacy;
+      return { updated: { legacy: null } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'legacy',
+      baseline,
+      contact: desired,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(patch).toEqual({ 'emails/remoteFirst': null });
+    expect(patch).not.toHaveProperty('emails/remoteSecond');
+  });
+
+  it('fails safely when a migrated email has no unique remote key', async () => {
+    const legacyEmail = {
+      mapKey: null,
+      position: 0,
+      value: 'duplicate@example.com',
+      label: null,
+      contexts: [],
+      pref: null,
+      isPreferred: true,
+    };
+    const fields = contactFields({ fullName: 'Legacy', emails: [legacyEmail] });
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({
+      state: 's1',
+      list: [{
+        id: 'legacy',
+        name: { full: 'Legacy' },
+        emails: {
+          first: { address: 'duplicate@example.com', 'x-id': 1 },
+          second: { address: 'duplicate@example.com', 'x-id': 2 },
+        },
+      }],
+    }));
+    transport.handle('ContactCard/set', () => {
+      throw new Error('ambiguous legacy keys must not be rebound');
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'legacy',
+      baseline: fields,
+      contact: fields,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { type: 'contactNeedsSync', terminal: true },
+    });
+    expect(countMethod(transport, 'ContactCard/set')).toBe(0);
+  });
+
+  it('edits an unkeyed anniversary and mints only the new detail key', async () => {
+    const baseline = contactFields({
+      fullName: 'Legacy',
+      anniversaries: [{
+        mapKey: null,
+        position: 0,
+        kind: 'birth',
+        date: { kind: 'partial', year: 2000, month: 5, day: 1 },
+      }],
+    });
+    const desired = withContactDetailKeys(contactFields({
+      fullName: 'Legacy',
+      anniversaries: [{
+        ...baseline.anniversaries[0],
+        date: { kind: 'partial', year: 2001, month: 5, day: 2 },
+      }],
+      notes: [{ mapKey: null, position: 0, value: 'New note' }],
+    }), baseline);
+    expect(desired.anniversaries[0].mapKey).toBeNull();
+    expect(desired.notes[0].mapKey).toMatch(/^note-/);
+    const current = {
+      id: 'legacy-date',
+      name: { full: 'Legacy' },
+      anniversaries: {
+        serverDate: {
+          '@type': 'Anniversary',
+          kind: 'birth',
+          label: 'Vendor label',
+          date: {
+            '@type': 'PartialDate',
+            year: 2000,
+            month: 5,
+            day: 1,
+            calendarScale: 'gregory',
+          },
+          'x-server': true,
+        },
+      },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [current] }));
+    let patch: any = null;
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update['legacy-date'];
+      return { updated: { 'legacy-date': null } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'legacy-date',
+      baseline,
+      contact: desired,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(patch['anniversaries/serverDate']).toEqual({
+      ...current.anniversaries.serverDate,
+      date: {
+        ...current.anniversaries.serverDate.date,
+        year: 2001,
+        day: 2,
+      },
+    });
+    expect(patch.notes[desired.notes[0].mapKey!])
+      .toEqual({ '@type': 'Note', note: 'New note' });
+  });
+
+  it('preserves an unexposed server organizationId during a title edit', async () => {
+    const baseline = contactFields({
+      fullName: 'Worker',
+      titles: [{
+        mapKey: 'hiddenTitle',
+        position: 0,
+        value: 'Old role',
+        kind: 'role',
+        organizationMapKey: null,
+      }],
+    });
+    const desired = contactFields({
+      ...baseline,
+      titles: [{ ...baseline.titles[0], value: 'New role' }],
+    });
+    const current = {
+      id: 'hidden-affiliation',
+      name: { full: 'Worker' },
+      organizations: {
+        hiddenOrg: {
+          '@type': 'Organization',
+          contexts: { work: true },
+          sortAs: 'Hidden',
+        },
+      },
+      titles: {
+        hiddenTitle: {
+          '@type': 'Title',
+          name: 'Old role',
+          kind: 'role',
+          organizationId: 'hiddenOrg',
+          'x-server': true,
+        },
+      },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [current] }));
+    let patch: any = null;
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update['hidden-affiliation'];
+      return { updated: { 'hidden-affiliation': null } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'hidden-affiliation',
+      baseline,
+      contact: desired,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(patch['titles/hiddenTitle']).toEqual({
+      ...current.titles.hiddenTitle,
+      name: 'New role',
+    });
+  });
+
+  it('keeps concurrent organization units separate from a user addition', async () => {
+    const baseline = contactFields({
+      fullName: 'Worker',
+      organizations: [{
+        mapKey: 'org1',
+        position: 0,
+        name: 'Example',
+        contexts: ['work'],
+        units: [
+          { position: 0, value: 'Existing' },
+          { position: 1, value: 'Delete Me' },
+          { position: 2, value: 'Keep Me' },
+        ],
+      }],
+    });
+    const desired = contactFields({
+      ...baseline,
+      organizations: [{
+        ...baseline.organizations[0],
+        units: [
+          { position: 0, value: 'Keep Me' },
+          { position: 1, value: 'Existing' },
+          { position: 2, value: 'User Added' },
+        ],
+      }],
+    });
+    const current = {
+      id: 'org-card',
+      name: { full: 'Worker' },
+      organizations: {
+        org1: {
+          '@type': 'Organization',
+          name: 'Example',
+          contexts: { work: true },
+          units: [
+            { '@type': 'OrgUnit', name: 'Existing', 'x-order': 1 },
+            { '@type': 'OrgUnit', name: 'Delete Me', 'x-order': 2 },
+            { '@type': 'OrgUnit', name: 'Keep Me', 'x-order': 3 },
+            { '@type': 'OrgUnit', name: 'Concurrent', 'x-concurrent': true },
+          ],
+        },
+      },
+    };
+    const transport = new MockTransport();
+    transport.handle('ContactCard/get', () => ({ state: 's1', list: [current] }));
+    let patch: any = null;
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update['org-card'];
+      return { updated: { 'org-card': null } };
+    });
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'org-card',
+      baseline,
+      contact: desired,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(patch['organizations/org1'].units).toEqual([
+      { '@type': 'OrgUnit', name: 'Keep Me', 'x-order': 3 },
+      { '@type': 'OrgUnit', name: 'Existing', 'x-order': 1 },
+      { '@type': 'OrgUnit', name: 'User Added' },
+      { '@type': 'OrgUnit', name: 'Concurrent', 'x-concurrent': true },
+    ]);
   });
 });
 

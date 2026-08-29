@@ -498,7 +498,8 @@ export class OutboxRunner {
     const contactWrite = row.mutation_type === MUTATION_TYPE.WHITELIST_SENDER
       || row.mutation_type === MUTATION_TYPE.CREATE_CONTACT
       || row.mutation_type === MUTATION_TYPE.UPDATE_CONTACT
-      || row.mutation_type === MUTATION_TYPE.DELETE_CONTACT;
+      || row.mutation_type === MUTATION_TYPE.DELETE_CONTACT
+      || row.mutation_type === MUTATION_TYPE.CONTACT_BATCH;
     const identityWrite = row.mutation_type === MUTATION_TYPE.CREATE_IDENTITY
       || row.mutation_type === MUTATION_TYPE.UPDATE_IDENTITY
       || row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY;

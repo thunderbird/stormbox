@@ -517,8 +517,18 @@ describe('syncEmailChanges', () => {
         WHERE mutation_type = 'whitelistSender'`,
     );
     expect(JSON.parse(row.request_json).senders).toEqual([
-      { email: 'alice@example.com', name: 'Alice', sourceSentAt: NOW - 1000 },
-      { email: 'bob@example.com', name: 'Bob', sourceSentAt: NOW - 1000 },
+      {
+        email: 'alice@example.com',
+        name: 'Alice',
+        sourceSentAt: NOW - 1000,
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
+      {
+        email: 'bob@example.com',
+        name: 'Bob',
+        sourceSentAt: NOW - 1000,
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
     ]);
   });
 

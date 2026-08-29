@@ -1,15 +1,30 @@
-import { SEND_PHASE } from '../../../../../constants/states';
+import { SEND_PHASE, SERVICE_KIND } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
+import type {
+  ContactBatchFailure,
+  ContactBatchMutationRequest,
+  ContactBatchMutationResult,
+  ContactMutationFields,
+} from '../../../../../types/db';
 import { addressKey } from '../../../../../utils/address-key';
+import {
+  createContactMapKey,
+  createContactUid,
+  isContactUid,
+} from '../../../../../utils/contact-uid';
 import {
   createContactCard,
   createTrustedContactCards,
   deleteContactCard,
+  mutateContactCardsBatch,
+  reconcileContactCardBatch,
   reconcileContactCards,
   updateContactCard,
 } from '../../contacts';
 import { readPhase } from '../../send-checkpoint';
+
+const CONTACT_CREATE_PENDING = 'contact_create_pending';
 
 /**
  * Whitelist one or more senders: add each From address to the trusted-
@@ -26,11 +41,18 @@ import { readPhase } from '../../send-checkpoint';
  */
 async function runWhitelistSender({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
+  const recoverCreate = row?.phase === CONTACT_CREATE_PENDING;
   let ids = applied?.ids;
   if (!applied) {
-    const senders = Array.isArray(request?.senders)
+    const requestedSenders = Array.isArray(request?.senders)
       ? request.senders
       : [{ email: request?.email, name: request?.name }];
+    const senders = await ensureTrustedSenderUids({
+      handlers,
+      row,
+      request,
+      senders: requestedSenders,
+    });
     const keys = [...new Set(senders.map((sender) => addressKey(sender?.email)).filter(Boolean))];
     const deletedRows = keys.length === 0
       ? []
@@ -57,7 +79,16 @@ async function runWhitelistSender({ transport, account, handlers, row, request, 
     });
     if (eligible.length > 0) {
       const result = await createTrustedContactCards({
-        transport, account, senders: eligible, useWebSocket,
+        transport,
+        account,
+        senders: eligible,
+        recoverCreate,
+        beforeCreate: () => checkpointContactCreate({
+          handlers,
+          row,
+          uids: eligible.map((sender) => sender.uid),
+        }),
+        useWebSocket,
       });
       if (!result.ok) {
         return { ok: false, error: result.error ?? { type: 'serverFail' } };
@@ -95,14 +126,29 @@ async function runWhitelistSender({ transport, account, handlers, row, request, 
  */
 async function runCreateContact({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
+  const recoverCreate = row?.phase === CONTACT_CREATE_PENDING;
   let ids = applied?.ids;
   if (!applied) {
+    const durableRequest = await ensureCreateContactUid({ handlers, row, request });
+    const contact = contactFieldsFromRequest(durableRequest);
+    const addressBookIds = await resolveAddressBookRemoteIds({
+      handlers,
+      accountId: account.id,
+      localIds: durableRequest.addressbookIds,
+    });
     const result = await createContactCard({
       transport,
       account,
-      emails: request?.emails,
-      name: request?.name,
-      bookId: request?.bookRemoteId ?? null,
+      uid: durableRequest.uid,
+      contact,
+      addressBookIds,
+      bookId: durableRequest.bookRemoteId ?? null,
+      recoverCreate,
+      beforeCreate: () => checkpointContactCreate({
+        handlers,
+        row,
+        uids: [durableRequest.uid],
+      }),
       useWebSocket,
     });
     if (!result.ok) {
@@ -111,7 +157,14 @@ async function runCreateContact({ transport, account, handlers, row, request, us
     ids = result.id ? [result.id] : [];
   }
   return reconcileOrReport({
-    transport, account, handlers, row, ids, useWebSocket, attempts: applied?.attempts ?? 0,
+    transport,
+    account,
+    handlers,
+    row,
+    ids,
+    useWebSocket,
+    attempts: applied?.attempts ?? 0,
+    successResult: { ids },
   });
 }
 
@@ -122,16 +175,39 @@ async function runCreateContact({ transport, account, handlers, row, request, us
  */
 async function runUpdateContact({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
+  const remoteId = request?.contactId == null
+    ? request?.remoteId
+    : (await handlers[DB_RPC.QUERY]({
+        sql: `SELECT remote_id
+                FROM contacts
+               WHERE id = ? AND account_id = ? AND is_deleted = 0`,
+        params: [request.contactId, account.id],
+      }))[0]?.remote_id;
   if (!applied) {
     const result = await updateContactCard({
       transport,
       account,
-      remoteId: request?.remoteId,
+      remoteId,
+      baseline: request?.baseline,
+      contact: request?.contact,
       emails: request?.emails,
       name: request?.name,
       useWebSocket,
     });
     if (!result.ok) {
+      if (result.error?.type === 'contactNeedsSync' && remoteId) {
+        try {
+          await reconcileContactCards({
+            transport,
+            account,
+            handlers,
+            ids: [remoteId],
+            useWebSocket,
+          });
+        } catch (err: any) {
+          wlog.warn('jmap-outbox', `contact key refresh failed: ${err?.message ?? err}`);
+        }
+      }
       return { ok: false, error: result.error ?? { type: 'serverFail' } };
     }
   }
@@ -140,7 +216,7 @@ async function runUpdateContact({ transport, account, handlers, row, request, us
     account,
     handlers,
     row,
-    ids: request?.remoteId ? [request.remoteId] : [],
+    ids: remoteId ? [remoteId] : [],
     useWebSocket,
     attempts: applied?.attempts ?? 0,
   });
@@ -180,6 +256,535 @@ async function runDeleteContact({ transport, account, handlers, row, request, us
       remoteId: request?.remoteId,
     }),
   });
+}
+
+interface DurableContactBatchCheckpoint extends ContactBatchMutationResult {
+  destroyedRemoteIds: string[];
+  updatedRemoteIds: string[];
+  version: 1;
+}
+
+const RETRYABLE_CONTACT_BATCH_ERRORS = new Set([
+  'authenticationFailed',
+  'cacheReconcileFailed',
+  'noResponse',
+  'rateLimit',
+  'serverFail',
+  'serverPartialFail',
+  'serverUnavailable',
+  'stateMismatch',
+  'transport',
+]);
+
+function emptyContactBatchCheckpoint(): DurableContactBatchCheckpoint {
+  return {
+    version: 1,
+    succeededContactIds: [],
+    updatedContactIds: [],
+    destroyedContactIds: [],
+    failures: [],
+    updatedRemoteIds: [],
+    destroyedRemoteIds: [],
+  };
+}
+
+function numericContactIds(values: unknown): number[] {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.filter(
+    (id): id is number =>
+      typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
+  ))];
+}
+
+function normalizeContactBatchRequest(request: any): ContactBatchMutationRequest | null {
+  const contactIds = numericContactIds(request?.contactIds);
+  if (contactIds.length === 0) return null;
+  if (request?.operation === 'move') {
+    const sourceAddressbookId = Number(request.sourceAddressbookId);
+    const targetAddressbookId = Number(request.targetAddressbookId);
+    if (
+      !Number.isSafeInteger(sourceAddressbookId)
+      || sourceAddressbookId <= 0
+      || !Number.isSafeInteger(targetAddressbookId)
+      || targetAddressbookId <= 0
+      || sourceAddressbookId === targetAddressbookId
+    ) {
+      return null;
+    }
+    return {
+      operation: 'move',
+      contactIds,
+      sourceAddressbookId,
+      targetAddressbookId,
+    };
+  }
+  if (request?.operation !== 'scoped-delete') return null;
+  const sourceAddressbookId = request.sourceAddressbookId == null
+    ? null
+    : Number(request.sourceAddressbookId);
+  if (
+    sourceAddressbookId != null
+    && (!Number.isSafeInteger(sourceAddressbookId) || sourceAddressbookId <= 0)
+  ) {
+    return null;
+  }
+  return {
+    operation: 'scoped-delete',
+    contactIds,
+    sourceAddressbookId,
+  };
+}
+
+function readContactBatchCheckpoint(row: any): DurableContactBatchCheckpoint {
+  if (readPhase(row) !== SEND_PHASE.CACHE_PENDING) {
+    return emptyContactBatchCheckpoint();
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(row?.server_response_json ?? 'null')?.contactBatch;
+  } catch {
+    return emptyContactBatchCheckpoint();
+  }
+  if (parsed?.version !== 1) return emptyContactBatchCheckpoint();
+  return {
+    version: 1,
+    succeededContactIds: numericContactIds(parsed.succeededContactIds),
+    updatedContactIds: numericContactIds(parsed.updatedContactIds),
+    destroyedContactIds: numericContactIds(parsed.destroyedContactIds),
+    failures: Array.isArray(parsed.failures)
+      ? parsed.failures.filter((failure) =>
+          Number.isSafeInteger(failure?.contactId)
+          && typeof failure?.errorType === 'string')
+      : [],
+    updatedRemoteIds: Array.isArray(parsed.updatedRemoteIds)
+      ? [...new Set<string>((parsed.updatedRemoteIds as unknown[]).filter(
+          (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+        ))]
+      : [],
+    destroyedRemoteIds: Array.isArray(parsed.destroyedRemoteIds)
+      ? [...new Set<string>((parsed.destroyedRemoteIds as unknown[]).filter(
+          (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+        ))]
+      : [],
+  };
+}
+
+function mergeContactBatchCheckpoint(
+  checkpoint: DurableContactBatchCheckpoint,
+  result: ContactBatchMutationResult & {
+    updatedRemoteIds?: string[];
+    destroyedRemoteIds?: string[];
+  },
+): void {
+  const successful = new Set([
+    ...checkpoint.succeededContactIds,
+    ...numericContactIds(result.succeededContactIds),
+  ]);
+  checkpoint.succeededContactIds = [...successful];
+  checkpoint.updatedContactIds = [...new Set([
+    ...checkpoint.updatedContactIds,
+    ...numericContactIds(result.updatedContactIds),
+  ])];
+  checkpoint.destroyedContactIds = [...new Set([
+    ...checkpoint.destroyedContactIds,
+    ...numericContactIds(result.destroyedContactIds),
+  ])];
+  const failures = new Map<number, ContactBatchFailure>(
+    checkpoint.failures.map((failure) => [failure.contactId, failure]),
+  );
+  for (const failure of result.failures ?? []) {
+    if (
+      Number.isSafeInteger(failure?.contactId)
+      && typeof failure?.errorType === 'string'
+    ) {
+      failures.set(failure.contactId, failure);
+    }
+  }
+  for (const contactId of successful) failures.delete(contactId);
+  checkpoint.failures = [...failures.values()];
+  checkpoint.updatedRemoteIds = [...new Set([
+    ...checkpoint.updatedRemoteIds,
+    ...(result.updatedRemoteIds ?? []),
+  ])];
+  checkpoint.destroyedRemoteIds = [...new Set([
+    ...checkpoint.destroyedRemoteIds,
+    ...(result.destroyedRemoteIds ?? []),
+  ])];
+}
+
+function contactBatchPublicResult(
+  checkpoint: DurableContactBatchCheckpoint,
+): ContactBatchMutationResult {
+  return {
+    succeededContactIds: checkpoint.succeededContactIds,
+    updatedContactIds: checkpoint.updatedContactIds,
+    destroyedContactIds: checkpoint.destroyedContactIds,
+    failures: checkpoint.failures,
+  };
+}
+
+function settledContactIds(checkpoint: DurableContactBatchCheckpoint): Set<number> {
+  return new Set([
+    ...checkpoint.succeededContactIds,
+    ...checkpoint.failures.map((failure) => failure.contactId),
+  ]);
+}
+
+function failUnsettledContacts(
+  checkpoint: DurableContactBatchCheckpoint,
+  contactIds: number[],
+  errorType: string,
+  message?: string,
+): void {
+  const settled = settledContactIds(checkpoint);
+  mergeContactBatchCheckpoint(checkpoint, {
+    succeededContactIds: [],
+    updatedContactIds: [],
+    destroyedContactIds: [],
+    failures: contactIds
+      .filter((contactId) => !settled.has(contactId))
+      .map((contactId) => ({
+        contactId,
+        errorType,
+        ...(message ? { message } : {}),
+      })),
+  });
+}
+
+function checkpointContactBatch({
+  handlers,
+  row,
+  checkpoint,
+}: {
+  handlers: any;
+  row: any;
+  checkpoint: DurableContactBatchCheckpoint;
+}): Promise<unknown> {
+  return handlers[DB_RPC.QUERY]({
+    sql: `UPDATE pending_mutations
+             SET phase = ?, server_response_json = ?, updated_at = ?
+           WHERE id = ?`,
+    params: [
+      SEND_PHASE.CACHE_PENDING,
+      JSON.stringify({ contactBatch: checkpoint }),
+      Date.now(),
+      row.id,
+    ],
+  });
+}
+
+async function resolveContactBatchBook({
+  handlers,
+  accountId,
+  localId,
+}: {
+  handlers: any;
+  accountId: number;
+  localId: number;
+}): Promise<{ remoteId: string; writable: boolean } | null> {
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT remote_id, may_write
+            FROM addressbooks
+           WHERE id = ?
+             AND account_id = ?
+             AND service_kind = ?
+             AND is_deleted = 0
+           LIMIT 1`,
+    params: [localId, accountId, SERVICE_KIND.JMAP_CONTACTS],
+  });
+  const row = rows[0];
+  return typeof row?.remote_id === 'string' && row.remote_id
+    ? {
+        remoteId: row.remote_id,
+        writable: Number(row.may_write) === 1,
+      }
+    : null;
+}
+
+async function runContactBatch({
+  transport,
+  account,
+  handlers,
+  row,
+  request: rawRequest,
+  useWebSocket,
+}: any) {
+  const request = normalizeContactBatchRequest(rawRequest);
+  if (!request) {
+    return {
+      ok: false,
+      error: {
+        type: 'invalidArguments',
+        terminal: true,
+      },
+    };
+  }
+  const checkpoint = readContactBatchCheckpoint(row);
+  const settled = settledContactIds(checkpoint);
+  let unsettled = request.contactIds.filter(
+    (contactId) => !settled.has(contactId),
+  );
+
+  let wireOperation;
+  if (request.operation === 'move') {
+    const [source, target] = await Promise.all([
+      resolveContactBatchBook({
+        handlers,
+        accountId: account.id,
+        localId: request.sourceAddressbookId,
+      }),
+      resolveContactBatchBook({
+        handlers,
+        accountId: account.id,
+        localId: request.targetAddressbookId,
+      }),
+    ]);
+    if (!source?.writable || !target?.writable) {
+      failUnsettledContacts(checkpoint, unsettled, 'forbidden');
+      await checkpointContactBatch({ handlers, row, checkpoint });
+      unsettled = [];
+    }
+    wireOperation = source && target
+      ? {
+          operation: 'move' as const,
+          sourceAddressbookRemoteId: source.remoteId,
+          targetAddressbookRemoteId: target.remoteId,
+        }
+      : null;
+  } else if (request.sourceAddressbookId == null) {
+    wireOperation = {
+      operation: 'scoped-delete' as const,
+      sourceAddressbookRemoteId: null,
+    };
+  } else {
+    const source = await resolveContactBatchBook({
+      handlers,
+      accountId: account.id,
+      localId: request.sourceAddressbookId,
+    });
+    if (!source?.writable) {
+      failUnsettledContacts(checkpoint, unsettled, 'forbidden');
+      await checkpointContactBatch({ handlers, row, checkpoint });
+      unsettled = [];
+    }
+    wireOperation = source
+      ? {
+          operation: 'scoped-delete' as const,
+          sourceAddressbookRemoteId: source.remoteId,
+        }
+      : null;
+  }
+
+  if (unsettled.length > 0 && wireOperation) {
+    const placeholders = unsettled.map(() => '?').join(',');
+    const rows = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT id, remote_id
+              FROM contacts
+             WHERE account_id = ?
+               AND id IN (${placeholders})`,
+      params: [account.id, ...unsettled],
+    });
+    const byId = new Map(
+      rows.map((contact) => [Number(contact.id), contact.remote_id]),
+    );
+    const unknown = unsettled.filter((contactId) =>
+      typeof byId.get(contactId) !== 'string' || !byId.get(contactId));
+    if (unknown.length > 0) {
+      failUnsettledContacts(checkpoint, unknown, 'unknownContact');
+      await checkpointContactBatch({ handlers, row, checkpoint });
+      const unknownIds = new Set(unknown);
+      unsettled = unsettled.filter((contactId) => !unknownIds.has(contactId));
+    }
+    if (unsettled.length > 0) {
+      const protocol = await mutateContactCardsBatch({
+        transport,
+        account,
+        targets: unsettled.map((contactId) => ({
+          contactId,
+          remoteId: String(byId.get(contactId)),
+        })),
+        operation: wireOperation,
+        useWebSocket,
+        onChunk: async (result) => {
+          mergeContactBatchCheckpoint(checkpoint, result);
+          await checkpointContactBatch({ handlers, row, checkpoint });
+        },
+      });
+      if (!protocol.complete) {
+        const errorType = protocol.error?.type ?? 'serverFail';
+        if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
+          return {
+            ok: false,
+            error: {
+              ...protocol.error,
+              type: errorType,
+              result: contactBatchPublicResult(checkpoint),
+            },
+          };
+        }
+        failUnsettledContacts(checkpoint, request.contactIds, errorType);
+        await checkpointContactBatch({ handlers, row, checkpoint });
+      }
+    }
+  }
+
+  if (checkpoint.succeededContactIds.length > 0) {
+    try {
+      await reconcileContactCardBatch({
+        transport,
+        account,
+        handlers,
+        updatedIds: checkpoint.updatedRemoteIds,
+        destroyedIds: checkpoint.destroyedRemoteIds,
+        useWebSocket,
+      });
+    } catch (error: any) {
+      return {
+        ok: false,
+        error: {
+          type: 'cacheReconcileFailed',
+          message: error?.message ?? String(error),
+          result: contactBatchPublicResult(checkpoint),
+        },
+      };
+    }
+  }
+  return {
+    ok: true,
+    result: contactBatchPublicResult(checkpoint),
+  };
+}
+
+async function ensureCreateContactUid({ handlers, row, request }: any): Promise<any> {
+  const usesDetailModel = Boolean(
+    request
+      && typeof request === 'object'
+      && (
+        'fullName' in request
+        || 'phones' in request
+        || 'links' in request
+        || (Array.isArray(request.emails)
+          && request.emails.some((email) => email && typeof email === 'object'))
+      ),
+  );
+  const next = usesDetailModel
+    ? {
+        ...request,
+        uid: isContactUid(request?.uid)
+          ? request.uid
+          : createContactUid(),
+      }
+    : {
+        ...request,
+        uid: isContactUid(request?.uid)
+          ? request.uid
+          : createContactUid(),
+        addressbookIds: Array.isArray(request?.addressbookIds) ? request.addressbookIds : [],
+        fullName: typeof request?.name === 'string' && request.name.trim()
+          ? request.name.trim()
+          : null,
+        emails: (Array.isArray(request?.emails) ? request.emails : [])
+          .filter((email) => typeof email === 'string' && email.trim())
+          .map((email, position) => ({
+            mapKey: createContactMapKey('email'),
+            position,
+            value: email.trim(),
+            label: null,
+            contexts: [],
+            pref: null,
+            isPreferred: position === 0,
+          })),
+        phones: [],
+        links: [],
+        anniversaries: [],
+        notes: [],
+        organizations: [],
+        titles: [],
+      };
+  if (JSON.stringify(next) !== JSON.stringify(request)) {
+    await persistMutationRequest(handlers, row, next);
+  }
+  return next;
+}
+
+async function ensureTrustedSenderUids({
+  handlers,
+  row,
+  request,
+  senders,
+}: any): Promise<any[]> {
+  let changed = false;
+  const next = senders.map((sender) => {
+    if (isContactUid(sender?.uid)) return sender;
+    changed = true;
+    return { ...sender, uid: createContactUid() };
+  });
+  if (changed) {
+    await persistMutationRequest(handlers, row, { ...request, senders: next });
+  }
+  return next;
+}
+
+async function persistMutationRequest(handlers: any, row: any, request: any): Promise<void> {
+  if (row?.id == null) return;
+  await handlers[DB_RPC.QUERY]({
+    sql: `UPDATE pending_mutations
+             SET request_json = ?, updated_at = ?
+           WHERE id = ?`,
+    params: [JSON.stringify(request), Date.now(), row.id],
+  });
+}
+
+function checkpointContactCreate({ handlers, row, uids }: any): Promise<unknown> {
+  return handlers[DB_RPC.QUERY]({
+    sql: `UPDATE pending_mutations
+             SET phase = ?, server_response_json = ?, updated_at = ?
+           WHERE id = ?`,
+    params: [
+      CONTACT_CREATE_PENDING,
+      JSON.stringify({ contactCreateUids: uids }),
+      Date.now(),
+      row.id,
+    ],
+  });
+}
+
+function contactFieldsFromRequest(request: any): ContactMutationFields {
+  return {
+    fullName: typeof request?.fullName === 'string' ? request.fullName : null,
+    emails: Array.isArray(request?.emails) ? request.emails : [],
+    phones: Array.isArray(request?.phones) ? request.phones : [],
+    links: Array.isArray(request?.links) ? request.links : [],
+    anniversaries: Array.isArray(request?.anniversaries) ? request.anniversaries : [],
+    notes: Array.isArray(request?.notes) ? request.notes : [],
+    organizations: Array.isArray(request?.organizations) ? request.organizations : [],
+    titles: Array.isArray(request?.titles) ? request.titles : [],
+  };
+}
+
+async function resolveAddressBookRemoteIds({
+  handlers,
+  accountId,
+  localIds,
+}: any): Promise<string[]> {
+  if (!Array.isArray(localIds) || localIds.length === 0) return [];
+  const ids = [...new Set(
+    localIds.filter((id) => Number.isSafeInteger(id) && Number(id) > 0),
+  )];
+  if (ids.length === 0) return [];
+  const rows = await handlers[DB_RPC.QUERY]({
+    sql: `SELECT id, remote_id
+            FROM addressbooks
+           WHERE account_id = ?
+             AND service_kind = ?
+             AND is_deleted = 0
+             AND id IN (${ids.map(() => '?').join(',')})`,
+    params: [accountId, SERVICE_KIND.JMAP_CONTACTS, ...ids],
+  });
+  const byId = new Map(rows.map((book) => [Number(book.id), book.remote_id]));
+  return ids.map((id) => byId.get(Number(id))).filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  );
 }
 
 /**
@@ -242,7 +847,15 @@ function checkpointContactWrite({ handlers, row, ids, attempts }: any) {
  * run out.
  */
 async function reconcileOrReport({
-  transport, account, handlers, row, ids, useWebSocket, attempts = 0, repair,
+  transport,
+  account,
+  handlers,
+  row,
+  ids,
+  useWebSocket,
+  attempts = 0,
+  repair,
+  successResult,
 }: any) {
   // Record that the server write happened *before* touching the cache.
   //
@@ -273,7 +886,10 @@ async function reconcileOrReport({
     await (repair
       ? repair()
       : reconcileContactCards({ transport, account, handlers, ids, useWebSocket }));
-    return { ok: true };
+    return {
+      ok: true,
+      ...(successResult == null ? {} : { result: successResult }),
+    };
   } catch (err: any) {
     const attempted = attempting;
     wlog.warn(
@@ -313,6 +929,7 @@ async function reconcileOrReport({
 }
 
 export {
+  runContactBatch,
   runCreateContact,
   runDeleteContact,
   runUpdateContact,

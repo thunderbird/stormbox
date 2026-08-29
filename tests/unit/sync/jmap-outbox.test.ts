@@ -966,7 +966,9 @@ describe('drainOutbox', () => {
         to: [{ email: 'rcpt@example.com' }],
         subject: 'With image',
         textBody: 'See image.',
-        htmlBody: `<p>See image.</p><img src="data:image/png;base64,${pngBase64}">`,
+        htmlBody: `<p>See image.</p><img src="data:image/png;base64,${
+            pngBase64
+          }">`,
         draftsFolderId: drafts.id,
         sentFolderId: sent.id,
         outboxFolderId: null,
@@ -1034,6 +1036,7 @@ describe('drainOutbox', () => {
     // The HTML references the cid and no longer carries the data: URL.
     expect(create.bodyValues.h1.value).toContain(`src="cid:${imagePart.cid}"`);
     expect(create.bodyValues.h1.value).not.toContain('data:image/');
+    expect(create.bodyValues.h1.value).not.toContain('data-stormbox-');
   });
 
   it('fails the send and keeps the draft when an inline image upload fails', async () => {
@@ -1197,9 +1200,24 @@ describe('drainOutbox', () => {
       [MUTATION_TYPES.WHITELIST_SENDER],
     );
     expect(JSON.parse(trust.request_json).senders).toEqual([
-      { email: 'to@example.com', name: null, sourceSentAt: expect.any(Number) },
-      { email: 'cc@example.com', name: null, sourceSentAt: expect.any(Number) },
-      { email: 'bcc@example.com', name: null, sourceSentAt: expect.any(Number) },
+      {
+        email: 'to@example.com',
+        name: null,
+        sourceSentAt: expect.any(Number),
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
+      {
+        email: 'cc@example.com',
+        name: null,
+        sourceSentAt: expect.any(Number),
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
+      {
+        email: 'bcc@example.com',
+        name: null,
+        sourceSentAt: expect.any(Number),
+        uid: expect.stringMatching(/^urn:uuid:/),
+      },
     ]);
   });
 

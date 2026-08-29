@@ -15,7 +15,36 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import { SERVICE_KIND } from '../../../constants/states';
+import type {
+  ContactBatchFailure,
+  ContactBatchMutationResult,
+  ContactAnniversaryDate,
+  ContactAnniversaryKind,
+  ContactContext,
+  ContactDetailAnniversary,
+  ContactDetailLink,
+  ContactDetailNote,
+  ContactDetailOrganization,
+  ContactDetailPhone,
+  ContactDetailTitle,
+  ContactMutationFields,
+  ContactPhoneFeature,
+  ContactTitleKind,
+} from '../../../types/db';
 import { addressKey } from '../../../utils/address-key';
+import {
+  contactFieldsAreEmpty,
+  emptyContactFields,
+  isContactMapKey as isMapKey,
+  isUtcDateTime,
+  isValidContactDate,
+  legacyCreateContactFields,
+  legacyUpdatedContactFields,
+  validateContactFields as validateProtocolContactFields,
+  withContactDetailKeys,
+} from '../../../utils/contact-fields';
+import type { ContactFieldValidationIssue } from '../../../utils/contact-fields';
+import { createContactMapKey, createContactUid, isContactUid } from '../../../utils/contact-uid';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { maxObjectsInGet, maxObjectsInSet } from './limits';
@@ -23,15 +52,6 @@ import { maxObjectsInGet, maxObjectsInSet } from './limits';
 const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
   'isDefault', 'isSubscribed', 'myRights',
-];
-
-// JSContact (RFC 9553) property names as Stalwart serves them. The
-// older single-book `addressBookId` / flat `emails` array / `fullName`
-// shape is still accepted by `normalizeCard` below for backwards
-// compatibility, but we request the spec property names here.
-const CONTACT_PROPERTIES = [
-  'id', 'addressBookIds', 'uid',
-  'name', 'nicknames', 'emails', 'phones', 'organizations',
 ];
 
 /**
@@ -60,7 +80,13 @@ interface FullContactSync {
  * Pull every visible AddressBook for the account and persist them as a
  * snapshot: what the server did not list, the account no longer has.
  */
-export async function syncAddressBooks({ transport, account, handlers, useWebSocket = false }) {
+export async function syncAddressBooks({
+  transport,
+  account,
+  handlers,
+  useWebSocket = false,
+  broadcast = true,
+}) {
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
@@ -75,19 +101,28 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
   // list in it. Applying either as a snapshot would retire every book the
   // user has over one malformed response.
   if (!response || !Array.isArray(response.list)) {
-    return { count: 0, state: null, retired: 0 };
+    return {
+      complete: false,
+      count: 0,
+      state: null,
+      retired: 0,
+    };
   }
   const list = response.list;
   const { retired } = await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
     accountId: account.id,
     serviceKind: SERVICE_KIND.JMAP_CONTACTS,
     snapshot: true,
+    broadcast,
     addressbooks: list.map((ab) => ({
       remoteId: ab.id,
       name: ab.name ?? null,
       description: ab.description ?? null,
       isDefault: !!ab.isDefault,
       isSubscribed: ab.isSubscribed === false ? false : true,
+      mayWrite: typeof ab.myRights?.mayWrite === 'boolean'
+        ? ab.myRights.mayWrite
+        : null,
       rawJson: JSON.stringify(ab),
       isDeleted: false,
     })),
@@ -99,7 +134,12 @@ export async function syncAddressBooks({ transport, account, handlers, useWebSoc
       state: response.state,
     });
   }
-  return { count: list.length, state: response.state ?? null, retired };
+  return {
+    complete: true,
+    count: list.length,
+    state: response.state ?? null,
+    retired,
+  };
 }
 
 /**
@@ -212,7 +252,6 @@ async function pageAllContacts({
               name: 'ContactCard/query',
               path: '/ids',
             },
-            properties: CONTACT_PROPERTIES,
           },
           'cg1',
         ],
@@ -496,7 +535,6 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
         {
           accountId: account.remote_account_id,
           ids: ids.slice(index, index + cap),
-          properties: CONTACT_PROPERTIES,
         },
         'cg1',
       ]],
@@ -528,9 +566,14 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
   return { fetched, skipped };
 }
 
-async function persistContactCards({ account, cards, handlers, generation = null }) {
+async function contactCardsForPersistence({ account, cards, handlers }) {
   let skipped = 0;
-  const normalized = cards.map(normalizeCard);
+  const normalized: NormalizedCard[] = [];
+  for (const raw of cards) {
+    const card = normalizeCard(raw);
+    if (card) normalized.push(card);
+    else skipped += 1;
+  }
   // Resolve addressbook remote ids -> local ids. A JSContact card can
   // belong to several books (the addressBookIds map of RFC 9610), and the
   // local row is filed in every one of them that is already known from
@@ -542,7 +585,8 @@ async function persistContactCards({ account, cards, handlers, generation = null
     const placeholders = remoteAbIds.map(() => '?').join(',');
     const rows = await handlers[DB_RPC.QUERY]({
       sql: `SELECT id, remote_id FROM addressbooks
-              WHERE account_id = ? AND service_kind = ? AND remote_id IN (${placeholders})`,
+              WHERE account_id = ? AND service_kind = ? AND is_deleted = 0
+                AND remote_id IN (${placeholders})`,
       params: [account.id, SERVICE_KIND.JMAP_CONTACTS, ...remoteAbIds],
     });
     for (const r of rows) {
@@ -577,13 +621,35 @@ async function persistContactCards({ account, cards, handlers, generation = null
       rawJson: JSON.stringify(card.raw),
       isDeleted: false,
       emails: card.emails,
+      phones: card.phones,
+      links: card.links,
+      anniversaries: card.anniversaries,
+      notes: card.notes,
+      organizations: card.organizations,
+      titles: card.titles,
     });
   }
+  return { contacts, skipped };
+}
+
+async function persistContactCards({
+  account,
+  cards,
+  handlers,
+  generation = null,
+  broadcast = true,
+}) {
+  const { contacts, skipped } = await contactCardsForPersistence({
+    account,
+    cards,
+    handlers,
+  });
   if (contacts.length > 0) {
     await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
       accountId: account.id,
       contacts,
       generation,
+      broadcast,
     });
   }
   return { skipped };
@@ -593,6 +659,7 @@ interface ContactWriteError {
   type: string;
   message?: string;
   detail?: unknown;
+  terminal?: boolean;
 }
 
 /** Result of a ContactCard create/update/destroy write. */
@@ -607,9 +674,12 @@ interface ContactWriteResult {
 }
 
 interface NormalizedEmail {
+  mapKey: string | null;
   position: number;
   email: string;
   label: string | null;
+  contexts: ContactContext[];
+  pref: number | null;
   isPreferred: boolean;
 }
 
@@ -624,6 +694,12 @@ interface NormalizedCard {
   organization: string | null;
   nicknames: string[];
   emails: NormalizedEmail[];
+  phones: ContactDetailPhone[];
+  links: ContactDetailLink[];
+  anniversaries: ContactDetailAnniversary[];
+  notes: ContactDetailNote[];
+  organizations: ContactDetailOrganization[];
+  titles: ContactDetailTitle[];
   raw: unknown;
 }
 
@@ -635,38 +711,62 @@ interface NormalizedCard {
  * some servers and the unit tests (`addressBookId`, `emails: [...]`,
  * `fullName`, `organization`).
  */
-function normalizeCard(card: any): NormalizedCard {
-  const bookRemoteIds = card.addressBookIds && typeof card.addressBookIds === 'object'
-    ? Object.keys(card.addressBookIds).filter((id) => card.addressBookIds[id])
-    : (card.addressBookId ? [card.addressBookId] : []);
+function normalizeCard(card: any): NormalizedCard | null {
+  if (!isPlainObject(card) || typeof card.id !== 'string' || !card.id) return null;
+  const bookRemoteIds = isPlainObject(card.addressBookIds)
+    ? Object.keys(card.addressBookIds).filter(
+        (id) => isMapKey(id) && card.addressBookIds[id] === true,
+      )
+    : (
+        typeof card.addressBookId === 'string' && card.addressBookId
+          ? [card.addressBookId]
+          : []
+      );
 
   const emails = normalizeEmails(card.emails);
-  const fullName = card.fullName
-    ?? (typeof card.name === 'object' ? card.name?.full : null)
-    ?? null;
+  const phones = normalizePhones(card.phones);
+  const links = normalizeLinks(card.links);
+  const anniversaries = normalizeAnniversaries(card.anniversaries);
+  const notes = normalizeNotes(card.notes);
+  const organizations = normalizeOrganizations(card);
+  const titles = normalizeTitles(card.titles, organizations);
+  const fullName = stringOrNull(card.fullName)
+    ?? (isPlainObject(card.name) ? stringOrNull(card.name.full) : null);
   // RFC 9553 §2.2.1 carries given/family names as NameComponent entries,
   // keyed by `kind`; the flat name.given/name.surname reads stay as a
   // tolerance for the older non-RFC shape.
   const givenName = joinComponentValues(card.name, ['given'])
-    ?? card.name?.given ?? null;
+    ?? (isPlainObject(card.name) ? stringOrNull(card.name.given) : null);
   const familyName = joinComponentValues(card.name, ['surname', 'surname2'])
-    ?? card.name?.surname ?? card.name?.surnames ?? null;
+    ?? (
+      isPlainObject(card.name)
+        ? stringOrNull(card.name.surname) ?? stringOrNull(card.name.surnames)
+        : null
+    );
   const display = fullName
     ?? combineNameComponents(card.name)
     ?? emails[0]?.email
+    ?? organizations.find((organization) => organization.name)?.name
+    ?? phones[0]?.value
     ?? '(no name)';
 
   return {
     id: card.id,
-    uid: card.uid ?? null,
+    uid: stringOrNull(card.uid),
     bookRemoteIds,
     fullName,
     displayName: display,
     givenName,
     familyName,
-    organization: normalizeOrganization(card),
+    organization: organizations.find((organization) => organization.name)?.name ?? null,
     nicknames: normalizeNicknames(card.nicknames),
     emails,
+    phones,
+    links,
+    anniversaries,
+    notes,
+    organizations,
+    titles,
     raw: card,
   };
 }
@@ -689,52 +789,318 @@ function normalizeNicknames(nicknames: any): string[] {
 
 function normalizeEmails(emails: any): NormalizedEmail[] {
   if (!emails) return [];
-  // JSContact map shape: { e1: { address, contexts, pref }, ... }
-  const entries = Array.isArray(emails) ? emails : Object.values(emails);
   const out: NormalizedEmail[] = [];
-  const prefs: (number | null)[] = [];
-  for (const e of entries) {
+  for (const [mapKey, e] of normalizedMapEntries(emails)) {
     if (typeof e === 'string') {
       if (!e) continue;
-      out.push({ position: out.length, email: e, label: null, isPreferred: false });
-      prefs.push(null);
+      out.push({
+        mapKey,
+        position: out.length,
+        email: e,
+        label: null,
+        contexts: [],
+        pref: null,
+        isPreferred: false,
+      });
       continue;
     }
-    const email = e?.address ?? e?.email ?? null;
+    if (!isTypedObject(e, 'EmailAddress')) continue;
+    const email = typeof e.address === 'string'
+      ? e.address
+      : (typeof e.email === 'string' ? e.email : null);
     if (!email) continue;
-    const label = e.label
-      ?? e.kind
-      ?? (e.contexts ? Object.keys(e.contexts)[0] : null)
-      ?? null;
-    // `isDefault` is the older shape's flag; JSContact `pref` is resolved
-    // across the whole card below.
-    out.push({ position: out.length, email, label, isPreferred: !!e.isDefault });
-    const pref = Number(e?.pref);
-    prefs.push(Number.isInteger(pref) && pref >= 1 && pref <= 100 ? pref : null);
+    out.push({
+      mapKey,
+      position: out.length,
+      email,
+      label: stringOrNull(e.label),
+      contexts: standardContexts(e.contexts),
+      pref: preference(e.pref),
+      isPreferred: e.isDefault === true,
+    });
   }
   // RFC 9553 §1.5.3: pref is a 1-100 ordering, lower is more preferred, and
   // an address without one is least preferred. Exactly the most-preferred
   // address is marked (ties go to the first listed).
-  const best = prefs.reduce<number | null>(
-    (min, p) => (p != null && (min == null || p < min) ? p : min),
+  const best = out.reduce<number | null>(
+    (min, email) => (
+      email.pref != null && (min == null || email.pref < min) ? email.pref : min
+    ),
     null,
   );
   if (best != null) {
-    const winner = prefs.findIndex((p) => p === best);
+    const winner = out.findIndex((email) => email.pref === best);
     out.forEach((e, i) => { e.isPreferred = i === winner; });
   }
   return out;
 }
 
-function normalizeOrganization(card: any): string | null {
-  if (typeof card.organization === 'string') return card.organization;
-  if (card.organization?.name) return card.organization.name;
-  // JSContact `organizations` map: { o1: { name, units }, ... }
-  if (card.organizations && typeof card.organizations === 'object') {
-    const first = Object.values(card.organizations)[0] as { name?: string } | undefined;
-    if (first?.name) return first.name;
+function normalizePhones(phones: any): ContactDetailPhone[] {
+  const out: ContactDetailPhone[] = [];
+  for (const [mapKey, phone] of normalizedMapEntries(phones)) {
+    if (typeof phone === 'string') {
+      if (phone) {
+        out.push({
+          mapKey,
+          position: out.length,
+          value: phone,
+          label: null,
+          contexts: [],
+          features: [],
+          pref: null,
+        });
+      }
+      continue;
+    }
+    if (!isTypedObject(phone, 'Phone') || typeof phone.number !== 'string' || !phone.number) {
+      continue;
+    }
+    out.push({
+      mapKey,
+      position: out.length,
+      value: phone.number,
+      label: stringOrNull(phone.label),
+      contexts: standardContexts(phone.contexts),
+      features: standardPhoneFeatures(phone.features),
+      pref: preference(phone.pref),
+    });
   }
-  return null;
+  return out;
+}
+
+function normalizeLinks(links: any): ContactDetailLink[] {
+  const out: ContactDetailLink[] = [];
+  for (const [mapKey, link] of normalizedMapEntries(links)) {
+    if (typeof link === 'string') {
+      if (link) {
+        out.push({
+          mapKey,
+          position: out.length,
+          value: link,
+          label: null,
+          contexts: [],
+          pref: null,
+        });
+      }
+      continue;
+    }
+    if (!isTypedObject(link, 'Link')) continue;
+    const uri = typeof link.uri === 'string'
+      ? link.uri
+      : (typeof link.url === 'string' ? link.url : null);
+    if (!uri) continue;
+    out.push({
+      mapKey,
+      position: out.length,
+      value: uri,
+      label: stringOrNull(link.label),
+      contexts: standardContexts(link.contexts),
+      pref: preference(link.pref),
+    });
+  }
+  return out;
+}
+
+function normalizeAnniversaries(anniversaries: any): ContactDetailAnniversary[] {
+  const out: ContactDetailAnniversary[] = [];
+  for (const [mapKey, anniversary] of normalizedMapEntries(anniversaries)) {
+    if (!isTypedObject(anniversary, 'Anniversary')) continue;
+    if (!isAnniversaryKind(anniversary.kind)) continue;
+    const date = normalizeAnniversaryDate(anniversary.date);
+    if (!date) continue;
+    out.push({
+      mapKey,
+      position: out.length,
+      kind: anniversary.kind,
+      date,
+    });
+  }
+  return out;
+}
+
+function normalizeNotes(notes: any): ContactDetailNote[] {
+  const out: ContactDetailNote[] = [];
+  for (const [mapKey, note] of normalizedMapEntries(notes)) {
+    if (typeof note === 'string') {
+      if (note) out.push({ mapKey, position: out.length, value: note });
+      continue;
+    }
+    if (!isTypedObject(note, 'Note') || typeof note.note !== 'string') continue;
+    out.push({ mapKey, position: out.length, value: note.note });
+  }
+  return out;
+}
+
+function normalizeOrganizations(card: any): ContactDetailOrganization[] {
+  const source = card.organizations ?? (
+    card.organization == null ? null : [card.organization]
+  );
+  const referencedOrganizationKeys = new Set(
+    normalizedMapEntries(card.titles)
+      .map(([, title]) => (
+        isTypedObject(title, 'Title') && typeof title.organizationId === 'string'
+          ? title.organizationId
+          : null
+      ))
+      .filter((value): value is string => value != null),
+  );
+  const out: ContactDetailOrganization[] = [];
+  for (const [mapKey, organization] of normalizedMapEntries(source)) {
+    if (typeof organization === 'string') {
+      if (organization) {
+        out.push({
+          mapKey,
+          position: out.length,
+          name: organization,
+          contexts: [],
+          units: [],
+        });
+      }
+      continue;
+    }
+    if (!isTypedObject(organization, 'Organization')) continue;
+    const name = stringOrNull(organization.name);
+    const units = normalizeOrganizationUnits(organization.units);
+    if (
+      name == null
+      && units.length === 0
+      && (mapKey == null || !referencedOrganizationKeys.has(mapKey))
+    ) continue;
+    out.push({
+      mapKey,
+      position: out.length,
+      name,
+      contexts: standardContexts(organization.contexts),
+      units,
+    });
+  }
+  return out;
+}
+
+function normalizeOrganizationUnits(units: any): ContactDetailOrganization['units'] {
+  if (!Array.isArray(units)) return [];
+  const out: ContactDetailOrganization['units'] = [];
+  for (const unit of units) {
+    const value = typeof unit === 'string'
+      ? unit
+      : (
+          isTypedObject(unit, 'OrgUnit') && typeof unit.name === 'string'
+            ? unit.name
+            : null
+        );
+    if (value) out.push({ position: out.length, value });
+  }
+  return out;
+}
+
+function normalizeTitles(
+  titles: any,
+  organizations: ContactDetailOrganization[] = [],
+): ContactDetailTitle[] {
+  const exposedOrganizationKeys = new Set(
+    organizations
+      .map((organization) => organization.mapKey)
+      .filter((mapKey): mapKey is string => isMapKey(mapKey)),
+  );
+  const out: ContactDetailTitle[] = [];
+  for (const [mapKey, title] of normalizedMapEntries(titles)) {
+    if (!isTypedObject(title, 'Title') || typeof title.name !== 'string' || !title.name) {
+      continue;
+    }
+    const kind = title.kind == null ? 'title' : title.kind;
+    if (!isTitleKind(kind)) continue;
+    out.push({
+      mapKey,
+      position: out.length,
+      value: title.name,
+      kind,
+      organizationMapKey: typeof title.organizationId === 'string'
+        && exposedOrganizationKeys.has(title.organizationId)
+          ? title.organizationId
+          : null,
+    });
+  }
+  return out;
+}
+
+function normalizedMapEntries(value: any): Array<[string | null, any]> {
+  if (Array.isArray(value)) return value.map((entry) => [null, entry]);
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value)
+    .filter(([key]) => isMapKey(key))
+    .map(([key, entry]) => [key, entry]);
+}
+
+function isTypedObject(value: any, expectedType: string): value is Record<string, any> {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && (value['@type'] == null || value['@type'] === expectedType),
+  );
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function preference(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 100
+    ? Number(value)
+    : null;
+}
+
+function standardContexts(value: any): ContactContext[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return (['private', 'work'] as const).filter((context) => value[context] === true);
+}
+
+function standardPhoneFeatures(value: any): ContactPhoneFeature[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return ([
+    'fax',
+    'main-number',
+    'mobile',
+    'pager',
+    'text',
+    'textphone',
+    'video',
+    'voice',
+  ] as const).filter((feature) => value[feature] === true);
+}
+
+function isAnniversaryKind(value: unknown): value is ContactAnniversaryKind {
+  return value === 'birth' || value === 'death' || value === 'wedding';
+}
+
+function isTitleKind(value: unknown): value is ContactTitleKind {
+  return value === 'role' || value === 'title';
+}
+
+function normalizeAnniversaryDate(value: any): ContactAnniversaryDate | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value['@type'] === 'Timestamp') {
+    return isUtcDateTime(value.utc) ? { kind: 'timestamp', utc: value.utc } : null;
+  }
+  if (value['@type'] != null && value['@type'] !== 'PartialDate') return null;
+  const year = optionalUnsignedInteger(value, 'year');
+  const month = optionalUnsignedInteger(value, 'month');
+  const day = optionalUnsignedInteger(value, 'day');
+  if (year === undefined || month === undefined || day === undefined) return null;
+  if (month != null && (month < 1 || month > 12)) return null;
+  const normalized: ContactAnniversaryDate = { kind: 'partial', year, month, day };
+  return isValidContactDate(normalized) ? normalized : null;
+}
+
+function optionalUnsignedInteger(
+  value: Record<string, unknown>,
+  property: string,
+): number | null | undefined {
+  if (!(property in value)) return null;
+  const candidate = value[property];
+  return Number.isSafeInteger(candidate) && Number(candidate) >= 0
+    ? Number(candidate)
+    : undefined;
 }
 
 /** Every book of the card's that this account already knows about. */
@@ -797,10 +1163,10 @@ export async function ensureTrustedSendersBook({ transport, account, useWebSocke
  * has a card).
  */
 export async function createTrustedContactCard({
-  transport, account, email, name, useWebSocket = false,
+  transport, account, email, name, uid = createContactUid(), useWebSocket = false,
 }): Promise<ContactWriteResult> {
   return createTrustedContactCards({
-    transport, account, senders: [{ email, name }], useWebSocket,
+    transport, account, senders: [{ email, name, uid }], useWebSocket,
   });
 }
 
@@ -814,26 +1180,59 @@ export async function createTrustedContactCard({
  * converges. Returns { ok, created, alreadyTrusted?, ids?, error? }.
  */
 export async function createTrustedContactCards({
-  transport, account, senders, useWebSocket = false,
+  transport,
+  account,
+  senders,
+  recoverCreate = false,
+  beforeCreate = null,
+  useWebSocket = false,
 }): Promise<ContactWriteResult> {
   // Dedupe with the same NFC/IDNA key autocomplete and contact storage use.
-  const byEmail = new Map<string, { email: string; name: string | null }>();
+  const byEmail = new Map<
+    string,
+    { email: string; name: string | null; uid: string }
+  >();
   for (const s of senders ?? []) {
     const email = String(s?.email ?? '').trim();
     const key = addressKey(email);
     if (!email || !key) continue;
-    if (!byEmail.has(key)) byEmail.set(key, { email, name: s?.name ?? null });
+    if (!byEmail.has(key)) {
+      byEmail.set(key, {
+        email,
+        name: s?.name ?? null,
+        uid: isContactUid(s?.uid) ? s.uid : createContactUid(),
+      });
+    }
   }
   const unique = [...byEmail.values()];
   if (unique.length === 0) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
   }
 
+  const recoveredIds = new Set<string>();
+  const recoveredEmails = new Set<string>();
+  if (recoverCreate) {
+    for (const sender of unique) {
+      const recovered = await findContactCardIdByUid({
+        transport,
+        account,
+        uid: sender.uid,
+        useWebSocket,
+      });
+      if (recovered.error) return { ok: false, error: recovered.error };
+      if (recovered.id) {
+        recoveredIds.add(recovered.id);
+        recoveredEmails.add(addressKey(sender.email));
+      }
+    }
+  }
+
   // 1) One existence query for every address; skip ones already carded.
   let existing;
+  const unresolved = unique.filter((sender) => !recoveredEmails.has(addressKey(sender.email)));
   try {
     existing = await existingCardEmails({
-      transport, account, emails: unique.map((s) => s.email), useWebSocket,
+      transport, account, emails: unresolved.map((s) => s.email), useWebSocket,
     });
   } catch (error: any) {
     return {
@@ -841,13 +1240,13 @@ export async function createTrustedContactCards({
       error: { type: 'serverFail', message: error?.message ?? String(error) },
     };
   }
-  const toCreate = unique.filter((s) => !existing.keys.has(addressKey(s.email)));
+  const toCreate = unresolved.filter((s) => !existing.keys.has(addressKey(s.email)));
   if (toCreate.length === 0) {
     return {
       ok: true,
       created: 0,
       alreadyTrusted: true,
-      ids: [...existing.cardIds],
+      ids: [...recoveredIds, ...existing.cardIds],
     };
   }
 
@@ -855,17 +1254,20 @@ export async function createTrustedContactCards({
   const bookId = await ensureTrustedSendersBook({ transport, account, useWebSocket });
 
   // 3) Create every missing card in server-sized batches.
-  const ids: string[] = [...existing.cardIds];
+  const ids = new Set<string>([...recoveredIds, ...existing.cardIds]);
+  let createdCount = 0;
   const cap = maxObjectsInSet(transport);
   for (let offset = 0; offset < toCreate.length; offset += cap) {
     const create: Record<string, unknown> = {};
     toCreate.slice(offset, offset + cap).forEach((s, i) => {
       create[`c${offset + i + 1}`] = buildContactCard({
+        uid: s.uid,
         name: s.name,
         emails: [s.email],
         bookId,
       });
     });
+    if (typeof beforeCreate === 'function') await beforeCreate();
     const result = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
       methodCalls: [[
@@ -885,11 +1287,17 @@ export async function createTrustedContactCards({
     if (Object.keys(create).some((key) => !createdKeys.includes(key))) {
       return { ok: false, error: { type: 'noResponse' } };
     }
-    ids.push(...Object.values(set.created ?? {})
-      .map((card: any) => card?.id)
-      .filter(Boolean));
+    for (const card of Object.values(set.created ?? {})) {
+      const id = (card as any)?.id;
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+    createdCount += createdKeys.length;
   }
-  return { ok: true, created: ids.length - existing.cardIds.size, ids };
+  return {
+    ok: true,
+    created: createdCount,
+    ids: [...ids],
+  };
 }
 
 /**
@@ -898,17 +1306,59 @@ export async function createTrustedContactCards({
  * creating a duplicate.
  */
 export async function createContactCard({
-  transport, account, emails, name = null, bookId = null, useWebSocket = false,
+  transport,
+  account,
+  uid = null,
+  contact = null,
+  addressBookIds = null,
+  emails = null,
+  name = null,
+  bookId = null,
+  recoverCreate = false,
+  beforeCreate = null,
+  useWebSocket = false,
 }): Promise<ContactWriteResult> {
-  const addresses = normalizeAddressList(emails);
-  if (addresses.length === 0) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'no email' } };
+  const durableUid = uid == null ? createContactUid() : uid;
+  if (!isContactUid(durableUid)) {
+    return { ok: false, error: { type: 'invalidArguments', message: 'invalid contact uid' } };
   }
-  // Caller may pin a target book (the selected folder in the contacts
-  // UI); otherwise fall back to the account's default book.
-  const targetBook = bookId ?? await resolveDefaultBook({ transport, account, useWebSocket });
+  const fields = withContactDetailKeys(
+    contact ?? legacyCreateContactFields(name, emails),
+    null,
+  );
+  const validationIssue = validateProtocolContactFields(fields, {
+    rejectEmpty: true,
+    requireMapKeys: true,
+  });
+  if (validationIssue) {
+    return {
+      ok: false,
+      error: { type: 'invalidArguments', message: contactValidationError(validationIssue) },
+    };
+  }
+
+  if (recoverCreate) {
+    const recovered = await findContactCardIdByUid({
+      transport,
+      account,
+      uid: durableUid,
+      useWebSocket,
+    });
+    if (recovered.error) return { ok: false, error: recovered.error };
+    if (recovered.id) return { ok: true, id: recovered.id, alreadyExists: true };
+  }
+
+  let targetBooks = Array.isArray(addressBookIds)
+    ? [...new Set(addressBookIds.filter((id) => typeof id === 'string' && id))]
+    : (bookId ? [bookId] : []);
+  if (targetBooks.length === 0) {
+    const defaultBook = await resolveDefaultBook({ transport, account, useWebSocket });
+    if (defaultBook) targetBooks = [defaultBook];
+  }
+
+  const addresses = fields.emails.map((email) => email.value);
   let existing;
-  try {
+  if (addresses.length > 0) try {
     existing = await findContactCardsForEmails({
       transport, account, emails: addresses, useWebSocket,
     });
@@ -917,6 +1367,8 @@ export async function createContactCard({
       ok: false,
       error: { type: 'serverFail', message: error?.message ?? String(error) },
     };
+  } else {
+    existing = [];
   }
   if (existing.length > 1) {
     return {
@@ -928,26 +1380,28 @@ export async function createContactCard({
     };
   }
   if (existing.length === 1) {
-    const card = existing[0];
-    const id = String(card.id);
-    const currentAddresses = normalizeEmails(card.emails).map((email) => email.email);
-    const mergedAddresses = normalizeAddressList([...currentAddresses, ...addresses]);
-    const addressBookIds = card.addressBookIds && typeof card.addressBookIds === 'object'
-      ? { ...card.addressBookIds }
-      : (card.addressBookId ? { [card.addressBookId]: true } : {});
-    if (targetBook) addressBookIds[targetBook] = true;
-    const patch: Record<string, unknown> = {
-      addressBookIds,
-      emails: mergeEmails(card.emails, mergedAddresses),
-    };
-    if (name != null && name !== (card.name?.full ?? null)) {
-      patch.name = { ...(card.name ?? {}), full: name };
+    const id = String(existing[0].id);
+    const fresh = await fetchContactCard({ transport, account, id, useWebSocket });
+    if (fresh.error) return { ok: false, error: fresh.error };
+    if (!fresh.card || !fresh.state) return { ok: false, error: { type: 'notFound' } };
+    const promotionFields = withoutExistingEmails(fields, fresh.card.emails);
+    const built = buildSparseContactPatch(fresh.card, emptyContactFields(), promotionFields);
+    if (built.error) return { ok: false, error: built.error };
+    const patch = built.patch;
+    addAddressBookPatches(patch, fresh.card.addressBookIds, targetBooks);
+    if (fresh.card.uid == null) patch.uid = durableUid;
+    if (Object.keys(patch).length === 0) {
+      return { ok: true, id, alreadyExists: true };
     }
     const result = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
       methodCalls: [[
         'ContactCard/set',
-        { accountId: account.remote_account_id, update: { [id]: patch } },
+        {
+          accountId: account.remote_account_id,
+          ifInState: fresh.state,
+          update: { [id]: patch },
+        },
         'cpromote',
       ]],
       useWebSocket,
@@ -955,15 +1409,21 @@ export async function createContactCard({
     const set = pickResponse(result, 'ContactCard/set');
     if (!set) return { ok: false, error: { type: 'serverFail' } };
     if (set.notUpdated?.[id]) {
-      return { ok: false, error: { type: 'notUpdated', detail: set.notUpdated[id] } };
+      return contactSetError('notUpdated', set.notUpdated[id]);
     }
     if (set.updated && id in set.updated) {
       return { ok: true, id, alreadyExists: true };
     }
     return { ok: false, error: { type: 'noResponse' } };
   }
+  if (typeof beforeCreate === 'function') await beforeCreate();
   return submitContactCardCreate({
-    transport, account, emails: addresses, name, bookId: targetBook, useWebSocket,
+    transport,
+    account,
+    uid: durableUid,
+    contact: fields,
+    addressBookIds: targetBooks,
+    useWebSocket,
   });
 }
 
@@ -986,17 +1446,222 @@ export async function createContactCard({
  * Returns { ok, error? }.
  */
 export async function updateContactCard({
-  transport, account, remoteId, emails, name = null, useWebSocket = false,
+  transport,
+  account,
+  remoteId,
+  baseline = null,
+  contact = null,
+  emails = null,
+  name = null,
+  useWebSocket = false,
 }): Promise<ContactWriteResult> {
   const id = String(remoteId ?? '').trim();
   if (!id) {
     return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
   }
-  const addresses = normalizeAddressList(emails);
-  if (addresses.length === 0) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'at least one email is required' } };
+  if (contact && contactFieldsAreEmpty(contact)) {
+    return {
+      ok: false,
+      error: { type: 'invalidArguments', message: 'contact card is empty' },
+    };
   }
+  const fresh = await fetchContactCard({ transport, account, id, useWebSocket });
+  if (fresh.error) return { ok: false, error: fresh.error };
+  if (!fresh.card) return { ok: false, error: { type: 'notFound' } };
+  if (!fresh.state) {
+    return {
+      ok: false,
+      error: { type: 'serverFail', message: 'ContactCard/get returned no state' },
+    };
+  }
+  const normalizedCurrent = contactFieldsFromCard(fresh.card);
+  const before = baseline ?? normalizedCurrent;
+  const after = withContactDetailKeys(
+    contact ?? legacyUpdatedContactFields(normalizedCurrent, name, emails),
+    before,
+  );
+  const validationIssue = validateProtocolContactFields(after, {
+    baseline: before,
+    rejectEmpty: true,
+  });
+  if (validationIssue) {
+    return {
+      ok: false,
+      error: { type: 'invalidArguments', message: contactValidationError(validationIssue) },
+    };
+  }
+  const built = buildSparseContactPatch(fresh.card, before, after);
+  if (built.error) return { ok: false, error: built.error };
+  const patch = built.patch;
+  if (Object.keys(patch).length === 0) return { ok: true };
 
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/set',
+      {
+        accountId: account.remote_account_id,
+        ifInState: fresh.state,
+        update: { [id]: patch },
+      },
+      'cupd',
+    ]],
+    useWebSocket,
+  });
+  const set = pickResponse(result, 'ContactCard/set');
+  if (!set) return { ok: false, error: { type: 'serverFail' } };
+  if (set.notUpdated?.[id]) return contactSetError('notUpdated', set.notUpdated[id]);
+  // Stalwart returns the id key in `updated` (value may be null).
+  if (set.updated && id in set.updated) return { ok: true };
+  return { ok: false, error: { type: 'noResponse' } };
+}
+
+function contactFieldsFromCard(card: any): ContactMutationFields {
+  const normalized = normalizeCard(card);
+  if (!normalized) return emptyContactFields();
+  return {
+    fullName: normalized.fullName,
+    emails: normalized.emails.map((email) => ({
+      mapKey: email.mapKey,
+      position: email.position,
+      value: email.email,
+      label: email.label,
+      contexts: [...email.contexts],
+      pref: email.pref,
+      isPreferred: email.isPreferred,
+    })),
+    phones: normalized.phones,
+    links: normalized.links,
+    anniversaries: normalized.anniversaries,
+    notes: normalized.notes,
+    organizations: normalized.organizations,
+    titles: normalized.titles,
+  };
+}
+
+function contactValidationError(issue: ContactFieldValidationIssue): string {
+  switch (issue) {
+    case 'duplicate-map-key':
+      return 'duplicate contact detail map key';
+    case 'empty-contact':
+      return 'contact card is empty';
+    case 'empty-email':
+      return 'email address is empty';
+    case 'empty-organization':
+      return 'organization is empty';
+    case 'empty-phone':
+      return 'phone number is empty';
+    case 'empty-website':
+      return 'website is empty';
+    case 'invalid-anniversary':
+      return 'invalid anniversary';
+    case 'invalid-collection':
+      return 'invalid contact detail collection';
+    case 'invalid-email':
+      return 'invalid email address';
+    case 'invalid-fields':
+      return 'invalid contact fields';
+    case 'invalid-map-key':
+      return 'invalid contact detail map key';
+    case 'invalid-note':
+      return 'invalid note';
+    case 'invalid-organization-reference':
+      return 'invalid title organization reference';
+    case 'invalid-title':
+      return 'invalid title';
+    case 'invalid-website':
+      return 'website must be an absolute HTTP or HTTPS URL';
+    default: {
+      const exhaustive: never = issue;
+      return exhaustive;
+    }
+  }
+}
+
+async function findContactCardIdByUid({
+  transport,
+  account,
+  uid,
+  useWebSocket,
+}: any): Promise<{ id: string | null; error?: ContactWriteError }> {
+  const result = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/query',
+      {
+        accountId: account.remote_account_id,
+        filter: { uid },
+        limit: 2,
+      },
+      'cuid',
+    ]],
+    useWebSocket,
+  });
+  const response = pickResponse(result, 'ContactCard/query');
+  if (!response || !Array.isArray(response.ids)) {
+    const methodError = pickResponse(result, 'error');
+    return {
+      id: null,
+      error: {
+        type: 'uidProbeInconclusive',
+        message: methodError?.type
+          ? `uid probe failed: ${methodError.type}`
+          : 'ContactCard/query did not answer the uid probe',
+        detail: methodError ?? undefined,
+      },
+    };
+  }
+  if (response.ids.length === 0) return { id: null };
+  const ids = response.ids.filter((id) => typeof id === 'string');
+  if (ids.length !== response.ids.length) {
+    return {
+      id: null,
+      error: { type: 'uidProbeInconclusive', message: 'uid probe returned invalid ids' },
+    };
+  }
+  const got = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+    methodCalls: [[
+      'ContactCard/get',
+      {
+        accountId: account.remote_account_id,
+        ids,
+        properties: ['id', 'uid'],
+      },
+      'cuidget',
+    ]],
+    useWebSocket,
+  });
+  const answer = pickResponse(got, 'ContactCard/get');
+  if (!answer || !Array.isArray(answer.list)) {
+    return {
+      id: null,
+      error: { type: 'uidProbeInconclusive', message: 'uid probe cards could not be verified' },
+    };
+  }
+  const exact = answer.list.filter((card) => card?.uid === uid && ids.includes(card?.id));
+  if (exact.length === 1) return { id: exact[0].id };
+  return {
+    id: null,
+    error: {
+      type: 'uidProbeInconclusive',
+      message: exact.length > 1
+        ? 'more than one card has the requested uid'
+        : 'the server ignored the uid filter',
+    },
+  };
+}
+
+async function fetchContactCard({
+  transport,
+  account,
+  id,
+  useWebSocket,
+}: any): Promise<{
+  card: any | null;
+  state: string | null;
+  error?: ContactWriteError;
+}> {
   const got = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
@@ -1007,108 +1672,1319 @@ export async function updateContactCard({
     useWebSocket,
   });
   const answer = pickResponse(got, 'ContactCard/get');
-  // A refused read is not a card that is gone, and the difference decides
-  // the row's fate: `notFound` is terminal in the outbox runner, so reading
-  // one as the other retires the user's edit as impossible over a round trip
-  // that was worth retrying. Only a list the server actually answered with
-  // can say the card is absent.
   if (!answer || !Array.isArray(answer.list)) {
     return {
-      ok: false,
+      card: null,
+      state: null,
       error: { type: 'serverFail', message: 'ContactCard/get did not answer' },
     };
   }
-  const current = answer.list[0];
-  if (!current) {
-    return { ok: false, error: { type: 'notFound' } };
+  return {
+    card: answer.list[0] ?? null,
+    state: typeof answer.state === 'string' ? answer.state : null,
+  };
+}
+
+function withoutExistingEmails(
+  fields: ContactMutationFields,
+  currentEmails: unknown,
+): ContactMutationFields {
+  const present = new Set(
+    normalizeEmails(currentEmails).map((email) => addressKey(email.email)),
+  );
+  return {
+    ...fields,
+    emails: fields.emails.filter((email) => !present.has(addressKey(email.value))),
+  };
+}
+
+function jmapPatchSegment(value: string): string {
+  return value.replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+function addAddressBookPatches(
+  patch: Record<string, unknown>,
+  currentValue: unknown,
+  addressBookIds: string[],
+): void {
+  const additions = addressBookIds.filter(
+    (id) => !isPlainObject(currentValue)
+      || !hasOwn(currentValue, id)
+      || currentValue[id] !== true,
+  );
+  if (additions.length === 0) return;
+  if (!isPlainObject(currentValue)) {
+    patch.addressBookIds = Object.fromEntries(additions.map((id) => [id, true]));
+    return;
+  }
+  for (const id of additions) {
+    patch[`addressBookIds/${jmapPatchSegment(id)}`] = true;
+  }
+}
+
+function contactSetError(wrapper: string, detail: any): ContactWriteResult {
+  return {
+    ok: false,
+    error: detail?.type === 'stateMismatch'
+      ? { type: 'stateMismatch', detail }
+      : { type: wrapper, detail },
+  };
+}
+
+interface KeyedContactDetail {
+  mapKey: string | null;
+  position: number;
+}
+
+interface SparseMapConfig<T extends KeyedContactDetail> {
+  property: string;
+  keyPrefix: string;
+  currentValue: unknown;
+  baseline: T[];
+  desired: T[];
+  same: (left: T, right: T) => boolean;
+  matches: (raw: unknown, detail: T) => boolean;
+  sameIdentity: (left: T, right: T) => boolean;
+  matchesIdentity: (raw: unknown, detail: T) => boolean;
+  build: (detail: T) => Record<string, unknown>;
+  merge: (raw: unknown, baseline: T, desired: T) => Record<string, unknown>;
+}
+
+function buildSparseContactPatch(
+  current: any,
+  baseline: ContactMutationFields,
+  desired: ContactMutationFields,
+): { patch: Record<string, unknown>; error?: ContactWriteError } {
+  const patch: Record<string, unknown> = {};
+  const currentFullName = isPlainObject(current?.name) && typeof current.name.full === 'string'
+    ? current.name.full
+    : null;
+  if (baseline.fullName !== desired.fullName && currentFullName !== desired.fullName) {
+    applyFullNamePatch(patch, current?.name, desired.fullName);
+  }
+  const maps: SparseMapConfig<any>[] = [
+    {
+      property: 'emails',
+      keyPrefix: 'email',
+      currentValue: current?.emails,
+      baseline: baseline.emails,
+      desired: desired.emails,
+      same: sameEmail,
+      matches: rawMatchesEmail,
+      sameIdentity: sameEmailIdentity,
+      matchesIdentity: rawMatchesEmailIdentity,
+      build: buildEmail,
+      merge: mergeEmail,
+    },
+    {
+      property: 'phones',
+      keyPrefix: 'phone',
+      currentValue: current?.phones,
+      baseline: baseline.phones,
+      desired: desired.phones,
+      same: samePhone,
+      matches: rawMatchesPhone,
+      sameIdentity: sameDetailValue,
+      matchesIdentity: rawMatchesPhoneIdentity,
+      build: buildPhone,
+      merge: mergePhone,
+    },
+    {
+      property: 'links',
+      keyPrefix: 'link',
+      currentValue: current?.links,
+      baseline: baseline.links,
+      desired: desired.links,
+      same: sameResource,
+      matches: rawMatchesLink,
+      sameIdentity: sameDetailValue,
+      matchesIdentity: rawMatchesLinkIdentity,
+      build: buildLink,
+      merge: mergeLink,
+    },
+    {
+      property: 'anniversaries',
+      keyPrefix: 'date',
+      currentValue: current?.anniversaries,
+      baseline: baseline.anniversaries,
+      desired: desired.anniversaries,
+      same: sameAnniversary,
+      matches: rawMatchesAnniversary,
+      sameIdentity: sameAnniversary,
+      matchesIdentity: rawMatchesAnniversary,
+      build: buildAnniversary,
+      merge: mergeAnniversary,
+    },
+    {
+      property: 'notes',
+      keyPrefix: 'note',
+      currentValue: current?.notes,
+      baseline: baseline.notes,
+      desired: desired.notes,
+      same: sameNote,
+      matches: rawMatchesNote,
+      sameIdentity: sameDetailValue,
+      matchesIdentity: rawMatchesNoteIdentity,
+      build: buildNote,
+      merge: mergeNote,
+    },
+    {
+      property: 'organizations',
+      keyPrefix: 'organization',
+      currentValue: current?.organizations,
+      baseline: baseline.organizations,
+      desired: desired.organizations,
+      same: sameOrganization,
+      matches: rawMatchesOrganization,
+      sameIdentity: sameOrganization,
+      matchesIdentity: rawMatchesOrganization,
+      build: buildOrganization,
+      merge: mergeOrganization,
+    },
+    {
+      property: 'titles',
+      keyPrefix: 'title',
+      currentValue: current?.titles,
+      baseline: baseline.titles,
+      desired: desired.titles,
+      same: sameTitle,
+      matches: rawMatchesTitle,
+      sameIdentity: sameTitle,
+      matchesIdentity: rawMatchesTitle,
+      build: buildTitle,
+      merge: mergeTitle,
+    },
+  ];
+  for (const config of maps) {
+    const error = applySparseMapPatch(patch, config);
+    if (error) return { patch: {}, error };
+  }
+  return { patch };
+}
+
+function applyFullNamePatch(
+  patch: Record<string, unknown>,
+  currentName: unknown,
+  fullName: string | null,
+): void {
+  if (!isPlainObject(currentName)) {
+    if (fullName != null) patch.name = { full: fullName };
+    return;
+  }
+  if (fullName != null) {
+    patch['name/full'] = fullName;
+    return;
+  }
+  const remaining = Object.keys(currentName).filter(
+    (property) => property !== 'full' && property !== '@type',
+  );
+  if (remaining.length === 0) patch.name = null;
+  else patch['name/full'] = null;
+}
+
+function applySparseMapPatch<T extends KeyedContactDetail>(
+  patch: Record<string, unknown>,
+  config: SparseMapConfig<T>,
+): ContactWriteError | null {
+  const parentPresent = config.currentValue != null;
+  if (parentPresent && !isPlainObject(config.currentValue)) {
+    return {
+      type: 'invalidProperties',
+      message: `${config.property} is not a keyed map`,
+    };
+  }
+  const current = isPlainObject(config.currentValue) ? config.currentValue : {};
+  const claimedCurrentKeys = new Set<string>();
+  const resolvedBaseline = resolveLegacyKeys(
+    config.baseline,
+    current,
+    config.matchesIdentity,
+    claimedCurrentKeys,
+  );
+  if (!resolvedBaseline.ok) {
+    return {
+      type: 'contactNeedsSync',
+      message: `${config.property} legacy keys could not be resolved uniquely`,
+      terminal: true,
+    };
+  }
+  const resolvedDesired = resolveDesiredLegacyKeys(
+    config.desired,
+    resolvedBaseline.details,
+    config.sameIdentity,
+    config.keyPrefix,
+  );
+  if (!resolvedDesired.ok) {
+    return {
+      type: 'contactNeedsSync',
+      message: `${config.property} legacy edit could not be resolved uniquely`,
+      terminal: true,
+    };
+  }
+  const baseline = resolvedBaseline.details;
+  const desired = resolvedDesired.details;
+  const beforeByKey = new Map(
+    baseline
+      .filter((detail): detail is T & { mapKey: string } => isMapKey(detail.mapKey))
+      .map((detail) => [detail.mapKey, detail]),
+  );
+  const afterByKey = new Map(
+    desired
+      .filter((detail): detail is T & { mapKey: string } => isMapKey(detail.mapKey))
+      .map((detail) => [detail.mapKey, detail]),
+  );
+  const additions = new Map<string, unknown>();
+  for (const [key, before] of beforeByKey) {
+    const after = afterByKey.get(key);
+    if (!after) {
+      if (hasOwn(current, key)) patch[`${config.property}/${key}`] = null;
+      continue;
+    }
+    if (config.same(before, after)) continue;
+    additions.set(
+      key,
+      hasOwn(current, key)
+        ? config.merge(current[key], before, after)
+        : config.build(after),
+    );
+  }
+  for (const [key, after] of afterByKey) {
+    if (beforeByKey.has(key)) continue;
+    if (hasOwn(current, key)) {
+      if (!config.matches(current[key], after)) {
+        return {
+          type: 'stateMismatch',
+          message: `${config.property} map key is already in use`,
+        };
+      }
+      continue;
+    }
+    additions.set(key, config.build(after));
+  }
+  if (!parentPresent) {
+    if (additions.size > 0) patch[config.property] = Object.fromEntries(additions);
+  } else {
+    for (const [key, entry] of additions) {
+      patch[`${config.property}/${key}`] = entry;
+    }
+  }
+  return null;
+}
+
+function resolveLegacyKeys<T extends KeyedContactDetail>(
+  details: T[],
+  current: Record<string, any>,
+  matches: (raw: unknown, detail: T) => boolean,
+  claimed: Set<string>,
+): { ok: true; details: T[] } | { ok: false } {
+  const entries = Object.entries(current).filter(([key]) => isMapKey(key));
+  const resolved = [...details];
+  const pending: number[] = [];
+  details.forEach((detail, index) => {
+    if (isMapKey(detail.mapKey)) {
+      claimed.add(detail.mapKey);
+      return;
+    }
+    const matched = entries.filter(
+      ([key, raw]) => !claimed.has(key) && isMapKey(key) && matches(raw, detail),
+    );
+    if (matched.length > 1) {
+      pending.push(-1);
+      return;
+    }
+    if (matched.length === 1) {
+      claimed.add(matched[0][0]);
+      resolved[index] = { ...detail, mapKey: matched[0][0] };
+      return;
+    }
+    pending.push(index);
+  });
+  if (pending.includes(-1)) return { ok: false };
+  for (const index of pending) {
+    const detail = details[index];
+    const fallback = entries[detail.position];
+    if (!fallback || claimed.has(fallback[0])) return { ok: false };
+    claimed.add(fallback[0]);
+    resolved[index] = { ...detail, mapKey: fallback[0] };
+  }
+  return { ok: true, details: resolved };
+}
+
+function resolveDesiredLegacyKeys<T extends KeyedContactDetail>(
+  desired: T[],
+  baseline: T[],
+  sameIdentity: (left: T, right: T) => boolean,
+  keyPrefix: string,
+): { ok: true; details: T[] } | { ok: false } {
+  const claimedBaseline = new Set<number>();
+  const resolved = [...desired];
+  const pending: number[] = [];
+  desired.forEach((detail, desiredIndex) => {
+    if (isMapKey(detail.mapKey)) {
+      const baselineIndex = baseline.findIndex(
+        (candidate) => candidate.mapKey === detail.mapKey,
+      );
+      if (baselineIndex >= 0) claimedBaseline.add(baselineIndex);
+      return;
+    }
+    const matches = baseline
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate, index }) => isMapKey(candidate.mapKey)
+        && !claimedBaseline.has(index)
+        && sameIdentity(candidate, detail),
+      );
+    if (matches.length > 1) {
+      pending.push(-1);
+      return;
+    }
+    if (matches.length === 1 && isMapKey(matches[0].candidate.mapKey)) {
+      claimedBaseline.add(matches[0].index);
+      resolved[desiredIndex] = { ...detail, mapKey: matches[0].candidate.mapKey };
+      return;
+    }
+    pending.push(desiredIndex);
+  });
+  if (pending.includes(-1)) return { ok: false };
+
+  const remainingBaselineBeforeFallback = baseline.filter(
+    (_, index) => !claimedBaseline.has(index),
+  ).length;
+  for (const desiredIndex of pending) {
+    const detail = desired[desiredIndex];
+    const matches = baseline
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate, index }) => !claimedBaseline.has(index)
+        && candidate.position === detail.position);
+    if (
+      matches.length === 1
+      && remainingBaselineBeforeFallback <= pending.length
+      && isMapKey(matches[0].candidate.mapKey)
+    ) {
+      claimedBaseline.add(matches[0].index);
+      resolved[desiredIndex] = { ...detail, mapKey: matches[0].candidate.mapKey };
+    }
   }
 
-  const patch: Record<string, unknown> = { emails: mergeEmails(current.emails, addresses) };
-  // Only touch the name when the visible full name actually changed, and
-  // preserve any other name components the editor does not show.
-  if (name != null && name !== (current.name?.full ?? null)) {
-    patch.name = { ...(current.name ?? {}), full: name };
+  const unresolved = pending.filter((index) => !isMapKey(resolved[index].mapKey));
+  if (unresolved.length > 0 && baseline.some((_, index) => !claimedBaseline.has(index))) {
+    return { ok: false };
+  }
+  for (const index of unresolved) {
+    resolved[index] = { ...resolved[index], mapKey: createContactMapKey(keyPrefix) };
+  }
+  return { ok: true, details: resolved };
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function hasOwn(value: object, property: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, property);
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && [...left].sort().every((value, index) => value === [...right].sort()[index]);
+}
+
+function sameResource(left: ContactDetailLink, right: ContactDetailLink): boolean {
+  return left.value === right.value
+    && left.label === right.label
+    && left.pref === right.pref
+    && sameStringSet(left.contexts, right.contexts);
+}
+
+function sameDetailValue(
+  left: { value: string },
+  right: { value: string },
+): boolean {
+  return left.value === right.value;
+}
+
+function sameEmailIdentity(
+  left: ContactMutationFields['emails'][number],
+  right: ContactMutationFields['emails'][number],
+): boolean {
+  return addressKey(left.value) === addressKey(right.value);
+}
+
+function sameEmail(
+  left: ContactMutationFields['emails'][number],
+  right: ContactMutationFields['emails'][number],
+): boolean {
+  return sameResource(left, right);
+}
+
+function samePhone(left: ContactDetailPhone, right: ContactDetailPhone): boolean {
+  return sameResource(left, right)
+    && sameStringSet(left.features, right.features);
+}
+
+function sameAnniversary(
+  left: ContactDetailAnniversary,
+  right: ContactDetailAnniversary,
+): boolean {
+  return left.kind === right.kind && sameContactDate(left.date, right.date);
+}
+
+function sameContactDate(left: ContactAnniversaryDate, right: ContactAnniversaryDate): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'timestamp' && right.kind === 'timestamp') return left.utc === right.utc;
+  return left.kind === 'partial' && right.kind === 'partial'
+    && left.year === right.year
+    && left.month === right.month
+    && left.day === right.day;
+}
+
+function sameNote(left: ContactDetailNote, right: ContactDetailNote): boolean {
+  return left.value === right.value;
+}
+
+function sameOrganization(
+  left: ContactDetailOrganization,
+  right: ContactDetailOrganization,
+): boolean {
+  return left.name === right.name
+    && sameStringSet(left.contexts, right.contexts)
+    && left.units.length === right.units.length
+    && left.units.every((unit, index) => unit.value === right.units[index]?.value);
+}
+
+function sameTitle(left: ContactDetailTitle, right: ContactDetailTitle): boolean {
+  return left.value === right.value
+    && left.kind === right.kind
+    && left.organizationMapKey === right.organizationMapKey;
+}
+
+function buildEmail(detail: ContactMutationFields['emails'][number]): Record<string, unknown> {
+  return compactObject({
+    '@type': 'EmailAddress',
+    address: detail.value,
+    contexts: booleanSet(detail.contexts),
+    pref: detail.pref,
+    label: detail.label,
+  });
+}
+
+function mergeEmail(
+  raw: unknown,
+  baseline: ContactMutationFields['emails'][number],
+  desired: ContactMutationFields['emails'][number],
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildEmail(desired);
+  if (baseline.value !== desired.value) next.address = desired.value;
+  mergeResourceMetadata(next, baseline, desired);
+  return next;
+}
+
+function buildPhone(detail: ContactDetailPhone): Record<string, unknown> {
+  return compactObject({
+    '@type': 'Phone',
+    number: detail.value,
+    contexts: booleanSet(detail.contexts),
+    features: booleanSet(detail.features),
+    pref: detail.pref,
+    label: detail.label,
+  });
+}
+
+function mergePhone(
+  raw: unknown,
+  baseline: ContactDetailPhone,
+  desired: ContactDetailPhone,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildPhone(desired);
+  if (baseline.value !== desired.value) next.number = desired.value;
+  mergeResourceMetadata(next, baseline, desired);
+  if (!sameStringSet(baseline.features, desired.features)) {
+    assignOptional(
+      next,
+      'features',
+      mergeKnownBooleanSet(next.features, standardPhoneFeatureNames, desired.features),
+    );
+  }
+  return next;
+}
+
+function buildLink(detail: ContactDetailLink): Record<string, unknown> {
+  return compactObject({
+    '@type': 'Link',
+    uri: detail.value,
+    contexts: booleanSet(detail.contexts),
+    pref: detail.pref,
+    label: detail.label,
+  });
+}
+
+function mergeLink(
+  raw: unknown,
+  baseline: ContactDetailLink,
+  desired: ContactDetailLink,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildLink(desired);
+  if (baseline.value !== desired.value) next.uri = desired.value;
+  mergeResourceMetadata(next, baseline, desired);
+  return next;
+}
+
+function mergeResourceMetadata(
+  next: Record<string, any>,
+  baseline: ContactDetailLink,
+  desired: ContactDetailLink,
+): void {
+  if (baseline.label !== desired.label) assignOptional(next, 'label', desired.label);
+  if (baseline.pref !== desired.pref) assignOptional(next, 'pref', desired.pref);
+  if (!sameStringSet(baseline.contexts, desired.contexts)) {
+    assignOptional(
+      next,
+      'contexts',
+      mergeKnownBooleanSet(next.contexts, standardContextNames, desired.contexts),
+    );
+  }
+}
+
+function buildAnniversary(detail: ContactDetailAnniversary): Record<string, unknown> {
+  return {
+    '@type': 'Anniversary',
+    kind: detail.kind,
+    date: buildContactDate(detail.date),
+  };
+}
+
+function mergeAnniversary(
+  raw: unknown,
+  baseline: ContactDetailAnniversary,
+  desired: ContactDetailAnniversary,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildAnniversary(desired);
+  if (baseline.kind !== desired.kind) next.kind = desired.kind;
+  if (!sameContactDate(baseline.date, desired.date)) {
+    next.date = mergeContactDate(next.date, baseline.date, desired.date);
+  }
+  return next;
+}
+
+function buildContactDate(date: ContactAnniversaryDate): Record<string, unknown> {
+  if (date.kind === 'timestamp') return { '@type': 'Timestamp', utc: date.utc };
+  return compactObject({
+    '@type': 'PartialDate',
+    year: date.year,
+    month: date.month,
+    day: date.day,
+  });
+}
+
+function mergeContactDate(
+  raw: unknown,
+  baseline: ContactAnniversaryDate,
+  desired: ContactAnniversaryDate,
+): Record<string, unknown> {
+  if (baseline.kind !== desired.kind || !isPlainObject(raw)) return buildContactDate(desired);
+  const next = { ...raw };
+  if (desired.kind === 'timestamp') {
+    next['@type'] = 'Timestamp';
+    next.utc = desired.utc;
+    return next;
+  }
+  next['@type'] = 'PartialDate';
+  assignOptional(next, 'year', desired.year);
+  assignOptional(next, 'month', desired.month);
+  assignOptional(next, 'day', desired.day);
+  return next;
+}
+
+function buildNote(detail: ContactDetailNote): Record<string, unknown> {
+  return { '@type': 'Note', note: detail.value };
+}
+
+function mergeNote(
+  raw: unknown,
+  baseline: ContactDetailNote,
+  desired: ContactDetailNote,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildNote(desired);
+  if (baseline.value !== desired.value) next.note = desired.value;
+  return next;
+}
+
+function buildOrganization(detail: ContactDetailOrganization): Record<string, unknown> {
+  return compactObject({
+    '@type': 'Organization',
+    name: detail.name,
+    contexts: booleanSet(detail.contexts),
+    units: detail.units.length > 0
+      ? detail.units.map((unit) => ({ '@type': 'OrgUnit', name: unit.value }))
+      : null,
+  });
+}
+
+function mergeOrganization(
+  raw: unknown,
+  baseline: ContactDetailOrganization,
+  desired: ContactDetailOrganization,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildOrganization(desired);
+  if (baseline.name !== desired.name) assignOptional(next, 'name', desired.name);
+  if (!sameStringSet(baseline.contexts, desired.contexts)) {
+    assignOptional(
+      next,
+      'contexts',
+      mergeKnownBooleanSet(next.contexts, standardContextNames, desired.contexts),
+    );
+  }
+  if (
+    baseline.units.length !== desired.units.length
+    || baseline.units.some((unit, index) => unit.value !== desired.units[index]?.value)
+  ) {
+    const currentUnits = Array.isArray(next.units) ? next.units : [];
+    assignOptional(
+      next,
+      'units',
+      mergeOrganizationUnits(currentUnits, baseline.units, desired.units),
+    );
+  }
+  return next;
+}
+
+function mergeOrganizationUnits(
+  current: unknown[],
+  baseline: ContactDetailOrganization['units'],
+  desired: ContactDetailOrganization['units'],
+): Record<string, unknown>[] {
+  const baselineToCurrent = new Map<number, number>();
+  const claimedCurrent = new Set<number>();
+  baseline.forEach((unit, baselineIndex) => {
+    const uniqueBaselineValue = baseline.filter(
+      (candidate) => candidate.value === unit.value,
+    ).length === 1;
+    const matches = current
+      .map((candidate, currentIndex) => ({ candidate, currentIndex }))
+      .filter(({ candidate, currentIndex }) => !claimedCurrent.has(currentIndex)
+        && isPlainObject(candidate)
+        && candidate.name === unit.value);
+    if (uniqueBaselineValue && matches.length === 1) {
+      baselineToCurrent.set(baselineIndex, matches[0].currentIndex);
+      claimedCurrent.add(matches[0].currentIndex);
+    }
+  });
+  baseline.forEach((_, baselineIndex) => {
+    if (baselineToCurrent.has(baselineIndex)) return;
+    if (baselineIndex < current.length && !claimedCurrent.has(baselineIndex)) {
+      baselineToCurrent.set(baselineIndex, baselineIndex);
+      claimedCurrent.add(baselineIndex);
+    }
+  });
+
+  const desiredToBaseline = new Map<number, number>();
+  const claimedBaseline = new Set<number>();
+  desired.forEach((unit, desiredIndex) => {
+    const matches = baseline
+      .map((candidate, baselineIndex) => ({ candidate, baselineIndex }))
+      .filter(({ candidate, baselineIndex }) => !claimedBaseline.has(baselineIndex)
+        && candidate.value === unit.value);
+    if (matches.length === 1) {
+      desiredToBaseline.set(desiredIndex, matches[0].baselineIndex);
+      claimedBaseline.add(matches[0].baselineIndex);
+    }
+  });
+  if (desiredToBaseline.size === 0 && desired.length === baseline.length) {
+    desired.forEach((_, desiredIndex) => {
+      if (!claimedBaseline.has(desiredIndex)) {
+        desiredToBaseline.set(desiredIndex, desiredIndex);
+        claimedBaseline.add(desiredIndex);
+      }
+    });
   }
 
-  const result = await callJmap(transport, {
+  const edited = desired.map((unit, desiredIndex) => {
+    const baselineIndex = desiredToBaseline.get(desiredIndex);
+    const currentIndex = baselineIndex == null
+      ? null
+      : baselineToCurrent.get(baselineIndex);
+    return currentIndex != null && isPlainObject(current[currentIndex])
+      ? { ...current[currentIndex], name: unit.value }
+      : { '@type': 'OrgUnit', name: unit.value };
+  });
+  const concurrent = current
+    .filter((candidate, currentIndex) => (
+      !claimedCurrent.has(currentIndex) && isPlainObject(candidate)
+    ))
+    .map((candidate) => ({ ...(candidate as Record<string, unknown>) }));
+  return [...edited, ...concurrent];
+}
+
+function buildTitle(detail: ContactDetailTitle): Record<string, unknown> {
+  return compactObject({
+    '@type': 'Title',
+    name: detail.value,
+    kind: detail.kind,
+    organizationId: detail.organizationMapKey,
+  });
+}
+
+function mergeTitle(
+  raw: unknown,
+  baseline: ContactDetailTitle,
+  desired: ContactDetailTitle,
+): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : buildTitle(desired);
+  if (baseline.value !== desired.value) next.name = desired.value;
+  if (baseline.kind !== desired.kind) next.kind = desired.kind;
+  if (baseline.organizationMapKey !== desired.organizationMapKey) {
+    assignOptional(next, 'organizationId', desired.organizationMapKey);
+  }
+  return next;
+}
+
+const standardContextNames = ['private', 'work'] as const;
+const standardPhoneFeatureNames = [
+  'fax',
+  'main-number',
+  'mobile',
+  'pager',
+  'text',
+  'textphone',
+  'video',
+  'voice',
+] as const;
+
+function booleanSet(values: readonly string[]): Record<string, true> | null {
+  return values.length > 0
+    ? Object.fromEntries(values.map((value) => [value, true]))
+    : null;
+}
+
+function mergeKnownBooleanSet(
+  current: unknown,
+  known: readonly string[],
+  desired: readonly string[],
+): Record<string, unknown> | null {
+  const next = isPlainObject(current) ? { ...current } : {};
+  for (const key of known) delete next[key];
+  for (const key of desired) next[key] = true;
+  return Object.keys(next).length > 0 ? next : null;
+}
+
+function assignOptional(
+  target: Record<string, any>,
+  property: string,
+  value: unknown,
+): void {
+  if (value == null || (Array.isArray(value) && value.length === 0)) delete target[property];
+  else target[property] = value;
+}
+
+function compactObject(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item != null),
+  );
+}
+
+function rawMatchesEmail(
+  raw: unknown,
+  detail: ContactMutationFields['emails'][number],
+): boolean {
+  const normalized = normalizeEmails({ match: raw })[0];
+  return Boolean(normalized && sameEmail(
+    {
+      mapKey: detail.mapKey,
+      position: detail.position,
+      value: normalized.email,
+      label: normalized.label,
+      contexts: normalized.contexts,
+      pref: normalized.pref,
+      isPreferred: normalized.isPreferred,
+    },
+    detail,
+  ));
+}
+
+function rawMatchesEmailIdentity(
+  raw: unknown,
+  detail: ContactMutationFields['emails'][number],
+): boolean {
+  const normalized = normalizeEmails({ match: raw })[0];
+  return Boolean(normalized && addressKey(normalized.email) === addressKey(detail.value));
+}
+
+function rawMatchesPhone(raw: unknown, detail: ContactDetailPhone): boolean {
+  const normalized = normalizePhones({ match: raw })[0];
+  return Boolean(normalized && samePhone(normalized, detail));
+}
+
+function rawMatchesPhoneIdentity(raw: unknown, detail: ContactDetailPhone): boolean {
+  const normalized = normalizePhones({ match: raw })[0];
+  return Boolean(normalized && normalized.value === detail.value);
+}
+
+function rawMatchesLink(raw: unknown, detail: ContactDetailLink): boolean {
+  const normalized = normalizeLinks({ match: raw })[0];
+  return Boolean(normalized && sameResource(normalized, detail));
+}
+
+function rawMatchesLinkIdentity(raw: unknown, detail: ContactDetailLink): boolean {
+  const normalized = normalizeLinks({ match: raw })[0];
+  return Boolean(normalized && normalized.value === detail.value);
+}
+
+function rawMatchesAnniversary(raw: unknown, detail: ContactDetailAnniversary): boolean {
+  const normalized = normalizeAnniversaries({ match: raw })[0];
+  return Boolean(normalized && sameAnniversary(normalized, detail));
+}
+
+function rawMatchesNote(raw: unknown, detail: ContactDetailNote): boolean {
+  const normalized = normalizeNotes({ match: raw })[0];
+  return Boolean(normalized && sameNote(normalized, detail));
+}
+
+function rawMatchesNoteIdentity(raw: unknown, detail: ContactDetailNote): boolean {
+  const normalized = normalizeNotes({ match: raw })[0];
+  return Boolean(normalized && normalized.value === detail.value);
+}
+
+function rawMatchesOrganization(raw: unknown, detail: ContactDetailOrganization): boolean {
+  const normalized = normalizeOrganizations({ organizations: { match: raw } })[0];
+  return Boolean(normalized && sameOrganization(normalized, detail));
+}
+
+function rawMatchesTitle(raw: unknown, detail: ContactDetailTitle): boolean {
+  const normalized = normalizeTitles({ match: raw })[0];
+  return Boolean(normalized && sameTitle(normalized, detail));
+}
+
+export interface ContactBatchWireTarget {
+  contactId: number;
+  remoteId: string;
+}
+
+export type ContactBatchWireOperation =
+  | {
+      operation: 'move';
+      sourceAddressbookRemoteId: string;
+      targetAddressbookRemoteId: string;
+    }
+  | {
+      operation: 'scoped-delete';
+      sourceAddressbookRemoteId: string | null;
+    };
+
+interface ContactBatchChunkResult extends ContactBatchMutationResult {
+  destroyedRemoteIds: string[];
+  updatedRemoteIds: string[];
+}
+
+export interface ContactBatchProtocolResult {
+  complete: boolean;
+  error?: ContactWriteError;
+  result: ContactBatchChunkResult;
+}
+
+const CONTACT_BATCH_REBASE_ATTEMPTS = 3;
+const RETRYABLE_CONTACT_BATCH_ERRORS = new Set([
+  'noResponse',
+  'rateLimit',
+  'serverFail',
+  'serverPartialFail',
+  'serverUnavailable',
+  'stateMismatch',
+]);
+
+function emptyContactBatchChunkResult(): ContactBatchChunkResult {
+  return {
+    succeededContactIds: [],
+    updatedContactIds: [],
+    destroyedContactIds: [],
+    failures: [],
+    updatedRemoteIds: [],
+    destroyedRemoteIds: [],
+  };
+}
+
+function mergeContactBatchChunkResult(
+  target: ContactBatchChunkResult,
+  source: ContactBatchChunkResult,
+): void {
+  target.succeededContactIds.push(...source.succeededContactIds);
+  target.updatedContactIds.push(...source.updatedContactIds);
+  target.destroyedContactIds.push(...source.destroyedContactIds);
+  target.failures.push(...source.failures);
+  target.updatedRemoteIds.push(...source.updatedRemoteIds);
+  target.destroyedRemoteIds.push(...source.destroyedRemoteIds);
+}
+
+function cardAddressbookRemoteIds(card: any): string[] | null {
+  if (isPlainObject(card?.addressBookIds)) {
+    const entries = Object.entries(card.addressBookIds);
+    if (entries.some(([id, present]) => !isMapKey(id) || present !== true)) return null;
+    return entries.map(([id]) => id);
+  }
+  if (typeof card?.addressBookId === 'string' && card.addressBookId) {
+    return [card.addressBookId];
+  }
+  return null;
+}
+
+async function fetchContactBatchRights({
+  transport,
+  account,
+  useWebSocket,
+}: any): Promise<
+  | { ok: true; rights: Map<string, boolean> }
+  | { ok: false; error: ContactWriteError }
+> {
+  const response = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
-      'ContactCard/set',
-      { accountId: account.remote_account_id, update: { [id]: patch } },
-      'cupd',
+      'AddressBook/get',
+      {
+        accountId: account.remote_account_id,
+        properties: ['id', 'myRights'],
+      },
+      'abbatch',
     ]],
     useWebSocket,
   });
-  const set = pickResponse(result, 'ContactCard/set');
-  if (!set) return { ok: false, error: { type: 'serverFail' } };
-  if (set.notUpdated?.[id]) return { ok: false, error: { type: 'notUpdated', detail: set.notUpdated[id] } };
-  // Stalwart returns the id key in `updated` (value may be null).
-  if (set.updated && id in set.updated) return { ok: true };
-  return { ok: false, error: { type: 'noResponse' } };
+  const answer = pickResponse(response, 'AddressBook/get');
+  if (!answer || !Array.isArray(answer.list)) {
+    const detail = pickResponse(response, 'error');
+    return {
+      ok: false,
+      error: {
+        type: detail?.type ?? 'serverFail',
+        detail,
+      },
+    };
+  }
+  const rights = new Map<string, boolean>();
+  for (const book of answer.list) {
+    if (typeof book?.id !== 'string' || !book.id) continue;
+    rights.set(book.id, book.myRights?.mayWrite === true);
+  }
+  return { ok: true, rights };
 }
 
-/**
- * Build the JSContact `emails` map for an updated card by merging the
- * user's address list against the card's current entries. Surviving
- * addresses reuse their original entry (preserving metadata and key);
- * removed addresses drop out; added addresses get a fresh entry. The
- * user's typed address wins (so a case-only edit is honoured) while the
- * rest of the entry is preserved.
- */
-function mergeEmails(currentEmails: any, addresses: string[]): Record<string, unknown> {
-  const pool = new Map<string, Array<{ key: string; entry: any }>>();
-  const originalKeys = new Set<string>();
-  const entries = (currentEmails && typeof currentEmails === 'object')
-    ? Object.entries(currentEmails as Record<string, any>)
-    : [];
-  for (const [key, entry] of entries) {
-    originalKeys.add(key);
-    const comparisonKey = addressKey(entry?.address);
-    if (!comparisonKey) continue;
-    if (!pool.has(comparisonKey)) pool.set(comparisonKey, []);
-    pool.get(comparisonKey).push({ key, entry });
-  }
-  // Pass 1: claim a matching original entry for each address, in order.
-  const assignments = addresses.map((address) => {
-    const queue = pool.get(addressKey(address));
-    if (queue && queue.length > 0) {
-      const { key, entry } = queue.shift();
-      return { key, entry: { ...entry, address } };
+function contactBatchFailure(
+  contactId: number,
+  errorType: string,
+  detail?: any,
+): ContactBatchFailure {
+  const description = typeof detail?.description === 'string'
+    ? detail.description
+    : (typeof detail?.message === 'string' ? detail.message : undefined);
+  return {
+    contactId,
+    errorType,
+    ...(description ? { message: description } : {}),
+  };
+}
+
+function contactBatchSetErrorType(reason: any, fallback: string): string {
+  return typeof reason?.type === 'string' && reason.type
+    ? reason.type
+    : fallback;
+}
+
+function prepareContactBatchChunk(
+  targets: ContactBatchWireTarget[],
+  cardsById: Map<string, any>,
+  rights: Map<string, boolean>,
+  operation: ContactBatchWireOperation,
+): {
+  destroy: string[];
+  result: ContactBatchChunkResult;
+  update: Record<string, Record<string, unknown>>;
+  writeTargets: Map<string, ContactBatchWireTarget>;
+} {
+  const destroy: string[] = [];
+  const result = emptyContactBatchChunkResult();
+  const update: Record<string, Record<string, unknown>> = {};
+  const writeTargets = new Map<string, ContactBatchWireTarget>();
+
+  for (const target of targets) {
+    const card = cardsById.get(target.remoteId);
+    if (!card) {
+      result.succeededContactIds.push(target.contactId);
+      result.destroyedContactIds.push(target.contactId);
+      result.destroyedRemoteIds.push(target.remoteId);
+      continue;
     }
-    return { key: null, entry: { '@type': 'EmailAddress', address } };
+    const memberships = cardAddressbookRemoteIds(card);
+    if (!memberships || memberships.length === 0) {
+      result.failures.push(contactBatchFailure(
+        target.contactId,
+        'invalidContactMembership',
+      ));
+      continue;
+    }
+
+    if (operation.operation === 'move') {
+      const source = operation.sourceAddressbookRemoteId;
+      const destination = operation.targetAddressbookRemoteId;
+      if (rights.get(source) !== true || rights.get(destination) !== true) {
+        result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
+        continue;
+      }
+      const inSource = memberships.includes(source);
+      const inDestination = memberships.includes(destination);
+      if (!inSource) {
+        if (inDestination) {
+          result.succeededContactIds.push(target.contactId);
+          result.updatedContactIds.push(target.contactId);
+          result.updatedRemoteIds.push(target.remoteId);
+        } else {
+          result.failures.push(contactBatchFailure(
+            target.contactId,
+            'sourceMembershipMissing',
+          ));
+        }
+        continue;
+      }
+      const patch: Record<string, unknown> = {
+        [`addressBookIds/${jmapPatchSegment(source)}`]: null,
+      };
+      if (!inDestination) {
+        patch[`addressBookIds/${jmapPatchSegment(destination)}`] = true;
+      }
+      update[target.remoteId] = patch;
+      writeTargets.set(target.remoteId, target);
+      continue;
+    }
+
+    const source = operation.sourceAddressbookRemoteId;
+    if (source == null) {
+      if (memberships.some((bookId) => rights.get(bookId) !== true)) {
+        result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
+        continue;
+      }
+      destroy.push(target.remoteId);
+      writeTargets.set(target.remoteId, target);
+      continue;
+    }
+    if (rights.get(source) !== true) {
+      result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
+      continue;
+    }
+    if (!memberships.includes(source)) {
+      result.succeededContactIds.push(target.contactId);
+      result.updatedContactIds.push(target.contactId);
+      result.updatedRemoteIds.push(target.remoteId);
+      continue;
+    }
+    if (memberships.length === 1) {
+      destroy.push(target.remoteId);
+    } else {
+      update[target.remoteId] = {
+        [`addressBookIds/${jmapPatchSegment(source)}`]: null,
+      };
+    }
+    writeTargets.set(target.remoteId, target);
+  }
+  return {
+    destroy,
+    result,
+    update,
+    writeTargets,
+  };
+}
+
+function applyContactBatchSetResponse(
+  prepared: ReturnType<typeof prepareContactBatchChunk>,
+  response: any,
+): { result: ContactBatchChunkResult; retryableError: ContactWriteError | null } {
+  const result = prepared.result;
+  let retryableError: ContactWriteError | null = null;
+  for (const [remoteId, target] of prepared.writeTargets) {
+    if (remoteId in prepared.update) {
+      if (response.updated && remoteId in response.updated) {
+        result.succeededContactIds.push(target.contactId);
+        result.updatedContactIds.push(target.contactId);
+        result.updatedRemoteIds.push(remoteId);
+        continue;
+      }
+      const reason = response.notUpdated?.[remoteId];
+      const errorType = contactBatchSetErrorType(reason, 'noResponse');
+      if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
+        retryableError ??= { type: errorType, detail: reason };
+      } else {
+        result.failures.push(contactBatchFailure(target.contactId, errorType, reason));
+      }
+      continue;
+    }
+
+    if ((response.destroyed ?? []).includes(remoteId)) {
+      result.succeededContactIds.push(target.contactId);
+      result.destroyedContactIds.push(target.contactId);
+      result.destroyedRemoteIds.push(remoteId);
+      continue;
+    }
+    const reason = response.notDestroyed?.[remoteId];
+    if (reason?.type === 'notFound') {
+      result.succeededContactIds.push(target.contactId);
+      result.destroyedContactIds.push(target.contactId);
+      result.destroyedRemoteIds.push(remoteId);
+      continue;
+    }
+    const errorType = contactBatchSetErrorType(reason, 'noResponse');
+    if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
+      retryableError ??= { type: errorType, detail: reason };
+    } else {
+      result.failures.push(contactBatchFailure(target.contactId, errorType, reason));
+    }
+  }
+  return { result, retryableError };
+}
+
+async function runContactBatchChunk({
+  transport,
+  account,
+  targets,
+  rights,
+  operation,
+  useWebSocket,
+}: any): Promise<{
+  result: ContactBatchChunkResult;
+  retryableError: ContactWriteError | null;
+}> {
+  for (let attempt = 1; attempt <= CONTACT_BATCH_REBASE_ATTEMPTS; attempt += 1) {
+    const fetched = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/get',
+        {
+          accountId: account.remote_account_id,
+          ids: targets.map((target) => target.remoteId),
+        },
+        'cbget',
+      ]],
+      useWebSocket,
+    });
+    const answer = pickResponse(fetched, 'ContactCard/get');
+    if (!answer || !Array.isArray(answer.list) || typeof answer.state !== 'string') {
+      const detail = pickResponse(fetched, 'error');
+      return {
+        result: emptyContactBatchChunkResult(),
+        retryableError: { type: detail?.type ?? 'serverFail', detail },
+      };
+    }
+    const cardsById = new Map<string, any>(
+      answer.list
+        .filter((card) => typeof card?.id === 'string')
+        .map((card) => [card.id, card]),
+    );
+    const prepared = prepareContactBatchChunk(
+      targets,
+      cardsById,
+      rights,
+      operation,
+    );
+    if (
+      Object.keys(prepared.update).length === 0
+      && prepared.destroy.length === 0
+    ) {
+      return { result: prepared.result, retryableError: null };
+    }
+
+    const written = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/set',
+        {
+          accountId: account.remote_account_id,
+          ifInState: answer.state,
+          ...(Object.keys(prepared.update).length > 0
+            ? { update: prepared.update }
+            : {}),
+          ...(prepared.destroy.length > 0
+            ? { destroy: prepared.destroy }
+            : {}),
+        },
+        'cbset',
+      ]],
+      useWebSocket,
+    });
+    const set = pickResponse(written, 'ContactCard/set');
+    if (!set) {
+      const detail = pickResponse(written, 'error');
+      if (
+        detail?.type === 'stateMismatch'
+        && attempt < CONTACT_BATCH_REBASE_ATTEMPTS
+      ) {
+        continue;
+      }
+      return {
+        result: prepared.result,
+        retryableError: {
+          type: detail?.type ?? 'noResponse',
+          detail,
+        },
+      };
+    }
+    return applyContactBatchSetResponse(prepared, set);
+  }
+  return {
+    result: emptyContactBatchChunkResult(),
+    retryableError: { type: 'stateMismatch' },
+  };
+}
+
+export async function mutateContactCardsBatch({
+  transport,
+  account,
+  targets,
+  operation,
+  onChunk,
+  useWebSocket = false,
+}: {
+  transport: any;
+  account: any;
+  targets: ContactBatchWireTarget[];
+  operation: ContactBatchWireOperation;
+  onChunk?: (result: ContactBatchChunkResult) => Promise<void>;
+  useWebSocket?: boolean;
+}): Promise<ContactBatchProtocolResult> {
+  const rights = await fetchContactBatchRights({
+    transport,
+    account,
+    useWebSocket,
   });
-  // Pass 2: reused entries keep their key; new entries get one that
-  // collides with neither a reused nor an already-assigned key.
-  const reusedKeys = new Set(assignments.filter((a) => a.key).map((a) => a.key));
-  const map: Record<string, unknown> = {};
-  let counter = 1;
-  for (const { key, entry } of assignments) {
-    let resolvedKey = key;
-    if (!resolvedKey) {
-      do { resolvedKey = `e${counter}`; counter += 1; }
-      while (reusedKeys.has(resolvedKey) || resolvedKey in map);
-    }
-    map[resolvedKey] = entry;
+  if (rights.ok === false) {
+    return {
+      complete: false,
+      error: rights.error,
+      result: emptyContactBatchChunkResult(),
+    };
   }
-  return map;
-}
 
-/**
- * Trim, drop empties, and de-duplicate with the canonical address key.
- */
-function normalizeAddressList(emails: any): string[] {
-  const list = Array.isArray(emails) ? emails : (emails == null ? [] : [emails]);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of list) {
-    const addr = String(raw ?? '').trim();
-    if (!addr) continue;
-    const key = addressKey(addr);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(addr);
+  const result = emptyContactBatchChunkResult();
+  const cap = Math.min(maxObjectsInGet(transport), maxObjectsInSet(transport));
+  for (let offset = 0; offset < targets.length; offset += cap) {
+    const chunk = await runContactBatchChunk({
+      transport,
+      account,
+      targets: targets.slice(offset, offset + cap),
+      rights: rights.rights,
+      operation,
+      useWebSocket,
+    });
+    mergeContactBatchChunkResult(result, chunk.result);
+    if (
+      chunk.result.succeededContactIds.length > 0
+      || chunk.result.failures.length > 0
+    ) {
+      await onChunk?.(chunk.result);
+    }
+    if (chunk.retryableError) {
+      return {
+        complete: false,
+        error: chunk.retryableError,
+        result,
+      };
+    }
   }
-  return out;
+  return { complete: true, result };
 }
 
 /**
@@ -1140,6 +3016,116 @@ export async function deleteContactCard({
   if (reason && reason.type === 'notFound') return { ok: true };
   if (reason) return { ok: false, error: { type: 'notDestroyed', detail: reason } };
   return { ok: false, error: { type: 'noResponse' } };
+}
+
+async function fetchRawContactCards({
+  transport,
+  account,
+  ids,
+  useWebSocket,
+}: any): Promise<{ cards: any[]; missingIds: string[] }> {
+  const requested: string[] = [...new Set<string>(
+    (ids ?? []).filter(
+      (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+    ),
+  )];
+  const cards: any[] = [];
+  const missingIds: string[] = [];
+  const cap = maxObjectsInGet(transport);
+  for (let offset = 0; offset < requested.length; offset += cap) {
+    const chunk = requested.slice(offset, offset + cap);
+    const result = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/get',
+        {
+          accountId: account.remote_account_id,
+          ids: chunk,
+        },
+        'cbrepair',
+      ]],
+      useWebSocket,
+    });
+    const answer = pickResponse(result, 'ContactCard/get');
+    if (!answer || !Array.isArray(answer.list)) {
+      throw new Error('ContactCard/get did not answer batch cache repair');
+    }
+    cards.push(...answer.list);
+    const returned = new Set<string>(
+      answer.list
+        .map((card) => card?.id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    missingIds.push(...chunk.filter((id) => !returned.has(id)));
+  }
+  return { cards, missingIds };
+}
+
+export async function reconcileContactCardBatch({
+  transport,
+  account,
+  handlers,
+  updatedIds,
+  destroyedIds,
+  useWebSocket = false,
+}: any): Promise<{ destroyed: number; updated: number }> {
+  const updated: string[] = [...new Set<string>(
+    (updatedIds ?? []).filter(
+      (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+    ),
+  )];
+  const destroyed = new Set<string>(
+    (destroyedIds ?? []).filter(
+      (id: unknown): id is string => typeof id === 'string' && id.length > 0,
+    ),
+  );
+  const books = await syncAddressBooks({
+    transport,
+    account,
+    handlers,
+    useWebSocket,
+    broadcast: false,
+  });
+  if (!books.complete) {
+    throw new Error('AddressBook/get did not answer batch cache repair');
+  }
+
+  let contacts: any[] = [];
+  if (updated.length > 0) {
+    const fetched = await fetchRawContactCards({
+      transport,
+      account,
+      ids: updated,
+      useWebSocket,
+    });
+    for (const id of fetched.missingIds) destroyed.add(id);
+    const prepared = await contactCardsForPersistence({
+      account,
+      cards: fetched.cards,
+      handlers,
+    });
+    if (prepared.skipped > 0) {
+      throw new Error(`${prepared.skipped} card(s) read back but not filed`);
+    }
+    contacts = prepared.contacts;
+  }
+
+  if (contacts.length > 0) {
+    await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+      accountId: account.id,
+      contacts,
+      broadcast: false,
+    });
+  }
+  const deletion = await handlers[DB_RPC.CONTACT_DELETE_LOCAL]({
+    accountId: account.id,
+    remoteIds: [...destroyed],
+    broadcast: true,
+  });
+  return {
+    updated: contacts.length,
+    destroyed: Number(deletion?.deleted ?? 0),
+  };
 }
 
 /**
@@ -1396,37 +3382,64 @@ async function existingCardEmails({
   return { keys: present, cardIds };
 }
 
-/**
- * Build the JSContact `Card` shape Stalwart accepts for a create, shared
- * by the single-add and batched create paths. `emails` is an ordered,
- * already-normalized list of addresses (at least one).
- */
 function buildContactCard({
-  name, emails, bookId,
-}: { name?: string | null; emails: string[]; bookId?: string | null }): Record<string, unknown> {
-  const emailsMap: Record<string, unknown> = {};
-  emails.forEach((address, i) => {
-    emailsMap[`e${i + 1}`] = { '@type': 'EmailAddress', address };
-  });
-  return {
+  uid,
+  contact,
+  addressBookIds,
+  name,
+  emails,
+  bookId,
+}: {
+  uid?: string;
+  contact?: ContactMutationFields;
+  addressBookIds?: string[];
+  name?: string | null;
+  emails?: string[];
+  bookId?: string | null;
+}): Record<string, unknown> {
+  const fields = contact ?? legacyCreateContactFields(name, emails);
+  const books = addressBookIds ?? (bookId ? [bookId] : []);
+  return compactObject({
     '@type': 'Card',
     version: '1.0',
+    uid: uid ?? createContactUid(),
     kind: 'individual',
-    name: { full: name || emails[0] },
-    emails: emailsMap,
-    ...(bookId ? { addressBookIds: { [bookId]: true } } : {}),
-  };
+    addressBookIds: books.length > 0 ? booleanSet(books) : null,
+    name: fields.fullName ? { full: fields.fullName } : null,
+    emails: contactDetailMap(fields.emails, buildEmail),
+    phones: contactDetailMap(fields.phones, buildPhone),
+    links: contactDetailMap(fields.links, buildLink),
+    anniversaries: contactDetailMap(fields.anniversaries, buildAnniversary),
+    notes: contactDetailMap(fields.notes, buildNote),
+    organizations: contactDetailMap(fields.organizations, buildOrganization),
+    titles: contactDetailMap(fields.titles, buildTitle),
+  });
+}
+
+function contactDetailMap<T extends KeyedContactDetail>(
+  details: T[],
+  build: (detail: T) => Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (details.length === 0) return null;
+  return Object.fromEntries(
+    details
+      .filter((detail): detail is T & { mapKey: string } => isMapKey(detail.mapKey))
+      .map((detail) => [detail.mapKey, build(detail)]),
+  );
 }
 
 /**
- * Low-level ContactCard/set create shared by the whitelist and contacts
- * UI paths. Builds the JSContact map shape Stalwart accepts. `emails` is
- * an ordered, already-normalized list of addresses (at least one).
+ * Low-level ContactCard/set create shared by contact mutation paths.
  */
 async function submitContactCardCreate({
-  transport, account, emails, name, bookId, useWebSocket,
+  transport,
+  account,
+  uid,
+  contact,
+  addressBookIds,
+  useWebSocket,
 }): Promise<ContactWriteResult> {
-  const card = buildContactCard({ name, emails, bookId });
+  const card = buildContactCard({ uid, contact, addressBookIds });
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
     methodCalls: [[
