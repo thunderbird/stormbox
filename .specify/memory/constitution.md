@@ -111,6 +111,21 @@ outside that scope must not displace core read/send reliability.
   stylesheet fully controls, such as text inputs, checkboxes, and
   buttons.
 
+### X. Stable Interactive Surfaces
+
+- Loading or switching data within the same semantic surface shall
+  preserve the pane root, header, toolbar, persistent focus targets,
+  column geometry, and scroll containers.
+- Loading and error states shall replace only the data-dependent
+  content region when the surrounding shell remains applicable.
+- Stable chrome shall not be keyed by the selected entity. Controls
+  that are temporarily unavailable shall remain mounted and become
+  inert without replacing their surrounding toolbar.
+- Replacement is appropriate when the semantic surface or workflow
+  genuinely changes.
+- Important selection and loading transitions shall have regression
+  tests that assert DOM identity and expected focus behavior.
+
 ## Technology Commitments
 
 - Frontend: Vue 3 + Pinia, Vite, TypeScript.
@@ -158,7 +173,7 @@ architectural constraints. Feature specs, plans, and tasks must call
 out any conflict before implementation begins. Amendments require an
 update to this file with a brief reason.
 
-**Version**: 1.4.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-08-07
+**Version**: 1.5.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-08-29
 
 <!-- 1.2.0: Mutation Pipeline (IV) now requires every mail operation to
 support both single and batched messages, with the single action as the
@@ -169,4 +184,7 @@ per-item loop), storage (batched SQL), and UI (coalesced into one
 paint) — folding in the former standalone bulk-SQL/UI bullet.
 1.4.0: New principle IX — themed widgets, not native chrome. Prompted
 by the composer's font and size menus shipping as native selects whose
-OS popups sat beside the toolbar's styled menus. -->
+OS popups sat beside the toolbar's styled menus.
+1.5.0: New principle X — stable interactive surfaces. Selection and
+loading updates preserve applicable UI chrome, geometry, and focus
+instead of replacing the entire surface. -->
