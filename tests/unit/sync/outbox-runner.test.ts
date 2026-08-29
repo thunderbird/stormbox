@@ -290,10 +290,12 @@ describe('OutboxRunner per-target serialization', () => {
       options: { notifyDelayMs: 0 },
     });
     const secondId = await insertTargetlessWrite('createContact');
+    const thirdId = await insertTargetlessWrite('contactBatch');
     const drainPromise = runner.drain();
 
     await waitFor(() => order.includes(`start:${firstId}`));
     expect(order).not.toContain(`start:${secondId}`);
+    expect(order).not.toContain(`start:${thirdId}`);
     firstBlocked.resolve();
     await drainPromise;
 
@@ -302,6 +304,8 @@ describe('OutboxRunner per-target serialization', () => {
       `end:${firstId}`,
       `start:${secondId}`,
       `end:${secondId}`,
+      `start:${thirdId}`,
+      `end:${thirdId}`,
     ]);
     await runner.stop();
   });

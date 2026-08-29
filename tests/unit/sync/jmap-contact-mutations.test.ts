@@ -5,6 +5,7 @@ import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { SEND_PHASE, SERVICE_KIND } from '../../../src/constants/states';
 import { MUTATION_TYPES, processMutationRow } from '../../../src/sync/backends/jmap/outbox';
+import { withContactDetailKeys } from '../../../src/utils/contact-fields';
 import { MockTransport } from './_mock-transport';
 
 /**
@@ -105,6 +106,288 @@ function contactServer({ getFails = false, getRefuses = false } = {}) {
 }
 
 describe('a contact write the cache did not follow', () => {
+  it('persists a legacy create uid and map key before the first server write', async () => {
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: ['ada@example.com'],
+      name: 'Ada',
+    });
+    const transport = new MockTransport();
+    let requestDuringWrite: any = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/query', () => ({ ids: [], total: 0 }));
+    transport.handle('ContactCard/set', async () => {
+      requestDuringWrite = JSON.parse((await reload(row.id)).request_json);
+      return { created: { c1: { id: 'card-new' } } };
+    });
+    transport.handle('ContactCard/get', () => {
+      throw new Error('stop after the write');
+    });
+
+    await processMutationRow({ transport, account, handlers, row });
+
+    expect(requestDuringWrite.uid).toMatch(/^urn:uuid:/);
+    expect(requestDuringWrite.emails[0]).toMatchObject({
+      mapKey: expect.stringMatching(/^email-/),
+      value: 'ada@example.com',
+    });
+    const persisted = JSON.parse((await reload(row.id)).request_json);
+    expect(persisted.uid).toBe(requestDuringWrite.uid);
+    expect(persisted.emails[0].mapKey).toBe(requestDuringWrite.emails[0].mapKey);
+  });
+
+  it('recovers a response-loss create by durable uid after worker restart', async () => {
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      emails: [],
+      name: 'Ada',
+    });
+    const first = new MockTransport();
+    first.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    let writes = 0;
+    first.handle('ContactCard/set', () => {
+      writes += 1;
+      return null;
+    });
+
+    const lost = await processMutationRow({ transport: first, account, handlers, row });
+    expect(lost).toMatchObject({ ok: false, error: { type: 'serverFail' } });
+    const uncertain = await reload(row.id);
+    expect(uncertain.phase).toBe('contact_create_pending');
+    const request = JSON.parse(uncertain.request_json);
+    expect(JSON.parse(uncertain.server_response_json).contactCreateUids).toEqual([request.uid]);
+
+    const recovered = new MockTransport();
+    recovered.handle('ContactCard/query', ({ filter }) => ({
+      ids: filter?.uid === request.uid ? ['card-recovered'] : [],
+      total: 1,
+    }));
+    recovered.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-2',
+    }));
+    recovered.handle('ContactCard/get', ({ ids, properties }) => ({
+      state: 'cc-2',
+      list: ids.map((id: string) => properties
+        ? { id, uid: request.uid }
+        : {
+            id,
+            uid: request.uid,
+            addressBookIds: { 'book-default': true },
+            name: { full: 'Ada' },
+          }),
+    }));
+
+    const retry = await processMutationRow({
+      transport: recovered,
+      account,
+      handlers,
+      row: uncertain,
+    });
+
+    expect(retry.ok).toBe(true);
+    expect(writes).toBe(1);
+    expect(recovered.requests.some(
+      (entry) => entry.methodCalls.some(([method]) => method === 'ContactCard/set'),
+    )).toBe(false);
+  });
+
+  it('ignores local address books from another contact service', async () => {
+    await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
+      accountId: account.id,
+      serviceKind: SERVICE_KIND.CARDDAV,
+      addressbooks: [{ remoteId: 'carddav-book', name: 'Other service' }],
+    });
+    const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id });
+    const jmapBook = books.find((book: any) => book.remote_id === 'book-default');
+    const otherBook = books.find((book: any) => book.remote_id === 'carddav-book');
+    const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
+      uid: 'urn:uuid:11111111-2222-4333-8444-555555555555',
+      addressbookIds: [otherBook.id, jmapBook.id],
+      fullName: 'Scoped',
+      emails: [],
+      phones: [],
+      links: [],
+      anniversaries: [],
+      notes: [],
+      organizations: [],
+      titles: [],
+    });
+    const transport = new MockTransport();
+    let created: any = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/set', ({ create }) => {
+      created = create.c1;
+      return { created: { c1: { id: 'card-new' } } };
+    });
+    transport.handle('ContactCard/get', ({ ids }) => ({
+      state: 'cc-1',
+      list: ids.map((id: string) => ({
+        id,
+        addressBookIds: { 'book-default': true },
+        name: { full: 'Scoped' },
+      })),
+    }));
+
+    const result = await processMutationRow({ transport, account, handlers, row });
+
+    expect(result.ok).toBe(true);
+    expect(created.addressBookIds).toEqual({ 'book-default': true });
+  });
+
+  it('carries a migrated typo correction through preparation and outbox patching', async () => {
+    const legacyEmail = {
+      mapKey: null,
+      position: 0,
+      value: 'typo@example.con',
+      label: null,
+      contexts: [],
+      pref: null,
+      isPreferred: true,
+    };
+    const baseline = {
+      fullName: 'Legacy',
+      emails: [legacyEmail],
+      phones: [],
+      links: [],
+      anniversaries: [],
+      notes: [],
+      organizations: [],
+      titles: [],
+    };
+    const contact = withContactDetailKeys({
+      ...baseline,
+      emails: [{ ...legacyEmail, value: 'typo@example.com' }],
+    }, baseline);
+    expect(contact.emails[0].mapKey).toBeNull();
+    const row = await queueRow(MUTATION_TYPES.UPDATE_CONTACT, {
+      remoteId: 'legacy-card',
+      baseline,
+      contact,
+    });
+    const transport = new MockTransport();
+    let patch: any = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      state: 'cc-1',
+      list: [{
+        id: 'legacy-card',
+        addressBookIds: { 'book-default': true },
+        name: { full: 'Legacy' },
+        emails: {
+          serverEmail: {
+            '@type': 'EmailAddress',
+            address: 'typo@example.con',
+            contexts: { work: true },
+            'x-server': { preserve: true },
+          },
+        },
+      }],
+    }));
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update['legacy-card'];
+      return { updated: { 'legacy-card': null } };
+    });
+
+    const result = await processMutationRow({ transport, account, handlers, row });
+
+    expect(result.ok).toBe(true);
+    expect(patch['emails/serverEmail']).toEqual({
+      '@type': 'EmailAddress',
+      address: 'typo@example.com',
+      contexts: { work: true },
+      'x-server': { preserve: true },
+    });
+  });
+
+  it('adds, removes, and reorders migrated emails without rebinding survivors', async () => {
+    const email = (value: string, position: number) => ({
+      mapKey: null,
+      position,
+      value,
+      label: null,
+      contexts: [],
+      pref: null,
+      isPreferred: false,
+    });
+    const baseline = {
+      fullName: 'Legacy',
+      emails: [
+        email('a@example.com', 0),
+        email('remove@example.com', 1),
+        email('c@example.com', 2),
+      ],
+      phones: [],
+      links: [],
+      anniversaries: [],
+      notes: [],
+      organizations: [],
+      titles: [],
+    };
+    const contact = withContactDetailKeys({
+      ...baseline,
+      emails: [
+        email('new@example.com', 0),
+        email('c@example.com', 1),
+        email('a@example.com', 2),
+      ],
+    }, baseline);
+    expect(contact.emails).toEqual([
+      expect.objectContaining({ value: 'new@example.com', mapKey: expect.stringMatching(/^email-/) }),
+      expect.objectContaining({ value: 'c@example.com', mapKey: null }),
+      expect.objectContaining({ value: 'a@example.com', mapKey: null }),
+    ]);
+    const row = await queueRow(MUTATION_TYPES.UPDATE_CONTACT, {
+      remoteId: 'legacy-card',
+      baseline,
+      contact,
+    });
+    const transport = new MockTransport();
+    let patch: any = null;
+    transport.handle('AddressBook/get', () => ({
+      list: [{ id: 'book-default', name: 'Contacts', isDefault: true }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      state: 'cc-1',
+      list: [{
+        id: 'legacy-card',
+        addressBookIds: { 'book-default': true },
+        name: { full: 'Legacy' },
+        emails: {
+          keyA: { address: 'a@example.com', 'x-id': 'a' },
+          keyRemoved: { address: 'remove@example.com', 'x-id': 'remove' },
+          keyC: { address: 'c@example.com', 'x-id': 'c' },
+        },
+      }],
+    }));
+    transport.handle('ContactCard/set', ({ update }) => {
+      patch = update['legacy-card'];
+      return { updated: { 'legacy-card': null } };
+    });
+
+    const result = await processMutationRow({ transport, account, handlers, row });
+
+    expect(result.ok).toBe(true);
+    expect(patch['emails/keyRemoved']).toBeNull();
+    expect(patch).not.toHaveProperty('emails/keyA');
+    expect(patch).not.toHaveProperty('emails/keyC');
+    const addition = Object.entries(patch).find(
+      ([key]) => key.startsWith('emails/email-'),
+    );
+    expect(addition?.[1]).toMatchObject({ address: 'new@example.com' });
+  });
+
   it('reports the failure instead of a success the list contradicts', async () => {
     const row = await queueRow(MUTATION_TYPES.CREATE_CONTACT, {
       emails: ['ada@example.com'],

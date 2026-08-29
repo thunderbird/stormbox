@@ -21,6 +21,7 @@
 import { DB_RPC } from '../../../db/protocol';
 import { MUTATION_TYPE } from '../../../constants/states';
 import { addressKey } from '../../../utils/address-key';
+import { createContactUid } from '../../../utils/contact-uid';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
@@ -413,6 +414,7 @@ async function queueNewOutgoingRecipients({
       email: candidate.email,
       name: candidate.name,
       sourceSentAt: candidate.sentAt,
+      uid: createContactUid(),
     }));
   if (senders.length === 0) return;
   await handlers[DB_RPC.PENDING_MUTATION_INSERT]({

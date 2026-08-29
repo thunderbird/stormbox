@@ -421,12 +421,12 @@ test.describe('Contacts + Junk whitelist e2e', () => {
         .toBeVisible({ timeout: 30_000 });
 
       // --- Add with two emails ---
-      await page.getByRole('button', { name: 'Add contact' }).click();
+      await page.getByRole('button', { name: 'New Contact' }).click();
       const form = page.locator('.contacts__form');
       await expect(form).toBeVisible();
       await form.locator('input[type="text"]').first().fill(name);
       await form.locator('input[type="email"]').first().fill(email1);
-      await form.getByRole('button', { name: /add another email/i }).click();
+      await form.getByRole('button', { name: /^add email$/i }).click();
       await form.locator('input[type="email"]').nth(1).fill(email2);
       await form.getByRole('button', { name: /^save contact$/i }).click();
 
@@ -454,13 +454,16 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       ).toBe(2);
 
       // --- Edit: rename + add a third email ---
-      await row.getByRole('button', { name: /^Edit / }).click();
+      await row.click();
+      await page.locator('.contact-detail')
+        .getByRole('button', { name: 'Edit', exact: true })
+        .click();
       const editForm = page.locator('.contacts__form');
       await expect(editForm).toBeVisible();
       await editForm.locator('input[type="text"]').first().fill(editedName);
-      await editForm.getByRole('button', { name: /add another email/i }).click();
+      await editForm.getByRole('button', { name: /^add email$/i }).click();
       await editForm.locator('input[type="email"]').nth(2).fill(email3);
-      await editForm.getByRole('button', { name: /^save changes$/i }).click();
+      await editForm.getByRole('button', { name: /^save contact$/i }).click();
 
       const editedRow = page.locator('.contacts__row').filter({ hasText: editedName });
       await expect(editedRow).toBeVisible({ timeout: 30_000 });
@@ -488,7 +491,13 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       ).toBe(3);
 
       // --- Remove ---
-      await editedRow.getByRole('button', { name: /^Remove / }).click();
+      await editedRow.click();
+      await page.locator('.contact-detail')
+        .getByRole('button', { name: 'Delete', exact: true })
+        .click();
+      await page.getByRole('alertdialog')
+        .getByRole('button', { name: 'Delete', exact: true })
+        .click();
       await expect(editedRow).toHaveCount(0, { timeout: 30_000 });
 
       await waitForPendingMutations(page);

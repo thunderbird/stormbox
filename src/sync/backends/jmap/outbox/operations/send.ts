@@ -2,6 +2,7 @@ import { MUTATION_TYPE, SEND_PHASE } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import { addressKey } from '../../../../../utils/address-key';
+import { createContactUid } from '../../../../../utils/contact-uid';
 import { prepareComposeEmail } from '../../compose-email';
 import { callJmap, pickResponse, pickResponseById } from '../../invoke';
 import {
@@ -866,7 +867,12 @@ async function cleanupDraftsAfterSend({
  * The DB handler commits this set's mutation with the accepted checkpoint,
  * closing the crash window between the irreversible send and its follow-up.
  */
-function trustedRecipients(request): Array<{ email: string; name: string | null; sourceSentAt: number }> {
+function trustedRecipients(request): Array<{
+  email: string;
+  name: string | null;
+  sourceSentAt: number;
+  uid: string;
+}> {
   const byKey = new Map<string, { email: string; name: string | null }>();
   for (const recipient of [
     ...(request?.to ?? []),
@@ -879,7 +885,11 @@ function trustedRecipients(request): Array<{ email: string; name: string | null;
     byKey.set(key, { email, name: recipient?.name?.trim() || null });
   }
   const sourceSentAt = Date.now();
-  return [...byKey.values()].map((recipient) => ({ ...recipient, sourceSentAt }));
+  return [...byKey.values()].map((recipient) => ({
+    ...recipient,
+    sourceSentAt,
+    uid: createContactUid(),
+  }));
 }
 
 /**

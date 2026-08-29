@@ -28,6 +28,7 @@ import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-htm
 import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
+import { createContactUid } from '../utils/contact-uid';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
@@ -1607,7 +1608,10 @@ export const useMailStore = defineStore('mail', () => {
     }
     if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
     const rescueIds = rows.map((r) => r.id);
-    const senders = [...sendersByEmail.values()];
+    const senders = [...sendersByEmail.values()].map((sender) => ({
+      ...sender,
+      uid: createContactUid(),
+    }));
 
     // 1) Trust every unique sender in a single mutation, run it, and
     //    capture whether the trust write applied — the whole point of the
