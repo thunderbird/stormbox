@@ -45,7 +45,7 @@ function stubContactListLayout() {
     configurable: true,
     get(this: HTMLElement) {
       if (this.classList.contains('contacts__list')) return 510;
-      if (this.classList.contains('contacts__row')) return 51;
+      if (this.classList.contains('contacts__row')) return 59;
       return 0;
     },
   });
@@ -73,6 +73,7 @@ function stubContactListLayout() {
 function makeRepo() {
   return {
     subscribe() { return () => {}; },
+    async listAccounts() { return []; },
     async listFolders() { return []; },
     async listMessagesForView() { return []; },
     async queryViewProgress() { return { total: 0, covered: 0, percent: 0 }; },
@@ -82,6 +83,31 @@ function makeRepo() {
     async ensureFolderTree() { return { count: 0 }; },
     async listAddressbooks() { return []; },
     async listContacts() { return repoContacts; },
+    async getContact(_accountId, contactId) {
+      const contact = repoContacts.find((candidate) => candidate.id === contactId);
+      if (!contact) return null;
+      return {
+        ...contact,
+        full_name: contact.display_name,
+        emails: contact.email
+          ? [{
+            mapKey: `email-${contact.id}`,
+            position: 0,
+            value: contact.email,
+            label: null,
+            contexts: [],
+            pref: 1,
+            isPreferred: true,
+          }]
+          : [],
+        phones: [],
+        links: [],
+        anniversaries: [],
+        notes: [],
+        organizations: [],
+        titles: [],
+      };
+    },
     async listIdentities() { return []; },
   };
 }
@@ -220,7 +246,11 @@ describe('App mail layout', () => {
     expect(wrapper.find('.welcome--spotlighting').exists()).toBe(false);
     expect(window.localStorage.getItem('stormbox.welcomeModalDismissed.v1')).toBeNull();
 
-    await wrapper.get('.welcome__primary').trigger('click');
+    wrapper.get('[role="dialog"]').element.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Enter',
+    }));
     await nextTick();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
@@ -343,7 +373,6 @@ describe('App mail layout', () => {
         remote_id: 'alice',
         addressbook_ids: [],
         display_name: 'Alice Example',
-        organization: null,
         email: 'alice@example.com',
       },
       {
@@ -351,7 +380,6 @@ describe('App mail layout', () => {
         remote_id: 'bob',
         addressbook_ids: [],
         display_name: 'Bob Example',
-        organization: null,
         email: 'bob@example.net',
       },
     ];
@@ -396,6 +424,57 @@ describe('App mail layout', () => {
     await nextTick();
     expect((wrapper.get('.quick-filter__input').element as HTMLInputElement).value).toBe('');
     expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('');
+  });
+
+  it('guards contact-filter invalidation and leaving Contacts for Mail', async () => {
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [{
+      id: 1,
+      remote_id: 'alice',
+      addressbook_ids: [],
+      display_name: 'Alice Example',
+      email: 'alice@example.com',
+    }];
+    const wrapper = mountApp();
+    await flushPromises();
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-entry-key="contact:1"]').trigger('click');
+    await flushPromises();
+    const edit = wrapper.findAll('button')
+      .find((button) => button.attributes('aria-label') === 'Edit')!;
+    await edit.trigger('click');
+    await wrapper.get('input[autocomplete="name"]').setValue('Dirty Alice');
+
+    await wrapper.get('.quick-filter__input').setValue('no match');
+    await nextTick();
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('Save your changes');
+    await wrapper.findAll('button')
+      .filter((button) => button.text().trim() === 'Cancel')
+      .at(-1)!
+      .trigger('click');
+    await flushPromises();
+    expect((wrapper.get('.quick-filter__input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.find('.shell--contacts').exists()).toBe(true);
+
+    await wrapper.get('[aria-label="Mail"]').trigger('click');
+    await nextTick();
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('Save your changes');
+    await wrapper.findAll('button')
+      .filter((button) => button.text().trim() === 'Cancel')
+      .at(-1)!
+      .trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell--contacts').exists()).toBe(true);
+
+    await wrapper.get('[aria-label="Mail"]').trigger('click');
+    await nextTick();
+    await wrapper.findAll('button')
+      .find((button) => button.text().trim() === 'Discard')!
+      .trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell--contacts').exists()).toBe(false);
+    expect(wrapper.find('.msg-list').exists()).toBe(true);
   });
 
   it('does not change mail selection when the Contacts filter query changes', async () => {
