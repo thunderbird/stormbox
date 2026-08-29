@@ -11,9 +11,15 @@ function identity(overrides: Partial<IdentityRow>): IdentityRow {
     id: overrides.id ?? 1,
     account_id: overrides.account_id ?? 1,
     remote_id: overrides.remote_id ?? `id-${overrides.id ?? 1}`,
-    name: overrides.name ?? null,
+    name: overrides.name ?? '',
     email: overrides.email ?? 'user@example.com',
     reply_to_json: overrides.reply_to_json ?? null,
+    bcc_json: overrides.bcc_json ?? null,
+    text_signature: overrides.text_signature ?? null,
+    html_signature: overrides.html_signature ?? null,
+    may_delete: overrides.may_delete ?? null,
+    reply_to: overrides.reply_to ?? null,
+    bcc: overrides.bcc ?? null,
     raw_json: overrides.raw_json ?? null,
     updated_at: overrides.updated_at ?? 0,
   };
@@ -42,8 +48,8 @@ describe('compose identity resolution', () => {
 
   it('uses a non-deletable JMAP identity when no email match exists', () => {
     expect(resolveComposeIdentityIndex([
-      identity({ id: 1, email: 'alias@example.com', raw_json: JSON.stringify({ mayDelete: true }) }),
-      identity({ id: 2, email: 'primary@example.com', raw_json: JSON.stringify({ mayDelete: false }) }),
+      identity({ id: 1, email: 'alias@example.com', may_delete: 1 }),
+      identity({ id: 2, email: 'primary@example.com', may_delete: 0 }),
     ])).toBe(1);
   });
 

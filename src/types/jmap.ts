@@ -114,9 +114,10 @@ export interface JmapIdentity {
   name: string;
   email: string;
   replyTo?: JmapEmailAddress[] | null;
+  bcc?: JmapEmailAddress[] | null;
   textSignature?: string | null;
   htmlSignature?: string | null;
-  mayDelete?: boolean;
+  mayDelete?: boolean | null;
 }
 
 // ---------------------------------------------------------------------
