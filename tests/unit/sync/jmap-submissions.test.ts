@@ -2,7 +2,7 @@
  * EmailSubmission synchronizer tests: the Stalwart 0.15.4 read path,
  * tracked-row transitions, external-schedule discovery, settled-row
  * handoffs to durable operations, account isolation, and the
- * level-based Scheduled-mailbox subscription reconciler.
+ * permanent Scheduled-mailbox subscription reconciler.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -574,29 +574,29 @@ describe('reconcileScheduledSubscription', () => {
     ]);
   });
 
-  it('unsubscribes once the last schedule resolves', async () => {
-    await reconcileScheduledSubscription(handlers, account.id);
-    expect(await subscriptionMutations()).toEqual([
-      {
-        folderId: scheduledFolder.id,
-        isSubscribed: false,
-        managedBy: 'scheduledMailbox',
-      },
-    ]);
-  });
-
-  it('is level-based: a matching level enqueues nothing', async () => {
-    await seedScheduledMessage('e-1');
-    // Folder subscribed + one pending schedule: already at the desired level.
+  it('keeps the folder subscribed when no schedules remain', async () => {
     await reconcileScheduledSubscription(handlers, account.id);
     expect(await subscriptionMutations()).toEqual([]);
   });
 
-  it('rewrites a queued opposite level instead of letting it land later', async () => {
+  it('enqueues nothing when the permanent subscription already matches', async () => {
     await reconcileScheduledSubscription(handlers, account.id);
-    expect((await subscriptionMutations())[0].isSubscribed).toBe(false);
+    expect(await subscriptionMutations()).toEqual([]);
+  });
 
-    await seedScheduledMessage('e-1');
+  it('rewrites a queued unsubscribe instead of letting it hide the folder', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        folderId: scheduledFolder.id,
+        isSubscribed: false,
+        managedBy: 'scheduledMailbox',
+      }),
+      optimisticPatchJson: null,
+    });
+
     await reconcileScheduledSubscription(handlers, account.id);
     await reconcileScheduledSubscription(handlers, account.id);
 
@@ -609,15 +609,24 @@ describe('reconcileScheduledSubscription', () => {
     ]);
   });
 
-  it('queues a compensating level behind an opposite in-flight write', async () => {
-    await reconcileScheduledSubscription(handlers, account.id);
+  it('queues a compensating subscribe behind an in-flight unsubscribe', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        folderId: scheduledFolder.id,
+        isSubscribed: false,
+        managedBy: 'scheduledMailbox',
+      }),
+      optimisticPatchJson: null,
+    });
     const [unsubscribe] = await pendingMutations(MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION);
     await engine.run(
       "UPDATE pending_mutations SET local_status = 'in_flight' WHERE id = ?",
       [unsubscribe.id],
     );
 
-    await seedScheduledMessage('e-1');
     await reconcileScheduledSubscription(handlers, account.id);
 
     expect(await subscriptionMutations()).toEqual([
@@ -636,6 +645,51 @@ describe('reconcileScheduledSubscription', () => {
 });
 
 describe('ensureScheduledMailbox', () => {
+  it('creates the managed mailbox subscribed', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
+      accountId: account.id,
+      patch: { scheduledMailboxRemoteId: null },
+    });
+    let create: any = null;
+    const t = new MockTransport();
+    t.handle('Mailbox/query', () => ({
+      ids: [],
+      position: 0,
+      total: 0,
+      canCalculateChanges: false,
+      queryState: 'mq-empty',
+    }));
+    t.handle('Mailbox/get', () => ({
+      list: [],
+      notFound: [],
+      state: 'mg-empty',
+    }));
+    t.handle('Mailbox/set', (params) => {
+      create = params.create;
+      return {
+        created: { 'stormbox-scheduled': { id: 'mb-created' } },
+        newState: 'ms-created',
+      };
+    });
+
+    await expect(ensureScheduledMailbox({
+      transport: t,
+      account,
+      handlers,
+    })).resolves.toBe('mb-created');
+
+    expect(create['stormbox-scheduled']).toMatchObject({
+      name: 'Scheduled',
+      parentId: null,
+      isSubscribed: true,
+    });
+    expect(await engine.get(
+      'SELECT is_subscribed FROM folders WHERE account_id = ? AND remote_id = ?',
+      [account.id, 'mb-created'],
+    )).toMatchObject({ is_subscribed: 1 });
+  });
+
   it('preserves synced folder counts and rights when refreshing the cached mailbox', async () => {
     await engine.run(
       `UPDATE folders

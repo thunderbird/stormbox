@@ -103,8 +103,8 @@ export function folderCapabilities(
   // The managed Send Later mailbox: structurally protected like a role
   // folder (no rename/delete/reparent), and closed to ordinary message
   // transfers — its contents are owned by the scheduling flow, where a
-  // stray move would strand or duplicate a held submission. It stays
-  // subscribable so standard IMAP Subscribe dialogs can reveal it.
+  // stray move would strand or duplicate a held submission. Stormbox also
+  // owns its permanent subscription.
   const isScheduledManaged = isPrimary && Number(folder.is_scheduled ?? 0) === 1;
   const subscribed = isSystemProtected
     || (isPrimary
@@ -121,7 +121,10 @@ export function folderCapabilities(
     isSystemProtected,
     // Stalwart currently gates shared isSubscribed updates on Modify,
     // represented by mayRename. Keep this server-specific policy explicit.
-    maySubscribe: !isSystemProtected && (isPrimary || rights.mayRename),
+    maySubscribe:
+      !isSystemProtected
+      && !isScheduledManaged
+      && (isPrimary || rights.mayRename),
     mayStar: !isSystemProtected && subscribed,
     mayReparent: !isSystemProtected && !isScheduledManaged && rights.mayRename,
     mayDeleteWithMail: !isSystemProtected && !isScheduledManaged

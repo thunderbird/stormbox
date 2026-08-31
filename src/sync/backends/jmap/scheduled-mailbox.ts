@@ -2,11 +2,8 @@
  * The real, top-level `Scheduled` mailbox that holds Send Later messages.
  *
  * It is an ordinary server mailbox — visible to IMAP clients, synced by
- * the normal Mailbox pipeline — whose only special treatment is that its
- * subscription follows the presence of active schedules: subscribed while
- * anything is pending, unsubscribed once the last schedule resolves. The
- * folder pane already hides unsubscribed roleless folders, so that flag
- * alone produces Fastmail's appear/disappear behavior.
+ * the normal Mailbox pipeline — whose only special treatment is that
+ * Stormbox keeps it subscribed after adopting or creating it.
  *
  * Discovery order: the settings-cached remote id, then a name match on
  * the shape in `matchesScheduledMailboxShape`, then creation. The cached
@@ -146,9 +143,7 @@ async function createMailbox(
           [CREATION_ID]: {
             name: SCHEDULED_MAILBOX_NAME,
             parentId: null,
-            // Unsubscribed at birth: the subscription reconciler flips it
-            // on once the first schedule is actually accepted.
-            isSubscribed: false,
+            isSubscribed: true,
           },
         },
       },
@@ -159,7 +154,7 @@ async function createMailbox(
   const response = pickResponse(payload, 'Mailbox/set');
   const createdId = response?.created?.[CREATION_ID]?.id;
   if (typeof createdId === 'string' && createdId.length > 0) {
-    return { remoteId: createdId, isSubscribed: false };
+    return { remoteId: createdId, isSubscribed: true };
   }
   // A lost race with another client leaves the name taken; adopt theirs.
   const discovered = await discoverByName(args);
@@ -239,13 +234,9 @@ export async function ensureScheduledMailbox(
 }
 
 /**
- * Level-based subscription reconciler: subscribed exactly while the
- * account has any unresolved schedule. Runs after every transition that
- * could change that level (send accepted, submission sync, cancel) and
- * compares the desired level with the local folder row, enqueueing the
- * existing durable SET_MAILBOX_SUBSCRIPTION mutation only on a
- * difference — so missed or duplicate invocations converge and the
- * server write inherits the outbox's retry behavior.
+ * Keep the managed mailbox subscribed. Runs after scheduling transitions
+ * and rewrites any queued legacy/opposite subscription write so retries
+ * converge on permanent visibility.
  *
  * Best-effort by design — the subscription only controls folder-pane
  * visibility, and every caller sits past a point of no return where a
@@ -260,18 +251,14 @@ export async function reconcileScheduledSubscription(
     if (!remoteId) return;
     const rows = await handlers[DB_RPC.QUERY]({
       sql: `SELECT f.id AS folder_id,
-                   COALESCE(f.is_subscribed, 1) AS is_subscribed,
-                   (SELECT COUNT(*) FROM messages m
-                     WHERE m.account_id = ?
-                       AND m.scheduled_undo_status IN ('pending', 'unknown')
-                   ) AS active
+                   COALESCE(f.is_subscribed, 1) AS is_subscribed
               FROM folders f
              WHERE f.account_id = ? AND f.remote_id = ? AND f.is_deleted = 0`,
-      params: [accountId, accountId, remoteId],
+      params: [accountId, remoteId],
     });
     const row = rows?.[0];
     if (!row) return;
-    const desired = Number(row.active) > 0;
+    const desired = true;
     const current = Number(row.is_subscribed) !== 0;
     const pending = await handlers[DB_RPC.QUERY]({
       sql: `SELECT id, local_status, request_json

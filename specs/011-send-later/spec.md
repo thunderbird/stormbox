@@ -33,18 +33,26 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   immediate-send behavior.
 - **SL-1.3 — Split-control order.** The expanded composer shall place the
   schedule dropdown segment immediately to the right of the primary Send
-  button. The left segment shall be labeled `Send`; the right segment shall
-  have the accessible label and tooltip `Schedule send`.
+  button. The left segment shall remain labeled `Send`. The right segment
+  shall have the accessible label and tooltip `Schedule send` before a
+  selection, then expand to show the selected preset title or `Custom`.
 - **SL-1.4 — Exact menu.** When scheduling is supported, the right segment
-  shall open a menu containing these options in order: `Later today`,
-  `This evening`, `Tomorrow`, `This weekend`, `Next week`, a separator, and
-  `Choose a date and time`.
+  shall open a menu containing these options in order: `Later today`, `This
+  evening`, `Tomorrow`, `This weekend`, `Next week`, a separator, and `Choose
+  a date and time`. Once a schedule is staged, `Send now` and a separator
+  shall appear before those options so the user can clear it.
 - **SL-1.5 — Resolved presets.** Each preset shall show its resolved local
   date/time in the active scheduling time zone. A preset outside the server's
   remaining range shall stay visible but disabled with an explanation.
 - **SL-1.6 — Fresh acceptance check.** Opening the menu and committing a
   schedule shall refresh the live capability. A capability lost while the
   composer is open shall prevent scheduling without affecting immediate Send.
+- **SL-1.7 — Explicit confirmation.** Selecting a preset or choosing `Set send
+  time` in the custom dialog shall only stage that target and show its title
+  in the dropdown segment; it shall not enqueue or submit anything. The
+  primary button shall remain `Send`, and the user shall press it to commit
+  the selected schedule. While a target is staged, choosing `Send now` shall
+  clear it without sending.
 
 ## 2. Time zone, wall time, and range
 
@@ -128,13 +136,12 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   cached id is canonical and every consumer shall compare against it through
   one shared predicate. Name matching is bootstrap and recovery only, and a
   stale cached id shall be re-verified against the server before reuse.
-- **SL-4.3 — Conditional subscription.** The mailbox's `isSubscribed` flag
-  shall follow the presence of active schedules through one level-based,
-  idempotent reconciler: subscribed while any `pending`/`unknown` schedule
-  exists, unsubscribed once none remain. The reconciler shall compare desired
-  and cached local state and enqueue the existing mailbox-subscription
-  mutation only on a difference, and its failure shall never fail the send or
-  cancel that triggered it.
+- **SL-4.3 — Permanent subscription.** Stormbox shall create the mailbox
+  subscribed and keep its `isSubscribed` flag true after discovery. The
+  idempotent reconciler shall repair an unsubscribed cached mailbox and rewrite
+  any queued opposite subscription mutation so an old retry cannot hide it.
+  Reconciliation failure shall never fail the send or cancel that triggered
+  it.
 - **SL-4.4 — Stalwart-compatible reads.** All submission reads shall use one
   unfiltered `EmailSubmission/query` plus explicit `EmailSubmission/get(ids)`
   with client-side filtering, never Stalwart's unreliable `undoStatus` query
@@ -158,10 +165,10 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 
 ## 5. Scheduled folder presentation
 
-- **SL-5.1 — Conditional visibility.** The Scheduled folder shall appear in
-  the folder pane exactly while it is subscribed (SL-4.3): present when
-  schedules are active, absent when none remain, and still discoverable in
-  standard IMAP Subscribe dialogs while hidden.
+- **SL-5.1 — Permanent visibility.** Once discovered or created, the Scheduled
+  folder shall remain in the folder pane while empty as well as while
+  schedules are active. Stormbox shall not hide it after cancellation or
+  release of the last schedule.
 - **SL-5.2 — Placement.** The folder shall render as a special folder between
   Drafts and Sent, with its own icon, and shall not be renameable, deletable,
   reparentable, or usable as an ordinary move/copy target.
@@ -282,12 +289,13 @@ later.
   settings-store, ScheduleSendDialog, and ComposeDialog tests.
 - Live Stalwart: `tests/integration/send-later-live.test.ts` covers the target
   instant on `Email.sentAt`, the raw MIME `Date` header, and
-  `EmailSubmission.sendAt`; conditional subscription; pre-release cancellation
+  `EmailSubmission.sendAt`; permanent subscription; pre-release cancellation
   to Drafts with no delivery; short-delay release through delivery, Sent
   filing, and cleared tracking (with an attachment); and fresh-client adoption
   of an externally created schedule.
-- Browser: `tests/e2e/send-later.spec.js` covers split-control geometry, the
-  resolved preset menu and custom picker, conditional real-folder placement
-  below Drafts, soonest-first ordering, normal list/detail rendering with the
-  scheduled banner, inert reply/delete shortcuts, cancellation back to Drafts,
-  and the folder disappearing after the last cancel, in Firefox and Chromium.
+- Browser: `tests/e2e/send-later.spec.js` covers split-control geometry,
+  staged preset/custom selection with explicit Send-later confirmation,
+  permanent real-folder placement below Drafts, soonest-first ordering, normal
+  list/detail rendering with the scheduled banner, inert reply/delete
+  shortcuts, cancellation back to Drafts, and empty-folder persistence, in
+  Firefox and Chromium.

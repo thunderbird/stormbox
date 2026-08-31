@@ -64,16 +64,13 @@ canonical once discovered, and `isScheduledMailbox` in
 through. A top-level `Scheduled` with a conflicting shape fails scheduling
 tersely rather than commandeering a user folder.
 
-Fastmail's appear/disappear behavior falls out of the subscription flag:
-`reconcileScheduledSubscription` is a level-based, idempotent reconciler that
-subscribes the mailbox while any `pending`/`unknown` schedule exists and
-unsubscribes it once none remain, enqueueing the existing
-`SET_MAILBOX_SUBSCRIPTION` mutation only when desired and cached state
-differ. The folder pane already hides unsubscribed roleless folders, and the
-empty mailbox stays discoverable in standard IMAP Subscribe dialogs. The
-reconciler is best-effort by design — it only controls visibility, and every
-caller sits past a point of no return where a cosmetic failure must not fail
-the row.
+The mailbox is created subscribed and stays visible when empty.
+`reconcileScheduledSubscription` idempotently repairs an unsubscribed cached
+mailbox and rewrites queued opposite subscription writes before they can hide
+it. It reuses the durable `SET_MAILBOX_SUBSCRIPTION` mutation when a server
+write is needed. The reconciler is best-effort by design — it only controls
+visibility, and every caller sits past a point of no return where a cosmetic
+failure must not fail the row.
 
 ## Submission synchronization
 
@@ -101,7 +98,7 @@ Each pass:
   enqueues `CANCEL_SCHEDULED_SEND` for Drafts restoration. Scheduling columns
   clear only after placement confirms, so a crash repeats an idempotent move
   instead of stranding a released message;
-- reconciles the mailbox subscription and reports the nearest pending target.
+- keeps the mailbox subscribed and reports the nearest pending target.
 
 Triggers (in `src/sync/backends/jmap/backend.ts`): `EmailSubmission`
 StateChange, connect/reconnect, Scheduled-folder open, and one non-durable
@@ -152,8 +149,12 @@ auto-open the compose editor mid-cancel.
 Compose controls (split button, presets, custom picker with IANA time-zone
 search, DST validation, synced `timeZone` setting) live in
 `ComposeDialog.vue`, `ScheduleSendDialog.vue`, and `src/utils/schedule-time.ts`;
-`scheduleSend` in the compose store validates capability and target client-side
-and then delegates to the ordinary `send` action with `scheduledAt` attached.
+choosing a preset or custom time only stages an absolute target and changes the
+dropdown segment to the preset title or `Custom`. The primary action remains
+`Send`, and the user must click it before `scheduleSend` validates capability
+and target client-side and delegates to the ordinary `send` action with
+`scheduledAt` attached. While a target is staged, the dropdown adds `Send now`;
+choosing it clears the target without submitting anything.
 
 ## Verification
 
@@ -161,5 +162,5 @@ See the verification map in the spec: unit coverage for the scheduled send
 branch, synchronizer, cancel operation, triggers, capability, and DST math;
 live Stalwart verticals in `tests/integration/send-later-live.test.ts`
 (time surfaces, cancellation, release-to-Sent with delivery, external-client
-adoption, subscription levels); and the browser flow in
+adoption, permanent subscription); and the browser flow in
 `tests/e2e/send-later.spec.js` (Firefox and Chromium).
