@@ -22,6 +22,7 @@ import {
 import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
+import { detectTimeZone } from '../../../src/utils/schedule-time';
 
 const MIRROR_KEY = 'stormbox.settings.v1';
 const META_KEY = 'stormbox.settings.meta.v1';
@@ -33,6 +34,7 @@ function makeRepo(documents: Record<number, Record<string, unknown>>) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     }),
+    ensureSettings: vi.fn(async () => {}),
     getSettings: vi.fn(async (accountId) => ({
       doc: {
         owner: 'stormbox',
@@ -144,6 +146,7 @@ describe('settings store account safety', () => {
     const store = useSettingsStore();
     await store.attach();
     await flushPromises();
+    repo.applySettingsPatch.mockClear();
 
     let finishWrite!: () => void;
     const writing = new Promise<void>((resolve) => {
@@ -179,8 +182,84 @@ describe('settings store account safety', () => {
     store.settings = {
       theme: 'invalid',
       primaryIdentityRemoteId: '',
+      scheduledMailboxRemoteId: '',
+      timeZone: 'Mars/Olympus_Mons',
     };
     expect(store.get('theme')).toBe('system');
     expect(store.get('primaryIdentityRemoteId')).toBeNull();
+    expect(store.get('scheduledMailboxRemoteId')).toBeNull();
+    expect(store.get('timeZone')).toBe(detectTimeZone());
+  });
+
+  it('persists a detected timezone once on the first connected account load', async () => {
+    const repo = makeRepo({ 11: {} });
+    __setRepositoryForTests(repo as any);
+    const auth = useAuthStore();
+    auth.accountId = 11;
+    auth.status = AUTH_STATE.CONNECTED;
+    const store = useSettingsStore();
+
+    await store.attach();
+    await flushPromises();
+
+    expect(repo.applySettingsPatch).toHaveBeenCalledTimes(1);
+    expect(repo.applySettingsPatch).toHaveBeenCalledWith(11, {
+      timeZone: detectTimeZone(),
+    });
+    repo.touchSettings();
+    await flushPromises();
+    expect(repo.applySettingsPatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a valid synced timezone on first load', async () => {
+    const repo = makeRepo({ 12: { timeZone: 'Pacific/Auckland' } });
+    __setRepositoryForTests(repo as any);
+    const auth = useAuthStore();
+    auth.accountId = 12;
+    auth.status = AUTH_STATE.CONNECTED;
+    const store = useSettingsStore();
+
+    await store.attach();
+    await flushPromises();
+
+    expect(store.get('timeZone')).toBe('Pacific/Auckland');
+    expect(repo.applySettingsPatch).not.toHaveBeenCalled();
+  });
+
+  it('pulls remote settings before deciding whether to persist a default timezone', async () => {
+    const documents: Record<number, Record<string, unknown>> = { 14: {} };
+    const repo = makeRepo(documents);
+    repo.ensureSettings.mockImplementationOnce(async () => {
+      documents[14] = { timeZone: 'Europe/Berlin' };
+    });
+    __setRepositoryForTests(repo as any);
+    const auth = useAuthStore();
+    auth.accountId = 14;
+    auth.status = AUTH_STATE.CONNECTED;
+    const store = useSettingsStore();
+
+    await store.attach();
+    await flushPromises();
+
+    expect(repo.ensureSettings).toHaveBeenCalledWith(14);
+    expect(store.get('timeZone')).toBe('Europe/Berlin');
+    expect(repo.applySettingsPatch).not.toHaveBeenCalled();
+  });
+
+  it('repairs an unusable synced timezone through the settings update path', async () => {
+    const repo = makeRepo({ 13: { timeZone: 'Mars/Olympus_Mons' } });
+    __setRepositoryForTests(repo as any);
+    const auth = useAuthStore();
+    auth.accountId = 13;
+    auth.status = AUTH_STATE.CONNECTED;
+    const store = useSettingsStore();
+
+    await store.attach();
+    await flushPromises();
+
+    expect(store.get('timeZone')).toBe(detectTimeZone());
+    expect(repo.applySettingsPatch).toHaveBeenCalledWith(13, {
+      timeZone: detectTimeZone(),
+    });
   });
 });

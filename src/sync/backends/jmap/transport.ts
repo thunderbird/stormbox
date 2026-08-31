@@ -31,6 +31,16 @@ export const JMAP_CAPS = Object.freeze({
   WEBSOCKET: JMAP_WEBSOCKET_CAP,
 });
 
+export interface ServerClockReference {
+  capturedAtMs: number;
+  lowerOffsetMs: number;
+  uncertaintyMs: number;
+}
+
+const SERVER_CLOCK_MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
+const SERVER_CLOCK_MAX_AGE_MS = 10 * 60 * 1_000;
+export const SERVER_CLOCK_MAX_UNCERTAINTY_MS = 31_000;
+
 function httpResponseError(
   label: string,
   response: { status: number; statusText: string },
@@ -331,6 +341,7 @@ export class JmapTransport {
   _XMLHttpRequest: typeof XMLHttpRequest | null;
   _inFlightHttp: Set<{ abort: () => void }>;
   _aborted: boolean;
+  _serverClockReference: ServerClockReference | null;
 
   constructor(options: any) {
     this._sessionUrl = options.sessionUrl;
@@ -383,6 +394,7 @@ export class JmapTransport {
      *  so abort() can cancel them during teardown. */
     this._inFlightHttp = new Set();
     this._aborted = false;
+    this._serverClockReference = null;
   }
 
   isWebSocketOpen(): boolean {
@@ -481,6 +493,7 @@ export class JmapTransport {
     armTimeout();
     try {
       const response = await this._fetch(url, { ...init, signal: controller.signal });
+      this._captureServerClock(response, started, Date.now());
       onActivity();
       return await consume(response, onActivity);
     } catch (err: any) {
@@ -817,6 +830,41 @@ export class JmapTransport {
 
   get session() {
     return this._session;
+  }
+
+  /**
+   * A recent bounded estimate derived from an HTTP Date response header.
+   * `lowerOffsetMs` treats the whole advertised second as not yet elapsed;
+   * `uncertaintyMs` covers its sub-second precision and the request RTT.
+   */
+  get serverClockReference(): ServerClockReference | null {
+    const reference = this._serverClockReference;
+    if (!reference || Date.now() - reference.capturedAtMs > SERVER_CLOCK_MAX_AGE_MS) {
+      return null;
+    }
+    return { ...reference };
+  }
+
+  _captureServerClock(response: any, startedAtMs: number, receivedAtMs: number): void {
+    const raw = response?.headers?.get?.('date');
+    if (typeof raw !== 'string' || raw.trim().length === 0) return;
+    const serverDateMs = Date.parse(raw);
+    if (!Number.isFinite(serverDateMs)) return;
+    const roundTripMs = Math.max(0, receivedAtMs - startedAtMs);
+    const uncertaintyMs = 999 + roundTripMs;
+    const lowerOffsetMs = serverDateMs - receivedAtMs;
+    if (
+      uncertaintyMs > SERVER_CLOCK_MAX_UNCERTAINTY_MS
+      || Math.abs(lowerOffsetMs) > SERVER_CLOCK_MAX_ABS_OFFSET_MS
+      || Math.abs(lowerOffsetMs + uncertaintyMs) > SERVER_CLOCK_MAX_ABS_OFFSET_MS
+    ) {
+      return;
+    }
+    this._serverClockReference = {
+      capturedAtMs: receivedAtMs,
+      lowerOffsetMs,
+      uncertaintyMs,
+    };
   }
 
   /**
