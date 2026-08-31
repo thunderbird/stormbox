@@ -31,6 +31,19 @@ import {
 } from '../../../src/stores/contacts-store';
 import type { ContactDetail, IdentityRow } from '../../../src/types';
 
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const GIF_BASE64 =
+  'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+function rasterFile(base64: string, name: string, type: string): File {
+  return new File(
+    [Uint8Array.from(atob(base64), (value) => value.charCodeAt(0))],
+    name,
+    { type },
+  );
+}
+
 function contactDetail(): ContactDetail {
   return {
     id: 1,
@@ -197,6 +210,113 @@ describe('ContactDetailPane', () => {
     expect(wrapper.text()).toContain('Programmer');
     expect(wrapper.text()).toContain('Founder');
     expect(wrapper.text()).toContain('Personal, Team');
+  });
+
+  it('offers contact duplication as an icon action', async () => {
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: ['Personal'],
+        createAddressbookIds: [],
+        detail: contactDetail(),
+        mode: 'view',
+      },
+    });
+    const button = wrapper.get('[aria-label="Duplicate contact"]');
+
+    expect(button.text()).toBe('');
+    await button.trigger('click');
+    expect(wrapper.emitted('duplicate')).toHaveLength(1);
+  });
+
+  it('keeps photo saving disabled and discards a read from a previous contact', async () => {
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: ['Personal'],
+        createAddressbookIds: [],
+        detail: contactDetail(),
+        mode: 'edit',
+      },
+    });
+    const file = rasterFile(PNG_BASE64, 'avatar.png', 'image/png');
+    let finishRead: ((value: ArrayBuffer) => void) | null = null;
+    vi.spyOn(file, 'arrayBuffer').mockImplementation(() => new Promise((resolve) => {
+      finishRead = resolve;
+    }));
+    const input = wrapper.get('input[type="file"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [file],
+    });
+
+    await input.trigger('change');
+
+    expect(wrapper.text()).toContain('Reading photo…');
+    expect(wrapper.emitted('dirtyChange')?.at(-1)).toEqual([true]);
+    const save = wrapper.findAll('button').find((button) => button.text() === 'Save contact');
+    expect(save?.attributes()).toHaveProperty('disabled');
+    const name = wrapper.get('input[autocomplete="name"]');
+    await name.setValue('Temporary name');
+    await name.setValue('Augusta Ada Lovelace');
+    expect(wrapper.emitted('dirtyChange')?.at(-1)).toEqual([true]);
+
+    await wrapper.setProps({
+      detail: {
+        ...contactDetail(),
+        id: 2,
+        remote_id: 'card-2',
+        display_name: 'Grace Hopper',
+        full_name: 'Grace Hopper',
+      },
+    });
+    await nextTick();
+    const bytes = Uint8Array.from(atob(PNG_BASE64), (value) => value.charCodeAt(0));
+    finishRead?.(bytes.buffer);
+    await flushPromises();
+
+    expect(wrapper.find('.contact-detail__photo-editor img').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('Reading photo…');
+  });
+
+  it('preserves a null photo preference when replacing the image', async () => {
+    const store = useContactsStore();
+    const update = vi.spyOn(store, 'updateContact').mockResolvedValue(false);
+    const detail = {
+      ...contactDetail(),
+      photo: {
+        mapKey: 'avatar',
+        uri: `data:image/png;base64,${PNG_BASE64}`,
+        blobId: null,
+        mediaType: 'image/png',
+        pref: null,
+      },
+    };
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: ['Personal'],
+        createAddressbookIds: [],
+        detail,
+        mode: 'edit',
+      },
+    });
+    const input = wrapper.get('input[type="file"]');
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [rasterFile(GIF_BASE64, 'avatar.gif', 'image/gif')],
+    });
+
+    await input.trigger('change');
+    await flushPromises();
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      contact: expect.objectContaining({
+        photo: expect.objectContaining({
+          mediaType: 'image/gif',
+          pref: null,
+        }),
+      }),
+    }));
   });
 
   it('keeps the displayed calendar year stable when year inclusion changes', async () => {
@@ -861,7 +981,7 @@ describe('IdentityDetailPane', () => {
     await flushPromises();
   });
 
-  it('disables deletion when mayDelete is false', () => {
+  it('hides protected deletion and explains the server restriction', () => {
     const wrapper = mount(IdentityDetailPane, {
       props: {
         identity: identityDetail({ may_delete: 0 }),
@@ -869,6 +989,42 @@ describe('IdentityDetailPane', () => {
       },
     });
 
-    expect(wrapper.get('[aria-label="Delete"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('[aria-label="Delete"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain(
+      "The mail server doesn't allow this identity to be deleted.",
+    );
+  });
+
+  it('sets an identity as Primary and disables the action when already Primary', async () => {
+    const wrapper = mount(IdentityDetailPane, {
+      props: {
+        identity: identityDetail(),
+        mode: 'view',
+        primary: false,
+      },
+    });
+    const button = wrapper.get('button[aria-pressed="false"]');
+
+    await button.trigger('click');
+    expect(wrapper.emitted('setPrimary')).toHaveLength(1);
+
+    await wrapper.setProps({ primary: true });
+    expect(wrapper.get('button[aria-pressed="true"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('button[aria-pressed="true"]').classes())
+      .toContain('identity-detail__primary-action');
+  });
+
+  it('offers identity duplication as an icon action', async () => {
+    const wrapper = mount(IdentityDetailPane, {
+      props: {
+        identity: identityDetail(),
+        mode: 'view',
+      },
+    });
+    const button = wrapper.get('[aria-label="Duplicate identity"]');
+
+    expect(button.text()).toBe('');
+    await button.trigger('click');
+    expect(wrapper.emitted('duplicate')).toHaveLength(1);
   });
 });

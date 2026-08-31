@@ -239,6 +239,9 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_ADDRESSBOOKS]: async ({ accountId }) =>
       syncClient.ensureAddressbooks(accountId),
 
+    [DB_RPC.SYNC_INVENTORY_ADDRESSBOOK]: async ({ accountId, addressbookId }) =>
+      syncClient.inventoryAddressbook(accountId, addressbookId),
+
     [DB_RPC.SYNC_ENSURE_CONTACTS]: async ({ accountId, addressbookId }) =>
       syncClient.ensureContacts(accountId, addressbookId),
 
@@ -261,12 +264,76 @@ export function makeSyncRpcHandlers({
       return backend.runMutation(mutationId);
     },
 
-    [DB_RPC.SYNC_DOWNLOAD_BLOB]: async ({ accountId, blobId, type, name }) => {
+    [DB_RPC.SYNC_GET_ATTACHMENT_LIMITS]: async ({ accountId }) => {
+      const backend = backends.get(accountId);
+      if (!backend) throw accountUnavailableError(accountId);
+      return backend.attachmentLimits(accountId);
+    },
+
+    [DB_RPC.SYNC_UPLOAD_COMPOSE_ATTACHMENT]: async ({
+      accountId,
+      blob,
+      type,
+      totalAttachmentBytes,
+    }, { signal, reportProgress }: any = {}) => {
+      const backend = backends.get(accountId);
+      if (!backend) throw accountUnavailableError(accountId);
+      return backend.uploadComposeAttachment({
+        accountId,
+        blob,
+        type,
+        totalAttachmentBytes,
+        signal,
+        onProgress: reportProgress,
+      });
+    },
+
+    [DB_RPC.SYNC_DOWNLOAD_ATTACHMENT]: async ({
+      accountId,
+      blobId,
+      type,
+      name,
+      maxBytes,
+      truncateAtMaxBytes,
+    }, { signal, reportProgress }: any = {}) => {
+      const backend = backends.get(accountId);
+      if (!backend) throw accountUnavailableError(accountId);
+      return backend.downloadAttachment({
+        accountId,
+        blobId,
+        type,
+        name,
+        maxBytes,
+        truncateAtMaxBytes,
+        signal,
+        onProgress: reportProgress,
+      });
+    },
+
+    [DB_RPC.SYNC_DOWNLOAD_BLOB]: async ({
+      accountId,
+      blobId,
+      type,
+      name,
+    }, { signal, reportProgress }: any = {}) => {
       const backend = backends.get(accountId);
       if (!backend) return null;
-      return backend.downloadBlob({ blobId, type, name });
+      return backend.downloadBlob({
+        accountId,
+        blobId,
+        type,
+        name,
+        signal,
+        onProgress: reportProgress,
+      });
     },
   };
+}
+
+function accountUnavailableError(accountId: number) {
+  const error: any = new Error(`No JMAP backend registered for account ${accountId}`);
+  error.type = 'accountUnavailable';
+  return error;
 }
 
 function findBearerBackend(

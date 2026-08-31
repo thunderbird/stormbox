@@ -36,11 +36,11 @@ useModalFocus(dialogEl, { onDefault: chooseDefault });
 function defaultChoice(): ContactsConfirmationChoice {
   switch (props.kind) {
     case 'unsaved':
+    case 'external-addressbook-change':
     case 'external-change':
       return 'save';
-    case 'delete-contact':
-    case 'delete-contacts-global':
     case 'delete-contacts-scoped':
+    case 'delete-contact-trash':
     case 'delete-identity':
       return 'cancel';
     default: {
@@ -61,18 +61,18 @@ const title = computed(() => {
       return 'Save your changes?';
     case 'external-change':
       return 'Contact changed elsewhere';
-    case 'delete-contact':
-      return 'Delete this contact?';
-    case 'delete-contacts-global':
-      return count === 1
-        ? 'Permanently delete this contact?'
-        : `Permanently delete ${count} contacts?`;
+    case 'external-addressbook-change':
+      return 'Address book changed elsewhere';
     case 'delete-contacts-scoped':
       return count === 1
         ? `Delete this contact from ${props.scopeLabel || 'this address book'}?`
         : `Delete ${count} contacts from ${props.scopeLabel || 'this address book'}?`;
     case 'delete-identity':
       return 'Delete this identity?';
+    case 'delete-contact-trash':
+      return count === 1
+        ? 'Delete this contact forever?'
+        : `Delete ${count} contacts forever?`;
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -88,24 +88,24 @@ const description = computed(() => {
       return 'Save before continuing, discard your edits, or cancel to keep editing.';
     case 'external-change':
       return 'This entry moved or was removed while you were editing. Save to try your draft, discard it, or cancel to keep editing.';
-    case 'delete-contact':
-      return `“${props.subject || 'This contact'}” will be removed.`;
-    case 'delete-contacts-global':
-      return `${contacts} will be permanently deleted from all address books. This action cannot be undone.`;
+    case 'external-addressbook-change':
+      return 'This address book was removed while you were editing. Save to try your draft, discard it, or cancel to keep editing.';
     case 'delete-contacts-scoped': {
       const scope = props.scopeLabel || 'this address book';
-      let knownConsequence = 'Based on the current contact data, none will be permanently deleted.';
+      let knownConsequence = 'Based on the current contact data, none will move to Trash.';
       if (props.permanentCount === 1 && count === 1) {
-        knownConsequence = 'This is currently the contact’s only address-book membership, so it will be permanently deleted from all address books.';
+        knownConsequence = 'This is currently the contact’s only address-book membership, so it will move to Trash and remain recoverable for 30 days.';
       } else if (props.permanentCount > 0) {
         knownConsequence = `${props.permanentCount} selected contact${
           props.permanentCount === 1 ? '' : 's'
         } currently ${
           props.permanentCount === 1 ? 'has' : 'have'
-        } no other address-book membership and will be permanently deleted from all address books.`;
+        } no other address-book membership and will move to Trash for 30 days.`;
       }
-      return `${contacts} will be removed from ${scope}. Any contact whose final membership is removed will be permanently deleted. ${knownConsequence}`;
+      return `${contacts} will be removed from ${scope}. Any contact whose final membership is removed will move to Trash. ${knownConsequence}`;
     }
+    case 'delete-contact-trash':
+      return `${contacts} will be removed from Trash immediately. This action cannot be undone.`;
     case 'delete-identity':
       return `“${props.subject || 'This identity'}” will be removed.`;
     default: {
@@ -115,9 +115,11 @@ const description = computed(() => {
   }
 });
 const showsSaveChoices = computed(() =>
-  props.kind === 'unsaved' || props.kind === 'external-change');
+  props.kind === 'unsaved'
+  || props.kind === 'external-change'
+  || props.kind === 'external-addressbook-change');
 const deleteLabel = computed(() =>
-  props.kind === 'delete-contacts-global' ? 'Delete permanently' : 'Delete');
+  props.kind === 'delete-contact-trash' ? 'Delete forever' : 'Delete');
 
 function focusableElements(): HTMLElement[] {
   if (!dialogEl.value) return [];

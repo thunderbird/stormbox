@@ -10,6 +10,10 @@
 import type {
   MailboxRole, MutationPhase, MutationStatus, MutationType, ServiceKind, SyncJobStatus,
 } from '../constants/states';
+import type {
+  ContactTrashMedia,
+  ContactTrashStatus,
+} from '../constants/contacts-trash-document';
 
 export interface AccountRow {
   id: number;
@@ -156,6 +160,7 @@ export interface BodyAttachmentRow {
   size: number | null;
   disposition: string | null;
   cid: string | null;
+  charset: string | null;
 }
 
 export interface MessageBody {
@@ -186,14 +191,61 @@ export interface AddressbookRow {
   remote_id: string;
   name: string | null;
   description: string | null;
+  sort_order: number;
   is_default: 0 | 1;
   is_subscribed: 0 | 1;
   may_write?: 0 | 1 | null;
+  may_delete: 0 | 1 | null;
   ctag: string | null;
   sync_token: string | null;
   raw_json: string | null;
   is_deleted: 0 | 1;
   updated_at: number;
+}
+
+export interface AddressBookMutableFields {
+  name?: string;
+  description?: string | null;
+  sortOrder?: number;
+  isSubscribed?: boolean;
+  setAsDefault?: boolean;
+}
+
+export interface CreateAddressBookMutationRequest extends AddressBookMutableFields {
+  operationId: string;
+  name: string;
+}
+
+export interface UpdateAddressBookMutationRequest extends AddressBookMutableFields {
+  operationId: string;
+  addressbookId?: number;
+  remoteId?: string;
+}
+
+export interface AddressBookInventoryContact {
+  remoteId: string;
+  addressBookIds: string[];
+  classification: 'exclusive' | 'shared';
+  hasMedia: boolean;
+}
+
+export interface AddressBookInventory {
+  version: 1;
+  addressbookId: number | null;
+  addressBookRemoteId: string;
+  queryState: string | null;
+  total: number;
+  exclusiveCount: number;
+  sharedCount: number;
+  mediaBearingCount: number;
+  contacts: AddressBookInventoryContact[];
+}
+
+export interface DestroyAddressBookMutationRequest {
+  operationId: string;
+  addressbookId?: number;
+  remoteId?: string;
+  confirmationInventory: AddressBookInventory;
 }
 
 export interface ContactListRow {
@@ -205,7 +257,42 @@ export interface ContactListRow {
   addressbook_ids: number[];
   display_name: string | null;
   email: string | null;
+  photo?: ContactPhoto | null;
 }
+
+export interface ContactTrashListRow {
+  id: number;
+  uid: string;
+  prior_remote_id: string;
+  display_name: string;
+  primary_email: string | null;
+  trashed_at: number;
+  expires_at: number;
+  status: ContactTrashStatus;
+}
+
+export interface ContactTrashDetail extends ContactTrashListRow {
+  original_addressbook_ids: string[];
+  snapshot: Record<string, unknown>;
+  email_keys: string[];
+  media: ContactTrashMedia[];
+}
+
+export type ContactTrashLookup =
+  | {
+      trashId: number;
+      status: 'active';
+      detail: ContactTrashDetail;
+    }
+  | {
+      trashId: number;
+      status: 'inactive' | 'missing';
+    }
+  | {
+      trashId: number;
+      status: 'unreadable';
+      errorType: 'invalidTrashSnapshot';
+    };
 
 export type ContactContext = 'private' | 'work';
 
@@ -298,6 +385,15 @@ export interface ContactDetailTitle {
   organizationFormId?: string | null;
 }
 
+export interface ContactPhoto {
+  /** Stable JSContact media map key. */
+  mapKey: string;
+  uri: string | null;
+  blobId: string | null;
+  mediaType: string | null;
+  pref: number | null;
+}
+
 export interface ContactDetail {
   id: number;
   remote_id: string | null;
@@ -311,6 +407,7 @@ export interface ContactDetail {
   notes: ContactDetailNote[];
   organizations: ContactDetailOrganization[];
   titles: ContactDetailTitle[];
+  photo?: ContactPhoto | null;
 }
 
 export interface ContactMutationFields {
@@ -322,12 +419,15 @@ export interface ContactMutationFields {
   notes: ContactDetailNote[];
   organizations: ContactDetailOrganization[];
   titles: ContactDetailTitle[];
+  photo?: ContactPhoto | null;
 }
 
 export interface CreateContactMutationRequest extends ContactMutationFields {
   uid: string;
   /** Local address-book ids; the sync backend resolves protocol ids. */
   addressbookIds: number[];
+  /** Explicit duplication bypasses normal email-based contact enrichment. */
+  allowDuplicate?: boolean;
 }
 
 export interface UpdateContactMutationRequest {
@@ -363,6 +463,28 @@ export interface ContactBatchMutationResult {
   updatedContactIds: number[];
   destroyedContactIds: number[];
   failures: ContactBatchFailure[];
+}
+
+export type ContactTrashMutationRequest =
+  | {
+      operation: 'restore';
+      trashIds: number[];
+      destinationAddressbookId?: number | null;
+    }
+  | {
+      operation: 'delete-forever';
+      trashIds: number[];
+    };
+
+export interface ContactTrashMutationResult {
+  succeededTrashIds: number[];
+  restoredRemoteIds: string[];
+  destinationRequiredTrashIds: number[];
+  failures: Array<{
+    trashId: number;
+    errorType: string;
+    message?: string;
+  }>;
 }
 
 export interface PendingMutationRow {

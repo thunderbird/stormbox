@@ -31,6 +31,7 @@ import { SERVICE_KIND } from '../constants/states';
  * @property {(folderId: number, options: object) => Promise<void>} ensureFolderIndex
  * @property {() => Promise<void>} ensureIdentities
  * @property {() => Promise<void>} ensureAddressbooks
+ * @property {(addressbookId: number) => Promise<object>} inventoryAddressbook
  * @property {(addressbookId: number) => Promise<void>} ensureContacts
  * @property {(mutationId: number) => Promise<void>} runMutation
  */
@@ -106,6 +107,11 @@ export class SyncClient {
 
   ensureAddressbooks(accountId) {
     return this.getBackend(accountId, SERVICE_KIND.JMAP_CONTACTS).ensureAddressbooks();
+  }
+
+  inventoryAddressbook(accountId, addressbookId) {
+    return this.getBackend(accountId, SERVICE_KIND.JMAP_CONTACTS)
+      .inventoryAddressbook(addressbookId);
   }
 
   ensureContacts(accountId, addressbookId) {

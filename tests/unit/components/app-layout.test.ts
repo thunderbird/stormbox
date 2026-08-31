@@ -71,8 +71,33 @@ function stubContactListLayout() {
 }
 
 function makeRepo() {
+  let settings: Record<string, unknown> = {};
   return {
     subscribe() { return () => {}; },
+    async getSettings() {
+      return {
+        doc: {
+          owner: 'stormbox',
+          documentType: 'user-settings',
+          version: 1,
+          settings,
+          updatedAt: {},
+        },
+        remoteNodeId: null,
+      };
+    },
+    async applySettingsPatch(_accountId, patch) {
+      settings = { ...settings, ...patch };
+      return {
+        doc: {
+          owner: 'stormbox',
+          documentType: 'user-settings',
+          version: 1,
+          settings,
+          updatedAt: {},
+        },
+      };
+    },
     async listAccounts() { return []; },
     async listFolders() { return []; },
     async listMessagesForView() { return []; },
@@ -982,24 +1007,27 @@ describe('App mail layout', () => {
       .toContain('--message-list-width: 280px');
   });
 
-  it('toggles the document theme between dark and light and persists the choice (R-8.4)', async () => {
-    window.localStorage?.setItem('stormbox.theme.v1', 'dark');
+  it('toggles explicit light and dark themes through the settings store (R-8.4)', async () => {
+    window.localStorage?.setItem('stormbox.theme.v1', 'light');
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     // Theme is applied as html.dark / html.light classes (services-ui's
     // dark-mode convention), no longer as a data-theme attribute.
-    expect(document.documentElement.classList.contains('dark')).toBe(true);
-
-    await wrapper.get('.theme-toggle').trigger('click');
     expect(document.documentElement.classList.contains('light')).toBe(true);
-    expect(document.documentElement.classList.contains('dark')).toBe(false);
-    expect(window.localStorage.getItem('stormbox.theme.v1')).toBe('light');
+    expect(wrapper.get('.theme-toggle').attributes('aria-label')).toBe('Switch to dark mode');
 
     await wrapper.get('.theme-toggle').trigger('click');
     expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(document.documentElement.classList.contains('light')).toBe(false);
-    expect(window.localStorage.getItem('stormbox.theme.v1')).toBe('dark');
+    expect(wrapper.get('.theme-toggle').attributes('aria-label')).toBe('Switch to light mode');
+    expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
+      .toEqual({ theme: 'dark' });
+
+    await wrapper.get('.theme-toggle').trigger('click');
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(document.documentElement.classList.contains('light')).toBe(true);
+    expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
+      .toEqual({ theme: 'light' });
   });
 });

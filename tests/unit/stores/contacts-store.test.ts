@@ -4,6 +4,9 @@ import {
 import { createPinia, setActivePinia } from 'pinia';
 
 import {
+  ADDRESSBOOK_ERROR,
+} from '../../../src/constants/addressbook-errors';
+import {
   IDENTITY_ERROR,
 } from '../../../src/constants/identity-errors';
 import {
@@ -20,6 +23,7 @@ import {
   useContactsStore,
 } from '../../../src/stores/contacts-store';
 import type {
+  AddressBookInventory,
   AddressbookRow,
   ContactDetailEmail,
   ContactListRow,
@@ -76,9 +80,11 @@ function addressbook(
     remote_id: `book-${id}`,
     name: `Book ${id}`,
     description: null,
+    sort_order: id - 1,
     is_default: id === 1 ? 1 : 0,
     is_subscribed: 1,
     may_write: mayWrite,
+    may_delete: mayWrite,
     ctag: null,
     sync_token: null,
     raw_json: null,
@@ -100,6 +106,24 @@ function contact(
   };
 }
 
+function addressBookInventory(
+  book: AddressbookRow,
+  overrides: Partial<AddressBookInventory> = {},
+): AddressBookInventory {
+  return {
+    version: 1,
+    addressbookId: book.id,
+    addressBookRemoteId: book.remote_id,
+    queryState: 'inventory-state',
+    total: 0,
+    exclusiveCount: 0,
+    sharedCount: 0,
+    mediaBearingCount: 0,
+    contacts: [],
+    ...overrides,
+  };
+}
+
 beforeEach(async () => {
   setActivePinia(createPinia());
   const authStore = useAuthStore();
@@ -109,10 +133,23 @@ beforeEach(async () => {
     subscribe: vi.fn(() => () => {}),
     listAddressbooks: vi.fn(async () => []),
     listContacts: vi.fn(async () => []),
+    listContactTrash: vi.fn(async () => []),
+    getContactTrash: vi.fn(async () => null),
     getContact: vi.fn(async () => null),
     listIdentities: vi.fn(async () => []),
+    getAccountCapabilities: vi.fn(async () => ({
+      'urn:ietf:params:jmap:contacts': {
+        mayCreateAddressBook: true,
+      },
+    })),
     insertPendingMutation: vi.fn(async () => ({ id: 10 })),
+    ensureAddressbookMutation: vi.fn(async () => ({
+      id: 10,
+      reused: false,
+      requestMatches: true,
+    })),
     ensureIdentityMutation: vi.fn(async () => ({ id: 10, reused: false })),
+    inventoryAddressbook: vi.fn(),
     runMutation: vi.fn(async () => ({
       attempted: 1,
       succeeded: mutationErrorType ? 0 : 1,
@@ -127,6 +164,318 @@ beforeEach(async () => {
 afterEach(() => {
   __resetRepositoryForTests();
   vi.restoreAllMocks();
+});
+
+describe('address book capability and actions', () => {
+  it.each([
+    [undefined],
+    [{}],
+    [{ 'urn:ietf:params:jmap:contacts': {} }],
+    [{
+      'urn:ietf:params:jmap:contacts': {
+        mayCreateAddressBook: false,
+      },
+    }],
+    [{
+      'urn:ietf:params:jmap:contacts': {
+        mayCreateAddressBook: 'true',
+      },
+    }],
+  ])('fails creation capability closed for %j', async (capabilities) => {
+    repo.getAccountCapabilities.mockResolvedValue(capabilities);
+    const store = useContactsStore();
+
+    await store.refreshAddressBookCapability();
+
+    expect(store.canCreateAddressBook).toBe(false);
+    expect(repo.getAccountCapabilities).toHaveBeenLastCalledWith(
+      1,
+      SERVICE_KIND.JMAP_CONTACTS,
+    );
+    await expect(store.createAddressBook({ name: 'Projects' })).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+    });
+    expect(repo.ensureAddressbookMutation).not.toHaveBeenCalled();
+  });
+
+  it('loads and clears the exact contacts account capability', async () => {
+    const store = useContactsStore();
+
+    expect(store.canCreateAddressBook).toBe(true);
+    store.$reset();
+    expect(store.canCreateAddressBook).toBe(false);
+  });
+
+  it('queues a canonical create with explicit defaults', async () => {
+    const created = {
+      ...addressbook(9, 1),
+      name: 'Projects',
+      description: null,
+      sort_order: 0,
+      is_default: 0 as const,
+      is_subscribed: 1 as const,
+    };
+    repo.runMutation.mockResolvedValue({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        ids: [created.remote_id],
+        addressbook: created,
+        addressbooks: [created],
+      },
+    });
+    const store = useContactsStore();
+
+    await expect(store.createAddressBook({
+      operationId: 'stable-create-book',
+      name: '  Projects  ',
+    })).resolves.toEqual({ ok: true, addressbook: created });
+
+    expect(repo.ensureAddressbookMutation).toHaveBeenCalledTimes(1);
+    const ensured = repo.ensureAddressbookMutation.mock.calls[0][0];
+    expect(ensured).toMatchObject({
+      accountId: 1,
+      mutationType: MUTATION_TYPE.CREATE_ADDRESSBOOK,
+      operationId: 'stable-create-book',
+      targetMessageId: null,
+    });
+    expect(JSON.parse(ensured.requestJson)).toEqual({
+      operationId: 'stable-create-book',
+      name: 'Projects',
+      description: null,
+      sortOrder: 0,
+      isSubscribed: true,
+      setAsDefault: false,
+    });
+    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
+  it('sends only changed update fields with the local address book id', async () => {
+    const original = {
+      ...addressbook(2, 1),
+      name: 'Projects',
+      description: 'Before',
+      sort_order: 7,
+    };
+    const updated = {
+      ...original,
+      description: 'After',
+      sort_order: 11,
+    };
+    const store = useContactsStore();
+    store.addressbooks = [original];
+    repo.runMutation.mockResolvedValue({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        ids: [updated.remote_id],
+        addressbook: updated,
+        addressbooks: [updated],
+      },
+    });
+
+    await expect(store.updateAddressBook({
+      addressbookId: original.id,
+      operationId: 'stable-update-book',
+      description: 'After',
+      sortOrder: 11,
+    })).resolves.toEqual({ ok: true, addressbook: updated });
+
+    const request = JSON.parse(
+      repo.ensureAddressbookMutation.mock.calls[0][0].requestJson,
+    );
+    expect(request).toEqual({
+      operationId: 'stable-update-book',
+      addressbookId: original.id,
+      description: 'After',
+      sortOrder: 11,
+    });
+  });
+
+  it('passes the inventory result through without reshaping it', async () => {
+    const book = addressbook(2, 1);
+    const inventory = addressBookInventory(book, {
+      total: 1,
+      exclusiveCount: 1,
+      contacts: [{
+        remoteId: 'card-1',
+        addressBookIds: [book.remote_id],
+        classification: 'exclusive',
+        hasMedia: false,
+      }],
+    });
+    const store = useContactsStore();
+    store.addressbooks = [book];
+    repo.inventoryAddressbook.mockResolvedValue(inventory);
+
+    const result = await store.inventoryAddressBook(book.id);
+
+    expect(result).toEqual({ ok: true, inventory });
+    expect(result.ok && result.inventory).toBe(inventory);
+    expect(repo.inventoryAddressbook).toHaveBeenCalledWith(1, book.id);
+  });
+
+  it('blocks locally ineligible address book deletes', async () => {
+    const store = useContactsStore();
+    const denied = addressbook(1, null);
+    const trusted = {
+      ...addressbook(2, 1),
+      name: 'TRUSTED SENDERS',
+    };
+    const last = addressbook(3, 1);
+
+    store.addressbooks = [denied, addressbook(4, 1)];
+    await expect(store.deleteAddressBook(
+      denied.id,
+      addressBookInventory(denied),
+    )).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+    });
+
+    store.addressbooks = [trusted, addressbook(4, 1)];
+    await expect(store.deleteAddressBook(
+      trusted.id,
+      addressBookInventory(trusted),
+    )).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.PROTECTED,
+    });
+
+    store.addressbooks = [last];
+    await expect(store.deleteAddressBook(
+      last.id,
+      addressBookInventory(last),
+    )).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK,
+    });
+    expect(repo.ensureAddressbookMutation).not.toHaveBeenCalled();
+  });
+
+  it('forwards the exact confirmed inventory when deleting', async () => {
+    const target = addressbook(2, 1);
+    const other = addressbook(3, 1);
+    const trusted = {
+      ...addressbook(4, 1),
+      name: 'Trusted senders',
+    };
+    const inventory = addressBookInventory(target, {
+      total: 1,
+      exclusiveCount: 1,
+      contacts: [{
+        remoteId: 'card-exclusive',
+        addressBookIds: [target.remote_id],
+        classification: 'exclusive',
+        hasMedia: true,
+      }],
+      mediaBearingCount: 1,
+    });
+    const store = useContactsStore();
+    store.addressbooks = [target, other, trusted];
+    repo.runMutation.mockResolvedValue({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        ids: [target.remote_id],
+        addressbook: null,
+        addressbooks: [other, trusted],
+      },
+    });
+
+    await expect(store.deleteAddressBook({
+      operationId: 'stable-delete-book',
+      addressbookId: target.id,
+      confirmationInventory: inventory,
+    })).resolves.toEqual({ ok: true });
+
+    const request = JSON.parse(
+      repo.ensureAddressbookMutation.mock.calls[0][0].requestJson,
+    );
+    expect(request).toEqual({
+      operationId: 'stable-delete-book',
+      addressbookId: target.id,
+      confirmationInventory: inventory,
+    });
+    expect(store.deletingAddressBookIds).toEqual([]);
+    expect(store.addressbooks).toEqual([other, trusted]);
+  });
+
+  it('returns structured local and backend failures', async () => {
+    const store = useContactsStore();
+
+    await expect(store.createAddressBook({ name: ' '.repeat(3) })).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.INVALID_NAME,
+    });
+
+    const book = addressbook(2, 1);
+    store.addressbooks = [book];
+    mutationErrorType = ADDRESSBOOK_ERROR.STATE_MISMATCH;
+    await expect(store.updateAddressBook({
+      addressbookId: book.id,
+      description: 'Changed',
+    })).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.STATE_MISMATCH,
+    });
+    expect(store.error).toContain('changed on the server');
+
+    repo.inventoryAddressbook.mockRejectedValue({
+      type: ADDRESSBOOK_ERROR.STATE_MISMATCH,
+    });
+    await expect(store.inventoryAddressBook(book.id)).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.STATE_MISMATCH,
+    });
+  });
+
+  it('coalesces concurrent duplicate creates and clears the operation', async () => {
+    const created = {
+      ...addressbook(8, 1),
+      name: 'Concurrent',
+    };
+    let resolveRun: (value: unknown) => void = () => {};
+    repo.runMutation.mockReturnValueOnce(new Promise((resolve) => {
+      resolveRun = resolve;
+    }));
+    const store = useContactsStore();
+    const input = { name: 'Concurrent' };
+
+    const first = store.createAddressBook(input);
+    const second = store.createAddressBook(input);
+    expect(repo.ensureAddressbookMutation).toHaveBeenCalledTimes(1);
+
+    resolveRun({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        ids: [created.remote_id],
+        addressbook: created,
+        addressbooks: [created],
+      },
+    });
+    await expect(first).resolves.toEqual({ ok: true, addressbook: created });
+    await expect(second).resolves.toEqual({ ok: true, addressbook: created });
+
+    repo.runMutation.mockResolvedValueOnce({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        ids: [created.remote_id],
+        addressbook: created,
+        addressbooks: [created],
+      },
+    });
+    await store.createAddressBook(input);
+    expect(repo.ensureAddressbookMutation).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('identity action errors', () => {
@@ -748,6 +1097,7 @@ describe('contact mutation requests', () => {
 
     const result = await store.createContact({
       addressbookIds: [7, 8],
+      allowDuplicate: true,
       contact: {
         fullName: 'Email Less',
         emails: [],
@@ -775,6 +1125,7 @@ describe('contact mutation requests', () => {
       /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     expect(request.addressbookIds).toEqual([7, 8]);
+    expect(request.allowDuplicate).toBe(true);
     expect(request.phones[0].mapKey).toMatch(/^phone-/);
     expect(request.phones[0].value).toBe('+1 555 1234');
   });
@@ -1264,5 +1615,58 @@ describe('contact batch mutation requests', () => {
     });
     expect(store.contacts).toEqual([second]);
     expect(store.error).toContain('1 contact updated; 1 could not be updated');
+  });
+});
+
+describe('contact trash mutations', () => {
+  it('surfaces destination-required restore results without choosing a book', async () => {
+    const store = useContactsStore();
+    repo.runMutation.mockResolvedValue({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        succeededTrashIds: [],
+        restoredRemoteIds: [],
+        destinationRequiredTrashIds: [7],
+        failures: [],
+      },
+    });
+
+    const result = await store.restoreContactTrash([7]);
+
+    expect(result).toEqual({
+      ok: false,
+      succeededTrashIds: [],
+      restoredRemoteIds: [],
+      destinationRequiredTrashIds: [7],
+      failures: [],
+    });
+    expect(JSON.parse(repo.insertPendingMutation.mock.calls.at(-1)[0].requestJson))
+      .toEqual({ operation: 'restore', trashIds: [7] });
+  });
+
+  it('queues Delete Forever as a trash-document mutation', async () => {
+    const store = useContactsStore();
+    repo.runMutation.mockResolvedValue({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        succeededTrashIds: [7],
+        restoredRemoteIds: [],
+        destinationRequiredTrashIds: [],
+        failures: [],
+      },
+    });
+
+    await expect(store.deleteContactTrashForever([7])).resolves.toMatchObject({
+      ok: true,
+      succeededTrashIds: [7],
+    });
+    expect(repo.insertPendingMutation).toHaveBeenCalledWith(expect.objectContaining({
+      mutationType: MUTATION_TYPE.CONTACT_TRASH,
+      requestJson: JSON.stringify({ operation: 'delete-forever', trashIds: [7] }),
+    }));
   });
 });

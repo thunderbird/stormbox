@@ -14,8 +14,11 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
+import { ADDRESSBOOK_ERROR } from '../../../constants/addressbook-errors';
 import { SERVICE_KIND } from '../../../constants/states';
 import type {
+  AddressBookInventory,
+  AddressBookInventoryContact,
   ContactBatchFailure,
   ContactBatchMutationResult,
   ContactAnniversaryDate,
@@ -29,6 +32,7 @@ import type {
   ContactDetailTitle,
   ContactMutationFields,
   ContactPhoneFeature,
+  ContactPhoto,
   ContactTitleKind,
 } from '../../../types/db';
 import { addressKey } from '../../../utils/address-key';
@@ -49,7 +53,7 @@ import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { maxObjectsInGet, maxObjectsInSet } from './limits';
 
-const ADDRESSBOOK_PROPERTIES = [
+export const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
   'isDefault', 'isSubscribed', 'myRights',
 ];
@@ -118,10 +122,16 @@ export async function syncAddressBooks({
       remoteId: ab.id,
       name: ab.name ?? null,
       description: ab.description ?? null,
+      sortOrder: Number.isSafeInteger(ab.sortOrder) && ab.sortOrder >= 0
+        ? ab.sortOrder
+        : 0,
       isDefault: !!ab.isDefault,
       isSubscribed: ab.isSubscribed === false ? false : true,
       mayWrite: typeof ab.myRights?.mayWrite === 'boolean'
         ? ab.myRights.mayWrite
+        : null,
+      mayDelete: typeof ab.myRights?.mayDelete === 'boolean'
+        ? ab.myRights.mayDelete
         : null,
       rawJson: JSON.stringify(ab),
       isDeleted: false,
@@ -139,6 +149,307 @@ export async function syncAddressBooks({
     count: list.length,
     state: response.state ?? null,
     retired,
+  };
+}
+
+function addressBookInventoryError(
+  type: string,
+  message: string,
+  detail?: unknown,
+): Error {
+  const error: any = new Error(message);
+  error.type = type;
+  if (detail !== undefined) error.detail = detail;
+  return error;
+}
+
+function inventoryAddressBookIds(card: any): string[] | null {
+  if (!card?.addressBookIds || typeof card.addressBookIds !== 'object'
+      || Array.isArray(card.addressBookIds)) {
+    return null;
+  }
+  const entries = Object.entries(card.addressBookIds);
+  if (entries.some(([id, present]) => !isMapKey(id) || present !== true)) {
+    return null;
+  }
+  return entries.map(([id]) => id);
+}
+
+function contactCardHasMedia(card: any): boolean {
+  if (Array.isArray(card?.media)) return card.media.length > 0;
+  if (!card?.media || typeof card.media !== 'object') return false;
+  return Object.values(card.media).some(
+    (item) => item !== null && typeof item === 'object',
+  );
+}
+
+/**
+ * Read one complete, stable ContactCard inventory for a selected book.
+ * The returned per-card classifications are retained by delete
+ * confirmations so a later inventory can detect destructive escalation.
+ */
+export async function inventoryAddressBook({
+  transport,
+  account,
+  handlers,
+  addressbookId = null,
+  remoteId = null,
+  useWebSocket = false,
+}: any): Promise<AddressBookInventory> {
+  let localId = Number.isSafeInteger(addressbookId) && addressbookId > 0
+    ? Number(addressbookId)
+    : null;
+  let addressBookRemoteId = typeof remoteId === 'string' && remoteId
+    ? remoteId
+    : null;
+  if (!addressBookRemoteId && localId != null) {
+    const rows = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT remote_id
+              FROM addressbooks
+             WHERE id = ?
+               AND account_id = ?
+               AND service_kind = ?
+               AND is_deleted = 0
+             LIMIT 1`,
+      params: [localId, account.id, SERVICE_KIND.JMAP_CONTACTS],
+    });
+    addressBookRemoteId = rows[0]?.remote_id ?? null;
+  }
+  if (!addressBookRemoteId) {
+    throw addressBookInventoryError(
+      ADDRESSBOOK_ERROR.MISSING,
+      'Address book is not available',
+    );
+  }
+  if (localId == null) {
+    const rows = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT id
+              FROM addressbooks
+             WHERE account_id = ?
+               AND service_kind = ?
+               AND remote_id = ?
+               AND is_deleted = 0
+             LIMIT 1`,
+      params: [account.id, SERVICE_KIND.JMAP_CONTACTS, addressBookRemoteId],
+    });
+    localId = rows[0] ? Number(rows[0].id) : null;
+  }
+
+  const cap = maxObjectsInGet(transport);
+  const contacts: AddressBookInventoryContact[] = [];
+  const seen = new Set<string>();
+  let position = 0;
+  let queryState: string | null = null;
+  let total: number | null = null;
+  for (;;) {
+    let result;
+    try {
+      result = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+        methodCalls: [
+          [
+            'ContactCard/query',
+            {
+              accountId: account.remote_account_id,
+              filter: { inAddressBook: addressBookRemoteId },
+              position,
+              limit: cap,
+              calculateTotal: true,
+            },
+            'abiq',
+          ],
+          [
+            'ContactCard/get',
+            {
+              accountId: account.remote_account_id,
+              '#ids': {
+                resultOf: 'abiq',
+                name: 'ContactCard/query',
+                path: '/ids',
+              },
+            },
+            'abig',
+          ],
+        ],
+        useWebSocket,
+      });
+    } catch (error: any) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+        error?.message ?? String(error),
+      );
+    }
+    const query = pickResponse(result, 'ContactCard/query');
+    const methodError = pickResponse(result, 'error');
+    if (!query || !Array.isArray(query.ids)) {
+      throw addressBookInventoryError(
+        methodError?.type === 'stateMismatch'
+          ? ADDRESSBOOK_ERROR.STATE_MISMATCH
+          : ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+        'ContactCard/query did not return a complete inventory page',
+        methodError ?? undefined,
+      );
+    }
+    if (typeof query.queryState !== 'string' || !query.queryState) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'ContactCard/query did not provide stable paging state',
+      );
+    }
+    if (queryState == null) queryState = query.queryState;
+    else if (query.queryState !== queryState) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'Address book contents changed while inventory was being read',
+      );
+    }
+    const pageTotal = Number(query.total);
+    if (!Number.isSafeInteger(pageTotal) || pageTotal < 0
+        || (total != null && total !== pageTotal)) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'Address book inventory total changed while paging',
+      );
+    }
+    total = pageTotal;
+
+    const ids = query.ids as unknown[];
+    if (
+      !Number.isSafeInteger(query.position)
+      || Number(query.position) !== position
+      || ids.length > cap
+    ) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'Address book inventory page did not match its requested window',
+      );
+    }
+    const pageIds = new Set<string>();
+    if (ids.some((id) => {
+      if (typeof id !== 'string' || !id || seen.has(id) || pageIds.has(id)) {
+        return true;
+      }
+      pageIds.add(id);
+      return false;
+    })) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'Address book inventory returned invalid or duplicate ids',
+      );
+    }
+    const got = pickResponse(result, 'ContactCard/get');
+    if (!got || !Array.isArray(got.list)) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+        'ContactCard/get did not return an inventory page',
+        methodError ?? undefined,
+      );
+    }
+    const cards = new Map<string, any>();
+    for (const card of got.list) {
+      if (typeof card?.id !== 'string' || cards.has(card.id)) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'ContactCard/get returned invalid or duplicate cards',
+        );
+      }
+      cards.set(card.id, card);
+    }
+    for (const id of ids as string[]) {
+      const card = cards.get(id);
+      const addressBookIds = inventoryAddressBookIds(card);
+      if (!card || !addressBookIds?.includes(addressBookRemoteId)) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'Address book contents changed during inventory read',
+        );
+      }
+      seen.add(id);
+      contacts.push({
+        remoteId: id,
+        addressBookIds: [...addressBookIds].sort(),
+        classification: addressBookIds.length === 1 ? 'exclusive' : 'shared',
+        hasMedia: contactCardHasMedia(card),
+      });
+    }
+
+    const nextPosition = position + ids.length;
+    const echoedLimit = Number.isSafeInteger(query.limit) && query.limit > 0
+      ? Number(query.limit)
+      : cap;
+    const served = Math.min(cap, echoedLimit);
+    if (ids.length === 0
+        || (total != null && nextPosition >= total)
+        || ids.length < served) {
+      break;
+    }
+    if (nextPosition <= position) {
+      throw addressBookInventoryError(
+        ADDRESSBOOK_ERROR.STATE_MISMATCH,
+        'Address book inventory cursor did not advance',
+      );
+    }
+    position = nextPosition;
+  }
+  let verificationResult;
+  try {
+    verificationResult = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+      methodCalls: [[
+        'ContactCard/query',
+        {
+          accountId: account.remote_account_id,
+          filter: { inAddressBook: addressBookRemoteId },
+          position: 0,
+          limit: 1,
+          calculateTotal: true,
+        },
+        'abiv',
+      ]],
+      useWebSocket,
+    });
+  } catch (error: any) {
+    throw addressBookInventoryError(
+      ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+      error?.message ?? String(error),
+    );
+  }
+  const verification = pickResponse(verificationResult, 'ContactCard/query');
+  if (
+    !verification
+    || verification.queryState !== queryState
+    || !Number.isSafeInteger(verification.position)
+    || Number(verification.position) !== 0
+    || !Number.isSafeInteger(verification.total)
+    || Number(verification.total) !== contacts.length
+  ) {
+    throw addressBookInventoryError(
+      ADDRESSBOOK_ERROR.STATE_MISMATCH,
+      'Address book contents changed while inventory was being read',
+    );
+  }
+  if (total != null && contacts.length !== total) {
+    throw addressBookInventoryError(
+      ADDRESSBOOK_ERROR.STATE_MISMATCH,
+      'Address book inventory was incomplete',
+    );
+  }
+
+  contacts.sort((left, right) => left.remoteId.localeCompare(right.remoteId));
+  return {
+    version: 1,
+    addressbookId: localId,
+    addressBookRemoteId,
+    queryState,
+    total: contacts.length,
+    exclusiveCount: contacts.filter(
+      (contact) => contact.classification === 'exclusive',
+    ).length,
+    sharedCount: contacts.filter(
+      (contact) => contact.classification === 'shared',
+    ).length,
+    mediaBearingCount: contacts.filter((contact) => contact.hasMedia).length,
+    contacts,
   };
 }
 
@@ -627,6 +938,7 @@ async function contactCardsForPersistence({ account, cards, handlers }) {
       notes: card.notes,
       organizations: card.organizations,
       titles: card.titles,
+      media: card.media,
     });
   }
   return { contacts, skipped };
@@ -700,7 +1012,13 @@ interface NormalizedCard {
   notes: ContactDetailNote[];
   organizations: ContactDetailOrganization[];
   titles: ContactDetailTitle[];
+  media: NormalizedMedia[];
   raw: unknown;
+}
+
+interface NormalizedMedia extends ContactPhoto {
+  kind: string;
+  position: number;
 }
 
 /**
@@ -730,6 +1048,7 @@ function normalizeCard(card: any): NormalizedCard | null {
   const notes = normalizeNotes(card.notes);
   const organizations = normalizeOrganizations(card);
   const titles = normalizeTitles(card.titles, organizations);
+  const media = normalizeMedia(card.media);
   const fullName = stringOrNull(card.fullName)
     ?? (isPlainObject(card.name) ? stringOrNull(card.name.full) : null);
   // RFC 9553 §2.2.1 carries given/family names as NameComponent entries,
@@ -767,6 +1086,7 @@ function normalizeCard(card: any): NormalizedCard | null {
     notes,
     organizations,
     titles,
+    media,
     raw: card,
   };
 }
@@ -833,6 +1153,48 @@ function normalizeEmails(emails: any): NormalizedEmail[] {
     out.forEach((e, i) => { e.isPreferred = i === winner; });
   }
   return out;
+}
+
+function normalizeMedia(value: unknown): NormalizedMedia[] {
+  const media: NormalizedMedia[] = [];
+  for (const [mapKey, item] of normalizedMapEntries(value)) {
+    if (!isMapKey(mapKey) || !isTypedObject(item, 'Media')) continue;
+    const kind = typeof item.kind === 'string' ? item.kind.trim() : '';
+    const uri = stringOrNull(item.uri);
+    const blobId = stringOrNull(item.blobId);
+    if (!kind || (!uri && !blobId)) continue;
+    media.push({
+      mapKey,
+      position: media.length,
+      kind,
+      uri,
+      blobId,
+      mediaType: stringOrNull(item.mediaType),
+      pref: preference(item.pref),
+    });
+  }
+  return media;
+}
+
+function preferredPhoto(media: NormalizedMedia[]): ContactPhoto | null {
+  const photos = media.filter((item) => item.kind === 'photo');
+  photos.sort((left, right) => {
+    if (left.pref == null && right.pref != null) return 1;
+    if (left.pref != null && right.pref == null) return -1;
+    if (left.pref != null && right.pref != null && left.pref !== right.pref) {
+      return left.pref - right.pref;
+    }
+    return left.position - right.position;
+  });
+  const photo = photos[0];
+  if (!photo) return null;
+  return {
+    mapKey: photo.mapKey,
+    uri: photo.uri,
+    blobId: photo.blobId,
+    mediaType: photo.mediaType,
+    pref: photo.pref,
+  };
 }
 
 function normalizePhones(phones: any): ContactDetailPhone[] {
@@ -1113,7 +1475,7 @@ function knownLocalBooks(bookRemoteIds: string[], abMap: Map<string, number>): n
   return found;
 }
 
-const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
+export const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
 
 /**
  * Find (or lazily create) the dedicated "Trusted senders" address book
@@ -1314,6 +1676,7 @@ export async function createContactCard({
   emails = null,
   name = null,
   bookId = null,
+  allowDuplicate = false,
   recoverCreate = false,
   beforeCreate = null,
   useWebSocket = false,
@@ -1357,8 +1720,8 @@ export async function createContactCard({
   }
 
   const addresses = fields.emails.map((email) => email.value);
-  let existing;
-  if (addresses.length > 0) try {
+  let existing = [];
+  if (!allowDuplicate && addresses.length > 0) try {
     existing = await findContactCardsForEmails({
       transport, account, emails: addresses, useWebSocket,
     });
@@ -1367,8 +1730,6 @@ export async function createContactCard({
       ok: false,
       error: { type: 'serverFail', message: error?.message ?? String(error) },
     };
-  } else {
-    existing = [];
   }
   if (existing.length > 1) {
     return {
@@ -1536,6 +1897,7 @@ function contactFieldsFromCard(card: any): ContactMutationFields {
     notes: normalized.notes,
     organizations: normalized.organizations,
     titles: normalized.titles,
+    photo: preferredPhoto(normalized.media),
   };
 }
 
@@ -1567,6 +1929,8 @@ function contactValidationError(issue: ContactFieldValidationIssue): string {
       return 'invalid note';
     case 'invalid-organization-reference':
       return 'invalid title organization reference';
+    case 'invalid-photo':
+      return 'invalid contact photo';
     case 'invalid-title':
       return 'invalid title';
     case 'invalid-website':
@@ -1859,7 +2223,110 @@ function buildSparseContactPatch(
     const error = applySparseMapPatch(patch, config);
     if (error) return { patch: {}, error };
   }
+  const photoError = applySparsePhotoPatch(
+    patch,
+    current?.media,
+    baseline.photo ?? null,
+    desired.photo ?? null,
+  );
+  if (photoError) return { patch: {}, error: photoError };
   return { patch };
+}
+
+function samePhoto(left: ContactPhoto, right: ContactPhoto): boolean {
+  return left.mapKey === right.mapKey
+    && left.uri === right.uri
+    && left.blobId === right.blobId
+    && left.mediaType === right.mediaType
+    && left.pref === right.pref;
+}
+
+function rawMatchesPhoto(raw: unknown, photo: ContactPhoto): boolean {
+  return isTypedObject(raw, 'Media')
+    && raw.kind === 'photo'
+    && stringOrNull(raw.uri) === photo.uri
+    && stringOrNull(raw.blobId) === photo.blobId
+    && stringOrNull(raw.mediaType) === photo.mediaType
+    && preference(raw.pref) === photo.pref;
+}
+
+function buildPhoto(photo: ContactPhoto): Record<string, unknown> {
+  return compactObject({
+    '@type': 'Media',
+    kind: 'photo',
+    uri: photo.uri,
+    blobId: photo.blobId,
+    mediaType: photo.mediaType,
+    pref: photo.pref,
+  });
+}
+
+function mergePhoto(raw: unknown, photo: ContactPhoto): Record<string, unknown> {
+  const next = isPlainObject(raw) ? { ...raw } : {};
+  next['@type'] = 'Media';
+  next.kind = 'photo';
+  if (photo.uri == null) delete next.uri;
+  else next.uri = photo.uri;
+  if (photo.blobId == null) delete next.blobId;
+  else next.blobId = photo.blobId;
+  if (photo.mediaType == null) delete next.mediaType;
+  else next.mediaType = photo.mediaType;
+  if (photo.pref == null) delete next.pref;
+  else next.pref = photo.pref;
+  return next;
+}
+
+function applySparsePhotoPatch(
+  patch: Record<string, unknown>,
+  currentValue: unknown,
+  baseline: ContactPhoto | null,
+  desired: ContactPhoto | null,
+): ContactWriteError | null {
+  if (baseline && desired && samePhoto(baseline, desired)) return null;
+  if (!baseline && !desired) return null;
+  if (currentValue != null && !isPlainObject(currentValue)) {
+    return { type: 'invalidProperties', message: 'media is not a keyed map' };
+  }
+  const current = isPlainObject(currentValue) ? currentValue : {};
+  if (!baseline && desired) {
+    if (hasOwn(current, desired.mapKey)) {
+      return rawMatchesPhoto(current[desired.mapKey], desired)
+        ? null
+        : { type: 'stateMismatch', message: 'media map key is already in use' };
+    }
+    if (currentValue == null) {
+      patch.media = { [desired.mapKey]: buildPhoto(desired) };
+    } else {
+      patch[`media/${jmapPatchSegment(desired.mapKey)}`] = buildPhoto(desired);
+    }
+    return null;
+  }
+  if (!baseline) return null;
+  const currentPhoto = current[baseline.mapKey];
+  if (currentPhoto == null) {
+    return desired == null
+      ? null
+      : { type: 'stateMismatch', message: 'contact photo changed on the server' };
+  }
+  if (!rawMatchesPhoto(currentPhoto, baseline)) {
+    return desired && rawMatchesPhoto(currentPhoto, desired)
+      ? null
+      : { type: 'stateMismatch', message: 'contact photo changed on the server' };
+  }
+  if (!desired) {
+    patch[`media/${jmapPatchSegment(baseline.mapKey)}`] = null;
+    return null;
+  }
+  if (desired.mapKey !== baseline.mapKey) {
+    if (hasOwn(current, desired.mapKey)) {
+      return { type: 'stateMismatch', message: 'media map key is already in use' };
+    }
+    patch[`media/${jmapPatchSegment(baseline.mapKey)}`] = null;
+    patch[`media/${jmapPatchSegment(desired.mapKey)}`] = buildPhoto(desired);
+    return null;
+  }
+  patch[`media/${jmapPatchSegment(desired.mapKey)}`] = mergePhoto(currentPhoto, desired);
+  return null;
 }
 
 function applyFullNamePatch(
@@ -3413,6 +3880,9 @@ function buildContactCard({
     notes: contactDetailMap(fields.notes, buildNote),
     organizations: contactDetailMap(fields.organizations, buildOrganization),
     titles: contactDetailMap(fields.titles, buildTitle),
+    media: fields.photo
+      ? { [fields.photo.mapKey]: buildPhoto(fields.photo) }
+      : null,
   });
 }
 

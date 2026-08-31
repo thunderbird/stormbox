@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   findMatchingIdentityIndex,
   resolveComposeIdentityIndex,
+  resolveReplyIdentityIndex,
 } from '../../../src/utils/compose-identity';
 import type { IdentityRow } from '../../../src/types';
 
@@ -32,32 +33,19 @@ describe('compose identity resolution', () => {
     identity({ id: 3, remote_id: 'other', email: 'other@example.com' }),
   ];
 
-  it('prefers a remembered remote id over primary email', () => {
+  it('prefers the client-selected Primary identity', () => {
     expect(resolveComposeIdentityIndex(identities, {
-      remembered: { remoteId: 'other', email: 'missing@example.com' },
-      primaryEmail: 'user@thundermail.com',
+      primaryIdentityRemoteId: 'other',
     })).toBe(2);
   });
 
-  it('falls back from remembered email to the account primary email', () => {
-    expect(resolveComposeIdentityIndex(identities, {
-      remembered: { email: 'missing@example.com' },
-      primaryEmail: 'USER@THUNDERMAIL.COM',
-    })).toBe(1);
-  });
-
-  it('uses a non-deletable JMAP identity when no email match exists', () => {
+  it('uses a non-deletable JMAP identity when no Primary setting matches', () => {
     expect(resolveComposeIdentityIndex([
       identity({ id: 1, email: 'alias@example.com', may_delete: 1 }),
       identity({ id: 2, email: 'primary@example.com', may_delete: 0 }),
-    ])).toBe(1);
-  });
-
-  it('uses a thundermail address before falling back to the first identity', () => {
-    expect(resolveComposeIdentityIndex([
-      identity({ id: 1, email: 'alias@example.com' }),
-      identity({ id: 2, email: 'person@thundermail.com' }),
-    ])).toBe(1);
+    ], {
+      primaryIdentityRemoteId: 'removed',
+    })).toBe(1);
   });
 
   it('falls back to the first identity when no preferred identity exists', () => {
@@ -72,5 +60,21 @@ describe('compose identity resolution', () => {
       remote_id: 'primary',
       email: 'old@example.com',
     })).toBe(1);
+  });
+
+  it('uses the first identity matching the original To field for replies', () => {
+    expect(resolveReplyIdentityIndex(
+      identities,
+      ['missing@example.com', 'OTHER@example.com'],
+      { primaryIdentityRemoteId: 'primary' },
+    )).toBe(2);
+  });
+
+  it('falls back to Primary when no identity matches the original To field', () => {
+    expect(resolveReplyIdentityIndex(
+      identities,
+      ['recipient@example.com'],
+      { primaryIdentityRemoteId: 'primary' },
+    )).toBe(1);
   });
 });

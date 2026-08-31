@@ -15,6 +15,10 @@ import { ref, watch } from 'vue';
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import {
+  ADDRESSBOOK_ERROR,
+} from '../constants/addressbook-errors';
+import type { AddressBookError } from '../constants/addressbook-errors';
+import {
   IDENTITY_ERROR,
   IDENTITY_ERROR_MESSAGE,
 } from '../constants/identity-errors';
@@ -29,6 +33,8 @@ import {
 import type { MutationType } from '../constants/states';
 import { TABLE_FAMILIES } from '../db/protocol';
 import type {
+  AddressBookInventory,
+  AddressBookMutableFields,
   AddressbookRow,
   ContactBatchFailure,
   ContactBatchMutationRequest,
@@ -36,11 +42,17 @@ import type {
   ContactDetail,
   ContactListRow,
   ContactMutationFields,
+  ContactTrashDetail,
+  ContactTrashListRow,
+  ContactTrashMutationResult,
+  CreateAddressBookMutationRequest,
   CreateContactMutationRequest,
   CreateIdentityMutationRequest,
+  DestroyAddressBookMutationRequest,
   IdentityAddress,
   IdentityMutableFields,
   IdentityRow,
+  UpdateAddressBookMutationRequest,
   UpdateContactMutationRequest,
   UpdateIdentityMutationRequest,
 } from '../types';
@@ -77,7 +89,10 @@ interface PendingMutationInsert {
 
 interface MutationExecution {
   ok: boolean;
+  addressbook?: AddressbookRow | null;
+  addressbooks?: AddressbookRow[];
   contactBatch?: ContactBatchMutationResult;
+  contactTrash?: ContactTrashMutationResult;
   errorType?: string;
   ids?: string[];
   identity?: IdentityRow;
@@ -90,6 +105,15 @@ const IDENTITY_MUTATION_TYPES = new Set<MutationType>([
   MUTATION_TYPE.UPDATE_IDENTITY,
   MUTATION_TYPE.DELETE_IDENTITY,
 ]);
+
+const ADDRESSBOOK_MUTATION_TYPES = new Set<MutationType>([
+  MUTATION_TYPE.CREATE_ADDRESSBOOK,
+  MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+  MUTATION_TYPE.DESTROY_ADDRESSBOOK,
+]);
+
+const JMAP_CONTACTS_CAPABILITY = 'urn:ietf:params:jmap:contacts';
+const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
 
 export interface IdentityCreateInput extends IdentityMutableFields {
   operationId?: string;
@@ -104,6 +128,37 @@ export interface IdentityUpdateInput extends IdentityMutableFields {
 export type IdentitySaveResult =
   | { ok: true; identity: IdentityRow }
   | { ok: false; error: IdentityError };
+
+export type AddressBookCreateInput =
+  Omit<CreateAddressBookMutationRequest, 'operationId'> & {
+    operationId?: string;
+  };
+
+export interface AddressBookUpdateInput extends AddressBookMutableFields {
+  addressbookId: number;
+  operationId?: string;
+}
+
+export interface AddressBookDeleteInput {
+  addressbookId: number;
+  confirmationInventory: AddressBookInventory;
+  operationId?: string;
+}
+
+export type AddressBookSaveResult =
+  | { ok: true; addressbook: AddressbookRow }
+  | { ok: false; error: AddressBookError };
+
+export type AddressBookCreateResult = AddressBookSaveResult;
+export type AddressBookUpdateResult = AddressBookSaveResult;
+
+export type AddressBookInventoryResult =
+  | { ok: true; inventory: AddressBookInventory }
+  | { ok: false; error: AddressBookError };
+
+export type AddressBookDeleteResult =
+  | { ok: true }
+  | { ok: false; error: AddressBookError };
 
 export interface AutocompleteCandidate {
   name?: string | null;
@@ -180,6 +235,7 @@ export type ContactCreateInput =
   | {
       contact: ContactMutationFields;
       addressbookIds?: number[];
+      allowDuplicate?: boolean;
     }
   | {
       name?: string | null;
@@ -209,6 +265,10 @@ export type ContactCreateResult =
   | { ok: false };
 
 export type ContactBatchActionResult = ContactBatchMutationResult & {
+  ok: boolean;
+};
+
+export type ContactTrashActionResult = ContactTrashMutationResult & {
   ok: boolean;
 };
 
@@ -257,6 +317,8 @@ function contactValidationMessage(issue: ContactFieldValidationIssue): string {
       return 'Enter a valid note.';
     case 'invalid-organization-reference':
       return 'Choose a valid organization for each title.';
+    case 'invalid-photo':
+      return 'Choose a PNG, JPEG, GIF, or WebP image no larger than 1 MiB.';
     case 'empty-organization':
       return 'Enter an organization or department.';
     case 'invalid-title':
@@ -333,25 +395,159 @@ function failedContactBatch(
   };
 }
 
+function contactTrashResult(value: unknown): ContactTrashMutationResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<ContactTrashMutationResult>;
+  if (
+    !Array.isArray(candidate.succeededTrashIds)
+    || !Array.isArray(candidate.restoredRemoteIds)
+    || !Array.isArray(candidate.destinationRequiredTrashIds)
+    || !Array.isArray(candidate.failures)
+  ) {
+    return null;
+  }
+  return {
+    succeededTrashIds: uniqueContactIds(candidate.succeededTrashIds),
+    restoredRemoteIds: candidate.restoredRemoteIds.filter(
+      (id): id is string => typeof id === 'string' && id.length > 0,
+    ),
+    destinationRequiredTrashIds: uniqueContactIds(
+      candidate.destinationRequiredTrashIds,
+    ),
+    failures: candidate.failures.flatMap((failure) =>
+      failure
+      && Number.isSafeInteger(failure.trashId)
+      && failure.trashId > 0
+      && typeof failure.errorType === 'string'
+        ? [{
+            trashId: failure.trashId,
+            errorType: failure.errorType,
+            ...(typeof failure.message === 'string' ? { message: failure.message } : {}),
+          }]
+        : []),
+  };
+}
+
+function failedContactTrash(
+  trashIds: readonly number[],
+  errorType: string,
+  message: string,
+): ContactTrashActionResult {
+  return {
+    ok: false,
+    succeededTrashIds: [],
+    restoredRemoteIds: [],
+    destinationRequiredTrashIds: [],
+    failures: uniqueContactIds(trashIds).map((trashId) => ({
+      trashId,
+      errorType,
+      message,
+    })),
+  };
+}
+
+const ADDRESSBOOK_ERROR_MESSAGE: Record<AddressBookError, string> = {
+  [ADDRESSBOOK_ERROR.INVALID_NAME]:
+    'Enter an address book name without a line break.',
+  [ADDRESSBOOK_ERROR.PERMISSION_DENIED]:
+    'You don’t have permission to manage this address book.',
+  [ADDRESSBOOK_ERROR.UNSUPPORTED_SUBSCRIPTION]:
+    'The server does not allow this subscription change.',
+  [ADDRESSBOOK_ERROR.STATE_MISMATCH]:
+    'The address book changed on the server. Refresh and try again.',
+  [ADDRESSBOOK_ERROR.MISSING]:
+    'This address book no longer exists.',
+  [ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE]:
+    'The address book service is temporarily unavailable.',
+  [ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED]:
+    'The address book changed on the server, but the local list could not be refreshed.',
+  [ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE]:
+    'The server may have created this address book, but it could not be identified safely.',
+  [ADDRESSBOOK_ERROR.CONFIRMATION_REQUIRED]:
+    'Review the address book contents before deleting it.',
+  [ADDRESSBOOK_ERROR.CONFIRMATION_STALE]:
+    'The address book contents changed. Review them again before deleting.',
+  [ADDRESSBOOK_ERROR.PROTECTED]:
+    'Trusted Senders cannot be deleted.',
+  [ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK]:
+    'The last address book cannot be deleted.',
+  [ADDRESSBOOK_ERROR.INVALID_ARGUMENTS]:
+    'Enter valid address book details.',
+};
+
+const ADDRESSBOOK_ERROR_TYPES = new Set<string>(
+  Object.values(ADDRESSBOOK_ERROR),
+);
+
+let addressBookOperationSequence = 0;
+
+function canonicalAddressBookText(value: string): string {
+  return value.normalize('NFC').replace(/\r\n?/gu, '\n');
+}
+
+function canonicalAddressBookName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (/[\r\n]/u.test(value)) return null;
+  const name = canonicalAddressBookText(value).trim();
+  return name || null;
+}
+
+function validAddressBookMetadata(input: Record<string, unknown>): boolean {
+  return (
+    (!hasOwn(input, 'description')
+      || input.description === null
+      || typeof input.description === 'string')
+    && (!hasOwn(input, 'sortOrder')
+      || (
+        Number.isSafeInteger(input.sortOrder)
+        && Number(input.sortOrder) >= 0
+      ))
+    && (!hasOwn(input, 'isSubscribed')
+      || typeof input.isSubscribed === 'boolean')
+    && (!hasOwn(input, 'setAsDefault')
+      || typeof input.setAsDefault === 'boolean')
+  );
+}
+
+function createAddressBookOperationId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return `addressbook-${randomUuid}`;
+  addressBookOperationSequence += 1;
+  return `addressbook-${Date.now()}-${addressBookOperationSequence}`;
+}
+
+function isTrustedSendersBook(book: AddressbookRow): boolean {
+  return canonicalAddressBookName(book.name)?.toLocaleLowerCase()
+    === TRUSTED_SENDERS_BOOK_NAME.toLocaleLowerCase();
+}
+
 export const useContactsStore = defineStore('contacts', () => {
   const authStore = useAuthStore();
   const addressbooks = ref<AddressbookRow[]>([]);
+  const canCreateAddressBook = ref(false);
   const contacts = ref<ContactListRow[]>([]);
+  const trash = ref<ContactTrashListRow[]>([]);
   const identities = ref<IdentityRow[]>([]);
   const error = ref<string | null>(null);
   const saving = ref(false);
   const deletingIds = ref<number[]>([]);
   const movingIds = ref<number[]>([]);
+  const restoringTrashIds = ref<number[]>([]);
+  const deletingTrashIds = ref<number[]>([]);
   const deletingIdentityIds = ref<number[]>([]);
+  const deletingAddressBookIds = ref<number[]>([]);
   const identityOperationIds = new Map<string, string>();
+  const addressBookOperationIds = new Map<string, string>();
+  const addressBookOperations = new Map<string, Promise<unknown>>();
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
+  let stopAccountWatch: (() => void) | null = null;
 
   async function attach(): Promise<void> {
     if (repo) return;
     repo = await getRepositoryAsync();
     unsubscribe = repo.subscribe(onTablesTouched);
-    watch(
+    stopAccountWatch = watch(
       () => authStore.accountId,
       async (newId) => {
         if (newId) {
@@ -360,13 +556,19 @@ export const useContactsStore = defineStore('contacts', () => {
         }
         $reset();
       },
-      { immediate: true },
     );
+    if (authStore.accountId != null) {
+      await refresh();
+    } else {
+      $reset();
+    }
   }
 
   function detach(): void {
     unsubscribe?.();
     unsubscribe = null;
+    stopAccountWatch?.();
+    stopAccountWatch = null;
     repo = null;
     $reset();
   }
@@ -379,21 +581,38 @@ export const useContactsStore = defineStore('contacts', () => {
    */
   function $reset(): void {
     addressbooks.value = [];
+    canCreateAddressBook.value = false;
     contacts.value = [];
+    trash.value = [];
     identities.value = [];
     error.value = null;
     saving.value = false;
     deletingIds.value = [];
     movingIds.value = [];
+    restoringTrashIds.value = [];
+    deletingTrashIds.value = [];
     deletingIdentityIds.value = [];
+    deletingAddressBookIds.value = [];
     identityOperationIds.clear();
+    addressBookOperationIds.clear();
+    addressBookOperations.clear();
   }
 
   function onTablesTouched(tables: string[]): void {
     if (authStore.accountId == null) return;
+    if (tables.includes(TABLE_FAMILIES.ACCOUNTS)) {
+      refreshAddressBookCapability().catch((err) => {
+        console.warn('[contacts-store] capability refresh after broadcast failed', err);
+      });
+    }
     if (tables.includes(TABLE_FAMILIES.CONTACTS)) {
       Promise.all([refreshAddressbooks(), refreshContacts()]).catch((err) => {
         console.warn('[contacts-store] contact refresh after broadcast failed', err);
+      });
+    }
+    if (tables.includes(TABLE_FAMILIES.CONTACTS_TRASH)) {
+      refreshTrash().catch((err) => {
+        console.warn('[contacts-store] trash refresh after broadcast failed', err);
       });
     }
     if (tables.includes(TABLE_FAMILIES.IDENTITIES)) {
@@ -404,7 +623,35 @@ export const useContactsStore = defineStore('contacts', () => {
   }
 
   async function refresh(): Promise<void> {
-    await Promise.all([refreshAddressbooks(), refreshContacts(), refreshIdentities()]);
+    await Promise.all([
+      refreshAddressBookCapability(),
+      refreshAddressbooks(),
+      refreshContacts(),
+      refreshTrash(),
+      refreshIdentities(),
+    ]);
+  }
+
+  async function refreshAddressBookCapability(): Promise<void> {
+    canCreateAddressBook.value = false;
+    if (!repo || authStore.accountId == null) return;
+    const accountId = authStore.accountId;
+    try {
+      const capabilities = await repo.getAccountCapabilities(
+        accountId,
+        SERVICE_KIND.JMAP_CONTACTS,
+      );
+      if (authStore.accountId !== accountId) return;
+      const contactsCapability = capabilities?.[JMAP_CONTACTS_CAPABILITY];
+      canCreateAddressBook.value = Boolean(
+        contactsCapability
+        && typeof contactsCapability === 'object'
+        && (contactsCapability as { mayCreateAddressBook?: unknown })
+          .mayCreateAddressBook === true,
+      );
+    } catch {
+      canCreateAddressBook.value = false;
+    }
   }
 
   async function refreshAddressbooks(): Promise<void> {
@@ -426,6 +673,18 @@ export const useContactsStore = defineStore('contacts', () => {
     }
     try {
       contacts.value = await repo.listContacts(authStore.accountId, options);
+    } catch (err: any) {
+      error.value = err?.message ?? String(err);
+    }
+  }
+
+  async function refreshTrash(): Promise<void> {
+    if (!repo || authStore.accountId == null) {
+      trash.value = [];
+      return;
+    }
+    try {
+      trash.value = await repo.listContactTrash(authStore.accountId);
     } catch (err: any) {
       error.value = err?.message ?? String(err);
     }
@@ -499,7 +758,11 @@ export const useContactsStore = defineStore('contacts', () => {
   ): Promise<MutationExecution> {
     if (!repo || authStore.accountId == null) return { ok: false };
     let operationId: string | null = null;
-    if (IDENTITY_MUTATION_TYPES.has(mutation.mutationType)) {
+    const identityMutation = IDENTITY_MUTATION_TYPES.has(mutation.mutationType);
+    const addressBookMutation = ADDRESSBOOK_MUTATION_TYPES.has(
+      mutation.mutationType,
+    );
+    if (identityMutation || addressBookMutation) {
       try {
         const request = JSON.parse(mutation.requestJson);
         operationId = typeof request?.operationId === 'string' ? request.operationId : null;
@@ -507,9 +770,11 @@ export const useContactsStore = defineStore('contacts', () => {
         operationId = null;
       }
     }
-    const inserted = operationId && typeof repo.ensureIdentityMutation === 'function'
+    const inserted = operationId && identityMutation
       ? await repo.ensureIdentityMutation({ ...mutation, operationId })
-      : await repo.insertPendingMutation(mutation);
+      : operationId && addressBookMutation
+        ? await repo.ensureAddressbookMutation({ ...mutation, operationId })
+        : await repo.insertPendingMutation(mutation);
     if (inserted?.errorType) {
       return {
         ok: false,
@@ -522,10 +787,18 @@ export const useContactsStore = defineStore('contacts', () => {
       ? await repo.runMutation(authStore.accountId, inserted.id)
       : await repo.drainOutbox(authStore.accountId);
     const batch = contactBatchResult(result?.result);
+    const trashMutation = contactTrashResult(result?.result);
     return {
       ok: (result?.failed ?? 0) === 0
         && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0),
       ...(batch ? { contactBatch: batch } : {}),
+      ...(trashMutation ? { contactTrash: trashMutation } : {}),
+      ...(Array.isArray(result?.result?.addressbooks)
+        ? { addressbooks: result.result.addressbooks as AddressbookRow[] }
+        : {}),
+      ...(result?.result && Object.hasOwn(result.result, 'addressbook')
+        ? { addressbook: result.result.addressbook as AddressbookRow | null }
+        : {}),
       ...(typeof result?.errorType === 'string' ? { errorType: result.errorType } : {}),
       ...(Array.isArray(result?.result?.ids)
         ? {
@@ -550,6 +823,11 @@ export const useContactsStore = defineStore('contacts', () => {
   async function getContact(contactId: number): Promise<ContactDetail | null> {
     if (!repo || authStore.accountId == null) return null;
     return repo.getContact(authStore.accountId, contactId);
+  }
+
+  async function getContactTrash(trashId: number): Promise<ContactTrashDetail | null> {
+    if (!repo || authStore.accountId == null) return null;
+    return repo.getContactTrash(authStore.accountId, trashId);
   }
 
   /**
@@ -598,6 +876,7 @@ export const useContactsStore = defineStore('contacts', () => {
       ...fields,
       uid,
       addressbookIds: selectedAddressbookIds,
+      allowDuplicate: 'contact' in input && input.allowDuplicate === true,
     };
     saving.value = true;
     try {
@@ -945,6 +1224,538 @@ export const useContactsStore = defineStore('contacts', () => {
     return (await deleteContacts([contact.id], null)).ok;
   }
 
+  async function mutateContactTrash(
+    operation: 'delete-forever' | 'restore',
+    trashIdsInput: number[],
+    destinationAddressbookId: number | null = null,
+  ): Promise<ContactTrashActionResult> {
+    const trashIds = uniqueContactIds(trashIdsInput);
+    error.value = null;
+    if (!repo || authStore.accountId == null) {
+      error.value = 'Not connected.';
+      return failedContactTrash(trashIds, 'notConnected', error.value);
+    }
+    if (
+      operation === 'restore'
+      && destinationAddressbookId != null
+      && !writableContactBook(destinationAddressbookId)
+    ) {
+      error.value = 'Choose a writable address book.';
+      return failedContactTrash(trashIds, 'permissionDenied', error.value);
+    }
+    const pending = operation === 'restore' ? restoringTrashIds : deletingTrashIds;
+    pending.value = [...new Set([...pending.value, ...trashIds])];
+    saving.value = true;
+    try {
+      const mutation = await queueAndRunResult({
+        accountId: authStore.accountId,
+        mutationType: MUTATION_TYPE.CONTACT_TRASH,
+        targetMessageId: null,
+        requestJson: JSON.stringify({
+          operation,
+          trashIds,
+          ...(operation === 'restore' && destinationAddressbookId != null
+            ? { destinationAddressbookId }
+            : {}),
+        }),
+      });
+      await Promise.all([refreshTrash(), refreshContacts()]);
+      if (!mutation.contactTrash) {
+        const message = operation === 'restore'
+          ? 'Could not restore the selected contacts. Please try again.'
+          : 'Could not delete the selected contacts forever. Please try again.';
+        error.value = message;
+        return failedContactTrash(trashIds, mutation.errorType ?? 'unknown', message);
+      }
+      const complete = mutation.contactTrash;
+      if (complete.failures.length > 0) {
+        error.value = `${complete.failures.length} contact${
+          complete.failures.length === 1 ? '' : 's'
+        } could not be updated.`;
+      }
+      return {
+        ...complete,
+        ok: mutation.ok
+          && complete.failures.length === 0
+          && complete.destinationRequiredTrashIds.length === 0,
+      };
+    } catch (err: any) {
+      error.value = err?.message ?? String(err);
+      await Promise.all([refreshTrash(), refreshContacts()]);
+      return failedContactTrash(trashIds, 'transport', error.value);
+    } finally {
+      const completed = new Set(trashIds);
+      pending.value = pending.value.filter((id) => !completed.has(id));
+      saving.value = false;
+    }
+  }
+
+  function restoreContactTrash(
+    trashIds: number[],
+    destinationAddressbookId: number | null = null,
+  ): Promise<ContactTrashActionResult> {
+    return mutateContactTrash('restore', trashIds, destinationAddressbookId);
+  }
+
+  function deleteContactTrashForever(
+    trashIds: number[],
+  ): Promise<ContactTrashActionResult> {
+    return mutateContactTrash('delete-forever', trashIds);
+  }
+
+  function addressBookErrorForMutation(errorType?: string): AddressBookError {
+    if (errorType && ADDRESSBOOK_ERROR_TYPES.has(errorType)) {
+      return errorType as AddressBookError;
+    }
+    switch (errorType) {
+      case 'accountNotFound':
+      case 'accountNotSupportedByMethod':
+      case 'accountReadOnly':
+      case 'authorizationFailed':
+      case 'forbidden':
+        return ADDRESSBOOK_ERROR.PERMISSION_DENIED;
+      case 'invalidName':
+        return ADDRESSBOOK_ERROR.INVALID_NAME;
+      case 'invalidArguments':
+      case 'invalidProperties':
+        return ADDRESSBOOK_ERROR.INVALID_ARGUMENTS;
+      case 'notFound':
+        return ADDRESSBOOK_ERROR.MISSING;
+      case 'stateMismatch':
+        return ADDRESSBOOK_ERROR.STATE_MISMATCH;
+      default:
+        return ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE;
+    }
+  }
+
+  function addressBookFailure(
+    code: AddressBookError,
+  ): { ok: false; error: AddressBookError } {
+    error.value = ADDRESSBOOK_ERROR_MESSAGE[code];
+    return { ok: false, error: code };
+  }
+
+  function operationIdForAddressBook(
+    key: string,
+    supplied: string | undefined,
+  ): string {
+    const existing = addressBookOperationIds.get(key);
+    if (existing) return existing;
+    const operationId = supplied ?? createAddressBookOperationId();
+    addressBookOperationIds.set(key, operationId);
+    return operationId;
+  }
+
+  function finishAddressBookOperation(
+    key: string,
+    operationId: string,
+    errorCode: AddressBookError | null,
+  ): void {
+    if (
+      errorCode !== ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE
+      && errorCode !== ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED
+      && errorCode !== ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE
+      && addressBookOperationIds.get(key) === operationId
+    ) {
+      addressBookOperationIds.delete(key);
+    }
+  }
+
+  function runAddressBookOperation<T>(
+    key: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const existing = addressBookOperations.get(key);
+    if (existing) return existing as Promise<T>;
+    const operation = action();
+    addressBookOperations.set(key, operation);
+    const clear = () => {
+      if (addressBookOperations.get(key) === operation) {
+        addressBookOperations.delete(key);
+      }
+    };
+    operation.then(clear, clear);
+    return operation;
+  }
+
+  async function addressBookFromMutation(
+    result: MutationExecution,
+    fallbackRemoteId: string | null = null,
+  ): Promise<AddressbookRow | null> {
+    if (result.addressbooks) {
+      addressbooks.value = result.addressbooks;
+    } else {
+      await refreshAddressbooks();
+    }
+    const remoteId = result.addressbook?.remote_id
+      ?? result.ids?.[0]
+      ?? fallbackRemoteId;
+    if (!remoteId) return null;
+    const cached = addressbooks.value.find((book) => book.remote_id === remoteId);
+    if (cached) return cached;
+    if (result.addressbook) {
+      addressbooks.value = [...addressbooks.value, result.addressbook];
+      return result.addressbook;
+    }
+    return null;
+  }
+
+  async function applyAddressBookContinuation(
+    operationKey: string,
+    addressbook: AddressbookRow,
+    fields: AddressBookMutableFields,
+  ): Promise<AddressBookSaveResult> {
+    const operationId = createAddressBookOperationId();
+    addressBookOperationIds.set(operationKey, operationId);
+    const request: UpdateAddressBookMutationRequest = {
+      operationId,
+      addressbookId: addressbook.id,
+      ...fields,
+    };
+    try {
+      const result = await queueAndRunResult({
+        accountId: authStore.accountId!,
+        mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+        targetMessageId: null,
+        requestJson: JSON.stringify(request),
+      });
+      if (!result.ok) {
+        const code = addressBookErrorForMutation(result.errorType);
+        finishAddressBookOperation(operationKey, operationId, code);
+        return addressBookFailure(code);
+      }
+      const updated = await addressBookFromMutation(
+        result,
+        addressbook.remote_id,
+      );
+      if (!updated) {
+        finishAddressBookOperation(
+          operationKey,
+          operationId,
+          ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+        );
+        return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
+      }
+      finishAddressBookOperation(operationKey, operationId, null);
+      return { ok: true, addressbook: updated };
+    } catch (caught: any) {
+      const code = addressBookErrorForMutation(caught?.type);
+      finishAddressBookOperation(operationKey, operationId, code);
+      return addressBookFailure(code);
+    }
+  }
+
+  function createAddressBook(
+    input: AddressBookCreateInput,
+  ): Promise<AddressBookCreateResult> {
+    error.value = null;
+    const runtimeInput = input as unknown as Record<string, unknown>;
+    const name = canonicalAddressBookName(runtimeInput?.name);
+    if (!name) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.INVALID_NAME));
+    }
+    if (!validAddressBookMetadata(runtimeInput)) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.INVALID_ARGUMENTS));
+    }
+    if (!repo || authStore.accountId == null) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
+    }
+    if (!canCreateAddressBook.value) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.PERMISSION_DENIED));
+    }
+
+    const operationKey = `create:${name.toLocaleLowerCase()}`;
+    return runAddressBookOperation(operationKey, async () => {
+      const operationId = operationIdForAddressBook(
+        operationKey,
+        typeof input.operationId === 'string' ? input.operationId : undefined,
+      );
+      const request: CreateAddressBookMutationRequest = {
+        operationId,
+        name,
+        description: typeof input.description === 'string'
+          ? canonicalAddressBookText(input.description)
+          : null,
+        sortOrder: input.sortOrder ?? 0,
+        isSubscribed: input.isSubscribed ?? true,
+        setAsDefault: input.setAsDefault ?? false,
+      };
+      saving.value = true;
+      try {
+        const result = await queueAndRunResult({
+          accountId: authStore.accountId!,
+          mutationType: MUTATION_TYPE.CREATE_ADDRESSBOOK,
+          targetMessageId: null,
+          requestJson: JSON.stringify(request),
+        });
+        if (!result.ok) {
+          const code = addressBookErrorForMutation(result.errorType);
+          finishAddressBookOperation(operationKey, operationId, code);
+          return addressBookFailure(code);
+        }
+        const created = await addressBookFromMutation(result);
+        if (!created) {
+          finishAddressBookOperation(
+            operationKey,
+            operationId,
+            ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+          );
+          return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
+        }
+        if (result.requestMatches === false) {
+          return applyAddressBookContinuation(operationKey, created, {
+            name: request.name,
+            description: request.description,
+            sortOrder: request.sortOrder,
+            isSubscribed: request.isSubscribed,
+            ...(request.setAsDefault === true ? { setAsDefault: true } : {}),
+          });
+        }
+        finishAddressBookOperation(operationKey, operationId, null);
+        return { ok: true, addressbook: created };
+      } catch (caught: any) {
+        const code = addressBookErrorForMutation(caught?.type);
+        finishAddressBookOperation(operationKey, operationId, code);
+        return addressBookFailure(code);
+      } finally {
+        saving.value = false;
+      }
+    });
+  }
+
+  function updateAddressBook(
+    input: AddressBookUpdateInput,
+  ): Promise<AddressBookUpdateResult>;
+  function updateAddressBook(
+    addressbookId: number,
+    fields: Omit<AddressBookUpdateInput, 'addressbookId'>,
+  ): Promise<AddressBookUpdateResult>;
+  function updateAddressBook(
+    inputOrId: AddressBookUpdateInput | number,
+    fields: Omit<AddressBookUpdateInput, 'addressbookId'> = {},
+  ): Promise<AddressBookUpdateResult> {
+    error.value = null;
+    const input: AddressBookUpdateInput = typeof inputOrId === 'number'
+      ? { addressbookId: inputOrId, ...fields }
+      : inputOrId;
+    const runtimeInput = input as unknown as Record<string, unknown>;
+    if (!repo || authStore.accountId == null) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
+    }
+    const current = addressbooks.value.find((book) =>
+      book.id === input.addressbookId
+      && book.account_id === authStore.accountId
+      && book.service_kind === SERVICE_KIND.JMAP_CONTACTS
+      && book.is_deleted === 0) ?? null;
+    if (!current) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.MISSING));
+    }
+    if (hasOwn(runtimeInput, 'name') && !canonicalAddressBookName(input.name)) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.INVALID_NAME));
+    }
+    if (!validAddressBookMetadata(runtimeInput)) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.INVALID_ARGUMENTS));
+    }
+
+    const patch: AddressBookMutableFields = {};
+    if (hasOwn(runtimeInput, 'name')) {
+      patch.name = canonicalAddressBookName(input.name)!;
+    }
+    if (hasOwn(runtimeInput, 'description')) {
+      patch.description = input.description == null
+        ? null
+        : canonicalAddressBookText(input.description);
+    }
+    if (hasOwn(runtimeInput, 'sortOrder')) {
+      patch.sortOrder = input.sortOrder;
+    }
+    if (hasOwn(runtimeInput, 'isSubscribed')) {
+      patch.isSubscribed = input.isSubscribed;
+    }
+    if (input.setAsDefault === true) {
+      patch.setAsDefault = true;
+    }
+    if (Object.keys(patch).length === 0) {
+      return Promise.resolve({ ok: true, addressbook: current });
+    }
+
+    const operationKey = `update:${current.id}`;
+    return runAddressBookOperation(operationKey, async () => {
+      const operationId = operationIdForAddressBook(
+        operationKey,
+        typeof input.operationId === 'string' ? input.operationId : undefined,
+      );
+      const request: UpdateAddressBookMutationRequest = {
+        operationId,
+        addressbookId: current.id,
+        ...patch,
+      };
+      saving.value = true;
+      try {
+        const result = await queueAndRunResult({
+          accountId: authStore.accountId!,
+          mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+          targetMessageId: null,
+          requestJson: JSON.stringify(request),
+        });
+        if (!result.ok) {
+          const code = addressBookErrorForMutation(result.errorType);
+          finishAddressBookOperation(operationKey, operationId, code);
+          return addressBookFailure(code);
+        }
+        const updated = await addressBookFromMutation(result, current.remote_id);
+        if (!updated) {
+          finishAddressBookOperation(
+            operationKey,
+            operationId,
+            ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+          );
+          return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
+        }
+        if (result.requestMatches === false) {
+          return applyAddressBookContinuation(operationKey, updated, patch);
+        }
+        finishAddressBookOperation(operationKey, operationId, null);
+        return { ok: true, addressbook: updated };
+      } catch (caught: any) {
+        const code = addressBookErrorForMutation(caught?.type);
+        finishAddressBookOperation(operationKey, operationId, code);
+        return addressBookFailure(code);
+      } finally {
+        saving.value = false;
+      }
+    });
+  }
+
+  function inventoryAddressBook(
+    addressbookId: number,
+  ): Promise<AddressBookInventoryResult> {
+    error.value = null;
+    if (!repo || authStore.accountId == null) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
+    }
+    const current = addressbooks.value.find((book) =>
+      book.id === addressbookId
+      && book.account_id === authStore.accountId
+      && book.service_kind === SERVICE_KIND.JMAP_CONTACTS
+      && book.is_deleted === 0) ?? null;
+    if (!current) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.MISSING));
+    }
+    return runAddressBookOperation(`inventory:${addressbookId}`, async () => {
+      try {
+        const inventory = await repo!.inventoryAddressbook(
+          authStore.accountId!,
+          addressbookId,
+        );
+        return { ok: true, inventory };
+      } catch (caught: any) {
+        return addressBookFailure(addressBookErrorForMutation(caught?.type));
+      }
+    });
+  }
+
+  function deleteAddressBook(
+    input: AddressBookDeleteInput,
+  ): Promise<AddressBookDeleteResult>;
+  function deleteAddressBook(
+    addressbookId: number,
+    confirmationInventory: AddressBookInventory,
+    operationId?: string,
+  ): Promise<AddressBookDeleteResult>;
+  function deleteAddressBook(
+    inputOrId: AddressBookDeleteInput | number,
+    confirmationInventory?: AddressBookInventory,
+    operationId?: string,
+  ): Promise<AddressBookDeleteResult> {
+    error.value = null;
+    const input: AddressBookDeleteInput = typeof inputOrId === 'number'
+      ? {
+          addressbookId: inputOrId,
+          confirmationInventory: confirmationInventory!,
+          operationId,
+        }
+      : inputOrId;
+    if (!repo || authStore.accountId == null) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
+    }
+    const current = addressbooks.value.find((book) =>
+      book.id === input.addressbookId
+      && book.account_id === authStore.accountId
+      && book.service_kind === SERVICE_KIND.JMAP_CONTACTS
+      && book.is_deleted === 0) ?? null;
+    if (!current) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.MISSING));
+    }
+    if (current.may_delete !== 1) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.PERMISSION_DENIED));
+    }
+    if (isTrustedSendersBook(current)) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.PROTECTED));
+    }
+    const personalBooks = addressbooks.value.filter((book) =>
+      book.account_id === authStore.accountId
+      && book.service_kind === SERVICE_KIND.JMAP_CONTACTS
+      && book.is_deleted === 0
+      && !isTrustedSendersBook(book));
+    if (personalBooks.length <= 1) {
+      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK));
+    }
+    if (
+      !input.confirmationInventory
+      || input.confirmationInventory.addressbookId !== current.id
+      || input.confirmationInventory.addressBookRemoteId !== current.remote_id
+    ) {
+      return Promise.resolve(
+        addressBookFailure(ADDRESSBOOK_ERROR.CONFIRMATION_REQUIRED),
+      );
+    }
+
+    const operationKey = `delete:${current.id}`;
+    return runAddressBookOperation(operationKey, async () => {
+      const stableOperationId = operationIdForAddressBook(
+        operationKey,
+        typeof input.operationId === 'string' ? input.operationId : undefined,
+      );
+      const request: DestroyAddressBookMutationRequest = {
+        operationId: stableOperationId,
+        addressbookId: current.id,
+        confirmationInventory: input.confirmationInventory,
+      };
+      deletingAddressBookIds.value = [
+        ...new Set([...deletingAddressBookIds.value, current.id]),
+      ];
+      try {
+        const result = await queueAndRunResult({
+          accountId: authStore.accountId!,
+          mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
+          targetMessageId: null,
+          requestJson: JSON.stringify(request),
+        });
+        if (!result.ok) {
+          const code = addressBookErrorForMutation(result.errorType);
+          finishAddressBookOperation(operationKey, stableOperationId, code);
+          return addressBookFailure(code);
+        }
+        if (result.addressbooks) {
+          addressbooks.value = result.addressbooks;
+        } else {
+          await refreshAddressbooks();
+        }
+        await refreshContacts();
+        finishAddressBookOperation(operationKey, stableOperationId, null);
+        return { ok: true };
+      } catch (caught: any) {
+        const code = addressBookErrorForMutation(caught?.type);
+        finishAddressBookOperation(operationKey, stableOperationId, code);
+        return addressBookFailure(code);
+      } finally {
+        deletingAddressBookIds.value = deletingAddressBookIds.value
+          .filter((id) => id !== current.id);
+      }
+    });
+  }
+
   function identityErrorForMutation(errorType?: string): IdentityError {
     switch (errorType) {
       case IDENTITY_ERROR.INVALID_REPLY_TO:
@@ -1273,23 +2084,31 @@ export const useContactsStore = defineStore('contacts', () => {
 
   return {
     addressbooks,
+    canCreateAddressBook,
     contacts,
+    trash,
     identities,
     error,
     saving,
     deletingIds,
     movingIds,
+    restoringTrashIds,
+    deletingTrashIds,
     deletingIdentityIds,
+    deletingAddressBookIds,
     $reset,
     attach,
     detach,
     refresh,
+    refreshAddressBookCapability,
     refreshAddressbooks,
     refreshContacts,
+    refreshTrash,
     refreshIdentities,
     listContacts,
     listIdentities,
     getContact,
+    getContactTrash,
     autocomplete,
     createContact,
     createContactResult,
@@ -1297,6 +2116,12 @@ export const useContactsStore = defineStore('contacts', () => {
     deleteContact,
     deleteContacts,
     moveContacts,
+    restoreContactTrash,
+    deleteContactTrashForever,
+    createAddressBook,
+    updateAddressBook,
+    inventoryAddressBook,
+    deleteAddressBook,
     createIdentity,
     updateIdentity,
     deleteIdentity,

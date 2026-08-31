@@ -13,6 +13,7 @@ import type {
   ContactDetailTitle,
   ContactMutationFields,
   ContactPhoneFeature,
+  ContactPhoto,
   ContactTitleKind,
 } from '../../types';
 import {
@@ -73,6 +74,7 @@ export type ContactEditorTitle = ContactDetailTitle & ContactEditorKey;
 
 export interface ContactEditorModel {
   fullName: string;
+  photo: ContactPhoto | null;
   emails: ContactEditorEmail[];
   phones: ContactEditorPhone[];
   links: ContactEditorLink[];
@@ -358,6 +360,7 @@ export function createContactEditorModel(
     email.isPlaceholder = true;
     return {
       fullName: '',
+      photo: null,
       emails: [email],
       phones: [],
       links: [],
@@ -389,6 +392,7 @@ export function createContactEditorModel(
 
   return {
     fullName: detail.full_name ?? detail.display_name ?? '',
+    photo: detail.photo ? { ...detail.photo } : null,
     emails: detail.emails.map((email) => ({
       ...email,
       formKey: createFormKey('email', email.mapKey),
@@ -529,6 +533,7 @@ export function contactEditorFields(
     errorFieldKey: null,
     fields: {
       fullName: model.fullName.trim() || null,
+      photo: model.photo ? { ...model.photo } : null,
       emails: resourceFields(model.emails) as ContactDetailEmail[],
       phones: resourceFields(model.phones) as ContactDetailPhone[],
       links: resourceFields(model.links) as ContactDetailLink[],

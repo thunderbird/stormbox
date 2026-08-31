@@ -2,36 +2,40 @@
 import {
   computed,
   nextTick,
+  onBeforeUnmount,
   ref,
   watch,
 } from 'vue';
-import { ArrowLeft, Pencil, Trash2 } from '@lucide/vue';
+import {
+  ArrowLeft,
+  Copy,
+  Pencil,
+  Trash2,
+} from '@lucide/vue';
 
 import { useContactsStore } from '../../stores/contacts-store';
 import type {
   ContactDetail,
-  ContactDetailResource,
   ContactMutationFields,
 } from '../../types';
+import { contactMutationFieldsFromDetail } from '../../utils/contact-fields';
 import {
-  contactMutationFieldsFromDetail,
-  isHttpContactWebsite,
-} from '../../utils/contact-fields';
+  CONTACT_PHOTO_ACCEPT,
+  readContactPhotoFile,
+} from '../../utils/contact-photo';
+import { createContactMapKey } from '../../utils/contact-uid';
 import AppButton from '../AppButton.vue';
 import AppIconButton from '../AppIconButton.vue';
 import ContactAffiliationsEditor from './ContactAffiliationsEditor.vue';
+import ContactAvatar from './ContactAvatar.vue';
 import ContactDateSection from './ContactDateSection.vue';
+import ContactDetailsView from './ContactDetailsView.vue';
 import ContactNotesSection from './ContactNotesSection.vue';
 import ContactResourceSection from './ContactResourceSection.vue';
 import {
-  contactAnniversaryKindLabel,
   contactEditorFields,
-  contactResourceLabel,
   createContactEditorModel,
-  formatContactDate,
   type ContactEditorModel,
-  type ContactEditorResource,
-  type ContactResourceKind,
 } from './contact-editor';
 
 type ContactDetailPaneMode = 'create' | 'edit' | 'loading' | 'view';
@@ -55,6 +59,7 @@ const emit = defineEmits<{
   back: [];
   cancel: [];
   dirtyChange: [dirty: boolean];
+  duplicate: [];
   edit: [];
   requestDelete: [];
   saved: [payload: ContactSavedPayload];
@@ -64,28 +69,31 @@ const emit = defineEmits<{
 const contactsStore = useContactsStore();
 const formEl = ref<HTMLFormElement | null>(null);
 const fullNameEl = ref<HTMLInputElement | null>(null);
-const headingEl = ref<HTMLHeadingElement | null>(null);
+const photoInputEl = ref<HTMLInputElement | null>(null);
+const detailViewEl = ref<{ focusHeading: () => Promise<void> } | null>(null);
 const model = ref<ContactEditorModel>(createContactEditorModel(props.detail));
 const initialSerialized = ref('');
 const initialFields = ref<ContactMutationFields | null>(null);
 const localError = ref<string | null>(null);
 const fieldErrors = ref<Record<string, string>>({});
 const saveAttempted = ref(false);
+const photoReading = ref(false);
+let photoReadGeneration = 0;
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
-const title = computed(() => {
-  if (props.mode === 'create') return 'New contact';
-  if (props.mode === 'edit') return 'Edit contact';
-  return props.detail?.full_name?.trim()
-    || props.detail?.display_name?.trim()
-    || '(no name)';
-});
 const displayError = computed(() =>
   localError.value || (saveAttempted.value ? contactsStore.error : null));
 const firstErrorFieldKey = computed(() => Object.keys(fieldErrors.value)[0] ?? null);
 const dirty = computed(() =>
   editing.value && JSON.stringify(model.value) !== initialSerialized.value);
+const preferredEmail = computed(() =>
+  model.value.emails.find((email) => email.isPreferred)?.value
+    ?? model.value.emails.find((email) => email.value.trim())?.value
+    ?? null);
+const photoAccept = CONTACT_PHOTO_ACCEPT.join(',');
 
 function resetEditor(): void {
+  photoReadGeneration += 1;
+  photoReading.value = false;
   const detail = props.mode === 'create' ? null : props.detail;
   model.value = createContactEditorModel(detail);
   initialFields.value = props.mode === 'edit' && detail
@@ -95,11 +103,57 @@ function resetEditor(): void {
   localError.value = null;
   fieldErrors.value = {};
   saveAttempted.value = false;
+  if (photoInputEl.value) photoInputEl.value.value = '';
   emit('dirtyChange', false);
   emit('stateChange', null);
   if (editing.value) {
     void nextTick(() => fullNameEl.value?.focus());
   }
+}
+
+function choosePhoto(): void {
+  photoInputEl.value?.click();
+}
+
+async function onPhotoSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  const generation = ++photoReadGeneration;
+  const previousPhoto = model.value.photo;
+  photoReading.value = true;
+  emit('dirtyChange', true);
+  localError.value = null;
+  try {
+    const photo = await readContactPhotoFile(file);
+    if (generation !== photoReadGeneration) return;
+    model.value.photo = {
+      mapKey: previousPhoto?.mapKey ?? createContactMapKey('photo'),
+      uri: photo.uri,
+      blobId: null,
+      mediaType: photo.mediaType,
+      pref: previousPhoto ? previousPhoto.pref : 1,
+    };
+    emit('stateChange', null);
+  } catch (error: any) {
+    if (generation !== photoReadGeneration) return;
+    localError.value = error?.message ?? 'Could not read the selected image.';
+    emit('stateChange', 'validation-error');
+  } finally {
+    if (generation === photoReadGeneration) {
+      photoReading.value = false;
+      emit('dirtyChange', dirty.value);
+    }
+  }
+}
+
+function removePhoto(): void {
+  photoReadGeneration += 1;
+  photoReading.value = false;
+  model.value.photo = null;
+  localError.value = null;
+  emit('stateChange', null);
 }
 
 watch(
@@ -111,7 +165,7 @@ watch(
 watch(
   model,
   () => {
-    const value = dirty.value;
+    const value = photoReading.value || dirty.value;
     emit('dirtyChange', value);
     if (saveAttempted.value) {
       saveAttempted.value = false;
@@ -123,35 +177,9 @@ watch(
   { deep: true },
 );
 
-function labelFor(
-  kind: ContactResourceKind,
-  resource: ContactDetailResource,
-): string {
-  return contactResourceLabel(kind, {
-    ...resource,
-    formKey: resource.mapKey ?? '',
-  } as ContactEditorResource);
-}
-
-function titlesForOrganization(
-  organizationMapKey: string | null,
-): ContactDetail['titles'] {
-  if (!props.detail) return [];
-  return props.detail.titles.filter((title) =>
-    organizationMapKey != null
-      && title.organizationMapKey === organizationMapKey);
-}
-
-const unlinkedTitles = computed(() => {
-  if (!props.detail) return [];
-  const organizationKeys = new Set(
-    props.detail.organizations
-      .map((organization) => organization.mapKey)
-      .filter((mapKey): mapKey is string => Boolean(mapKey)),
-  );
-  return props.detail.titles.filter((title) =>
-    title.organizationMapKey == null
-    || !organizationKeys.has(title.organizationMapKey));
+onBeforeUnmount(() => {
+  photoReadGeneration += 1;
+  photoReading.value = false;
 });
 
 async function focusFirstInvalidField(fieldKey: string): Promise<void> {
@@ -165,7 +193,7 @@ async function focusFirstInvalidField(fieldKey: string): Promise<void> {
 }
 
 async function save(): Promise<boolean> {
-  if (!editing.value || contactsStore.saving) return false;
+  if (!editing.value || contactsStore.saving || photoReading.value) return false;
   saveAttempted.value = true;
   localError.value = null;
   const result = contactEditorFields(model.value);
@@ -229,7 +257,7 @@ async function save(): Promise<boolean> {
 
 async function focusDetail(): Promise<void> {
   await nextTick();
-  headingEl.value?.focus();
+  await detailViewEl.value?.focusHeading();
 }
 
 defineExpose({ focusDetail, save });
@@ -240,7 +268,7 @@ defineExpose({ focusDetail, save });
     <header class="contact-detail__header">
       <AppIconButton
         class="contact-detail__action--back"
-        :disabled="deleting || contactsStore.saving"
+        :disabled="deleting || contactsStore.saving || photoReading"
         title="Back"
         aria-label="Back"
         @click="emit('back')"
@@ -255,6 +283,14 @@ defineExpose({ focusDetail, save });
           @click="emit('edit')"
         >
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
+        </AppIconButton>
+        <AppIconButton
+          :disabled="deleting || contactsStore.saving"
+          title="Duplicate contact"
+          aria-label="Duplicate contact"
+          @click="emit('duplicate')"
+        >
+          <Copy :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
         <AppIconButton
           class="contact-detail__delete"
@@ -284,6 +320,41 @@ defineExpose({ focusDetail, save });
       novalidate
       @submit.prevent="save"
     >
+      <div class="contact-detail__photo-editor">
+        <ContactAvatar
+          :email="preferredEmail"
+          :name="model.fullName"
+          :photo="model.photo"
+          size="large"
+        />
+        <input
+          ref="photoInputEl"
+          class="contact-detail__photo-input"
+          type="file"
+          :accept="photoAccept"
+          :disabled="photoReading"
+          tabindex="-1"
+          @change="onPhotoSelected"
+        />
+        <div class="contact-detail__photo-actions">
+          <AppButton
+            variant="outline"
+            :disabled="photoReading"
+            @click="choosePhoto"
+          >
+            {{ photoReading ? 'Reading photo…' : (model.photo ? 'Replace photo' : 'Upload photo') }}
+          </AppButton>
+          <AppButton
+            v-if="model.photo"
+            variant="outline"
+            :disabled="photoReading"
+            @click="removePhoto"
+          >
+            Remove
+          </AppButton>
+        </div>
+      </div>
+
       <label class="contact-detail__field">
         <span>Full or display name</span>
         <input
@@ -337,14 +408,14 @@ defineExpose({ focusDetail, save });
         <div class="contact-detail__footer-actions">
           <AppButton
             variant="outline"
-            :disabled="contactsStore.saving"
+            :disabled="contactsStore.saving || photoReading"
             @click="emit('cancel')"
           >
             Cancel
           </AppButton>
           <AppButton
             form-action="submit"
-            :disabled="contactsStore.saving"
+            :disabled="contactsStore.saving || photoReading"
           >
             {{ contactsStore.saving ? 'Saving…' : 'Save contact' }}
           </AppButton>
@@ -352,127 +423,12 @@ defineExpose({ focusDetail, save });
       </footer>
     </form>
 
-    <div v-else-if="detail" class="contact-detail__body">
-      <h2
-        ref="headingEl"
-        class="contact-detail__display-name"
-        tabindex="-1"
-      >
-        {{ title }}
-      </h2>
-
-      <section v-if="detail.emails.length > 0">
-        <h3>Email addresses</h3>
-        <dl>
-          <template v-for="email in detail.emails" :key="email.mapKey ?? email.position">
-            <dt>{{ labelFor('email', email) }}</dt>
-            <dd>
-              <a :href="`mailto:${email.value}`">{{ email.value }}</a>
-              <span v-if="email.isPreferred" class="contact-detail__primary">Primary</span>
-            </dd>
-          </template>
-        </dl>
-      </section>
-
-      <section v-if="detail.phones.length > 0">
-        <h3>Phone numbers</h3>
-        <dl>
-          <template v-for="phone in detail.phones" :key="phone.mapKey ?? phone.position">
-            <dt>{{ labelFor('phone', phone) }}</dt>
-            <dd><a :href="`tel:${phone.value}`">{{ phone.value }}</a></dd>
-          </template>
-        </dl>
-      </section>
-
-      <section v-if="detail.links.length > 0">
-        <h3>Websites</h3>
-        <dl>
-          <template v-for="link in detail.links" :key="link.mapKey ?? link.position">
-            <dt>{{ labelFor('website', link) }}</dt>
-            <dd>
-              <a
-                v-if="isHttpContactWebsite(link.value)"
-                :href="link.value"
-                target="_blank"
-                rel="noopener noreferrer"
-              >{{ link.value }}</a>
-              <span v-else>{{ link.value }}</span>
-            </dd>
-          </template>
-        </dl>
-      </section>
-
-      <section v-if="detail.anniversaries.length > 0">
-        <h3>Dates</h3>
-        <dl>
-          <template
-            v-for="anniversary in detail.anniversaries"
-            :key="anniversary.mapKey ?? anniversary.position"
-          >
-            <dt>{{ contactAnniversaryKindLabel(anniversary.kind) }}</dt>
-            <dd>{{ formatContactDate(anniversary.date) }}</dd>
-          </template>
-        </dl>
-      </section>
-
-      <section v-if="detail.notes.length > 0">
-        <h3>Notes</h3>
-        <p
-          v-for="note in detail.notes"
-          :key="note.mapKey ?? note.position"
-          class="contact-detail__note"
-        >
-          {{ note.value }}
-        </p>
-      </section>
-
-      <section v-if="detail.organizations.length > 0 || unlinkedTitles.length > 0">
-        <h3>Work affiliations</h3>
-        <div
-          v-for="organization in detail.organizations"
-          :key="organization.mapKey ?? organization.position"
-          class="contact-detail__affiliation"
-        >
-          <strong>{{ organization.name || 'Work' }}</strong>
-          <p v-if="organization.units.length > 0">
-            {{ organization.units.map((unit) => unit.value).join(' · ') }}
-          </p>
-          <p
-            v-for="title in titlesForOrganization(organization.mapKey)"
-            :key="title.mapKey ?? title.position"
-          >
-            {{ title.kind === 'title' ? 'Title' : 'Role' }}: {{ title.value }}
-          </p>
-        </div>
-        <p
-          v-for="title in unlinkedTitles"
-          :key="title.mapKey ?? title.position"
-          class="contact-detail__affiliation"
-        >
-          {{ title.kind === 'title' ? 'Title' : 'Role' }}: {{ title.value }}
-        </p>
-      </section>
-
-      <section>
-        <h3>Address books</h3>
-        <p>{{ addressbookNames.length > 0 ? addressbookNames.join(', ') : 'None' }}</p>
-      </section>
-
-      <p
-        v-if="
-          detail.emails.length === 0
-            && detail.phones.length === 0
-            && detail.links.length === 0
-            && detail.anniversaries.length === 0
-            && detail.notes.length === 0
-            && detail.organizations.length === 0
-            && detail.titles.length === 0
-        "
-        class="contact-detail__empty"
-      >
-        No additional contact details.
-      </p>
-    </div>
+    <ContactDetailsView
+      v-else-if="detail"
+      ref="detailViewEl"
+      :addressbook-names="addressbookNames"
+      :detail="detail"
+    />
   </article>
 </template>
 
@@ -503,21 +459,6 @@ defineExpose({ focusDetail, save });
   margin-right: 12px;
 }
 
-.contact-detail__display-name {
-  min-width: 0;
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
-
-.contact-detail__display-name:focus-visible {
-  border-radius: 3px;
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .contact-detail__footer-actions {
   display: flex;
   flex-shrink: 0;
@@ -525,7 +466,6 @@ defineExpose({ focusDetail, save });
   gap: 8px;
 }
 
-.contact-detail__body,
 .contact-detail__editor,
 .contact-detail__loading {
   min-height: 0;
@@ -543,78 +483,9 @@ defineExpose({ focusDetail, save });
   margin: 0;
 }
 
-.contact-detail__body {
-  display: grid;
-  align-content: start;
-  gap: 20px;
-  padding: 20px;
-}
-
-.contact-detail__body > *,
 .contact-detail__editor > :not(.contact-detail__footer) {
   width: min(100%, 480px);
   justify-self: center;
-}
-
-.contact-detail__body section {
-  min-width: 0;
-}
-
-.contact-detail__body h3 {
-  margin: 0 0 8px;
-  color: var(--muted, #6b7388);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.contact-detail__body dl {
-  display: grid;
-  grid-template-columns: minmax(80px, 0.35fr) minmax(0, 1fr);
-  gap: 7px 12px;
-  margin: 0;
-}
-
-.contact-detail__body dt {
-  color: var(--muted, #6b7388);
-  font-size: 12px;
-}
-
-.contact-detail__body dd,
-.contact-detail__body p {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.contact-detail__body a {
-  color: var(--accent);
-}
-
-.contact-detail__primary {
-  margin-left: 7px;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.contact-detail__note {
-  white-space: pre-wrap;
-}
-
-.contact-detail__affiliation {
-  margin-bottom: 9px !important;
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft, #eef0f5);
-  border-radius: 8px;
-}
-
-.contact-detail__affiliation p {
-  margin-top: 3px;
-  color: var(--muted, #6b7388);
-  font-size: 12px;
 }
 
 .contact-detail__editor {
@@ -627,6 +498,23 @@ defineExpose({ focusDetail, save });
 .contact-detail__field {
   display: grid;
   gap: 5px;
+}
+
+.contact-detail__photo-editor {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.contact-detail__photo-input {
+  display: none;
+}
+
+.contact-detail__photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
 .contact-detail__field > span {
@@ -673,8 +561,7 @@ defineExpose({ focusDetail, save });
   background: var(--surface, #fff);
 }
 
-.contact-detail__hint,
-.contact-detail__empty {
+.contact-detail__hint {
   color: var(--muted, #6b7388);
   font-size: 12px;
 }

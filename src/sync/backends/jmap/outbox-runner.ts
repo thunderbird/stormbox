@@ -499,10 +499,16 @@ export class OutboxRunner {
       || row.mutation_type === MUTATION_TYPE.CREATE_CONTACT
       || row.mutation_type === MUTATION_TYPE.UPDATE_CONTACT
       || row.mutation_type === MUTATION_TYPE.DELETE_CONTACT
-      || row.mutation_type === MUTATION_TYPE.CONTACT_BATCH;
+      || row.mutation_type === MUTATION_TYPE.CONTACT_BATCH
+      || row.mutation_type === MUTATION_TYPE.CONTACT_TRASH
+      || row.mutation_type === MUTATION_TYPE.PUSH_CONTACTS_TRASH
+      || row.mutation_type === MUTATION_TYPE.CREATE_ADDRESSBOOK
+      || row.mutation_type === MUTATION_TYPE.UPDATE_ADDRESSBOOK
+      || row.mutation_type === MUTATION_TYPE.DESTROY_ADDRESSBOOK;
     const identityWrite = row.mutation_type === MUTATION_TYPE.CREATE_IDENTITY
       || row.mutation_type === MUTATION_TYPE.UPDATE_IDENTITY
       || row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY;
+    const settingsWrite = row.mutation_type === MUTATION_TYPE.PUSH_SETTINGS;
     let draftSessionId: string | null = null;
     if (row.mutation_type === MUTATION_TYPE.SAVE_DRAFT
         || row.mutation_type === MUTATION_TYPE.DISCARD_DRAFT
@@ -517,16 +523,18 @@ export class OutboxRunner {
       }
     }
     const key = contactWrite
-      ? 'contact-writes'
+      ? 'contacts-trash-document'
       : (identityWrite
         ? 'identity-writes'
-        : (draftSessionId && row.target_message_id != null
-          ? `draft-target:${Number(row.target_message_id)}`
-          : (draftSessionId
-            ? `draft-session:${draftSessionId}`
-          : (row.target_message_id == null
-            ? `row:${row.id}`
-            : `target:${Number(row.target_message_id)}`))));
+        : (settingsWrite
+          ? 'settings-document'
+          : (draftSessionId && row.target_message_id != null
+            ? `draft-target:${Number(row.target_message_id)}`
+            : (draftSessionId
+              ? `draft-session:${draftSessionId}`
+            : (row.target_message_id == null
+              ? `row:${row.id}`
+              : `target:${Number(row.target_message_id)}`)))));
     const prev = this._targetLocks.get(key) ?? Promise.resolve();
     // suppressed-rejection chain: if row N for target T fails, row
     // N+1 for the same target should still get a chance to run.
@@ -558,10 +566,15 @@ export class OutboxRunner {
     // regardless of success or failure.
     this._signalForeground(1);
     let result;
+    let activeRow;
     try {
-      await this._markInFlight(row.id, attemptNumber);
+      activeRow = await this._claimInFlight(row, attemptNumber);
+      if (!activeRow) {
+        await this._settleUnclaimedRow(row.id);
+        return;
+      }
       try {
-        result = await this._processRow(row);
+        result = await this._processRow(activeRow);
       } catch (err) {
         // A throw means the request never produced a response, so for
         // most mutations a retry is both safe and desirable. For a send
@@ -586,7 +599,7 @@ export class OutboxRunner {
             ...(status != null ? { status } : {}),
             ...((authenticationFailed
               || authorizationFailed
-              || this._unsafeToReplayTypes.has(row.mutation_type))
+              || this._unsafeToReplayTypes.has(activeRow.mutation_type))
               ? { terminal: true }
               : {}),
           },
@@ -596,24 +609,24 @@ export class OutboxRunner {
       this._signalForeground(-1);
     }
     if (result?.ok) {
-      await this._deleteRow(row.id);
-      this._resolveAwaiters(row.id, { ok: true, result: result.result });
-      this._fireTally(row.id, { ok: true, result: result.result });
+      await this._deleteRow(activeRow.id);
+      this._resolveAwaiters(activeRow.id, { ok: true, result: result.result });
+      this._fireTally(activeRow.id, { ok: true, result: result.result });
       return;
     }
     const errorType = result?.error?.type ?? 'unknown';
-    const maxAttempts = this._maxAttemptsByType.get(row.mutation_type) ?? this._maxAttempts;
+    const maxAttempts = this._maxAttemptsByType.get(activeRow.mutation_type) ?? this._maxAttempts;
     const terminal = result?.error?.terminal === true
       || TERMINAL_ERROR_TYPES.has(errorType)
       || attemptNumber >= maxAttempts;
     if (terminal) {
-      await this._markConflicted(row.id, result?.error);
-      this._resolveAwaiters(row.id, {
+      await this._markConflicted(activeRow.id, result?.error);
+      this._resolveAwaiters(activeRow.id, {
         ok: false,
         error: result?.error,
         result: result?.result ?? result?.error?.result,
       });
-      this._fireTally(row.id, {
+      this._fireTally(activeRow.id, {
         ok: false,
         error: result?.error,
         result: result?.result ?? result?.error?.result,
@@ -624,7 +637,7 @@ export class OutboxRunner {
       this._backoffBaseMs * 2 ** (attemptNumber - 1),
       this._backoffCapMs,
     );
-    await this._markRetry(row.id, this._now() + delay, result?.error);
+    await this._markRetry(activeRow.id, this._now() + delay, result?.error);
     // Awaiters intentionally not resolved on transient retry — the
     // next drain pass picks this row up after the backoff window
     // and will eventually resolve the awaiter when it terminates.
@@ -674,17 +687,53 @@ export class OutboxRunner {
     return rows[0] ?? null;
   }
 
-  async _markInFlight(mutationId, attempts) {
+  async _claimInFlight(row, attempts) {
     const ts = this._now();
-    await this._handlers[DB_RPC.QUERY]({
-      sql: `UPDATE pending_mutations
+    const [claimed] = await this._handlers[DB_RPC.TRANSACTION]({
+      statements: [{
+        sql: `UPDATE pending_mutations
                SET local_status = 'in_flight',
                    attempts = ?,
                    last_attempt_at = ?,
                    updated_at = ?
-             WHERE id = ?`,
-      params: [attempts, ts, ts, mutationId],
+             WHERE id = ?
+               AND account_id = ?
+               AND mutation_type = ?
+               AND local_status = ?`,
+      params: [
+        attempts,
+        ts,
+        ts,
+        row.id,
+        this._accountId,
+        row.mutation_type,
+        row.local_status,
+      ],
+      }],
     });
+    if ((claimed?.changes ?? 0) !== 1) return null;
+    const current = await this._loadRow(row.id);
+    if (current?.local_status !== 'in_flight'
+        || current.mutation_type !== row.mutation_type) {
+      return null;
+    }
+    return current;
+  }
+
+  async _settleUnclaimedRow(mutationId) {
+    const current = await this._loadRow(mutationId);
+    if (!current) {
+      this._resolveAwaiters(mutationId, { ok: true });
+      return;
+    }
+    if (current.local_status !== 'conflicted') return;
+    let error;
+    try {
+      error = current.error_json ? JSON.parse(current.error_json) : null;
+    } catch {
+      error = { type: 'unknown' };
+    }
+    this._resolveAwaiters(mutationId, { ok: false, error });
   }
 
   async _markRetry(mutationId, notBefore, error) {

@@ -19,7 +19,9 @@ import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
 import { useContactsStore } from './stores/contacts-store';
 import { useComposeStore } from './stores/compose-store';
+import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
+import type { Theme } from './constants/settings';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -39,6 +41,7 @@ const authStore = useAuthStore();
 const mailStore = useMailStore();
 const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
+const settingsStore = useSettingsStore();
 
 type AppSpace = 'contacts' | 'mail';
 
@@ -81,7 +84,6 @@ useTitle(documentTitle, { restoreOnUnmount: false });
 type ResizePane = 'folderList' | 'messageList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
-const THEME_STORAGE_KEY = 'stormbox.theme.v1';
 const WELCOME_MODAL_STORAGE_KEY = 'stormbox.welcomeModalDismissed.v1';
 const SPACE_RAIL_WIDTH = 56;
 const RESIZER_WIDTH = 6;
@@ -89,7 +91,6 @@ const COMPACT_READING_WIDTH = 1024;
 const SINGLE_COLUMN_WIDTH = 640;
 const FOLDER_LIST_TRANSITION_MS = 360;
 const MESSAGE_VIEW_PRELOAD_MS = 50;
-type Theme = 'dark' | 'light';
 const DEFAULT_COLUMN_WIDTHS = {
   folderList: 240,
   messageList: 360,
@@ -106,11 +107,12 @@ const MAX_COLUMN_WIDTHS = {
 const shellEl = ref<HTMLElement | null>(null);
 const quickFilterInputEl = ref<HTMLInputElement | null>(null);
 const appMenuEl = ref<HTMLDetailsElement | null>(null);
-const theme = ref<Theme>(getInitialTheme());
+const theme = computed<Theme>(() => settingsStore.get('theme'));
+const appliedTheme = ref<'dark' | 'light'>(resolveTheme(theme.value));
 applyTheme(theme.value);
+watch(theme, (value) => applyTheme(value));
 const themeToggleLabel = computed(() =>
-  theme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
-);
+  appliedTheme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
@@ -176,26 +178,39 @@ onClickOutside(appMenuEl, () => {
   if (appMenuEl.value?.open) appMenuEl.value.open = false;
 });
 
+let appMounted = false;
+
 onMounted(async () => {
+  appMounted = true;
   applyTheme(theme.value);
+  watchSystemTheme();
   loadColumnWidths();
   applyResponsiveLayout();
   clampColumnWidths();
   window.addEventListener('resize', onWindowResize);
 
+  void settingsStore.attach().catch((error) => {
+    console.warn('[app] settings attach failed', error);
+  });
   await authStore.initialize();
+  if (!appMounted) return;
   await mailStore.attach();
+  if (!appMounted) return;
   await contactsStore.attach();
+  if (!appMounted) return;
   await composeStore.attach();
 });
 
 onBeforeUnmount(() => {
+  appMounted = false;
   stopColumnResize();
   clearMessageViewTimer();
   clearQuickFilterSpotlightTimer();
   clearResizeLayoutSpotlightTimer();
   clearComposeActionSpotlightTimer();
   window.removeEventListener('resize', onWindowResize);
+  unwatchSystemTheme();
+  settingsStore.detach();
 });
 
 watch(showMessageView, () => {
@@ -282,9 +297,10 @@ function toggleFolderList() {
 }
 
 function toggleTheme() {
-  theme.value = theme.value === 'dark' ? 'light' : 'dark';
-  applyTheme(theme.value);
-  saveTheme(theme.value);
+  const nextTheme = appliedTheme.value === 'dark' ? 'light' : 'dark';
+  void settingsStore.update({ theme: nextTheme }).catch((error) => {
+    console.warn('[app] theme update failed', error);
+  });
 }
 
 function maybeShowWelcomeModal() {
@@ -596,42 +612,42 @@ function saveColumnWidths() {
   }
 }
 
-function getInitialTheme(): Theme {
-  try {
-    const stored = window.localStorage?.getItem(THEME_STORAGE_KEY);
-    if (isTheme(stored)) return stored;
-  } catch {
-    // Theme falls back to the system preference when storage is unavailable.
-  }
-
+function resolveTheme(value: Theme): 'dark' | 'light' {
+  if (value !== 'system') return value;
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   }
-
   return 'dark';
 }
 
-function applyTheme(nextTheme: Theme) {
+function applyTheme(value: Theme) {
   if (typeof document === 'undefined') return;
+  const resolved = resolveTheme(value);
+  appliedTheme.value = resolved;
   // services-ui drives theming off a `dark` class on <html>; we add an
   // explicit `light` class too so an explicit light choice can override
   // a dark system preference. Our own tokens key off the same classes.
   const root = document.documentElement;
-  root.classList.toggle('dark', nextTheme === 'dark');
-  root.classList.toggle('light', nextTheme === 'light');
-  root.style.colorScheme = nextTheme;
+  root.classList.toggle('dark', resolved === 'dark');
+  root.classList.toggle('light', resolved === 'light');
+  root.style.colorScheme = resolved;
 }
 
-function saveTheme(nextTheme: Theme) {
-  try {
-    window.localStorage?.setItem(THEME_STORAGE_KEY, nextTheme);
-  } catch {
-    // Ignore storage failures; the selected theme still applies this session.
-  }
+let systemThemeMedia: MediaQueryList | null = null;
+
+function onSystemThemeChange() {
+  if (theme.value === 'system') applyTheme('system');
 }
 
-function isTheme(value: string | null): value is Theme {
-  return value === 'dark' || value === 'light';
+function watchSystemTheme() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  systemThemeMedia = window.matchMedia('(prefers-color-scheme: light)');
+  systemThemeMedia.addEventListener?.('change', onSystemThemeChange);
+}
+
+function unwatchSystemTheme() {
+  systemThemeMedia?.removeEventListener?.('change', onSystemThemeChange);
+  systemThemeMedia = null;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -743,7 +759,7 @@ function clamp(value: number, min: number, max: number) {
           :title="themeToggleLabel"
           @click="toggleTheme"
         >
-          <Sun v-if="theme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
+          <Sun v-if="appliedTheme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
           <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />

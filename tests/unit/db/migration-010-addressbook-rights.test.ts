@@ -29,7 +29,7 @@ describe('migration 010: address-book rights', () => {
       'INSERT INTO addressbook_contacts(contact_id, addressbook_id) VALUES (20, 10)',
     );
 
-    await engine.runMigrations();
+    await engine.runMigrations({ upTo: 10 });
 
     expect(Number((await engine.get('PRAGMA user_version'))?.user_version)).toBe(10);
     expect(await engine.get(

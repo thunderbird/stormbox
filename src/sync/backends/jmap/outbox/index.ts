@@ -21,6 +21,8 @@
  *                      rename/move, and destroy (RFC 8621 §2.5)
  *   'createIdentity' / 'updateIdentity' / 'deleteIdentity'
  *                      Identity/set writes with authoritative read-back
+ *   'createAddressbook' / 'updateAddressbook' / 'destroyAddressbook'
+ *                      AddressBook/set writes with authoritative inventory
  *
  * Move and destroy delegate the cache effect to the protocol-neutral
  * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
@@ -50,10 +52,16 @@
 
 import { DB_RPC } from '../../../../db/protocol';
 import { deleteRow, markFailed, markRow } from './batch';
+import {
+  runCreateAddressBook,
+  runDestroyAddressBook,
+  runUpdateAddressBook,
+} from './operations/addressbooks';
 import { runCopyToFolders } from './operations/copy-to-folders';
 import { runCreateMailbox } from './operations/create-mailbox';
 import {
   runContactBatch,
+  runContactTrash,
   runCreateContact,
   runDeleteContact,
   runUpdateContact,
@@ -71,6 +79,8 @@ import { runMoveToFolders } from './operations/move-to-folders';
 import { runSend } from './operations/send';
 import { runSetKeywords } from './operations/set-keywords';
 import { runSetMailboxSubscription } from './operations/set-mailbox-subscription';
+import { runPushSettings } from './operations/settings';
+import { runPushContactsTrash } from './operations/contacts-trash';
 import { runUpdateMailbox } from './operations/update-mailbox';
 import { toProcessResult } from './send-outcome';
 
@@ -91,13 +101,19 @@ export const MUTATION_TYPES = Object.freeze({
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
   CONTACT_BATCH: 'contactBatch',
+  CONTACT_TRASH: 'contactTrash',
   CREATE_IDENTITY: 'createIdentity',
   UPDATE_IDENTITY: 'updateIdentity',
   DELETE_IDENTITY: 'deleteIdentity',
+  CREATE_ADDRESSBOOK: 'createAddressbook',
+  UPDATE_ADDRESSBOOK: 'updateAddressbook',
+  DESTROY_ADDRESSBOOK: 'destroyAddressbook',
   SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
   CREATE_MAILBOX: 'createMailbox',
   UPDATE_MAILBOX: 'updateMailbox',
   DESTROY_MAILBOX: 'destroyMailbox',
+  PUSH_SETTINGS: 'pushSettings',
+  PUSH_CONTACTS_TRASH: 'pushContactsTrash',
 });
 /**
  * Drain pending mutations for the given account. When mutationId is
@@ -157,7 +173,11 @@ export async function processMutationRow({
     || row.mutation_type === MUTATION_TYPES.UPDATE_IDENTITY
     || row.mutation_type === MUTATION_TYPES.DELETE_IDENTITY;
   const checkpointedWrite = identityWrite
-    || row.mutation_type === MUTATION_TYPES.CONTACT_BATCH;
+    || row.mutation_type === MUTATION_TYPES.CONTACT_BATCH
+    || row.mutation_type === MUTATION_TYPES.CONTACT_TRASH
+    || row.mutation_type === MUTATION_TYPES.CREATE_ADDRESSBOOK
+    || row.mutation_type === MUTATION_TYPES.UPDATE_ADDRESSBOOK
+    || row.mutation_type === MUTATION_TYPES.DESTROY_ADDRESSBOOK;
   const currentRows = checkpointedWrite
     ? await handlers[DB_RPC.QUERY]({
         sql: 'SELECT * FROM pending_mutations WHERE id = ? LIMIT 1',
@@ -182,7 +202,14 @@ export async function processMutationRow({
     case MUTATION_TYPES.SAVE_DRAFT:
       return runSaveDraft({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DISCARD_DRAFT:
-      return runDiscardDraft({ transport, account, handlers, request, useWebSocket });
+      return runDiscardDraft({
+        transport,
+        account,
+        handlers,
+        row: currentRow,
+        request,
+        useWebSocket,
+      });
     case MUTATION_TYPES.WHITELIST_SENDER:
       return runWhitelistSender({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.CREATE_CONTACT:
@@ -193,6 +220,10 @@ export async function processMutationRow({
       return runDeleteContact({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.CONTACT_BATCH:
       return runContactBatch({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
+    case MUTATION_TYPES.CONTACT_TRASH:
+      return runContactTrash({
         transport, account, handlers, row: currentRow, request, useWebSocket,
       });
     case MUTATION_TYPES.CREATE_IDENTITY:
@@ -207,6 +238,18 @@ export async function processMutationRow({
       return runDeleteIdentity({
         transport, account, handlers, row: currentRow, request, useWebSocket,
       });
+    case MUTATION_TYPES.CREATE_ADDRESSBOOK:
+      return runCreateAddressBook({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
+    case MUTATION_TYPES.UPDATE_ADDRESSBOOK:
+      return runUpdateAddressBook({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
+    case MUTATION_TYPES.DESTROY_ADDRESSBOOK:
+      return runDestroyAddressBook({
+        transport, account, handlers, row: currentRow, request, useWebSocket,
+      });
     case MUTATION_TYPES.SET_MAILBOX_SUBSCRIPTION:
       return runSetMailboxSubscription({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.CREATE_MAILBOX:
@@ -215,6 +258,10 @@ export async function processMutationRow({
       return runUpdateMailbox({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.DESTROY_MAILBOX:
       return runDestroyMailbox({ transport, handlers, request, useWebSocket });
+    case MUTATION_TYPES.PUSH_SETTINGS:
+      return runPushSettings({ transport, account, handlers, useWebSocket });
+    case MUTATION_TYPES.PUSH_CONTACTS_TRASH:
+      return runPushContactsTrash({ transport, account, handlers, useWebSocket });
     default:
       return {
         ok: false,

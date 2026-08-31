@@ -5,6 +5,7 @@ import type {
   ContactMutationFields,
 } from '../types/db';
 import { addressKey } from './address-key';
+import { validatedContactPhotoDataUri } from './contact-photo';
 import { createContactMapKey } from './contact-uid';
 
 export type ContactFieldValidationIssue =
@@ -21,6 +22,7 @@ export type ContactFieldValidationIssue =
   | 'invalid-map-key'
   | 'invalid-note'
   | 'invalid-organization-reference'
+  | 'invalid-photo'
   | 'invalid-title'
   | 'invalid-website';
 
@@ -41,6 +43,7 @@ export function emptyContactFields(): ContactMutationFields {
     notes: [],
     organizations: [],
     titles: [],
+    photo: null,
   };
 }
 
@@ -73,6 +76,7 @@ export function contactMutationFieldsFromDetail(
       units: organization.units.map((unit) => ({ ...unit })),
     })),
     titles: detail.titles.map((title) => ({ ...title })),
+    photo: detail.photo ? { ...detail.photo } : null,
   };
 }
 
@@ -163,6 +167,14 @@ export function withContactDetailKeys(
   });
   return {
     ...fields,
+    photo: fields.photo
+      ? {
+          ...fields.photo,
+          mapKey: isContactMapKey(fields.photo.mapKey)
+            ? fields.photo.mapKey
+            : createContactMapKey('photo'),
+        }
+      : null,
     emails: prepareDetailKeys(
       fields.emails,
       baseline?.emails ?? [],
@@ -272,7 +284,8 @@ export function contactFieldsAreEmpty(fields: ContactMutationFields): boolean {
       (organization) => !organization.name?.trim()
         && organization.units.every((unit) => !unit.value.trim()),
     )
-    && fields.titles.every((detail) => !detail.value.trim());
+    && fields.titles.every((detail) => !detail.value.trim())
+    && !fields.photo;
 }
 
 export function validateContactFields(
@@ -291,6 +304,27 @@ export function validateContactFields(
   ];
   if (collections.some((collection) => !Array.isArray(collection))) {
     return 'invalid-collection';
+  }
+  const photo = fields.photo ?? null;
+  if (photo) {
+    if (!isContactMapKey(photo.mapKey)) return 'invalid-map-key';
+    const baselinePhoto = options.baseline?.photo ?? null;
+    const unchanged = baselinePhoto != null
+      && baselinePhoto.mapKey === photo.mapKey
+      && baselinePhoto.uri === photo.uri
+      && baselinePhoto.blobId === photo.blobId
+      && baselinePhoto.mediaType === photo.mediaType
+      && baselinePhoto.pref === photo.pref;
+    if (!unchanged) {
+      const valid = validatedContactPhotoDataUri(photo.uri);
+      if (
+        !valid
+        || photo.blobId != null
+        || photo.mediaType !== valid.mediaType
+      ) {
+        return 'invalid-photo';
+      }
+    }
   }
   for (const collection of collections) {
     const keys = new Set<string>();

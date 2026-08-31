@@ -11,22 +11,30 @@ import { onClickOutside } from '@vueuse/core';
 import {
   ChevronDown,
   MoveRight,
+  Pencil,
   Plus,
+  RotateCcw,
   Trash2,
 } from '@lucide/vue';
 
 import AppButton from '../AppButton.vue';
+import AppIconButton from '../AppIconButton.vue';
 import SelectableListHeader from '../SelectableListHeader.vue';
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import { useListSelection } from '../../composables/useListSelection';
+import type { AddressbookRow } from '../../types';
 import {
   isDeleteKey,
   isModKey,
 } from '../../utils/keyboard';
 import {
+  addressBookDeleteDisabledReason,
+  addressBookDisplayName,
   directoryOptionId,
   type DirectoryEntry,
+  type DirectoryKind,
 } from './directory-types';
+import ContactAvatar from './ContactAvatar.vue';
 
 export interface ContactMoveTarget {
   id: number;
@@ -35,22 +43,25 @@ export interface ContactMoveTarget {
 
 const props = withDefaults(defineProps<{
   addLabel: string;
+  addressbooks?: AddressbookRow[];
   canDeleteSelection?: boolean;
   canDragContacts?: boolean;
   deleteDisabledReason?: string;
   emptyMessage: string;
   entries: DirectoryEntry[];
   error?: string | null;
-  listKind?: 'contacts' | 'identities';
+  listKind?: DirectoryKind;
   loading?: boolean;
   moveTargets?: ContactMoveTarget[];
   notice?: string;
+  primaryIdentityId?: number | null;
   resetToken: string;
   selectedContactIds?: Set<number>;
   selectedKey: string | null;
   sourceAddressbookId?: number | null;
   title: string;
 }>(), {
+  addressbooks: () => [],
   canDeleteSelection: true,
   canDragContacts: false,
   deleteDisabledReason: '',
@@ -59,14 +70,19 @@ const props = withDefaults(defineProps<{
   loading: false,
   moveTargets: () => [],
   notice: '',
+  primaryIdentityId: null,
   selectedContactIds: () => new Set<number>(),
   sourceAddressbookId: null,
 });
 
 const emit = defineEmits<{
   add: [];
+  deleteAddressBook: [addressbook: AddressbookRow];
   deleteSelection: [];
+  deleteForeverSelection: [];
+  editAddressBook: [addressbook: AddressbookRow];
   moveSelection: [addressbookId: number];
+  restoreSelection: [];
   select: [entry: DirectoryEntry];
   selectionChange: [selectedIds: Set<number>];
 }>();
@@ -76,9 +92,30 @@ const scrollEl = ref<HTMLElement | null>(null);
 const activeKey = ref<string | null>(null);
 const moveMenuOpen = ref(false);
 const moveMenuEl = ref<HTMLElement | null>(null);
-const selectionEnabled = computed(() => props.listKind === 'contacts');
+const concreteAddressBook = computed(() =>
+  props.listKind === 'contacts' && props.sourceAddressbookId != null
+    ? props.addressbooks.find((book) => book.id === props.sourceAddressbookId) ?? null
+    : null);
+const addressBookDeleteReason = computed(() =>
+  concreteAddressBook.value
+    ? addressBookDeleteDisabledReason(
+        concreteAddressBook.value,
+        props.addressbooks,
+      )
+    : null);
+const showAddressbookColumn = computed(() =>
+  props.listKind === 'contacts' && props.sourceAddressbookId == null);
+const addressbookLabels = computed(() => {
+  const labels = new Map<number, string>();
+  for (const book of props.addressbooks) {
+    labels.set(book.id, addressBookDisplayName(book));
+  }
+  return labels;
+});
+const selectionEnabled = computed(() =>
+  props.listKind === 'contacts' || props.listKind === 'trash');
 const selectableCount = computed(() => props.entries.reduce(
-  (count, entry) => count + (entry.kind === 'contact' ? 1 : 0),
+  (count, entry) => count + (entry.kind === 'contact' || entry.kind === 'trash' ? 1 : 0),
   0,
 ));
 const selectionModel = computed<Set<number>>({
@@ -89,7 +126,20 @@ const selection = useListSelection<DirectoryEntry, number>({
   rows: computed(() => props.entries),
   total: selectableCount,
   selectedIds: selectionModel,
-  getKey: (entry) => entry.kind === 'contact' ? entry.contact.id : null,
+  getKey: (entry) => {
+    switch (entry.kind) {
+      case 'contact':
+        return entry.contact.id;
+      case 'trash':
+        return entry.trash.id;
+      case 'identity':
+        return null;
+      default: {
+        const exhaustive: never = entry;
+        return exhaustive;
+      }
+    }
+  },
 });
 const allSelected = computed(() =>
   selectableCount.value > 0
@@ -180,20 +230,29 @@ function onListFocusIn(): void {
   if (entryIndex(activeKey.value) < 0) activeKey.value = initialActiveKey();
 }
 
-function contactId(entry: DirectoryEntry): number | null {
-  return entry.kind === 'contact' ? entry.contact.id : null;
+function selectableId(entry: DirectoryEntry): number | null {
+  if (entry.kind === 'contact') return entry.contact.id;
+  if (entry.kind === 'trash') return entry.trash.id;
+  return null;
 }
 
 function isContactSelected(entry: DirectoryEntry): boolean {
-  const id = contactId(entry);
+  const id = selectableId(entry);
   return id != null && selection.isSelected(id);
+}
+
+function addressbookLabel(entry: Extract<DirectoryEntry, { kind: 'contact' }>): string {
+  const names = entry.contact.addressbook_ids
+    .map((id) => addressbookLabels.value.get(id))
+    .filter((name): name is string => name != null);
+  return names.length > 0 ? names.join(', ') : 'No address book';
 }
 
 function toggleContactAt(
   index: number,
   event?: { shiftKey?: boolean } | null,
 ): void {
-  if (!selectionEnabled.value || props.entries[index]?.kind !== 'contact') return;
+  if (!selectionEnabled.value || props.entries[index]?.kind === 'identity') return;
   activeKey.value = props.entries[index].key;
   selection.handleCheckboxClick(index, event, index);
 }
@@ -205,7 +264,7 @@ function onPointerSelect(
 ): void {
   if (
     selectionEnabled.value
-    && entry.kind === 'contact'
+    && entry.kind !== 'identity'
     && (event.shiftKey || event.ctrlKey || event.metaKey)
   ) {
     toggleContactAt(index, event);
@@ -243,7 +302,8 @@ function onKeydown(event: KeyboardEvent): void {
     && props.canDeleteSelection
   ) {
     event.preventDefault();
-    emit('deleteSelection');
+    if (props.listKind === 'trash') emit('deleteForeverSelection');
+    else emit('deleteSelection');
     return;
   }
   if (props.entries.length === 0) return;
@@ -270,7 +330,7 @@ function onKeydown(event: KeyboardEvent): void {
       if (
         event.shiftKey
         && selectionEnabled.value
-        && props.entries[Math.min(current + 1, props.entries.length - 1)]?.kind === 'contact'
+        && props.entries[Math.min(current + 1, props.entries.length - 1)]?.kind !== 'identity'
       ) {
         selection.extendRange(
           Math.min(current + 1, props.entries.length - 1),
@@ -285,7 +345,7 @@ function onKeydown(event: KeyboardEvent): void {
       if (
         event.shiftKey
         && selectionEnabled.value
-        && props.entries[Math.max(current - 1, 0)]?.kind === 'contact'
+        && props.entries[Math.max(current - 1, 0)]?.kind !== 'identity'
       ) {
         selection.extendRange(Math.max(current - 1, 0), current);
       }
@@ -311,7 +371,7 @@ function onKeydown(event: KeyboardEvent): void {
       const entry = props.entries[entryIndex(activeKey.value)];
       if (!entry) return;
       event.preventDefault();
-      if (selectionEnabled.value && entry.kind === 'contact') {
+      if (selectionEnabled.value && entry.kind !== 'identity') {
         toggleContactAt(entryIndex(entry.key));
       } else {
         emit('select', entry);
@@ -371,7 +431,9 @@ watch(
       activeKey.value = entryIndex(props.selectedKey) >= 0 ? props.selectedKey : null;
     }
     selection.retainOnly(props.entries.flatMap(
-      (entry) => entry.kind === 'contact' ? [entry.contact.id] : [],
+      (entry) => entry.kind === 'contact'
+        ? [entry.contact.id]
+        : (entry.kind === 'trash' ? [entry.trash.id] : []),
     ));
   },
 );
@@ -397,16 +459,55 @@ onBeforeUnmount(endContactDrag);
       class="directory-list__header contacts__header"
       :all-selected="allSelected"
       :disabled="loading"
-      :item-label="listKind === 'contacts' ? 'contacts' : 'identities'"
+      :item-label="
+        listKind === 'contacts'
+          ? 'contacts'
+          : (listKind === 'trash' ? 'trashed contacts' : 'identities')
+      "
       :selectable="selectionEnabled"
       :selected-count="selection.selectionCount.value"
-      :singular-item-label="listKind === 'contacts' ? 'contact' : 'identity'"
+      :singular-item-label="
+        listKind === 'contacts'
+          ? 'contact'
+          : (listKind === 'trash' ? 'trashed contact' : 'identity')
+      "
       :total-count="entries.length"
       @clear-selection="selection.selectNone"
       @toggle-all="toggleAll"
     >
       <template #normal-actions>
-        <div class="directory-list__normal-header">
+        <div
+          class="directory-list__normal-header"
+          :class="{
+            'directory-list__normal-header--addressbook': listKind === 'contacts',
+          }"
+        >
+          <div
+            v-if="concreteAddressBook"
+            class="directory-list__addressbook-actions"
+            role="group"
+            aria-label="Address book actions"
+          >
+            <AppIconButton
+              :disabled="concreteAddressBook.may_write !== 1"
+              :title="concreteAddressBook.may_write === 1
+                ? 'Edit address book'
+                : 'You don’t have permission to edit this address book.'"
+              aria-label="Edit address book"
+              @click="emit('editAddressBook', concreteAddressBook)"
+            >
+              <Pencil :size="17" :stroke-width="1.75" aria-hidden="true" />
+            </AppIconButton>
+            <AppIconButton
+              danger
+              :disabled="addressBookDeleteReason !== null"
+              :title="addressBookDeleteReason || 'Delete address book'"
+              aria-label="Delete address book"
+              @click="emit('deleteAddressBook', concreteAddressBook)"
+            >
+              <Trash2 :size="17" :stroke-width="1.75" aria-hidden="true" />
+            </AppIconButton>
+          </div>
           <h2>{{ title }}</h2>
           <AppButton
             v-if="listKind === 'identities'"
@@ -422,7 +523,16 @@ onBeforeUnmount(endContactDrag);
       </template>
 
       <template #selection-actions>
-        <div ref="moveMenuEl" class="directory-list__move">
+        <button
+          v-if="listKind === 'trash'"
+          class="directory-list__action"
+          type="button"
+          @click="emit('restoreSelection')"
+        >
+          <RotateCcw :size="16" :stroke-width="1.9" aria-hidden="true" />
+          <span>Restore</span>
+        </button>
+        <div v-if="listKind === 'contacts'" ref="moveMenuEl" class="directory-list__move">
           <button
             class="directory-list__action"
             type="button"
@@ -457,11 +567,23 @@ onBeforeUnmount(endContactDrag);
           class="directory-list__action directory-list__action--danger"
           type="button"
           :disabled="!canDeleteSelection"
-          :title="canDeleteSelection ? 'Delete selected contacts' : deleteDisabledReason"
-          @click="emit('deleteSelection')"
+          :title="
+            canDeleteSelection
+              ? (
+                listKind === 'trash'
+                  ? 'Delete selected contacts forever'
+                  : 'Delete selected contacts'
+              )
+              : deleteDisabledReason
+          "
+          @click="
+            listKind === 'trash'
+              ? emit('deleteForeverSelection')
+              : emit('deleteSelection')
+          "
         >
           <Trash2 :size="16" :stroke-width="1.9" aria-hidden="true" />
-          <span>Delete</span>
+          <span>{{ listKind === 'trash' ? 'Delete Forever' : 'Delete' }}</span>
         </button>
       </template>
     </SelectableListHeader>
@@ -469,6 +591,17 @@ onBeforeUnmount(endContactDrag);
     <p v-if="notice" class="directory-list__notice" role="status" aria-live="polite">
       {{ notice }}
     </p>
+
+    <div
+      v-if="showAddressbookColumn && !loading && !error && entries.length > 0"
+      class="directory-list__column-header"
+      aria-hidden="true"
+    >
+      <span />
+      <span />
+      <span>Contact</span>
+      <span>Address book</span>
+    </div>
 
     <div
       ref="scrollEl"
@@ -508,16 +641,21 @@ onBeforeUnmount(endContactDrag);
           :class="{
             'directory-list__row--active': activeKey === entry.key,
             'directory-list__row--selected':
-              entry.kind === 'contact'
+              entry.kind !== 'identity'
                 ? isContactSelected(entry)
                 : selectedKey === entry.key,
             'directory-list__row--viewed':
-              entry.kind === 'contact' && selectedKey === entry.key,
-            'directory-list__row--contact': entry.kind === 'contact',
+              entry.kind !== 'identity' && selectedKey === entry.key,
+            'directory-list__row--contact': entry.kind !== 'identity',
+            'directory-list__row--active-contact': entry.kind === 'contact',
+            'directory-list__row--with-addressbook':
+              showAddressbookColumn && entry.kind === 'contact',
+            'directory-list__row--primary-identity':
+              entry.kind === 'identity' && entry.identity.id === primaryIdentityId,
           }"
           role="option"
           :aria-selected="
-            entry.kind === 'contact'
+            entry.kind !== 'identity'
               ? (
                 selection.selectionCount.value > 0
                   ? isContactSelected(entry)
@@ -539,9 +677,13 @@ onBeforeUnmount(endContactDrag);
           @dragend="endContactDrag"
         >
           <label
-            v-if="entry.kind === 'contact'"
+            v-if="entry.kind !== 'identity'"
             class="directory-list__checkbox"
-            :title="isContactSelected(entry) ? 'Deselect contact' : 'Select contact'"
+            :title="
+              isContactSelected(entry)
+                ? `Deselect ${entry.kind === 'trash' ? 'trashed contact' : 'contact'}`
+                : `Select ${entry.kind === 'trash' ? 'trashed contact' : 'contact'}`
+            "
             @click.stop
           >
             <input
@@ -551,9 +693,27 @@ onBeforeUnmount(endContactDrag);
               @click="toggleContactAt(virtualRow.index, $event)"
             />
           </label>
+          <ContactAvatar
+            v-if="entry.kind === 'contact'"
+            :email="entry.contact.email"
+            :name="entry.contact.display_name"
+            :photo="entry.contact.photo"
+          />
+          <span
+            v-if="entry.kind === 'identity' && entry.identity.id === primaryIdentityId"
+            class="directory-list__primary-badge"
+          >
+            Primary
+          </span>
           <span class="directory-list__row-content">
             <span class="name">{{ entry.name }}</span>
             <span class="email">{{ entry.email }}</span>
+          </span>
+          <span
+            v-if="showAddressbookColumn && entry.kind === 'contact'"
+            class="addressbook"
+          >
+            {{ addressbookLabel(entry) }}
           </span>
         </div>
       </div>
@@ -579,6 +739,7 @@ onBeforeUnmount(endContactDrag);
 }
 
 .directory-list__normal-header {
+  position: relative;
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -587,11 +748,49 @@ onBeforeUnmount(endContactDrag);
   gap: 12px;
 }
 
+.directory-list__normal-header--addressbook {
+  justify-content: center;
+}
+
+.directory-list__addressbook-actions {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .directory-list__normal-header h2 {
   min-width: 0;
   margin: 0;
   overflow: hidden;
   font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-list__normal-header--addressbook h2 {
+  max-width: calc(100% - 156px);
+  text-align: center;
+}
+
+.directory-list__column-header {
+  display: grid;
+  grid-template-columns: 34px 34px repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px 16px 6px 10px;
+  border-bottom: 1px solid var(--border-soft, #eef0f5);
+  color: var(--muted, #6b7388);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.directory-list__column-header > span {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -719,6 +918,19 @@ onBeforeUnmount(endContactDrag);
   padding-inline-start: 10px;
 }
 
+.directory-list__row--active-contact {
+  grid-template-columns: 34px 34px minmax(0, 1fr);
+}
+
+.directory-list__row--with-addressbook {
+  grid-template-columns: 34px 34px minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.directory-list__row--primary-identity {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+}
+
 .directory-list__row:hover {
   background: var(--rowHover, #f0f1f6);
 }
@@ -761,8 +973,20 @@ onBeforeUnmount(endContactDrag);
   gap: 3px;
 }
 
+.directory-list__primary-badge {
+  align-self: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
 .name,
-.email {
+.email,
+.addressbook {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -775,6 +999,11 @@ onBeforeUnmount(endContactDrag);
 }
 
 .email {
+  color: var(--muted, #6b7388);
+  font-size: 12px;
+}
+
+.addressbook {
   color: var(--muted, #6b7388);
   font-size: 12px;
 }
