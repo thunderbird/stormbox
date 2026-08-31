@@ -688,6 +688,23 @@ describe('message drag and folder drop components', () => {
     });
   });
 
+  it('does not expose scheduled messages as draggable rows', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [
+      makeRow(1, { scheduled_undo_status: 'pending' }),
+      makeRow(2, { scheduled_undo_status: null }),
+    ];
+    mailStore.totalForFolder = 2;
+
+    const wrapper = mount(MessageList);
+    await nextTick();
+
+    expect(wrapper.findAll('.msg-list__item').map((row) => row.attributes('draggable')))
+      .toEqual(['false', 'true']);
+  });
+
   it('drops dragged message ids on a valid folder and calls mailStore.moveMessages', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [

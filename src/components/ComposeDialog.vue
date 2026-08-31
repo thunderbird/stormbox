@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
+  ChevronDown,
   Paperclip,
   RotateCw,
   Save,
@@ -22,11 +23,19 @@ import { useModalFocus } from '../composables/useModalFocus';
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from '../stores/auth-store';
 import { useContactsStore } from '../stores/contacts-store';
+import { useSettingsStore } from '../stores/settings-store';
 import { COMPOSE_STATE } from '../constants/states';
 import type { ContactListRow, IdentityRow } from '../types/db';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import { formatBytes } from '../utils/format-bytes';
+import {
+  SCHEDULE_PRESETS,
+  resolveSchedulePreset,
+  resolveSchedulePresets,
+  type SchedulePresetId,
+  type SchedulePresetResolution,
+} from '../utils/schedule-time';
 import {
   IDENTITY_SIGNATURE_ORIGIN,
   type TrackedOriginState,
@@ -35,6 +44,7 @@ import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 import RecipientInput from './RecipientInput.vue';
 import RichTextEditor from './RichTextEditor.vue';
+import ScheduleSendDialog from './ScheduleSendDialog.vue';
 
 const props = defineProps<{
   sessionId?: string;
@@ -43,6 +53,7 @@ const props = defineProps<{
 const composeStore = useComposeStore();
 const authStore = useAuthStore();
 const contactsStore = useContactsStore();
+const settingsStore = useSettingsStore();
 const session = computed<ComposeSession | null>(() =>
   props.sessionId
     ? composeStore.sessionById(props.sessionId)
@@ -50,6 +61,7 @@ const session = computed<ComposeSession | null>(() =>
 const draft = computed(() => session.value?.draft ?? composeStore.draft);
 const sessionStatus = computed(() => session.value?.status ?? COMPOSE_STATE.IDLE);
 const sessionError = computed(() => session.value?.error ?? null);
+const isSending = computed(() => sessionStatus.value === COMPOSE_STATE.SENDING);
 const attachments = computed(() => session.value?.attachments ?? []);
 const uncheckpointedAttachmentCount = computed(() =>
   session.value ? composeStore.uncheckpointedAttachmentCount(session.value.id) : 0);
@@ -77,12 +89,49 @@ const closeTriggerLabel = computed(() =>
 const dialogEl = ref<HTMLElement | null>(null);
 const closePromptEl = ref<HTMLElement | null>(null);
 const attachmentInputEl = ref<HTMLInputElement | null>(null);
+const scheduleMenuTriggerEl = ref<HTMLElement | null>(null);
+const customScheduleOpen = ref(false);
+const capabilityRefreshing = ref(false);
+const capabilityChecked = ref(false);
+const isScheduling = ref(false);
+const scheduleUiError = ref<string | null>(null);
+const customScheduleError = ref<string | null>(null);
+const schedulePresets = ref<SchedulePresetResolution[]>(
+  SCHEDULE_PRESETS.map((preset) => ({
+    ...preset,
+    available: false,
+    targetAt: null,
+    resolvedLabel: null,
+    reason: 'capabilityUnavailable',
+    message: 'Checking whether scheduled sending is available.',
+  })),
+);
+let capabilityRefreshGeneration = 0;
+let scheduleActionGeneration = 0;
 const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
 useModalFocus(closePromptEl, {
   active: closePromptOpen,
   onDefault: saveClosePrompt,
 });
 const closeMenuTriggerEl = ref<HTMLElement | null>(null);
+const selectedTimeZone = computed(() => settingsStore.get('timeZone'));
+const scheduleBusy = computed(() => isSending.value || isScheduling.value);
+const scheduleSegmentDisabled = computed(() =>
+  scheduleBusy.value
+  || !capabilityChecked.value
+  || !composeStore.canScheduleSend);
+const scheduleDescriptionId = computed(() =>
+  `compose-${session.value?.id ?? 'inactive'}-schedule-description`);
+const scheduleAvailabilityMessage = computed(() => {
+  if (isScheduling.value) return 'Scheduling this message.';
+  if (capabilityRefreshing.value || !capabilityChecked.value) {
+    return 'Checking whether scheduled sending is available.';
+  }
+  if (!composeStore.canScheduleSend) {
+    return 'Scheduled sending is not supported by this account. Immediate Send is still available.';
+  }
+  return `Scheduled sending uses ${selectedTimeZone.value}.`;
+});
 const richTextEditorEl = ref<{
   focus: () => void;
   setContent: (
@@ -164,6 +213,113 @@ function closeDropdown(event: Event) {
   if (details) details.open = false;
 }
 
+function closeScheduleMenu(): void {
+  const details = scheduleMenuTriggerEl.value?.closest('details');
+  if (details instanceof HTMLDetailsElement) details.open = false;
+}
+
+function refreshResolvedPresets(): void {
+  schedulePresets.value = resolveSchedulePresets({
+    now: Date.now(),
+    timeZone: selectedTimeZone.value,
+    maxDelayedSend: composeStore.scheduleMaxDelayedSend,
+    serverClockReference: composeStore.scheduleCapability.serverClockReference,
+  });
+}
+
+async function refreshScheduleCapabilityForSession(
+  expectedSessionId = session.value?.id,
+): Promise<void> {
+  if (!expectedSessionId) return;
+  const generation = ++capabilityRefreshGeneration;
+  capabilityRefreshing.value = true;
+  const capability = await composeStore.refreshScheduleCapability();
+  if (
+    generation !== capabilityRefreshGeneration
+    || session.value?.id !== expectedSessionId
+  ) {
+    return;
+  }
+  capabilityRefreshing.value = false;
+  capabilityChecked.value = true;
+  refreshResolvedPresets();
+  if (!capability.supported) closeScheduleMenu();
+}
+
+function onScheduleMenuToggle(event: Event): void {
+  const details = event.target;
+  if (!(details instanceof HTMLDetailsElement) || !details.open) return;
+  scheduleUiError.value = null;
+  void refreshScheduleCapabilityForSession();
+}
+
+async function scheduleAbsoluteTarget(
+  targetAt: string,
+  timeZone: string,
+): Promise<void> {
+  const current = session.value;
+  if (!current || scheduleBusy.value) return;
+  const actionGeneration = ++scheduleActionGeneration;
+  isScheduling.value = true;
+  scheduleUiError.value = null;
+  customScheduleError.value = null;
+  closeScheduleMenu();
+  try {
+    const scheduled = await composeStore.scheduleSend(current.id, targetAt, timeZone);
+    if (
+      actionGeneration === scheduleActionGeneration
+      && session.value?.id === current.id
+      && scheduled
+    ) {
+      customScheduleOpen.value = false;
+    }
+    if (
+      actionGeneration === scheduleActionGeneration
+      && session.value?.id === current.id
+      && !scheduled
+      && customScheduleOpen.value
+    ) {
+      customScheduleError.value = sessionError.value
+        ?? 'Could not schedule this message. Try another time.';
+    }
+  } finally {
+    if (actionGeneration === scheduleActionGeneration) {
+      isScheduling.value = false;
+    }
+  }
+}
+
+async function pickSchedulePreset(id: SchedulePresetId): Promise<void> {
+  if (scheduleSegmentDisabled.value) return;
+  const current = resolveSchedulePreset(id, {
+    now: Date.now(),
+    timeZone: selectedTimeZone.value,
+    maxDelayedSend: composeStore.scheduleMaxDelayedSend,
+    serverClockReference: composeStore.scheduleCapability.serverClockReference,
+  });
+  if (!current.available || !current.targetAt) {
+    scheduleUiError.value = current.message ?? 'Choose another scheduled time.';
+    refreshResolvedPresets();
+    return;
+  }
+  await scheduleAbsoluteTarget(current.targetAt, selectedTimeZone.value);
+}
+
+function openCustomSchedule(event: Event): void {
+  if (scheduleSegmentDisabled.value) return;
+  closeDropdown(event);
+  scheduleUiError.value = null;
+  customScheduleError.value = null;
+  customScheduleOpen.value = true;
+}
+
+function closeCustomSchedule(): void {
+  if (!isScheduling.value) {
+    customScheduleOpen.value = false;
+    void nextTick(() => scheduleMenuTriggerEl.value?.focus());
+  }
+}
+
 function activateCloseTrigger(event: MouseEvent) {
   const sessionId = session.value?.id;
   if (!sessionId || composeStore.isSessionMeaningfullyNonEmpty(sessionId)) return;
@@ -212,6 +368,7 @@ function focusableElements(container: HTMLElement | null): HTMLElement[] {
     .filter((element) => {
       if (element.closest('details:not([open])')) return false;
       if (element.closest('[hidden], [aria-hidden="true"]')) return false;
+      if (element.getAttribute('aria-disabled') === 'true') return false;
       const style = window.getComputedStyle(element);
       return style.display !== 'none' && style.visibility !== 'hidden';
     });
@@ -242,7 +399,8 @@ function trapDialogFocus(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  if (session.value) {
+  if (session.value && isExpanded.value) {
+    void refreshScheduleCapabilityForSession(session.value.id);
     void nextTick().then(() => {
       if (isExpanded.value) focusFreshDraft();
     });
@@ -251,6 +409,15 @@ onMounted(() => {
 
 watch(() => session.value?.id, (nextId, previousId) => {
   if (nextId && nextId !== previousId) {
+    scheduleActionGeneration += 1;
+    capabilityRefreshGeneration += 1;
+    customScheduleOpen.value = false;
+    capabilityChecked.value = false;
+    capabilityRefreshing.value = false;
+    isScheduling.value = false;
+    scheduleUiError.value = null;
+    customScheduleError.value = null;
+    void refreshScheduleCapabilityForSession(nextId);
     void nextTick().then(() => {
       if (isExpanded.value) focusFreshDraft();
     });
@@ -262,7 +429,13 @@ watch(() => session.value?.draftEpoch, (nextEpoch, previousEpoch) => {
 });
 
 watch(isExpanded, (expanded) => {
-  if (expanded) void nextTick().then(focusFreshDraft);
+  if (expanded) {
+    void refreshScheduleCapabilityForSession();
+    void nextTick().then(focusFreshDraft);
+  } else {
+    customScheduleOpen.value = false;
+    closeScheduleMenu();
+  }
 });
 
 watch(
@@ -280,11 +453,6 @@ watch(
     });
   },
 );
-
-// Draft exit actions are withheld while the send mutation is in flight:
-// the queued request payload is the only durable copy of the message, so
-// erasing the draft here could lose it if the send then fails.
-const isSending = computed(() => sessionStatus.value === COMPOSE_STATE.SENDING);
 
 /**
  * The committed recipients of each field, as the control shows them.
@@ -402,6 +570,7 @@ async function browseAllContacts() {
 }
 
 async function send() {
+  if (isScheduling.value) return;
   await composeStore.send(session.value?.id ?? null);
 }
 
@@ -435,6 +604,7 @@ function identityInitials(id: IdentityRow): string {
       role="dialog"
       aria-modal="true"
       :aria-labelledby="dialogTitleId"
+      :aria-hidden="customScheduleOpen ? 'true' : undefined"
       tabindex="-1"
       @keydown.capture="trapDialogFocus"
     >
@@ -445,26 +615,30 @@ function identityInitials(id: IdentityRow): string {
           <button
             type="button"
             class="icon icon--minimize"
-            :disabled="isSending || session.isSaving || session.isDiscarding"
-            :title="isSending ? 'Sending — please wait' : 'Minimize'"
+            :disabled="scheduleBusy || session.isSaving || session.isDiscarding"
+            :title="isScheduling
+              ? 'Scheduling — please wait'
+              : (isSending ? 'Sending — please wait' : 'Minimize')"
             aria-label="Minimize"
             @click="composeStore.minimize(session.id)"
           >−</button>
           <AppDropdown
             class="compose-close-menu"
-            :disabled="isSending || session.isDiscarding"
+            :disabled="scheduleBusy || session.isDiscarding"
           >
             <summary
               ref="closeMenuTriggerEl"
               class="icon compose-close-menu__trigger"
               role="button"
               aria-haspopup="menu"
-              :title="isSending ? 'Sending — please wait' : closeTriggerLabel"
+              :title="isScheduling
+                ? 'Scheduling — please wait'
+                : (isSending ? 'Sending — please wait' : closeTriggerLabel)"
               :aria-label="closeTriggerLabel"
-              :aria-disabled="isSending || session.isDiscarding
+              :aria-disabled="scheduleBusy || session.isDiscarding
                 ? 'true'
                 : undefined"
-              :tabindex="isSending || session.isDiscarding ? -1 : undefined"
+              :tabindex="scheduleBusy || session.isDiscarding ? -1 : undefined"
               @click="activateCloseTrigger"
             >×</summary>
             <div
@@ -476,7 +650,7 @@ function identityInitials(id: IdentityRow): string {
                 type="button"
                 class="app-dropdown__item compose-close-menu__discard"
                 role="menuitem"
-                :disabled="isSending || session.isDiscarding"
+                :disabled="scheduleBusy || session.isDiscarding"
                 @click="discardFromCloseMenu"
               >
                 <Trash2 :size="15" aria-hidden="true" />
@@ -486,7 +660,7 @@ function identityInitials(id: IdentityRow): string {
                 type="button"
                 class="app-dropdown__item"
                 role="menuitem"
-                :disabled="isSending || session.isSaving || session.isDiscarding"
+                :disabled="scheduleBusy || session.isSaving || session.isDiscarding"
                 @click="saveFromCloseMenu"
               >
                 <Save :size="15" aria-hidden="true" />
@@ -697,7 +871,7 @@ function identityInitials(id: IdentityRow): string {
         />
         <AppButton
           variant="outline"
-          :disabled="isSending || session.isDiscarding"
+          :disabled="scheduleBusy || session.isDiscarding"
           aria-label="Attach files"
           title="Attach files"
           @click="openAttachmentPicker"
@@ -707,21 +881,92 @@ function identityInitials(id: IdentityRow): string {
           </template>
           Attach
         </AppButton>
-        <AppButton
-          class="compose-send"
-          :disabled="isSending || session.isDiscarding || attachmentBusy"
-          @click="send"
-        >
-          <template #iconLeft>
-            <SendIcon
-              :size="16"
-              :stroke-width="2"
-              aria-hidden="true"
-            />
-          </template>
-          {{ isSending ? 'Sending…' : 'Send' }}
-        </AppButton>
+        <div class="compose-send-split">
+          <AppButton
+            class="compose-send"
+            :disabled="scheduleBusy || session.isDiscarding || attachmentBusy"
+            @click="send"
+          >
+            <template #iconLeft>
+              <SendIcon
+                :size="16"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
+            </template>
+            {{ isScheduling ? 'Scheduling…' : (isSending ? 'Sending…' : 'Send') }}
+          </AppButton>
+          <AppDropdown
+            class="compose-schedule-menu"
+            :disabled="scheduleSegmentDisabled"
+            @toggle="onScheduleMenuToggle"
+          >
+            <summary
+              ref="scheduleMenuTriggerEl"
+              class="compose-schedule-menu__trigger"
+              role="button"
+              aria-haspopup="menu"
+              aria-label="Schedule send"
+              title="Schedule send"
+              :aria-describedby="scheduleDescriptionId"
+              :aria-busy="isScheduling ? 'true' : undefined"
+              :aria-disabled="scheduleSegmentDisabled ? 'true' : undefined"
+              :tabindex="scheduleSegmentDisabled ? -1 : undefined"
+            >
+              <ChevronDown :size="16" :stroke-width="2" aria-hidden="true" />
+            </summary>
+            <div
+              class="app-dropdown__menu compose-schedule-menu__menu"
+              role="menu"
+              aria-label="Schedule send"
+            >
+              <button
+                v-for="preset in schedulePresets"
+                :key="preset.id"
+                type="button"
+                class="app-dropdown__item compose-schedule-menu__item"
+                role="menuitem"
+                :disabled="scheduleSegmentDisabled || !preset.available"
+                :title="preset.available
+                  ? (preset.resolvedLabel ?? undefined)
+                  : (preset.message ?? undefined)"
+                @click="pickSchedulePreset(preset.id)"
+              >
+                <span class="compose-schedule-menu__label">{{ preset.label }}</span>
+                <span class="compose-schedule-menu__secondary">
+                  {{ preset.available ? preset.resolvedLabel : preset.message }}
+                </span>
+              </button>
+              <div class="compose-schedule-menu__separator" role="separator" />
+              <button
+                type="button"
+                class="app-dropdown__item compose-schedule-menu__item"
+                role="menuitem"
+                :disabled="scheduleSegmentDisabled"
+                @click="openCustomSchedule"
+              >
+                <span class="compose-schedule-menu__label">Choose a date and time</span>
+              </button>
+            </div>
+          </AppDropdown>
+          <span :id="scheduleDescriptionId" class="compose-schedule-menu__description">
+            {{ scheduleAvailabilityMessage }}
+          </span>
+        </div>
       </footer>
+
+      <ScheduleSendDialog
+        v-if="customScheduleOpen"
+        :busy="isScheduling"
+        :error="customScheduleError"
+        :max-delayed-send="composeStore.scheduleMaxDelayedSend"
+        :server-clock-reference="composeStore.scheduleCapability.serverClockReference"
+        :session-id="session.id"
+        :time-zone="selectedTimeZone"
+        @clear-error="customScheduleError = null"
+        @close="closeCustomSchedule"
+        @schedule="scheduleAbsoluteTarget"
+      />
 
       <p
         v-if="session.saveError && session.saveError !== sessionError"
@@ -735,6 +980,14 @@ function identityInitials(id: IdentityRow): string {
            card is a flex column with a gap, and a permanently rendered
            container would hold that gap open under the footer whenever
            there is no error. -->
+      <p
+        v-if="scheduleUiError"
+        class="compose-error"
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="true"
+      >{{ scheduleUiError }}</p>
+
       <p
         v-if="sessionError"
         class="compose-error"
@@ -1045,6 +1298,97 @@ footer {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+}
+.compose-send-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+}
+.compose-send-split .compose-schedule-menu {
+  position: static;
+}
+.compose-schedule-menu__trigger {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, #fff 42%, transparent);
+  border-radius: 0 4px 4px 0;
+  background: var(--colour-primary-default, var(--accent, #0060df));
+  color: var(--colour-ti-on-primary, #fff);
+  cursor: pointer;
+  list-style: none;
+}
+.compose-schedule-menu__trigger::-webkit-details-marker {
+  display: none;
+}
+.compose-schedule-menu__trigger:hover:not([aria-disabled='true']) {
+  background: var(--colour-primary-hover, #0250bb);
+}
+.compose-schedule-menu__trigger:active:not([aria-disabled='true']) {
+  background: var(--colour-primary-pressed, #054096);
+}
+.compose-schedule-menu__trigger:focus:not(:focus-visible) {
+  outline: none;
+}
+.compose-schedule-menu__trigger:focus-visible {
+  z-index: 2;
+  outline: 2px solid var(--accent, #0060df);
+  outline-offset: 2px;
+}
+.compose-schedule-menu__trigger[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.compose-send-split .base.app-button.compose-send {
+  border-radius: 4px 0 0 4px;
+}
+.compose-schedule-menu__menu {
+  top: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  left: auto;
+  width: min(340px, calc(100vw - 32px));
+  min-width: 290px;
+}
+.compose-schedule-menu__item {
+  grid-template-columns: 1fr;
+  gap: 1px;
+}
+.compose-schedule-menu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.compose-schedule-menu__label {
+  font-weight: 600;
+}
+.compose-schedule-menu__secondary {
+  overflow: hidden;
+  color: var(--muted, #6b7280);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-schedule-menu__separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border, #d6d9e2);
+}
+.compose-schedule-menu__description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .base.app-button.compose-send:disabled {
   background: var(--colour-neutral-border, var(--border, #d6d9e2));

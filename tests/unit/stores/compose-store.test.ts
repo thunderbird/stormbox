@@ -1360,6 +1360,10 @@ describe('compose-store send safety', () => {
       getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
       listIdentities: vi.fn(async () => identities),
       ensureIdentities: vi.fn(async () => {}),
+      getScheduleCapability: vi.fn(async () => ({
+        supported: true,
+        maxDelayedSend: 2_592_000,
+      })),
       insertPendingMutation: vi.fn(async () => ({ id: 7 })),
       runMutation: vi.fn(async () => outcome),
       getPendingMutationError: vi.fn(async () => (rowError
@@ -1397,6 +1401,221 @@ describe('compose-store send safety', () => {
     await expect(composeStore.send()).resolves.toBe(false);
     await expect(firstSend).resolves.toBe(true);
     expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues a scheduled send as the shared SEND mutation with scheduledAt', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { filed: true },
+    });
+    const sessionId = composeStore.open({
+      to: [{ email: 'rcpt@example.com' }],
+      subject: 'Later',
+      textBody: 'Plain scheduled body',
+      htmlBody: '<p>Rich scheduled body</p>',
+    });
+    const targetAt = new Date(Date.now() + 60_000);
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      targetAt,
+      'America/New_York',
+    )).resolves.toBe(true);
+
+    const input = lastRepo.insertPendingMutation.mock.calls[0][0];
+    const request = JSON.parse(input.requestJson);
+    expect(input.mutationType).toBe(MUTATION_TYPE.SEND);
+    expect(request.scheduledAt).toBe(targetAt.toISOString());
+    expect(request.to).toEqual([{ email: 'rcpt@example.com' }]);
+    expect(request.textBody).toBe('Plain scheduled body');
+    expect(request.htmlBody).toBe('<p>Rich scheduled body</p>');
+    expect(composeStore.isOpen).toBe(false);
+    expect(composeStore.notice).toBe('Message scheduled.');
+  });
+
+  it('queues at most one scheduled-send mutation while scheduling is in flight', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { scheduled: true },
+    });
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+    const targetAt = new Date(Date.now() + 60_000);
+
+    const first = composeStore.scheduleSend(sessionId, targetAt);
+    await expect(composeStore.scheduleSend(sessionId, targetAt)).resolves.toBe(false);
+    await expect(first).resolves.toBe(true);
+
+    expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies send validation before queuing a scheduled send', async () => {
+    const composeStore = await composerWithOutcome({});
+    const sessionId = composeStore.open({ subject: 'No recipients' });
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      new Date(Date.now() + 60_000),
+    )).resolves.toBe(false);
+
+    expect(composeStore.error).toBe('Add at least one recipient.');
+    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compose session recoverable when scheduling is rejected', async () => {
+    const composeStore = await composerWithOutcome(
+      { attempted: 1, succeeded: 0, failed: 1 },
+      {
+        type: 'scheduleCapabilityUnavailable',
+        terminal: true,
+        description: 'Delayed submission is unavailable.',
+      },
+    );
+    const sessionId = composeStore.open({
+      to: [{ email: 'rcpt@example.com' }],
+      subject: 'Keep this draft',
+    });
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      new Date(Date.now() + 60_000),
+    )).resolves.toBe(false);
+
+    expect(composeStore.sessionById(sessionId)?.status).toBe(COMPOSE_STATE.FAILED);
+    expect(composeStore.sessionById(sessionId)?.draft.subject).toBe('Keep this draft');
+    expect(composeStore.error).toBe('Delayed submission is unavailable.');
+  });
+
+  it('rejects unsupported scheduling without gating immediate send', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { filed: true },
+    });
+    lastRepo.getScheduleCapability.mockResolvedValueOnce({
+      supported: false,
+      maxDelayedSend: 0,
+    });
+    await composeStore.refreshScheduleCapability();
+    const sessionId = composeStore.open({
+      to: [{ email: 'rcpt@example.com' }],
+      subject: 'Send normally',
+    });
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      new Date(Date.now() + 60_000),
+    )).resolves.toBe(false);
+    expect(composeStore.error).toBe(
+      'Scheduled sending is not supported by this account.',
+    );
+    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
+
+    await expect(composeStore.send(sessionId)).resolves.toBe(true);
+    expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
+    expect(lastRepo.insertPendingMutation.mock.calls[0][0].mutationType)
+      .toBe(MUTATION_TYPE.SEND);
+  });
+
+  it('rejects a target above the cached server cap before enqueueing', async () => {
+    const composeStore = await composerWithOutcome({});
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      new Date(Date.now() + 2_592_001_000),
+    )).resolves.toBe(false);
+
+    expect(composeStore.error).toBe('Choose a time within 2592000 seconds.');
+    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
+  it('revalidates the live capability immediately before enqueueing', async () => {
+    const composeStore = await composerWithOutcome({});
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+    lastRepo.getScheduleCapability.mockResolvedValueOnce({
+      supported: false,
+      maxDelayedSend: 0,
+    });
+
+    await expect(composeStore.scheduleSend(
+      sessionId,
+      new Date(Date.now() + 60_000),
+    )).resolves.toBe(false);
+
+    expect(lastRepo.getScheduleCapability).toHaveBeenCalledTimes(2);
+    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
+    expect(composeStore.error).toBe(
+      'Scheduled sending is not supported by this account.',
+    );
+  });
+
+  it('keeps only the newest capability refresh result', async () => {
+    const composeStore = await composerWithOutcome({});
+    let resolveOlder!: (value: any) => void;
+    const older = new Promise((resolve) => {
+      resolveOlder = resolve;
+    });
+    lastRepo.getScheduleCapability
+      .mockImplementationOnce(() => older)
+      .mockResolvedValueOnce({ supported: true, maxDelayedSend: 900 });
+
+    const first = composeStore.refreshScheduleCapability();
+    const second = composeStore.refreshScheduleCapability();
+    await expect(second).resolves.toEqual({
+      supported: true,
+      maxDelayedSend: 900,
+      serverClockReference: null,
+    });
+    resolveOlder({ supported: false, maxDelayedSend: 0 });
+    await first;
+
+    expect(composeStore.canScheduleSend).toBe(true);
+    expect(composeStore.scheduleMaxDelayedSend).toBe(900);
+  });
+
+  it('ignores a capability response from the previous account', async () => {
+    let resolveFirst!: (value: any) => void;
+    const firstCapability = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async (accountId) => ({
+        id: accountId,
+        primary_email: `${accountId}@example.com`,
+      })),
+      listIdentities: vi.fn(async () => [identity({ id: 1 })]),
+      getScheduleCapability: vi.fn(async (accountId) => (
+        accountId === 1
+          ? firstCapability
+          : { supported: true, maxDelayedSend: 1_800 }
+      )),
+    };
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await vi.waitFor(() => {
+      expect(repo.getScheduleCapability).toHaveBeenCalledWith(1);
+    });
+
+    authStore.accountId = 2;
+    expect(composeStore.canScheduleSend).toBe(false);
+    await vi.waitFor(() => {
+      expect(composeStore.scheduleMaxDelayedSend).toBe(1_800);
+    });
+    resolveFirst({ supported: true, maxDelayedSend: 60 });
+    await firstCapability;
+    await waitForAsyncWatchers();
+
+    expect(composeStore.canScheduleSend).toBe(true);
+    expect(composeStore.scheduleMaxDelayedSend).toBe(1_800);
   });
 
   it('sends a message addressed only in Cc', async () => {

@@ -233,8 +233,18 @@ function makeRepo(): any {
     // Repository helpers the mail-store hits for mutation flows.
     // The store-only tests treat every id as present so the
     // destroyMessages / moveMessages flow is not short-circuited.
-    async filterExistingMessageIds(_accountId, ids) {
-      return (ids ?? []).map(Number).filter((id) => Number.isFinite(id));
+    async filterExistingMessageIds(_accountId, ids, { excludeScheduled = false } = {}) {
+      const byId = new Map(
+        [...views.values()]
+          .flatMap((view) => view.rows ?? [])
+          .filter((row) => row?.id != null)
+          .map((row) => [Number(row.id), row]),
+      );
+      return (ids ?? [])
+        .map(Number)
+        .filter((id) =>
+          Number.isFinite(id)
+          && (!excludeScheduled || byId.get(id)?.scheduled_undo_status == null));
     },
     async getPendingMutationError() { return null; },
   };
@@ -1408,6 +1418,35 @@ describe('focusedMessageId (keyboard cursor)', () => {
 });
 
 describe('moveMessages', () => {
+  it('rejects actions targeting a scheduled row exposed through another mailbox', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
+    const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });
+    const trash = makeFolder(3, { role: 'trash', may_add_items: 1 });
+    const junk = makeFolder(4, { role: 'junk', may_add_items: 1 });
+    const scheduled = makeRow(7, {
+      scheduled_submission_remote_id: 'sub-7',
+      scheduled_undo_status: 'pending',
+    });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive, trash, junk],
+      views: { 1: { rows: [scheduled], total: 1 } },
+    });
+    mailStore.selectFolder(inbox.id);
+    await flush();
+    repo.insertPendingMutation = vi.fn(async () => ({ id: 1 }));
+
+    await mailStore.destroyMessages([scheduled.id]);
+    expect(mailStore.error).toContain('Scheduled messages');
+    await expect(mailStore.moveMessages([scheduled.id], archive.id))
+      .rejects.toThrow('Scheduled messages');
+    await expect(mailStore.junkMessages([scheduled.id])).resolves.toEqual({
+      succeeded: 0,
+      failed: 1,
+      skipped: 0,
+    });
+    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
   it('refetches a previously visited destination folder after moving a message into it', async () => {
     const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1 });
     const archive = makeFolder(2, { role: 'archive', total_emails: 1, may_add_items: 1 });

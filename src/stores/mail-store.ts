@@ -23,6 +23,7 @@ import { computed, ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
+import { useSettingsStore } from './settings-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
 import {
   canDecodeRasterBlob,
@@ -33,6 +34,7 @@ import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-htm
 import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
+import { isScheduledMailbox } from '../constants/scheduled-mailbox';
 import { createContactUid } from '../utils/contact-uid';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
@@ -97,8 +99,32 @@ const BULK_OPERATION_PROGRESS_THRESHOLD = 500;
 
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
+  const settingsStore = useSettingsStore();
 
-  const folders = ref<FolderRow[]>([]);
+  const folderRows = ref<FolderRow[]>([]);
+  /**
+   * The managed Send Later mailbox is an ordinary roleless server folder
+   * whose identity is the settings-cached remote id. Decorating its row
+   * with `is_scheduled` here gives every consumer — sorting, sidebar
+   * presentation, capabilities — one flag to key on instead of each
+   * re-deriving the predicate.
+   */
+  const scheduledMailboxRemoteId = computed(() => {
+    const value = settingsStore.settings.scheduledMailboxRemoteId;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  });
+  // Writable so callers (and tests) can keep assigning `folders`
+  // directly; the setter feeds the raw rows and the decoration is
+  // reapplied on read.
+  const folders = computed<FolderRow[]>({
+    get: () => folderRows.value.map((folder) => (
+      Number(folder.account_id) === Number(authStore.accountId)
+        && isScheduledMailbox(folder, scheduledMailboxRemoteId.value)
+        ? { ...folder, is_scheduled: 1 as const }
+        : folder
+    )),
+    set: (rows) => { folderRows.value = rows; },
+  });
   const currentFolderId = ref<number | null>(null);
   // Bound to the current folder's positional `rows` array. Indices
   // we haven't fetched are `undefined`, so the virtualiser renders
@@ -228,6 +254,13 @@ export const useMailStore = defineStore('mail', () => {
     () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
   );
 
+  /**
+   * Sort of the open folder's canonical view. MessageList shows the
+   * matching timestamp column (sent vs received) so the list order is
+   * explainable from what is on screen.
+   */
+  const currentSort = computed<JmapViewSort>(() => _sortPropFor(currentFolder.value));
+
   // Accounts visible in this session: the signed-in (primary) account
   // plus any shared accounts (RFC 9670) the server advertised. Loaded
   // alongside folders so the sidebar can group shared folders by owner.
@@ -294,7 +327,7 @@ export const useMailStore = defineStore('mail', () => {
    * that want an explicit knob.
    */
   function $reset() {
-    folders.value = [];
+    folderRows.value = [];
     accounts.value = [];
     messages.value = [];
     currentFolderId.value = null;
@@ -399,7 +432,7 @@ export const useMailStore = defineStore('mail', () => {
 
   async function refreshFolders() {
     if (!repo || authStore.accountId == null) {
-      folders.value = [];
+      folderRows.value = [];
       accounts.value = [];
       return;
     }
@@ -427,7 +460,7 @@ export const useMailStore = defineStore('mail', () => {
           if (pending != null) row.is_subscribed = pending;
         }
       }
-      folders.value = rows;
+      folderRows.value = rows;
       await refreshFolderProgress();
     } catch (err) {
       error.value = err?.message ?? String(err);
@@ -494,7 +527,7 @@ export const useMailStore = defineStore('mail', () => {
     }));
     folderProgress.value = next;
     let changed = false;
-    const remapped = folders.value.map((folder) => {
+    const remapped = folderRows.value.map((folder) => {
       const progress = next.get(folder.id);
       if (!progress) return folder;
       const total = progress.total ?? folder.index_total ?? null;
@@ -515,15 +548,26 @@ export const useMailStore = defineStore('mail', () => {
         index_percent: percent,
       };
     });
-    // Only reassign folders.value when at least one folder's index
+    // Only reassign folder rows when at least one folder's index
     // numbers actually changed. Reassigning unconditionally rebuilds
     // every FolderNode in the tree on every broadcast, which is the
     // DOM-churn pattern Playwright cannot lock onto.
-    if (changed) folders.value = remapped;
+    if (changed) folderRows.value = remapped;
   }
 
-  function _sortPropFor(folder: { role?: MailboxRole | null } | null | undefined): JmapViewSort {
+  function _sortPropFor(
+    folder: { role?: MailboxRole | null; is_scheduled?: 0 | 1 } | null | undefined,
+  ): JmapViewSort {
+    if (Number(folder?.is_scheduled ?? 0) === 1) return 'scheduled';
     return folder?.role === 'sent' || folder?.role === 'drafts' ? 'sent' : 'received';
+  }
+
+  /** The Email/query sort parameters a JmapViewSort value stands for. */
+  function _jmapSortFor(sortProp: JmapViewSort) {
+    return {
+      sortProp: sortProp === 'received' ? 'receivedAt' : 'sentAt',
+      sortAscending: sortProp === 'scheduled',
+    } as const;
   }
 
   /**
@@ -799,6 +843,7 @@ export const useMailStore = defineStore('mail', () => {
     const result = await repo.ensureFolderWindow(accountIdForFolder(state.folderId), state.folderId, {
       offset,
       limit,
+      ..._jmapSortFor(state.sortProp),
     });
     if (state !== folderState) return;
     state.needsFreshWindow = false;
@@ -1506,8 +1551,13 @@ export const useMailStore = defineStore('mail', () => {
     } catch {
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
+    const mutable = await filterMutableMessageIds(messageIds, source.account_id);
+    if (mutable.blockedScheduled) {
+      error.value = 'Scheduled messages can’t be marked as junk. Cancel the send instead.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
 
-    const rows = messageIds
+    const rows = mutable.ids
       .map((id) => messages.value.find((m) => m?.id === id))
       .filter((row): row is CachedRow => row != null);
     if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
@@ -1752,13 +1802,24 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'You do not have permission to remove messages from this folder.';
       return;
     }
+    // Deleting a scheduled message would leave its held submission
+    // pending server-side; the send has to be canceled instead.
+    if (Number(source.is_scheduled ?? 0) === 1) {
+      error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
+      return;
+    }
     // Drop ids that no longer exist in messages (e.g. a previous
     // delete attempt already wiped them but the UI still shows them
     // because the user clicked before the row re-rendered). The
     // PENDING_MUTATION_INSERT FK check would null the target out,
     // but skipping them here keeps the pending row clean and avoids
     // an extra outbox dispatch for nothing.
-    const liveIds = await filterExistingMessageIds(ids, source.account_id);
+    const mutable = await filterMutableMessageIds(ids, source.account_id);
+    if (mutable.blockedScheduled) {
+      error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
+      return;
+    }
+    const liveIds = mutable.ids;
     if (liveIds.length === 0) {
       clearSelectionFor(ids);
       return;
@@ -1935,6 +1996,57 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Durably cancel a scheduled send and restore the message to Drafts.
+   * The revoke/restore/reconcile logic lives in the cancelScheduledSend
+   * outbox operation; this wrapper enqueues it, runs it immediately,
+   * and reports the outcome. On a retryable failure the queued row
+   * keeps retrying in the background.
+   */
+  async function cancelScheduledSend(messageId: number): Promise<boolean> {
+    if (!repo || authStore.accountId == null) return false;
+    const id = Number(messageId);
+    if (!Number.isFinite(id)) return false;
+    // Leave the message before the cancel lands. The restore flips its
+    // row to a draft while the cancel is still running, and a selected
+    // draft auto-opens the compose editor; deselecting first keeps the
+    // user in the folder list, matching the notice below.
+    if (selectedMessageId.value === id) {
+      selectMessage(null);
+      clearSelection();
+    }
+    const mutation = await repo.insertPendingMutation({
+      accountId: authStore.accountId,
+      mutationType: MUTATION_TYPE.CANCEL_SCHEDULED_SEND,
+      targetMessageId: id,
+      requestJson: JSON.stringify({ messageId: id }),
+    });
+    const result: MutationOutcome = typeof repo.runMutation === 'function' && mutation?.id != null
+      ? await repo.runMutation(authStore.accountId, mutation.id)
+      : await repo.drainOutbox(authStore.accountId);
+    const succeeded = (result?.failed ?? 0) === 0
+      && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0);
+    if (succeeded) {
+      setNotice('Sending canceled. The message is back in Drafts.');
+      return true;
+    }
+    // Cancel rejections carry precise reasons worth showing verbatim
+    // (already sent, state unknown after the target passed).
+    let description: string | null = null;
+    if (mutation?.id != null && typeof repo.getPendingMutationError === 'function') {
+      try {
+        const failed = await repo.getPendingMutationError(mutation.id);
+        const parsed = failed?.error_json ? JSON.parse(failed.error_json) : null;
+        if (typeof parsed?.description === 'string') description = parsed.description;
+      } catch {
+        // Fall through to the generic line.
+      }
+    }
+    error.value = description
+      ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
+    return false;
+  }
+
+  /**
    * Move one or more messages from the currently-open folder into a
    * target folder. The outbox already knows how to apply moveToFolders
    * locally after Email/set succeeds; the store's job is to validate
@@ -1958,7 +2070,11 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
 
-    const liveIds = await filterExistingMessageIds(messageIds, source.account_id);
+    const mutable = await filterMutableMessageIds(messageIds, source.account_id);
+    if (mutable.blockedScheduled) {
+      throwMoveError('Scheduled messages can’t be moved or copied. Cancel the send instead.');
+    }
+    const liveIds = mutable.ids;
     if (liveIds.length === 0) {
       clearSelectionFor(messageIds);
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
@@ -2031,14 +2147,29 @@ export const useMailStore = defineStore('mail', () => {
     return source.account_id === target.account_id ? 'move' : 'copy';
   }
 
-  async function filterExistingMessageIds(
+  async function filterMutableMessageIds(
     ids: number[],
     accountId: number = authStore.accountId!,
-  ): Promise<number[]> {
-    if (!repo || !Array.isArray(ids) || ids.length === 0) return [];
+  ): Promise<{ ids: number[]; blockedScheduled: boolean }> {
+    if (!repo || !Array.isArray(ids) || ids.length === 0) {
+      return { ids: [], blockedScheduled: false };
+    }
     const numeric = normalizeMessageIds(ids);
-    if (numeric.length === 0) return [];
-    return repo.filterExistingMessageIds(accountId, numeric);
+    if (numeric.length === 0) return { ids: [], blockedScheduled: false };
+    const existing = await repo.filterExistingMessageIds(accountId, numeric);
+    const mutable = await repo.filterExistingMessageIds(accountId, numeric, {
+      excludeScheduled: true,
+    });
+    const mutableSet = new Set(mutable.map(Number));
+    const loadedScheduled = messages.value.some((message) =>
+      message?.id != null
+      && numeric.includes(Number(message.id))
+      && message.scheduled_undo_status != null);
+    return {
+      ids: existing.map(Number).filter((id) => mutableSet.has(id)),
+      blockedScheduled:
+        loadedScheduled || existing.some((id) => !mutableSet.has(Number(id))),
+    };
   }
 
   function clearSelectionFor(ids: number | number[]) {
@@ -2300,7 +2431,10 @@ export const useMailStore = defineStore('mail', () => {
     }
     const sourceCapabilities = folderCapabilities(source, authStore.accountId);
     const targetCapabilities = folderCapabilities(target, authStore.accountId);
-    if (source.account_id === target.account_id && !sourceCapabilities.mayRemoveItems) {
+    // mayMoveMessages rather than raw mayRemoveItems: the managed
+    // Scheduled mailbox keeps its remove right (the cancel operation
+    // needs it) while ordinary drag/move out of it stays blocked.
+    if (source.account_id === target.account_id && !sourceCapabilities.mayMoveMessages) {
       throwMoveError('Cannot move messages out of this folder.');
     }
     if (source.account_id !== target.account_id && !sourceCapabilities.mayReadItems) {
@@ -2356,7 +2490,7 @@ export const useMailStore = defineStore('mail', () => {
           anchor: snapshot.remoteId,
           anchorOffset: 0,
           limit: 1,
-          sortProp: state.sortProp === 'sent' ? 'sentAt' : 'receivedAt',
+          ..._jmapSortFor(state.sortProp),
         },
       );
     } catch (err) {
@@ -2436,7 +2570,7 @@ export const useMailStore = defineStore('mail', () => {
       const result = await repo.ensureFolderWindow(
         accountIdForFolder(state.folderId),
         state.folderId,
-        { offset: 0, limit: PAGE_SIZE },
+        { offset: 0, limit: PAGE_SIZE, ..._jmapSortFor(state.sortProp) },
       );
       if (state !== folderState) return;
       if (Number.isFinite(result?.total)) {
@@ -3016,6 +3150,7 @@ export const useMailStore = defineStore('mail', () => {
     deleteFolders,
     currentFolderId,
     currentFolder,
+    currentSort,
     inbox,
     messages,
     totalForFolder,
@@ -3049,6 +3184,7 @@ export const useMailStore = defineStore('mail', () => {
     destroyMessage,
     destroyMessages,
     permanentlyDestroyMessages,
+    cancelScheduledSend,
     moveMessage,
     moveMessages,
     archiveMessages,

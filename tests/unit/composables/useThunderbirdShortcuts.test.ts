@@ -314,6 +314,24 @@ describe('useThunderbirdShortcuts', () => {
     expect(composeStore.draft.to).toEqual([]);
   });
 
+  it('leaves Escape to an open schedule dialog', () => {
+    mountHarness();
+    const composeStore = useComposeStore();
+    composeStore.open(populatedDraft());
+    const scheduleDialog = document.createElement('section');
+    scheduleDialog.className = 'schedule-dialog';
+    scheduleDialog.setAttribute('aria-modal', 'true');
+    document.body.appendChild(scheduleDialog);
+
+    try {
+      const event = fireKey('Escape');
+      expect(event.defaultPrevented).toBe(false);
+      expect(composeStore.isOpen).toBe(true);
+    } finally {
+      scheduleDialog.remove();
+    }
+  });
+
   it('leaves a composing Escape and the draft to the input method', () => {
     mountHarness();
     const composeStore = useComposeStore();
@@ -535,6 +553,33 @@ describe('useThunderbirdShortcuts', () => {
     expect(purgeSpy).toHaveBeenCalledWith([1]);
     // Shift+Delete must not also dispatch the ordinary delete path.
     expect(destroySpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps archive and delete shortcuts inert for scheduled targets', async () => {
+    mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1, {
+      scheduled_submission_remote_id: 'sub-1',
+      scheduled_undo_status: 'pending',
+    })];
+    mailStore.selectedMessageId = 1;
+    const archiveSpy = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+    const purgeSpy = vi.spyOn(mailStore, 'permanentlyDestroyMessages')
+      .mockResolvedValue(undefined);
+
+    fireKey('a');
+    fireKey('Delete');
+    fireKey('Delete', { shiftKey: true });
+    await Promise.resolve();
+
+    expect(archiveSpy).not.toHaveBeenCalled();
+    expect(destroySpy).not.toHaveBeenCalled();
+    expect(purgeSpy).not.toHaveBeenCalled();
   });
 
   it('forwards key events from nested documents via invokeThunderbirdShortcut', async () => {
