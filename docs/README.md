@@ -4,10 +4,8 @@ This directory is the human entry point for project documentation.
 
 ## Architecture
 
-- [Performance and architecture notes](architecture/performance.md): current
-  runtime shape, cache behavior, and performance work.
-- [SQLite storage design](architecture/sqlite-storage.md): local cache schema,
-  sync state, and storage rationale.
+[Architecture overview and index](architecture/README.md) summarizes the
+system and links to the focused design documents.
 
 ## Spec-Driven Development
 

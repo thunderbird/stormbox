@@ -24,9 +24,10 @@ flowchart TD
     Repository -.->|broadcasts| UI
 ```
 
-Today the worker is a `SharedWorker`. A leader-elected
-`DedicatedWorker` fallback is acceptable on browsers that do not ship
-SharedWorker (e.g. Android Chrome).
+Today the worker is a `SharedWorker`. The constitution allows a
+leader-elected `DedicatedWorker` fallback for browsers that do not ship
+SharedWorker (e.g. Android Chrome); that fallback is not implemented.
+Missing SharedWorker fails boot.
 
 ## Storage backend
 
@@ -42,7 +43,7 @@ Why IndexedDB rather than OPFS:
   does not support the shared-memory primitives WAL needs.
   `OPFSAnyContextVFS` was measured 5-8x slower than
   `IDBBatchAtomicVFS` on representative delete-under-indexer-churn
-  workloads (see `research/vfs-bench/`).
+  workloads (see `research/vfs-bench.spec.js`).
 - Faster OPFS VFSes (`AccessHandlePoolVFS` + WAL,
   `OPFSCoopSyncVFS`) use `createSyncAccessHandle`, which Firefox
   restricts to dedicated workers. They are incompatible with the
@@ -73,6 +74,12 @@ This shape is required because background sync runs SQL outside any
 inbound RPC, so a queue at the RPC dispatcher only is not enough; the
 serialization lives one layer down, in the engine itself.
 
+Attachment upload and download RPCs move `File`/`Blob` bytes through
+the same worker but bypass `pending_mutations` because they create no
+durable mail object. They still contend on the JMAP transport and
+should honor live `maxConcurrentUpload` rather than opening unbounded
+parallel uploads.
+
 Implication: every SQL operation contends on the same lock. The
 *shape* of writes matters more than usual — many small operations
 queue behind one another, while batched operations dominate cost.
@@ -84,19 +91,29 @@ flowchart TD
     Login[Sign in] --> Session[GET /.well-known/jmap]
     Session --> Mailboxes[Sync mailboxes]
     Mailboxes --> Identities[Sync identities]
-    Identities --> AddressBooks[Sync addressbooks and contacts]
+    Identities --> FileNodes[Sync settings and contacts trash]
+    FileNodes --> AddressBooks[Sync addressbooks and contacts]
     AddressBooks --> WS[Open JMAP WebSocket]
     WS -->|StateChange| Push[Per-type changes]
     Push --> EmailChanges[Email and queryChanges]
     Push --> MailboxChanges[Mailbox changes]
     Push --> ContactChanges[ContactCard changes]
     Push --> IdentityChanges[Identity changes]
+    Push --> FileNodeChanges[FileNode settings and trash]
 ```
 
 `JmapBackend.start()` returns as soon as the local account row and
-folder tree are populated. Identities, contacts, and the WebSocket
-are kicked off in the background so the UI can paint a folder list
-within one round trip of "login complete".
+primary plus shared mailbox trees are populated. Identities, settings,
+contacts trash, contacts, recipient ranking, and the WebSocket continue
+in the background so the UI can paint a folder list within one round
+trip of "login complete". If WS fails, the backend stays on HTTP.
+
+AddressBook metadata writes reconcile with one complete
+`AddressBook/get`. Permanent deletion first pages only the selected
+book's `ContactCard/query` inventory, then performs a full ContactCard
+sync after the server accepts deletion so exclusive removals and shared
+membership changes are reflected authoritatively. Failure permutations
+remain unit-tested; live coverage uses one mixed deletion fixture.
 
 Visible folder windows load through `JmapBackend.ensureFolderWindow()`,
 which runs a chained `Email/query + Email/get` in a single envelope
@@ -121,17 +138,16 @@ User actions enqueue rows in `pending_mutations` and drain through
 via the DB layer hook, a JMAP `StateChange` push, and a backoff
 timer.
 
-After a successful `Email/set`, the local cache is reconciled
-in-process from `outbox.ts`. Move and destroy paths call the
+After a successful `Email/set`, the local cache is reconciled by the
+modular handlers under `outbox/`. Move and destroy paths call the
 protocol-neutral `OUTBOX_APPLY_MOVE_BATCH` /
 `OUTBOX_APPLY_DESTROY_BATCH` worker handlers directly, which mirror
 the exact server-confirmed id set in one engine transaction: replace
 `folder_messages` rows, drop affected query view items, compact
 positions once per view, decrement `query_views.total`, and mark
 added-folder views stale. Send and the `notUpdated`/`notDestroyed`
-fallback are JMAP-specific (they issue an `Email/get` to reconcile)
-and live in `applySendLocally` / `reconcileMessageFromServer` in
-`outbox.ts`.
+fallback are JMAP-specific; `send-apply.ts` and
+`messages-shared.ts` issue `Email/get` to reconcile.
 
 Trash semantics: ordinary delete moves to Trash via `moveToFolders`.
 Permanent destroy is reserved for messages already in Trash or
@@ -176,11 +192,9 @@ URLs from `mail.*` to `jmap.*` for both HTTP fields and the WebSocket
 capability so every URL the client subsequently dereferences stays
 inside the bridge.
 
-The worker captures `fetch` and `WebSocket` once at startup and
-binds them to `globalThis`. Firefox's SharedWorker enforces the
-WorkerGlobalScope receiver on `fetch`, so a captured-and-called
-function without binding throws "called on an object that does not
-implement interface WorkerGlobalScope".
+The sync host binds `fetch` to `globalThis` so Firefox SharedWorker
+does not throw `WorkerGlobalScope`. `WebSocket` is passed through as
+the constructor, not a bound function.
 
 ## Performance patterns
 
@@ -301,8 +315,8 @@ short-circuits only the self-induced case.
 
 ### Coalesced refresh after bulk apply
 
-**Issue.** Bulk mutations emit one `FOLDER_MEMBERSHIP_REPLACE` plus
-`QUERY_VIEW_APPLY_CHANGES` per id, which fires N `MESSAGES`
+**Issue.** Bulk mutations previously emitted one
+`FOLDER_MEMBERSHIP_REPLACE` plus `QUERY_VIEW_APPLY_CHANGES` per id, which fired N `MESSAGES`
 broadcasts. With per-id SQLite reads in between, deleted rows
 disappeared from the list one at a time even though the JMAP round
 trip was a single batched call.
@@ -350,14 +364,15 @@ WebSocket via the proxy described above.
 - `src/db/handlers.ts`: RPC handlers that own SQL writes. Bulk
   primitives (`MESSAGE_UPSERT_MANY`,
   `FOLDER_MEMBERSHIP_REPLACE_MANY`, `MESSAGE_LIST_FOR_VIEW`,
-  `QUERY_VIEW_PROGRESS`, `OUTBOX_APPLY_MOVE`,
-  `OUTBOX_APPLY_DESTROY`) live here.
+  `QUERY_VIEW_PROGRESS`, `FOLDER_WINDOW_PERSIST_BATCH`,
+  `FOLDER_WINDOW_APPLY_CHANGES_BATCH`, `OUTBOX_APPLY_MOVE_BATCH`,
+  `OUTBOX_APPLY_DESTROY_BATCH`) live here.
 - `src/db/protocol.ts`: RPC method names and `TABLE_FAMILIES`
   constants.
 - `src/db/repository.ts`: main-thread RPC client used by stores.
 - `src/sync/backends/jmap/`: JMAP transport, mailbox/email/contact/
-  identity sync, body fetch, outbox, and the `JmapBackend`
-  orchestrator.
+  identity sync, `file-node.ts` / `settings.ts` / `contacts-trash.ts`,
+  body fetch, `outbox/`, and the `JmapBackend` orchestrator.
 - `src/stores/mail-store.ts`: per-folder cache, virtualized list
   state, body prefetch queue, scroll-position persistence, broadcast
   handling.

@@ -139,6 +139,12 @@ jobs:
             sleep 2
           done
 
+      - name: Configure local e2e stack
+        run: npm run stack:configure
+
+      - name: Run live backend integration tests
+        run: npm run test:integration
+
       - name: Start JMAP WebSocket proxy
         run: npm run stack:ws-proxy >/tmp/stormbox-ws-proxy.log 2>&1 &
 

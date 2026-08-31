@@ -10,11 +10,11 @@ hit when a new store or a new store action lands.
 
 A store is a Pinia composition-API `defineStore` that holds the
 session-scoped state for one slice of the UI (auth, mail, compose,
-contacts) and exposes the actions a component can call to mutate
-that state. Stores never run protocol code, never touch the DOM,
-and never own background timers other than what flows out of their
-own watchers. Anything that does not fit those rules belongs in a
-composable, a worker handler, a sync backend, or a component.
+contacts, settings) and exposes the actions a component can call to mutate
+that state. Stores never run protocol code or manipulate the DOM.
+Narrow browser mirrors and lifecycle timers remain store-owned when
+they are part of that state's account-safe lifecycle. Anything else
+belongs in a composable, worker handler, sync backend, or component.
 
 ## Layer boundaries
 
@@ -23,16 +23,16 @@ composable, a worker handler, a sync backend, or a component.
 - Call `fetch`, JMAP, IMAP, or any other protocol transport. Reads
   and writes go through `Repository` RPC, which delegates to the
   SharedWorker.
-- Read or write `document`, `window`, `localStorage`, or any other
-  global that ties them to a tab. The eslint config bans `document`
-  and `window` in `src/stores/**` to enforce this.
-- Embed JMAP-shaped values in mutation payloads. `pending_mutations`
-  rows carry local row ids only; the outbox resolves remote ids at
-  dispatch.
-- Hold their own setTimeout / setInterval that survives logout. If
-  a store needs scheduling, it lives in a composable that takes the
-  store's deps (repo, accountId) so the composable can guard
-  against drain-after-logout.
+- Read or write `document` or `window`. The eslint config bans both
+  in `src/stores/**`. `globalThis.localStorage` is limited to the
+  settings boot mirror; server data remains in SQLite.
+- Embed JMAP method-call payloads in the store. Mail, send, draft, and
+  mailbox `pending_mutations` rows carry local ids; the outbox resolves
+  remote ids at dispatch. Identity (and some contact) rows already
+  store the server `remoteId`.
+- Leave a timer alive across reset or logout. Token renewal, notice
+  expiry, and compose autosave timers are tracked by their owning
+  store and cleared with its lifecycle.
 
 ### Stores may
 
@@ -41,7 +41,7 @@ composable, a worker handler, a sync backend, or a component.
 - Subscribe to `Repository` table-touched broadcasts and re-run
   their queries.
 - Insert into `pending_mutations` and call `runMutation` /
-  `drainOutbox` to drive the outbox.
+  `drainOutbox`, or patch settings through `applySettingsPatch`.
 - Compose with other stores: `useMailStore` may call into
   `useAuthStore`, etc.
 
@@ -52,20 +52,20 @@ composable, a worker handler, a sync backend, or a component.
 When a store has more than one boolean flag describing the same
 underlying state machine, collapse the flags into a single status
 ref typed against an `as const` object in `src/constants/states.ts`.
-`AUTH_STATE`, `COMPOSE_STATE`, `SYNC_STATE`, `MUTATION_STATUS`, and
-`SYNC_JOB_STATUS` are the existing examples. Derived UI booleans
-(`isConnected`, `isOidcReady`) are computed from the status, not
-parallel refs.
+`AUTH_STATE` and `COMPOSE_STATE` are the store examples.
+`MUTATION_STATUS` and `SYNC_JOB_STATUS` belong to the outbox and
+`sync_jobs` rows, not store UI. Derived UI booleans (`isConnected`,
+`isOidcReady`) are computed from the status, not parallel refs.
 
 ### Errors
 
-Every store exposes `error: Ref<string | null>`. `null` is "no
-error", an empty string is never used. The matching status enum
-includes a `FAILED` variant that the action sets at the same time
-it writes the error. The global `StoreErrorToast` component reads
-each store's `error` and surfaces them through
-`role="status" aria-live="polite"`; dismissing a toast nulls the
-source ref.
+Mail, compose, and contacts expose `error` as `string | null` (`ref`
+or computed). `null` is "no error"; an empty string is never used.
+Compose errors toast only when the dialog is closed. Mail and compose
+also expose `notice` for success toasts. Auth keeps `error` for the
+login gate. Settings does not participate. `StoreErrorToast` reads
+those sources through `role="status" aria-live="polite"`; dismissing
+a toast nulls the source ref.
 
 ### Absence is `null`
 
@@ -81,7 +81,7 @@ goes by `error` or `errorMessage`. Names match shape.
 
 ### Repository handle
 
-Every store that talks to SharedWorker storage holds the handle as
+Every store with a Repository subscription holds the handle as
 `let repo: Repository | null = null` (typed against
 `src/db/repository.ts`). `null` means "before attach() resolved" or
 "after detach()". The store re-checks before each call so a logout-
@@ -91,8 +91,7 @@ during-RPC race is harmless.
 
 ### attach / detach / $reset
 
-Every store with a `Repository` subscription exposes the same
-three-method shape:
+Mail, compose, and contacts use the same three-method shape:
 
 - `attach()`: idempotent. Resolve the repo, subscribe to broadcasts,
   set up the `authStore.accountId` watch.
@@ -102,9 +101,10 @@ three-method shape:
   publicly so account switching and tests can clear without going
   through an OIDC redirect.
 
-`auth-store.logout()` is the auth-specific equivalent; it calls
-`stopSyncAccount`, runs the local clear (the same fields `$reset()`
-clears), and then drives the OIDC redirect.
+Settings `attach`/`detach` manage the repo subscription;
+`$reset` restores the browser mirror and does not run from `detach`.
+Auth has `$reset` and `logout`; `logout` stops token sync, stops the
+worker account, then `$reset`, then the OIDC redirect.
 
 ### Broadcast subscriptions
 
@@ -118,29 +118,35 @@ flurry of MESSAGES touches collapses into one re-read pass — see
 
 User actions that change server state are queued through
 `pending_mutations` and drained by the worker-side `OutboxRunner`.
-The store is the producer; it writes a row, calls `runMutation`
-(per-row) or `drainOutbox` (account-wide) on the repository, and
-then reads back the success / error fields to surface to the UI.
+Mail triage that must be on screen when the action returns
+(`destroy` / `move`) writes a row and awaits `runMutation`. Mark-seen
+and keywords enqueue and let the runner drain. Settings patch through
+`applySettingsPatch`, which coalesces `pushSettings` in the same
+transaction.
 
-### Mutation payloads carry local ids only
+### Mutation payloads carry local ids for mail
 
-`pending_mutations.request_json` for SET_KEYWORDS, MOVE_TO_FOLDERS,
-DESTROY, and SEND uses local `messages.id`, `folders.id`, and
-`identities.id`. The outbox resolves to JMAP `remote_id` at dispatch
-through `resolveRemoteMessageIds`, `resolveRemoteFolderIds`, and
-`resolveIdentity`. Storing remote ids in the row would leak the
-protocol across the layer boundary and break a hypothetical
-non-JMAP backend that consumes the same row.
+Mail, send, draft, and mailbox `request_json` uses local ids. The
+modular outbox (`outbox/index.ts`) resolves remote ids at dispatch
+(`resolveRemoteMessageIdsByAccount`, `resolveFolderRemoteIds`,
+`resolveIdentity`). Identity and some contact rows already carry
+server `remoteId`.
+
+AddressBook create, edit, inventory, and delete remain contacts-store
+actions. The store reads the persisted Contacts capability and fails
+closed unless `mayCreateAddressBook` is explicitly true. It passes local
+book ids and authoritative inventory envelopes through Repository; the
+JMAP backend owns remote-id resolution, fresh rights checks, recovery,
+and post-write reconciliation.
 
 ### Local cache reconciliation is synchronous
 
-When a mutation's protocol call succeeds, the matching cache effect
-in `src/sync/backends/jmap/outbox.ts` writes the local cache change
+When a mutation's protocol call succeeds, the matching operation
+under `src/sync/backends/jmap/outbox/` writes the local cache change
 before `runMutation` resolves. Move and destroy go straight to the
 protocol-neutral `OUTBOX_APPLY_MOVE_BATCH` /
-`OUTBOX_APPLY_DESTROY_BATCH` DB handlers; send and the
-notUpdated/notDestroyed fallback are handled by `applySendLocally`
-and `reconcileMessageFromServer` in the same file. The store can
+`OUTBOX_APPLY_DESTROY_BATCH` DB handlers; send and fallback
+reconciliation use `send-apply.ts` and `messages-shared.ts`. The store can
 therefore splice the affected rows out of `messages.value`
 synchronously after `runMutation` returns success — it does not need
 to wait for the JMAP push channel and the broadcast hop.
@@ -183,12 +189,12 @@ Skip comments that just narrate what the next line does.
   presentation, body-prefetch composable) get their own focused
   unit-test file under `tests/unit/utils/` or
   `tests/unit/composables/` respectively.
-- Store action tests use the in-memory engine
-  (`bootTestEngine` from `src/db/bootstrap-memory.js`) and exercise
-  the action through its public surface, not through internal
-  implementation details.
+- Mail, compose, and contacts action tests that hit SQLite use the
+  in-memory engine (`bootTestEngine` from `src/db/bootstrap-memory`)
+  and exercise the public surface. Settings tests mock the repository
+  and `localStorage`.
 - Verified-Consistency e2e tests live in `tests/e2e/` and run on
-  Chromium and Firefox. Every shipped server+cache mutation has
-  one. The pass condition is the synchronous-cache invariant: by
-  the time the action's promise resolves, the local cache already
-  matches what the server now holds.
+  Firefox by default (Chromium via `INCLUDE_CHROMIUM=1`). The pass
+  condition is the synchronous-cache invariant: by the time the
+  awaited action resolves, the local cache already matches what the
+  server now holds.
