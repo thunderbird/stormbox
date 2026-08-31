@@ -523,8 +523,10 @@ describe('App mail layout', () => {
     await nextTick();
     const input = wrapper.get('.quick-filter__input');
 
-    expect(input.attributes('placeholder')).toBe('Quick Filter');
+    expect(input.attributes('placeholder')).toBe('Filter messages..');
     expect(input.attributes('aria-label')).toBe('Quick Filter messages by from, to, or subject');
+    expect(input.attributes('aria-keyshortcuts')).toBe('Control+K');
+    expect(wrapper.get('.quick-filter__shortcut').text()).toBe('Ctrl+K');
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
@@ -1021,13 +1023,15 @@ describe('App mail layout', () => {
     await wrapper.get('.theme-toggle').trigger('click');
     expect(document.documentElement.classList.contains('dark')).toBe(true);
     expect(wrapper.get('.theme-toggle').attributes('aria-label')).toBe('Switch to light mode');
+    // The mirror also carries the scheduling time zone, initialized on
+    // first connect; only the theme is under test here.
     expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
-      .toEqual({ theme: 'dark' });
+      .toMatchObject({ theme: 'dark' });
 
     await wrapper.get('.theme-toggle').trigger('click');
     expect(document.documentElement.classList.contains('dark')).toBe(false);
     expect(document.documentElement.classList.contains('light')).toBe(true);
     expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
-      .toEqual({ theme: 'light' });
+      .toMatchObject({ theme: 'light' });
   });
 });

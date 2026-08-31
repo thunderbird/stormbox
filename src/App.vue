@@ -22,6 +22,7 @@ import { useComposeStore } from './stores/compose-store';
 import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
 import type { Theme } from './constants/settings';
+import { shortcutModifierAria, shortcutModifierLabel } from './utils/keyboard';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -57,13 +58,15 @@ const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
 const composeActionSpotlight = ref(false);
 const quickFilterPlaceholder = computed(() =>
-  space.value === 'contacts' ? 'Filter contacts or identities' : 'Quick Filter',
+  space.value === 'contacts' ? 'Filter contacts or identities' : 'Filter messages..',
 );
 const quickFilterAriaLabel = computed(() =>
   space.value === 'contacts'
     ? 'Filter contacts or identities by name or email address'
     : 'Quick Filter messages by from, to, or subject',
 );
+const quickFilterShortcutLabel = `${shortcutModifierLabel()}+K`;
+const quickFilterAriaShortcut = `${shortcutModifierAria()}+K`;
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
@@ -711,14 +714,21 @@ function clamp(value: number, min: number, max: number) {
         <input
           ref="quickFilterInputEl"
           class="quick-filter__input"
+          :class="{ 'quick-filter__input--empty': quickFilterQuery.length === 0 }"
           type="search"
           :value="quickFilterQuery"
           :aria-label="quickFilterAriaLabel"
+          :aria-keyshortcuts="quickFilterAriaShortcut"
           :placeholder="quickFilterSpotlight ? '' : quickFilterPlaceholder"
           autocomplete="off"
           spellcheck="false"
           @input="setQuickFilterQuery"
         />
+        <kbd
+          v-if="quickFilterQuery.length === 0"
+          class="quick-filter__shortcut"
+          aria-hidden="true"
+        >{{ quickFilterShortcutLabel }}</kbd>
         <button
           v-if="quickFilterQuery.length > 0"
           class="quick-filter__clear"
@@ -1133,6 +1143,9 @@ html.light,
   outline: none;
   box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
 }
+.quick-filter__input--empty {
+  padding-right: 70px;
+}
 .quick-filter__search--spotlight .quick-filter__input {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
@@ -1150,6 +1163,21 @@ html.light,
 .quick-filter__input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.quick-filter__shortcut {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--rowHover));
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 .quick-filter__clear {
   position: absolute;

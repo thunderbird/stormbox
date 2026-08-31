@@ -12,7 +12,6 @@ import { ref } from 'vue';
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import type { AddressbookRow } from '../../types';
 import AppButton from '../AppButton.vue';
-import AppIconButton from '../AppIconButton.vue';
 import {
   addressBookDisplayName,
   isTrustedSendersAddressBook,
@@ -123,7 +122,7 @@ function onInvalidDrop(event: DragEvent): void {
 <template>
   <nav class="contacts-rail" aria-label="Address books">
     <header class="contacts-rail__header">
-      <AppIconButton
+      <AppButton
         class="contacts-rail__create-book"
         :disabled="!canCreateAddressBook"
         title="Create address book"
@@ -138,7 +137,7 @@ function onInvalidDrop(event: DragEvent): void {
             :stroke-width="2.6"
           />
         </span>
-      </AppIconButton>
+      </AppButton>
       <AppButton
         class="contacts-rail__create"
         :disabled="kind === 'trash'"
@@ -274,27 +273,13 @@ function onInvalidDrop(event: DragEvent): void {
   max-width: 100%;
 }
 
-.contacts-rail__create-book {
-  border-radius: 3px;
-  background: var(--primary-filled-gradient);
-  color: #fff;
-  box-shadow: none;
-}
-
-.contacts-rail__create-book:hover:not(:disabled) {
-  background: var(--colour-primary-hover, var(--accent));
-  color: #fff;
-  box-shadow: none;
-}
-
-.contacts-rail__create-book:active:not(:disabled) {
-  background: var(--colour-primary-pressed, var(--accent));
-}
-
-.contacts-rail__create-book:disabled {
-  background: var(--colour-neutral-border, var(--border));
-  color: var(--colour-ti-muted, var(--muted));
-  opacity: 1;
+/* Icon-only square variant of the filled house button. Doubled with .base
+   (services-ui's own class) to outrank its padding, same trick as
+   AppButton.vue, so both header buttons share one visual treatment. */
+.base.contacts-rail__create-book {
+  width: 34px;
+  flex: 0 0 34px;
+  padding: 0;
 }
 
 .contacts-rail__create-book-icon {
