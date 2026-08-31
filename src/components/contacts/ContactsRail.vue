@@ -4,6 +4,7 @@ import {
   BookUser,
   ContactRound,
   Plus,
+  Trash2,
   Users,
 } from '@lucide/vue';
 import { ref } from 'vue';
@@ -11,13 +12,20 @@ import { ref } from 'vue';
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import type { AddressbookRow } from '../../types';
 import AppButton from '../AppButton.vue';
-import type { DirectoryKind } from './directory-types';
+import AppIconButton from '../AppIconButton.vue';
+import {
+  addressBookDisplayName,
+  isTrustedSendersAddressBook,
+  type DirectoryKind,
+} from './directory-types';
 
 const props = defineProps<{
   addressbooks: AddressbookRow[];
   bookCounts: Map<number, number>;
+  canCreateAddressBook: boolean;
   contactCount: number;
   identityCount: number;
+  trashCount: number;
   kind: DirectoryKind;
   selectedBookId: number | null;
 }>();
@@ -29,8 +37,10 @@ const emit = defineEmits<{
     targetAddressbookId: number;
   }];
   addContact: [];
+  createAddressBook: [];
   selectBook: [id: number | null];
   selectIdentities: [];
+  selectTrash: [];
 }>();
 
 const hoveredDropTarget = ref<number | null>(null);
@@ -40,15 +50,6 @@ const {
   readContactDrop,
   setContactDropEffect,
 } = useContactDragDrop();
-
-function bookLabel(book: AddressbookRow): string {
-  if (book.is_default) return 'Personal';
-  return book.name?.trim() || 'Address book';
-}
-
-function isTrustedSendersBook(book: AddressbookRow): boolean {
-  return book.name?.trim().toLowerCase() === 'trusted senders';
-}
 
 function canMoveTo(book: AddressbookRow, event?: DragEvent): boolean {
   if (props.kind !== 'contacts' || book.may_write !== 1) {
@@ -70,7 +71,9 @@ function onBookDragOver(book: AddressbookRow, event: DragEvent): void {
   const allowed = canMoveTo(book, event);
   setContactDropEffect(event, allowed ? 'move' : null);
   hoveredDropTarget.value = allowed ? book.id : null;
-  if (allowed) dropAnnouncement.value = `Move contacts to ${bookLabel(book)}`;
+  if (allowed) {
+    dropAnnouncement.value = `Move contacts to ${addressBookDisplayName(book)}`;
+  }
 }
 
 function onBookDragLeave(book: AddressbookRow, event: DragEvent): void {
@@ -96,7 +99,7 @@ function onBookDrop(book: AddressbookRow, event: DragEvent): void {
   }
   dropAnnouncement.value = `Moving ${payload.ids.length} contact${
     payload.ids.length === 1 ? '' : 's'
-  } to ${bookLabel(book)}`;
+  } to ${addressBookDisplayName(book)}`;
   emit('moveContacts', {
     contactIds: payload.ids,
     sourceAddressbookId: payload.sourceAddressbookId,
@@ -120,7 +123,27 @@ function onInvalidDrop(event: DragEvent): void {
 <template>
   <nav class="contacts-rail" aria-label="Address books">
     <header class="contacts-rail__header">
-      <AppButton class="contacts-rail__create" @click="emit('addContact')">
+      <AppIconButton
+        class="contacts-rail__create-book"
+        :disabled="!canCreateAddressBook"
+        title="Create address book"
+        aria-label="Create address book"
+        @click="emit('createAddressBook')"
+      >
+        <span class="contacts-rail__create-book-icon" aria-hidden="true">
+          <BookUser :size="18" :stroke-width="1.75" />
+          <Plus
+            class="contacts-rail__create-book-plus"
+            :size="10"
+            :stroke-width="2.6"
+          />
+        </span>
+      </AppIconButton>
+      <AppButton
+        class="contacts-rail__create"
+        :disabled="kind === 'trash'"
+        @click="emit('addContact')"
+      >
         <template #iconLeft>
           <Plus :size="16" :stroke-width="2" aria-hidden="true" />
         </template>
@@ -161,7 +184,7 @@ function onInvalidDrop(event: DragEvent): void {
         @drop.prevent="onBookDrop(book, $event)"
       >
         <BookUser
-          v-if="isTrustedSendersBook(book)"
+          v-if="isTrustedSendersAddressBook(book)"
           :size="16"
           :stroke-width="1.75"
           aria-hidden="true"
@@ -172,11 +195,30 @@ function onInvalidDrop(event: DragEvent): void {
           :stroke-width="1.75"
           aria-hidden="true"
         />
-        <span class="contacts-rail__name">{{ bookLabel(book) }}</span>
+        <span class="contacts-rail__book-label">
+          <span class="contacts-rail__name">{{ addressBookDisplayName(book) }}</span>
+          <span v-if="book.is_default === 1" class="contacts-rail__badge">
+            Personal
+          </span>
+        </span>
         <span v-if="hoveredDropTarget === book.id" class="contacts-rail__drop-label">
           Move here
         </span>
         <span v-else class="contacts-rail__count">{{ bookCounts.get(book.id) ?? 0 }}</span>
+      </button>
+
+      <button
+        class="contacts-rail__book contacts-rail__trash contacts__book"
+        type="button"
+        :class="{ 'contacts-rail__book--active': kind === 'trash' }"
+        :aria-pressed="kind === 'trash'"
+        @click="emit('selectTrash')"
+        @dragover="onInvalidDragOver"
+        @drop.prevent="onInvalidDrop"
+      >
+        <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <span class="contacts-rail__name">Trash</span>
+        <span class="contacts-rail__count">{{ trashCount }}</span>
       </button>
 
       <div class="contacts-rail__identity contacts__identity-section">
@@ -218,14 +260,70 @@ function onInvalidDrop(event: DragEvent): void {
 }
 
 .contacts-rail__header {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 6px;
   padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft, #eef0f5);
 }
 
 .contacts-rail__create {
-  width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
   max-width: 100%;
+}
+
+.contacts-rail__create-book {
+  border-radius: 3px;
+  background: var(--primary-filled-gradient);
+  color: #fff;
+  box-shadow: none;
+}
+
+.contacts-rail__create-book:hover:not(:disabled) {
+  background: var(--colour-primary-hover, var(--accent));
+  color: #fff;
+  box-shadow: none;
+}
+
+.contacts-rail__create-book:active:not(:disabled) {
+  background: var(--colour-primary-pressed, var(--accent));
+}
+
+.contacts-rail__create-book:disabled {
+  background: var(--colour-neutral-border, var(--border));
+  color: var(--colour-ti-muted, var(--muted));
+  opacity: 1;
+}
+
+.contacts-rail__create-book-icon {
+  position: relative;
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+}
+
+.contacts-rail__create-book-plus {
+  position: absolute;
+  right: -2px;
+  bottom: -1px;
+  padding: 1px;
+  border-radius: 999px;
+  background: var(--colour-primary-default, var(--accent));
+}
+
+.contacts-rail__create-book:hover:not(:disabled) .contacts-rail__create-book-plus {
+  background: var(--colour-primary-hover, var(--accent));
+}
+
+.contacts-rail__create-book:active:not(:disabled) .contacts-rail__create-book-plus {
+  background: var(--colour-primary-pressed, var(--accent));
+}
+
+.contacts-rail__create-book:disabled .contacts-rail__create-book-plus {
+  background: var(--colour-neutral-border, var(--border));
 }
 
 .contacts-rail__books {
@@ -283,12 +381,33 @@ function onInvalidDrop(event: DragEvent): void {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.contacts-rail__name {
+.contacts-rail__book-label {
+  display: flex;
   min-width: 0;
   flex: 1 1 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.contacts-rail__name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.contacts-rail__badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.contacts-rail__badge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
 
 .contacts-rail__drop-label {
@@ -316,8 +435,12 @@ function onInvalidDrop(event: DragEvent): void {
   color: var(--text, #1a1d24);
 }
 
-.contacts-rail__identity {
+.contacts-rail__trash {
   margin-top: auto;
+}
+
+.contacts-rail__identity {
+  margin-top: 0;
   padding-top: 8px;
   border-top: 1px solid var(--border-soft, #eef0f5);
 }
@@ -357,9 +480,14 @@ function onInvalidDrop(event: DragEvent): void {
     border-radius: 999px;
   }
 
-  .contacts-rail__identity {
+  .contacts-rail__trash {
     margin-top: 0;
     margin-left: auto;
+  }
+
+  .contacts-rail__identity {
+    margin-top: 0;
+    margin-left: 0;
     padding-top: 0;
     padding-left: 6px;
     border-top: 0;

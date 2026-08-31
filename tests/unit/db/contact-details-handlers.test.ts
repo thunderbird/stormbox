@@ -123,6 +123,7 @@ describe('contact detail handlers', () => {
       addressbook_ids: [10],
       display_name: 'Ada Lovelace',
       email: 'work@example.com',
+      photo: null,
     }]);
     expect(list[0]).not.toHaveProperty('organization');
 

@@ -121,6 +121,30 @@ export interface JmapIdentity {
 }
 
 // ---------------------------------------------------------------------
+// File storage
+// ---------------------------------------------------------------------
+
+export interface JmapFileNodeRights {
+  mayRead?: boolean;
+  mayWrite?: boolean;
+  mayModifyContent?: boolean;
+  mayDelete?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+export interface JmapFileNode {
+  id: string;
+  name: string;
+  parentId: string | null;
+  nodeType?: string;
+  blobId?: string | null;
+  type?: string | null;
+  size?: number;
+  myRights?: JmapFileNodeRights;
+  [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------
 // Email/query and Email/queryChanges
 // ---------------------------------------------------------------------
 
@@ -159,9 +183,15 @@ export interface JmapAddressBook {
   id: string;
   name?: string | null;
   description?: string | null;
+  sortOrder?: number;
   isDefault?: boolean;
   isSubscribed?: boolean;
-  myRights?: Record<string, boolean>;
+  myRights?: {
+    mayRead?: boolean;
+    mayWrite?: boolean;
+    mayShare?: boolean;
+    mayDelete?: boolean;
+  };
 }
 
 export interface JmapContactCard {

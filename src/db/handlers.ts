@@ -16,9 +16,34 @@ import { addressKey, nameTokens } from '../utils/address-key';
 import { IDENTITY_ERROR } from '../constants/identity-errors';
 import { decodeIdentityAddresses, hasOwn } from '../utils/identity-fields';
 import {
+  ADDRESSBOOK_PHASE,
+  DRAFT_PHASE,
   MUTATION_TYPE,
   SEND_PHASE,
 } from '../constants/states';
+import {
+  CONTACTS_TRASH_MAX_DOCUMENT_BYTES,
+  CONTACTS_TRASH_MAX_SHARD_ENTRIES,
+  CONTACTS_TRASH_MAX_TOMBSTONE_SHARD_BYTES,
+  CONTACTS_TRASH_SHARD_FILE_PREFIX,
+  aggregateContactsTrashDocuments,
+  contactTrashEntryFitsInShard,
+  emptyContactsTrashShardDocument,
+  mergeContactsTrashShardDocuments,
+  normalizeContactsTrashDocument,
+  normalizeContactTrashEntry,
+  normalizeContactsTrashShardDocument,
+  serializedContactsTrashShardBytes,
+  type ContactTrashDocumentEntry,
+  type ContactsTrashDocument,
+  type ContactsTrashShardDocument,
+} from '../constants/contacts-trash-document';
+import type { ContactTrashDetail, ContactTrashLookup } from '../types/db';
+import {
+  emptySettingsDocument,
+  mergeSettingsDocuments,
+  normalizeSettingsDocument,
+} from '../constants/settings-document';
 import { autocompleteRecipients, ownedAddressKeys } from './autocomplete';
 import {
   batchResult,
@@ -97,6 +122,578 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     ? hooks.onMutationInserted
     : () => {};
   const now = () => Date.now();
+
+  function notifyMutation(accountId: number, mutationId: number): void {
+    try {
+      const maybePromise = onMutationInserted({ accountId, mutationId });
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.catch(() => {});
+      }
+    } catch {
+      // The durable row is sufficient; a later outbox wake will find it.
+    }
+  }
+
+  function parseSettingsDocument(docJson: unknown) {
+    if (typeof docJson !== 'string') return emptySettingsDocument();
+    try {
+      return normalizeSettingsDocument(JSON.parse(docJson));
+    } catch {
+      return emptySettingsDocument();
+    }
+  }
+
+  async function loadSettingsInTx(tx: any, accountId: number) {
+    const row = await tx.get(
+      'SELECT doc_json, remote_node_id FROM user_settings WHERE account_id = ?',
+      [accountId],
+    );
+    return {
+      document: parseSettingsDocument(row?.doc_json),
+      remoteNodeId: row?.remote_node_id ?? null,
+    };
+  }
+
+  async function upsertSettingsInTx(
+    tx: any,
+    accountId: number,
+    document: unknown,
+    remoteNodeId: string | null,
+    ts: number,
+  ) {
+    await tx.run(
+      `INSERT INTO user_settings(account_id, doc_json, remote_node_id, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET
+          doc_json = excluded.doc_json,
+          remote_node_id = excluded.remote_node_id,
+          updated_at = excluded.updated_at`,
+      [accountId, JSON.stringify(normalizeSettingsDocument(document)), remoteNodeId, ts],
+    );
+  }
+
+  async function ensureSettingsPushInTx(tx: any, accountId: number, ts: number) {
+    const rows = await tx.all(
+      `SELECT id
+         FROM pending_mutations
+        WHERE account_id = ?
+          AND mutation_type = ?
+          AND local_status IN ('pending','retry')
+        ORDER BY id`,
+      [accountId, MUTATION_TYPE.PUSH_SETTINGS],
+    );
+    const existing = rows[0];
+    if (existing) {
+      await tx.run(
+        `UPDATE pending_mutations
+            SET local_status = 'pending',
+                request_json = '{}',
+                attempts = 0,
+                last_attempt_at = NULL,
+                not_before = NULL,
+                server_response_json = NULL,
+                error_json = NULL,
+                updated_at = ?
+          WHERE id = ?`,
+        [ts, existing.id],
+      );
+      if (rows.length > 1) {
+        await tx.run(
+          `DELETE FROM pending_mutations
+            WHERE account_id = ?
+              AND mutation_type = ?
+              AND local_status IN ('pending','retry')
+              AND id <> ?`,
+          [accountId, MUTATION_TYPE.PUSH_SETTINGS, existing.id],
+        );
+      }
+      return { id: Number(existing.id), reused: true };
+    }
+    const result = await tx.run(
+      `INSERT INTO pending_mutations(
+          account_id, mutation_type, local_status, target_message_id,
+          request_json, optimistic_patch_json, server_response_json, error_json,
+          created_at, updated_at
+       ) VALUES (?, ?, 'pending', NULL, '{}', NULL, NULL, NULL, ?, ?)`,
+      [accountId, MUTATION_TYPE.PUSH_SETTINGS, ts, ts],
+    );
+    return { id: Number(result.lastInsertRowid), reused: false };
+  }
+
+  function parseContactsTrashDocument(
+    docJson: unknown,
+  ): ContactsTrashDocument | ContactsTrashShardDocument {
+    if (typeof docJson !== 'string') return emptyContactsTrashShardDocument();
+    try {
+      const parsed = JSON.parse(docJson);
+      return parsed?.version === 1
+        ? normalizeContactsTrashDocument(parsed)
+        : normalizeContactsTrashShardDocument(parsed);
+    } catch {
+      return emptyContactsTrashShardDocument();
+    }
+  }
+
+  async function loadContactsTrashInTx(tx: any, accountId: number) {
+    const rows = await tx.all(
+      `SELECT shard_name, doc_json, remote_node_id, remote_blob_id,
+              dirty, local_revision
+         FROM contacts_trash_documents
+        WHERE account_id = ?
+        ORDER BY shard_name`,
+      [accountId],
+    );
+    const shards = rows.map((row: any) => ({
+      shardName: String(row.shard_name),
+      document: parseContactsTrashDocument(row.doc_json),
+      remoteNodeId: row.remote_node_id ?? null,
+      remoteBlobId: row.remote_blob_id ?? null,
+      dirty: Number(row.dirty) === 1,
+      localRevision: Number(row.local_revision),
+    }));
+    return {
+      document: aggregateContactsTrashDocuments(
+        shards.map((shard: any) => shard.document),
+      ),
+      shards,
+    };
+  }
+
+  function randomContactsTrashShardName(): string {
+    return `${CONTACTS_TRASH_SHARD_FILE_PREFIX}${globalThis.crypto.randomUUID()}.json`;
+  }
+
+  function contactsTrashShardTooLarge(): Error & { type: 'tooLarge'; terminal: true } {
+    return Object.assign(
+      new Error('Contact trash entry exceeds the configured shard size limit'),
+      { type: 'tooLarge' as const, terminal: true as const },
+    );
+  }
+
+  function contactsTrashGroupTooLarge(): Error & { type: 'trashGroupTooLarge' } {
+    return Object.assign(
+      new Error('Contact trash checkpoint group does not fit one shard'),
+      { type: 'trashGroupTooLarge' as const },
+    );
+  }
+
+  function ambiguousContactsTrashUid(): Error & { type: 'ambiguousUid' } {
+    return Object.assign(
+      new Error('A different active contact already owns this trash UID'),
+      { type: 'ambiguousUid' as const },
+    );
+  }
+
+  type ContactsTrashShardLane = 'snapshot' | 'tombstone';
+
+  async function openContactsTrashShardNameInTx(
+    tx: any,
+    accountId: number,
+    ts: number,
+    lane: ContactsTrashShardLane,
+  ) {
+    const state = await tx.get(
+      `SELECT open_shard_name, open_tombstone_shard_name
+         FROM contacts_trash_state
+        WHERE account_id = ?`,
+      [accountId],
+    );
+    const column = lane === 'snapshot' ? 'open_shard_name' : 'open_tombstone_shard_name';
+    if (state?.[column]) return String(state[column]);
+    const snapshotShardName = randomContactsTrashShardName();
+    const tombstoneShardName = randomContactsTrashShardName();
+    await tx.run(
+      `INSERT INTO contacts_trash_state(
+         account_id, open_shard_name, open_tombstone_shard_name, updated_at
+       ) VALUES (?, ?, ?, ?)`,
+      [accountId, snapshotShardName, tombstoneShardName, ts],
+    );
+    return lane === 'snapshot' ? snapshotShardName : tombstoneShardName;
+  }
+
+  async function rotateContactsTrashShardInTx(
+    tx: any,
+    accountId: number,
+    ts: number,
+    lane: ContactsTrashShardLane,
+  ) {
+    const shardName = randomContactsTrashShardName();
+    const column = lane === 'snapshot' ? 'open_shard_name' : 'open_tombstone_shard_name';
+    await tx.run(
+      `UPDATE contacts_trash_state
+          SET ${column} = ?, updated_at = ?
+        WHERE account_id = ?`,
+      [shardName, ts, accountId],
+    );
+    return shardName;
+  }
+
+  async function appendContactsTrashRecordsInTx(
+    tx: any,
+    accountId: number,
+    entries: ContactTrashDocumentEntry[],
+    ts: number,
+    {
+      maxBytes = CONTACTS_TRASH_MAX_DOCUMENT_BYTES,
+      singleShard = false,
+      lane = 'snapshot',
+    }: {
+      maxBytes?: number;
+      singleShard?: boolean;
+      lane?: ContactsTrashShardLane;
+    } = {},
+  ): Promise<string[]> {
+    const touched = new Set<string>();
+    let shardName = await openContactsTrashShardNameInTx(tx, accountId, ts, lane);
+    if (singleShard && entries.length > 0) {
+      for (const entry of entries) {
+        if (!contactTrashEntryFitsInShard(entry, maxBytes)) throw contactsTrashShardTooLarge();
+      }
+      const records = entries.map((entry) => ({
+        entry,
+        recordId: globalThis.crypto.randomUUID(),
+      }));
+      for (let candidateIndex = 0; candidateIndex < 2; candidateIndex += 1) {
+        const row = await tx.get(
+          `SELECT doc_json
+             FROM contacts_trash_documents
+            WHERE account_id = ? AND shard_name = ?`,
+          [accountId, shardName],
+        );
+        const document = row
+          ? normalizeContactsTrashShardDocument(parseContactsTrashDocument(row.doc_json))
+          : emptyContactsTrashShardDocument();
+        const candidate = structuredClone(document);
+        for (const record of records) {
+          candidate.entries[record.recordId] = structuredClone(record.entry);
+        }
+        if (
+          Object.keys(candidate.entries).length <= CONTACTS_TRASH_MAX_SHARD_ENTRIES
+          && serializedContactsTrashShardBytes(candidate) <= maxBytes
+        ) {
+          if (row) {
+            await tx.run(
+              `UPDATE contacts_trash_documents
+                  SET doc_json = ?, dirty = 1,
+                      local_revision = local_revision + 1, updated_at = ?
+                WHERE account_id = ? AND shard_name = ?`,
+              [JSON.stringify(candidate), ts, accountId, shardName],
+            );
+          } else {
+            await tx.run(
+              `INSERT INTO contacts_trash_documents(
+                 account_id, shard_name, doc_json, remote_node_id,
+                 dirty, local_revision, updated_at
+               ) VALUES (?, ?, ?, NULL, 1, 1, ?)`,
+              [accountId, shardName, JSON.stringify(candidate), ts],
+            );
+          }
+          return [shardName];
+        }
+        if (candidateIndex === 0) {
+          shardName = await rotateContactsTrashShardInTx(tx, accountId, ts, lane);
+        }
+      }
+      throw contactsTrashGroupTooLarge();
+    }
+    for (const entry of entries) {
+      if (!contactTrashEntryFitsInShard(entry, maxBytes)) throw contactsTrashShardTooLarge();
+      let appended = false;
+      while (!appended) {
+        const row = await tx.get(
+          `SELECT doc_json, local_revision
+             FROM contacts_trash_documents
+            WHERE account_id = ? AND shard_name = ?`,
+          [accountId, shardName],
+        );
+        const document = row
+          ? normalizeContactsTrashShardDocument(parseContactsTrashDocument(row.doc_json))
+          : emptyContactsTrashShardDocument();
+        const recordId = globalThis.crypto.randomUUID();
+        const candidate = structuredClone(document);
+        candidate.entries[recordId] = structuredClone(entry);
+        if (
+          Object.keys(candidate.entries).length > CONTACTS_TRASH_MAX_SHARD_ENTRIES
+          || serializedContactsTrashShardBytes(candidate) > maxBytes
+        ) {
+          shardName = await rotateContactsTrashShardInTx(tx, accountId, ts, lane);
+          continue;
+        }
+        if (row) {
+          await tx.run(
+            `UPDATE contacts_trash_documents
+                SET doc_json = ?, dirty = 1,
+                    local_revision = local_revision + 1, updated_at = ?
+              WHERE account_id = ? AND shard_name = ?`,
+            [JSON.stringify(candidate), ts, accountId, shardName],
+          );
+        } else {
+          await tx.run(
+            `INSERT INTO contacts_trash_documents(
+               account_id, shard_name, doc_json, remote_node_id,
+               dirty, local_revision, updated_at
+             ) VALUES (?, ?, ?, NULL, 1, 1, ?)`,
+            [accountId, shardName, JSON.stringify(candidate), ts],
+          );
+        }
+        touched.add(shardName);
+        appended = true;
+      }
+    }
+    return [...touched];
+  }
+
+  function contactsTrashEntryFingerprint(
+    entry: ContactTrashDocumentEntry,
+    includeUpdatedAt = true,
+  ): string {
+    const serialized = JSON.stringify(
+      includeUpdatedAt ? entry : { ...entry, updatedAt: 0 },
+    );
+    let first = 0x811c9dc5;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < serialized.length; index += 1) {
+      const code = serialized.charCodeAt(index);
+      first = Math.imul(first ^ code, 0x01000193);
+      second = Math.imul(second ^ code, 0x5bd1e995);
+    }
+    return `${serialized.length}:${(first >>> 0).toString(16)}:${(second >>> 0).toString(16)}`;
+  }
+
+  function contactsTrashTombstone(
+    entry: ContactTrashDocumentEntry,
+    status: 'purged' | 'restored',
+    updatedAt: number,
+  ): ContactTrashDocumentEntry {
+    return {
+      ...entry,
+      addressBookIds: [],
+      status,
+      updatedAt,
+      emailKeys: [],
+      displayName: '(deleted)',
+      primaryEmail: null,
+      snapshot: null,
+      media: [],
+    };
+  }
+
+  async function persistContactsTrashInTx(
+    tx: any,
+    accountId: number,
+    input: unknown,
+    ts: number,
+  ): Promise<ContactsTrashDocument> {
+    const document = normalizeContactsTrashDocument(input);
+    const existingRows = await tx.all(
+      `SELECT id, uid, lifecycle_updated_at, projection_fingerprint
+         FROM contacts_trash
+        WHERE account_id = ?`,
+      [accountId],
+    );
+    const existingByUid = new Map<string, any>(
+      existingRows.map((row: any) => [String(row.uid), row]),
+    );
+    for (const entry of Object.values(document.entries)) {
+      const projected = {
+        priorRemoteId: entry.remoteId,
+        addressBookIdsJson: JSON.stringify(entry.addressBookIds),
+        snapshotJson: entry.snapshot == null ? null : JSON.stringify(entry.snapshot),
+        mediaJson: JSON.stringify(entry.media),
+        fingerprint: contactsTrashEntryFingerprint(entry),
+        displayName: entry.displayName,
+        primaryEmail: entry.primaryEmail,
+        trashedAt: entry.trashedAt,
+        expiresAt: entry.expiresAt,
+        status: entry.status,
+        lifecycleUpdatedAt: entry.updatedAt,
+      };
+      const existing = existingByUid.get(entry.uid);
+      const unchanged = existing
+        && existing.projection_fingerprint === projected.fingerprint
+        && Number(existing.lifecycle_updated_at) === projected.lifecycleUpdatedAt;
+      if (unchanged) {
+        existingByUid.delete(entry.uid);
+        continue;
+      }
+      let trashId: number;
+      if (existing) {
+        await tx.run(
+          `UPDATE contacts_trash
+              SET prior_remote_id = ?, original_addressbook_ids_json = ?,
+                  snapshot_json = ?, media_json = ?, projection_fingerprint = ?,
+                  display_name = ?, primary_email = ?, trashed_at = ?,
+                  expires_at = ?, status = ?, lifecycle_updated_at = ?,
+                  updated_at = ?
+            WHERE id = ?`,
+          [
+            projected.priorRemoteId,
+            projected.addressBookIdsJson,
+            projected.snapshotJson,
+            projected.mediaJson,
+            projected.fingerprint,
+            projected.displayName,
+            projected.primaryEmail,
+            projected.trashedAt,
+            projected.expiresAt,
+            projected.status,
+            projected.lifecycleUpdatedAt,
+            ts,
+            existing.id,
+          ],
+        );
+        trashId = Number(existing.id);
+      } else {
+        const inserted = await tx.run(
+          `INSERT INTO contacts_trash(
+             account_id, uid, prior_remote_id, original_addressbook_ids_json,
+             snapshot_json, media_json, projection_fingerprint, display_name,
+             primary_email, trashed_at, expires_at, status, lifecycle_updated_at,
+             updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            accountId,
+            entry.uid,
+            projected.priorRemoteId,
+            projected.addressBookIdsJson,
+            projected.snapshotJson,
+            projected.mediaJson,
+            projected.fingerprint,
+            projected.displayName,
+            projected.primaryEmail,
+            projected.trashedAt,
+            projected.expiresAt,
+            projected.status,
+            projected.lifecycleUpdatedAt,
+            ts,
+          ],
+        );
+        trashId = Number(inserted.lastInsertRowid);
+      }
+      existingByUid.delete(entry.uid);
+      await tx.run('DELETE FROM contacts_trash_emails WHERE trash_id = ?', [trashId]);
+      const projectedEmailKeys = entry.status === 'trashed' ? entry.emailKeys : [];
+      for (let position = 0; position < projectedEmailKeys.length; position += 1) {
+        await tx.run(
+          `INSERT INTO contacts_trash_emails(
+             trash_id, account_id, position, email_key
+           ) VALUES (?, ?, ?, ?)`,
+          [
+            trashId,
+            accountId,
+            position,
+            projectedEmailKeys[position],
+          ],
+        );
+      }
+    }
+    const removedIds = [...existingByUid.values()].map((row: any) => Number(row.id));
+    const deleteBatchSize = 250;
+    for (let offset = 0; offset < removedIds.length; offset += deleteBatchSize) {
+      const ids = removedIds.slice(offset, offset + deleteBatchSize);
+      await tx.run(
+        `DELETE FROM contacts_trash
+          WHERE account_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+        [accountId, ...ids],
+      );
+    }
+    return document;
+  }
+
+  function invalidTrashSnapshot(): Error & { type: 'invalidTrashSnapshot' } {
+    return Object.assign(
+      new Error('invalidTrashSnapshot: saved contact data is unreadable'),
+      { type: 'invalidTrashSnapshot' as const },
+    );
+  }
+
+  function contactTrashDetailFromRow(
+    row: any,
+    emailKeys: string[],
+  ): ContactTrashDetail {
+    let addressBookIds: unknown;
+    let snapshot: unknown;
+    let media: unknown;
+    try {
+      addressBookIds = JSON.parse(row.original_addressbook_ids_json);
+      snapshot = JSON.parse(row.snapshot_json);
+      media = JSON.parse(row.media_json);
+    } catch {
+      throw invalidTrashSnapshot();
+    }
+    const entry = normalizeContactTrashEntry({
+      uid: row.uid,
+      remoteId: row.prior_remote_id,
+      addressBookIds,
+      snapshot,
+      media,
+      displayName: row.display_name,
+      primaryEmail: row.primary_email ?? null,
+      trashedAt: Number(row.trashed_at),
+      expiresAt: Number(row.expires_at),
+      status: row.status,
+      updatedAt: Number(row.lifecycle_updated_at),
+      emailKeys,
+    });
+    if (!entry || entry.status !== 'trashed' || entry.snapshot == null) {
+      throw invalidTrashSnapshot();
+    }
+    return {
+      id: Number(row.id),
+      uid: entry.uid,
+      prior_remote_id: entry.remoteId,
+      display_name: entry.displayName,
+      primary_email: entry.primaryEmail,
+      trashed_at: entry.trashedAt,
+      expires_at: entry.expiresAt,
+      status: entry.status,
+      original_addressbook_ids: entry.addressBookIds,
+      snapshot: entry.snapshot,
+      email_keys: entry.emailKeys,
+      media: entry.media,
+    };
+  }
+
+  async function ensureContactsTrashPushInTx(tx: any, accountId: number, ts: number) {
+    const rows = await tx.all(
+      `SELECT id
+         FROM pending_mutations
+        WHERE account_id = ?
+          AND mutation_type = ?
+          AND local_status IN ('pending','retry')
+        ORDER BY id`,
+      [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH],
+    );
+    const existing = rows[0];
+    if (existing) {
+      await tx.run(
+        `UPDATE pending_mutations
+            SET local_status = 'pending', request_json = '{}', attempts = 0,
+                last_attempt_at = NULL, not_before = NULL,
+                server_response_json = NULL, error_json = NULL, updated_at = ?
+          WHERE id = ?`,
+        [ts, existing.id],
+      );
+      if (rows.length > 1) {
+        await tx.run(
+          `DELETE FROM pending_mutations
+            WHERE account_id = ? AND mutation_type = ?
+              AND local_status IN ('pending','retry') AND id <> ?`,
+          [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH, existing.id],
+        );
+      }
+      return { id: Number(existing.id), reused: true };
+    }
+    const result = await tx.run(
+      `INSERT INTO pending_mutations(
+         account_id, mutation_type, local_status, target_message_id,
+         request_json, optimistic_patch_json, server_response_json, error_json,
+         created_at, updated_at
+       ) VALUES (?, ?, 'pending', NULL, '{}', NULL, NULL, NULL, ?, ?)`,
+      [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH, ts, ts],
+    );
+    return { id: Number(result.lastInsertRowid), reused: false };
+  }
 
   function mutationReferencesRemovedData(
     value: unknown,
@@ -784,6 +1381,24 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         }
       });
       broadcaster.touch(TABLE_FAMILIES.ACCOUNTS);
+    },
+
+    [DB_RPC.ACCOUNT_CAPABILITIES_GET]: async ({ accountId, serviceKind }) => {
+      const rows = await engine.all(
+        `SELECT capability, payload_json
+           FROM account_capabilities
+          WHERE account_id = ? AND service_kind = ?`,
+        [accountId, serviceKind],
+      );
+      const capabilities: Record<string, unknown> = {};
+      for (const row of rows) {
+        try {
+          capabilities[row.capability] = JSON.parse(row.payload_json);
+        } catch {
+          capabilities[row.capability] = null;
+        }
+      }
+      return capabilities;
     },
 
     [DB_RPC.FOLDER_LIST]: async ({ accountId, includeDeleted = false }) =>
@@ -1657,7 +2272,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [messageId],
       );
       const attachments = await engine.all(
-        `SELECT part_id, blob_id, name, media_type AS mime_type, size, disposition, cid
+        `SELECT part_id, blob_id, name, media_type AS mime_type, size, disposition, cid, charset
            FROM body_parts
           WHERE message_id = ? AND is_attachment = 1
           ORDER BY position`,
@@ -2657,7 +3272,9 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
     [DB_RPC.ADDRESSBOOK_LIST]: async ({ accountId }) =>
       engine.all(
-        `SELECT * FROM addressbooks WHERE account_id = ? AND is_deleted = 0 ORDER BY is_default DESC, name COLLATE NOCASE`,
+        `SELECT * FROM addressbooks
+          WHERE account_id = ? AND is_deleted = 0
+          ORDER BY is_default DESC, sort_order, name COLLATE NOCASE`,
         [accountId],
       ),
 
@@ -2683,15 +3300,17 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           await tx.run(
             `INSERT INTO addressbooks(
                 account_id, service_kind, remote_id, name, description,
-                is_default, is_subscribed, may_write, ctag, sync_token,
-                raw_json, is_deleted, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sort_order, is_default, is_subscribed, may_write, may_delete,
+                ctag, sync_token, raw_json, is_deleted, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id, service_kind, remote_id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
+                sort_order = excluded.sort_order,
                 is_default = excluded.is_default,
                 is_subscribed = excluded.is_subscribed,
                 may_write = excluded.may_write,
+                may_delete = excluded.may_delete,
                 ctag = excluded.ctag,
                 sync_token = excluded.sync_token,
                 raw_json = excluded.raw_json,
@@ -2703,9 +3322,11 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               ab.remoteId,
               ab.name ?? null,
               ab.description ?? null,
+              Number.isSafeInteger(ab.sortOrder) && ab.sortOrder >= 0 ? ab.sortOrder : 0,
               ab.isDefault ? 1 : 0,
               ab.isSubscribed === false ? 0 : 1,
               ab.mayWrite === true ? 1 : (ab.mayWrite === false ? 0 : null),
+              ab.mayDelete === true ? 1 : (ab.mayDelete === false ? 0 : null),
               ab.ctag ?? null,
               ab.syncToken ?? null,
               ab.rawJson ?? null,
@@ -2729,6 +3350,176 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return { upserted: addressbooks?.length ?? 0, retired };
     },
 
+    [DB_RPC.ADDRESSBOOK_MUTATION_ENSURE]: async (input) => {
+      const mutationTypes = new Set([
+        MUTATION_TYPE.CREATE_ADDRESSBOOK,
+        MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+        MUTATION_TYPE.DESTROY_ADDRESSBOOK,
+      ]);
+      let nextRequest;
+      try {
+        nextRequest = JSON.parse(input.requestJson);
+      } catch {
+        nextRequest = null;
+      }
+      if (
+        !mutationTypes.has(input.mutationType)
+        || typeof input.operationId !== 'string'
+        || !input.operationId
+        || nextRequest?.operationId !== input.operationId
+      ) {
+        throw new Error(
+          'addressbook.ensureMutation requires an AddressBook mutation operation',
+        );
+      }
+
+      const ts = now();
+      let ensured: {
+        id: number;
+        reused: boolean;
+        requestMatches: boolean;
+        storedRequestJson: string;
+        errorType?: string;
+      } | null = null;
+      await engine.transaction(async (tx) => {
+        const rows = await tx.all(
+          `SELECT *
+             FROM pending_mutations
+            WHERE account_id = ?
+              AND mutation_type = ?
+              AND local_status IN ('pending','retry','in_flight','conflicted')
+            ORDER BY id`,
+          [input.accountId, input.mutationType],
+        );
+        for (const row of rows) {
+          let request;
+          try {
+            request = JSON.parse(row.request_json);
+          } catch {
+            continue;
+          }
+          if (request?.operationId !== input.operationId) continue;
+          const requestMatches = row.request_json === input.requestJson;
+          const prewrite = row.phase == null;
+          if (
+            prewrite
+            && !requestMatches
+            && row.local_status !== 'in_flight'
+          ) {
+            await tx.run(
+              `UPDATE pending_mutations
+                  SET local_status = 'pending',
+                      request_json = ?,
+                      attempts = 0,
+                      not_before = NULL,
+                      error_json = NULL,
+                      updated_at = ?
+                WHERE id = ?`,
+              [input.requestJson, ts, row.id],
+            );
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches: true,
+              storedRequestJson: input.requestJson,
+            };
+            return;
+          }
+          if (row.local_status !== 'conflicted') {
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches,
+              storedRequestJson: row.request_json,
+            };
+            return;
+          }
+
+          let recordedError;
+          let checkpoint;
+          try {
+            recordedError = JSON.parse(row.error_json ?? 'null');
+          } catch {
+            recordedError = null;
+          }
+          try {
+            checkpoint = JSON.parse(
+              row.server_response_json ?? 'null',
+            )?.addressBook;
+          } catch {
+            checkpoint = null;
+          }
+          const cachePending = row.phase === ADDRESSBOOK_PHASE.CACHE_PENDING
+            && checkpoint?.version === 1
+            && typeof checkpoint.remoteId === 'string';
+          const destroyPending =
+            row.phase === ADDRESSBOOK_PHASE.DESTROY_SUBMITTING
+            && checkpoint?.version === 1
+            && checkpoint.operation === 'destroy'
+            && typeof checkpoint.remoteId === 'string'
+            && checkpoint.confirmationInventory?.version === 1;
+          const retryablePrewrite = prewrite
+            && recordedError
+            && recordedError.terminal !== true;
+          if (!cachePending && !destroyPending && !retryablePrewrite) {
+            ensured = {
+              id: Number(row.id),
+              reused: true,
+              requestMatches,
+              storedRequestJson: row.request_json,
+              ...(typeof recordedError?.type === 'string'
+                ? { errorType: recordedError.type }
+                : {}),
+            };
+            return;
+          }
+          if (cachePending) checkpoint.attempts = 0;
+          await tx.run(
+            `UPDATE pending_mutations
+                SET local_status = 'retry',
+                    attempts = 0,
+                    not_before = NULL,
+                    error_json = NULL,
+                    server_response_json = ?,
+                    updated_at = ?
+              WHERE id = ?`,
+            [
+              checkpoint
+                ? JSON.stringify({ addressBook: checkpoint })
+                : row.server_response_json,
+              ts,
+              row.id,
+            ],
+          );
+          ensured = {
+            id: Number(row.id),
+            reused: true,
+            requestMatches,
+            storedRequestJson: row.request_json,
+          };
+          return;
+        }
+
+        const inserted = await tx.run(
+          `INSERT INTO pending_mutations(
+              account_id, mutation_type, local_status, target_message_id,
+              request_json, optimistic_patch_json, server_response_json, error_json,
+              created_at, updated_at
+           ) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL, NULL, ?, ?)`,
+          [input.accountId, input.mutationType, input.requestJson, ts, ts],
+        );
+        ensured = {
+          id: Number(inserted.lastInsertRowid),
+          reused: false,
+          requestMatches: true,
+          storedRequestJson: input.requestJson,
+        };
+      });
+      broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      notifyMutation(input.accountId, ensured!.id);
+      return ensured;
+    },
+
     /**
      * List contacts joined with their preferred (or first) email,
      * suitable for the contact-book view. Returns a flat row shape so
@@ -2746,6 +3537,26 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                   WHERE ce.contact_id = c.id
                   ORDER BY is_preferred DESC, position
                   LIMIT 1) AS email,
+                (SELECT map_key FROM contact_media cm
+                  WHERE cm.contact_id = c.id AND cm.kind = 'photo'
+                  ORDER BY pref IS NULL, pref, position
+                  LIMIT 1) AS photo_map_key,
+                (SELECT uri FROM contact_media cm
+                  WHERE cm.contact_id = c.id AND cm.kind = 'photo'
+                  ORDER BY pref IS NULL, pref, position
+                  LIMIT 1) AS photo_uri,
+                (SELECT blob_id FROM contact_media cm
+                  WHERE cm.contact_id = c.id AND cm.kind = 'photo'
+                  ORDER BY pref IS NULL, pref, position
+                  LIMIT 1) AS photo_blob_id,
+                (SELECT media_type FROM contact_media cm
+                  WHERE cm.contact_id = c.id AND cm.kind = 'photo'
+                  ORDER BY pref IS NULL, pref, position
+                  LIMIT 1) AS photo_media_type,
+                (SELECT pref FROM contact_media cm
+                  WHERE cm.contact_id = c.id AND cm.kind = 'photo'
+                  ORDER BY pref IS NULL, pref, position
+                  LIMIT 1) AS photo_pref,
                 -- A card can be filed in several books (RFC 9610), so the
                 -- view is given all of them and decides what to show.
                 (SELECT group_concat(ac.addressbook_id)
@@ -2757,7 +3568,29 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           LIMIT ?`,
         [accountId, Number.isFinite(limit) && limit > 0 ? limit : -1],
       );
-      return rows.map((row) => ({ ...row, addressbook_ids: splitIds(row.addressbook_ids) }));
+      return rows.map((row) => {
+        const {
+          photo_map_key: photoMapKey,
+          photo_uri: photoUri,
+          photo_blob_id: photoBlobId,
+          photo_media_type: photoMediaType,
+          photo_pref: photoPref,
+          ...contact
+        } = row;
+        return {
+          ...contact,
+          addressbook_ids: splitIds(row.addressbook_ids),
+          photo: photoMapKey
+            ? {
+                mapKey: photoMapKey,
+                uri: photoUri ?? null,
+                blobId: photoBlobId ?? null,
+                mediaType: photoMediaType ?? null,
+                pref: photoPref == null ? null : Number(photoPref),
+              }
+            : null,
+        };
+      });
     },
 
     /**
@@ -2811,6 +3644,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const titleRows = await engine.all(
         `SELECT map_key, position, value, kind, organization_map_key
            FROM contact_titles WHERE contact_id = ? ORDER BY position`,
+        [contactId],
+      );
+      const photoRow = await engine.get(
+        `SELECT map_key, uri, blob_id, media_type, pref
+           FROM contact_media
+          WHERE contact_id = ? AND kind = 'photo'
+          ORDER BY pref IS NULL, pref, position
+          LIMIT 1`,
         [contactId],
       );
       const books = await engine.all(
@@ -2887,6 +3728,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         notes,
         organizations,
         titles,
+        photo: photoRow
+          ? {
+              mapKey: photoRow.map_key,
+              uri: photoRow.uri ?? null,
+              blobId: photoRow.blob_id ?? null,
+              mediaType: photoRow.media_type ?? null,
+              pref: photoRow.pref == null ? null : Number(photoRow.pref),
+            }
+          : null,
         addressbook_ids: books.map((book) => book.addressbook_id),
       };
     },
@@ -2962,6 +3812,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           ['contact_notes', 'notes'],
           ['contact_organizations', 'organizations'],
           ['contact_titles', 'titles'],
+          ['contact_media', 'media'],
         ];
         for (const [table, property] of detailTables) {
           const ids = preparedContacts
@@ -3141,6 +3992,26 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               );
             }
           }
+          if (Array.isArray(c.media)) {
+            for (let i = 0; i < c.media.length; i += 1) {
+              const media = c.media[i];
+              await tx.run(
+                `INSERT INTO contact_media(
+                   contact_id, position, map_key, kind, blob_id, uri, media_type, pref
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  contactId,
+                  i,
+                  media.mapKey,
+                  media.kind,
+                  media.blobId ?? null,
+                  media.uri ?? null,
+                  media.mediaType ?? null,
+                  media.pref ?? null,
+                ],
+              );
+            }
+          }
           // Search tokens are replaced rather than added to, so renaming a
           // contact stops matching the name it used to have (CS-3.2). A
           // deleted card keeps none: it is not a suggestion.
@@ -3253,6 +4124,493 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     [DB_RPC.CONTACT_AUTOCOMPLETE]: async (params) =>
       autocompleteRecipients(engine, params),
 
+    [DB_RPC.CONTACT_TRASH_LIST]: async ({ accountId }) =>
+      engine.all(
+        `SELECT id, uid, prior_remote_id, display_name, primary_email,
+                trashed_at, expires_at, status
+           FROM contacts_trash
+          WHERE account_id = ? AND status = 'trashed'
+          ORDER BY trashed_at DESC, id DESC`,
+        [accountId],
+      ),
+
+    [DB_RPC.CONTACT_TRASH_GET]: async ({ accountId, trashId }) => {
+      const row = await engine.get(
+        `SELECT id, uid, prior_remote_id, original_addressbook_ids_json,
+                snapshot_json, media_json, display_name, primary_email,
+                trashed_at, expires_at, status, lifecycle_updated_at
+           FROM contacts_trash
+          WHERE account_id = ? AND id = ?
+            AND status = 'trashed'`,
+        [accountId, trashId],
+      );
+      if (!row) return null;
+      const emails = await engine.all(
+        `SELECT email_key FROM contacts_trash_emails
+          WHERE trash_id = ? ORDER BY position`,
+        [trashId],
+      );
+      return contactTrashDetailFromRow(
+        row,
+        emails.map((email) => String(email.email_key)),
+      );
+    },
+
+    [DB_RPC.CONTACT_TRASH_GET_MANY]: async ({ accountId, trashIds }) => {
+      const ids = numericUnique(trashIds ?? []);
+      if (ids.length === 0) return [];
+      const byId = new Map<number, any>();
+      const emailKeys = new Map<number, string[]>();
+      const chunkSize = 250;
+      for (let offset = 0; offset < ids.length; offset += chunkSize) {
+        const chunk = ids.slice(offset, offset + chunkSize);
+        const placeholders = chunk.map(() => '?').join(',');
+        const rows = await engine.all(
+          `SELECT id, uid, prior_remote_id, original_addressbook_ids_json,
+                  snapshot_json, media_json, display_name, primary_email,
+                  trashed_at, expires_at, status, lifecycle_updated_at
+             FROM contacts_trash
+            WHERE account_id = ? AND id IN (${placeholders})`,
+          [accountId, ...chunk],
+        );
+        for (const row of rows) byId.set(Number(row.id), row);
+        const emailRows = await engine.all(
+          `SELECT trash_id, email_key
+             FROM contacts_trash_emails
+            WHERE account_id = ? AND trash_id IN (${placeholders})
+            ORDER BY trash_id, position`,
+          [accountId, ...chunk],
+        );
+        for (const email of emailRows) {
+          const trashId = Number(email.trash_id);
+          const keys = emailKeys.get(trashId) ?? [];
+          keys.push(String(email.email_key));
+          emailKeys.set(trashId, keys);
+        }
+      }
+      return ids.map((trashId): ContactTrashLookup => {
+        const row = byId.get(trashId);
+        if (!row) return { trashId, status: 'missing' };
+        if (row.status !== 'trashed') return { trashId, status: 'inactive' };
+        try {
+          return {
+            trashId,
+            status: 'active',
+            detail: contactTrashDetailFromRow(row, emailKeys.get(trashId) ?? []),
+          };
+        } catch {
+          return {
+            trashId,
+            status: 'unreadable',
+            errorType: 'invalidTrashSnapshot',
+          };
+        }
+      });
+    },
+
+    [DB_RPC.CONTACT_TRASH_GET_DOCUMENT]: async ({ accountId }) => {
+      const current = await loadContactsTrashInTx(engine, accountId);
+      return { doc: current.document };
+    },
+
+    [DB_RPC.CONTACT_TRASH_GET_SHARDS]: async ({
+      accountId,
+      shardNames = null,
+      dirtyOnly = false,
+      metadataOnly = false,
+    }) => {
+      const names = Array.isArray(shardNames)
+        ? [...new Set(shardNames.filter((name) => typeof name === 'string' && name))]
+        : null;
+      if (names?.length === 0) return [];
+      const whereNames = names
+        ? ` AND shard_name IN (${names.map(() => '?').join(',')})`
+        : '';
+      const rows = await engine.all(
+        `SELECT shard_name, ${metadataOnly ? '' : 'doc_json,'}
+                remote_node_id, remote_blob_id,
+                dirty, local_revision
+           FROM contacts_trash_documents
+          WHERE account_id = ?
+            ${dirtyOnly ? 'AND dirty = 1' : ''}
+            ${whereNames}
+          ORDER BY shard_name`,
+        [accountId, ...(names ?? [])],
+      );
+      return rows.map((row: any) => ({
+        shardName: String(row.shard_name),
+        ...(!metadataOnly ? { doc: parseContactsTrashDocument(row.doc_json) } : {}),
+        remoteNodeId: row.remote_node_id ?? null,
+        remoteBlobId: row.remote_blob_id ?? null,
+        dirty: Number(row.dirty) === 1,
+        localRevision: Number(row.local_revision),
+      }));
+    },
+
+    [DB_RPC.CONTACT_TRASH_MERGE_REMOTE_SHARDS]: async ({
+      accountId,
+      shards,
+      ensurePush = true,
+      finalize = true,
+    }) => {
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        let localNewer = false;
+        for (const shard of shards ?? []) {
+          const shardName = typeof shard?.shardName === 'string' ? shard.shardName : '';
+          if (!shardName) throw new Error('contactTrash.mergeRemoteShards requires a shard name');
+          const existing = await tx.get(
+            `SELECT doc_json, dirty, local_revision
+               FROM contacts_trash_documents
+              WHERE account_id = ? AND shard_name = ?`,
+            [accountId, shardName],
+          );
+          const isLegacy = shard.legacy === true;
+          const remoteDocument = isLegacy
+            ? normalizeContactsTrashDocument(shard.doc)
+            : normalizeContactsTrashShardDocument(shard.doc);
+          const merged = isLegacy || !existing
+            ? { document: remoteDocument, localNewer: false }
+            : mergeContactsTrashShardDocuments(
+              parseContactsTrashDocument(existing.doc_json),
+              remoteDocument,
+            );
+          const serialized = JSON.stringify(merged.document);
+          const changed = !existing || existing.doc_json !== serialized;
+          const dirty = !isLegacy
+            && (Number(existing?.dirty) === 1 || merged.localNewer);
+          if (merged.localNewer) localNewer = true;
+          await tx.run(
+            `INSERT INTO contacts_trash_documents(
+               account_id, shard_name, doc_json, remote_node_id, remote_blob_id,
+               dirty, local_revision, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+             ON CONFLICT(account_id, shard_name) DO UPDATE SET
+               doc_json = excluded.doc_json,
+               remote_node_id = excluded.remote_node_id,
+               remote_blob_id = excluded.remote_blob_id,
+               dirty = excluded.dirty,
+               local_revision = CASE
+                 WHEN contacts_trash_documents.doc_json <> excluded.doc_json
+                   THEN contacts_trash_documents.local_revision + 1
+                 ELSE contacts_trash_documents.local_revision
+               END,
+               updated_at = excluded.updated_at`,
+            [
+              accountId,
+              shardName,
+              serialized,
+              shard.remoteNodeId ?? null,
+              shard.remoteBlobId ?? null,
+              dirty ? 1 : 0,
+              ts,
+            ],
+          );
+          if (changed && dirty) localNewer = true;
+        }
+        if (!finalize) {
+          return {
+            doc: null,
+            localNewer,
+            touchedShards: [],
+            mutation: null,
+          };
+        }
+        let current = await loadContactsTrashInTx(tx, accountId);
+        const expired: ContactTrashDocumentEntry[] = [];
+        for (const entry of Object.values(current.document.entries)) {
+          if (entry.status === 'trashed' && entry.expiresAt <= ts) {
+            expired.push(contactsTrashTombstone(
+              entry,
+              'purged',
+              Math.max(ts, entry.updatedAt + 1),
+            ));
+            localNewer = true;
+          }
+        }
+        const touchedShards = await appendContactsTrashRecordsInTx(
+          tx,
+          accountId,
+          expired,
+          ts,
+          {
+            lane: 'tombstone',
+            maxBytes: CONTACTS_TRASH_MAX_TOMBSTONE_SHARD_BYTES,
+          },
+        );
+        if (expired.length > 0) current = await loadContactsTrashInTx(tx, accountId);
+        const document = await persistContactsTrashInTx(tx, accountId, current.document, ts);
+        const dirtyShard = await tx.get(
+          `SELECT 1 AS present
+             FROM contacts_trash_documents
+            WHERE account_id = ? AND dirty = 1
+            LIMIT 1`,
+          [accountId],
+        );
+        const mutation = ensurePush && (localNewer || dirtyShard != null)
+          ? await ensureContactsTrashPushInTx(tx, accountId, ts)
+          : null;
+        return {
+          doc: document,
+          localNewer,
+          touchedShards,
+          mutation,
+        };
+      });
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS_TRASH);
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.CONTACT_TRASH_PUT_ENTRIES]: async ({
+      accountId,
+      entries,
+      ensurePush = false,
+      maxBytes = CONTACTS_TRASH_MAX_DOCUMENT_BYTES,
+      singleShard = false,
+    }) => {
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadContactsTrashInTx(tx, accountId);
+        const appended: ContactTrashDocumentEntry[] = [];
+        const requiredShards = new Set<string>();
+        const incomingRemoteIds = new Map<string, string>();
+        for (const value of entries ?? []) {
+          const entry = normalizeContactTrashEntry(value);
+          if (!entry) throw new Error('contactTrash.putEntries received an invalid entry');
+          const existing = current.document.entries[entry.uid];
+          const incomingRemoteId = incomingRemoteIds.get(entry.uid);
+          if (
+            (incomingRemoteId != null && incomingRemoteId !== entry.remoteId)
+            || (
+              existing?.status === 'trashed'
+              && existing.remoteId !== entry.remoteId
+            )
+          ) {
+            throw ambiguousContactsTrashUid();
+          }
+          incomingRemoteIds.set(entry.uid, entry.remoteId);
+          if (existing) {
+            const logicalChange = contactsTrashEntryFingerprint(entry, false)
+              !== contactsTrashEntryFingerprint(existing, false);
+            if (!logicalChange) {
+              const serialized = JSON.stringify(existing);
+              for (const shard of current.shards) {
+                if (
+                  shard.dirty
+                  && Object.values(shard.document.entries)
+                    .some((record) => JSON.stringify(record) === serialized)
+                ) {
+                  requiredShards.add(shard.shardName);
+                }
+              }
+              continue;
+            }
+            entry.updatedAt = Math.max(ts, existing.updatedAt + 1, entry.updatedAt);
+          }
+          appended.push(entry);
+        }
+        const touchedShards = await appendContactsTrashRecordsInTx(
+          tx,
+          accountId,
+          appended,
+          ts,
+          { maxBytes, singleShard },
+        );
+        for (const shardName of touchedShards) requiredShards.add(shardName);
+        if (
+          singleShard
+          && appended.length > 0
+          && requiredShards.size > 1
+        ) {
+          throw contactsTrashGroupTooLarge();
+        }
+        const updated = appended.length > 0
+          ? await loadContactsTrashInTx(tx, accountId)
+          : current;
+        const saved = await persistContactsTrashInTx(
+          tx,
+          accountId,
+          updated.document,
+          ts,
+        );
+        const mutation = ensurePush && touchedShards.length > 0
+          ? await ensureContactsTrashPushInTx(tx, accountId, ts)
+          : null;
+        return { doc: saved, touchedShards: [...requiredShards], mutation };
+      });
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS_TRASH);
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.CONTACT_TRASH_ROLLBACK_ENTRIES]: async ({
+      accountId,
+      stagedEntries,
+    }) => {
+      const staged = new Map<string, ContactTrashDocumentEntry>();
+      for (const value of stagedEntries ?? []) {
+        const entry = normalizeContactTrashEntry(value);
+        if (!entry) throw new Error('contactTrash.rollbackEntries received an invalid staged entry');
+        staged.set(entry.uid, entry);
+      }
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadContactsTrashInTx(tx, accountId);
+        const rollback: ContactTrashDocumentEntry[] = [];
+        for (const [uid, stagedEntry] of staged) {
+          if (JSON.stringify(current.document.entries[uid]) !== JSON.stringify(stagedEntry)) {
+            continue;
+          }
+          rollback.push(contactsTrashTombstone(
+            stagedEntry,
+            'purged',
+            Math.max(ts, stagedEntry.updatedAt + 1),
+          ));
+        }
+        if (rollback.length === 0) return { changed: false, doc: current.document };
+        const touchedShards = await appendContactsTrashRecordsInTx(
+          tx,
+          accountId,
+          rollback,
+          ts,
+          {
+            lane: 'tombstone',
+            maxBytes: CONTACTS_TRASH_MAX_TOMBSTONE_SHARD_BYTES,
+          },
+        );
+        const updated = await loadContactsTrashInTx(tx, accountId);
+        const doc = await persistContactsTrashInTx(tx, accountId, updated.document, ts);
+        return { changed: true, doc, touchedShards };
+      });
+      if (result.changed) broadcaster.touch(TABLE_FAMILIES.CONTACTS_TRASH);
+      return result;
+    },
+
+    [DB_RPC.CONTACT_TRASH_SET_STATUS]: async ({
+      accountId,
+      trashIds,
+      status,
+      ensurePush = false,
+    }) => {
+      if (status !== 'restored' && status !== 'purged') {
+        throw new Error('contactTrash.setStatus requires a tombstone status');
+      }
+      const ids = numericUnique(trashIds ?? []);
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadContactsTrashInTx(tx, accountId);
+        if (ids.length === 0) {
+          return {
+            doc: current.document,
+            changedIds: [],
+            touchedShards: [],
+            mutation: null,
+          };
+        }
+        const rows = await tx.all(
+          `SELECT id, uid FROM contacts_trash
+            WHERE account_id = ? AND id IN (${ids.map(() => '?').join(',')})`,
+          [accountId, ...ids],
+        );
+        const changedIds: number[] = [];
+        const tombstones: ContactTrashDocumentEntry[] = [];
+        for (const row of rows) {
+          const entry = current.document.entries[row.uid] as ContactTrashDocumentEntry | undefined;
+          if (!entry || entry.status !== 'trashed') continue;
+          tombstones.push(contactsTrashTombstone(
+            entry,
+            status,
+            Math.max(ts, entry.updatedAt + 1),
+          ));
+          changedIds.push(Number(row.id));
+        }
+        const touchedShards = await appendContactsTrashRecordsInTx(
+          tx,
+          accountId,
+          tombstones,
+          ts,
+          {
+            lane: 'tombstone',
+            maxBytes: CONTACTS_TRASH_MAX_TOMBSTONE_SHARD_BYTES,
+          },
+        );
+        const updated = tombstones.length > 0
+          ? await loadContactsTrashInTx(tx, accountId)
+          : current;
+        const saved = await persistContactsTrashInTx(
+          tx,
+          accountId,
+          updated.document,
+          ts,
+        );
+        const mutation = ensurePush && changedIds.length > 0
+          ? await ensureContactsTrashPushInTx(tx, accountId, ts)
+          : null;
+        return { doc: saved, changedIds, touchedShards, mutation };
+      });
+      broadcaster.touch(TABLE_FAMILIES.CONTACTS_TRASH);
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.CONTACT_TRASH_ENSURE_PUSH]: async ({ accountId, force = false }) => {
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const dirty = await tx.get(
+          `SELECT 1 AS present
+             FROM contacts_trash_documents
+            WHERE account_id = ? AND dirty = 1
+            LIMIT 1`,
+          [accountId],
+        );
+        if (!dirty && !force) {
+          return { mutation: null };
+        }
+        return { mutation: await ensureContactsTrashPushInTx(tx, accountId, ts) };
+      });
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.CONTACT_TRASH_CONFIRM_SHARD]: async ({
+      accountId,
+      shardName,
+      remoteNodeId,
+      remoteBlobId,
+      localRevision,
+    }) => {
+      const result = await engine.transaction(async (tx) => {
+        await tx.run(
+          `UPDATE contacts_trash_documents
+              SET remote_node_id = ?, remote_blob_id = ?, updated_at = ?
+            WHERE account_id = ? AND shard_name = ?`,
+          [remoteNodeId, remoteBlobId, now(), accountId, shardName],
+        );
+        const clean = await tx.run(
+          `UPDATE contacts_trash_documents
+              SET dirty = 0
+            WHERE account_id = ? AND shard_name = ?
+              AND local_revision = ?`,
+          [accountId, shardName, localRevision],
+        );
+        return { clean: (clean.changes ?? 0) > 0 };
+      });
+      return result;
+    },
+
     /**
      * Rebuild contact ranking evidence from the latest bounded Sent window.
      *
@@ -3320,6 +4678,108 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         }
       }
       return saved;
+    },
+
+    [DB_RPC.SETTINGS_GET]: async ({ accountId }) => {
+      const row = await engine.get(
+        'SELECT doc_json, remote_node_id FROM user_settings WHERE account_id = ?',
+        [accountId],
+      );
+      return {
+        doc: parseSettingsDocument(row?.doc_json),
+        remoteNodeId: row?.remote_node_id ?? null,
+      };
+    },
+
+    [DB_RPC.SETTINGS_APPLY_PATCH]: async ({ accountId, patch }) => {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('settings.applyPatch requires an object patch');
+      }
+      const serializedPatch = JSON.stringify(patch);
+      const safePatch = JSON.parse(serializedPatch);
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadSettingsInTx(tx, accountId);
+        const document = normalizeSettingsDocument(current.document);
+        for (const [key, value] of Object.entries(safePatch)) {
+          document.settings[key] = value;
+          document.updatedAt[key] = Math.max(ts, (document.updatedAt[key] ?? 0) + 1);
+        }
+        await upsertSettingsInTx(
+          tx,
+          accountId,
+          document,
+          current.remoteNodeId,
+          ts,
+        );
+        const mutation = await ensureSettingsPushInTx(tx, accountId, ts);
+        return { doc: document, remoteNodeId: current.remoteNodeId, mutation };
+      });
+      broadcaster.touch(TABLE_FAMILIES.SETTINGS);
+      broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      notifyMutation(accountId, result.mutation.id);
+      return result;
+    },
+
+    [DB_RPC.SETTINGS_MERGE_REMOTE]: async ({
+      accountId,
+      doc,
+      remoteNodeId,
+      ensurePush = true,
+    }) => {
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadSettingsInTx(tx, accountId);
+        const merged = mergeSettingsDocuments(current.document, doc);
+        await upsertSettingsInTx(
+          tx,
+          accountId,
+          merged.document,
+          remoteNodeId ?? null,
+          ts,
+        );
+        const mutation = ensurePush && merged.localNewer
+          ? await ensureSettingsPushInTx(tx, accountId, ts)
+          : null;
+        return {
+          doc: merged.document,
+          remoteNodeId: remoteNodeId ?? null,
+          localNewer: merged.localNewer,
+          mutation,
+        };
+      });
+      broadcaster.touch(TABLE_FAMILIES.SETTINGS);
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.SETTINGS_ENSURE_PUSH]: async ({ accountId }) => {
+      const ts = now();
+      const result = await engine.transaction(async (tx) => {
+        const current = await loadSettingsInTx(tx, accountId);
+        if (Object.keys(current.document.settings).length === 0) {
+          return { mutation: null };
+        }
+        return { mutation: await ensureSettingsPushInTx(tx, accountId, ts) };
+      });
+      if (result.mutation) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+        notifyMutation(accountId, result.mutation.id);
+      }
+      return result;
+    },
+
+    [DB_RPC.SETTINGS_SET_REMOTE_NODE]: async ({ accountId, remoteNodeId }) => {
+      const result = await engine.run(
+        `UPDATE user_settings
+            SET remote_node_id = ?, updated_at = ?
+          WHERE account_id = ?`,
+        [remoteNodeId ?? null, now(), accountId],
+      );
+      return { updated: result.changes ?? 0 };
     },
 
     [DB_RPC.SYNC_STATE_GET]: async ({ accountId, objectType, scope = '' }) =>
@@ -3651,19 +5111,34 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
     [DB_RPC.PENDING_MUTATION_RETRY]: async ({ accountId, mutationId }) => {
       const ts = now();
-      const result = await engine.run(
-        `UPDATE pending_mutations
-            SET local_status = 'retry',
-                attempts = 0,
-                not_before = NULL,
-                error_json = NULL,
-                updated_at = ?
-          WHERE id = ?
-            AND account_id = ?
-            AND mutation_type = 'saveDraft'
-            AND local_status IN ('failed','conflicted','retry')`,
-        [ts, mutationId, accountId],
-      );
+      const result = await engine.transaction(async (tx: any) => {
+        const row = await tx.get(
+          `SELECT error_json
+             FROM pending_mutations
+            WHERE id = ?
+              AND account_id = ?
+              AND mutation_type = 'saveDraft'
+              AND local_status IN ('failed','conflicted','retry')`,
+          [mutationId, accountId],
+        );
+        const error = jsonRecord(row?.error_json);
+        if (error?.type === 'draftAbandonedPreserveCopies') {
+          return { changes: 0 };
+        }
+        return tx.run(
+          `UPDATE pending_mutations
+              SET local_status = 'retry',
+                  attempts = 0,
+                  not_before = NULL,
+                  error_json = NULL,
+                  updated_at = ?
+            WHERE id = ?
+              AND account_id = ?
+              AND mutation_type = 'saveDraft'
+              AND local_status IN ('failed','conflicted','retry')`,
+          [ts, mutationId, accountId],
+        );
+      });
       if ((result.changes ?? 0) > 0) {
         broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
         try {
@@ -3678,17 +5153,132 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return { retried: result.changes ?? 0 };
     },
 
-    [DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]: async ({ accountId, mutationId }) => {
-      const result = await engine.run(
-        `DELETE FROM pending_mutations
-          WHERE id = ?
-            AND account_id = ?
-            AND mutation_type = 'saveDraft'
-            AND local_status != 'in_flight'`,
-        [mutationId, accountId],
-      );
-      if ((result.changes ?? 0) > 0) broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
-      return { abandoned: result.changes ?? 0 };
+    [DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]: async ({
+      accountId,
+      mutationId,
+      intent = 'keep-confirmed',
+      confirmedEmailIds = [],
+      draftSessionId = null,
+      draftsFolderId = null,
+    }) => {
+      const result = await engine.transaction(async (tx: any) => {
+        const row = await tx.get(
+          `SELECT *
+             FROM pending_mutations
+            WHERE id = ? AND account_id = ? AND mutation_type = ?`,
+          [mutationId, accountId, MUTATION_TYPE.SAVE_DRAFT],
+        );
+        if (!row) {
+          return {
+            abandoned: 0,
+            converted: 0,
+            parked: 0,
+            inFlight: 0,
+            mutationId: null,
+          };
+        }
+        if (row.local_status === 'in_flight') {
+          return {
+            abandoned: 0,
+            converted: 0,
+            parked: 0,
+            inFlight: 1,
+            mutationId: null,
+          };
+        }
+        const plan = draftAbandonPlan(row, intent, confirmedEmailIds, {
+          draftSessionId,
+          draftsFolderId,
+        });
+        if (plan.kind === 'park') {
+          const parked = await tx.run(
+            `UPDATE pending_mutations
+                SET local_status = 'conflicted',
+                    not_before = NULL,
+                    error_json = ?,
+                    updated_at = ?
+              WHERE id = ? AND account_id = ? AND mutation_type = ?`,
+            [
+              JSON.stringify({
+                type: 'draftAbandonedPreserveCopies',
+                reason: plan.reason,
+                terminal: true,
+              }),
+              now(),
+              mutationId,
+              accountId,
+              MUTATION_TYPE.SAVE_DRAFT,
+            ],
+          );
+          return {
+            abandoned: 0,
+            converted: 0,
+            parked: parked.changes ?? 0,
+            inFlight: 0,
+            mutationId: null,
+          };
+        }
+        if (plan.kind === 'delete') {
+          const abandoned = await tx.run(
+            `DELETE FROM pending_mutations
+              WHERE id = ? AND account_id = ? AND mutation_type = ?`,
+            [mutationId, accountId, MUTATION_TYPE.SAVE_DRAFT],
+          );
+          return {
+            abandoned: abandoned.changes ?? 0,
+            converted: 0,
+            parked: 0,
+            inFlight: 0,
+            mutationId: null,
+          };
+        }
+        const converted = await tx.run(
+          `UPDATE pending_mutations
+              SET mutation_type = ?,
+                  local_status = 'pending',
+                  target_message_id = NULL,
+                  request_json = ?,
+                  optimistic_patch_json = NULL,
+                  server_response_json = ?,
+                  error_json = NULL,
+                  phase = NULL,
+                  attempts = 0,
+                  last_attempt_at = NULL,
+                  not_before = NULL,
+                  updated_at = ?
+            WHERE id = ? AND account_id = ? AND mutation_type = ?`,
+          [
+            MUTATION_TYPE.DISCARD_DRAFT,
+            JSON.stringify(plan.request),
+            plan.preserveCheckpoint ? row.server_response_json : null,
+            now(),
+            mutationId,
+            accountId,
+            MUTATION_TYPE.SAVE_DRAFT,
+          ],
+        );
+        return {
+          abandoned: 0,
+          converted: converted.changes ?? 0,
+          parked: 0,
+          inFlight: 0,
+          mutationId: (converted.changes ?? 0) > 0 ? mutationId : null,
+        };
+      });
+      if (result.abandoned > 0 || result.converted > 0 || result.parked > 0) {
+        broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
+      }
+      if (result.converted > 0) {
+        try {
+          const maybePromise = onMutationInserted({ accountId, mutationId });
+          if (maybePromise && typeof maybePromise.then === 'function') {
+            maybePromise.catch(() => {});
+          }
+        } catch {
+          // The converted row is durable; a later runner pass will find it.
+        }
+      }
+      return result;
     },
 
     [DB_RPC.SYNC_JOB_INSERT]: async (input) => {
@@ -3724,6 +5314,165 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
   };
 
   return h;
+}
+
+type DraftAbandonPlan =
+  | { kind: 'delete' }
+  | { kind: 'park'; reason: string }
+  | {
+      kind: 'convert';
+      preserveCheckpoint: boolean;
+      request: {
+        draftSessionId: string | null;
+        draftsFolderId: number | null;
+        draftEmailIds: string[];
+        probeRevision?: true;
+      };
+    };
+
+function draftRemoteId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function draftRemoteIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.some((id) => !draftRemoteId(id))) return null;
+  return [...new Set<string>(value)];
+}
+
+function exactDraftRemoteIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids = draftRemoteIds(value);
+  return ids && ids.length === value.length ? ids : null;
+}
+
+function jsonRecord(value: unknown): Record<string, any> | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameDraftIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((id) => right.includes(id));
+}
+
+function draftAbandonPlan(
+  row: any,
+  intent: unknown,
+  confirmedEmailIds: unknown,
+  fallback: { draftSessionId: unknown; draftsFolderId: unknown },
+): DraftAbandonPlan {
+  const discardAll = intent === 'discard-all';
+  const confirmed = draftRemoteIds(confirmedEmailIds) ?? [];
+  const request = jsonRecord(row.request_json);
+  const draftSessionId = typeof request?.draftSessionId === 'string'
+    ? request.draftSessionId
+    : (typeof fallback.draftSessionId === 'string' ? fallback.draftSessionId : null);
+  const requestedFolderId = Number(request?.draftsFolderId ?? fallback.draftsFolderId);
+  const draftsFolderId = Number.isSafeInteger(requestedFolderId) && requestedFolderId > 0
+    ? requestedFolderId
+    : null;
+  if (row.phase == null) {
+    if (row.server_response_json != null) {
+      return { kind: 'park', reason: 'checkpointWithoutPhase' };
+    }
+    if (!discardAll || confirmed.length === 0) return { kind: 'delete' };
+    return {
+      kind: 'convert',
+      preserveCheckpoint: false,
+      request: {
+        draftSessionId,
+        draftsFolderId,
+        draftEmailIds: confirmed,
+      },
+    };
+  }
+  if (row.phase === DRAFT_PHASE.CONFLICT) {
+    return { kind: 'park', reason: 'checkpointConflict' };
+  }
+  if (!Object.values(DRAFT_PHASE).includes(row.phase)) {
+    return { kind: 'park', reason: 'unrecognizedPhase' };
+  }
+  const phase = row.phase as (typeof DRAFT_PHASE)[keyof typeof DRAFT_PHASE];
+  const checkpoint = jsonRecord(row.server_response_json);
+  const baseEmailIds = exactDraftRemoteIds(checkpoint?.baseEmailIds);
+  const pendingDestroyIds = exactDraftRemoteIds(checkpoint?.pendingDestroyIds);
+  const preparedEmail = checkpoint?.preparedEmail;
+  const successor = draftRemoteId(checkpoint?.newEmailId) ? checkpoint.newEmailId : null;
+  const localSuccessor = Number.isSafeInteger(checkpoint?.localMessageId)
+    && Number(checkpoint.localMessageId) > 0;
+  const validSuccessor = checkpoint?.newEmailId == null || successor != null;
+  const validLocalSuccessor = checkpoint?.localMessageId == null || localSuccessor;
+  if (
+    !checkpoint
+    || !draftRemoteId(checkpoint.operationId)
+    || !draftRemoteId(checkpoint.draftSessionId)
+    || !Number.isSafeInteger(checkpoint.revision)
+    || checkpoint.revision < 1
+    || typeof checkpoint.payloadHash !== 'string'
+    || !baseEmailIds
+    || !pendingDestroyIds
+    || !preparedEmail
+    || typeof preparedEmail !== 'object'
+    || Array.isArray(preparedEmail)
+    || !draftRemoteId(checkpoint.revisionMessageId)
+    || !validSuccessor
+    || !validLocalSuccessor
+  ) {
+    return { kind: 'park', reason: 'unreadableCheckpoint' };
+  }
+  if (successor && pendingDestroyIds.includes(successor)) {
+    return { kind: 'park', reason: 'successorPendingDestroy' };
+  }
+  let probeRevision = false;
+  switch (phase) {
+    case DRAFT_PHASE.QUEUED:
+      if (successor || localSuccessor) {
+        return { kind: 'park', reason: 'queuedHasSuccessor' };
+      }
+      if (!sameDraftIds(pendingDestroyIds, baseEmailIds)) {
+        return { kind: 'park', reason: 'queuedDestroySetChanged' };
+      }
+      probeRevision = true;
+      break;
+    case DRAFT_PHASE.CREATED:
+      if (!successor) return { kind: 'park', reason: 'createdMissingSuccessor' };
+      if (localSuccessor) return { kind: 'park', reason: 'createdHasLocalSuccessor' };
+      break;
+    case DRAFT_PHASE.CACHE_PENDING:
+    case DRAFT_PHASE.CLEANUP_PENDING:
+      if (!successor) return { kind: 'park', reason: 'pendingMissingSuccessor' };
+      if (!localSuccessor) return { kind: 'park', reason: 'pendingMissingLocalSuccessor' };
+      break;
+    case DRAFT_PHASE.CONFLICT:
+      return { kind: 'park', reason: 'checkpointConflict' };
+    default: {
+      const unhandled: never = phase;
+      return unhandled;
+    }
+  }
+  const explicitIds = discardAll
+    ? [...new Set([
+        ...confirmed,
+        ...baseEmailIds,
+        ...pendingDestroyIds,
+        ...(successor ? [successor] : []),
+      ])]
+    : (successor && !confirmed.includes(successor) ? [successor] : []);
+  if (explicitIds.length === 0 && !probeRevision) return { kind: 'delete' };
+  return {
+    kind: 'convert',
+    preserveCheckpoint: probeRevision,
+    request: {
+      draftSessionId,
+      draftsFolderId,
+      draftEmailIds: explicitIds,
+      ...(probeRevision ? { probeRevision: true as const } : {}),
+    },
+  };
 }
 
 /**

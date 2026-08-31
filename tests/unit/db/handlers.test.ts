@@ -496,6 +496,7 @@ describe('thread + message + membership handlers', () => {
         size: 42,
         disposition: 'attachment',
         cid: null,
+        charset: null,
       }],
     });
     expect(body.bodyParts).toEqual(expect.arrayContaining([

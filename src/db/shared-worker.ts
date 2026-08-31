@@ -11,10 +11,8 @@
 import { bootProductionEngine } from './bootstrap-idb';
 import { makeHandlers } from './handlers';
 import {
-  dispatchRpc,
   makeBroadcaster,
-  RPC_REQUEST,
-  RPC_RESPONSE,
+  serveRpcPort,
 } from './rpc-dispatch';
 import { BROADCAST_CHANNEL } from './protocol';
 import { attachWorkerLogger, wlog } from './worker-log';
@@ -71,22 +69,5 @@ function getHandlers() {
 self.addEventListener('connect', (event) => {
   const port = event.ports[0];
   port.start();
-  port.addEventListener('message', async (msg) => {
-    const message = msg.data;
-    if (!message || message.type !== RPC_REQUEST) {
-      return;
-    }
-    let response;
-    try {
-      const handlers = await getHandlers();
-      response = await dispatchRpc(message, handlers);
-    } catch (error) {
-      response = {
-        type: RPC_RESPONSE,
-        id: message.id,
-        error: `Database failed to initialise: ${error?.message ?? error}`,
-      };
-    }
-    port.postMessage(response);
-  });
+  serveRpcPort(port, getHandlers);
 });

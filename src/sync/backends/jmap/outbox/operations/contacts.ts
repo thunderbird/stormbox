@@ -1,4 +1,8 @@
-import { SEND_PHASE, SERVICE_KIND } from '../../../../../constants/states';
+import {
+  CONTACT_TRASH_PHASE,
+  SEND_PHASE,
+  SERVICE_KIND,
+} from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import type {
@@ -6,6 +10,7 @@ import type {
   ContactBatchMutationRequest,
   ContactBatchMutationResult,
   ContactMutationFields,
+  ContactTrashMutationRequest,
 } from '../../../../../types/db';
 import { addressKey } from '../../../../../utils/address-key';
 import {
@@ -16,12 +21,17 @@ import {
 import {
   createContactCard,
   createTrustedContactCards,
-  deleteContactCard,
   mutateContactCardsBatch,
   reconcileContactCardBatch,
   reconcileContactCards,
   updateContactCard,
 } from '../../contacts';
+import {
+  deleteContactCardsWithTrash,
+  deleteContactTrashForever,
+  pushContactsTrash,
+  restoreContactTrash,
+} from '../../contacts-trash';
 import { readPhase } from '../../send-checkpoint';
 
 const CONTACT_CREATE_PENDING = 'contact_create_pending';
@@ -72,10 +82,26 @@ async function runWhitelistSender({ transport, account, handlers, row, request, 
         Number(record.deleted_at),
       ]),
     );
+    const trashedRows = keys.length === 0
+      ? []
+      : await handlers[DB_RPC.QUERY]({
+        sql: `SELECT DISTINCT te.email_key
+                FROM contacts_trash_emails te
+                JOIN contacts_trash t ON t.id = te.trash_id
+               WHERE t.account_id = ?
+                 AND t.status = 'trashed'
+                 AND te.email_key IN (${keys.map(() => '?').join(',')})`,
+        params: [account.id, ...keys],
+      });
+    const trashedKeys = new Set<string>(
+      trashedRows.map((record) => String(record.email_key)),
+    );
     const eligible = senders.filter((sender) => {
+      const key = addressKey(sender?.email);
+      if (trashedKeys.has(key)) return false;
       const sourceSentAt = Number(sender?.sourceSentAt);
       if (!Number.isFinite(sourceSentAt)) return true;
-      return sourceSentAt > (deletedAt.get(addressKey(sender?.email)) ?? 0);
+      return sourceSentAt > (deletedAt.get(key) ?? 0);
     });
     if (eligible.length > 0) {
       const result = await createTrustedContactCards({
@@ -142,6 +168,7 @@ async function runCreateContact({ transport, account, handlers, row, request, us
       uid: durableRequest.uid,
       contact,
       addressBookIds,
+      allowDuplicate: durableRequest.allowDuplicate === true,
       bookId: durableRequest.bookRemoteId ?? null,
       recoverCreate,
       beforeCreate: () => checkpointContactCreate({
@@ -231,14 +258,44 @@ async function runUpdateContact({ transport, account, handlers, row, request, us
 async function runDeleteContact({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
   if (!applied) {
-    const result = await deleteContactCard({
+    const local = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT id FROM contacts
+              WHERE account_id = ? AND remote_id = ?
+              LIMIT 1`,
+      params: [account.id, request?.remoteId],
+    });
+    const result = await deleteContactCardsWithTrash({
       transport,
       account,
-      remoteId: request?.remoteId,
+      handlers,
+      targets: [{
+        contactId: Number(local[0]?.id ?? 0),
+        remoteId: request?.remoteId,
+      }],
+      sourceAddressBookRemoteId: null,
       useWebSocket,
+      onPhase: async (phase, detail) => {
+        const durablePhase = phase === 'snapshot-saved'
+          ? CONTACT_TRASH_PHASE.SNAPSHOT_SAVED
+          : (phase === 'document-confirmed'
+            ? CONTACT_TRASH_PHASE.DOCUMENT_CONFIRMED
+            : CONTACT_TRASH_PHASE.SERVER_WRITE_PENDING);
+        await checkpointContactTrashPhase({
+          handlers,
+          row,
+          checkpoint: emptyContactBatchCheckpoint(),
+          phase: durablePhase,
+          detail,
+        });
+      },
     });
-    if (!result.ok) {
-      return { ok: false, error: result.error ?? { type: 'serverFail' } };
+    if (!result.complete || result.result.failures.length > 0) {
+      return {
+        ok: false,
+        error: result.error ?? {
+          type: result.result.failures[0]?.errorType ?? 'serverFail',
+        },
+      };
     }
   }
   // A destroyed card is absent from the server list rather than marked
@@ -336,7 +393,11 @@ function normalizeContactBatchRequest(request: any): ContactBatchMutationRequest
 }
 
 function readContactBatchCheckpoint(row: any): DurableContactBatchCheckpoint {
-  if (readPhase(row) !== SEND_PHASE.CACHE_PENDING) {
+  const phase = readPhase(row);
+  if (
+    phase !== SEND_PHASE.CACHE_PENDING
+    && !Object.values(CONTACT_TRASH_PHASE).includes(phase as any)
+  ) {
     return emptyContactBatchCheckpoint();
   }
   let parsed;
@@ -473,6 +534,35 @@ function checkpointContactBatch({
   });
 }
 
+function checkpointContactTrashPhase({
+  handlers,
+  row,
+  checkpoint,
+  phase,
+  detail,
+}: {
+  handlers: any;
+  row: any;
+  checkpoint: DurableContactBatchCheckpoint;
+  phase: string;
+  detail?: unknown;
+}): Promise<unknown> {
+  return handlers[DB_RPC.QUERY]({
+    sql: `UPDATE pending_mutations
+             SET phase = ?, server_response_json = ?, updated_at = ?
+           WHERE id = ?`,
+    params: [
+      phase,
+      JSON.stringify({
+        contactBatch: checkpoint,
+        contactTrash: { phase, detail: detail ?? null },
+      }),
+      Date.now(),
+      row.id,
+    ],
+  });
+}
+
 async function resolveContactBatchBook({
   handlers,
   accountId,
@@ -596,20 +686,50 @@ async function runContactBatch({
       unsettled = unsettled.filter((contactId) => !unknownIds.has(contactId));
     }
     if (unsettled.length > 0) {
-      const protocol = await mutateContactCardsBatch({
-        transport,
-        account,
-        targets: unsettled.map((contactId) => ({
-          contactId,
-          remoteId: String(byId.get(contactId)),
-        })),
-        operation: wireOperation,
-        useWebSocket,
-        onChunk: async (result) => {
-          mergeContactBatchCheckpoint(checkpoint, result);
-          await checkpointContactBatch({ handlers, row, checkpoint });
-        },
-      });
+      const protocol = request.operation === 'move'
+        ? await mutateContactCardsBatch({
+          transport,
+          account,
+          targets: unsettled.map((contactId) => ({
+            contactId,
+            remoteId: String(byId.get(contactId)),
+          })),
+          operation: wireOperation,
+          useWebSocket,
+          onChunk: async (result) => {
+            mergeContactBatchCheckpoint(checkpoint, result);
+            await checkpointContactBatch({ handlers, row, checkpoint });
+          },
+        })
+        : await deleteContactCardsWithTrash({
+          transport,
+          account,
+          handlers,
+          targets: unsettled.map((contactId) => ({
+            contactId,
+            remoteId: String(byId.get(contactId)),
+          })),
+          sourceAddressBookRemoteId: wireOperation.sourceAddressbookRemoteId,
+          useWebSocket,
+          onPhase: async (phase, detail) => {
+            const durablePhase = phase === 'snapshot-saved'
+              ? CONTACT_TRASH_PHASE.SNAPSHOT_SAVED
+              : (phase === 'document-confirmed'
+                ? CONTACT_TRASH_PHASE.DOCUMENT_CONFIRMED
+                : CONTACT_TRASH_PHASE.SERVER_WRITE_PENDING);
+            await checkpointContactTrashPhase({
+              handlers,
+              row,
+              checkpoint,
+              phase: durablePhase,
+              detail,
+            });
+          },
+          onChunk: async (result) => {
+            mergeContactBatchCheckpoint(checkpoint, result);
+            await checkpointContactBatch({ handlers, row, checkpoint });
+          },
+        });
       if (!protocol.complete) {
         const errorType = protocol.error?.type ?? 'serverFail';
         if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
@@ -655,12 +775,118 @@ async function runContactBatch({
   };
 }
 
+function normalizeContactTrashRequest(request: any): ContactTrashMutationRequest | null {
+  const trashIds = numericContactIds(request?.trashIds);
+  if (trashIds.length === 0) return null;
+  if (request?.operation === 'delete-forever') {
+    return { operation: 'delete-forever', trashIds };
+  }
+  if (request?.operation !== 'restore') return null;
+  const destinationAddressbookId = request.destinationAddressbookId == null
+    ? null
+    : Number(request.destinationAddressbookId);
+  if (
+    destinationAddressbookId != null
+    && (
+      !Number.isSafeInteger(destinationAddressbookId)
+      || destinationAddressbookId <= 0
+    )
+  ) {
+    return null;
+  }
+  return { operation: 'restore', trashIds, destinationAddressbookId };
+}
+
+async function runContactTrash({
+  transport,
+  account,
+  handlers,
+  row,
+  request: rawRequest,
+  useWebSocket,
+}: any) {
+  const request = normalizeContactTrashRequest(rawRequest);
+  if (!request) {
+    return { ok: false, error: { type: 'invalidArguments', terminal: true } };
+  }
+  if (request.operation === 'delete-forever') {
+    await checkpointContactTrashPhase({
+      handlers,
+      row,
+      checkpoint: emptyContactBatchCheckpoint(),
+      phase: CONTACT_TRASH_PHASE.TOMBSTONE_PENDING,
+    });
+    const result = await deleteContactTrashForever({
+      transport,
+      account,
+      handlers,
+      trashIds: request.trashIds,
+      useWebSocket,
+    });
+    return { ok: true, result };
+  }
+
+  let destinationAddressBookRemoteId: string | null = null;
+  if (request.destinationAddressbookId != null) {
+    const destination = await resolveContactBatchBook({
+      handlers,
+      accountId: account.id,
+      localId: request.destinationAddressbookId,
+    });
+    if (!destination?.writable) {
+      return { ok: false, error: { type: 'forbidden', terminal: true } };
+    }
+    destinationAddressBookRemoteId = destination.remoteId;
+  }
+  await checkpointContactTrashPhase({
+    handlers,
+    row,
+    checkpoint: emptyContactBatchCheckpoint(),
+    phase: CONTACT_TRASH_PHASE.RESTORE_PENDING,
+  });
+  const result = await restoreContactTrash({
+    transport,
+    account,
+    handlers,
+    trashIds: request.trashIds,
+    destinationAddressBookRemoteId,
+    useWebSocket,
+  });
+  if (result.restoredRemoteIds.length > 0) {
+    await reconcileContactCards({
+      transport,
+      account,
+      handlers,
+      ids: result.restoredRemoteIds,
+      useWebSocket,
+    });
+  }
+  if (result.succeededTrashIds.length > 0) {
+    const changed = await handlers[DB_RPC.CONTACT_TRASH_SET_STATUS]({
+      accountId: account.id,
+      trashIds: result.succeededTrashIds,
+      status: 'restored',
+      ensurePush: true,
+    });
+    const pushed = await pushContactsTrash({
+      transport,
+      account,
+      handlers,
+      shardNames: changed.touchedShards,
+      useWebSocket,
+    });
+    if (pushed.ok === false) return pushed;
+  }
+  return { ok: true, result };
+}
+
 async function ensureCreateContactUid({ handlers, row, request }: any): Promise<any> {
   const usesDetailModel = Boolean(
     request
       && typeof request === 'object'
       && (
         'fullName' in request
+        || 'photo' in request
         || 'phones' in request
         || 'links' in request
         || (Array.isArray(request.emails)
@@ -700,6 +926,7 @@ async function ensureCreateContactUid({ handlers, row, request }: any): Promise<
         notes: [],
         organizations: [],
         titles: [],
+        photo: null,
       };
   if (JSON.stringify(next) !== JSON.stringify(request)) {
     await persistMutationRequest(handlers, row, next);
@@ -759,6 +986,7 @@ function contactFieldsFromRequest(request: any): ContactMutationFields {
     notes: Array.isArray(request?.notes) ? request.notes : [],
     organizations: Array.isArray(request?.organizations) ? request.organizations : [],
     titles: Array.isArray(request?.titles) ? request.titles : [],
+    photo: request?.photo && typeof request.photo === 'object' ? request.photo : null,
   };
 }
 
@@ -930,6 +1158,7 @@ async function reconcileOrReport({
 
 export {
   runContactBatch,
+  runContactTrash,
   runCreateContact,
   runDeleteContact,
   runUpdateContact,

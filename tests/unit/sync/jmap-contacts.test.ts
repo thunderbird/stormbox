@@ -18,6 +18,11 @@ import {
 import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { MockTransport } from './_mock-transport';
 
+const PNG_PHOTO_URI =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const GIF_PHOTO_URI =
+  'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
 function jmapCalls(transport, method) {
   const out = [];
   for (const req of transport.requests) {
@@ -505,6 +510,27 @@ describe('syncContacts', () => {
         absentTitle: { name: 'Absent role', kind: 'role', organizationId: 'missingOrg' },
         invalidTitle: { name: 'Invalid role', kind: 'role', organizationId: 'bad key' },
       },
+      media: {
+        secondary: {
+          '@type': 'Media',
+          kind: 'photo',
+          uri: 'data:image/png;base64,iVBORw0KGgo=',
+          mediaType: 'image/png',
+        },
+        avatar: {
+          '@type': 'Media',
+          kind: 'photo',
+          uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          mediaType: 'image/png',
+          pref: 1,
+        },
+        sound: {
+          '@type': 'Media',
+          kind: 'sound',
+          uri: 'https://example.com/voice.ogg',
+          mediaType: 'audio/ogg',
+        },
+      },
       'x-unknown': { nested: ['must', 'survive'] },
     };
     const transport = new MockTransport();
@@ -539,6 +565,42 @@ describe('syncContacts', () => {
       pref: 1,
       label: 'Primary',
     })]);
+    expect(detail.photo).toEqual({
+      mapKey: 'avatar',
+      uri: card.media.avatar.uri,
+      blobId: null,
+      mediaType: 'image/png',
+      pref: 1,
+    });
+    expect(await engine.all(
+      `SELECT map_key, kind, uri, media_type, pref
+         FROM contact_media
+        WHERE contact_id = ?
+        ORDER BY position`,
+      [row.id],
+    )).toEqual([
+      {
+        map_key: 'secondary',
+        kind: 'photo',
+        uri: card.media.secondary.uri,
+        media_type: 'image/png',
+        pref: null,
+      },
+      {
+        map_key: 'avatar',
+        kind: 'photo',
+        uri: card.media.avatar.uri,
+        media_type: 'image/png',
+        pref: 1,
+      },
+      {
+        map_key: 'sound',
+        kind: 'sound',
+        uri: 'https://example.com/voice.ogg',
+        media_type: 'audio/ogg',
+        pref: null,
+      },
+    ]);
     expect(detail.phones).toEqual([expect.objectContaining({
       mapKey: 'phone1',
       value: 'tel:+15551234',
@@ -1279,6 +1341,51 @@ describe('createContactCard', () => {
     expect(update.existing.emails).toBeUndefined();
   });
 
+  it('creates a separate card when duplication is explicit', async () => {
+    const transport = new MockTransport();
+    let created: any = null;
+    transport.handle('ContactCard/set', (params) => {
+      created = params.create?.c1;
+      return { created: { c1: { id: 'copy-1' } } };
+    });
+
+    const result = await createContactCard({
+      transport,
+      account,
+      contact: contactFields({
+        fullName: 'Duplicated (Copy 1)',
+        emails: [{
+          mapKey: 'email',
+          position: 0,
+          value: 'dup@example.com',
+          label: null,
+          contexts: [],
+          pref: 1,
+          isPreferred: true,
+        }],
+        photo: {
+          mapKey: 'avatar',
+          uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+          blobId: null,
+          mediaType: 'image/png',
+          pref: 1,
+        },
+      }),
+      addressBookIds: ['book-default'],
+      allowDuplicate: true,
+    });
+
+    expect(result).toEqual({ ok: true, id: 'copy-1' });
+    expect(created.name.full).toBe('Duplicated (Copy 1)');
+    expect(created.media.avatar).toMatchObject({
+      '@type': 'Media',
+      kind: 'photo',
+      mediaType: 'image/png',
+      pref: 1,
+    });
+    expect(jmapCalls(transport, 'ContactCard/query')).toHaveLength(0);
+  });
+
   it('creates an email-less card with the exact durable keyed detail payload', async () => {
     const transport = new MockTransport();
     transport.handle('ContactCard/query', () => ({ ids: [], total: 0 }));
@@ -1880,6 +1987,120 @@ describe('updateContactCard', () => {
       transport, account, remoteId: 'd', emails: ['keep@example.com'], name: 'Old Name',
     });
     expect(getUpdate().d).toEqual({ 'emails/e2': null });
+  });
+
+  it('adds, replaces, and removes only the selected photo media entry', async () => {
+    const current = {
+      ...cardWithExtras(),
+      media: {
+        avatar: {
+          '@type': 'Media',
+          kind: 'photo',
+          uri: PNG_PHOTO_URI,
+          mediaType: 'image/png',
+          pref: 1,
+          'x-server': 'preserve',
+        },
+        logo: {
+          '@type': 'Media',
+          kind: 'logo',
+          uri: 'https://example.com/logo.png',
+        },
+      },
+    };
+    const baseline = contactFields({
+      fullName: 'Old Name',
+      emails: [{
+        mapKey: 'e1',
+        position: 0,
+        value: 'keep@example.com',
+        label: null,
+        contexts: ['work'],
+        pref: 1,
+        isPreferred: true,
+      }],
+      photo: {
+        mapKey: 'avatar',
+        uri: PNG_PHOTO_URI,
+        blobId: null,
+        mediaType: 'image/png',
+        pref: 1,
+      },
+    });
+    const replacement = contactFields({
+      ...baseline,
+      photo: {
+        ...baseline.photo!,
+        uri: GIF_PHOTO_URI,
+        mediaType: 'image/gif',
+      },
+    });
+    const replacing = withCard(current);
+
+    await expect(updateContactCard({
+      transport: replacing.transport,
+      account,
+      remoteId: 'd',
+      baseline,
+      contact: replacement,
+    })).resolves.toEqual({ ok: true });
+    expect(replacing.getUpdate().d).toEqual({
+      'media/avatar': {
+        '@type': 'Media',
+        kind: 'photo',
+        uri: GIF_PHOTO_URI,
+        mediaType: 'image/gif',
+        pref: 1,
+        'x-server': 'preserve',
+      },
+    });
+
+    const removing = withCard(current);
+    await expect(updateContactCard({
+      transport: removing.transport,
+      account,
+      remoteId: 'd',
+      baseline,
+      contact: contactFields({ ...baseline, photo: null }),
+    })).resolves.toEqual({ ok: true });
+    expect(removing.getUpdate().d).toEqual({ 'media/avatar': null });
+  });
+
+  it('does not overwrite a photo changed after the editor opened', async () => {
+    const baseline = contactFields({
+      fullName: 'Old Name',
+      photo: {
+        mapKey: 'avatar',
+        uri: PNG_PHOTO_URI,
+        blobId: null,
+        mediaType: 'image/png',
+        pref: 1,
+      },
+    });
+    const current = {
+      ...cardWithExtras(),
+      media: {
+        avatar: {
+          '@type': 'Media',
+          kind: 'photo',
+          uri: GIF_PHOTO_URI,
+          mediaType: 'image/gif',
+          pref: 1,
+        },
+      },
+    };
+    const { transport } = withCard(current);
+
+    const result = await updateContactCard({
+      transport,
+      account,
+      remoteId: 'd',
+      baseline,
+      contact: contactFields({ ...baseline, photo: null }),
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { type: 'stateMismatch' } });
+    expect(jmapCalls(transport, 'ContactCard/set')).toHaveLength(0);
   });
 
   it('changes only name.full and preserves other name components', async () => {
@@ -2929,6 +3150,59 @@ describe('whitelist reconcile cost is independent of contact count', () => {
       [account.id],
     );
   }
+
+  it('does not whitelist a trashed sender when sourceSentAt is absent', async () => {
+    await handlers[DB_RPC.CONTACT_TRASH_PUT_ENTRIES]({
+      accountId: account.id,
+      entries: [{
+        uid: 'trashed-sender-uid',
+        remoteId: 'trashed-sender-card',
+        addressBookIds: ['book-trusted'],
+        trashedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        status: 'trashed',
+        updatedAt: Date.now(),
+        emailKeys: ['trashed@example.com'],
+        displayName: 'Trashed Sender',
+        primaryEmail: 'trashed@example.com',
+        snapshot: {
+          id: 'trashed-sender-card',
+          uid: 'trashed-sender-uid',
+          addressBookIds: { 'book-trusted': true },
+        },
+        media: [],
+      }],
+    });
+    const transport = new MockTransport();
+    expect(await handlers[DB_RPC.QUERY]({
+      sql: 'SELECT email_key FROM contacts_trash_emails WHERE account_id = ?',
+      params: [account.id],
+    })).toEqual([{ email_key: 'trashed@example.com' }]);
+    transport.handle('AddressBook/get', () => ({ list: [], state: 'books-1' }));
+    transport.handle('ContactCard/get', () => ({
+      list: [],
+      notFound: [],
+      state: 'cards-1',
+    }));
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: {
+        mutation_type: 'whitelistSender',
+        request_json: JSON.stringify({
+          senders: [{
+            email: 'trashed@example.com',
+            name: 'Trashed Sender',
+            uid: 'new-trusted-uid',
+          }],
+        }),
+      },
+    })).resolves.toMatchObject({ ok: true });
+    expect(transport.requests.flatMap((request) => request.methodCalls)
+      .some(([name]) => name === 'ContactCard/set')).toBe(false);
+  });
 
   it('batch-whitelisting 200 mails from 150 senders on a 1099-contact book fetches only the 150 new cards', async () => {
     await seedLocalContacts(1099);

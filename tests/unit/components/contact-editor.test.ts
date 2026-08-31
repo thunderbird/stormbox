@@ -72,6 +72,31 @@ function detail(): ContactDetail {
 }
 
 describe('contact editor mapping', () => {
+  it('round-trips the selected photo and treats it as contact content', () => {
+    const source = detail();
+    source.photo = {
+      mapKey: 'avatar',
+      uri: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      blobId: null,
+      mediaType: 'image/png',
+      pref: 1,
+    };
+    const result = contactEditorFields(createContactEditorModel(source));
+
+    expect(result.fields?.photo).toEqual(source.photo);
+    expect(contactFieldsAreEmpty({
+      fullName: null,
+      emails: [],
+      phones: [],
+      links: [],
+      anniversaries: [],
+      notes: [],
+      organizations: [],
+      titles: [],
+      photo: source.photo,
+    })).toBe(false);
+  });
+
   it('maps preset and custom labels while preserving unrelated phone metadata', () => {
     const phone: ContactEditorPhone & { vendorValue: string } = {
       formKey: 'phone:one',

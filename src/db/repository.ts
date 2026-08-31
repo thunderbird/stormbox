@@ -8,14 +8,50 @@
  */
 
 import type {
+  AddressBookInventory,
   ContactDetail,
   ContactListRow,
+  ContactTrashDetail,
+  ContactTrashListRow,
+  ContactTrashLookup,
   IdentityRow,
   IdentityUpsertInput,
 } from '../types/db';
 import { assertSupportedBrowser } from './availability';
 import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol';
-import { RPC_REQUEST, RPC_RESPONSE, TABLES_TOUCHED, WORKER_LOG } from './rpc-dispatch';
+import {
+  RPC_CANCEL,
+  RPC_PROGRESS,
+  RPC_REQUEST,
+  RPC_RESPONSE,
+  TABLES_TOUCHED,
+  WORKER_LOG,
+} from './rpc-dispatch';
+
+export interface BlobTransferProgress {
+  direction: 'upload' | 'download';
+  phase: 'transferring' | 'processing' | 'complete';
+  loaded: number;
+  total: number | null;
+}
+
+export interface AttachmentLimits {
+  maxSizeUpload: number;
+  maxSizeAttachmentsPerEmail: number;
+  maxConcurrentUpload: number;
+}
+
+export interface JmapUploadMetadata {
+  accountId: string;
+  blobId: string;
+  type: string;
+  size: number;
+}
+
+export interface TransferCallOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: BlobTransferProgress) => void;
+}
 
 /**
  * @typedef {import('./protocol').DB_RPC} DBRpcMethods
@@ -49,7 +85,12 @@ export class Repository {
   _port: MessagePort;
   _channel: BroadcastChannel;
   _nextId: number;
-  _pending: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  _pending: Map<number, {
+    resolve: (v: any) => void;
+    reject: (e: any) => void;
+    onProgress?: (progress: BlobTransferProgress) => void;
+    removeAbort?: () => void;
+  }>;
   _listeners: Set<(tables: string[]) => void>;
 
   constructor(port: MessagePort, channel: BroadcastChannel) {
@@ -76,17 +117,47 @@ export class Repository {
 
   /**
    * Low-level RPC. Most callers use one of the named helper methods
-   * below. The result is a JSON-shaped value crossing the MessagePort
-   * boundary, so it is typed loosely; consumers narrow it at the call
-   * site (typed store assignment, explicit cast, or the named helper
-   * method's annotated return type).
+   * below. Values cross through structured clone, including Blob/File for
+   * transfer RPCs. Consumers narrow loosely typed results at the call site
+   * or use a named helper with an annotated return type.
    */
   call<T = any>(method: string, params: any = {}): Promise<T> {
+    return this._call<T>(method, params);
+  }
+
+  _call<T = any>(
+    method: string,
+    params: any = {},
+    options: TransferCallOptions = {},
+  ): Promise<T> {
     const id = this._nextId;
     this._nextId += 1;
     return new Promise<T>((resolve, reject) => {
-      this._pending.set(id, { resolve, reject });
-      this._port.postMessage({ type: RPC_REQUEST, id, method, params });
+      if (options.signal?.aborted) {
+        reject(cancelledRpcError());
+        return;
+      }
+      const onAbort = () => {
+        this._port.postMessage({ type: RPC_CANCEL, id });
+      };
+      if (options.signal) {
+        options.signal.addEventListener('abort', onAbort, { once: true });
+      }
+      this._pending.set(id, {
+        resolve,
+        reject,
+        onProgress: options.onProgress,
+        removeAbort: options.signal
+          ? () => options.signal?.removeEventListener('abort', onAbort)
+          : undefined,
+      });
+      try {
+        this._port.postMessage({ type: RPC_REQUEST, id, method, params });
+      } catch (error) {
+        this._pending.delete(id);
+        options.signal?.removeEventListener('abort', onAbort);
+        reject(error);
+      }
     });
   }
 
@@ -117,6 +188,13 @@ export class Repository {
       accountId,
       serviceKind,
       capabilities,
+    });
+  }
+
+  getAccountCapabilities(accountId, serviceKind) {
+    return this.call(DB_RPC.ACCOUNT_CAPABILITIES_GET, {
+      accountId,
+      serviceKind,
     });
   }
 
@@ -303,6 +381,10 @@ export class Repository {
     });
   }
 
+  ensureAddressbookMutation(input) {
+    return this.call(DB_RPC.ADDRESSBOOK_MUTATION_ENSURE, input);
+  }
+
   upsertContacts(accountId, contacts) {
     return this.call(DB_RPC.CONTACT_UPSERT_MANY, { accountId, contacts });
   }
@@ -323,8 +405,42 @@ export class Repository {
     return this.call<ContactDetail | null>(DB_RPC.CONTACT_GET, { accountId, contactId });
   }
 
+  listContactTrash(accountId: number): Promise<ContactTrashListRow[]> {
+    return this.call<ContactTrashListRow[]>(DB_RPC.CONTACT_TRASH_LIST, { accountId });
+  }
+
+  getContactTrash(
+    accountId: number,
+    trashId: number,
+  ): Promise<ContactTrashDetail | null> {
+    return this.call<ContactTrashDetail | null>(
+      DB_RPC.CONTACT_TRASH_GET,
+      { accountId, trashId },
+    );
+  }
+
+  getContactTrashMany(
+    accountId: number,
+    trashIds: number[],
+  ): Promise<ContactTrashLookup[]> {
+    return this.call<ContactTrashLookup[]>(
+      DB_RPC.CONTACT_TRASH_GET_MANY,
+      { accountId, trashIds },
+    );
+  }
+
   autocompleteContacts(accountId, prefix, limit = 20, exclude = []) {
     return this.call(DB_RPC.CONTACT_AUTOCOMPLETE, { accountId, prefix, limit, exclude });
+  }
+
+  // Settings -----------------------------------------------------------
+
+  getSettings(accountId) {
+    return this.call(DB_RPC.SETTINGS_GET, { accountId });
+  }
+
+  applySettingsPatch(accountId, patch) {
+    return this.call(DB_RPC.SETTINGS_APPLY_PATCH, { accountId, patch });
   }
 
   // Sync infrastructure ------------------------------------------------
@@ -362,8 +478,12 @@ export class Repository {
     return this.call(DB_RPC.PENDING_MUTATION_RETRY, { accountId, mutationId });
   }
 
-  abandonPendingDraftMutation(accountId, mutationId) {
-    return this.call(DB_RPC.PENDING_MUTATION_ABANDON_DRAFT, { accountId, mutationId });
+  abandonPendingDraftMutation(accountId, mutationId, options = {}) {
+    return this.call(DB_RPC.PENDING_MUTATION_ABANDON_DRAFT, {
+      accountId,
+      mutationId,
+      ...options,
+    });
   }
 
   async isEmailClaimedBySend(accountId, remoteId) {
@@ -466,6 +586,16 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_ADDRESSBOOKS, { accountId });
   }
 
+  inventoryAddressbook(
+    accountId: number,
+    addressbookId: number,
+  ): Promise<AddressBookInventory> {
+    return this.call<AddressBookInventory>(
+      DB_RPC.SYNC_INVENTORY_ADDRESSBOOK,
+      { accountId, addressbookId },
+    );
+  }
+
   ensureContacts(accountId, addressbookId) {
     return this.call(DB_RPC.SYNC_ENSURE_CONTACTS, { accountId, addressbookId });
   }
@@ -480,6 +610,64 @@ export class Repository {
 
   runMutation(accountId, mutationId) {
     return this.call(DB_RPC.SYNC_RUN_MUTATION, { accountId, mutationId });
+  }
+
+  getAttachmentLimits(accountId: number): Promise<AttachmentLimits> {
+    return this.call<AttachmentLimits>(DB_RPC.SYNC_GET_ATTACHMENT_LIMITS, {
+      accountId,
+    });
+  }
+
+  uploadComposeAttachment(
+    accountId: number,
+    blob: Blob,
+    {
+      type = blob.type || 'application/octet-stream',
+      totalAttachmentBytes = blob.size,
+      signal,
+      onProgress,
+    }: {
+      type?: string;
+      totalAttachmentBytes?: number;
+    } & TransferCallOptions = {},
+  ): Promise<JmapUploadMetadata> {
+    return this._call<JmapUploadMetadata>(
+      DB_RPC.SYNC_UPLOAD_COMPOSE_ATTACHMENT,
+      { accountId, blob, type, totalAttachmentBytes },
+      { signal, onProgress },
+    );
+  }
+
+  downloadAttachment(
+    accountId: number,
+    {
+      blobId,
+      type = 'application/octet-stream',
+      name = 'attachment',
+      maxBytes,
+      truncateAtMaxBytes = false,
+      signal,
+      onProgress,
+    }: {
+      blobId: string;
+      type?: string | null;
+      name?: string | null;
+      maxBytes?: number;
+      truncateAtMaxBytes?: boolean;
+    } & TransferCallOptions,
+  ): Promise<Blob> {
+    return this._call<Blob>(
+      DB_RPC.SYNC_DOWNLOAD_ATTACHMENT,
+      {
+        accountId,
+        blobId,
+        type,
+        name,
+        maxBytes,
+        truncateAtMaxBytes,
+      },
+      { signal, onProgress },
+    );
   }
 
   /**
@@ -497,16 +685,28 @@ export class Repository {
 
   _onMessage(msg) {
     const data = msg.data;
-    if (!data || data.type !== RPC_RESPONSE) {
+    if (!data) {
       return;
     }
+    if (data.type === RPC_PROGRESS) {
+      const pending = this._pending.get(data.id);
+      if (!pending?.onProgress) return;
+      try {
+        pending.onProgress(data.progress);
+      } catch (error) {
+        console.error('Repository progress listener threw', error);
+      }
+      return;
+    }
+    if (data.type !== RPC_RESPONSE) return;
     const pending = this._pending.get(data.id);
     if (!pending) {
       return;
     }
     this._pending.delete(data.id);
+    pending.removeAbort?.();
     if (data.error) {
-      pending.reject(new Error(data.error));
+      pending.reject(deserializeRpcError(data.error));
       return;
     }
     pending.resolve(data.result);
@@ -534,4 +734,21 @@ export class Repository {
       }
     }
   }
+}
+
+function cancelledRpcError() {
+  const error: any = new Error('RPC request was cancelled');
+  error.name = 'AbortError';
+  error.type = 'cancelled';
+  return error;
+}
+
+function deserializeRpcError(serialized: any) {
+  if (typeof serialized === 'string') return new Error(serialized);
+  const error: any = new Error(serialized?.message ?? 'Worker RPC failed');
+  error.name = serialized?.name ?? 'Error';
+  for (const [key, value] of Object.entries(serialized ?? {})) {
+    if (key !== 'name' && key !== 'message') error[key] = value;
+  }
+  return error;
 }

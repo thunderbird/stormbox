@@ -5,7 +5,12 @@ import {
   ref,
   watch,
 } from 'vue';
-import { ArrowLeft, Pencil, Trash2 } from '@lucide/vue';
+import {
+  ArrowLeft,
+  Copy,
+  Pencil,
+  Trash2,
+} from '@lucide/vue';
 
 import {
   IDENTITY_ERROR,
@@ -56,17 +61,23 @@ const props = withDefaults(defineProps<{
   deleting?: boolean;
   identity: IdentityRow | null;
   mode: IdentityDetailPaneMode;
+  primary?: boolean;
+  settingPrimary?: boolean;
 }>(), {
   deleting: false,
+  primary: false,
+  settingPrimary: false,
 });
 
 const emit = defineEmits<{
   back: [];
   cancel: [];
   dirtyChange: [dirty: boolean];
+  duplicate: [];
   edit: [];
   requestDelete: [];
   saved: [key: string | null];
+  setPrimary: [];
   stateChange: [state: 'save-error' | 'validation-error' | null];
 }>();
 
@@ -388,15 +399,33 @@ defineExpose({ focusDetail, save });
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
         <AppIconButton
+          :disabled="deleting || contactsStore.saving"
+          title="Duplicate identity"
+          aria-label="Duplicate identity"
+          @click="emit('duplicate')"
+        >
+          <Copy :size="18" :stroke-width="1.65" aria-hidden="true" />
+        </AppIconButton>
+        <AppIconButton
+          v-if="mayDelete"
           class="identity-detail__delete"
           danger
-          :disabled="deleting || !mayDelete"
-          :title="mayDelete ? 'Delete identity' : 'This identity cannot be deleted'"
+          :disabled="deleting"
+          title="Delete identity"
           aria-label="Delete"
           @click="emit('requestDelete')"
         >
           <Trash2 :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
+        <AppButton
+          class="identity-detail__primary-action"
+          variant="outline"
+          :aria-pressed="primary"
+          :disabled="deleting || contactsStore.saving || primary || settingPrimary"
+          @click="emit('setPrimary')"
+        >
+          Set as Primary
+        </AppButton>
       </template>
     </header>
 
@@ -549,7 +578,7 @@ defineExpose({ focusDetail, save });
         <p v-else>(not set)</p>
       </section>
       <p v-if="!mayDelete" class="identity-detail__protected">
-        This identity is managed by the server and cannot be deleted.
+        The mail server doesn't allow this identity to be deleted.
       </p>
     </div>
   </article>
@@ -580,6 +609,10 @@ defineExpose({ focusDetail, save });
 
 .identity-detail__action--back {
   margin-right: 12px;
+}
+
+.identity-detail__primary-action {
+  margin-left: auto;
 }
 
 .identity-detail__display-name {

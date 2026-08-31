@@ -5,6 +5,7 @@ import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { SEND_PHASE, SERVICE_KIND } from '../../../src/constants/states';
 import { MUTATION_TYPES, processMutationRow } from '../../../src/sync/backends/jmap/outbox';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { withContactDetailKeys } from '../../../src/utils/contact-fields';
 import { MockTransport } from './_mock-transport';
 
@@ -609,8 +610,88 @@ describe('a contact write the cache did not follow', () => {
       }],
     });
     const row = await queueRow(MUTATION_TYPES.DELETE_CONTACT, { remoteId: 'card-old' });
-    const transport = new MockTransport();
-    transport.handle('ContactCard/set', () => ({ destroyed: ['card-old'] }));
+    const transport = new MockTransport({
+      capabilities: {
+        [JMAP_CAPS.CORE]: {
+          maxObjectsInGet: 500,
+          maxObjectsInSet: 500,
+          maxSizeUpload: 50_000_000,
+        },
+        [JMAP_CAPS.CONTACTS]: {},
+        [JMAP_CAPS.FILENODE]: {},
+      },
+      accounts: {
+        'acct-1': {
+          accountCapabilities: {
+            [JMAP_CAPS.CONTACTS]: {},
+            [JMAP_CAPS.FILENODE]: {},
+          },
+        },
+      },
+    });
+    let cardExists = true;
+    transport.handle('AddressBook/get', () => ({
+      list: [{
+        id: 'book-default',
+        name: 'Contacts',
+        isDefault: true,
+        myRights: { mayDelete: true, mayWrite: true },
+      }],
+      state: 'ab-1',
+    }));
+    transport.handle('ContactCard/get', () => ({
+      list: cardExists
+        ? [{
+            id: 'card-old',
+            uid: 'uid-card-old',
+            addressBookIds: { 'book-default': true },
+            name: { full: 'Ada' },
+            emails: { e1: { address: 'ada@example.com' } },
+          }]
+        : [],
+      notFound: cardExists ? [] : ['card-old'],
+      state: 'cc-1',
+    }));
+    const fileNodes = new Map<string, any>();
+    let fileState = 1;
+    transport.handle('FileNode/query', ({ filter }) => ({
+      ids: [...fileNodes.values()]
+        .filter((node) => typeof filter?.name === 'string'
+          ? node.name === filter.name
+          : true)
+        .map((node) => node.id),
+      queryState: `fn-${fileState}`,
+    }));
+    transport.handle('FileNode/get', ({ ids }) => ({
+      list: (ids ?? [...fileNodes.keys()]).flatMap((id: string) => {
+        const node = fileNodes.get(id);
+        return node ? [node] : [];
+      }),
+      notFound: [],
+      state: `fn-${fileState}`,
+    }));
+    transport.handle('FileNode/set', ({ create }) => {
+      const created: Record<string, { id: string }> = {};
+      for (const [key, value] of Object.entries<any>(create ?? {})) {
+        const id = `file-${fileNodes.size + 1}`;
+        fileNodes.set(id, {
+          id,
+          ...value,
+          myRights: { mayRead: true, mayWrite: true },
+        });
+        created[key] = { id };
+      }
+      fileState += 1;
+      return {
+        oldState: `fn-${fileState - 1}`,
+        newState: `fn-${fileState}`,
+        created,
+      };
+    });
+    transport.handle('ContactCard/set', () => {
+      cardExists = false;
+      return { destroyed: ['card-old'] };
+    });
     // The local delete fails once, then the row is retried against a server
     // that would report notFound if asked to destroy the card again.
     let deletes = 0;
@@ -625,7 +706,11 @@ describe('a contact write the cache did not follow', () => {
     const first = await processMutationRow({
       transport, account, handlers: breakingHandlers, row,
     });
-    expect(first.ok).toBe(false);
+    expect(first).toMatchObject({
+      ok: false,
+      error: { type: 'cacheReconcileFailed' },
+    });
+    expect((await reload(row.id)).phase).toBe(SEND_PHASE.CACHE_PENDING);
 
     transport.handle('ContactCard/set', () => {
       throw new Error('the card is already gone');
