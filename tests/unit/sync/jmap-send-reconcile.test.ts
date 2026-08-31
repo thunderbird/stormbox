@@ -18,10 +18,32 @@ import { MockTransport } from './_mock-transport';
 
 const account = { remote_account_id: 'acc-1' };
 
+function handleSubmissionRecords(transport: MockTransport, records: any[]): void {
+  transport.handle('EmailSubmission/query', (params) => ({
+    ids: records
+      .map((record) => record.id)
+      .slice(params.position ?? 0, (params.position ?? 0) + params.limit),
+    position: params.position ?? 0,
+    total: records.length,
+    canCalculateChanges: false,
+    queryState: 'sq',
+  }));
+  transport.handle('EmailSubmission/get', (params) => ({
+    list: records.filter((record) => (params.ids ?? []).includes(record.id)),
+    notFound: [],
+    state: 'sg',
+  }));
+}
+
 describe('findSubmissionEvidence', () => {
   it('accepts a retained submission record as proof', async () => {
     const transport = new MockTransport();
-    transport.handle('EmailSubmission/query', () => ({ ids: ['sub-9'] }));
+    handleSubmissionRecords(transport, [{
+      id: 'sub-9',
+      emailId: 'e-1',
+      undoStatus: 'pending',
+      sendAt: null,
+    }]);
 
     expect(await findSubmissionEvidence({
       transport, account, emailRemoteId: 'e-1', sentRemoteId: 'mb-sent',
@@ -34,7 +56,7 @@ describe('findSubmissionEvidence', () => {
     // the submission record immediately, which is why this second signal
     // exists at all.
     const transport = new MockTransport();
-    transport.handle('EmailSubmission/query', () => ({ ids: [] }));
+    handleSubmissionRecords(transport, []);
     transport.handle('Email/get', () => ({
       list: [{ id: 'e-1', mailboxIds: { 'mb-sent': true }, keywords: {} }],
       state: 'es',
@@ -47,7 +69,7 @@ describe('findSubmissionEvidence', () => {
 
   it('does not read a message still in Drafts as proof of anything', async () => {
     const transport = new MockTransport();
-    transport.handle('EmailSubmission/query', () => ({ ids: [] }));
+    handleSubmissionRecords(transport, []);
     transport.handle('Email/get', () => ({
       list: [{
         id: 'e-1',
@@ -63,8 +85,7 @@ describe('findSubmissionEvidence', () => {
   });
 
   it('falls through to the mailbox signal when submissions cannot be queried', async () => {
-    // Not every server supports filtering submissions by emailIds, and a
-    // server that refuses the filter has told us nothing.
+    // A failed complete submission read has told us nothing.
     const transport = new MockTransport();
     transport.handle('EmailSubmission/query', () => {
       throw Object.assign(new Error('unsupportedFilter'), { type: 'unsupportedFilter' });
@@ -107,7 +128,7 @@ describe('findSubmissionEvidence', () => {
 
   it('stops after the submission signal when there is no Sent folder to check', async () => {
     const transport = new MockTransport();
-    transport.handle('EmailSubmission/query', () => ({ ids: [] }));
+    handleSubmissionRecords(transport, []);
 
     expect(await findSubmissionEvidence({
       transport, account, emailRemoteId: 'e-1', sentRemoteId: null,

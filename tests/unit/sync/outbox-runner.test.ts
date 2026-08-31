@@ -426,6 +426,38 @@ describe('OutboxRunner per-target serialization', () => {
     await runner.stop();
   });
 
+  it('serializes mailbox subscription writes in one account lane', async () => {
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertTargetlessWrite('setMailboxSubscription');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.id}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.id}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const secondId = await insertTargetlessWrite('setMailboxSubscription');
+    const drainPromise = runner.drain();
+
+    await waitFor(() => order.includes(`start:${firstId}`));
+    expect(order).not.toContain(`start:${secondId}`);
+    firstBlocked.resolve();
+    await drainPromise;
+
+    expect(order).toEqual([
+      `start:${firstId}`,
+      `end:${firstId}`,
+      `start:${secondId}`,
+      `end:${secondId}`,
+    ]);
+    await runner.stop();
+  });
+
   it('serializes setKeywords + destroy against the same message id', async () => {
     // markRead followed by destroy must not interleave: if the
     // destroy Email/set lands before the setKeywords, the second

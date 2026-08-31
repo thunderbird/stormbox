@@ -17,6 +17,7 @@ import type {
   IdentityRow,
   IdentityUpsertInput,
 } from '../types/db';
+import type { ServerClockReferenceLike } from '../utils/schedule-time';
 import { assertSupportedBrowser } from './availability';
 import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol';
 import {
@@ -39,6 +40,13 @@ export interface AttachmentLimits {
   maxSizeUpload: number;
   maxSizeAttachmentsPerEmail: number;
   maxConcurrentUpload: number;
+}
+
+/** RFC 4865 FUTURERELEASE support as advertised by the account. */
+export interface ScheduleCapability {
+  supported: boolean;
+  maxDelayedSend: number;
+  serverClockReference: ServerClockReferenceLike | null;
 }
 
 export interface JmapUploadMetadata {
@@ -336,8 +344,16 @@ export class Repository {
    * `messages` for `accountId`. Used by the mail-store to drop stale
    * UI ids before enqueuing a mutation.
    */
-  filterExistingMessageIds(accountId, ids) {
-    return this.call(DB_RPC.MESSAGE_FILTER_EXISTING_IDS, { accountId, ids });
+  filterExistingMessageIds(
+    accountId,
+    ids,
+    { excludeScheduled = false }: { excludeScheduled?: boolean } = {},
+  ) {
+    return this.call(DB_RPC.MESSAGE_FILTER_EXISTING_IDS, {
+      accountId,
+      ids,
+      excludeScheduled,
+    });
   }
 
   replaceMessageKeywords(messageId, keywords, keywordsJson) {
@@ -572,6 +588,23 @@ export class Repository {
 
   ensureIdentities(accountId) {
     return this.call(DB_RPC.SYNC_ENSURE_IDENTITIES, { accountId });
+  }
+
+  /**
+   * Pull the synced settings document from the server before first use,
+   * so a fresh device adopts the stored time zone instead of clobbering
+   * it with a local default.
+   */
+  ensureSettings(accountId) {
+    return this.call(DB_RPC.SYNC_ENSURE_SETTINGS, { accountId });
+  }
+
+  /**
+   * Live FUTURERELEASE delayed-send capability for the account, straight
+   * from a forced session refetch.
+   */
+  getScheduleCapability(accountId: number): Promise<ScheduleCapability> {
+    return this.call<ScheduleCapability>(DB_RPC.SYNC_GET_SCHEDULE_CAPABILITY, { accountId });
   }
 
   /**

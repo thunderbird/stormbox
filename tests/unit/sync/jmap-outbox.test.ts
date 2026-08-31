@@ -170,6 +170,23 @@ function sentEmailGetResponse(params: any) {
   };
 }
 
+function handleSubmissionRecords(transport: MockTransport, records: any[]): void {
+  transport.handle('EmailSubmission/query', (params) => ({
+    ids: records
+      .map((record) => record.id)
+      .slice(params.position ?? 0, (params.position ?? 0) + params.limit),
+    position: params.position ?? 0,
+    total: records.length,
+    canCalculateChanges: false,
+    queryState: 'sq',
+  }));
+  transport.handle('EmailSubmission/get', (params) => ({
+    list: records.filter((record) => (params.ids ?? []).includes(record.id)),
+    notFound: [],
+    state: 'sg',
+  }));
+}
+
 /** Transport that returns whatever response tuples the test builds. */
 function tupleTransport(build: (methodCalls: any[]) => any[]) {
   return {
@@ -2090,7 +2107,7 @@ describe('drainOutbox', () => {
       submitCalls += 1;
       return { created: { s1: { id: 'must-not-happen' } } };
     });
-    transport.handle('EmailSubmission/query', () => ({ ids: [] }));
+    handleSubmissionRecords(transport, []);
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
 
     const result = await processMutationRow({
@@ -2126,7 +2143,12 @@ describe('drainOutbox', () => {
       submitCalls += 1;
       return { created: { s1: { id: 'must-not-happen' } } };
     });
-    transport.handle('EmailSubmission/query', () => ({ ids: ['sub-found'] }));
+    handleSubmissionRecords(transport, [{
+      id: 'sub-found',
+      emailId: 'em-new',
+      undoStatus: 'pending',
+      sendAt: null,
+    }]);
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
 
     const result = await processMutationRow({
@@ -2165,7 +2187,7 @@ describe('drainOutbox', () => {
       submitCalls += 1;
       return { created: { s1: { id: 'must-not-happen' } } };
     });
-    transport.handle('EmailSubmission/query', () => ({ ids: [] }));
+    handleSubmissionRecords(transport, []);
     transport.handle('Email/get', (params) => ({
       list: (params.ids ?? []).map((id: string) => ({
         ...emailInMailbox(id, 'mb-drafts'),
@@ -2931,7 +2953,12 @@ describe('drainOutbox', () => {
       err.type = 'wsRequestTimeout';
       throw err;
     });
-    transport.handle('EmailSubmission/query', () => ({ ids: ['sub-11'] }));
+    handleSubmissionRecords(transport, [{
+      id: 'sub-11',
+      emailId: 'em-new',
+      undoStatus: 'pending',
+      sendAt: null,
+    }]);
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
 
     const rowId = await parkAtPhase({
@@ -3133,7 +3160,12 @@ describe('drainOutbox', () => {
     // out, so a failed write is filing work, not a failed send.
     const { drafts, sent } = await seedSendScaffolding();
     const transport = new MockTransport();
-    transport.handle('EmailSubmission/query', () => ({ ids: ['sub-22'] }));
+    handleSubmissionRecords(transport, [{
+      id: 'sub-22',
+      emailId: 'em-new',
+      undoStatus: 'pending',
+      sendAt: null,
+    }]);
     transport.handle('Email/get', (params) => sentEmailGetResponse(params));
     transport.handle('EmailSubmission/set', () => {
       throw new Error('a proven submission must not be repeated');

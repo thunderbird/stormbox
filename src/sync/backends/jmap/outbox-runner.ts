@@ -491,8 +491,9 @@ export class OutboxRunner {
    * Schedule the dispatch of one row behind any previously-queued
    * dispatches for the same target_message_id. ContactCard writes share an
    * account lane because their query-before-create de-duplication must not
-   * race. Identity writes use a second account lane so edits cannot overtake
-   * one another. Other targetless rows keep a unique key.
+   * race. Identity, settings, and mailbox-subscription writes use their own
+   * account lanes so updates to the same server state cannot overtake one
+   * another. Other targetless rows keep a unique key.
    */
   _dispatch(row) {
     const contactWrite = row.mutation_type === MUTATION_TYPE.WHITELIST_SENDER
@@ -509,6 +510,8 @@ export class OutboxRunner {
       || row.mutation_type === MUTATION_TYPE.UPDATE_IDENTITY
       || row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY;
     const settingsWrite = row.mutation_type === MUTATION_TYPE.PUSH_SETTINGS;
+    const subscriptionWrite =
+      row.mutation_type === MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION;
     let draftSessionId: string | null = null;
     if (row.mutation_type === MUTATION_TYPE.SAVE_DRAFT
         || row.mutation_type === MUTATION_TYPE.DISCARD_DRAFT
@@ -528,13 +531,15 @@ export class OutboxRunner {
         ? 'identity-writes'
         : (settingsWrite
           ? 'settings-document'
-          : (draftSessionId && row.target_message_id != null
-            ? `draft-target:${Number(row.target_message_id)}`
-            : (draftSessionId
-              ? `draft-session:${draftSessionId}`
-            : (row.target_message_id == null
-              ? `row:${row.id}`
-              : `target:${Number(row.target_message_id)}`)))));
+          : (subscriptionWrite
+            ? 'mailbox-subscriptions'
+            : (draftSessionId && row.target_message_id != null
+              ? `draft-target:${Number(row.target_message_id)}`
+              : (draftSessionId
+                ? `draft-session:${draftSessionId}`
+              : (row.target_message_id == null
+                ? `row:${row.id}`
+                : `target:${Number(row.target_message_id)}`))))));
     const prev = this._targetLocks.get(key) ?? Promise.resolve();
     // suppressed-rejection chain: if row N for target T fails, row
     // N+1 for the same target should still get a chance to run.

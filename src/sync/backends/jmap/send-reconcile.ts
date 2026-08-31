@@ -24,6 +24,7 @@
 
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
+import { fetchSubmissionRecords } from './submissions';
 
 /** How many recent messages to scan when matching a Message-ID. */
 const MESSAGE_ID_SCAN_LIMIT = 100;
@@ -180,27 +181,20 @@ export async function findSubmissionEvidence({
 }): Promise<SubmissionEvidence> {
   if (!emailRemoteId) return { outcome: 'unknown' };
 
-  // Signal 1: a submission record still referencing this Email.
+  // Signal 1: a submission record still referencing this Email. Stalwart
+  // 0.15.4 cannot reliably filter EmailSubmission/query, so this uses the
+  // same complete unfiltered read as normal submission synchronization.
   try {
-    const payload = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
-      methodCalls: [[
-        'EmailSubmission/query',
-        {
-          accountId: account.remote_account_id,
-          filter: { emailIds: [emailRemoteId] },
-          limit: 1,
-        },
-        'q1',
-      ]],
+    const record = (await fetchSubmissionRecords({
+      transport,
+      account,
       useWebSocket,
-    });
-    const ids = pickResponse(payload, 'EmailSubmission/query')?.ids ?? [];
-    if (ids.length > 0) {
-      return { outcome: 'submitted', submissionRemoteId: ids[0] };
+    })).find((candidate) => candidate.emailId === emailRemoteId);
+    if (record) {
+      return { outcome: 'submitted', submissionRemoteId: record.id };
     }
   } catch {
-    // A server that cannot filter submissions this way tells us nothing
+    // A failed or internally inconsistent complete read says nothing
     // either way; fall through to the mailbox signal.
   }
 

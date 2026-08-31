@@ -50,6 +50,7 @@ const ADDRESS_KINDS = ['from', 'to', 'cc', 'bcc', 'replyTo', 'sender'];
 export async function syncFolderWindow({
   transport, account, folder, handlers,
   sortProp = 'receivedAt',
+  sortAscending = false,
   position = 0,
   limit = 100,
   anchor = null,
@@ -58,7 +59,7 @@ export async function syncFolderWindow({
   useWebSocket = false,
 }) {
   const filter = { inMailbox: folder.remote_id };
-  const sort = [{ property: sortProp, isAscending: false }];
+  const sort = [{ property: sortProp, isAscending: !!sortAscending }];
   const queryArgs: any = {
     accountId: account.remote_account_id,
     filter,
@@ -119,6 +120,7 @@ export async function syncFolderWindow({
     folderId: folder.id,
     folderRemoteId: folder.remote_id,
     sortProp,
+    sortAscending,
     collapseThreads,
     queryState: query.queryState,
     canCalculateChanges: query.canCalculateChanges ?? null,
@@ -148,12 +150,13 @@ export async function syncFolderWindowChanges({
   transport, account, folder, handlers,
   sinceQueryState,
   sortProp = 'receivedAt',
+  sortAscending = false,
   collapseThreads = false,
   maxChanges = 500,
   useWebSocket = false,
 }) {
   const filter = { inMailbox: folder.remote_id };
-  const sort = [{ property: sortProp, isAscending: false }];
+  const sort = [{ property: sortProp, isAscending: !!sortAscending }];
   const effectiveMaxChanges = Math.min(maxChanges, maxObjectsInGet(transport));
 
   // Email/queryChanges + Email/get for the newly-added ids in a single
@@ -211,6 +214,7 @@ export async function syncFolderWindowChanges({
     folderId: folder.id,
     folderRemoteId: folder.remote_id,
     sortProp,
+    sortAscending,
     collapseThreads,
     queryState: change.newQueryState,
     total: change.total ?? null,

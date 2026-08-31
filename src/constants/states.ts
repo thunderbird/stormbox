@@ -168,6 +168,7 @@ export const MUTATION_TYPE = {
   COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  CANCEL_SCHEDULED_SEND: 'cancelScheduledSend',
   SAVE_DRAFT: 'saveDraft',
   DISCARD_DRAFT: 'discardDraft',
   WHITELIST_SENDER: 'whitelistSender',
@@ -258,6 +259,7 @@ export type JmapType =
 /**
  * `sort: [{ property }]` value for an Email/query mailbox-window view.
  * Maps to the `sort_received_at` / `sort_sent_at` columns on
- * folder_messages.
+ * folder_messages. `scheduled` is sentAt ascending — the Scheduled
+ * mailbox lists the soonest send first.
  */
-export type JmapViewSort = 'received' | 'sent';
+export type JmapViewSort = 'received' | 'sent' | 'scheduled';

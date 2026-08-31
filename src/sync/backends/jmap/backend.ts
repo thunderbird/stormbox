@@ -50,6 +50,13 @@ import {
 } from './contacts';
 import { MUTATION_TYPES, processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
+import { refreshScheduleCapability } from './schedule-capability';
+import {
+  scheduleClockWindow,
+  SUBMISSION_RELEASE_OBSERVATION_DELAY_MS,
+} from './schedule-time';
+import { readScheduledMailboxRemoteId } from './scheduled-mailbox';
+import { syncSubmissionsForAccount } from './submissions';
 import { hasFileNodeCapability, syncSettingsFromServer } from './settings';
 import { syncContactsTrashFromServer } from './contacts-trash';
 import { attachmentTransferLimits, maxObjectsInGet } from './limits';
@@ -63,9 +70,18 @@ const SUBSCRIBED_TYPES = [
   'Thread',
   'Identity',
   'EmailDelivery',
+  'EmailSubmission',
   'AddressBook',
   'ContactCard',
 ];
+
+const SUBMISSION_WAKE_MIN_MS = 1_000;
+// Far-out schedules are periodically re-derived without overflowing the
+// 32-bit setTimeout budget.
+const SUBMISSION_WAKE_MAX_MS = 6 * 60 * 60_000;
+// A settled submission whose local move/cancel is still draining gets
+// one short recheck instead of waiting for the next natural trigger.
+const SUBMISSION_SETTLED_RECHECK_MS = 15_000;
 
 const CONTACTS_TRASH_GATED_MUTATIONS = new Set([
   MUTATION_TYPES.WHITELIST_SENDER,
@@ -163,6 +179,10 @@ export class JmapBackend {
   _reconnectAttempts: number;
   _reconnectBaseDelayMs: number;
   _reconnectMaxDelayMs: number;
+  _submissionSyncInflight: Promise<void> | null;
+  _submissionSyncQueued: boolean;
+  _submissionSyncFailures: number;
+  _submissionWakeTimer: any;
 
   constructor({ transport, serverOrigin, handlers, options = {} }: {
     transport: any;
@@ -281,6 +301,13 @@ export class JmapBackend {
     this._reconnectAttempts = 0;
     this._reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? 1_000;
     this._reconnectMaxDelayMs = options.reconnectMaxDelayMs ?? 30_000;
+    // Submission-sync serialization, same single-flight + trailing-pass
+    // pattern as StateChange. The wake timer targets the account's
+    // nearest pending sendAt.
+    this._submissionSyncInflight = null;
+    this._submissionSyncQueued = false;
+    this._submissionSyncFailures = 0;
+    this._submissionWakeTimer = null;
   }
 
   _resetContactsTrashReadiness() {
@@ -596,6 +623,13 @@ export class JmapBackend {
         );
       });
     }
+    // Catch up on schedules that released or were canceled while this
+    // client was away, and arm the nearest-sendAt wake-up. Nothing later
+    // in bootstrap depends on it, so it does not gate bootstrapped().
+    this._syncSubmissions().catch((err) => {
+      wlog.warn('jmap-backend', 'startup submission sync failed', err);
+      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+    });
     this._scheduleMetadataIndexer(1_000);
   }
 
@@ -633,6 +667,11 @@ export class JmapBackend {
       clearTimeout(this._indexerTimer);
       this._indexerTimer = null;
     }
+    if (this._submissionWakeTimer) {
+      clearTimeout(this._submissionWakeTimer);
+      this._submissionWakeTimer = null;
+    }
+    this._submissionSyncFailures = 0;
     // Cancel in-flight network calls before waiting on the runner.
     // OutboxRunner.stop() awaits the in-flight drain, and a drain
     // parked on a request that the server never answers would hold
@@ -674,12 +713,18 @@ export class JmapBackend {
     this._foregroundFolderWindowCount += 1;
     try {
       const folder = await this._loadFolder(folderId);
+      this._maybeSyncSubmissionsForFolder(folder);
+      const defaultSort = await this._defaultSortFor(folder);
+      const sortProp = range.sortProp ?? defaultSort.sortProp;
+      const sortAscending = range.sortAscending
+        ?? (range.sortProp == null ? defaultSort.sortAscending : false);
       const r = await syncFolderWindow({
         transport: this.transport,
         account: this._accountForFolder(folder),
         folder,
         handlers: this.handlers,
-        sortProp: range.sortProp ?? this._defaultSortPropFor(folder),
+        sortProp,
+        sortAscending,
         position: range.offset ?? 0,
         limit: range.limit ?? 100,
         anchor: range.anchor ?? null,
@@ -695,6 +740,37 @@ export class JmapBackend {
     } finally {
       this._foregroundFolderWindowCount = Math.max(0, this._foregroundFolderWindowCount - 1);
     }
+  }
+
+  /**
+   * Opening the Scheduled mailbox is a natural moment for the schedule
+   * columns to be fresh (the user is looking right at them), so it
+   * triggers a fire-and-forget submission pass alongside the normal
+   * window sync.
+   */
+  _maybeSyncSubmissionsForFolder(folder: any) {
+    if (!folder || Number(folder.account_id) !== Number(this.account?.id)) return;
+    void (async () => {
+      const scheduledRemoteId = await readScheduledMailboxRemoteId(
+        this.handlers,
+        this.account.id,
+      );
+      if (!scheduledRemoteId || folder.remote_id !== scheduledRemoteId) return;
+      await this._syncSubmissions();
+    })().catch((err) => {
+      wlog.warn('jmap-backend', 'scheduled-folder submission sync failed', err);
+      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+    });
+  }
+
+  async _hasTrackedSchedules(accountId: number): Promise<boolean> {
+    const rows = await this.handlers[DB_RPC.QUERY]({
+      sql: `SELECT 1 FROM messages
+             WHERE account_id = ? AND scheduled_undo_status IS NOT NULL
+             LIMIT 1`,
+      params: [accountId],
+    });
+    return rows.length > 0;
   }
 
   async ensureMessageBody(messageId) {
@@ -831,7 +907,10 @@ export class JmapBackend {
   async ensureFolderIndex(folderId: number, options: any = {}) {
     const folder = await this._loadFolder(folderId);
     const folderAccount = this._accountForFolder(folder);
-    const sortProp = options.sortProp ?? this._defaultSortPropFor(folder);
+    const defaultSort = await this._defaultSortFor(folder);
+    const sortProp = options.sortProp ?? defaultSort.sortProp;
+    const sortAscending = options.sortAscending
+      ?? (options.sortProp == null ? defaultSort.sortAscending : false);
     const limit = Math.max(1, Math.min(Number(options.limit ?? 100), 500));
     const maxChunks = Math.max(1, Number(options.maxChunks ?? 1));
     // Caller can opt out of mid-tick yielding (foreground callers
@@ -852,7 +931,14 @@ export class JmapBackend {
         // the same gap with the latest progress.
         break;
       }
-      const gap = await this._nextQueryViewGap({ folder, sortProp, startAt: offset, total, limit });
+      const gap = await this._nextQueryViewGap({
+        folder,
+        sortProp,
+        sortAscending,
+        startAt: offset,
+        total,
+        limit,
+      });
       if (!gap) break;
       const result = await syncFolderWindow({
         transport: this.transport,
@@ -860,6 +946,7 @@ export class JmapBackend {
         folder,
         handlers: this.handlers,
         sortProp,
+        sortAscending,
         position: gap.offset,
         limit: gap.limit,
         collapseThreads: false,
@@ -1083,9 +1170,9 @@ export class JmapBackend {
   }
 
   async _queryViewProgress(folder) {
-    const sortProp = this._defaultSortPropFor(folder);
+    const { sortProp, sortAscending } = await this._defaultSortFor(folder);
     const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
-    const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+    const sortJson = JSON.stringify([{ property: sortProp, isAscending: sortAscending }]);
     const views = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT id, total
               FROM query_views
@@ -1147,6 +1234,15 @@ export class JmapBackend {
       handlers: this.handlers,
       useWebSocket: this._wsReady(),
     });
+  }
+
+  /**
+   * Live FUTURERELEASE capability for the compose scheduling UI. Forces
+   * a session refetch so the answer (and the transport's server clock
+   * reference) is current at the moment the user opens the dialog.
+   */
+  async getScheduleCapability() {
+    return refreshScheduleCapability(this.transport, this.account);
   }
 
   async ensureSettings() {
@@ -1577,6 +1673,97 @@ export class JmapBackend {
     await this._refreshRecipientUsage().catch((err) => {
       wlog.warn('jmap-backend', 'reconnect recipient usage refresh failed', err);
     });
+    // EmailSubmission pushes emitted while the socket was down are not
+    // replayed either; one pass re-reads whatever settled meanwhile.
+    await this._syncSubmissions().catch((err) => {
+      wlog.warn('jmap-backend', 'reconnect submission sync failed', err);
+      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+    });
+  }
+
+  // ----- Send Later submission sync ------------------------------------
+
+  /**
+   * Run one level-based submission-sync pass for the primary account
+   * (compose only schedules from it). Single-flight with a trailing
+   * re-run, mirroring the StateChange pattern: triggers may fire as
+   * often as they like — push, reconnect, Scheduled-folder open, wake
+   * timer — and collapse into at most one queued follow-up pass.
+   *
+   * Each pass re-arms the wake timer from its own result, so the timer
+   * always reflects the latest nearest pending sendAt.
+   */
+  _syncSubmissions(): Promise<void> {
+    if (!this._started || !this.account) return Promise.resolve();
+    if (this._submissionSyncInflight) {
+      this._submissionSyncQueued = true;
+      return this._submissionSyncInflight;
+    }
+    this._submissionSyncInflight = (async () => {
+      try {
+        do {
+          this._submissionSyncQueued = false;
+          const result = await syncSubmissionsForAccount({
+            transport: this.transport,
+            account: this.account,
+            handlers: this.handlers,
+            useWebSocket: this._wsReady(),
+          });
+          if (result.unresolvedSettled) this.outboxRunner?.notify();
+          const clock = scheduleClockWindow(this.transport);
+          const pendingWakeAt = result.nearestPendingAt == null
+            ? null
+            : Date.now() + Math.max(
+              result.nearestPendingAt
+                + SUBMISSION_RELEASE_OBSERVATION_DELAY_MS
+                - clock.lowerMs,
+              0,
+            );
+          const settledWakeAt = result.unresolvedSettled
+            ? Date.now() + SUBMISSION_SETTLED_RECHECK_MS
+            : null;
+          this._armSubmissionWake(
+            settledWakeAt == null
+              ? pendingWakeAt
+              : Math.min(settledWakeAt, pendingWakeAt ?? Infinity),
+          );
+        } while (this._submissionSyncQueued && this._started);
+        this._submissionSyncFailures = 0;
+      } catch (error) {
+        this._submissionSyncFailures += 1;
+        throw error;
+      } finally {
+        this._submissionSyncInflight = null;
+      }
+    })();
+    return this._submissionSyncInflight;
+  }
+
+  _submissionRetryDelayMs() {
+    return Math.min(
+      SUBMISSION_SETTLED_RECHECK_MS
+        * 2 ** Math.max(0, this._submissionSyncFailures - 1),
+      SUBMISSION_WAKE_MAX_MS,
+    );
+  }
+
+  _armSubmissionWake(wakeAt: number | null) {
+    if (this._submissionWakeTimer) {
+      clearTimeout(this._submissionWakeTimer);
+      this._submissionWakeTimer = null;
+    }
+    if (!this._started || wakeAt == null || !Number.isFinite(wakeAt)) return;
+    const delay = Math.min(
+      Math.max(wakeAt - Date.now(), SUBMISSION_WAKE_MIN_MS),
+      SUBMISSION_WAKE_MAX_MS,
+    );
+    this._submissionWakeTimer = setTimeout(() => {
+      this._submissionWakeTimer = null;
+      this._syncSubmissions().catch((err) => {
+        wlog.warn('jmap-backend', 'submission wake-up sync failed', err);
+        this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+      });
+    }, delay);
   }
 
   // ----- StateChange dispatch -----------------------------------------
@@ -1711,6 +1898,9 @@ export class JmapBackend {
       ['Email', 5],
       ['EmailDelivery', 6],
       ['Thread', 7],
+      // After Email so a released schedule's mailbox move is already in
+      // the cache when the submission pass reads placements.
+      ['EmailSubmission', 8],
     ]);
     const orderedTypes = Object.keys(types).sort(
       (left, right) => (priority.get(left) ?? 99) - (priority.get(right) ?? 99),
@@ -1738,6 +1928,16 @@ export class JmapBackend {
                 repairArchive: account.id === this.account.id,
               });
             }
+            if (
+              account.id === this.account.id
+              && !Object.hasOwn(types, 'EmailSubmission')
+              && await this._hasTrackedSchedules(account.id)
+            ) {
+              void this._syncSubmissions().catch((err) => {
+                wlog.warn('jmap-backend', 'mailbox-triggered submission sync failed', err);
+                this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+              });
+            }
             break;
           }
           case 'Email': {
@@ -1761,6 +1961,9 @@ export class JmapBackend {
           case 'EmailDelivery':
             needViewRefresh = true;
             viewRefreshTypes.push(type);
+            break;
+          case 'EmailSubmission':
+            if (account.id === this.account.id) await this._syncSubmissions();
             break;
           case 'Identity':
             if (account.id === this.account.id) await this.ensureIdentities();
@@ -1950,6 +2153,7 @@ export class JmapBackend {
       if (!folder) continue;
       const sortJson = JSON.parse(view.sort_json);
       const sortProp = sortJson?.[0]?.property ?? 'receivedAt';
+      const sortAscending = sortJson?.[0]?.isAscending === true;
       const result = view.query_state
         ? await syncFolderWindowChanges({
           transport: this.transport,
@@ -1958,6 +2162,7 @@ export class JmapBackend {
           handlers: this.handlers,
           sinceQueryState: view.query_state,
           sortProp,
+          sortAscending,
           collapseThreads: !!view.collapse_threads,
           useWebSocket: this._wsReady(),
         })
@@ -1969,6 +2174,7 @@ export class JmapBackend {
           folder,
           handlers: this.handlers,
           sortProp,
+          sortAscending,
           collapseThreads: !!view.collapse_threads,
           useWebSocket: this._wsReady(),
         });
@@ -2039,11 +2245,18 @@ export class JmapBackend {
     return this.useWebSocket && !!this.transport._ws && this.transport._ws.readyState === 1;
   }
 
-  _defaultSortPropFor(folder) {
-    if (folder?.role === 'sent' || folder?.role === 'drafts') {
-      return 'sentAt';
+  async _defaultSortFor(folder) {
+    const scheduledRemoteId = await readScheduledMailboxRemoteId(
+      this.handlers,
+      Number(folder?.account_id),
+    );
+    if (scheduledRemoteId && folder?.remote_id === scheduledRemoteId) {
+      return { sortProp: 'sentAt', sortAscending: true };
     }
-    return 'receivedAt';
+    if (folder?.role === 'sent' || folder?.role === 'drafts') {
+      return { sortProp: 'sentAt', sortAscending: false };
+    }
+    return { sortProp: 'receivedAt', sortAscending: false };
   }
 
   /**
@@ -2115,9 +2328,16 @@ export class JmapBackend {
     });
   }
 
-  async _nextQueryViewGap({ folder, sortProp, startAt = 0, total = 0, limit = 100 }) {
+  async _nextQueryViewGap({
+    folder,
+    sortProp,
+    sortAscending = false,
+    startAt = 0,
+    total = 0,
+    limit = 100,
+  }) {
     const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
-    const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+    const sortJson = JSON.stringify([{ property: sortProp, isAscending: sortAscending }]);
     const views = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT id, total
               FROM query_views

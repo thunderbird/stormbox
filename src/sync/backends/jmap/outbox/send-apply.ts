@@ -11,7 +11,7 @@ import type { SendOutcome } from './send-outcome';
 
 async function fileSentCopy({
   transport, account, handlers, useWebSocket,
-  result, createdRemoteId, submissionRemoteId, sentRemoteId, request,
+  result, createdRemoteId, submissionRemoteId, sentRemoteId, request, afterPersist,
 }): Promise<SendOutcome> {
   // onSuccessUpdateEmail generates a second, implicit Email/set response
   // under the submission's call id (RFC 8621 §7.5). When that patch
@@ -36,7 +36,10 @@ async function fileSentCopy({
     useWebSocket,
     createdRemoteId,
     sentRemoteId,
-    expectedRegularAttachments: regularAttachmentSources(request?.attachments),
+    expectedRegularAttachments: request?.scheduledAt
+      ? []
+      : regularAttachmentSources(request?.attachments),
+    afterPersist,
   });
 
   if (!applied.filed || filingRejected) {
@@ -116,7 +119,7 @@ async function markFolderViewsStale(handlers, accountId, folderRemoteId) {
  */
 export async function applySendLocally({
   transport, account, handlers, useWebSocket = false,
-  createdRemoteId, sentRemoteId, expectedRegularAttachments = [],
+  createdRemoteId, sentRemoteId, expectedRegularAttachments = [], afterPersist,
 }: {
   transport: any;
   account: any;
@@ -125,6 +128,7 @@ export async function applySendLocally({
   createdRemoteId: string | null;
   sentRemoteId: string | null;
   expectedRegularAttachments?: ComposeRegularAttachmentSource[];
+  afterPersist?: () => Promise<void>;
 }): Promise<{ filed: boolean }> {
   if (!createdRemoteId) return { filed: false };
   const payload = await callJmap(transport, {
@@ -145,6 +149,7 @@ export async function applySendLocally({
   if (!email) return { filed: false };
 
   await persistEmails({ account, emails: [email], handlers });
+  await afterPersist?.();
   if (expectedRegularAttachments.length > 0) {
     await fetchAndCheckpointComposeBody({
       transport,

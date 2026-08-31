@@ -18,6 +18,13 @@ import {
   saveCheckpoint,
 } from '../../send-checkpoint';
 import { findEmailByMessageId, findSubmissionEvidence } from '../../send-reconcile';
+import { requireScheduleCapability } from '../../schedule-capability';
+import { computeHoldFor, scheduledSendAtOf } from '../../schedule-time';
+import {
+  ensureScheduledMailbox,
+  readScheduledMailboxRemoteId,
+  reconcileScheduledSubscription,
+} from '../../scheduled-mailbox';
 import { JMAP_CAPS } from '../../transport';
 import {
   extractMethodError,
@@ -143,7 +150,15 @@ async function verifySendAttachmentSources({
  *     textBody?, htmlBody?,
  *     inReplyTo: [<bare msg-id>, ...], references: [...],
  *     draftsFolderId?, sentFolderId?, outboxFolderId?,
+ *     scheduledAt?: <ISO UTC instant>,
  *   }
+ *
+ * A `scheduledAt` request is the same durable operation on a different
+ * target: the Email is created directly in the real Scheduled mailbox
+ * with `sentAt` set to the target instant, the submission carries an
+ * RFC 4865 HOLDFOR envelope parameter, and filing/cleanup reuse the
+ * normal machinery with the Scheduled mailbox in place of Sent. Every
+ * checkpoint, resume, and ambiguity rule is shared.
  */
 async function runSend({
   transport, account, handlers, row, request, useWebSocket,
@@ -250,7 +265,8 @@ async function runSend({
   const sentRemoteId = folderRemoteIds[1];
   const outboxRemoteId = folderRemoteIds[2];
 
-  const targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
+  const scheduledAt = scheduledSendAtOf(request);
+  let targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
   let emailCreate: any = null;
   let regularAttachments: ComposeRegularAttachmentSource[] = [];
 
@@ -286,7 +302,10 @@ async function runSend({
       transport,
       account,
       emailRemoteId: checkpoint.emailRemoteId,
-      sentRemoteId,
+      // A scheduled Email sits in the Scheduled mailbox from the moment
+      // it is created, so its placement proves nothing about submission;
+      // only a retained EmailSubmission record counts as evidence.
+      sentRemoteId: scheduledAt ? null : sentRemoteId,
       useWebSocket,
     });
     if (evidence.outcome === 'submitted') {
@@ -331,6 +350,26 @@ async function runSend({
 
   // ---- phase 1: create the Email ------------------------------------
   //
+  // A scheduled message is created in the real Scheduled mailbox, not
+  // Outbox/Drafts. The mailbox is resolved (or created) before anything
+  // irreversible happens, so a failure here simply retries; rows already
+  // past the create use the settings-cached id instead and never fail on
+  // this step.
+  if (scheduledAt && !checkpoint.emailRemoteId) {
+    try {
+      targetBox = await ensureScheduledMailbox({
+        transport, account, handlers, useWebSocket,
+      });
+    } catch (err: any) {
+      const terminal = err?.terminal === true;
+      return rejectedSendOutcome({
+        type: err?.type ?? 'scheduledMailboxUnavailable',
+        message: err?.message ?? String(err),
+        ...(terminal ? { terminal: true as const, description: err?.message } : {}),
+      }, !terminal);
+    }
+  }
+
   // A previous attempt may have created the Email and lost the response.
   // The Message-ID it stamped is the only handle on it, and finding it
   // avoids leaving an orphaned draft behind on every retry. Only a
@@ -388,8 +427,16 @@ async function runSend({
         identity,
         request,
         mailboxRemoteId: targetBox,
-        isDraft: targetBox === draftsRemoteId,
+        isDraft: !scheduledAt && targetBox === draftsRemoteId,
       });
+      if (scheduledAt) {
+        // Fastmail semantics: the stored message wears its future send
+        // time. sentAt becomes the RFC 5322 Date header of the created
+        // Email (RFC 8621 §4.1.3), and $seen keeps the scheduled copy
+        // from counting as unread mail.
+        emailCreate.sentAt = scheduledAt;
+        emailCreate.keywords = { $seen: true };
+      }
     } catch (err: any) {
       const errorType = err?.type === 'blobNotFound' || err?.type === 'invalidAttachment'
         ? err.type
@@ -483,6 +530,46 @@ async function runSend({
   // ---- phase 2: submit ----------------------------------------------
   let result = null;
   if (!checkpoint.submissionRemoteId) {
+    // HOLDFOR is a relative duration, so it is computed against a fresh
+    // server clock reference immediately before each submission attempt
+    // — a retry after a long outage must not replay a stale delay. Both
+    // failures land before SUBMITTING is written: nothing has been
+    // submitted, so a terminal answer (capability gone, target passed,
+    // beyond the server limit) rewinds and destroys the phase-1 Email,
+    // while a transport failure simply retries from CREATED.
+    let holdFor: number | null = null;
+    if (scheduledAt) {
+      try {
+        const { maxDelayedSend } = await requireScheduleCapability(transport, account);
+        holdFor = computeHoldFor({
+          targetAt: scheduledAt,
+          maxDelayedSend,
+          transport,
+        }).holdFor;
+      } catch (err: any) {
+        if (err?.terminal === true) {
+          const error = {
+            type: err?.type ?? 'scheduleRejected',
+            terminal: true as const,
+            description: err?.description ?? err?.message ?? String(err),
+          };
+          await rewindDefinitiveSubmissionRejection({
+            transport,
+            account,
+            handlers,
+            useWebSocket,
+            rowId,
+            checkpoint,
+            error,
+          });
+          return rejectedSendOutcome(error, false);
+        }
+        return {
+          outcome: 'rejectedRetryable',
+          error: { type: err?.type ?? 'transport', message: err?.message ?? String(err) },
+        };
+      }
+    }
     // Recorded before the call, not after. Everything irreversible
     // happens inside the round trip below, so a worker that dies while it
     // is in flight must come back to a phase that says "this may already
@@ -511,12 +598,23 @@ async function runSend({
                 // the server validate every recipient before submitting
                 // instead of deriving it and silently skipping addresses.
                 envelope: {
-                  mailFrom: { email: identity.email },
+                  mailFrom: {
+                    email: identity.email,
+                    // RFC 4865 via RFC 8621 §7: envelope parameter values
+                    // are strings. The server holds the message and
+                    // releases it when the delay elapses.
+                    ...(holdFor != null
+                      ? { parameters: { HOLDFOR: String(holdFor) } }
+                      : {}),
+                  },
                   rcptTo,
                 },
               },
             },
-            onSuccessUpdateEmail: { '#s1': onSuccessUpdate },
+            // A scheduled Email already sits in its final mailbox with
+            // $seen set at create time; there is nothing to move on
+            // acceptance. The move-to-Sent patch is immediate-send only.
+            ...(scheduledAt ? {} : { onSuccessUpdateEmail: { '#s1': onSuccessUpdate } }),
           },
           's1',
         ]],
@@ -559,12 +657,14 @@ async function runSend({
       // Either the server answered without reporting this call, or there
       // was no answer at all. Ask it what happened rather than assuming:
       // the Email id is known, so both the submission record and the
-      // message's own mailbox placement are available as evidence.
+      // message's own mailbox placement are available as evidence. For a
+      // scheduled send the placement signal is disabled — the Email was
+      // created in the Scheduled mailbox before submission.
       const evidence = await findSubmissionEvidence({
         transport,
         account,
         emailRemoteId: checkpoint.emailRemoteId,
-        sentRemoteId,
+        sentRemoteId: scheduledAt ? null : sentRemoteId,
         useWebSocket,
       });
       if (evidence.outcome !== 'submitted') {
@@ -821,11 +921,39 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
     transport, handlers, account, rowId, checkpoint, result, createdRemoteId,
     submissionRemoteId, sentRemoteId, draftsRemoteId, request, useWebSocket,
   } = args;
+  // For a scheduled send the accepted message files into the Scheduled
+  // mailbox instead of Sent; the machinery is otherwise identical. The
+  // id comes from the settings cache, which any row that reached this
+  // point has already populated.
+  const scheduledAt = scheduledSendAtOf(request);
+  let filingRemoteId = sentRemoteId;
   try {
+    if (scheduledAt) {
+      filingRemoteId = await readScheduledMailboxRemoteId(handlers, account.id);
+    }
     const saved = rowId != null && checkpoint
       ? await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CACHE_PENDING)
       : checkpoint;
-    const outcome = await fileSentCopy({ ...args, checkpoint: saved });
+    const outcome = await fileSentCopy({
+      ...args,
+      sentRemoteId: filingRemoteId,
+      checkpoint: saved,
+      afterPersist: scheduledAt
+        ? async () => {
+            await handlers[DB_RPC.MESSAGE_SET_SCHEDULED]({
+              accountId: account.id,
+              emailRemoteId: createdRemoteId,
+              // A resume that proved acceptance without recovering the
+              // record's id carries the 'reconciled' placeholder; the
+              // synchronizer fills the real id in by emailId later.
+              submissionRemoteId:
+                submissionRemoteId === 'reconciled' ? null : submissionRemoteId,
+              undoStatus: 'pending',
+            });
+            await reconcileScheduledSubscription(handlers, account.id);
+          }
+        : undefined,
+    });
     await cleanupDraftsAfterSend({
       transport,
       account,
@@ -843,7 +971,7 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
       checkpoint,
       createdRemoteId,
       submissionRemoteId,
-      sentRemoteId,
+      sentRemoteId: filingRemoteId,
       response: result,
       err,
       request,
