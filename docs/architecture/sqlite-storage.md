@@ -10,8 +10,9 @@ Stormbox and the sync strategy that fills it. It pairs with
 The first implementation target is JMAP against Stalwart over
 WebSocket, with wa-sqlite backed by IndexedDB
 (`IDBBatchAtomicVFS`). The UI reads mail data from SQLite through
-the `Repository` RPC; sync code is the only layer that talks to the
-server and mutates the local mail cache.
+the `Repository` RPC. Protocol backends are the only layer that talk
+to the server; worker handlers own SQLite writes, including
+client-local preferences requested through `Repository`.
 
 The schema is intentionally multi-account and protocol-neutral.
 Every table that stores remote identifiers scopes them by local
@@ -57,7 +58,10 @@ and folder-scoped UIDs. The schema reserves
 sync leaves them null. Adding IMAP would mean populating those
 columns rather than rewriting the model.
 
-## Initial Schema
+## Effective Schema
+
+The migrations in `src/db/migrations/` are canonical. This selected
+schema shows the current architectural shape after migrations 001–015.
 
 ```sql
 -- PRAGMA foreign_keys = ON is applied by the engine.
@@ -79,6 +83,9 @@ CREATE TABLE accounts (
   server_kind TEXT,                     -- optional vendor tag, e.g. 'stalwart'
   is_primary INTEGER NOT NULL DEFAULT 0,
   is_personal INTEGER NOT NULL DEFAULT 1, -- JMAP Account isPersonal: 0 for accounts shared by other principals (RFC 8620 §1.6.2)
+  quota_used_bytes INTEGER,
+  quota_hard_limit_bytes INTEGER,
+  quota_updated_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   last_opened_at INTEGER,
@@ -93,8 +100,8 @@ CREATE TABLE accounts (
 -- service_kind values used by this implementation:
 --   'jmap-mail'        JMAP Mail (urn:ietf:params:jmap:mail/submission/vacationresponse)
 --   'jmap-contacts'    JMAP Contacts (urn:ietf:params:jmap:contacts)
---   'jmap-calendars'   JMAP Calendars (urn:ietf:params:jmap:calendars)
---   'carddav'          CardDAV (RFC 6352) for read-only contacts in MVP
+--   'jmap-calendars'   JMAP Calendars (urn:ietf:params:jmap:calendars) [future]
+--   'carddav'          CardDAV (RFC 6352) [future]
 --   'caldav'           CalDAV (RFC 4791) [future]
 --   'imap'             IMAP4rev1+ optionally with OBJECTID (RFC 8474) [future]
 CREATE TABLE account_services (
@@ -126,6 +133,73 @@ CREATE TABLE account_capabilities (
   PRIMARY KEY(account_id, service_kind, capability)
 );
 
+-- One marked, versioned settings document per account. The FileNode id is
+-- only a cache; sync re-resolves thundermail/stormbox-settings.json.
+CREATE TABLE user_settings (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  doc_json TEXT NOT NULL,
+  remote_node_id TEXT,
+  updated_at INTEGER NOT NULL
+);
+
+-- Physical contacts-trash shards are stored separately from settings.
+-- Dirty state and revisions make uploads shard-local and race-safe.
+CREATE TABLE contacts_trash_documents (
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  shard_name TEXT NOT NULL,
+  doc_json TEXT NOT NULL,
+  remote_node_id TEXT,
+  remote_blob_id TEXT,
+  dirty INTEGER NOT NULL DEFAULT 0 CHECK (dirty IN (0, 1)),
+  local_revision INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(account_id, shard_name)
+);
+
+CREATE INDEX contacts_trash_documents_dirty
+  ON contacts_trash_documents(account_id, dirty, shard_name);
+
+CREATE TABLE contacts_trash_state (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  open_shard_name TEXT NOT NULL,
+  open_tombstone_shard_name TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Deterministic LWW projection across all physical shards.
+CREATE TABLE contacts_trash (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  uid TEXT NOT NULL,
+  prior_remote_id TEXT NOT NULL,
+  original_addressbook_ids_json TEXT NOT NULL,
+  snapshot_json TEXT,
+  media_json TEXT NOT NULL,
+  projection_fingerprint TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  primary_email TEXT,
+  trashed_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('trashed', 'restored', 'purged')),
+  lifecycle_updated_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(account_id, uid)
+);
+
+CREATE INDEX contacts_trash_account_status_expiry
+  ON contacts_trash(account_id, status, expires_at, id);
+
+CREATE TABLE contacts_trash_emails (
+  trash_id INTEGER NOT NULL REFERENCES contacts_trash(id) ON DELETE CASCADE,
+  account_id INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  email_key TEXT NOT NULL,
+  PRIMARY KEY(trash_id, email_key)
+);
+
+CREATE INDEX contacts_trash_emails_account_key
+  ON contacts_trash_emails(account_id, email_key, trash_id);
+
 CREATE TABLE folders (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -144,6 +218,7 @@ CREATE TABLE folders (
   rights_json TEXT,
   raw_json TEXT,
   is_subscribed INTEGER,                -- JMAP Mailbox isSubscribed (RFC 8621 §2); NULL = server never reported it
+  is_starred INTEGER NOT NULL DEFAULT 0, -- client-local
   is_deleted INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL,
   UNIQUE(account_id, remote_id),
@@ -163,6 +238,10 @@ CREATE TABLE identities (
   name TEXT,
   email TEXT NOT NULL,
   reply_to_json TEXT,
+  bcc_json TEXT,
+  text_signature TEXT,
+  html_signature TEXT,
+  may_delete INTEGER CHECK (may_delete IS NULL OR may_delete IN (0, 1)),
   raw_json TEXT,
   updated_at INTEGER NOT NULL,
   UNIQUE(account_id, remote_id)
@@ -320,7 +399,7 @@ CREATE INDEX body_values_lru
 CREATE TABLE query_views (
   id INTEGER PRIMARY KEY,
   account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  view_type TEXT NOT NULL,              -- mailboxMessages, threadMessages, search, etc.
+  view_type TEXT NOT NULL,              -- implemented value: mailbox-window
   folder_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
   filter_json TEXT NOT NULL,
   sort_json TEXT NOT NULL,
@@ -391,12 +470,16 @@ CREATE TABLE pending_mutations (
   optimistic_patch_json TEXT,
   server_response_json TEXT,
   error_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  not_before INTEGER,
+  last_attempt_at INTEGER,
+  phase TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
-CREATE INDEX pending_mutations_pending
-  ON pending_mutations(account_id, local_status, created_at);
+CREATE INDEX pending_mutations_ready
+  ON pending_mutations(account_id, local_status, not_before, created_at);
 
 CREATE INDEX query_views_lru
   ON query_views(last_accessed_at);
@@ -406,9 +489,8 @@ CREATE INDEX query_views_lru
 -- recipient autocomplete).
 --
 -- The implemented sync path is JMAP-Contacts when the session document
--- advertises urn:ietf:params:jmap:contacts. CardDAV is supported in the
--- schema (service_kind on addressbooks selects the source) but is not
--- implemented yet; both populate the same tables.
+-- advertises urn:ietf:params:jmap:contacts. CardDAV is schema-only
+-- (service_kind on addressbooks); it does not populate these tables.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE addressbooks (
@@ -418,8 +500,11 @@ CREATE TABLE addressbooks (
   remote_id TEXT NOT NULL,                    -- CardDAV collection URL or JMAP AddressBook id
   name TEXT,
   description TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
   is_default INTEGER NOT NULL DEFAULT 0,
   is_subscribed INTEGER NOT NULL DEFAULT 1,
+  may_write INTEGER CHECK (may_write IS NULL OR may_write IN (0, 1)),
+  may_delete INTEGER CHECK (may_delete IS NULL OR may_delete IN (0, 1)),
   ctag TEXT,                                  -- CardDAV CTag
   sync_token TEXT,                            -- WebDAV-Sync token (RFC 6578) or JMAP changes state
   raw_json TEXT,
@@ -463,13 +548,128 @@ CREATE TABLE contact_emails (
   position INTEGER NOT NULL DEFAULT 0,
   email TEXT NOT NULL,
   email_key TEXT,                             -- written by addressKey(), not SQL
+  map_key TEXT,
   label TEXT,                                 -- 'home' | 'work' | ...
+  contexts_json TEXT NOT NULL DEFAULT '[]',
+  pref INTEGER CHECK (pref IS NULL OR (pref >= 1 AND pref <= 100)),
   is_preferred INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(contact_id, position)
 );
 
 CREATE INDEX contact_emails_key_lookup
   ON contact_emails(account_id, email_key, contact_id);
+
+CREATE UNIQUE INDEX contact_emails_map_key
+  ON contact_emails(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_phones (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  value TEXT NOT NULL,
+  label TEXT,
+  contexts_json TEXT NOT NULL DEFAULT '[]',
+  features_json TEXT NOT NULL DEFAULT '[]',
+  pref INTEGER CHECK (pref IS NULL OR (pref >= 1 AND pref <= 100)),
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_phones_map_key
+  ON contact_phones(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_links (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  value TEXT NOT NULL,
+  label TEXT,
+  contexts_json TEXT NOT NULL DEFAULT '[]',
+  pref INTEGER CHECK (pref IS NULL OR (pref >= 1 AND pref <= 100)),
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_links_map_key
+  ON contact_links(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_anniversaries (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('birth', 'death', 'wedding')),
+  date_kind TEXT NOT NULL CHECK (date_kind IN ('partial', 'timestamp')),
+  date_year INTEGER,
+  date_month INTEGER,
+  date_day INTEGER,
+  date_utc TEXT,
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_anniversaries_map_key
+  ON contact_anniversaries(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_notes (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  value TEXT NOT NULL,
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_notes_map_key
+  ON contact_notes(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_organizations (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  name TEXT,
+  contexts_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_organizations_map_key
+  ON contact_organizations(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_organization_units (
+  contact_id INTEGER NOT NULL,
+  organization_position INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  value TEXT NOT NULL,
+  PRIMARY KEY(contact_id, organization_position, position),
+  FOREIGN KEY(contact_id, organization_position)
+    REFERENCES contact_organizations(contact_id, position)
+    ON DELETE CASCADE
+);
+
+CREATE TABLE contact_titles (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT,
+  value TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('role', 'title')),
+  organization_map_key TEXT,
+  PRIMARY KEY(contact_id, position)
+);
+
+CREATE UNIQUE INDEX contact_titles_map_key
+  ON contact_titles(contact_id, map_key) WHERE map_key IS NOT NULL;
+
+CREATE TABLE contact_media (
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  map_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  blob_id TEXT,
+  uri TEXT,
+  media_type TEXT,
+  pref INTEGER CHECK (pref IS NULL OR (pref >= 1 AND pref <= 100)),
+  PRIMARY KEY(contact_id, position),
+  UNIQUE(contact_id, map_key),
+  CHECK (blob_id IS NOT NULL OR uri IS NOT NULL)
+);
+
+CREATE INDEX contact_media_preferred_photo
+  ON contact_media(contact_id, kind, pref, position);
 
 CREATE TABLE addressbook_contacts (
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
@@ -501,6 +701,7 @@ CREATE TABLE recipient_usage (
 
 Notes:
 
+- Contact-detail and media tables keep ordered `position` keys and unique `map_key` indexes so JSContact map entries survive round-trips. Migration 009 enforces the anniversary date-kind CHECK. Migration 014 adds media and clears the ContactCard sync state so existing server photos are projected without changing contact row ids. Migration 015 adds AddressBook ordering and fail-closed delete rights.
 - Migrated contact addresses keep `email_key = NULL` and migrated contacts have no search-token rows. Bootstrap's full contact sync writes both through the application tokenizer, avoiding SQLite's ASCII-only `lower()` and different punctuation rules.
 - If the selected wa-sqlite build lacks an extension we want, avoid depending on SQLite JSON functions for correctness. JSON columns are storage envelopes; hot query fields are normal columns.
 - FTS should not be in the first schema unless we decide local full-text search is in scope. The MVP scope says advanced search is out of scope.
@@ -509,74 +710,51 @@ Notes:
 
 This section maps the typical mail-app read paths to the SQL the schema is shaped for, and explains why each index exists. Every index is a write-amplification cost on the hot inbound paths (`Email/get`, `Email/queryChanges`, vCard PUT-after-sync, etc.), so the set is kept tight: indexes that don't justify themselves against a known query are not added.
 
-### Folder list view, sorted by date
+### Folder list view
 
-Showing the messages in a folder (Inbox, Trash, an Archive folder) sorted newest-first.
-
-```sql
-SELECT m.id, m.remote_id, m.subject, m.from_text, m.preview,
-       m.is_seen, m.is_flagged, m.has_attachment,
-       fm.sort_received_at AS sort_key
-FROM folder_messages fm
-JOIN messages m ON m.id = fm.message_id
-WHERE fm.folder_id = :folder_id
-ORDER BY fm.sort_received_at DESC, fm.message_id DESC
-LIMIT :limit OFFSET :offset;
-```
-
-`folder_messages_by_folder_received` covers the WHERE + ORDER BY entirely; the JOIN reads `messages` only for rows in the visible window. Sort is on the junction (denormalised `sort_received_at`) rather than `messages.received_at` so the query never visits messages it isn't going to render.
-
-For the Sent folder—or any folder where sent date is the natural sort—use `sort_sent_at` and `folder_messages_by_folder_sent`. The sync engine writes both columns when materialising junction rows.
-
-### Folder list filtered to unread
+The painted folder list is `MESSAGE_LIST_FOR_VIEW`: JMAP `Email/query`
+positions in `query_view_items`, joined to `messages` on
+`(account_id, remote_id)`. `view_type` is `mailbox-window`. The matching
+`query_views` row is the unique
+`(account_id, view_type, folder_id, filter_json, sort_json, collapse_threads)`
+probe. `query_views.total` is the list count.
 
 ```sql
-SELECT m.*
-FROM folder_messages fm
+SELECT m.*, qi.position AS view_position
+FROM query_view_items qi
 JOIN messages m
-  ON m.id = fm.message_id AND m.is_seen = 0
-WHERE fm.folder_id = :folder_id
-ORDER BY fm.sort_received_at DESC
-LIMIT :limit;
+  ON m.account_id = :account_id
+ AND m.remote_id = qi.remote_id
+WHERE qi.view_id = :view_id
+  AND qi.position >= :offset
+  AND qi.position < :offset + :limit
+ORDER BY qi.position;
 ```
 
-Window is found by `folder_messages_by_folder_received`; filter is post-join on `messages.is_seen`. Acceptable for typical folder sizes—we explicitly do not add a `(folder_id, is_seen, sort_received_at)` covering index because (a) "unread only" is a toggle, not the default view, (b) the index would be carried on every folder-membership write, and (c) once Model B (per-folder flag state) lands, the filter belongs on the junction, not the message.
+`folder_messages_by_folder_received` / `_sent` still cover membership
+writes and `MESSAGE_LIST_FOR_FOLDER`. An `OFFSET` over `folder_messages`
+is the sparse-cache failure described in `performance.md`; the mail store
+does not use that handler to paint.
+
+Unread is a client filter over the same `query_view_items` window
+(`MessageList.vue` `unreadOnly`), not a `folder_messages` + `is_seen`
+SQL path.
 
 ### Conversation / thread view
 
-All messages in a thread, oldest-first.
-
-```sql
-SELECT * FROM messages
-WHERE thread_id = :thread_id
-ORDER BY received_at ASC, id ASC;
-```
-
-`messages_thread` covers this. The same index also lets the sync engine ask "what message ids do we have for this thread?" cheaply when reconciling `Thread/get` responses.
+`messages_thread` and `MESSAGE_LIST_FOR_THREAD` are reserved. No
+implemented list or `Thread/get` path uses them. Thread rows are upserted
+from `Email.threadId`.
 
 ### Smart folder: account-wide flagged / unread
 
-```sql
-SELECT * FROM messages
-WHERE account_id = :account_id AND is_flagged = 1
-ORDER BY received_at DESC;
-```
-
-`messages_flagged ON (account_id, is_flagged, received_at DESC)` and the parallel `messages_unread` cover the two hot keyword filters (`$flagged`, `$seen`). Equivalent queries against arbitrary keywords go through `message_keywords` (below).
+`messages_flagged` and `messages_unread` are reserved. No implemented
+list uses these queries.
 
 ### Smart folder: arbitrary keyword
 
-For non-hot keywords (`$answered`, `$junk`, `$forwarded`, custom labels):
-
-```sql
-SELECT m.*
-FROM message_keywords mk
-JOIN messages m ON m.id = mk.message_id
-WHERE mk.keyword = :keyword AND m.account_id = :account_id
-ORDER BY m.received_at DESC;
-```
-
-`message_keywords_keyword ON (keyword, message_id)` is the join driver. Sort comes from `messages` and is post-join; small result sets (custom-keyword filters are usually narrow) make this fine.
+`message_keywords_keyword ON (keyword, message_id)` is reserved for a
+future keyword filter. No implemented list uses it.
 
 ### Recipient autocomplete
 
@@ -600,15 +778,17 @@ WHERE ce.account_id = :account_id
   AND c.is_deleted = 0
   AND ce.email_key >= :prefix
   AND ce.email_key < :prefix_upper
-LIMIT 40;
+LIMIT :pool;
 ```
 
+Prefix SQL uses `poolSize(limit)` (`min(max(limit*4, 40), 200)`). The
+default cut is 20 (`autocomplete.ts` / `repository.autocompleteContacts`).
 `contact_emails_key_lookup` drives exact and prefix address matching within
 one account; the denormalized `contact_emails.account_id` keeps those reads
 inside one bounded index range before joining the matching contacts.
 `contact_search_tokens_prefix` supplies unordered word-prefix name matching.
 Autocomplete merges duplicate card rows by `addressKey`, applies match tier
-before preferred/recency/frequency boosts, and then cuts the list to ten.
+before preferred/recency/frequency boosts, then cuts to `limit`.
 
 The usage cache is replaced transactionally at startup/reconnect and after a
 Sent change batch. Confirmed sends create missing ContactCards in the
@@ -647,30 +827,17 @@ SELECT id FROM messages
 WHERE account_id = :account_id AND rfc822_message_id = :msgid;
 ```
 
-`messages_account_msgid ON (account_id, rfc822_message_id) WHERE rfc822_message_id IS NOT NULL`. The sync engine uses this when a second source (a future IMAP feed, an `Email/import`, a duplicate that came in via different folders before threadId was assigned) needs to detect "we already have this logical message". Also used to reconstruct in-reply-to / references graphs locally when a server's threadId algorithm is unavailable.
+`messages_account_msgid ON (account_id, rfc822_message_id) WHERE rfc822_message_id IS NOT NULL`. Reserved for compose/reply and a future second source. JMAP sync keys messages by `(account_id, remote_id)`; nothing in sync or the outbox reads this index.
 
 ### Has-attachment filter
 
-```sql
-SELECT * FROM messages
-WHERE account_id = :account_id AND has_attachment = 1
-ORDER BY received_at DESC;
-```
-
-`messages_account_attachment_received ON (account_id, received_at DESC) WHERE has_attachment = 1`. Partial on `has_attachment = 1` keeps it small (most messages aren't attachments) while answering the common "files" view directly from the index.
+`messages_account_attachment_received` is reserved. No implemented list uses it.
 
 ### Sync job draining
 
-```sql
-SELECT id, job_type, payload_json
-FROM sync_jobs
-WHERE status = 'pending'
-  AND (not_before IS NULL OR not_before <= :now)
-ORDER BY priority DESC, not_before, created_at
-LIMIT :batch_size;
-```
-
-`sync_jobs_ready ON (status, priority DESC, not_before, created_at)`.
+`sync_jobs` and `SYNC_JOB_INSERT` / `SYNC_JOB_NEXT_BATCH` exist; only
+unit tests call them. Background work is the in-memory metadata indexer
+in `JmapBackend`, not this table.
 
 ### Pending mutations awaiting send
 
@@ -678,25 +845,17 @@ LIMIT :batch_size;
 SELECT * FROM pending_mutations
 WHERE account_id = :account_id
   AND local_status IN ('pending','retry')
+  AND (not_before IS NULL OR not_before <= :now)
 ORDER BY created_at;
 ```
 
-`pending_mutations_pending ON (account_id, local_status, created_at)`.
+`pending_mutations_ready ON (account_id, local_status, not_before, created_at)`.
 
-### LRU eviction (bodies, query views)
+### Cache eviction metadata
 
-```sql
-DELETE FROM body_values
-WHERE last_accessed_at < :cutoff
-ORDER BY last_accessed_at LIMIT :batch;
-```
-
-```sql
-DELETE FROM query_views
-WHERE last_accessed_at < :cutoff;
-```
-
-`body_values_lru` and `query_views_lru`. Both eviction paths work newest-first and respect a total byte cap maintained in code.
+`body_values_lru` and `query_views_lru` support future eviction by
+`last_accessed_at`. No body or query-view eviction loop or total-byte cap is
+implemented yet.
 
 ### Operations we deliberately do not index for
 
@@ -712,22 +871,25 @@ Memory:
 - Current route, selected account/folder/message, compose editor state, transient loading/error state.
 - Current viewport rows and a small overscan window loaded from SQLite.
 - WebSocket connection state and in-flight request bookkeeping.
-- Short-lived sanitized HTML render output and object URLs for inline blobs.
+- Short-lived sanitized HTML render output, object URLs for inline
+  blobs, and ephemeral attachment-preview object URLs.
 
 SQLite (IndexedDB-backed):
 
 - Account/session metadata, endpoints, capabilities, push state.
 - Folder tree, identities, message list metadata, thread metadata, keywords, address rows.
+- Address books, contacts, keyed contact details, and recipient-usage ranking.
+- User settings and contacts-trash shards/projection.
 - Query view state and sparse query result positions.
 - Body part metadata and attachment metadata.
-- Recently viewed body text/html values, subject to an LRU/size cap.
-- Pending mutations and sync job state.
+- Fetched body text/html values; eviction is not implemented yet.
+- Pending mutations. `sync_jobs` exists but is unused.
 
 Server only:
 
 - Attachment bytes.
 - Raw RFC5322 message blobs.
-- Large body values that have not been opened or are past the local body-cache cap.
+- Body values that have not been fetched into the local cache.
 - Mail outside any locally cached query range, except for server counts and query state.
 
 ## JMAP Sync Strategy
@@ -735,37 +897,41 @@ Server only:
 Initial connect:
 
 1. Fetch the JMAP Session document over HTTPS.
-2. Upsert `accounts` and one `account_services` row per advertised data service (`jmap-mail` always; `jmap-contacts`/`jmap-calendars` when their capabilities are present). Capabilities are fanned out into `account_capabilities` rows keyed by `(account_id, service_kind, capability)`.
-3. Open the JMAP WebSocket if `urn:ietf:params:jmap:websocket` is present; send `WebSocketPushEnable` for `Mailbox`, `Email`, `Thread`, `Identity`, and `EmailDelivery`, passing the stored `push_state` from `account_services` if any. The server will immediately push any state changes that occurred while disconnected.
-4. Load cached folders, the last opened view, and the contacts cache from SQLite immediately for the UI.
-5. Sync `Mailbox/get` or `Mailbox/changes`, then create/update the Inbox query view. In parallel, run the addressbook discovery and initial contacts sync (CardDAV `PROPFIND` + `addressbook-multiget`, or `AddressBook/get` + `ContactCard/get` if using JMAP-Contacts) so autocomplete is ready.
+2. Upsert the primary account and every other session account (`is_personal` from the session). Fan out `account_services` / `account_capabilities` for advertised mail and contacts. A `jmap-calendars` row may be written; there is no calendar sync.
+3. Blocking: `Mailbox/get` for the primary account, then each shared account (best-effort). `start()` returns here. The UI paints from SQLite folder rows. There is no persisted last-opened mailbox (`last_opened_at` is never written).
+4. Background: identities → settings FileNode → contacts-trash FileNodes → JMAP contacts (if advertised) → Sent `recipient_usage` rebuild → open WS + `WebSocketPushEnable` (`Mailbox`, `Email`, `Thread`, `Identity`, `EmailDelivery`, `AddressBook`, `ContactCard`, and `FileNode` when the primary account has the capability) → `_refreshActiveQueryViews` (existing `mailbox-window` rows) → metadata indexer. If WS fails, the backend stays on HTTP. The first visible window is created when the UI calls `ensureFolderWindow`. CardDAV remains a schema-compatible future backend.
 
 Visible mailbox sync:
 
-1. Run `Email/query` for the visible mailbox with `position`/`limit` sized for the viewport plus overscan.
-2. Store `query_state`, `total`, and returned ids in `query_views` and `query_view_items`.
-3. Fetch list metadata for missing ids with `Email/get`, using only fast properties: `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `size`, `receivedAt`, `messageId`, `inReplyTo`, `references`, `sender`, `from`, `to`, `cc`, `bcc`, `replyTo`, `subject`, `sentAt`, `hasAttachment`, and `preview`.
-4. Upsert `messages`, `threads`, `folder_messages`, `message_addresses`, and `message_keywords` in one transaction.
+1. One envelope: chained `Email/query` + `Email/get` with back-references (`#ids` `/ids`, or `/added/*/id` after `Email/queryChanges`).
+2. Persist through `FOLDER_WINDOW_PERSIST_BATCH` / `FOLDER_WINDOW_APPLY_CHANGES_BATCH`: `query_state`, `total`, positional ids, threads, messages, addresses, keywords, and folder memberships.
+3. Fast `Email/get` properties: `id`, `blobId`, `threadId`, `mailboxIds`, `keywords`, `size`, `receivedAt`, `messageId`, `inReplyTo`, `references`, `sender`, `from`, `to`, `cc`, `bcc`, `replyTo`, `subject`, `sentAt`, `hasAttachment`, and `preview`.
 
 Delta sync:
 
 - Use `Email/queryChanges` for active query views. Apply `removed` and `added` by updating `query_view_items` positions, then fetch metadata for newly visible/missing ids.
 - Use `Email/changes` for account-wide object cache freshness where we have cached objects outside active views.
-- Use `Mailbox/changes` to maintain the folder tree and counts.
-- Use `Thread/changes` or targeted `Thread/get` when changed messages affect visible conversations.
-- On `tooManyChanges`, retry with a larger limit within Stalwart's advertised limits. On `cannotCalculateChanges`, invalidate only the affected object/query cache and reload visible ranges first.
-- Use `upToId` for large immutable-sort query ranges when possible, so the server can omit changes beyond the locally cached prefix.
+- Use `Mailbox/changes` to maintain the folder tree and counts. Error or missing payload → `needsFullSync`, then full reload of that slice.
+- `Thread/changes` / targeted `Thread/get` are not implemented. Thread rows are upserted from `Email.threadId`.
+- Mail/email `tooManyChanges` falls through to full sync; there is no larger-limit retry. FileNode discovery can report `tooManyChanges`.
+- `query_views.up_to_remote_id` exists; nothing reads or writes it.
 
 Message detail:
 
 1. Render metadata from SQLite immediately.
 2. If body values are missing or stale, fetch `Email/get` with `bodyStructure`, `textBody`, `htmlBody`, `attachments`, body properties, and `fetchTextBodyValues`/`fetchHTMLBodyValues`.
-3. Store body part and attachment metadata. Store text/html body values only if under the body-cache policy.
-4. If a body value is truncated, fetch the body part blob as text for display, but do not store attachment blobs.
+3. Store body part, attachment metadata, and fetched text/html body values.
+4. If a body value is truncated, fetch the body part blob as text for display, but do not store attachment blobs. Attachment preview and download bytes remain ephemeral worker transfers (`specs/010-attachments/spec.md` AT-3).
 
 Mutation flow:
 
-- UI actions write a `pending_mutations` row and apply an optimistic SQLite transaction.
+- UI actions write a `pending_mutations` row and apply an optimistic SQLite transaction. A settings patch and its coalesced `pushSettings` row are committed together.
+- The outbox records retry timing and durable phases for send, contact, and
+  AddressBook operations whose server result may outlive a lost response.
+- AddressBook create snapshots the pre-create set for unique recovery.
+  Confirmed permanent deletion rechecks an authoritative contact inventory,
+  sends `onDestroyRemoveContents: true`, then repairs both AddressBooks and
+  ContactCards before resolving.
 - The sync worker sends the JMAP request.
 - On success, reconcile from the returned ids/states and then from `/changes` if necessary.
 - On failure, either roll back the optimistic patch or mark the row conflicted and resync the affected message/query.
@@ -774,12 +940,15 @@ Mutation flow:
 
 The UI should be responsive from local data first and increasingly correct as sync catches up:
 
-- On app start, show cached folder list and cached first page for the last opened mailbox immediately.
+- On app start, show the cached folder list immediately. Session
+  `folderStates` remember open folders for the tab; there is no last-mailbox
+  persistence.
 - Prioritize network work in this order: session/endpoints, folder tree, visible mailbox query, visible rows metadata, selected message body, ahead-of-scroll rows, adjacent message bodies, low-priority background refresh.
-- For virtual scrolling, fetch by visible range rather than by arbitrary pages. Keep the current viewport plus 2-3 screens ahead warm.
-- When the user selects a message, prefetch metadata/body for the next and previous visible messages only if the network queue is idle.
-- Background prefetch should be cancellable on folder switch and should respect Stalwart limits such as `getMaxResults`, `queryMaxResults`, `changesMaxResults`, and `maxConcurrentRequests`.
-- Body cache eviction should be based on total byte cap and `last_accessed_at`, not message age alone.
+- For virtual scrolling, fetch by visible range rather than by arbitrary pages. The virtualizer `overscan` is 8 rows; `ensureLoaded` uses the visible range / `PAGE_SIZE` 100.
+- When the user selects a message, `selectMessage` always enqueues idx+1, idx+2, and idx−1.
+- Background prefetch is cancellable on folder switch. Live clamps are Core `maxObjectsInGet` / `maxObjectsInSet` / `maxSizeUpload`.
+- Future body-cache eviction should use a total byte cap and
+  `last_accessed_at`, not message age alone.
 
 ## Thunderbird Panorama Takeaways
 

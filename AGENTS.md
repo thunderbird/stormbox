@@ -198,12 +198,10 @@ reverse-proxies them through `http://localhost:3000` (`/realms/*`,
 # 1. Start Keycloak + Stalwart + Accounts (host or dev container with Docker)
 cd thunderbird-accounts && docker compose up --build -d
 
-# 2. One-time per fresh volume (DEV USE ONLY, not required for e2e):
-#    open http://localhost:8087, sign in as admin@example.org / admin,
-#    provision a Thundermail address. The e2e suite uses a separate
-#    `e2e@example.org` account that is auto-provisioned by
-#    tests/fixtures/configure-keycloak.mjs and configure-stalwart.mjs
-#    on every run, so the developer's account stays uncontaminated.
+# 2. One-time per fresh volume: `npm run stack:configure` (or
+#    ./scripts/local-stack-up.sh). The e2e suite uses `e2e@example.org`;
+#    sign into Stormbox as admin@example.org / admin. The Accounts UI
+#    at http://localhost:8087 is optional for local browsing.
 
 # 3. Start the local WS proxy (background). seed-mail is no longer
 #    required — the relevant specs seed their own data idempotently
@@ -321,12 +319,9 @@ trusting an assumption rather than this list:
 - `connectJmap()` takes `username`, not `email`. Passing `email` silently
   authenticates the default account and looks like a credentials failure.
 - The second account is `shared-e2e@example.org` / `shared-e2e`,
-  provisioned by `tests/fixtures/configure-keycloak.mjs`, which resets
-  passwords on every run.
-- That fixture writes the realm-wide `frontendUrl` and replaces the
-  shared client's redirect origins from `VITE_LOCAL_PUBLIC_ORIGIN`, so
-  running it with a non-default origin reconfigures Keycloak for **every**
-  worktree. Run it with default env only.
+  provisioned by `npm run stack:configure`. Playwright and integration
+  setup must not rewrite Keycloak or Stalwart. The Vite proxy remaps
+  the pinned `http://localhost:3000` frontend origin per worktree.
 - Do not pipe command output through `tail`; it buffers and hides
   progress on long runs.
 - **Never run two lanes at once.** `workers: 1` serialises tests within one

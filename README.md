@@ -40,8 +40,9 @@ container, runs `stack:configure`, and starts the local WebSocket auth bridge in
 the dev container. To also start the Thunderbird Accounts UI and its Django
 Postgres/Redis services, run `WITH_ACCOUNTS=1 ./scripts/local-stack-up.sh`.
 
-`stack:configure` is idempotent and configures Keycloak as well as creates the
-(`e2e@example.org`) account for tests and (`admin@example.org`) for dev.
+`stack:configure` is idempotent and configures Keycloak as well as creates
+separate accounts for Playwright (`e2e@example.org`), backend integration tests
+(`integration@example.org`), and development (`admin@example.org`).
 
 Sign into Stormbox manually as `admin@example.org` / `admin`. Optional test account
 overrides live in `tests/e2e/.env.local.example`.
@@ -88,6 +89,15 @@ To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 `VITE_SEND_URL`. To override sender logo lookup, set
 `VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.
 
+Contacts Trash limits live in `stormbox.config.json`. Before deployment, set
+`contactsTrash.serverFileStorage` to the Stalwart FileStorage `maxSize`,
+`maxFiles`, and `maxFolders` values. These limits are not available to a normal
+client through standard JMAP. The checked-in defaults match the local Stalwart
+server: 25 MiB per file with no configured file or folder count cap.
+Remote application settings are stored below the top-level JMAP FileNode
+folder `thundermail/`; Contacts Trash shards are isolated further under
+`thundermail/contacts_trash/`.
+
 ```bash
 VITE_JMAP_SERVER_URL=https://your-jmap-bridge-or-server.com
 VITE_SENDER_AVATAR_PROXY_URL=https://your-avatar-proxy.com
@@ -103,6 +113,10 @@ docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
 # Type checking
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
   'cd /workspace && npm run typecheck'
+
+# Live backend integration tests (serial, no browser UI)
+docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
+  'cd /workspace && npm run test:integration'
 
 # Smoke E2E tests
 docker compose -f .devcontainer/docker-compose.yml exec app bash -c \
@@ -158,6 +172,7 @@ stormbox/
 ├── tests/
 │   ├── e2e/                  # Playwright specs and helpers
 │   ├── fixtures/             # Stack configure/seed scripts, local WS auth bridge
+│   ├── integration/          # Serial Vitest coverage against live Stalwart
 │   └── unit/                 # Vitest tests (mirrors src layout)
 ├── infra/
 │   └── jmap-bridge/          # Unified Cloudflare Worker (HTTP JMAP + WS auth)
