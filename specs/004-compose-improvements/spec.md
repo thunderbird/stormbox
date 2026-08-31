@@ -245,6 +245,9 @@ assertion in CS-5.1.
 These are out of scope for this specification and are recorded here so
 later work has a home rather than being absorbed silently:
 
+Server-backed scheduled sending is defined by
+[Send Later](../011-send-later/spec.md).
+
 - **Uncheckpointed compose recovery.** Server draft replacement, autosave,
   minimized compose sessions, and Close-versus-Discard semantics are defined
   by [draft-lifecycle.md](./draft-lifecycle.md). Restoring edits that never
@@ -253,10 +256,9 @@ later work has a home rather than being absorbed silently:
 - **Attachment reminders.** Received and compose attachment behavior is
   defined by [Attachment Support](../010-attachments/spec.md); reminder
   heuristics remain outside both specifications.
-- **Undo Send and scheduled send.** Both depend on durable send state
-  landing first. A client-local delay is not a durable scheduler once
-  every tab closes; these need server-delayed submission with
-  `maxDelayedSend`.
+- **Undo Send.** A client-local delay is not durable once every tab closes;
+  implementing this requires an explicit product contract distinct from the
+  server-backed scheduler.
 - **A user-visible Outbox folder and an offline send queue.**
 - **Multiple Sent-copy targets**, equivalent to Thunderbird's Fcc2.
 - **Distinct Mail and Submission primary accounts.** Stormbox requires the
