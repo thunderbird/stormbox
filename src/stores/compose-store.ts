@@ -31,6 +31,7 @@ import type {
   AttachmentLimits,
   BlobTransferProgress,
   Repository,
+  ScheduleCapability,
 } from '../db/repository';
 import { TABLE_FAMILIES } from '../db/protocol';
 import {
@@ -55,6 +56,10 @@ import { addressKey } from '../utils/address-key';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { isInlineImageType } from '../utils/message-html';
 import { makeMessageId, makeOperationId } from '../utils/message-id';
+import {
+  isUsableTimeZone,
+  validateScheduleTarget,
+} from '../utils/schedule-time';
 import { editSafeDraftHtml } from '../utils/compose-html';
 import { textSignatureToHtml } from '../utils/identity-fields';
 import { sanitizeRichTextHtml } from '../utils/rich-text';
@@ -525,9 +530,23 @@ export const useComposeStore = defineStore('compose', () => {
   let prefillGeneration = 0;
   const identities = ref<IdentityRow[]>([]);
   const accountPrimaryEmail = ref<string | null>(null);
+  const scheduleCapability = ref<ScheduleCapability>({
+    supported: false,
+    maxDelayedSend: 0,
+    serverClockReference: null,
+  });
+  const scheduleCapabilityAccountId = ref<number | null>(null);
+  const canScheduleSend = computed(() =>
+    scheduleCapability.value.supported
+    && scheduleCapabilityAccountId.value === authStore.accountId);
+  const scheduleMaxDelayedSend = computed(() =>
+    canScheduleSend.value ? scheduleCapability.value.maxDelayedSend : 0);
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
   let stopPrimaryIdentityWatch: WatchStopHandle | null = null;
+  let stopAccountWatch: WatchStopHandle | null = null;
+  let scheduleCapabilityGeneration = 0;
+  const schedulingSessions = new Set<string>();
 
   function sessionById(id: string | null | undefined): ComposeSession | null {
     if (!id) return null;
@@ -651,13 +670,16 @@ export const useComposeStore = defineStore('compose', () => {
       () => settingsStore.get('primaryIdentityRemoteId'),
       reselectAutomaticFromIdentities,
     );
-    watch(
+    stopAccountWatch = watch(
       () => authStore.accountId,
       async (newId) => {
         clearAttachmentPreflightsOutsideAccount(newId);
-        if (newId) {
-          await refreshAccount();
-          await refreshIdentities();
+        if (newId != null) {
+          await Promise.all([
+            refreshAccount(),
+            refreshIdentities(),
+            refreshScheduleCapability(),
+          ]);
         } else {
           $reset();
         }
@@ -667,6 +689,8 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   function detach(): void {
+    stopAccountWatch?.();
+    stopAccountWatch = null;
     stopPrimaryIdentityWatch?.();
     stopPrimaryIdentityWatch = null;
     unsubscribe?.();
@@ -688,6 +712,14 @@ export const useComposeStore = defineStore('compose', () => {
     for (const session of sessions.value) session.attachmentPreflights.splice(0);
     identities.value = [];
     accountPrimaryEmail.value = null;
+    scheduleCapabilityGeneration += 1;
+    scheduleCapability.value = {
+      supported: false,
+      maxDelayedSend: 0,
+      serverClockReference: null,
+    };
+    scheduleCapabilityAccountId.value = null;
+    schedulingSessions.clear();
     sessions.value = [];
     activeSessionId.value = null;
     Object.assign(fallbackDraft, emptyDraft());
@@ -734,6 +766,74 @@ export const useComposeStore = defineStore('compose', () => {
     }
     const account = await repo.getAccount(authStore.accountId);
     accountPrimaryEmail.value = account?.primary_email ?? null;
+  }
+
+  async function refreshScheduleCapability(): Promise<ScheduleCapability> {
+    const generation = ++scheduleCapabilityGeneration;
+    const accountId = authStore.accountId;
+    const currentRepo = repo;
+    const unsupported: ScheduleCapability = {
+      supported: false,
+      maxDelayedSend: 0,
+      serverClockReference: null,
+    };
+    if (
+      !currentRepo
+      || accountId == null
+      || typeof currentRepo.getScheduleCapability !== 'function'
+    ) {
+      scheduleCapability.value = unsupported;
+      scheduleCapabilityAccountId.value = accountId;
+      return unsupported;
+    }
+    if (scheduleCapabilityAccountId.value !== accountId) {
+      scheduleCapability.value = unsupported;
+      scheduleCapabilityAccountId.value = accountId;
+    }
+    try {
+      const result = await currentRepo.getScheduleCapability(accountId);
+      const serverClockReference =
+        result?.serverClockReference
+        && Number.isFinite(result.serverClockReference.capturedAtMs)
+        && Number.isFinite(result.serverClockReference.lowerOffsetMs)
+        && Number.isFinite(result.serverClockReference.uncertaintyMs)
+          ? {
+              capturedAtMs: result.serverClockReference.capturedAtMs,
+              lowerOffsetMs: result.serverClockReference.lowerOffsetMs,
+              uncertaintyMs: result.serverClockReference.uncertaintyMs,
+            }
+          : null;
+      const normalized = result?.supported === true
+        && typeof result.maxDelayedSend === 'number'
+        && Number.isSafeInteger(result.maxDelayedSend)
+        && result.maxDelayedSend > 0
+        ? {
+            supported: true,
+            maxDelayedSend: result.maxDelayedSend,
+            serverClockReference,
+          }
+        : { ...unsupported, serverClockReference };
+      if (
+        generation !== scheduleCapabilityGeneration
+        || accountId !== authStore.accountId
+        || currentRepo !== repo
+      ) {
+        return unsupported;
+      }
+      scheduleCapability.value = normalized;
+      scheduleCapabilityAccountId.value = accountId;
+      return normalized;
+    } catch {
+      if (
+        generation === scheduleCapabilityGeneration
+        && accountId === authStore.accountId
+        && currentRepo === repo
+      ) {
+        scheduleCapability.value = unsupported;
+        scheduleCapabilityAccountId.value = accountId;
+      }
+      return unsupported;
+    }
   }
 
   function defaultFromIdx(): number {
@@ -2916,7 +3016,16 @@ export const useComposeStore = defineStore('compose', () => {
     }
   }
 
-  async function send(sessionId: string | null = activeSessionId.value): Promise<boolean> {
+  /**
+   * Send now, or — with `scheduledAt` — hand the server a Send Later
+   * submission. Scheduling is the same durable SEND mutation with one
+   * extra field, so every guard, ambiguity rule, and retry path here
+   * covers both; only the user-facing copy differs.
+   */
+  async function send(
+    sessionId: string | null = activeSessionId.value,
+    scheduledAt: string | null = null,
+  ): Promise<boolean> {
     const session = sessionById(sessionId);
     if (!session
         || session.status === COMPOSE_STATE.SENDING
@@ -2995,6 +3104,7 @@ export const useComposeStore = defineStore('compose', () => {
         draftEmailIds: session.confirmedRevision
           ? [session.confirmedRevision.emailId]
           : [],
+        ...(scheduledAt ? { scheduledAt } : {}),
       };
       // Mutation payload carries local row ids only; the JMAP outbox
       // resolves identity and folder remote ids at dispatch time, the
@@ -3045,10 +3155,11 @@ export const useComposeStore = defineStore('compose', () => {
           // the draft behind a state only Discard could leave (CS-1.9).
           session.status = COMPOSE_STATE.IDLE;
           close(session.id);
-          setNotice(
-            'Could not confirm this send. If it went out it is in your '
-            + 'Sent folder; if not, the message is in Drafts.',
-          );
+          setNotice(scheduledAt
+            ? 'Could not confirm this schedule. If it was accepted it is in '
+              + 'your Scheduled folder; if not, the message is in Drafts.'
+            : 'Could not confirm this send. If it went out it is in your '
+              + 'Sent folder; if not, the message is in Drafts.');
           return false;
         }
         if (unknown) {
@@ -3057,8 +3168,11 @@ export const useComposeStore = defineStore('compose', () => {
           // Send stays offered too — never resubmitted automatically, but
           // after checking Sent, sending again is the user's call (CS-1.9).
           return failSend(
-            'Could not confirm whether this message was sent. Check your '
-            + 'Sent folder before sending it again.',
+            scheduledAt
+              ? 'Could not confirm whether this message was scheduled. Check '
+                + 'your Scheduled folder before scheduling it again.'
+              : 'Could not confirm whether this message was sent. Check your '
+                + 'Sent folder before sending it again.',
             session.id,
           );
         }
@@ -3076,6 +3190,17 @@ export const useComposeStore = defineStore('compose', () => {
           runtimeFor(session.id).blocked = hasAttachmentBlobFailure(session);
           return failed;
         }
+        if (scheduledAt) {
+          // Schedule rejections carry precise server-side reasons (the
+          // time passed, the delay exceeds the server limit, the
+          // capability disappeared); surface them over a generic line.
+          const description = await readMutationErrorDescription(mutation?.id);
+          return failSend(
+            description
+              ?? 'Could not schedule this message; the draft remains available.',
+            session.id,
+          );
+        }
         return failSend('Send failed; the message stays in your outbox.', session.id);
       }
       if (!stillCurrent()) return true;
@@ -3084,13 +3209,85 @@ export const useComposeStore = defineStore('compose', () => {
       // Confirmation is deliberately about acceptance, not arrival: the
       // server has taken the message, and nothing the client can observe
       // proves it reached the recipient (CS-1.13).
-      setNotice(result.result?.filed === false
-        ? 'Message accepted for delivery. Your Sent folder will show it shortly.'
-        : 'Message accepted for delivery.');
+      setNotice(scheduledAt
+        ? 'Message scheduled.'
+        : result.result?.filed === false
+          ? 'Message accepted for delivery. Your Sent folder will show it shortly.'
+          : 'Message accepted for delivery.');
       return true;
     } catch (err: any) {
       if (!stillCurrent()) return false;
       return failSend(err?.message ?? String(err), session.id);
+    }
+  }
+
+  /**
+   * The failed row's server-recorded reason, when it carries one worth
+   * showing (schedule rejections do: the time passed, the delay exceeds
+   * the server limit, the capability disappeared).
+   */
+  async function readMutationErrorDescription(
+    mutationId: number | null | undefined,
+  ): Promise<string | null> {
+    if (!repo || mutationId == null) return null;
+    if (typeof repo.getPendingMutationError !== 'function') return null;
+    try {
+      const failed = await repo.getPendingMutationError(mutationId);
+      const error = failed?.error_json ? JSON.parse(failed.error_json) : null;
+      return typeof error?.description === 'string'
+        ? error.description
+        : (typeof error?.message === 'string' ? error.message : null);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Validate the schedule client-side for fast, specific feedback, then
+   * delegate to send() with the target instant. The server re-validates
+   * authoritatively at submission time, so every check here is UX only.
+   */
+  async function scheduleSend(
+    sessionId: string,
+    targetAt: Date | string | number,
+    timeZone?: string,
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    if (!session
+        || session.status === COMPOSE_STATE.SENDING
+        || session.isDiscarding) return false;
+    if (schedulingSessions.has(session.id)) return false;
+    schedulingSessions.add(session.id);
+    try {
+      if (!canScheduleSend.value) {
+        return failSend(
+          'Scheduled sending is not supported by this account.',
+          session.id,
+        );
+      }
+      const selectedTimeZone = timeZone ?? settingsStore.get('timeZone');
+      if (!isUsableTimeZone(selectedTimeZone)) {
+        return failSend('Choose a valid time zone.', session.id);
+      }
+      const liveCapability = await refreshScheduleCapability();
+      if (!sessionById(session.id)) return false;
+      if (!liveCapability.supported || !canScheduleSend.value) {
+        return failSend(
+          'Scheduled sending is not supported by this account.',
+          session.id,
+        );
+      }
+      const target = validateScheduleTarget({
+        targetAt,
+        maxDelayedSend: liveCapability.maxDelayedSend,
+        serverClockReference: liveCapability.serverClockReference,
+      });
+      if ('reason' in target) {
+        return failSend(target.message, session.id);
+      }
+      return send(session.id, target.targetAt);
+    } finally {
+      schedulingSessions.delete(session.id);
     }
   }
 
@@ -3105,6 +3302,9 @@ export const useComposeStore = defineStore('compose', () => {
     isOpen,
     isExpanded,
     identities,
+    scheduleCapability,
+    canScheduleSend,
+    scheduleMaxDelayedSend,
     draft,
     draftEpoch,
     rejectedRecipients,
@@ -3114,6 +3314,7 @@ export const useComposeStore = defineStore('compose', () => {
     attach,
     detach,
     refreshIdentities,
+    refreshScheduleCapability,
     sessionById,
     identityForSession,
     open,
@@ -3147,5 +3348,6 @@ export const useComposeStore = defineStore('compose', () => {
     prepareForward,
     prepareDraftFromMessage,
     send,
+    scheduleSend,
   };
 });

@@ -344,7 +344,7 @@ test.describe('Compose draft lifecycle', () => {
         return matches.length;
       }, { timeout: 30_000 }).toBe(1);
 
-      await page.getByRole('button', { name: 'Send' }).click();
+      await page.getByRole('button', { name: 'Send', exact: true }).click();
       await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0, { timeout: 60_000 });
       await expect(page.getByText('Message accepted for delivery.', { exact: true })).toBeVisible();
       await expect.poll(

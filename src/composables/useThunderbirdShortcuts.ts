@@ -48,6 +48,17 @@ function getSingleMessage(mailStore: ReturnType<typeof useMailStore>) {
   return mailStore.messages.find((m) => m?.id === ids[0]) ?? null;
 }
 
+function hasScheduledTarget(
+  mailStore: ReturnType<typeof useMailStore>,
+  ids: number[],
+): boolean {
+  const targets = new Set(ids);
+  return mailStore.messages.some((message) =>
+    message?.id != null
+    && targets.has(Number(message.id))
+    && message.scheduled_undo_status != null);
+}
+
 function findMessageIndex(mailStore: ReturnType<typeof useMailStore>, messageId: number | null) {
   if (messageId == null) return -1;
   return mailStore.messages.findIndex((m) => m?.id === messageId);
@@ -129,6 +140,11 @@ export function useThunderbirdShortcuts({
           composeStore.cancelClose(composeStore.activeSessionId);
           return;
         }
+        // The nested scheduling dialog owns Escape one layer at a time.
+        // This listener runs first in the document capture phase.
+        if (document.querySelector('.schedule-dialog[aria-modal="true"]')) {
+          return;
+        }
         // A combobox showing its list owns Escape: dismissing the list is
         // what the user meant, and closing the whole message instead throws
         // away a draft over a keypress. This handler runs in the capture
@@ -178,7 +194,11 @@ export function useThunderbirdShortcuts({
       return;
     }
 
-    const single = getSingleMessage(mailStore);
+    // Scheduled (Send Later) messages are read-only outgoing mail, so
+    // the reply/forward shortcuts stand down for them just like the
+    // hidden toolbar buttons.
+    const singleTarget = getSingleMessage(mailStore);
+    const single = singleTarget?.scheduled_undo_status == null ? singleTarget : null;
     // The reply prefills read the parent's addresses from the cache, so
     // they settle a tick later. The handler stays synchronous — it has a
     // keystroke to preventDefault — and the composer opens when the read
@@ -214,6 +234,17 @@ export function useThunderbirdShortcuts({
     // --- Message actions (need at least one target) ---
     const targetIds = getTargetIds(mailStore);
     if (targetIds.length > 0) {
+      if (
+        hasScheduledTarget(mailStore, targetIds)
+        && (
+          isDeleteKey(event)
+          || event.key === 'a'
+          || event.key === 'A'
+        )
+      ) {
+        event.preventDefault();
+        return;
+      }
       if (isDeleteKey(event) && event.shiftKey) {
         event.preventDefault();
         try {

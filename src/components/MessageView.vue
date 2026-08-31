@@ -10,6 +10,7 @@ import {
 import DOMPurify from 'dompurify';
 import {
   ArrowLeft,
+  Clock,
   Moon,
   Sun,
   Trash2,
@@ -549,6 +550,64 @@ async function junk() {
   }
 }
 
+// Send Later: a scheduled message renders through the normal detail
+// view; the scheduling columns on its row only add this banner, swap
+// the toolbar to read-only + Cancel Send, and label the Date row with
+// the send time.
+const scheduledStatus = computed(() => {
+  const value = message.value?.scheduled_undo_status;
+  return value === 'pending' || value === 'unknown' || value === 'final' || value === 'canceled'
+    ? value
+    : null;
+});
+const isScheduledMessage = computed(() => scheduledStatus.value != null);
+const canCancelScheduled = computed(
+  () => scheduledStatus.value === 'pending' || scheduledStatus.value === 'unknown',
+);
+const cancelingScheduled = ref(false);
+
+function describeTimeUntil(ms) {
+  const target = Number(ms);
+  if (!Number.isFinite(target)) return '';
+  const diffMs = target - Date.now();
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const minutes = Math.round(diffMs / 60_000);
+  if (Math.abs(minutes) < 60) return rtf.format(minutes, 'minute');
+  const hours = Math.round(diffMs / 3_600_000);
+  if (Math.abs(hours) < 48) return rtf.format(hours, 'hour');
+  return rtf.format(Math.round(diffMs / 86_400_000), 'day');
+}
+
+const scheduledBannerText = computed(() => {
+  const sendAt = message.value?.sent_at;
+  switch (scheduledStatus.value) {
+    case 'pending': {
+      const relative = describeTimeUntil(sendAt);
+      return `Scheduled to send ${fmtDate(sendAt)}${relative ? ` (${relative})` : ''}.`;
+    }
+    case 'unknown':
+      return 'The scheduled time has passed, but the server has not confirmed sending yet.';
+    case 'final':
+      return 'This message was sent and is moving to your Sent folder.';
+    case 'canceled':
+      return 'Sending was canceled; this message is moving back to Drafts.';
+    default:
+      return '';
+  }
+});
+
+async function cancelScheduledSend() {
+  if (!message.value || cancelingScheduled.value) return;
+  cancelingScheduled.value = true;
+  try {
+    await mailStore.cancelScheduledSend(message.value.id);
+  } catch (err) {
+    console.warn('[message-view] cancel scheduled send failed', err?.message ?? err);
+  } finally {
+    cancelingScheduled.value = false;
+  }
+}
+
 async function destroy() {
   if (!message.value) return;
   try {
@@ -627,24 +686,29 @@ function closeMessageView() {
         >
           <span class="message-view__whitelist-label">Not junk</span>
         </button>
-        <AppIconButton class="message-view__action" @click="archive" title="Archive (A)" aria-label="Archive">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-        </AppIconButton>
-        <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action" danger @click="destroy" title="Delete (Del)" aria-label="Delete">
-          <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
-        </AppIconButton>
+        <!-- A scheduled message is read-only: the toolbar keeps only
+             Back and the view-mode toggle, and the banner below owns
+             Cancel Send. -->
+        <template v-if="!isScheduledMessage">
+          <AppIconButton class="message-view__action" @click="archive" title="Archive (A)" aria-label="Archive">
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+          </AppIconButton>
+          <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
+          </AppIconButton>
+          <AppIconButton class="message-view__action" danger @click="destroy" title="Delete (Del)" aria-label="Delete">
+            <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
+          </AppIconButton>
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
+          </AppIconButton>
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
+          </AppIconButton>
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
+            <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
+          </AppIconButton>
+        </template>
         <AppIconButton
           v-if="canForceLightBody"
           class="message-view__action message-view__action--view-mode"
@@ -657,6 +721,19 @@ function closeMessageView() {
           <Sun v-else :size="16" :stroke-width="1.75" />
         </AppIconButton>
       </header>
+      <div v-if="isScheduledMessage" class="message-view__scheduled" role="status">
+        <Clock :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <span class="message-view__scheduled-text">{{ scheduledBannerText }}</span>
+        <button
+          v-if="canCancelScheduled"
+          class="message-view__scheduled-cancel"
+          type="button"
+          :disabled="cancelingScheduled"
+          @click="cancelScheduledSend"
+        >
+          {{ cancelingScheduled ? 'Canceling…' : 'Cancel send' }}
+        </button>
+      </div>
       <section class="message-view__details" aria-label="Message header">
         <dl class="message-view__metadata">
           <div class="message-view__metadata-row">
@@ -676,8 +753,10 @@ function closeMessageView() {
             <dd><h2>{{ message.subject || '(no subject)' }}</h2></dd>
           </div>
           <div class="message-view__metadata-row">
-            <dt>Date</dt>
-            <dd class="message-view__date">{{ fmtDate(message.received_at) }}</dd>
+            <dt>{{ isScheduledMessage ? 'Send at' : 'Date' }}</dt>
+            <dd class="message-view__date">
+              {{ fmtDate(isScheduledMessage ? (message.sent_at ?? message.received_at) : message.received_at) }}
+            </dd>
           </div>
         </dl>
       </section>
@@ -768,6 +847,43 @@ function closeMessageView() {
   padding: 12px var(--message-content-trailing-inset) 12px var(--message-content-inset);
   border-bottom: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 92%, var(--panel2));
+}
+/* Send Later status strip, rendered above the normal metadata header. */
+.message-view__scheduled {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px var(--message-content-trailing-inset) 10px var(--message-content-inset);
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  color: var(--text);
+  font-size: 13px;
+}
+.message-view__scheduled-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.message-view__scheduled-cancel {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.message-view__scheduled-cancel:hover {
+  background: var(--rowHover);
+}
+.message-view__scheduled-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .message-view__metadata {
   display: grid;

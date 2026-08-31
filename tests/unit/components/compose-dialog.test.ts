@@ -6,6 +6,7 @@ import {
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
+import { VueDatePicker } from '@vuepic/vue-datepicker';
 
 vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
@@ -15,6 +16,7 @@ vi.mock('../../../src/services/auth', () => ({
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
 import ComposeManager from '../../../src/components/ComposeManager.vue';
 import RichTextEditor from '../../../src/components/RichTextEditor.vue';
+import ScheduleSendDialog from '../../../src/components/ScheduleSendDialog.vue';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -23,6 +25,9 @@ import { COMPOSE_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
+
+const mountedWrappers: Array<{ unmount: () => void }> = [];
 
 async function mountOpenCompose(htmlBody = 'hello world') {
   const composeStore = useComposeStore();
@@ -33,9 +38,65 @@ async function mountOpenCompose(htmlBody = 'hello world') {
   } as any];
   composeStore.open({ htmlBody });
 
-  const wrapper = mount(ComposeDialog, { attachTo: document.body });
+  const wrapper = mount(ComposeDialog, {
+    attachTo: document.body,
+    global: { stubs: { teleport: true } },
+  });
+  mountedWrappers.push(wrapper);
   await nextTick();
   return { wrapper, composeStore };
+}
+
+async function mountSchedulableCompose({
+  maxDelayedSend = 30 * 24 * 60 * 60,
+  timeZone = 'America/New_York',
+}: {
+  maxDelayedSend?: number;
+  timeZone?: string;
+} = {}) {
+  const getScheduleCapability = vi.fn(async () => ({
+    supported: true,
+    maxDelayedSend,
+  }));
+  __setRepositoryForTests({
+    subscribe: vi.fn(() => () => {}),
+    getAccount: vi.fn(async () => ({ id: 1, primary_email: 'sender@example.com' })),
+    listIdentities: vi.fn(async () => [{
+      id: 1,
+      name: 'Sender',
+      email: 'sender@example.com',
+    }]),
+    ensureIdentities: vi.fn(async () => {}),
+    getScheduleCapability,
+  });
+  useAuthStore().accountId = 1;
+  useSettingsStore().settings = { timeZone };
+  const composeStore = useComposeStore();
+  await composeStore.attach();
+  await vi.waitFor(() => {
+    expect(composeStore.canScheduleSend).toBe(true);
+  });
+  const sessionId = composeStore.open({
+    to: [{ email: 'recipient@example.com' }],
+    htmlBody: 'hello world',
+  });
+  const wrapper = mount(ComposeDialog, {
+    attachTo: document.body,
+    global: { stubs: { teleport: true } },
+  });
+  mountedWrappers.push(wrapper);
+  await flushPromises();
+  await nextTick();
+  await vi.waitFor(() => {
+    expect(wrapper.get('[aria-label="Schedule send"]').attributes('aria-disabled'))
+      .toBeUndefined();
+  });
+  return {
+    composeStore,
+    getScheduleCapability,
+    sessionId,
+    wrapper,
+  };
 }
 
 beforeEach(() => {
@@ -44,7 +105,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const wrapper of mountedWrappers.splice(0)) wrapper.unmount();
   document.body.innerHTML = '';
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   __resetRepositoryForTests();
 });
@@ -486,7 +549,10 @@ describe('ComposeDialog attachment controls', () => {
     const { wrapper } = await mountOpenCompose();
     const input = wrapper.get('footer input[type="file"]');
     const click = vi.spyOn(input.element as HTMLInputElement, 'click');
-    const buttons = wrapper.findAll('footer button');
+    const buttons = [
+      wrapper.get('footer > button'),
+      wrapper.get('footer .compose-send'),
+    ];
 
     expect(input.attributes('multiple')).toBeDefined();
     expect(input.attributes('hidden')).toBeDefined();
@@ -614,7 +680,10 @@ describe('ComposeDialog attachment controls', () => {
 });
 
 describe('ComposeDialog send control', () => {
-  const footerButtons = (wrapper: any) => wrapper.findAll('footer button')
+  const footerButtons = (wrapper: any) => [
+    wrapper.get('footer > button'),
+    wrapper.get('footer .compose-send'),
+  ]
     .map((button: any) => button.attributes('aria-label') || button.text());
 
   it('offers Send while the outcome of the draft is still open', async () => {
@@ -721,6 +790,302 @@ describe('ComposeDialog send control', () => {
   });
 });
 
+describe('ComposeDialog scheduled send control', () => {
+  async function openScheduleMenu(wrapper: any) {
+    const dropdown = wrapper.get('.compose-schedule-menu');
+    (dropdown.element as HTMLDetailsElement).open = true;
+    await dropdown.trigger('toggle');
+    await flushPromises();
+    await nextTick();
+    return dropdown;
+  }
+
+  async function openCustomDialog(wrapper: any) {
+    const dropdown = await openScheduleMenu(wrapper);
+    const choose = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) => item.find('.compose-schedule-menu__label').text()
+        === 'Choose a date and time')!;
+    await choose.trigger('click');
+    await flushPromises();
+    await nextTick();
+    return wrapper.findComponent(ScheduleSendDialog);
+  }
+
+  it('joins the immediate Send button to the schedule arrow on its right', async () => {
+    const { wrapper } = await mountSchedulableCompose();
+    const split = wrapper.get('.compose-send-split');
+    const children = [...split.element.children];
+
+    expect(children[0].tagName).toBe('BUTTON');
+    expect(children[0].classList.contains('compose-send')).toBe(true);
+    expect(children[1].tagName).toBe('DETAILS');
+    expect(children[1].classList.contains('compose-schedule-menu')).toBe(true);
+    expect(wrapper.get('.compose-schedule-menu__trigger').attributes()).toMatchObject({
+      'aria-label': 'Schedule send',
+      'aria-haspopup': 'menu',
+      title: 'Schedule send',
+    });
+    expect(wrapper.get('.compose-send').text()).toBe('Send');
+  });
+
+  it('disables only scheduling when the capability is unavailable', async () => {
+    const { wrapper } = await mountOpenCompose();
+    await flushPromises();
+    await nextTick();
+
+    const schedule = wrapper.get('.compose-schedule-menu__trigger');
+    expect(schedule.attributes('aria-disabled')).toBe('true');
+    expect(schedule.attributes('tabindex')).toBe('-1');
+    expect(schedule.attributes('title')).toBe('Schedule send');
+    expect(wrapper.get(`#${schedule.attributes('aria-describedby')}`).text())
+      .toContain('Immediate Send is still available');
+    expect(wrapper.get('.compose-send').attributes('disabled')).toBeUndefined();
+  });
+
+  it('refreshes capability on composer open and every menu open', async () => {
+    const { getScheduleCapability, wrapper } = await mountSchedulableCompose();
+    expect(getScheduleCapability.mock.calls.length).toBeGreaterThanOrEqual(2);
+    const beforeMenu = getScheduleCapability.mock.calls.length;
+
+    await openScheduleMenu(wrapper);
+
+    expect(getScheduleCapability.mock.calls.length).toBeGreaterThan(beforeMenu);
+  });
+
+  it('keeps an open schedule menu interactive during its live capability refresh', async () => {
+    const { getScheduleCapability, wrapper } = await mountSchedulableCompose();
+    let resolveRefresh!: (value: any) => void;
+    getScheduleCapability.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const dropdown = wrapper.get('.compose-schedule-menu');
+    (dropdown.element as HTMLDetailsElement).open = true;
+    await dropdown.trigger('toggle');
+    await nextTick();
+
+    expect(wrapper.get('.compose-schedule-menu__trigger').attributes('aria-disabled'))
+      .toBeUndefined();
+    const tomorrow = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) =>
+        item.find('.compose-schedule-menu__label').text() === 'Tomorrow')!;
+    expect(tomorrow.attributes('disabled')).toBeUndefined();
+
+    resolveRefresh({ supported: true, maxDelayedSend: 30 * 24 * 60 * 60 });
+    await flushPromises();
+  });
+
+  it('offers the exact Fastmail schedule labels in order with resolved times', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { wrapper } = await mountSchedulableCompose();
+    const dropdown = await openScheduleMenu(wrapper);
+    const items = dropdown.findAll('[role="menuitem"]');
+
+    expect(items.map((item: any) =>
+      item.find('.compose-schedule-menu__label').text())).toEqual([
+      'Later today',
+      'This evening',
+      'Tomorrow',
+      'This weekend',
+      'Next week',
+      'Choose a date and time',
+    ]);
+    expect(dropdown.findAll('.compose-schedule-menu__secondary')
+      .every((secondary: any) => secondary.text().length > 0)).toBe(true);
+    expect(dropdown.find('[role="separator"]').exists()).toBe(true);
+  });
+
+  it('disables expired and out-of-cap presets with an actionable reason', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T22:00:00Z'));
+    const { wrapper } = await mountSchedulableCompose({ maxDelayedSend: 60 * 60 });
+    const dropdown = await openScheduleMenu(wrapper);
+    const items = dropdown.findAll('[role="menuitem"]');
+
+    expect(items[1].get('.compose-schedule-menu__label').text()).toBe('This evening');
+    expect(items[1].attributes('disabled')).toBeDefined();
+    expect(items[1].get('.compose-schedule-menu__secondary').text())
+      .toBe('Choose a scheduled time in the future.');
+    expect(items[2].get('.compose-schedule-menu__label').text()).toBe('Tomorrow');
+    expect(items[2].attributes('disabled')).toBeDefined();
+    expect(items[2].get('.compose-schedule-menu__secondary').text())
+      .toBe('Choose a time within 3600 seconds.');
+  });
+
+  it('schedules a preset as an absolute target in the synced time zone', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    const schedule = vi.spyOn(composeStore, 'scheduleSend').mockResolvedValue(false);
+    const dropdown = await openScheduleMenu(wrapper);
+
+    await dropdown.findAll('[role="menuitem"]')[0].trigger('click');
+    await flushPromises();
+
+    expect(schedule).toHaveBeenCalledWith(
+      composeStore.activeSessionId,
+      '2026-08-31T15:00:00.000Z',
+      'America/New_York',
+    );
+    expect(dropdown.attributes('open')).toBeUndefined();
+  });
+
+  it('guards double scheduling and disables compose exit actions while busy', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    let finish!: (value: boolean) => void;
+    const pending = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const schedule = vi.spyOn(composeStore, 'scheduleSend').mockReturnValue(pending);
+    const dropdown = await openScheduleMenu(wrapper);
+    const preset = dropdown.findAll('[role="menuitem"]')[0];
+
+    void preset.trigger('click');
+    void preset.trigger('click');
+    await nextTick();
+
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('.compose-send').text()).toBe('Scheduling…');
+    expect(wrapper.get('.compose-send').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[aria-label="Close options"]').attributes('aria-disabled')).toBe('true');
+
+    finish(false);
+    await pending;
+    await flushPromises();
+  });
+
+  it('shows and persists a searched valid IANA time zone only when selected', async () => {
+    const { wrapper } = await mountSchedulableCompose();
+    const update = vi.spyOn(useSettingsStore(), 'update').mockResolvedValue();
+    const dialog = await openCustomDialog(wrapper);
+
+    expect(dialog.get('.schedule-dialog').text()).toContain(
+      'Current time zone: America/New_York',
+    );
+    const search = dialog.get('[aria-label="Search time zones"]');
+    await search.setValue('Not/AZone');
+    expect(dialog.text()).toContain('No matching IANA time zone');
+    expect(update).not.toHaveBeenCalled();
+
+    await search.setValue('tokyo');
+    const tokyo = dialog.findAll('[role="option"]')
+      .find((option) => option.text() === 'Asia/Tokyo')!;
+    await tokyo.trigger('click');
+    await flushPromises();
+
+    expect(update).toHaveBeenCalledWith({ timeZone: 'Asia/Tokyo' });
+    expect(dialog.get('.schedule-dialog').text()).toContain(
+      'Current time zone: Asia/Tokyo',
+    );
+  });
+
+  it('models picker values as neutral wall-time coordinates', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { wrapper } = await mountSchedulableCompose();
+    const dialog = await openCustomDialog(wrapper);
+    const picker = dialog.findComponent(VueDatePicker);
+
+    expect(picker.props('timezone')).toBe('UTC');
+    expect(picker.props('modelValue')).toBe('2026-08-31T08:15:00.000Z');
+  });
+
+  it('submits a valid custom wall time once as an absolute target', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    let finish!: (value: boolean) => void;
+    const pending = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const schedule = vi.spyOn(composeStore, 'scheduleSend').mockReturnValue(pending);
+    const dialog = await openCustomDialog(wrapper);
+    const picker = dialog.findComponent(VueDatePicker);
+    picker.vm.$emit('update:model-value', '2026-09-01T09:30:00.000Z');
+    await nextTick();
+
+    void dialog.get('.schedule-dialog__submit').trigger('click');
+    void dialog.get('.schedule-dialog__submit').trigger('click');
+    await nextTick();
+
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(schedule).toHaveBeenCalledWith(
+      composeStore.activeSessionId,
+      '2026-09-01T13:30:00.000Z',
+      'America/New_York',
+    );
+    finish(false);
+    await pending;
+    await flushPromises();
+  });
+
+  it.each([
+    {
+      label: 'past',
+      value: '2026-02-28T12:00:00.000Z',
+      error: 'Choose a scheduled time in the future.',
+    },
+    {
+      label: 'out-of-cap',
+      value: '2026-04-15T12:00:00.000Z',
+      error: 'Choose a time within 2592000 seconds.',
+    },
+    {
+      label: 'nonexistent DST',
+      value: '2026-03-08T02:30:00.000Z',
+      error: 'That local time does not exist because the clock changes then.',
+    },
+  ])('rejects a $label custom time before scheduling', async ({ value, error }) => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-03-01T12:00:00Z'));
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    const schedule = vi.spyOn(composeStore, 'scheduleSend').mockResolvedValue(false);
+    const dialog = await openCustomDialog(wrapper);
+    dialog.findComponent(VueDatePicker).vm.$emit('update:model-value', value);
+    await nextTick();
+
+    expect(dialog.get('.schedule-dialog__error').text()).toBe(error);
+    expect(dialog.get('.schedule-dialog__submit').attributes('disabled')).toBeDefined();
+    await dialog.get('.schedule-dialog__submit').trigger('click');
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('explains that an ambiguous fall-back time uses the earlier occurrence', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-25T12:00:00Z'));
+    const { wrapper } = await mountSchedulableCompose();
+    const dialog = await openCustomDialog(wrapper);
+    dialog.findComponent(VueDatePicker).vm.$emit(
+      'update:model-value',
+      '2026-11-01T01:30:00.000Z',
+    );
+    await nextTick();
+
+    expect(dialog.get('.schedule-dialog__resolved').text())
+      .toContain('This time occurs twice; the earlier occurrence will be used.');
+  });
+
+  it('closes the custom dialog on Escape without closing the composer', async () => {
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    const dialog = await openCustomDialog(wrapper);
+    expect(document.activeElement).toBe(dialog.get('.schedule-dialog').element);
+
+    await dialog.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.find('.schedule-dialog').exists()).toBe(false);
+    expect(composeStore.isOpen).toBe(true);
+    expect(document.activeElement).toBe(wrapper.get('.compose-schedule-menu__trigger').element);
+  });
+
+  it('anchors the schedule menu within the send split control', async () => {
+    const { wrapper } = await mountSchedulableCompose();
+    const split = wrapper.get('.compose-send-split');
+    const menuRoot = wrapper.get('.compose-schedule-menu');
+    const menuPanel = wrapper.get('.compose-schedule-menu__menu');
+
+    expect(menuRoot.element.parentElement).toBe(split.element);
+    expect(split.element.contains(menuPanel.element)).toBe(true);
+    expect(menuPanel.classes()).toContain('compose-schedule-menu__menu');
+  });
+});
+
 describe('ComposeDialog opening focus', () => {
   it('starts a fresh message in the To field', async () => {
     await mountOpenCompose();
@@ -789,7 +1154,10 @@ describe('ComposeDialog accessibility', () => {
       .find((item) => item.text() === 'Save Draft')!;
     expect(saveDraft.text()).toBe('Save Draft');
     expect(saveDraft.attributes('disabled')).toBeDefined();
-    expect(wrapper.findAll('footer button').map((button) => button.text()))
+    expect([
+      wrapper.get('footer > button').text(),
+      wrapper.get('footer .compose-send').text(),
+    ])
       .toEqual(['Attach', 'Send']);
   });
 
@@ -798,7 +1166,7 @@ describe('ComposeDialog accessibility', () => {
     const dialog = wrapper.get('[role="dialog"]');
     const windowButtons = wrapper.findAll('.compose-dialog__window-actions button');
     const first = windowButtons[0].element as HTMLButtonElement;
-    const send = wrapper.findAll('footer button').at(-1)!.element as HTMLButtonElement;
+    const send = wrapper.get('footer .compose-send').element as HTMLButtonElement;
     send.focus();
 
     send.dispatchEvent(new KeyboardEvent('keydown', {
@@ -1045,8 +1413,10 @@ describe('ComposeManager window presentation', () => {
     const prompt = wrapper.get('[role="alertdialog"]');
     expect(prompt.text()).toContain('Save draft');
     expect(prompt.text()).toContain("Don't Save");
-    expect(wrapper.findAll('footer button')
-      .map((button) => button.attributes('aria-label') || button.text()))
+    expect([
+      wrapper.get('footer > button').attributes('aria-label'),
+      wrapper.get('footer .compose-send').text(),
+    ])
       .toEqual(['Attach files', 'Send']);
 
     await prompt.findAll('button').find((button) => button.text() === "Don't Save")!.trigger('click');

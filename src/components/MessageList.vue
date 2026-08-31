@@ -431,6 +431,11 @@ function toggleSelectAll() {
 // entirely; the list header is the only surface that is always
 // visible, including in single-column layouts.
 const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+// The managed Scheduled mailbox is read-only apart from Cancel Send in
+// the message view, so the bulk archive/junk/delete actions hide there.
+const isInScheduledFolder = computed(
+  () => Number(mailStore.currentFolder?.is_scheduled ?? 0) === 1,
+);
 const canWhitelistInJunk = computed(() => {
   const current = mailStore.currentFolder;
   return current?.role === 'junk'
@@ -499,6 +504,17 @@ function toggleUnreadFilter() {
     // whole folder. This is a local SQLite read, never a JMAP call.
     void mailStore.expandFolderViewIntoMemory();
   }
+}
+
+/**
+ * The timestamp the row shows: the active sort's column, so what the
+ * user sees explains the order they see it in. Received-sorted folders
+ * show received_at; Sent/Drafts/Scheduled (sentAt sorts) show sent_at.
+ */
+function rowTimestamp(row) {
+  return mailStore.currentSort === 'received'
+    ? row.received_at
+    : (row.sent_at ?? row.received_at);
 }
 
 function fmtDate(ms) {
@@ -574,13 +590,13 @@ function normalizeFilterText(value) {
         >
           Not junk
         </button>
-        <button class="msg-list__bulk-action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
+        <button v-if="!isInScheduledFolder" class="msg-list__bulk-action" type="button" @click="bulkArchive" title="Archive" aria-label="Archive">
           <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
         </button>
-        <button v-if="!isInJunkFolder" class="msg-list__bulk-action" type="button" @click="bulkJunk" title="Junk" aria-label="Mark as junk">
+        <button v-if="!isInJunkFolder && !isInScheduledFolder" class="msg-list__bulk-action" type="button" @click="bulkJunk" title="Junk" aria-label="Mark as junk">
           <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="junkIcon" />
         </button>
-        <button class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
+        <button v-if="!isInScheduledFolder" class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="bulkDelete" title="Delete" aria-label="Delete">
           <Trash2 :size="18" :stroke-width="1.65" />
         </button>
         <button class="msg-list__bulk-action" type="button" @click="bulkMarkRead" title="Mark as read" aria-label="Mark as read">
@@ -660,7 +676,7 @@ function normalizeFilterText(value) {
             <div
               class="msg-list__item"
               tabindex="-1"
-              draggable="true"
+              :draggable="visibleMessages[v.index].scheduled_undo_status == null"
               @click="onRowClick(v.index, $event)"
               @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
               @dragend="endMessageDrag"
@@ -704,7 +720,7 @@ function normalizeFilterText(value) {
                     <Star v-if="Number(visibleMessages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
                     <Paperclip v-if="Number(visibleMessages[v.index].has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
                   </span>
-                  <span class="msg-list__date">{{ fmtDate(visibleMessages[v.index].received_at) }}</span>
+                  <span class="msg-list__date">{{ fmtDate(rowTimestamp(visibleMessages[v.index])) }}</span>
                 </div>
                 <p v-if="visibleMessages[v.index].preview" class="msg-list__preview">
                   {{ visibleMessages[v.index].preview }}
