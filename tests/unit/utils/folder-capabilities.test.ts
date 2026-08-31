@@ -107,4 +107,13 @@ describe('folderCapabilities', () => {
       is_subscribed: 0,
     }), 1).mayStar).toBe(false);
   });
+
+  it('prevents the managed Scheduled mailbox from being unsubscribed', () => {
+    const capabilities = folderCapabilities(folder({
+      name: 'Scheduled',
+      is_scheduled: 1,
+    }), 1);
+
+    expect(capabilities.maySubscribe).toBe(false);
+  });
 });

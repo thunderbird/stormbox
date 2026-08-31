@@ -31,6 +31,7 @@ import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import { formatBytes } from '../utils/format-bytes';
 import {
   SCHEDULE_PRESETS,
+  formatScheduleTarget,
   resolveSchedulePreset,
   resolveSchedulePresets,
   type SchedulePresetId,
@@ -96,6 +97,13 @@ const capabilityChecked = ref(false);
 const isScheduling = ref(false);
 const scheduleUiError = ref<string | null>(null);
 const customScheduleError = ref<string | null>(null);
+interface StagedSchedule {
+  targetAt: string;
+  timeZone: string;
+  resolvedLabel: string;
+  optionLabel: string;
+}
+const stagedSchedule = ref<StagedSchedule | null>(null);
 const schedulePresets = ref<SchedulePresetResolution[]>(
   SCHEDULE_PRESETS.map((preset) => ({
     ...preset,
@@ -116,14 +124,32 @@ useModalFocus(closePromptEl, {
 const closeMenuTriggerEl = ref<HTMLElement | null>(null);
 const selectedTimeZone = computed(() => settingsStore.get('timeZone'));
 const scheduleBusy = computed(() => isSending.value || isScheduling.value);
-const scheduleSegmentDisabled = computed(() =>
+const scheduleChoiceDisabled = computed(() =>
   scheduleBusy.value
   || !capabilityChecked.value
   || !composeStore.canScheduleSend);
+const scheduleSegmentDisabled = computed(() =>
+  scheduleBusy.value
+  || (!stagedSchedule.value && scheduleChoiceDisabled.value));
+const sendButtonText = computed(() => {
+  if (isScheduling.value) return 'Scheduling…';
+  if (isSending.value) return 'Sending…';
+  return 'Send';
+});
+const scheduleTriggerLabel = computed(() => stagedSchedule.value
+  ? `Schedule send: ${stagedSchedule.value.optionLabel}`
+  : 'Schedule send');
+const scheduleTriggerTitle = computed(() => stagedSchedule.value
+  ? `${stagedSchedule.value.optionLabel} — ${stagedSchedule.value.resolvedLabel}`
+  : 'Schedule send');
 const scheduleDescriptionId = computed(() =>
   `compose-${session.value?.id ?? 'inactive'}-schedule-description`);
 const scheduleAvailabilityMessage = computed(() => {
   if (isScheduling.value) return 'Scheduling this message.';
+  if (stagedSchedule.value) {
+    return `Selected ${stagedSchedule.value.resolvedLabel}. `
+      + 'Click Send to schedule this message.';
+  }
   if (capabilityRefreshing.value || !capabilityChecked.value) {
     return 'Checking whether scheduled sending is available.';
   }
@@ -243,7 +269,7 @@ async function refreshScheduleCapabilityForSession(
   capabilityRefreshing.value = false;
   capabilityChecked.value = true;
   refreshResolvedPresets();
-  if (!capability.supported) closeScheduleMenu();
+  if (!capability.supported && !stagedSchedule.value) closeScheduleMenu();
 }
 
 function onScheduleMenuToggle(event: Event): void {
@@ -253,44 +279,35 @@ function onScheduleMenuToggle(event: Event): void {
   void refreshScheduleCapabilityForSession();
 }
 
-async function scheduleAbsoluteTarget(
+function stageScheduleTarget(
   targetAt: string,
   timeZone: string,
-): Promise<void> {
+  optionLabel: string,
+): void {
   const current = session.value;
-  if (!current || scheduleBusy.value) return;
-  const actionGeneration = ++scheduleActionGeneration;
-  isScheduling.value = true;
+  if (!current || scheduleChoiceDisabled.value) return;
   scheduleUiError.value = null;
   customScheduleError.value = null;
+  stagedSchedule.value = {
+    targetAt,
+    timeZone,
+    resolvedLabel: formatScheduleTarget(targetAt, timeZone),
+    optionLabel,
+  };
   closeScheduleMenu();
-  try {
-    const scheduled = await composeStore.scheduleSend(current.id, targetAt, timeZone);
-    if (
-      actionGeneration === scheduleActionGeneration
-      && session.value?.id === current.id
-      && scheduled
-    ) {
-      customScheduleOpen.value = false;
-    }
-    if (
-      actionGeneration === scheduleActionGeneration
-      && session.value?.id === current.id
-      && !scheduled
-      && customScheduleOpen.value
-    ) {
-      customScheduleError.value = sessionError.value
-        ?? 'Could not schedule this message. Try another time.';
-    }
-  } finally {
-    if (actionGeneration === scheduleActionGeneration) {
-      isScheduling.value = false;
-    }
-  }
+  customScheduleOpen.value = false;
+  void nextTick(() =>
+    dialogEl.value?.querySelector<HTMLButtonElement>('.compose-send')?.focus());
 }
 
-async function pickSchedulePreset(id: SchedulePresetId): Promise<void> {
-  if (scheduleSegmentDisabled.value) return;
+function clearStagedSchedule(event: Event): void {
+  closeDropdown(event);
+  stagedSchedule.value = null;
+  scheduleUiError.value = null;
+}
+
+function pickSchedulePreset(id: SchedulePresetId): void {
+  if (scheduleChoiceDisabled.value) return;
   const current = resolveSchedulePreset(id, {
     now: Date.now(),
     timeZone: selectedTimeZone.value,
@@ -302,11 +319,15 @@ async function pickSchedulePreset(id: SchedulePresetId): Promise<void> {
     refreshResolvedPresets();
     return;
   }
-  await scheduleAbsoluteTarget(current.targetAt, selectedTimeZone.value);
+  stageScheduleTarget(current.targetAt, selectedTimeZone.value, current.label);
+}
+
+function stageCustomScheduleTarget(targetAt: string, timeZone: string): void {
+  stageScheduleTarget(targetAt, timeZone, 'Custom');
 }
 
 function openCustomSchedule(event: Event): void {
-  if (scheduleSegmentDisabled.value) return;
+  if (scheduleChoiceDisabled.value) return;
   closeDropdown(event);
   scheduleUiError.value = null;
   customScheduleError.value = null;
@@ -417,6 +438,7 @@ watch(() => session.value?.id, (nextId, previousId) => {
     isScheduling.value = false;
     scheduleUiError.value = null;
     customScheduleError.value = null;
+    stagedSchedule.value = null;
     void refreshScheduleCapabilityForSession(nextId);
     void nextTick().then(() => {
       if (isExpanded.value) focusFreshDraft();
@@ -571,7 +593,34 @@ async function browseAllContacts() {
 
 async function send() {
   if (isScheduling.value) return;
-  await composeStore.send(session.value?.id ?? null);
+  const current = session.value;
+  const schedule = stagedSchedule.value;
+  if (!current || !schedule) {
+    await composeStore.send(current?.id ?? null);
+    return;
+  }
+  const actionGeneration = ++scheduleActionGeneration;
+  isScheduling.value = true;
+  scheduleUiError.value = null;
+  try {
+    const scheduled = await composeStore.scheduleSend(
+      current.id,
+      schedule.targetAt,
+      schedule.timeZone,
+    );
+    if (
+      actionGeneration === scheduleActionGeneration
+      && session.value?.id === current.id
+      && !scheduled
+    ) {
+      scheduleUiError.value = sessionError.value
+        ?? 'Could not schedule this message. Try another time.';
+    }
+  } finally {
+    if (actionGeneration === scheduleActionGeneration) {
+      isScheduling.value = false;
+    }
+  }
 }
 
 function pickFromIdentity(idx: number, event: Event) {
@@ -884,7 +933,10 @@ function identityInitials(id: IdentityRow): string {
         <div class="compose-send-split">
           <AppButton
             class="compose-send"
-            :disabled="scheduleBusy || session.isDiscarding || attachmentBusy"
+            :disabled="scheduleBusy
+              || session.isDiscarding
+              || attachmentBusy
+              || Boolean(stagedSchedule && scheduleChoiceDisabled)"
             @click="send"
           >
             <template #iconLeft>
@@ -894,7 +946,7 @@ function identityInitials(id: IdentityRow): string {
                 aria-hidden="true"
               />
             </template>
-            {{ isScheduling ? 'Scheduling…' : (isSending ? 'Sending…' : 'Send') }}
+            {{ sendButtonText }}
           </AppButton>
           <AppDropdown
             class="compose-schedule-menu"
@@ -904,15 +956,20 @@ function identityInitials(id: IdentityRow): string {
             <summary
               ref="scheduleMenuTriggerEl"
               class="compose-schedule-menu__trigger"
+              :class="{ 'compose-schedule-menu__trigger--selected': stagedSchedule }"
               role="button"
               aria-haspopup="menu"
-              aria-label="Schedule send"
-              title="Schedule send"
+              :aria-label="scheduleTriggerLabel"
+              :title="scheduleTriggerTitle"
               :aria-describedby="scheduleDescriptionId"
               :aria-busy="isScheduling ? 'true' : undefined"
               :aria-disabled="scheduleSegmentDisabled ? 'true' : undefined"
               :tabindex="scheduleSegmentDisabled ? -1 : undefined"
             >
+              <span
+                v-if="stagedSchedule"
+                class="compose-schedule-menu__selection"
+              >{{ stagedSchedule.optionLabel }}</span>
               <ChevronDown :size="16" :stroke-width="2" aria-hidden="true" />
             </summary>
             <div
@@ -921,12 +978,28 @@ function identityInitials(id: IdentityRow): string {
               aria-label="Schedule send"
             >
               <button
+                v-if="stagedSchedule"
+                type="button"
+                class="app-dropdown__item compose-schedule-menu__item"
+                role="menuitem"
+                :disabled="scheduleBusy"
+                @click="clearStagedSchedule"
+              >
+                <span class="compose-schedule-menu__label">Send now</span>
+                <span class="compose-schedule-menu__secondary">Immediately</span>
+              </button>
+              <div
+                v-if="stagedSchedule"
+                class="compose-schedule-menu__separator"
+                role="separator"
+              />
+              <button
                 v-for="preset in schedulePresets"
                 :key="preset.id"
                 type="button"
                 class="app-dropdown__item compose-schedule-menu__item"
                 role="menuitem"
-                :disabled="scheduleSegmentDisabled || !preset.available"
+                :disabled="scheduleChoiceDisabled || !preset.available"
                 :title="preset.available
                   ? (preset.resolvedLabel ?? undefined)
                   : (preset.message ?? undefined)"
@@ -942,7 +1015,7 @@ function identityInitials(id: IdentityRow): string {
                 type="button"
                 class="app-dropdown__item compose-schedule-menu__item"
                 role="menuitem"
-                :disabled="scheduleSegmentDisabled"
+                :disabled="scheduleChoiceDisabled"
                 @click="openCustomSchedule"
               >
                 <span class="compose-schedule-menu__label">Choose a date and time</span>
@@ -965,7 +1038,7 @@ function identityInitials(id: IdentityRow): string {
         :time-zone="selectedTimeZone"
         @clear-error="customScheduleError = null"
         @close="closeCustomSchedule"
-        @schedule="scheduleAbsoluteTarget"
+        @select="stageCustomScheduleTarget"
       />
 
       <p
@@ -1324,6 +1397,20 @@ footer {
   color: var(--colour-ti-on-primary, #fff);
   cursor: pointer;
   list-style: none;
+}
+.compose-schedule-menu__trigger--selected {
+  width: auto;
+  min-width: 34px;
+  gap: 4px;
+  padding: 0 8px 0 10px;
+}
+.compose-schedule-menu__selection {
+  max-width: 112px;
+  overflow: hidden;
+  font-size: var(--txt-small, 0.75rem);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .compose-schedule-menu__trigger::-webkit-details-marker {
   display: none;

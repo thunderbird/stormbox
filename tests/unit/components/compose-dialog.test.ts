@@ -874,7 +874,7 @@ describe('ComposeDialog scheduled send control', () => {
     await flushPromises();
   });
 
-  it('offers the exact Fastmail schedule labels in order with resolved times', async () => {
+  it('offers scheduled send choices in order with resolved times', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
     const { wrapper } = await mountSchedulableCompose();
     const dropdown = await openScheduleMenu(wrapper);
@@ -891,7 +891,7 @@ describe('ComposeDialog scheduled send control', () => {
     ]);
     expect(dropdown.findAll('.compose-schedule-menu__secondary')
       .every((secondary: any) => secondary.text().length > 0)).toBe(true);
-    expect(dropdown.find('[role="separator"]').exists()).toBe(true);
+    expect(dropdown.findAll('[role="separator"]')).toHaveLength(1);
   });
 
   it('disables expired and out-of-cap presets with an actionable reason', async () => {
@@ -910,13 +910,28 @@ describe('ComposeDialog scheduled send control', () => {
       .toBe('Choose a time within 3600 seconds.');
   });
 
-  it('schedules a preset as an absolute target in the synced time zone', async () => {
+  it('shows the selected preset in the dropdown until Send is clicked', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
     const { composeStore, wrapper } = await mountSchedulableCompose();
     const schedule = vi.spyOn(composeStore, 'scheduleSend').mockResolvedValue(false);
     const dropdown = await openScheduleMenu(wrapper);
+    const laterToday = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) =>
+        item.find('.compose-schedule-menu__label').text() === 'Later today')!;
 
-    await dropdown.findAll('[role="menuitem"]')[0].trigger('click');
+    await laterToday.trigger('click');
+    await flushPromises();
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(wrapper.get('.compose-send').text()).toBe('Send');
+    expect(wrapper.get('.compose-schedule-menu__selection').text()).toBe('Later today');
+    expect(wrapper.get('.compose-schedule-menu__trigger').attributes('aria-label'))
+      .toBe('Schedule send: Later today');
+    expect(wrapper.get('.compose-schedule-menu__trigger').attributes('title'))
+      .toContain('Later today —');
+    expect(dropdown.attributes('open')).toBeUndefined();
+
+    await wrapper.get('.compose-send').trigger('click');
     await flushPromises();
 
     expect(schedule).toHaveBeenCalledWith(
@@ -924,10 +939,31 @@ describe('ComposeDialog scheduled send control', () => {
       '2026-08-31T15:00:00.000Z',
       'America/New_York',
     );
-    expect(dropdown.attributes('open')).toBeUndefined();
   });
 
-  it('guards double scheduling and disables compose exit actions while busy', async () => {
+  it('clears a staged schedule without sending', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
+    const { composeStore, wrapper } = await mountSchedulableCompose();
+    const schedule = vi.spyOn(composeStore, 'scheduleSend').mockResolvedValue(false);
+    let dropdown = await openScheduleMenu(wrapper);
+    const laterToday = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) =>
+        item.find('.compose-schedule-menu__label').text() === 'Later today')!;
+    await laterToday.trigger('click');
+
+    dropdown = await openScheduleMenu(wrapper);
+    expect(dropdown.findAll('[role="menuitem"]')).toHaveLength(7);
+    const sendNow = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) =>
+        item.find('.compose-schedule-menu__label').text() === 'Send now')!;
+    await sendNow.trigger('click');
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(wrapper.get('.compose-send').text()).toBe('Send');
+    expect(wrapper.find('.compose-schedule-menu__selection').exists()).toBe(false);
+  });
+
+  it('guards double scheduling after the staged choice is confirmed', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
     const { composeStore, wrapper } = await mountSchedulableCompose();
     let finish!: (value: boolean) => void;
@@ -936,10 +972,16 @@ describe('ComposeDialog scheduled send control', () => {
     });
     const schedule = vi.spyOn(composeStore, 'scheduleSend').mockReturnValue(pending);
     const dropdown = await openScheduleMenu(wrapper);
-    const preset = dropdown.findAll('[role="menuitem"]')[0];
+    const preset = dropdown.findAll('[role="menuitem"]')
+      .find((item: any) =>
+        item.find('.compose-schedule-menu__label').text() === 'Later today')!;
 
-    void preset.trigger('click');
-    void preset.trigger('click');
+    await preset.trigger('click');
+    expect(schedule).not.toHaveBeenCalled();
+
+    const sendLater = wrapper.get('.compose-send');
+    void sendLater.trigger('click');
+    void sendLater.trigger('click');
     await nextTick();
 
     expect(schedule).toHaveBeenCalledTimes(1);
@@ -988,7 +1030,7 @@ describe('ComposeDialog scheduled send control', () => {
     expect(picker.props('modelValue')).toBe('2026-08-31T08:15:00.000Z');
   });
 
-  it('submits a valid custom wall time once as an absolute target', async () => {
+  it('shows Custom in the dropdown and submits the target only from Send', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-08-31T12:00:00Z'));
     const { composeStore, wrapper } = await mountSchedulableCompose();
     let finish!: (value: boolean) => void;
@@ -1001,8 +1043,17 @@ describe('ComposeDialog scheduled send control', () => {
     picker.vm.$emit('update:model-value', '2026-09-01T09:30:00.000Z');
     await nextTick();
 
-    void dialog.get('.schedule-dialog__submit').trigger('click');
-    void dialog.get('.schedule-dialog__submit').trigger('click');
+    await dialog.get('.schedule-dialog__submit').trigger('click');
+    await flushPromises();
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(wrapper.find('.schedule-dialog').exists()).toBe(false);
+    expect(wrapper.get('.compose-send').text()).toBe('Send');
+    expect(wrapper.get('.compose-schedule-menu__selection').text()).toBe('Custom');
+
+    const sendLater = wrapper.get('.compose-send');
+    void sendLater.trigger('click');
+    void sendLater.trigger('click');
     await nextTick();
 
     expect(schedule).toHaveBeenCalledTimes(1);

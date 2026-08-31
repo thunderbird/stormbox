@@ -87,23 +87,6 @@ async function scheduledMailboxOf(jmap) {
   ) ?? null;
 }
 
-async function scheduledEmailCount(jmap) {
-  const scheduled = await scheduledMailboxOf(jmap);
-  if (!scheduled) return 0;
-  const response = await jmapRequest(jmap, [[
-    'Email/query',
-    {
-      accountId: jmap.accountId,
-      filter: { inMailbox: scheduled.id },
-      position: 0,
-      limit: 1,
-      calculateTotal: true,
-    },
-    'scheduled-count',
-  ]]);
-  return Number(pickResponse(response, 'Email/query')?.total ?? 0);
-}
-
 async function cleanupSendLaterArtifacts(jmap) {
   const emails = await matchingEmails(jmap, SUBJECT_PREFIX);
   const emailIds = emails.map((email) => email.id);
@@ -149,18 +132,16 @@ async function cleanupSendLaterArtifacts(jmap) {
       'legacy-scheduled-destroy',
     ]]);
   }
-  // The subscription level drives folder-pane visibility; reset it so a
-  // crashed earlier run cannot leave the mailbox visible with nothing
-  // scheduled.
+  // The managed mailbox remains visible even when cleanup leaves it empty.
   const scheduled = await scheduledMailboxOf(jmap);
-  if (scheduled && scheduled.isSubscribed !== false) {
+  if (scheduled && scheduled.isSubscribed !== true) {
     await jmapRequest(jmap, [[
       'Mailbox/set',
       {
         accountId: jmap.accountId,
-        update: { [scheduled.id]: { isSubscribed: false } },
+        update: { [scheduled.id]: { isSubscribed: true } },
       },
-      'scheduled-unsubscribe',
+      'scheduled-subscribe',
     ]]);
   }
 }
@@ -233,7 +214,6 @@ test.describe('Send Later', () => {
   test('schedules, lists soonest-first, reads, and cancels through the real folder', async ({ sharedPage: page }) => {
     test.setTimeout(120_000);
     const jmap = await connectJmap();
-    const initialScheduledCount = await scheduledEmailCount(jmap);
     const stamp = Date.now();
     const subjectLater = `${SUBJECT_PREFIX} later ${stamp}`;
     const subjectSoon = `${SUBJECT_PREFIX} soon ${stamp}`;
@@ -267,6 +247,10 @@ test.describe('Send Later', () => {
       }
 
       await menuItems.filter({ hasText: 'Tomorrow' }).click();
+      await expect(composer).toBeVisible();
+      await expect(composer.locator('.compose-send')).toHaveText(/Send/);
+      await expect(composer.locator('.compose-schedule-menu__selection')).toHaveText('Tomorrow');
+      await composer.locator('.compose-send').click();
       await expect(composer).toBeHidden({ timeout: 30_000 });
 
       // The real folder appears in the tree once a schedule is active.
@@ -296,7 +280,12 @@ test.describe('Send Later', () => {
       menu = await openScheduleMenu(page, composer);
       await menu.getByRole('menuitem').filter({ hasText: 'Choose a date and time' }).click();
       await expect(scheduleDialog).toBeVisible();
-      await scheduleDialog.getByRole('button', { name: 'Schedule send' }).click();
+      await scheduleDialog.getByRole('button', { name: 'Set send time' }).click();
+      await expect(scheduleDialog).toBeHidden();
+      await expect(composer).toBeVisible();
+      await expect(composer.locator('.compose-send')).toHaveText(/Send/);
+      await expect(composer.locator('.compose-schedule-menu__selection')).toHaveText('Custom');
+      await composer.locator('.compose-send').click();
       await expect(composer).toBeHidden({ timeout: 30_000 });
 
       await waitForPendingMutations(page);
@@ -309,8 +298,8 @@ test.describe('Send Later', () => {
         { timeout: 30_000, message: 'both schedules should be tracked locally' },
       ).toBe(2);
 
-      // Conditional placement: the managed folder renders directly
-      // below Drafts, like the other special folders.
+      // Permanent placement: the managed folder renders directly below
+      // Drafts, like the other special folders.
       const folderNames = await page.locator('.folder-node__name').allTextContents();
       const draftsIndex = folderNames.findIndex((name) => name.trim() === 'Drafts');
       const scheduledIndex = folderNames.findIndex((name) => name.trim() === 'Scheduled');
@@ -353,7 +342,7 @@ test.describe('Send Later', () => {
       await expect(soonRow).toHaveCount(1);
       await expect(laterRow).toHaveCount(1);
 
-      // ---- cancel the soonest; the other keeps the folder alive -------
+      // ---- cancel the soonest; the folder remains visible --------------
       await banner.getByRole('button', { name: 'Cancel send' }).click();
       await waitForPendingMutations(page);
       await expect(soonRow).toHaveCount(0, { timeout: 30_000 });
@@ -372,9 +361,7 @@ test.describe('Send Later', () => {
       await page.locator('.message-view__scheduled')
         .getByRole('button', { name: 'Cancel send' }).click();
       await waitForPendingMutations(page);
-      if (initialScheduledCount === 0) {
-        await expect(scheduledFolderName).toHaveCount(0, { timeout: 30_000 });
-      }
+      await expect(scheduledFolderName).toBeVisible();
       await expect.poll(
         async () => ((await localScheduledRows(page)) ?? []).filter(
           (row) => row.subject === subjectSoon || row.subject === subjectLater,

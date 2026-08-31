@@ -40,7 +40,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'clear-error': [];
   close: [];
-  schedule: [targetAt: string, timeZone: string];
+  select: [targetAt: string, timeZone: string];
 }>();
 
 const settingsStore = useSettingsStore();
@@ -207,7 +207,7 @@ function submit(): void {
     localError.value = resolution.message;
     return;
   }
-  emit('schedule', resolution.targetAt, selectedTimeZone.value);
+  emit('select', resolution.targetAt, selectedTimeZone.value);
 }
 
 function focusableElements(): HTMLElement[] {
@@ -429,7 +429,7 @@ onBeforeUnmount(() => {
             :disabled="busy || !activeResolution.ok"
             @click="submit"
           >
-            {{ busy ? 'Scheduling…' : 'Schedule send' }}
+            {{ busy ? 'Setting…' : 'Set send time' }}
           </AppButton>
         </div>
       </section>

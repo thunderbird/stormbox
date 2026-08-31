@@ -373,9 +373,9 @@ describe.sequential('live Stalwart Send Later', () => {
         'Mailbox/set',
         {
           accountId: context.account.remote_account_id,
-          update: { [scheduled.id]: { isSubscribed: false } },
+          update: { [scheduled.id]: { isSubscribed: true } },
         },
-        'purge-unsubscribe',
+        'purge-subscribe',
       ]]);
     }
     if (owner) {
@@ -515,8 +515,7 @@ describe.sequential('live Stalwart Send Later', () => {
     const sendAtMs = Date.parse(String(submissions[0].sendAt));
     expect(Math.abs(sendAtMs - Date.parse(holdTargetAt))).toBeLessThanOrEqual(120_000);
 
-    // One active schedule: the reconciler queues the subscribe and the
-    // drained mutation makes the mailbox visible to every client.
+    // The managed mailbox remains subscribed and visible to every client.
     await drainScheduleMutations();
     expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
 
@@ -532,7 +531,7 @@ describe.sequential('live Stalwart Send Later', () => {
     expect((await trackedRowBySubject(holdSubject)).scheduled_undo_status).toBe('pending');
   });
 
-  it('cancels the held schedule back to an editable draft and re-hides the mailbox', async () => {
+  it('cancels the held schedule back to an editable draft and keeps the mailbox visible', async () => {
     const row = await trackedRowBySubject(holdSubject);
     expect(row?.scheduled_undo_status).toBe('pending');
     const scheduledRemoteId = await scheduledMailboxRemoteId();
@@ -558,9 +557,9 @@ describe.sequential('live Stalwart Send Later', () => {
     const placements = await placementsOf(after.id);
     expect(placements.map((p: any) => p.role)).toEqual(['drafts']);
 
-    // No schedules remain, so the level reconciler hides the mailbox.
+    // No schedules remain, but the managed mailbox stays subscribed.
     await drainScheduleMutations();
-    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(false);
+    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
 
     // The canceled copy never leaves: nothing with this subject reaches
     // the recipient (target was hours away; delivery would be immediate
@@ -638,10 +637,10 @@ describe.sequential('live Stalwart Send Later', () => {
     expect(sentCopy.mailboxIds).toEqual({ [sentFolder.remote_id]: true });
     expect(sentCopy.hasAttachment).toBe(true);
 
-    // With the last schedule resolved the mailbox hides again.
+    // With the last schedule resolved the mailbox remains visible.
     await drainScheduleMutations();
     const scheduledRemoteId = await scheduledMailboxRemoteId();
-    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(false);
+    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
   }, 180_000);
 
   it('a fresh client adopts a schedule created by another client', async () => {
@@ -729,7 +728,7 @@ describe.sequential('live Stalwart Send Later', () => {
       expect(Number(adopted[0].sent_at)).toBe(Date.parse(targetAt));
 
       // The fresh client also adopted the mailbox id into its settings
-      // and reconciles the subscription on (one active schedule).
+      // and kept the managed mailbox subscribed.
       const cached = await fresh.handlers[DB_RPC.SETTINGS_GET]({
         accountId: fresh.account.id,
       });
