@@ -54,7 +54,9 @@ export async function fetchEmailBodies({
         bodyProperties: BODY_PART_PROPERTIES,
         fetchTextBodyValues: true,
         fetchHTMLBodyValues: true,
-        maxBodyValueBytes,
+        ...(Number.isSafeInteger(maxBodyValueBytes) && maxBodyValueBytes >= 0
+          ? { maxBodyValueBytes }
+          : {}),
       },
       'gb1',
     ]],
@@ -62,7 +64,7 @@ export async function fetchEmailBodies({
   });
   const list = pickResponse(result, 'Email/get')?.list ?? [];
   if (list.length === 0) {
-    return { fetched: 0 };
+    return { fetched: 0, emails: [] };
   }
   for (const email of list) {
     const bvKeys = Object.keys(email.bodyValues ?? {});
@@ -72,7 +74,7 @@ export async function fetchEmailBodies({
     );
   }
   await persistBodies({ account, emails: list, handlers });
-  return { fetched: list.length };
+  return { fetched: list.length, emails: list };
 }
 
 async function persistBodies({ account, emails, handlers }) {

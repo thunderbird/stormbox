@@ -14,6 +14,7 @@ vi.mock('../../../src/services/auth', () => ({
 
 import ComposeDialog from '../../../src/components/ComposeDialog.vue';
 import ComposeManager from '../../../src/components/ComposeManager.vue';
+import RichTextEditor from '../../../src/components/RichTextEditor.vue';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -480,12 +481,185 @@ describe('ComposeDialog recipient fields', () => {
   });
 });
 
+describe('ComposeDialog attachment controls', () => {
+  it('places an accessible multiple picker immediately beside Send', async () => {
+    const { wrapper } = await mountOpenCompose();
+    const input = wrapper.get('footer input[type="file"]');
+    const click = vi.spyOn(input.element as HTMLInputElement, 'click');
+    const buttons = wrapper.findAll('footer button');
+
+    expect(input.attributes('multiple')).toBeDefined();
+    expect(input.attributes('hidden')).toBeDefined();
+    expect(buttons.map((button) => button.attributes('aria-label') || button.text()))
+      .toEqual(['Attach files', 'Send']);
+    expect(buttons[0].text()).toBe('Attach');
+    await buttons[0].trigger('click');
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows progress and status-specific Retry, Cancel, and Remove actions', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const session = composeStore.activeSession!;
+    session.attachments.push(
+      {
+        clientId: 'uploading',
+        name: 'uploading.txt',
+        type: 'text/plain',
+        size: 3,
+        source: 'picker',
+        status: 'uploading',
+        uploadBlobId: null,
+        canonicalBlobId: null,
+        partId: null,
+        error: null,
+        progress: 40,
+      },
+      {
+        clientId: 'failed',
+        name: 'failed.txt',
+        type: 'text/plain',
+        size: 4,
+        source: 'paste',
+        status: 'failed',
+        uploadBlobId: null,
+        canonicalBlobId: null,
+        partId: null,
+        error: 'Upload failed: offline',
+        progress: 0,
+      },
+    );
+    const retry = vi.spyOn(composeStore, 'retryAttachment').mockResolvedValue(true);
+    const cancel = vi.spyOn(composeStore, 'cancelAttachment').mockReturnValue(true);
+    const remove = vi.spyOn(composeStore, 'removeAttachment').mockReturnValue(true);
+    await nextTick();
+
+    expect(wrapper.get('progress').attributes('aria-label'))
+      .toBe('Uploading uploading.txt: 40%');
+    expect(wrapper.text()).toContain('uploading.txt');
+    expect(wrapper.text()).toContain('3 B');
+    expect(wrapper.text()).toContain('Upload failed: offline');
+
+    await wrapper.get('[aria-label="Cancel upload of uploading.txt"]').trigger('click');
+    await wrapper.get('[aria-label="Retry failed.txt"]').trigger('click');
+    await wrapper.get('[aria-label="Remove failed.txt"]').trigger('click');
+    expect(cancel).toHaveBeenCalledWith('uploading', session.id);
+    expect(retry).toHaveBeenCalledWith('failed', session.id);
+    expect(remove).toHaveBeenCalledWith('failed', session.id);
+  });
+
+  it('sanitizes attachment names in visible and accessible labels', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    composeStore.activeSession!.attachments.push({
+      clientId: 'hostile-name',
+      name: '../../CON\u202e.zip',
+      type: 'application/zip',
+      size: 22,
+      source: 'picker',
+      status: 'ready',
+      uploadBlobId: 'uploaded',
+      canonicalBlobId: null,
+      partId: null,
+      error: null,
+      progress: 100,
+    });
+    await nextTick();
+
+    expect(wrapper.get('.compose-attachment__name').text()).toBe('_CON.zip');
+    expect(wrapper.get('[aria-label="Remove _CON.zip"]').attributes('aria-label'))
+      .toBe('Remove _CON.zip');
+    expect(wrapper.text()).not.toContain('\u202e');
+  });
+
+  it('uploads only regular classifications emitted by the editor', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const addAttachments = vi.spyOn(composeStore, 'addAttachments').mockResolvedValue(true);
+    const inline = new File(['image'], 'inline.png', { type: 'image/png' });
+    const regular = new File(['document'], 'document.pdf', { type: 'application/pdf' });
+
+    wrapper.findComponent(RichTextEditor).vm.$emit('paste-files', [
+      { file: inline, kind: 'inline' },
+      { file: regular, kind: 'attachment' },
+    ]);
+    await flushPromises();
+
+    expect(addAttachments).toHaveBeenCalledWith(
+      [regular],
+      'paste',
+      composeStore.activeSessionId,
+    );
+  });
+
+  it('explains uncheckpointed attachments in the close prompt', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose('');
+    const session = composeStore.activeSession!;
+    session.attachments.push({
+      clientId: 'pending',
+      name: 'pending.txt',
+      type: 'text/plain',
+      size: 1,
+      source: 'picker',
+      status: 'failed',
+      uploadBlobId: null,
+      canonicalBlobId: null,
+      partId: null,
+      error: 'Upload failed',
+      progress: 0,
+    });
+    composeStore.requestClose(session.id);
+    await nextTick();
+
+    expect(wrapper.get('#compose-close-description').text())
+      .toContain('attachments have not reached the draft');
+  });
+});
+
 describe('ComposeDialog send control', () => {
-  const footerButtons = (wrapper: any) => wrapper.findAll('footer button').map((b: any) => b.text());
+  const footerButtons = (wrapper: any) => wrapper.findAll('footer button')
+    .map((button: any) => button.attributes('aria-label') || button.text());
 
   it('offers Send while the outcome of the draft is still open', async () => {
     const { wrapper } = await mountOpenCompose();
-    expect(footerButtons(wrapper)).toEqual(['Send']);
+    expect(footerButtons(wrapper)).toEqual(['Attach files', 'Send']);
+  });
+
+  it('greys Send through attachment preflight and upload, then re-enables it', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const session = composeStore.activeSession!;
+    const send = wrapper.get('footer .compose-send');
+
+    expect(send.attributes('disabled')).toBeUndefined();
+    session.attachmentPreflights.push({ id: 'rejected-preflight', accountId: 1 });
+    await nextTick();
+    expect(send.attributes('disabled')).toBeDefined();
+
+    session.attachmentPreflights.splice(0);
+    await nextTick();
+    expect(send.attributes('disabled')).toBeUndefined();
+
+    session.attachmentPreflights.push({ id: 'accepted-preflight', accountId: 1 });
+    await nextTick();
+    expect(send.attributes('disabled')).toBeDefined();
+    session.attachments.push({
+      clientId: 'uploading',
+      name: 'uploading.txt',
+      type: 'text/plain',
+      size: 1,
+      source: 'picker',
+      status: 'uploading',
+      uploadBlobId: null,
+      canonicalBlobId: null,
+      partId: null,
+      error: null,
+      progress: 0,
+    });
+    session.attachmentPreflights.splice(0);
+    await nextTick();
+    expect(send.attributes('disabled')).toBeDefined();
+
+    session.attachments[0].status = 'ready';
+    session.attachments[0].uploadBlobId = 'uploaded';
+    await nextTick();
+    expect(send.attributes('disabled')).toBeUndefined();
   });
 
   it('keeps Send offered while an unconfirmed send holds the draft open', async () => {
@@ -499,7 +673,7 @@ describe('ComposeDialog send control', () => {
       + 'Check your Sent folder before sending it again.';
     await nextTick();
 
-    expect(footerButtons(wrapper)).toEqual(['Send']);
+    expect(footerButtons(wrapper)).toEqual(['Attach files', 'Send']);
     expect(wrapper.get('.compose-error').text()).toMatch(/check your sent folder/i);
   });
 
@@ -615,7 +789,8 @@ describe('ComposeDialog accessibility', () => {
       .find((item) => item.text() === 'Save Draft')!;
     expect(saveDraft.text()).toBe('Save Draft');
     expect(saveDraft.attributes('disabled')).toBeDefined();
-    expect(wrapper.get('footer').text()).toBe('Send');
+    expect(wrapper.findAll('footer button').map((button) => button.text()))
+      .toEqual(['Attach', 'Send']);
   });
 
   it('keeps Tab focus inside the composer and its close prompt', async () => {
@@ -870,8 +1045,9 @@ describe('ComposeManager window presentation', () => {
     const prompt = wrapper.get('[role="alertdialog"]');
     expect(prompt.text()).toContain('Save draft');
     expect(prompt.text()).toContain("Don't Save");
-    expect(wrapper.findAll('footer button').map((button) => button.text()))
-      .toEqual(['Send']);
+    expect(wrapper.findAll('footer button')
+      .map((button) => button.attributes('aria-label') || button.text()))
+      .toEqual(['Attach files', 'Send']);
 
     await prompt.findAll('button').find((button) => button.text() === "Don't Save")!.trigger('click');
     expect(composeStore.sessionById(sessionId)).toBeNull();

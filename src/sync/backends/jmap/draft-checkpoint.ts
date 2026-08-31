@@ -15,12 +15,63 @@ export interface DraftCheckpoint {
   pendingDestroyIds: string[];
 }
 
+function sameStrings(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(right);
+  return left.every((value) => expected.has(value));
+}
+
+export function isDraftEmailId(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function exactDraftEmailIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every(isDraftEmailId)) return null;
+  const ids = value as string[];
+  return new Set(ids).size === ids.length ? [...ids] : null;
+}
+
+export function draftCheckpointConflictReason(
+  checkpoint: DraftCheckpoint,
+  phase: DraftPhase,
+): string | null {
+  if (phase === DRAFT_PHASE.CONFLICT) return null;
+  const hasPreparedEmail = checkpoint.preparedEmail != null;
+  const hasSuccessor = isDraftEmailId(checkpoint.newEmailId);
+  const hasLocalSuccessor = Number.isSafeInteger(checkpoint.localMessageId)
+    && Number(checkpoint.localMessageId) > 0;
+  const destroysSuccessor = hasSuccessor
+    && checkpoint.pendingDestroyIds.includes(checkpoint.newEmailId!);
+
+  if (!hasPreparedEmail) return 'missingPreparedEmail';
+  if (destroysSuccessor) return 'successorPendingDestroy';
+
+  switch (phase) {
+    case DRAFT_PHASE.QUEUED:
+      if (hasSuccessor || hasLocalSuccessor) return 'queuedHasSuccessor';
+      return sameStrings(checkpoint.pendingDestroyIds, checkpoint.baseEmailIds)
+        ? null
+        : 'queuedDestroySetChanged';
+    case DRAFT_PHASE.CREATED:
+      if (!hasSuccessor) return 'createdMissingSuccessor';
+      return hasLocalSuccessor ? 'createdHasLocalSuccessor' : null;
+    case DRAFT_PHASE.CACHE_PENDING:
+    case DRAFT_PHASE.CLEANUP_PENDING:
+      if (!hasSuccessor) return 'pendingMissingSuccessor';
+      return hasLocalSuccessor ? null : 'pendingMissingLocalSuccessor';
+    default: {
+      const unhandled: never = phase;
+      return unhandled;
+    }
+  }
+}
+
 export function newDraftCheckpoint(request: any, identityEmail: string): DraftCheckpoint {
   const inputIds: unknown[] = Array.isArray(request?.draftEmailIds)
     ? request.draftEmailIds
     : [];
   const baseEmailIds = [...new Set<string>(
-    inputIds.filter((id): id is string => typeof id === 'string' && !!id),
+    inputIds.filter(isDraftEmailId),
   )];
   return {
     operationId: typeof request?.operationId === 'string'
@@ -49,30 +100,44 @@ export function readDraftCheckpoint(row: any): DraftCheckpoint | null {
     return null;
   }
   if (!parsed
-      || typeof parsed.operationId !== 'string'
-      || typeof parsed.draftSessionId !== 'string'
-      || !Number.isInteger(parsed.revision)
-      || typeof parsed.revisionMessageId !== 'string'
-      || typeof parsed.payloadHash !== 'string') {
+      || typeof parsed !== 'object'
+      || Array.isArray(parsed)
+      || !isDraftEmailId(parsed.operationId)
+      || !isDraftEmailId(parsed.draftSessionId)
+      || !Number.isSafeInteger(parsed.revision)
+      || parsed.revision < 1
+      || !isDraftEmailId(parsed.revisionMessageId)
+      || typeof parsed.payloadHash !== 'string'
+      || !parsed.preparedEmail
+      || typeof parsed.preparedEmail !== 'object'
+      || Array.isArray(parsed.preparedEmail)) {
     return null;
   }
-  const strings = (value: unknown): string[] =>
-    Array.isArray(value)
-      ? [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && !!entry))]
-      : [];
+  const baseEmailIds = exactDraftEmailIds(parsed.baseEmailIds);
+  const pendingDestroyIds = exactDraftEmailIds(parsed.pendingDestroyIds);
+  if (!baseEmailIds || !pendingDestroyIds) return null;
+  const newEmailId = parsed.newEmailId == null
+    ? null
+    : (isDraftEmailId(parsed.newEmailId) ? parsed.newEmailId : undefined);
+  const localMessageId = parsed.localMessageId == null
+    ? null
+    : (
+      Number.isSafeInteger(parsed.localMessageId) && parsed.localMessageId > 0
+        ? parsed.localMessageId
+        : undefined
+    );
+  if (newEmailId === undefined || localMessageId === undefined) return null;
   return {
     operationId: parsed.operationId,
     draftSessionId: parsed.draftSessionId,
     revision: parsed.revision,
     revisionMessageId: parsed.revisionMessageId,
     payloadHash: parsed.payloadHash,
-    baseEmailIds: strings(parsed.baseEmailIds),
-    preparedEmail: parsed.preparedEmail && typeof parsed.preparedEmail === 'object'
-      ? parsed.preparedEmail
-      : null,
-    newEmailId: typeof parsed.newEmailId === 'string' ? parsed.newEmailId : null,
-    localMessageId: Number.isInteger(parsed.localMessageId) ? parsed.localMessageId : null,
-    pendingDestroyIds: strings(parsed.pendingDestroyIds),
+    baseEmailIds,
+    preparedEmail: parsed.preparedEmail,
+    newEmailId,
+    localMessageId,
+    pendingDestroyIds,
   };
 }
 
@@ -87,6 +152,10 @@ export async function saveDraftCheckpoint(
   phase: DraftPhase,
 ): Promise<DraftCheckpoint> {
   if (rowId == null) throw new Error('saveDraftCheckpoint requires a mutation row id');
+  const reason = draftCheckpointConflictReason(checkpoint, phase);
+  if (reason) {
+    throw new Error(`Invalid draft checkpoint for ${phase}: ${reason}`);
+  }
   await handlers[DB_RPC.QUERY]({
     sql: `UPDATE pending_mutations
              SET phase = ?, server_response_json = ?, updated_at = ?

@@ -63,6 +63,17 @@ describe('extractDataUriImages', () => {
     expect(out).toBe(html);
   });
 
+  it('does not extract SVG data URLs into MIME inline parts', () => {
+    const html = '<img src="data:image/svg+xml;base64,PHN2Zy8+">'
+      + `<img src="data:image/png;base64,${btoa('png')}">`;
+
+    const { html: out, images } = extractDataUriImages(html);
+
+    expect(images.map((image) => image.type)).toEqual(['image/png']);
+    expect(out).toContain('data:image/svg+xml;base64,PHN2Zy8+');
+    expect(out).toContain(`cid:${images[0].cid}`);
+  });
+
   it('returns the input unchanged when there are no images', () => {
     expect(extractDataUriImages('<p>plain</p>')).toEqual({ html: '<p>plain</p>', images: [] });
     expect(extractDataUriImages('')).toEqual({ html: '', images: [] });

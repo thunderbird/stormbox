@@ -114,6 +114,25 @@ describe('RecipientInput committing', () => {
     expect(input(wrapper).element.value).toBe('');
   });
 
+  it('does not commit a typed recipient already used in another field', async () => {
+    const wrapper = mountControl({ taken: ['alice@example.com'] });
+
+    await typeAndCommit(wrapper, 'Alice <ALICE@example.com>');
+
+    expect(pills(wrapper)).toEqual([]);
+    expect(input(wrapper).element.value).toBe('');
+  });
+
+  it('filters recipients used in another field from a pasted list', async () => {
+    const wrapper = mountControl({ taken: ['alice@example.com'] });
+
+    await pasteInto(wrapper, 'Alice <ALICE@example.com>, Bob <bob@example.com>');
+
+    expect(wrapper.emitted('update:entries')?.at(-1)?.[0])
+      .toEqual([{ name: 'Bob', email: 'bob@example.com' }]);
+    expect(pills(wrapper)).toEqual([{ text: 'Bob', invalid: false }]);
+  });
+
   it.each([',', ';'])('commits on %s, which is what the key means', async (key) => {
     const wrapper = mountControl();
 

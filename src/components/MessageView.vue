@@ -2,20 +2,23 @@
 import {
   computed,
   nextTick,
-  watch,
-  ref,
   onMounted,
   onUnmounted,
+  ref,
+  watch,
 } from 'vue';
 import DOMPurify from 'dompurify';
 import {
-  Trash2, Paperclip,
-  ArrowLeft, Sun, Moon,
+  ArrowLeft,
+  Moon,
+  Sun,
+  Trash2,
 } from '@lucide/vue';
 
-import { useMailStore } from '../stores/mail-store';
-import { useComposeStore } from '../stores/compose-store';
+import { useMessageAttachments } from '../composables/useMessageAttachments';
 import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
+import { useComposeStore } from '../stores/compose-store';
+import { useMailStore } from '../stores/mail-store';
 import {
   ALLOWED_URI_REGEXP,
   BODY_THEME_COLORS,
@@ -23,7 +26,7 @@ import {
   buildMessageSrcDoc,
   isInlineImageType,
   normalizeContentId,
-  referencedContentIds,
+  referencedInlineImageContentIds,
   sanitizeMessageDocument,
   sanitizeMessageHtml,
 } from '../utils/message-html';
@@ -37,6 +40,8 @@ import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 import AppIconButton from './AppIconButton.vue';
+import MessageAttachmentBar from './MessageAttachmentBar.vue';
+import MessageAttachmentPreviews from './MessageAttachmentPreviews.vue';
 
 // Minimum logical width we lay HTML email out at before scaling down.
 // Reflowing typical marketing HTML below this gets visually messy
@@ -54,11 +59,12 @@ const mailStore = useMailStore();
 const composeStore = useComposeStore();
 const shortcutModifier = shortcutModifierLabel();
 
-const bodyRef = ref(null);
 const htmlShellRef = ref(null);
 const iframeRef = ref(null);
 const iframeSrcDoc = ref('');
 const iframeHeight = ref(120);
+const resolvedCidPartIds = ref<ReadonlySet<string>>(new Set());
+const cidResolutionSettled = ref(false);
 const effectiveColorScheme = ref(getEffectiveColorScheme());
 // Allow the user to disable dark mode in the message view only,
 // independently of the global theme toggle. Resets when the open message
@@ -78,7 +84,6 @@ const body = computed(() => mailStore.messageBody);
 // load completes. Used to show the loading placeholder only while loading,
 // not for a message that has genuinely no body content.
 const bodyLoaded = computed(() => body.value != null);
-const referencedInlineContentIds = computed(() => referencedContentIds(body.value?.html ?? ''));
 
 // Render plaintext bodies the way Thunderbird Desktop does: keep the
 // original line breaks/whitespace (white-space: pre-wrap), linkify URLs
@@ -99,6 +104,23 @@ const message = computed(() =>
   // access so find() doesn't throw on a hole.
   mailStore.messages.find((m) => m?.id === mailStore.selectedMessageId) ?? null,
 );
+const selectedMessageId = computed(() => mailStore.selectedMessageId);
+const messageAccountId = computed(() => message.value?.account_id ?? null);
+const attachmentParts = computed(() => (
+  Array.isArray(body.value?.attachments) ? body.value.attachments : []
+));
+const {
+  rows: attachmentRows,
+  preview: previewAttachment,
+  download: downloadAttachment,
+  retry: retryAttachment,
+} = useMessageAttachments({
+  messageId: selectedMessageId,
+  accountId: messageAccountId,
+  attachments: attachmentParts,
+  resolvedCidPartIds,
+  cidResolutionSettled,
+});
 
 /**
  * The message's Cc recipients, so the audience is visible before replying
@@ -121,17 +143,6 @@ let themeMutationObserver = null;
 // body/scheme render has superseded it.
 let renderToken = 0;
 
-function isReferencedInlinePart(part) {
-  const cid = normalizeContentId(part?.cid);
-  return !!cid && referencedInlineContentIds.value.has(cid);
-}
-
-const visibleAttachments = computed(() => {
-  const attachments = body.value?.attachments;
-  if (!Array.isArray(attachments)) return [];
-  return attachments.filter((part) => !isReferencedInlinePart(part));
-});
-
 function applyHtmlSrcDoc(html, colorScheme) {
   const nextSrcDoc = buildMessageSrcDoc(html, { colorScheme });
   // Only reset the height when the srcdoc actually changes. The
@@ -148,10 +159,10 @@ function applyHtmlSrcDoc(html, colorScheme) {
   if (nextSrcDoc === iframeSrcDoc.value) return;
   teardownResizeObserver();
   iframeSrcDoc.value = nextSrcDoc;
-  iframeHeight.value = initialIframeHeight();
+  iframeHeight.value = 120;
   nextTick(() => {
     if (iframeSrcDoc.value === nextSrcDoc) {
-      iframeHeight.value = Math.max(iframeHeight.value, initialIframeHeight());
+      iframeHeight.value = Math.max(iframeHeight.value, 120);
     }
   });
 }
@@ -160,40 +171,67 @@ function applyHtmlSrcDoc(html, colorScheme) {
 // parts that (a) belong to this message, (b) are an allowed raster image
 // type, and (c) are actually referenced by the body. Any other cid is
 // left untouched — it renders broken and never triggers a request.
-async function resolveCidImageUrls(next) {
-  const map = new Map<string, string>();
+function resolveCidImageUrls(next) {
+  const urls = new Map<string, string>();
+  const partIds = new Set<string>();
   const html = next?.html;
   const parts = next?.attachments;
-  if (!html || !Array.isArray(parts)) return map;
-  const referenced = referencedContentIds(html);
-  for (const part of parts) {
+  if (!html || !Array.isArray(parts)) return { urls, partIds };
+  const referenced = referencedInlineImageContentIds(html);
+  const candidates = parts.filter((part) => {
     const cid = normalizeContentId(part?.cid);
     const blobId = part?.blob_id;
-    if (!cid || !blobId || !isInlineImageType(part?.mime_type)) continue;
-    if (!referenced.has(cid)) continue;
-    const url = await mailStore.loadInlineImageUrl(blobId, part.mime_type, part.name);
-    if (url) map.set(cid, url);
-  }
-  return map;
+    return !!cid
+      && !!blobId
+      && isInlineImageType(part?.mime_type)
+      && referenced.has(cid);
+  });
+  if (candidates.length === 0) return { urls, partIds };
+
+  const accountId = message.value?.account_id ?? null;
+  return (async () => {
+    for (const part of candidates) {
+      const cid = normalizeContentId(part.cid);
+      const url = await mailStore.loadInlineImageUrl(
+        part.blob_id,
+        part.mime_type,
+        part.name,
+        accountId,
+      );
+      if (url) {
+        urls.set(cid, url);
+        partIds.add(part.part_id);
+      }
+    }
+    return { urls, partIds };
+  })();
 }
 
 async function renderHtmlBody(next, colorScheme) {
+  const myToken = (renderToken += 1);
+  resolvedCidPartIds.value = new Set();
+  cidResolutionSettled.value = false;
   if (!next?.html) {
     teardownResizeObserver();
     iframeSrcDoc.value = '';
     iframeHeight.value = 120;
+    cidResolutionSettled.value = true;
     return;
   }
   // Guard against a newer body/scheme starting to render while we await
   // inline-image blob downloads, so a fast selection change can't paint
   // a stale message.
-  const myToken = (renderToken += 1);
-  const cidUrls = await resolveCidImageUrls(next);
+  const resolution = resolveCidImageUrls(next);
+  const { urls: cidUrls, partIds } = resolution instanceof Promise
+    ? await resolution
+    : resolution;
   if (myToken !== renderToken) return;
   // Adapt for dark before building the srcdoc, so the first paint is already
   // dark-correct and never flashes the un-themed email (see dark-email.ts).
   const safeHtml = sanitizeMessageDocument(next.html, cidUrls);
   const themedHtml = colorScheme === 'dark' ? adaptHtmlForDarkMode(safeHtml) : safeHtml;
+  resolvedCidPartIds.value = partIds;
+  cidResolutionSettled.value = true;
   applyHtmlSrcDoc(themedHtml, colorScheme);
 }
 
@@ -274,7 +312,7 @@ function teardownThemeObservers() {
 }
 
 function initialIframeHeight() {
-  return Math.max(120, bodyRef.value?.clientHeight ?? 0);
+  return 120;
 }
 
 onMounted(() => {
@@ -299,6 +337,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  renderToken += 1;
   teardownResizeObserver();
   teardownThemeObservers();
   iframeSrcDoc.value = '';
@@ -450,7 +489,7 @@ function fmtDate(ms) {
 async function quoteBody() {
   const b = body.value;
   if (!b?.html) return b ?? {};
-  const cidUrls = await resolveCidImageUrls(b);
+  const { urls: cidUrls } = await resolveCidImageUrls(b);
   if (cidUrls.size === 0) return b;
   return { ...b, html: sanitizeMessageHtml(b.html, cidUrls) };
 }
@@ -642,7 +681,7 @@ function closeMessageView() {
           </div>
         </dl>
       </section>
-      <div ref="bodyRef" class="message-view__body">
+      <div class="message-view__body">
         <div
           v-if="iframeSrcDoc"
           ref="htmlShellRef"
@@ -663,14 +702,17 @@ function closeMessageView() {
         </div>
         <div v-else-if="textHtml" class="message-view__text" v-html="textHtml" />
         <p v-else-if="!bodyLoaded" class="message-view__placeholder">Loading message…</p>
-        <ul v-if="visibleAttachments.length" class="message-view__attachments">
-          <li v-for="a in visibleAttachments" :key="a.part_id">
-            <Paperclip :size="14" :stroke-width="1.75" class="message-view__att-icon" />
-            <span class="att-name">{{ a.name || '(unnamed)' }}</span>
-            <span class="att-meta">{{ a.mime_type || '?' }}{{ a.size ? ` · ${Math.ceil(a.size / 1024)} KB` : '' }}</span>
-          </li>
-        </ul>
+        <MessageAttachmentPreviews
+          :rows="attachmentRows"
+          @preview="previewAttachment"
+        />
       </div>
+      <MessageAttachmentBar
+        :rows="attachmentRows"
+        @preview="previewAttachment"
+        @download="downloadAttachment"
+        @retry="retryAttachment"
+      />
     </article>
   </section>
 </template>
@@ -688,16 +730,12 @@ function closeMessageView() {
   height: 100%;
 }
 .message-view__article {
-  /* This is where the actual auto-header + 1fr-body split happens.
-   * Without this, the body wrapper has unconstrained height (its
-   * height = its content's height) and the overflow-y: auto rule
-   * below has no overflow to act on — which is what made tall
-   * marketing emails (e.g. PledgeBox) impossible to scroll. */
-  display: grid;
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   width: 100%;
+  overflow: hidden;
   --message-content-inset: 20px;
   --message-content-trailing-inset: 16px;
   --message-html-edge-inset: 8px;
@@ -706,12 +744,15 @@ function closeMessageView() {
 }
 .message-view__empty {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
   place-items: center;
   height: 100%;
   color: var(--muted);
 }
 .message-view__header {
   display: flex;
+  flex: 0 0 auto;
   gap: 6px;
   align-items: center;
   justify-content: flex-start;
@@ -722,6 +763,7 @@ function closeMessageView() {
   border-bottom: 1px solid var(--border);
 }
 .message-view__details {
+  flex: 0 0 auto;
   min-width: 0;
   padding: 12px var(--message-content-trailing-inset) 12px var(--message-content-inset);
   border-bottom: 1px solid var(--border-soft);
@@ -859,6 +901,7 @@ function closeMessageView() {
    * document owns the canvas color so simple HTML can follow the app
    * theme while styled emails keep their own design. */
   padding: 0;
+  flex: 0 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
@@ -919,27 +962,6 @@ function closeMessageView() {
 .message-view__text :deep(blockquote.pt-quote--l5) {
   border-inline-start-color: rgb(233, 185, 110); /* Chocolate 1 */
 }
-.message-view__attachments {
-  list-style: none;
-  margin: 0;
-  padding: 12px 22px 18px;
-  border-top: 1px solid var(--border-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.message-view__attachments li {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  font-size: 13px;
-  padding: 6px 8px;
-  border-radius: 6px;
-}
-.message-view__attachments li:hover { background: var(--rowHover); }
-.message-view__att-icon { color: var(--muted); }
-.att-name { font-weight: 500; color: var(--text); }
-.att-meta { color: var(--muted); font-size: 12px; }
 .message-view__placeholder { margin: 0; padding: 18px 22px; color: var(--muted); }
 
 @media (max-width: 639px) {

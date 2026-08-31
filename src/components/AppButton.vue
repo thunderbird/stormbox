@@ -42,8 +42,44 @@ withDefaults(
    outrank its scoped .base[data-v] rules regardless of stylesheet order. */
 .base.app-button {
   align-items: center;
-  border-radius: 3px;
+  border-radius: 4px;
   gap: 6px;
+}
+.base.app-button.outline {
+  box-sizing: border-box;
+  border: 1px solid var(--colour-primary-default);
+  background: transparent;
+  background-clip: padding-box;
+  box-shadow: none;
+}
+.base.app-button.outline::before {
+  display: none;
+}
+.base.app-button.outline:hover:not(:disabled) {
+  border-color: var(--colour-primary-hover);
+  background: color-mix(
+    in srgb,
+    var(--colour-primary-default),
+    transparent 84%
+  );
+  box-shadow: none;
+}
+.base.app-button.outline:active:not(:disabled) {
+  border-color: var(--colour-primary-pressed);
+  background: color-mix(
+    in srgb,
+    var(--colour-accent-blue),
+    transparent 74%
+  );
+  box-shadow: none;
+}
+.base.app-button.outline:disabled {
+  border-color: var(--colour-neutral-border);
+  background: transparent;
+  box-shadow: none;
+}
+.base.app-button:focus:not(:focus-visible) {
+  outline: none;
 }
 .base.app-button :deep(.text) {
   font-weight: 600;

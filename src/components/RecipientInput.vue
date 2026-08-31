@@ -265,9 +265,10 @@ function commitText(value = text.value): boolean {
     // The same address twice is one recipient; the server would collapse
     // them anyway, and a duplicate pill looks like a mistake. Keyed by
     // addressKey so a punycode or NFD respelling is the same recipient.
-    const already = next.some(
+    const key = addressKey(element.address.email);
+    const already = takenEmails.value.has(key) || next.some(
       (entry) => !('invalid' in entry)
-        && addressKey(entry.email) === addressKey(element.address.email),
+        && addressKey(entry.email) === key,
     );
     if (!already) next.push(element.address);
   }

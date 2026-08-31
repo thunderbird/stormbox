@@ -3,7 +3,13 @@ import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import { addressKey } from '../../../../../utils/address-key';
 import { createContactUid } from '../../../../../utils/contact-uid';
-import { prepareComposeEmail } from '../../compose-email';
+import {
+  missingRegularAttachmentIndexes,
+  prepareComposeEmail,
+  regularAttachmentSources,
+  type ComposeRegularAttachmentSource,
+} from '../../compose-email';
+import { assertCanonicalAttachmentOwnership } from '../../compose-body-checkpoint';
 import { callJmap, pickResponse, pickResponseById } from '../../invoke';
 import {
   newCheckpoint,
@@ -63,6 +69,65 @@ function buildEnvelopeRecipients(request: any): Array<{ email: string }> {
     recipients.push({ email: recipient.email });
   }
   return recipients;
+}
+
+async function verifySendAttachmentSources({
+  transport,
+  account,
+  draftsRemoteId,
+  draftEmailIds,
+  attachments,
+  useWebSocket,
+}: {
+  transport: any;
+  account: any;
+  draftsRemoteId: string | null;
+  draftEmailIds: unknown;
+  attachments: ComposeRegularAttachmentSource[];
+  useWebSocket: boolean;
+}): Promise<void> {
+  if (!attachments.some((attachment) => attachment.partId != null)) return;
+  const ids = Array.isArray(draftEmailIds)
+    ? [...new Set(draftEmailIds.filter((id): id is string =>
+      typeof id === 'string' && id.trim().length > 0))]
+    : [];
+  if (!draftsRemoteId || ids.length === 0) {
+    const error: any = new Error('Canonical send attachment has no live draft owner');
+    error.type = 'blobNotFound';
+    throw error;
+  }
+  const payload = await callJmap(transport, {
+    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+    methodCalls: [[
+      'Email/get',
+      {
+        accountId: account.remote_account_id,
+        ids,
+        properties: [
+          'id', 'mailboxIds', 'keywords', 'bodyStructure', 'attachments',
+        ],
+        bodyProperties: [
+          'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
+        ],
+      },
+      'sa1',
+    ]],
+    useWebSocket,
+  });
+  const response = pickResponseById(payload, 'Email/get', 'sa1');
+  const liveOwners = Array.isArray(response?.list)
+    ? response.list.filter((email) =>
+      email?.mailboxIds?.[draftsRemoteId] === true && email?.keywords?.$draft === true)
+    : [];
+  if (!response
+      || !Array.isArray(response.list)
+      || !Array.isArray(response.notFound)
+      || liveOwners.length !== ids.length) {
+    const error: any = new Error('Canonical send attachment owner could not be confirmed');
+    error.type = 'blobNotFound';
+    throw error;
+  }
+  assertCanonicalAttachmentOwnership(attachments, liveOwners);
 }
 
 /**
@@ -186,33 +251,8 @@ async function runSend({
   const outboxRemoteId = folderRemoteIds[2];
 
   const targetBox = outboxRemoteId ?? draftsRemoteId ?? null;
-  let emailCreate;
-  try {
-    emailCreate = await prepareComposeEmail({
-      transport,
-      account,
-      identity,
-      request,
-      mailboxRemoteId: targetBox,
-      isDraft: targetBox === draftsRemoteId,
-    });
-  } catch (err: any) {
-    // A stalled or aborted upload is terminal. Retrying it is safe —
-    // nothing has been submitted, and a re-uploaded blob is just
-    // another blob — but not worth waiting for: the blob deadline is
-    // generous by design, and eight of those plus backoff would hold
-    // the composer in its sending state, with Close and Discard
-    // disabled, for a quarter of an hour. The draft is intact, so
-    // failing now lets the user decide. A server that reported a
-    // reason keeps the retry.
-    const terminal = TRANSPORT_FAILURE_TYPES.has(err?.type);
-    const error = {
-      type: 'uploadFailed',
-      message: err?.message ?? String(err),
-      ...(terminal ? { terminal: true as const } : {}),
-    };
-    return rejectedSendOutcome(error, !terminal);
-  }
+  let emailCreate: any = null;
+  let regularAttachments: ComposeRegularAttachmentSource[] = [];
 
   const onSuccessUpdate = {
     ...(sentRemoteId ? { mailboxIds: { [sentRemoteId]: true } } : {}),
@@ -332,6 +372,46 @@ async function runSend({
   }
 
   if (!checkpoint.emailRemoteId) {
+    try {
+      regularAttachments = regularAttachmentSources(request.attachments);
+      await verifySendAttachmentSources({
+        transport,
+        account,
+        draftsRemoteId,
+        draftEmailIds: request.draftEmailIds,
+        attachments: regularAttachments,
+        useWebSocket,
+      });
+      emailCreate = await prepareComposeEmail({
+        transport,
+        account,
+        identity,
+        request,
+        mailboxRemoteId: targetBox,
+        isDraft: targetBox === draftsRemoteId,
+      });
+    } catch (err: any) {
+      const errorType = err?.type === 'blobNotFound' || err?.type === 'invalidAttachment'
+        ? err.type
+        : 'uploadFailed';
+      const terminal = errorType !== 'uploadFailed'
+        || TRANSPORT_FAILURE_TYPES.has(err?.type);
+      const error = {
+        type: errorType,
+        message: err?.message ?? String(err),
+        ...(errorType === 'blobNotFound' ? {
+          result: {
+            submitted: false,
+            attachmentIndexes: regularAttachments.map((attachment) => attachment.index),
+          },
+        } : {}),
+        ...(terminal ? { terminal: true as const } : {}),
+      };
+      return rejectedSendOutcome(error, !terminal);
+    }
+  }
+
+  if (!checkpoint.emailRemoteId) {
     let createResult;
     try {
       createResult = await callJmap(transport, {
@@ -378,6 +458,17 @@ async function runSend({
     const createdId = emailSet.created?.c1?.id ?? null;
     if (!createdId) {
       const detail = emailSet.notCreated?.c1 ?? null;
+      if (detail?.type === 'blobNotFound') {
+        return rejectedSendOutcome({
+          type: 'blobNotFound',
+          detail,
+          terminal: true,
+          result: {
+            submitted: false,
+            attachmentIndexes: missingRegularAttachmentIndexes(detail, regularAttachments),
+          },
+        }, false);
+      }
       const error = submissionError('notCreated', detail);
       return rejectedSendOutcome(error, isRetryableSubmissionError(detail));
     }
@@ -950,12 +1041,14 @@ async function postSubmissionFailure({
       };
     }
   }
-  await queueDraftCleanupRepair({ handlers, account, request }).catch((queueError) => {
-    wlog.warn(
-      'jmap-outbox',
-      `could not queue sent draft cleanup: ${queueError?.message ?? queueError}`,
-    );
-  });
+  if (err?.type !== 'composeBodyIncomplete') {
+    await queueDraftCleanupRepair({ handlers, account, request }).catch((queueError) => {
+      wlog.warn(
+        'jmap-outbox',
+        `could not queue sent draft cleanup: ${queueError?.message ?? queueError}`,
+      );
+    });
+  }
   await markFolderViewsStale(handlers, account.id, sentRemoteId).catch(() => {});
   return {
     outcome: 'confirmed',

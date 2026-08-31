@@ -36,6 +36,11 @@ import {
   richTextPlainText,
   sanitizeRichTextToDOMFragment,
 } from '../utils/rich-text';
+import {
+  isInlineRasterType,
+  MAX_INLINE_RASTER_BYTES,
+} from '../utils/raster-images';
+import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 
 interface EditorContent {
@@ -49,6 +54,20 @@ interface EditorValidation {
   textBytes: number;
   maxSerializedUtf8Bytes: number | null;
 }
+
+interface PastedEditorFile {
+  file: File;
+  kind: 'inline' | 'attachment';
+}
+
+const PICKABLE_IMAGE_TYPES = new Set([
+  'image/gif',
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+]);
+const PICKABLE_IMAGE_ACCEPT = [...PICKABLE_IMAGE_TYPES].join(',');
 
 const props = withDefaults(
   defineProps<{
@@ -72,9 +91,17 @@ const props = withDefaults(
 const emit = defineEmits<{
   update: [EditorContent];
   'tracked-origin-state': [TrackedOriginState[]];
+  'paste-files': [PastedEditorFile[]];
 }>();
 
 const editorEl = ref<HTMLElement | null>(null);
+const imageInputEl = ref<HTMLInputElement | null>(null);
+const imageInsertError = ref<string | null>(null);
+const linkInputEl = ref<HTMLInputElement | null>(null);
+const linkEditorOpen = ref(false);
+const linkEditorHasLink = ref(false);
+const linkUrl = ref('');
+const linkError = ref<string | null>(null);
 const toolbarEl = ref<HTMLElement | null>(null);
 const toolbarState = ref({
   bold: false,
@@ -643,69 +670,186 @@ function applyHighlightColor(value: string) {
   runEditorCommand((editor) => editor.setHighlightColor(value || null));
 }
 
-function promptForLink() {
-  if (!squire) return;
-  restoreSelection();
-  const selectedText = squire.getSelectedText().trim();
-  const initialValue = /^https?:\/\//i.test(selectedText) || /^mailto:/i.test(selectedText)
-    ? selectedText
-    : '';
-  const url = window.prompt('Enter link URL', initialValue);
-  if (url === null) return;
+function selectedLink(): HTMLAnchorElement | null {
+  if (!squire) return null;
+  const range = lastSelection ?? squire.getSelection();
+  const node = range.startContainer;
+  const element = node.nodeType === Node.ELEMENT_NODE
+    ? node as Element
+    : node.parentElement;
+  return element?.closest('a') as HTMLAnchorElement | null;
+}
 
-  const trimmed = url.trim();
-  runEditorCommand((editor) => {
-    if (trimmed) {
-      editor.makeLink(trimmed);
-    } else {
-      editor.removeLink();
-    }
+function openLinkEditor(event?: Event) {
+  if (!squire) return;
+  rememberSelection();
+  if (event) closeDropdown(event);
+  const anchor = selectedLink();
+  const selectedText = squire.getSelectedText().trim();
+  linkEditorHasLink.value = anchor !== null;
+  linkUrl.value = anchor?.getAttribute('href')
+    ?? (/^https?:\/\//i.test(selectedText) || /^mailto:/i.test(selectedText)
+    ? selectedText
+    : '');
+  linkError.value = null;
+  linkEditorOpen.value = true;
+  void nextTick(() => {
+    linkInputEl.value?.focus();
+    linkInputEl.value?.select();
   });
 }
 
-function promptForImage() {
-  const src = window.prompt('Enter image URL');
-  if (src === null || !src.trim()) return;
-
-  const alt = window.prompt('Image alt text', '') ?? '';
-  runEditorCommand((editor) => editor.insertImage(src.trim(), { alt }));
+function validLinkUrl(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol.toLowerCase();
+    return protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:';
+  } catch {
+    return false;
+  }
 }
 
-// Pasted images are inlined as data: URLs for instant, offline-safe editing.
-// Compose later uploads them as JMAP blobs and rewrites them to cid: parts.
-const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
-
-function insertPastedImageFile(file: File | null) {
-  if (!file || !file.type.startsWith('image/')) return;
-  if (file.size > MAX_PASTED_IMAGE_BYTES) {
-    console.warn('[compose] pasted image exceeds size limit; skipping', file.size);
+function applyLink() {
+  const trimmed = linkUrl.value.trim();
+  if (!validLinkUrl(trimmed)) {
+    linkError.value = 'Enter an HTTP, HTTPS, or mailto URL.';
+    void nextTick(() => linkInputEl.value?.focus());
     return;
   }
-  // Capture the caret before the async read so the image lands at the
-  // paste position if the live selection moves.
-  rememberSelection();
-  const reader = new FileReader();
-  reader.onload = () => {
-    const dataUrl = typeof reader.result === 'string' ? reader.result : '';
-    if (!dataUrl.startsWith('data:image/')) return;
-    runEditorCommand((editor) => {
-      editor.insertImage(dataUrl, { style: 'max-width:100%;height:auto;' });
-      // Block text alignment lets toolbar commands reposition the image.
-      editor.setTextAlignment('center');
-    });
-  };
-  reader.readAsDataURL(file);
+  runEditorCommand((editor) => {
+    editor.makeLink(trimmed);
+  });
+  linkEditorOpen.value = false;
+  linkError.value = null;
 }
 
-function handlePasteImage(event: Event) {
-  const detail = (event as CustomEvent<{ clipboardData?: DataTransfer }>).detail;
-  const items = detail?.clipboardData?.items
-    ? Array.from(detail.clipboardData.items)
+function removeLink() {
+  runEditorCommand((editor) => editor.removeLink());
+  linkEditorOpen.value = false;
+  linkError.value = null;
+}
+
+function cancelLinkEditor() {
+  linkEditorOpen.value = false;
+  linkError.value = null;
+  squire?.focus();
+  restoreSelection();
+}
+
+function chooseImage(event: Event) {
+  closeDropdown(event);
+  imageInsertError.value = null;
+  rememberSelection();
+  imageInputEl.value?.click();
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Pasted file did not produce a data URL'));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Pasted file could not be read'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function decodeRaster(file: File, dataUrl: string): Promise<boolean> {
+  if (typeof globalThis.createImageBitmap === 'function') {
+    try {
+      const bitmap = await globalThis.createImageBitmap(file);
+      bitmap.close();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(true);
+    image.onerror = () => resolve(false);
+    image.src = dataUrl;
+  });
+}
+
+async function insertPickedImage(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement;
+  const file = input.files?.[0] ?? null;
+  input.value = '';
+  if (!file) return;
+  if (!PICKABLE_IMAGE_TYPES.has(file.type.trim().toLowerCase())) {
+    imageInsertError.value = 'Choose a PNG, JPEG, GIF, or WebP image.';
+    return;
+  }
+  if (file.size > MAX_INLINE_RASTER_BYTES) {
+    imageInsertError.value = 'Choose an image no larger than 10 MiB.';
+    return;
+  }
+
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    if (!await decodeRaster(file, dataUrl)) {
+      imageInsertError.value = 'This image could not be read.';
+      return;
+    }
+    runEditorCommand((editor) => {
+      editor.insertImage(dataUrl, {
+        alt: file.name,
+        style: 'max-width:100%;height:auto;',
+      });
+      editor.setTextAlignment('center');
+    });
+    imageInsertError.value = null;
+  } catch {
+    imageInsertError.value = 'This image could not be read.';
+  }
+}
+
+async function classifyAndInsertPastedFiles(files: readonly File[]): Promise<void> {
+  const classified: PastedEditorFile[] = [];
+  for (const file of files) {
+    let dataUrl: string | null = null;
+    if (isInlineRasterType(file.type) && file.size <= MAX_INLINE_RASTER_BYTES) {
+      try {
+        const read = await readFileAsDataUrl(file);
+        if (await decodeRaster(file, read)) dataUrl = read;
+      } catch {
+        dataUrl = null;
+      }
+    }
+    if (!dataUrl) {
+      classified.push({ file, kind: 'attachment' });
+      continue;
+    }
+    runEditorCommand((editor) => {
+      editor.insertImage(dataUrl, { style: 'max-width:100%;height:auto;' });
+      editor.setTextAlignment('center');
+    });
+    classified.push({ file, kind: 'inline' });
+  }
+  emit('paste-files', classified);
+}
+
+function handleNativePaste(event: ClipboardEvent): void {
+  const clipboard = event.clipboardData;
+  const itemFiles = clipboard?.items
+    ? Array.from(clipboard.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
     : [];
-  const imageItem = items.find(
-    (item) => item.kind === 'file' && item.type.startsWith('image/'),
-  );
-  insertPastedImageFile(imageItem?.getAsFile() ?? null);
+  const files = itemFiles.length > 0
+    ? itemFiles
+    : Array.from(clipboard?.files ?? []);
+  if (files.length === 0) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  rememberSelection();
+  const text = clipboard?.getData('text/plain') ?? '';
+  if (text) {
+    runEditorCommand((editor) => editor.insertPlainText(text, true));
+  }
+  void classifyAndInsertPastedFiles(files);
 }
 
 function syncAfterKeyboardCommand(editor: Squire, range: Range | null = null) {
@@ -753,7 +897,7 @@ function registerKeyboardShortcuts() {
     squire?.setKeyHandler(key, (_editor, event, range) => {
       event.preventDefault();
       lastSelection = range.cloneRange();
-      promptForLink();
+      openLinkEditor();
     });
   });
 }
@@ -848,7 +992,6 @@ function initEditor(html: string) {
   registerKeyboardShortcuts();
   squire.addEventListener('beforeinput', handleBeforeInput);
   squire.addEventListener('input', handleEditorInput);
-  squire.addEventListener('pasteImage', handlePasteImage);
   squire.addEventListener('pathChange', handleSquirePathChange);
   squire.addEventListener('select', handlePathChange);
   squire.addEventListener('cursor', handlePathChange);
@@ -949,6 +1092,9 @@ function reset() {
 watch(
   () => props.contentKey,
   () => {
+    imageInsertError.value = null;
+    linkEditorOpen.value = false;
+    linkError.value = null;
     void nextTick().then(reset);
   },
 );
@@ -977,6 +1123,13 @@ defineExpose({
 
 <template>
   <div class="rich-text-editor">
+    <input
+      ref="imageInputEl"
+      hidden
+      type="file"
+      :accept="PICKABLE_IMAGE_ACCEPT"
+      @change="insertPickedImage"
+    >
     <div
       ref="toolbarEl"
       class="compose-toolbar"
@@ -1112,7 +1265,7 @@ defineExpose({
           aria-label="Insert image"
           title="Insert image"
           @mousedown.prevent
-          @click="promptForImage"
+          @click="chooseImage"
         >
           <ImageIcon :size="15" />
         </button>
@@ -1124,7 +1277,7 @@ defineExpose({
           :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
           :title="`Insert or remove link (${shortcutModifier}+K)`"
           @mousedown.prevent
-          @click="promptForLink"
+          @click="openLinkEditor"
         >
           <LinkIcon :size="15" />
         </button>
@@ -1271,7 +1424,7 @@ defineExpose({
               class="toolbar-menu-button"
               role="menuitem"
               @mousedown.prevent
-              @click="promptForImage"
+              @click="chooseImage"
             >
               <ImageIcon :size="15" />
               <span>Insert image</span>
@@ -1285,7 +1438,7 @@ defineExpose({
               :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
               :title="`Insert or remove link (${shortcutModifier}+K)`"
               @mousedown.prevent
-              @click="promptForLink"
+              @click="openLinkEditor"
             >
               <LinkIcon :size="15" />
               <span>Link</span>
@@ -1462,6 +1615,54 @@ defineExpose({
       </AppDropdown>
     </div>
 
+    <p v-if="imageInsertError" class="editor-image-error" role="alert">
+      {{ imageInsertError }}
+    </p>
+
+    <form
+      v-if="linkEditorOpen"
+      class="editor-link-form"
+      @submit.prevent="applyLink"
+      @keydown.esc.prevent.stop="cancelLinkEditor"
+    >
+      <label class="editor-link-form__field">
+        <span>Link URL</span>
+        <input
+          ref="linkInputEl"
+          v-model="linkUrl"
+          type="url"
+          inputmode="url"
+          autocomplete="url"
+          placeholder="https://example.com"
+          :aria-invalid="linkError ? 'true' : undefined"
+          :aria-describedby="linkError ? 'editor-link-error' : undefined"
+        >
+      </label>
+      <p
+        v-if="linkError"
+        id="editor-link-error"
+        class="editor-link-form__error"
+        role="alert"
+      >
+        {{ linkError }}
+      </p>
+      <div class="editor-link-form__actions">
+        <AppButton variant="outline" @click="cancelLinkEditor">
+          Cancel
+        </AppButton>
+        <AppButton
+          v-if="linkEditorHasLink"
+          variant="outline"
+          @click="removeLink"
+        >
+          Remove link
+        </AppButton>
+        <AppButton form-action="submit">
+          Apply link
+        </AppButton>
+      </div>
+    </form>
+
     <div class="editor-wrap">
       <div
         ref="editorEl"
@@ -1472,6 +1673,7 @@ defineExpose({
         :aria-describedby="ariaDescribedby"
         :aria-invalid="ariaInvalid ? 'true' : undefined"
         aria-multiline="true"
+        @paste.capture="handleNativePaste"
       />
     </div>
   </div>
@@ -1485,6 +1687,54 @@ defineExpose({
   gap: 8px;
   min-width: 0;
   min-height: 0;
+}
+.editor-image-error {
+  margin: 0;
+  color: var(--error-fg, #c93838);
+  font-size: 12px;
+}
+.editor-link-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 6px;
+  background: var(--panel2, #f5f6f8);
+}
+.editor-link-form__field {
+  display: grid;
+  gap: 5px;
+}
+.editor-link-form__field > span {
+  color: var(--muted, #6b7388);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.editor-link-form__field input {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 4px;
+  background: var(--panel, #fff);
+  color: var(--text, #1a1d24);
+  font: inherit;
+}
+.editor-link-form__field input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.editor-link-form__error {
+  margin: 0;
+  color: var(--error-fg, #c93838);
+  font-size: 12px;
+}
+.editor-link-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .compose-toolbar {
   display: flex;

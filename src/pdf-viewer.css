@@ -1,0 +1,45 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+html,
+body,
+main,
+#pdf-viewer-frame {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: #1f2023;
+  color: #f4f4f5;
+}
+
+main {
+  display: grid;
+}
+
+#pdf-viewer-status,
+#pdf-viewer-frame {
+  grid-area: 1 / 1;
+}
+
+#pdf-viewer-status {
+  align-self: center;
+  justify-self: center;
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+}
+
+#pdf-viewer-frame {
+  box-sizing: border-box;
+  border: 0;
+}
+
+#pdf-viewer-frame[hidden] {
+  display: none;
+}

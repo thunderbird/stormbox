@@ -18,6 +18,7 @@ const JMAP_MAIL = 'urn:ietf:params:jmap:mail';
 const JMAP_SUBMISSION = 'urn:ietf:params:jmap:submission';
 const JMAP_CONTACTS = 'urn:ietf:params:jmap:contacts';
 const JMAP_QUOTA = 'urn:ietf:params:jmap:quota';
+const JMAP_FILENODE = 'urn:ietf:params:jmap:filenode';
 const JMAP_WEBSOCKET_CAP = 'urn:ietf:params:jmap:websocket';
 
 export const JMAP_CAPS = Object.freeze({
@@ -26,6 +27,7 @@ export const JMAP_CAPS = Object.freeze({
   SUBMISSION: JMAP_SUBMISSION,
   CONTACTS: JMAP_CONTACTS,
   QUOTA: JMAP_QUOTA,
+  FILENODE: JMAP_FILENODE,
   WEBSOCKET: JMAP_WEBSOCKET_CAP,
 });
 
@@ -40,6 +42,198 @@ function httpResponseError(
   error.type = 'httpError';
   error.status = response.status;
   return error;
+}
+
+function downloadTooLargeError(maxBytes: number, actualBytes?: number) {
+  const error: any = new Error(
+    actualBytes == null
+      ? `JMAP download exceeds the ${maxBytes} byte limit`
+      : `JMAP download is ${actualBytes} bytes, exceeding the ${maxBytes} byte limit`,
+  );
+  error.type = 'tooLarge';
+  error.status = 413;
+  error.maxBytes = maxBytes;
+  if (actualBytes != null) error.actualBytes = actualBytes;
+  return error;
+}
+
+function boundedDownloadLimit(maxBytes: number | undefined): number | undefined {
+  if (maxBytes == null) return undefined;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError('JMAP download maxBytes must be a non-negative safe integer');
+  }
+  return maxBytes;
+}
+
+function reportTransferProgress(onProgress: any, progress: any) {
+  if (typeof onProgress !== 'function') return;
+  try {
+    onProgress(progress);
+  } catch {
+    // Progress observers cannot affect the transfer.
+  }
+}
+
+type DownloadBodyKind = 'blob' | 'bytes';
+type DownloadChunk = Uint8Array<ArrayBuffer>;
+
+interface DownloadOptions {
+  accountId: string;
+  blobId: string;
+  type?: string;
+  name?: string;
+  maxBytes?: number;
+  truncateAtMaxBytes?: boolean;
+  signal?: AbortSignal;
+  onProgress?: (progress: any) => void;
+}
+
+function buildDownloadBody(
+  chunks: DownloadChunk[],
+  totalBytes: number,
+  kind: DownloadBodyKind,
+  type: string,
+): Blob | Uint8Array {
+  if (kind === 'blob') {
+    return new Blob(chunks, { type });
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function readDownloadBody(response: any, {
+  maxBytes,
+  truncateAtMaxBytes,
+  onProgress,
+  onActivity,
+  kind,
+  type,
+}: {
+  maxBytes?: number;
+  truncateAtMaxBytes?: boolean;
+  onProgress?: (progress: any) => void;
+  onActivity: () => void;
+  kind: DownloadBodyKind;
+  type: string;
+}): Promise<Blob | Uint8Array> {
+  const contentLength = response.headers?.get?.('content-length');
+  let total: number | null = null;
+  if (typeof contentLength === 'string' && /^\d+$/.test(contentLength.trim())) {
+    const declaredBytes = BigInt(contentLength.trim());
+    if (
+      maxBytes != null
+      && declaredBytes > BigInt(maxBytes)
+      && !truncateAtMaxBytes
+    ) {
+      const error = downloadTooLargeError(maxBytes);
+      await response.body?.cancel?.(error).catch(() => {});
+      throw error;
+    }
+    if (declaredBytes <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      total = Number(declaredBytes);
+    }
+  }
+
+  reportTransferProgress(onProgress, {
+    direction: 'download',
+    phase: 'transferring',
+    loaded: 0,
+    total,
+  });
+  const reader = response.body?.getReader?.();
+  if (reader) {
+    const chunks: DownloadChunk[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk: DownloadChunk = value instanceof Uint8Array
+          ? value as DownloadChunk
+          : new Uint8Array(value);
+        if (maxBytes != null && chunk.byteLength > maxBytes - totalBytes) {
+          if (truncateAtMaxBytes) {
+            const remaining = maxBytes - totalBytes;
+            if (remaining > 0) chunks.push(chunk.subarray(0, remaining));
+            totalBytes += Math.max(0, remaining);
+            onActivity();
+            reportTransferProgress(onProgress, {
+              direction: 'download',
+              phase: 'transferring',
+              loaded: totalBytes,
+              total,
+            });
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          const error = downloadTooLargeError(maxBytes, totalBytes + chunk.byteLength);
+          await reader.cancel(error).catch(() => {});
+          throw error;
+        }
+        chunks.push(chunk);
+        totalBytes += chunk.byteLength;
+        onActivity();
+        reportTransferProgress(onProgress, {
+          direction: 'download',
+          phase: 'transferring',
+          loaded: totalBytes,
+          total,
+        });
+        if (
+          truncateAtMaxBytes
+          && maxBytes != null
+          && totalBytes === maxBytes
+          && (total == null || total > totalBytes)
+        ) {
+          await reader.cancel().catch(() => {});
+          break;
+        }
+      }
+    } finally {
+      reader.releaseLock?.();
+    }
+    reportTransferProgress(onProgress, {
+      direction: 'download',
+      phase: 'complete',
+      loaded: totalBytes,
+      total: total ?? totalBytes,
+    });
+    return buildDownloadBody(chunks, totalBytes, kind, type);
+  }
+
+  if (truncateAtMaxBytes && maxBytes != null) {
+    const error: any = new Error(
+      'Bounded truncating download requires a readable response stream',
+    );
+    error.type = 'streamingUnavailable';
+    await response.body?.cancel?.(error).catch(() => {});
+    throw error;
+  }
+
+  const downloaded = kind === 'blob'
+    ? (typeof response.blob === 'function'
+        ? await response.blob()
+        : new Blob([await response.arrayBuffer()], { type }))
+    : new Uint8Array(await response.arrayBuffer());
+  onActivity();
+  const downloadedSize = downloaded instanceof Blob
+    ? downloaded.size
+    : downloaded.byteLength;
+  if (maxBytes != null && downloadedSize > maxBytes && !truncateAtMaxBytes) {
+    throw downloadTooLargeError(maxBytes, downloadedSize);
+  }
+  reportTransferProgress(onProgress, {
+    direction: 'download',
+    phase: 'complete',
+    loaded: downloadedSize,
+    total: total ?? downloadedSize,
+  });
+  return downloaded;
 }
 
 export function isAuthenticationError(error: any): boolean {
@@ -76,6 +270,9 @@ export function isAuthenticationError(error: any): boolean {
  * @property {typeof WebSocket} [WebSocketImpl]
  *                                     Optional WebSocket constructor. Defaults
  *                                     to globalThis.WebSocket.
+ * @property {typeof XMLHttpRequest} [XMLHttpRequestImpl]
+ *                                     Optional XMLHttpRequest constructor for
+ *                                     observable upload-body progress.
  * @property {number} [wsRequestTimeoutMs]
  *                                     Upper bound for both the opening
  *                                     handshake and each WebSocket request.
@@ -90,6 +287,14 @@ export function isAuthenticationError(error: any): boolean {
 function abortedError(label: string, elapsedMs: number) {
   const err: any = new Error(`JMAP request ${label} was aborted`);
   err.type = 'transportAborted';
+  err.elapsedMs = elapsedMs;
+  return err;
+}
+
+function cancelledError(label: string, elapsedMs: number) {
+  const err: any = new Error(`JMAP transfer ${label} was cancelled`);
+  err.name = 'AbortError';
+  err.type = 'cancelled';
   err.elapsedMs = elapsedMs;
   return err;
 }
@@ -121,8 +326,10 @@ export class JmapTransport {
   _lastPushState: any;
   _wsRequestTimeoutMs: number;
   _httpRequestTimeoutMs: number;
-  _httpBlobTimeoutMs: number;
-  _inFlightHttp: Set<AbortController>;
+  _httpBlobIdleTimeoutMs: number;
+  _httpUploadIdleTimeoutMs: number;
+  _XMLHttpRequest: typeof XMLHttpRequest | null;
+  _inFlightHttp: Set<{ abort: () => void }>;
   _aborted: boolean;
 
   constructor(options: any) {
@@ -163,9 +370,15 @@ export class JmapTransport {
     // unclosable. Matching the WebSocket bound keeps the two legs
     // behaving the same way.
     this._httpRequestTimeoutMs = options.httpRequestTimeoutMs ?? 30_000;
-    // Blob transfers are sized by the attachment, not by server
-    // latency, so they get a looser deadline than a method call.
-    this._httpBlobTimeoutMs = options.httpBlobTimeoutMs ?? 120_000;
+    // Downloads reset their idle timer for every streamed chunk.
+    this._httpBlobIdleTimeoutMs = options.httpBlobIdleTimeoutMs
+      ?? options.httpBlobTimeoutMs
+      ?? 120_000;
+    // Uploads use request-body progress and have no total-duration limit.
+    this._httpUploadIdleTimeoutMs = options.httpUploadIdleTimeoutMs ?? 15_000;
+    this._XMLHttpRequest = options.XMLHttpRequestImpl
+      ?? globalThis.XMLHttpRequest
+      ?? null;
     /** Abort controllers for HTTP requests that have not settled yet,
      *  so abort() can cancel them during teardown. */
     this._inFlightHttp = new Set();
@@ -211,8 +424,8 @@ export class JmapTransport {
   }
 
   /**
-   * Run one fetch under a deadline and hand the response to `consume`
-   * while that deadline is still armed.
+   * Run one fetch under a fixed deadline or progress-based idle timeout
+   * and keep the timer armed while `consume` reads the response body.
    *
    * The body read has to happen inside the window: fetch() resolves as
    * soon as the response headers arrive, so a server that sends headers
@@ -223,48 +436,74 @@ export class JmapTransport {
    * server from an intentional teardown, and neither is mistaken for a
    * server-side rejection.
    */
-  async _fetchWithDeadline<T>(url: string, init: any, { timeoutMs, label, consume }: {
+  async _fetchWithDeadline<T>(url: string, init: any, {
+    timeoutMs,
+    label,
+    consume,
+    timeoutKind = 'deadline',
+    bindActivity,
+  }: {
     timeoutMs: number;
     label: string;
-    consume: (response: any) => Promise<T>;
+    consume: (response: any, onActivity: () => void) => Promise<T>;
+    timeoutKind?: 'deadline' | 'idle';
+    bindActivity?: (onActivity: () => void) => void;
   }): Promise<T> {
     if (this._aborted) throw abortedError(label, 0);
     const controller = new AbortController();
     const external: AbortSignal | undefined = init.signal;
+    if (external?.aborted) throw cancelledError(label, 0);
     let forwardAbort: (() => void) | null = null;
     if (external) {
-      if (external.aborted) controller.abort();
-      else {
-        forwardAbort = () => controller.abort();
-        external.addEventListener('abort', forwardAbort, { once: true });
-      }
+      forwardAbort = () => controller.abort();
+      external.addEventListener('abort', forwardAbort, { once: true });
     }
     this._inFlightHttp.add(controller);
     const started = Date.now();
     let timedOut = false;
     let timer: any = null;
-    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    const armTimeout = () => {
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timedOut) return;
+      if (timer != null) {
+        if (timeoutKind === 'deadline') return;
+        clearTimeout(timer);
+      }
       timer = setTimeout(() => {
         timer = null;
         timedOut = true;
         controller.abort();
       }, timeoutMs);
-    }
+    };
+    const onActivity = () => {
+      if (timeoutKind === 'idle') armTimeout();
+    };
+    bindActivity?.(onActivity);
+    armTimeout();
     try {
       const response = await this._fetch(url, { ...init, signal: controller.signal });
-      return await consume(response);
+      onActivity();
+      return await consume(response, onActivity);
     } catch (err: any) {
       const elapsedMs = Date.now() - started;
       if (timedOut) {
-        wlog.warn('jmap-transport', `${label} timeout after ${elapsedMs}ms`);
-        const timeoutErr: any = new Error(
-          `JMAP HTTP request ${label} timed out after ${elapsedMs}ms`,
+        const idle = timeoutKind === 'idle';
+        wlog.warn(
+          'jmap-transport',
+          `${label} ${idle ? 'idle ' : ''}timeout after ${elapsedMs}ms`,
         );
-        timeoutErr.type = 'httpRequestTimeout';
+        const timeoutErr: any = new Error(
+          idle
+            ? `JMAP HTTP transfer ${label} made no progress for ${timeoutMs}ms`
+            : `JMAP HTTP request ${label} timed out after ${elapsedMs}ms`,
+        );
+        timeoutErr.type = idle ? 'httpIdleTimeout' : 'httpRequestTimeout';
         timeoutErr.elapsedMs = elapsedMs;
         throw timeoutErr;
       }
-      if (controller.signal.aborted && !external?.aborted) {
+      if (external?.aborted) {
+        throw cancelledError(label, elapsedMs);
+      }
+      if (controller.signal.aborted) {
         throw abortedError(label, elapsedMs);
       }
       throw err;
@@ -277,11 +516,280 @@ export class JmapTransport {
     }
   }
 
+  _uploadWithFetchIdleTimeout(url: string, {
+    auth,
+    type,
+    body,
+    bodySize,
+    signal,
+    onProgress,
+    label,
+  }: {
+    auth: string;
+    type: string;
+    body: any;
+    bodySize: number | null;
+    signal?: AbortSignal;
+    onProgress?: (progress: any) => void;
+    label: string;
+  }): Promise<any> {
+    const source = body instanceof Blob ? body : new Blob([body], { type });
+    const total = bodySize ?? source.size;
+    const reader = source.stream().getReader();
+    let uploadedBytes = 0;
+    let onActivity = () => {};
+    const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
+      pull: async (controller) => {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        uploadedBytes += value.byteLength;
+        onActivity();
+        reportTransferProgress(onProgress, {
+          direction: 'upload',
+          phase: 'transferring',
+          loaded: uploadedBytes,
+          total,
+        });
+        controller.enqueue(value as Uint8Array<ArrayBuffer>);
+      },
+      cancel: (reason) => reader.cancel(reason),
+    });
+
+    return this._fetchWithDeadline(url, {
+      method: 'POST',
+      headers: {
+        Authorization: auth,
+        'Content-Type': type,
+        Accept: 'application/json',
+      },
+      mode: 'cors',
+      credentials: 'omit',
+      body: stream,
+      duplex: 'half',
+      signal,
+    }, {
+      timeoutMs: this._httpUploadIdleTimeoutMs,
+      label,
+      timeoutKind: 'idle',
+      bindActivity: (notifyActivity) => {
+        onActivity = notifyActivity;
+      },
+      consume: async (response) => {
+        reportTransferProgress(onProgress, {
+          direction: 'upload',
+          phase: 'processing',
+          loaded: total,
+          total,
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => '');
+          throw httpResponseError('JMAP upload failed', response, detail);
+        }
+        const result = await response.json();
+        reportTransferProgress(onProgress, {
+          direction: 'upload',
+          phase: 'complete',
+          loaded: total,
+          total,
+        });
+        return result;
+      },
+    });
+  }
+
+  _uploadWithIdleTimeout(url: string, {
+    auth,
+    type,
+    body,
+    bodySize,
+    signal,
+    onProgress,
+    label,
+  }: {
+    auth: string;
+    type: string;
+    body: any;
+    bodySize: number | null;
+    signal?: AbortSignal;
+    onProgress?: (progress: any) => void;
+    label: string;
+  }): Promise<any> {
+    if (this._aborted) return Promise.reject(abortedError(label, 0));
+    if (signal?.aborted) return Promise.reject(cancelledError(label, 0));
+    if (!this._XMLHttpRequest) {
+      return this._uploadWithFetchIdleTimeout(url, {
+        auth,
+        type,
+        body,
+        bodySize,
+        signal,
+        onProgress,
+        label,
+      });
+    }
+
+    const request = new this._XMLHttpRequest();
+    const started = Date.now();
+    let uploadedBytes = 0;
+    let uploadFinished = false;
+    let timedOut = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer != null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        request.removeEventListener('load', onLoad);
+        request.removeEventListener('error', onError);
+        request.removeEventListener('abort', onAbort);
+        request.upload.removeEventListener('progress', onUploadProgress);
+        request.upload.removeEventListener('load', onUploadLoad);
+        signal?.removeEventListener('abort', onSignalAbort);
+        this._inFlightHttp.delete(request);
+      };
+      const rejectOnce = (error: any) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const resolveOnce = (result: any) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const timeoutError = () => {
+        const elapsedMs = Date.now() - started;
+        wlog.warn('jmap-transport', `${label} idle timeout after ${elapsedMs}ms`);
+        const error: any = new Error(
+          `JMAP HTTP transfer ${label} made no progress for ${this._httpUploadIdleTimeoutMs}ms`,
+        );
+        error.type = 'httpIdleTimeout';
+        error.elapsedMs = elapsedMs;
+        return error;
+      };
+      const armTimeout = () => {
+        if (
+          !Number.isFinite(this._httpUploadIdleTimeoutMs)
+          || this._httpUploadIdleTimeoutMs <= 0
+          || timedOut
+          || settled
+        ) {
+          return;
+        }
+        if (timer != null) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = null;
+          timedOut = true;
+          request.abort();
+        }, this._httpUploadIdleTimeoutMs);
+      };
+      const reportUploadedBytes = (loaded: number) => {
+        if (!Number.isFinite(loaded)) return;
+        const acceptedBytes = bodySize == null ? loaded : Math.min(bodySize, loaded);
+        if (acceptedBytes <= uploadedBytes) return;
+        uploadedBytes = acceptedBytes;
+        armTimeout();
+        reportTransferProgress(onProgress, {
+          direction: 'upload',
+          phase: 'transferring',
+          loaded: uploadedBytes,
+          total: bodySize,
+        });
+      };
+      const markUploadFinished = () => {
+        if (uploadFinished) return;
+        uploadFinished = true;
+        if (bodySize != null) reportUploadedBytes(bodySize);
+        reportTransferProgress(onProgress, {
+          direction: 'upload',
+          phase: 'processing',
+          loaded: bodySize ?? uploadedBytes,
+          total: bodySize,
+        });
+      };
+      const onUploadProgress = (event: ProgressEvent) => {
+        reportUploadedBytes(Number(event.loaded));
+      };
+      const onUploadLoad = () => {
+        markUploadFinished();
+      };
+      const onSignalAbort = () => {
+        request.abort();
+      };
+      const onAbort = () => {
+        const elapsedMs = Date.now() - started;
+        if (timedOut) {
+          rejectOnce(timeoutError());
+        } else if (signal?.aborted) {
+          rejectOnce(cancelledError(label, elapsedMs));
+        } else {
+          rejectOnce(abortedError(label, elapsedMs));
+        }
+      };
+      const onError = () => {
+        rejectOnce(new Error(`JMAP upload failed: ${request.statusText || 'network error'}`));
+      };
+      const onLoad = () => {
+        markUploadFinished();
+        if (request.status < 200 || request.status >= 300) {
+          rejectOnce(httpResponseError(
+            'JMAP upload failed',
+            request,
+            request.responseText || '',
+          ));
+          return;
+        }
+        try {
+          const result = JSON.parse(request.responseText);
+          const completedBytes = bodySize ?? Number(result?.size ?? uploadedBytes);
+          reportTransferProgress(onProgress, {
+            direction: 'upload',
+            phase: 'complete',
+            loaded: completedBytes,
+            total: bodySize ?? completedBytes,
+          });
+          resolveOnce(result);
+        } catch (error) {
+          rejectOnce(error);
+        }
+      };
+
+      request.addEventListener('load', onLoad);
+      request.addEventListener('error', onError);
+      request.addEventListener('abort', onAbort);
+      request.upload.addEventListener('progress', onUploadProgress);
+      request.upload.addEventListener('load', onUploadLoad);
+      signal?.addEventListener('abort', onSignalAbort, { once: true });
+      this._inFlightHttp.add(request);
+      try {
+        request.open('POST', url, true);
+        request.setRequestHeader('Authorization', auth);
+        request.setRequestHeader('Content-Type', type || 'application/octet-stream');
+        request.setRequestHeader('Accept', 'application/json');
+        armTimeout();
+        request.send(body);
+      } catch (error) {
+        rejectOnce(error);
+      }
+    });
+  }
+
   /**
    * Fetch and cache the session document. Subsequent calls return the
    * cached value unless force=true.
    */
-  async fetchSession({ force = false } = {}) {
+  async fetchSession({ force = false, signal }: {
+    force?: boolean;
+    signal?: AbortSignal;
+  } = {}) {
     if (this._session && !force) {
       return this._session;
     }
@@ -293,6 +801,7 @@ export class JmapTransport {
       },
       mode: 'cors',
       credentials: 'omit',
+      signal,
     }, {
       timeoutMs: this._httpRequestTimeoutMs,
       label: 'session',
@@ -374,9 +883,21 @@ export class JmapTransport {
    * @param {BodyInit} args.body     The blob bytes (Uint8Array/Blob/ArrayBuffer).
    * @returns {Promise<{ accountId: string, blobId: string, type: string, size: number }>}
    */
-  async upload({ accountId, type, body }: { accountId: string; type: string; body: any }) {
+  async upload({
+    accountId,
+    type,
+    body,
+    signal,
+    onProgress,
+  }: {
+    accountId: string;
+    type: string;
+    body: any;
+    signal?: AbortSignal;
+    onProgress?: (progress: any) => void;
+  }) {
     if (!this._session?.uploadUrl) {
-      await this.fetchSession();
+      await this.fetchSession({ signal });
     }
     const template = this._session?.uploadUrl;
     if (!template) {
@@ -384,27 +905,27 @@ export class JmapTransport {
     }
     const url = template.replace('{accountId}', encodeURIComponent(accountId));
     const auth = await this._getAuthHeader();
+    if (signal?.aborted) throw cancelledError(`upload ${type}`, 0);
+    const bodySize = Number.isSafeInteger(body?.size)
+      ? Number(body.size)
+      : (Number.isSafeInteger(body?.byteLength) ? Number(body.byteLength) : null);
+    const contentType = type || 'application/octet-stream';
+    const label = `upload ${contentType}`;
     wlog.info('jmap-transport', `upload ${type} -> ${accountId}`);
-    return this._fetchWithDeadline(url, {
-      method: 'POST',
-      headers: {
-        Authorization: auth,
-        'Content-Type': type || 'application/octet-stream',
-        Accept: 'application/json',
-      },
-      mode: 'cors',
-      credentials: 'omit',
+    reportTransferProgress(onProgress, {
+      direction: 'upload',
+      phase: 'transferring',
+      loaded: 0,
+      total: bodySize,
+    });
+    return this._uploadWithIdleTimeout(url, {
+      auth,
+      type: contentType,
       body,
-    }, {
-      timeoutMs: this._httpBlobTimeoutMs,
-      label: `upload ${type}`,
-      consume: async (response) => {
-        if (!response.ok) {
-          const detail = await response.text().catch(() => '');
-          throw httpResponseError('JMAP upload failed', response, detail);
-        }
-        return response.json();
-      },
+      signal,
+      bodySize,
+      onProgress,
+      label,
     });
   }
 
@@ -421,12 +942,37 @@ export class JmapTransport {
    * @param {string} [args.type]     MIME type, substituted into the
    *                                  template's {type} and sent as Accept.
    * @param {string} [args.name]     File name for the template's {name}.
+   * @param {number} [args.maxBytes] Maximum accepted response body size.
+   * @param {boolean} [args.truncateAtMaxBytes] Return a streamed prefix at
+   *                                             maxBytes instead of failing.
    * @returns {Promise<Uint8Array>}
    */
-  async download({ accountId, blobId, type = 'application/octet-stream', name = 'blob' }:
-  { accountId: string; blobId: string; type?: string; name?: string }) {
+  download(options: DownloadOptions): Promise<Uint8Array> {
+    return this._download(options, 'bytes') as Promise<Uint8Array>;
+  }
+
+  /**
+   * Attachment-only download path that builds the Blob directly from
+   * response stream chunks. Byte/base64 compatibility callers continue
+   * to use download().
+   */
+  downloadBlob(options: DownloadOptions): Promise<Blob> {
+    return this._download(options, 'blob') as Promise<Blob>;
+  }
+
+  async _download({
+    accountId,
+    blobId,
+    type = 'application/octet-stream',
+    name = 'blob',
+    maxBytes,
+    truncateAtMaxBytes = false,
+    signal,
+    onProgress,
+  }: DownloadOptions, kind: DownloadBodyKind): Promise<Blob | Uint8Array> {
+    const byteLimit = boundedDownloadLimit(maxBytes);
     if (!this._session?.downloadUrl) {
-      await this.fetchSession();
+      await this.fetchSession({ signal });
     }
     const template = this._session?.downloadUrl;
     if (!template) {
@@ -443,15 +989,24 @@ export class JmapTransport {
       headers: { Authorization: auth },
       mode: 'cors',
       credentials: 'omit',
+      signal,
     }, {
-      timeoutMs: this._httpBlobTimeoutMs,
+      timeoutMs: this._httpBlobIdleTimeoutMs,
       label: `download ${blobId}`,
-      consume: async (response) => {
+      timeoutKind: 'idle',
+      consume: async (response, onActivity) => {
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
           throw httpResponseError('JMAP download failed', response, detail);
         }
-        return new Uint8Array(await response.arrayBuffer());
+        return readDownloadBody(response, {
+          maxBytes: byteLimit,
+          truncateAtMaxBytes,
+          onProgress,
+          onActivity,
+          kind,
+          type,
+        });
       },
     });
   }

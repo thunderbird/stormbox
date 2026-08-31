@@ -2,7 +2,11 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { prepareComposeEmail } from '../../../src/sync/backends/jmap/compose-email';
+import {
+  missingRegularAttachmentIndexes,
+  prepareComposeEmail,
+  regularAttachmentSources,
+} from '../../../src/sync/backends/jmap/compose-email';
 import { stripInternalProvenanceHtml } from '../../../src/utils/compose-provenance';
 
 function requestWithBodies(htmlBody: string, textBody: string) {
@@ -52,5 +56,74 @@ describe('prepareComposeEmail worker provenance invariant', () => {
     expect(stripInternalProvenanceHtml(html)).toBe(html);
     expect(html).toBe('<p data-stormbox-origin="identity-signature">Signature</p>');
     expect(text).toBe('Signature');
+  });
+});
+
+describe('prepareComposeEmail regular attachment validation', () => {
+  const validAttachment = {
+    part_id: '',
+    blob_id: 'temporary-blob',
+    mime_type: 'application/pdf',
+    name: 'report.pdf',
+    size: 3,
+    disposition: 'attachment',
+    cid: null,
+  };
+
+  it.each([
+    ['blobId', { blob_id: ' bad-blob' }],
+    ['type', { mime_type: 'not a media type' }],
+    ['type alias', { type: 42 }],
+    ['name', { name: 'bad\nname.pdf' }],
+    ['empty name', { name: '   ' }],
+    ['disposition', { disposition: 'inline' }],
+    ['cid', { cid: '' }],
+    ['partId alias', { partId: 'other-part' }],
+    ['size', { size: '3' }],
+  ])('rejects an invalid regular attachment %s before upload', async (_field, patch) => {
+    const upload = vi.fn();
+    await expect(prepareComposeEmail({
+      transport: { upload },
+      account: { remote_account_id: 'account-1' },
+      identity: { email: 'sender@example.com' },
+      mailboxRemoteId: null,
+      isDraft: false,
+      request: {
+        ...requestWithBodies('<p>Attached.</p>', 'Attached.'),
+        attachments: [{ ...validAttachment, ...patch }],
+      },
+    })).rejects.toMatchObject({ type: 'invalidAttachment' });
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('uses structured notFound ids when blobNotFound has a generic description', () => {
+    const attachments = regularAttachmentSources([
+      { ...validAttachment, blob_id: 'blob-first', name: 'first.pdf' },
+      { ...validAttachment, blob_id: 'blob-second', name: 'second.pdf' },
+    ]);
+
+    expect(missingRegularAttachmentIndexes({
+      type: 'blobNotFound',
+      description: 'At least one referenced blob does not exist.',
+      notFound: ['blob-second'],
+    }, attachments)).toEqual([1]);
+  });
+
+  it('fails closed against captured attachments when blobNotFound names no candidate', () => {
+    const attachments = regularAttachmentSources([
+      { ...validAttachment, blob_id: 'blob-first', name: 'first.pdf' },
+      { ...validAttachment, blob_id: 'blob-second', name: 'second.pdf' },
+    ]);
+
+    expect(missingRegularAttachmentIndexes({
+      type: 'blobNotFound',
+      description: 'At least one referenced blob does not exist.',
+      notFound: ['blob-not-in-request'],
+    }, attachments)).toEqual([0, 1]);
+    expect(missingRegularAttachmentIndexes({
+      type: 'blobNotFound',
+      description: 'At least one referenced blob does not exist.',
+      notFound: 'blob-first',
+    }, attachments)).toEqual([0, 1]);
   });
 });

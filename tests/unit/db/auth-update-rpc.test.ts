@@ -32,7 +32,7 @@ describe('OIDC auth update RPC', () => {
       token: 'rotated-token',
       issuedAt: 2_000,
       expiresAt: 62_000,
-    });
+    }, {});
 
     channel.port1.close();
     channel.port2.close();

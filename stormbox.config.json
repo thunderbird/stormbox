@@ -1,0 +1,15 @@
+{
+  "contactsTrash": {
+    "serverFileStorage": {
+      "maxSize": "25MiB",
+      "maxFiles": null,
+      "maxFolders": null
+    },
+    "snapshotShardMaxBytes": null,
+    "maxRecordsPerShard": 128,
+    "tombstoneShardMaxBytes": "256KiB",
+    "maxMediaItems": 32,
+    "maxMediaItemBytes": "16MiB",
+    "maxTotalMediaBytes": "16MiB"
+  }
+}

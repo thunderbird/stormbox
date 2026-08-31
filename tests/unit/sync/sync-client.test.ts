@@ -36,6 +36,10 @@ function makeBackend(name) {
     async ensureIdentities() { calls.push(['ensureIdentities']); },
     async ensureQuota() { calls.push(['ensureQuota']); },
     async ensureAddressbooks() { calls.push(['ensureAddressbooks']); },
+    async inventoryAddressbook(addressbookId) {
+      calls.push(['inventoryAddressbook', addressbookId]);
+      return { total: 0 };
+    },
     async ensureContacts(addressbookId) { calls.push(['ensureContacts', addressbookId]); },
     async runMutation(mutationId) { calls.push(['runMutation', mutationId]); },
   };
@@ -78,10 +82,12 @@ describe('SyncClient routing', () => {
     client.registerBackend(1, SERVICE_KIND.JMAP_CONTACTS, contacts);
 
     await client.ensureAddressbooks(1);
+    await client.inventoryAddressbook(1, 5);
     await client.ensureContacts(1, 5);
 
     expect(contacts.calls).toEqual([
       ['ensureAddressbooks'],
+      ['inventoryAddressbook', 5],
       ['ensureContacts', 5],
     ]);
     expect(mail.calls).toEqual([]);

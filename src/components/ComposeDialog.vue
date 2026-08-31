@@ -2,9 +2,12 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
+  Paperclip,
+  RotateCw,
   Save,
   Send as SendIcon,
   Trash2,
+  X,
 } from '@lucide/vue';
 
 import {
@@ -21,7 +24,9 @@ import { useAuthStore } from '../stores/auth-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { COMPOSE_STATE } from '../constants/states';
 import type { ContactListRow, IdentityRow } from '../types/db';
+import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
+import { formatBytes } from '../utils/format-bytes';
 import {
   IDENTITY_SIGNATURE_ORIGIN,
   type TrackedOriginState,
@@ -45,6 +50,11 @@ const session = computed<ComposeSession | null>(() =>
 const draft = computed(() => session.value?.draft ?? composeStore.draft);
 const sessionStatus = computed(() => session.value?.status ?? COMPOSE_STATE.IDLE);
 const sessionError = computed(() => session.value?.error ?? null);
+const attachments = computed(() => session.value?.attachments ?? []);
+const uncheckpointedAttachmentCount = computed(() =>
+  session.value ? composeStore.uncheckpointedAttachmentCount(session.value.id) : 0);
+const attachmentBusy = computed(() =>
+  session.value ? composeStore.isAttachmentBusy(session.value.id) : false);
 const fromIdentity = computed(() => composeStore.identityForSession(session.value));
 const isExpanded = computed(() =>
   session.value?.presentation === COMPOSE_PRESENTATION.EXPANDED);
@@ -66,6 +76,7 @@ const closeTriggerLabel = computed(() =>
 
 const dialogEl = ref<HTMLElement | null>(null);
 const closePromptEl = ref<HTMLElement | null>(null);
+const attachmentInputEl = ref<HTMLInputElement | null>(null);
 const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
 useModalFocus(closePromptEl, {
   active: closePromptOpen,
@@ -108,6 +119,39 @@ function updateDraftBody(content: { html: string; text: string }) {
 
 function updateTrackedOrigins(states: TrackedOriginState[]) {
   composeStore.updateTrackedOrigins(states, session.value?.id ?? null);
+}
+
+interface PastedEditorFile {
+  file: File;
+  kind: 'inline' | 'attachment';
+}
+
+function openAttachmentPicker(): void {
+  attachmentInputEl.value?.click();
+}
+
+async function pickAttachments(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement;
+  const files = input.files ? Array.from(input.files) : [];
+  input.value = '';
+  if (files.length === 0 || !session.value) return;
+  await composeStore.addAttachments(files, 'picker', session.value.id);
+}
+
+async function attachPastedFiles(files: PastedEditorFile[]): Promise<void> {
+  const regular = files
+    .filter((entry) => entry.kind === 'attachment')
+    .map((entry) => entry.file);
+  if (regular.length === 0 || !session.value) return;
+  await composeStore.addAttachments(regular, 'paste', session.value.id);
+}
+
+function attachmentSize(size: number): string {
+  return formatBytes(size) ?? `${size} B`;
+}
+
+function attachmentDisplayName(name: string): string {
+  return sanitizeAttachmentFilename(name);
 }
 
 /**
@@ -560,11 +604,112 @@ function identityInitials(id: IdentityRow): string {
         accessible-label="Message body"
         @tracked-origin-state="updateTrackedOrigins"
         @update="updateDraftBody"
+        @paste-files="attachPastedFiles"
       />
 
+      <section
+        v-if="attachments.length > 0"
+        class="compose-attachments"
+        aria-label="Attachments"
+      >
+        <article
+          v-for="attachment in attachments"
+          :key="attachment.clientId"
+          class="compose-attachment"
+        >
+          <div class="compose-attachment__details">
+            <strong class="compose-attachment__name">
+              {{ attachmentDisplayName(attachment.name) }}
+            </strong>
+            <span class="compose-attachment__meta">
+              {{ attachmentSize(attachment.size) }}
+              <template v-if="attachment.status === 'ready'"> · Ready</template>
+              <template v-else-if="attachment.status === 'failed'"> · Upload failed</template>
+            </span>
+            <div
+              v-if="attachment.status === 'uploading'"
+              class="compose-attachment__progress"
+            >
+              <progress
+                :value="attachment.progress"
+                max="100"
+                :aria-label="`Uploading ${attachmentDisplayName(attachment.name)}: ${attachment.progress}%`"
+              />
+              <span>{{ attachment.progress }}%</span>
+            </div>
+            <span
+              v-if="attachment.error"
+              class="compose-attachment__error"
+              role="status"
+            >{{ attachment.error }}</span>
+          </div>
+          <div class="compose-attachment__actions">
+            <button
+              v-if="attachment.status === 'failed'"
+              type="button"
+              class="compose-attachment__action"
+              :aria-label="`Retry ${attachmentDisplayName(attachment.name)}`"
+              :title="`Retry ${attachmentDisplayName(attachment.name)}`"
+              @click="composeStore.retryAttachment(attachment.clientId, session.id)"
+            >
+              <RotateCw :size="15" aria-hidden="true" />
+            </button>
+            <button
+              v-if="attachment.status === 'uploading'"
+              type="button"
+              class="compose-attachment__action"
+              :aria-label="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
+              :title="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
+              @click="composeStore.cancelAttachment(attachment.clientId, session.id)"
+            >
+              <X :size="15" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              class="compose-attachment__action"
+              :aria-label="`Remove ${attachmentDisplayName(attachment.name)}`"
+              :title="`Remove ${attachmentDisplayName(attachment.name)}`"
+              @click="composeStore.removeAttachment(attachment.clientId, session.id)"
+            >
+              <Trash2 :size="15" aria-hidden="true" />
+            </button>
+          </div>
+        </article>
+      </section>
+
+      <p
+        v-if="uncheckpointedAttachmentCount > 0"
+        class="compose-attachment-warning"
+        role="status"
+      >
+        {{ uncheckpointedAttachmentCount === 1
+          ? '1 attachment has not reached the draft yet.'
+          : `${uncheckpointedAttachmentCount} attachments have not reached the draft yet.` }}
+      </p>
+
       <footer>
+        <input
+          ref="attachmentInputEl"
+          type="file"
+          multiple
+          hidden
+          @change="pickAttachments"
+        />
         <AppButton
+          variant="outline"
           :disabled="isSending || session.isDiscarding"
+          aria-label="Attach files"
+          title="Attach files"
+          @click="openAttachmentPicker"
+        >
+          <template #iconLeft>
+            <Paperclip :size="17" aria-hidden="true" />
+          </template>
+          Attach
+        </AppButton>
+        <AppButton
+          class="compose-send"
+          :disabled="isSending || session.isDiscarding || attachmentBusy"
           @click="send"
         >
           <template #iconLeft>
@@ -615,7 +760,10 @@ function identityInitials(id: IdentityRow): string {
             id="compose-close-title"
           >Save this draft?</h3>
           <p id="compose-close-description">
-            Save your latest changes before closing this compose window.
+            {{ uncheckpointedAttachmentCount > 0
+              ? 'Some attachments have not reached the draft. Keep this window open to finish '
+                + 'or retry them, or close without saving those attachments.'
+              : 'Save your latest changes before closing this compose window.' }}
           </p>
           <div class="compose-confirm__actions">
             <AppButton
@@ -819,10 +967,90 @@ function identityInitials(id: IdentityRow): string {
   color: var(--text, inherit);
   border-color: var(--accent, #0060df);
 }
+.compose-attachments {
+  display: grid;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 8px;
+}
+.compose-attachment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.compose-attachment + .compose-attachment {
+  border-top: 1px solid var(--border, #d6d9e2);
+}
+.compose-attachment__details {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.compose-attachment__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--txt-default, 0.875rem);
+}
+.compose-attachment__meta,
+.compose-attachment__error,
+.compose-attachment__progress,
+.compose-attachment-warning {
+  font-size: var(--txt-small, 0.75rem);
+}
+.compose-attachment__meta {
+  color: var(--colour-ti-secondary, var(--muted, #6b7280));
+}
+.compose-attachment__error,
+.compose-attachment-warning {
+  color: var(--colour-ti-warning, #8a4b00);
+}
+.compose-attachment__progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compose-attachment__progress progress {
+  width: min(220px, 40vw);
+}
+.compose-attachment__actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+.compose-attachment__action {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.compose-attachment__action:hover {
+  border-color: var(--accent, #0060df);
+}
+.compose-attachment-warning {
+  margin: 0;
+}
 footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
+}
+.base.app-button.compose-send:disabled {
+  background: var(--colour-neutral-border, var(--border, #d6d9e2));
+  color: var(--colour-ti-secondary, var(--muted, #6b7280));
+  cursor: not-allowed;
+  opacity: 1;
 }
 .compose-error { color: #b3261e; font-size: 13px; }
 .compose-save-error {

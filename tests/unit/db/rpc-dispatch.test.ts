@@ -6,6 +6,7 @@ import {
   TABLES_TOUCHED,
   dispatchRpc,
   makeBroadcaster,
+  makeRpcProgressReporter,
 } from '../../../src/db/rpc-dispatch';
 
 describe('dispatchRpc', () => {
@@ -37,7 +38,35 @@ describe('dispatchRpc', () => {
     expect(response).toEqual({
       type: RPC_RESPONSE,
       id: 1,
-      error: 'not today',
+      error: {
+        name: 'Error',
+        message: 'not today',
+      },
+    });
+  });
+
+  it('preserves typed error fields in the response envelope', async () => {
+    const handlers = {
+      boom: () => {
+        throw Object.assign(new Error('too much'), {
+          type: 'tooLarge',
+          status: 413,
+          maxBytes: 5,
+          actualBytes: 6,
+        });
+      },
+    };
+    const response = await dispatchRpc(
+      { type: RPC_REQUEST, id: 3, method: 'boom' },
+      handlers,
+    );
+    expect(response.error).toMatchObject({
+      name: 'Error',
+      message: 'too much',
+      type: 'tooLarge',
+      status: 413,
+      maxBytes: 5,
+      actualBytes: 6,
     });
   });
 
@@ -47,7 +76,7 @@ describe('dispatchRpc', () => {
       {},
     );
     expect(response.id).toBe(2);
-    expect(response.error).toMatch(/Unknown RPC method/);
+    expect(response.error.message).toMatch(/Unknown RPC method/);
   });
 
   it('throws on malformed envelopes', async () => {
@@ -56,6 +85,57 @@ describe('dispatchRpc', () => {
     await expect(
       dispatchRpc({ type: RPC_REQUEST, id: 'not-a-number', method: 'x' }, {}),
     ).rejects.toThrow();
+  });
+});
+
+describe('makeRpcProgressReporter', () => {
+  it('emits start, whole-percent changes, phase changes, and final completion', () => {
+    const posted: any[] = [];
+    let now = 0;
+    const report = makeRpcProgressReporter(
+      (progress) => posted.push(progress),
+      { now: () => now },
+    );
+
+    report({ direction: 'download', phase: 'transferring', loaded: 0, total: 10_000 });
+    report({ direction: 'download', phase: 'transferring', loaded: 1, total: 10_000 });
+    report({ direction: 'download', phase: 'transferring', loaded: 49, total: 10_000 });
+    report({ direction: 'download', phase: 'transferring', loaded: 50, total: 10_000 });
+    report({ direction: 'download', phase: 'transferring', loaded: 51, total: 10_000 });
+    now = 1;
+    report({ direction: 'download', phase: 'processing', loaded: 10_000, total: 10_000 });
+    report({ direction: 'download', phase: 'complete', loaded: 10_000, total: 10_000 });
+
+    expect(posted.map(({ phase, loaded }) => [phase, loaded])).toEqual([
+      ['transferring', 0],
+      ['transferring', 50],
+      ['processing', 10_000],
+      ['complete', 10_000],
+    ]);
+    expect(posted.at(-1)).toEqual({
+      direction: 'download',
+      phase: 'complete',
+      loaded: 10_000,
+      total: 10_000,
+    });
+  });
+
+  it('time-throttles unknown-length intermediate progress', () => {
+    const posted: any[] = [];
+    let now = 0;
+    const report = makeRpcProgressReporter(
+      (progress) => posted.push(progress),
+      { now: () => now, intervalMs: 250 },
+    );
+
+    report({ direction: 'download', phase: 'transferring', loaded: 0, total: null });
+    now = 100;
+    report({ direction: 'download', phase: 'transferring', loaded: 20, total: null });
+    now = 250;
+    report({ direction: 'download', phase: 'transferring', loaded: 40, total: null });
+    report({ direction: 'download', phase: 'complete', loaded: 50, total: 50 });
+
+    expect(posted.map(({ loaded }) => loaded)).toEqual([0, 40, 50]);
   });
 });
 

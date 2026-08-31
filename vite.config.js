@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import basicSsl from "@vitejs/plugin-basic-ssl";
@@ -86,6 +88,12 @@ export default defineConfig({
     outDir: "dist",
     assetsDir: "assets",
     target: "esnext",
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        pdfViewer: fileURLToPath(new URL("./pdf-viewer.html", import.meta.url)),
+      },
+    },
   },
   // @journeyapps/wa-sqlite ships its own ES modules + WASM. Pre-bundling
   // them through esbuild breaks the WASM URL imports the VFS examples

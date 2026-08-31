@@ -7,11 +7,18 @@
  */
 
 import { defineStore } from 'pinia';
-import { computed, reactive, ref, watch } from 'vue';
+import {
+  computed,
+  reactive,
+  ref,
+  watch,
+  type WatchStopHandle,
+} from 'vue';
 
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import { useMailStore } from './mail-store';
+import { useSettingsStore } from './settings-store';
 import { COMPOSE_STATE, MUTATION_TYPE } from '../constants/states';
 import type { ComposeState, MailboxRole } from '../constants/states';
 import type {
@@ -20,12 +27,17 @@ import type {
   IdentityRow,
   MessageRow,
 } from '../types';
-import type { Repository } from '../db/repository';
+import type {
+  AttachmentLimits,
+  BlobTransferProgress,
+  Repository,
+} from '../db/repository';
 import { TABLE_FAMILIES } from '../db/protocol';
 import {
   findMatchingIdentityIndex,
+  findReplyIdentityIndex,
   resolveComposeIdentityIndex,
-  type RememberedComposeIdentity,
+  resolveReplyIdentityIndex,
 } from '../utils/compose-identity';
 import {
   buildQuotedHtml,
@@ -40,6 +52,7 @@ import {
 } from '../utils/address-parse';
 import { buildReplyAudience, buildThreadHeaders } from '../utils/reply';
 import { addressKey } from '../utils/address-key';
+import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { isInlineImageType } from '../utils/message-html';
 import { makeMessageId, makeOperationId } from '../utils/message-id';
 import { editSafeDraftHtml } from '../utils/compose-html';
@@ -59,10 +72,41 @@ import {
 } from '../utils/compose-provenance';
 
 export type RecipientField = 'to' | 'cc' | 'bcc';
+type PendingDiscardIntent = 'discard-all' | 'keep-confirmed';
 
 export const RECIPIENT_FIELDS: readonly RecipientField[] = ['to', 'cc', 'bcc'];
 export const INVALID_RECIPIENT_MESSAGE =
   'Fix invalid recipients before saving or sending this message.';
+export const UNCHECKPOINTED_ATTACHMENT_MESSAGE =
+  'Some attachments have not reached the draft. Wait for uploads to finish, '
+  + 'then retry or remove failed attachments.';
+
+export type ComposeAttachmentSource = 'picker' | 'paste' | 'draft';
+export type ComposeAttachmentStatus = 'uploading' | 'ready' | 'failed';
+
+export interface ComposeAttachment {
+  clientId: string;
+  name: string;
+  type: string;
+  size: number;
+  source: ComposeAttachmentSource;
+  status: ComposeAttachmentStatus;
+  uploadBlobId: string | null;
+  canonicalBlobId: string | null;
+  partId: string | null;
+  error: string | null;
+  progress: number;
+}
+
+interface AttachmentPreflightObligation {
+  id: string;
+  accountId: number;
+}
+
+const attachmentFiles = new Map<string, File>();
+const attachmentControllers = new Map<string, AbortController>();
+const attachmentAttempts = new Map<string, number>();
+const attachmentBlobFailures = new Set<string>();
 
 /**
  * Text a user committed as a recipient that is not a readable address.
@@ -94,11 +138,14 @@ export interface Draft {
   subject: string;
   textBody: string;
   htmlBody: string;
-  attachments: BodyAttachmentRow[];
   /** Threading for a reply, per RFC 5322 §3.6.4. Empty for a new message. */
   inReplyTo: string[];
   references: string[];
 }
+
+type DraftPrefill = Partial<Draft> & {
+  attachments?: BodyAttachmentRow[];
+};
 
 /**
  * A fresh empty draft. This is a factory rather than a frozen constant
@@ -115,7 +162,6 @@ function emptyDraft(): Draft {
     subject: '',
     textBody: '',
     htmlBody: '',
-    attachments: [],
     inReplyTo: [],
     references: [],
   };
@@ -140,12 +186,15 @@ export const COMPOSE_OPEN_ORIGIN = {
 export type ComposeOpenOrigin =
   (typeof COMPOSE_OPEN_ORIGIN)[keyof typeof COMPOSE_OPEN_ORIGIN];
 
-export type ComposeOpenOptions =
+export type ComposeOpenOptions = {
+  preferredIdentityEmails?: string[];
+} & (
   | { origin: typeof COMPOSE_OPEN_ORIGIN.NEW }
   | { origin: typeof COMPOSE_OPEN_ORIGIN.REPLY }
   | { origin: typeof COMPOSE_OPEN_ORIGIN.REPLY_ALL }
   | { origin: typeof COMPOSE_OPEN_ORIGIN.FORWARD }
-  | { origin: typeof COMPOSE_OPEN_ORIGIN.SERVER_DRAFT };
+  | { origin: typeof COMPOSE_OPEN_ORIGIN.SERVER_DRAFT }
+);
 
 export interface AutomaticBccOrigin {
   slot: number;
@@ -178,6 +227,8 @@ export interface ComposeSession {
   isDiscarding: boolean;
   closePromptOpen: boolean;
   draft: Draft;
+  attachments: ComposeAttachment[];
+  attachmentPreflights: AttachmentPreflightObligation[];
   recipientEntriesByField: Record<RecipientField, RecipientEntry[]>;
   rejectedRecipients: Record<RecipientField, string[]>;
   pendingRecipientText: Record<RecipientField, string>;
@@ -188,9 +239,13 @@ export interface ComposeSession {
   confirmedRevision: ConfirmedDraftRevision | null;
   sourceMessageId: number | null;
   unresolvedFrom: ParsedAddress | null;
+  automaticFromSelection: boolean;
+  preferredIdentityEmails: string[];
   failedSaveMutationId: number | null;
   failedSaveSeedJson: string | null;
   failedSaveRequest: Record<string, any> | null;
+  pendingDiscardMutationId: number | null;
+  pendingDiscardIntent: PendingDiscardIntent | null;
   openOrigin: ComposeOpenOrigin;
   automaticBccOrigins: AutomaticBccOrigin[];
   automaticSignatureOrigin: AutomaticSignatureOrigin | null;
@@ -229,18 +284,54 @@ function makeSessionId(): string {
   return `compose-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function cloneDraft(prefill: Partial<Draft> = {}): Draft {
+function makeAttachmentClientId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function makeAttachmentPreflightId(): string {
+  return `preflight-${makeAttachmentClientId()}`;
+}
+
+function cloneDraft(prefill: DraftPrefill = {}): Draft {
+  const { attachments: _attachments, ...draftPrefill } = prefill;
   return {
     ...emptyDraft(),
-    ...prefill,
-    to: [...(prefill.to ?? [])].map((entry) => ({ ...entry })),
-    cc: [...(prefill.cc ?? [])].map((entry) => ({ ...entry })),
-    bcc: [...(prefill.bcc ?? [])].map((entry) => ({ ...entry })),
-    replyTo: [...(prefill.replyTo ?? [])].map((entry) => ({ ...entry })),
-    attachments: [...(prefill.attachments ?? [])].map((attachment) => ({ ...attachment })),
-    inReplyTo: [...(prefill.inReplyTo ?? [])],
-    references: [...(prefill.references ?? [])],
+    ...draftPrefill,
+    to: [...(draftPrefill.to ?? [])].map((entry) => ({ ...entry })),
+    cc: [...(draftPrefill.cc ?? [])].map((entry) => ({ ...entry })),
+    bcc: [...(draftPrefill.bcc ?? [])].map((entry) => ({ ...entry })),
+    replyTo: [...(draftPrefill.replyTo ?? [])].map((entry) => ({ ...entry })),
+    inReplyTo: [...(draftPrefill.inReplyTo ?? [])],
+    references: [...(draftPrefill.references ?? [])],
   };
+}
+
+function composeAttachmentsFromBody(
+  attachments: readonly BodyAttachmentRow[],
+  sessionId: string,
+): ComposeAttachment[] {
+  return attachments
+    .filter((attachment) => attachment.disposition !== 'inline' && !attachment.cid)
+    .map((attachment, index) => ({
+      clientId: `${sessionId}:part:${attachment.part_id || index}`,
+      name: attachment.name || 'attachment',
+      type: attachment.mime_type || 'application/octet-stream',
+      size: Number.isSafeInteger(attachment.size) && Number(attachment.size) >= 0
+        ? Number(attachment.size)
+        : 0,
+      source: 'draft',
+      status: attachment.blob_id ? 'ready' : 'failed',
+      uploadBlobId: null,
+      canonicalBlobId: attachment.blob_id,
+      partId: attachment.part_id || null,
+      error: attachment.blob_id
+        ? null
+        : 'This attachment is missing its server data. Remove it or select the file again.',
+      progress: attachment.blob_id ? 100 : 0,
+    }));
 }
 
 function identityAddress(entry: { name: string | null; email: string }): ParsedAddress {
@@ -384,8 +475,8 @@ function parseStringArray(value: string | null | undefined): string[] {
 function identityReplyTo(identity: IdentityRow): ParsedAddress[] {
   return (identity.reply_to ?? []).map((entry) => ({
     ...(entry.name ? { name: entry.name } : {}),
-    email: entry.email,
-  }));
+        email: entry.email,
+      }));
 }
 
 function sameAddressDefaults(
@@ -407,43 +498,10 @@ function sameIdentitySignatureDefault(
     && leftSignature?.text === rightSignature?.text;
 }
 
-const FROM_IDENTITY_STORAGE_PREFIX = 'stormbox.compose.fromIdentity';
-
-function fromIdentityStorageKey(accountId: number): string {
-  return `${FROM_IDENTITY_STORAGE_PREFIX}.${accountId}`;
-}
-
-function readRememberedIdentity(accountId: number | null): RememberedComposeIdentity | null {
-  if (accountId == null) return null;
-  try {
-    const raw = globalThis.localStorage?.getItem(fromIdentityStorageKey(accountId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return {
-      remoteId: typeof parsed.remoteId === 'string' ? parsed.remoteId : null,
-      email: typeof parsed.email === 'string' ? parsed.email : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function rememberIdentity(accountId: number | null, identity: IdentityRow | null): void {
-  if (accountId == null || !identity) return;
-  try {
-    globalThis.localStorage?.setItem(
-      fromIdentityStorageKey(accountId),
-      JSON.stringify({ remoteId: identity.remote_id, email: identity.email }),
-    );
-  } catch {
-    // Storage can be unavailable in private contexts; compose still works for this session.
-  }
-}
-
 export const useComposeStore = defineStore('compose', () => {
   const authStore = useAuthStore();
   const mailStore = useMailStore();
+  const settingsStore = useSettingsStore();
 
   // Transient send confirmation, rendered by StoreErrorToast after the
   // dialog has closed. Cleared on a timer the same way mail-store's
@@ -469,6 +527,7 @@ export const useComposeStore = defineStore('compose', () => {
   const accountPrimaryEmail = ref<string | null>(null);
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
+  let stopPrimaryIdentityWatch: WatchStopHandle | null = null;
 
   function sessionById(id: string | null | undefined): ComposeSession | null {
     if (!id) return null;
@@ -517,6 +576,11 @@ export const useComposeStore = defineStore('compose', () => {
     queued: boolean;
     blocked: boolean;
   }>();
+  const attachmentUploadRuntime = new Map<string, {
+    active: number;
+    concurrency: number;
+    queue: Array<{ clientId: string; totalAttachmentBytes: number }>;
+  }>();
   const AUTOSAVE_DEBOUNCE_MS = 2_000;
   const AUTOSAVE_MAX_DELAY_MS = 30_000;
 
@@ -547,6 +611,30 @@ export const useComposeStore = defineStore('compose', () => {
     const runtime = autosaveRuntime.get(sessionId);
     if (runtime) runtime.blocked = true;
     autosaveRuntime.delete(sessionId);
+    const session = sessionById(sessionId);
+    session?.attachmentPreflights.splice(0);
+    for (const attachment of session?.attachments ?? []) {
+      attachmentAttempts.set(
+        attachment.clientId,
+        (attachmentAttempts.get(attachment.clientId) ?? 0) + 1,
+      );
+      attachmentControllers.get(attachment.clientId)?.abort();
+      attachmentControllers.delete(attachment.clientId);
+      attachmentFiles.delete(attachment.clientId);
+      attachmentAttempts.delete(attachment.clientId);
+      attachmentBlobFailures.delete(attachment.clientId);
+    }
+    attachmentUploadRuntime.delete(sessionId);
+  }
+
+  function clearAttachmentPreflightsOutsideAccount(accountId: number | null): void {
+    for (const session of sessions.value) {
+      for (let index = session.attachmentPreflights.length - 1; index >= 0; index -= 1) {
+        if (session.attachmentPreflights[index].accountId !== accountId) {
+          session.attachmentPreflights.splice(index, 1);
+        }
+      }
+    }
   }
 
   async function attach(): Promise<void> {
@@ -559,9 +647,14 @@ export const useComposeStore = defineStore('compose', () => {
     // whenever syncIdentities lands, matching how contacts-store reacts
     // to the CONTACTS family.
     unsubscribe = repo.subscribe(onTablesTouched);
+    stopPrimaryIdentityWatch = watch(
+      () => settingsStore.get('primaryIdentityRemoteId'),
+      reselectAutomaticFromIdentities,
+    );
     watch(
       () => authStore.accountId,
       async (newId) => {
+        clearAttachmentPreflightsOutsideAccount(newId);
         if (newId) {
           await refreshAccount();
           await refreshIdentities();
@@ -574,6 +667,8 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   function detach(): void {
+    stopPrimaryIdentityWatch?.();
+    stopPrimaryIdentityWatch = null;
     unsubscribe?.();
     unsubscribe = null;
     repo = null;
@@ -590,6 +685,7 @@ export const useComposeStore = defineStore('compose', () => {
     sessionGeneration += 1;
     prefillGeneration += 1;
     for (const sessionId of autosaveRuntime.keys()) disposeSessionRuntime(sessionId);
+    for (const session of sessions.value) session.attachmentPreflights.splice(0);
     identities.value = [];
     accountPrimaryEmail.value = null;
     sessions.value = [];
@@ -598,6 +694,7 @@ export const useComposeStore = defineStore('compose', () => {
     Object.assign(fallbackRejectedRecipients, emptyRejectedRecipients());
     fallbackStatus.value = COMPOSE_STATE.IDLE;
     fallbackError.value = null;
+    attachmentBlobFailures.clear();
     clearNotice();
   }
 
@@ -641,9 +738,37 @@ export const useComposeStore = defineStore('compose', () => {
 
   function defaultFromIdx(): number {
     return resolveComposeIdentityIndex(identities.value, {
-      remembered: readRememberedIdentity(authStore.accountId),
-      primaryEmail: accountPrimaryEmail.value,
+      primaryIdentityRemoteId: settingsStore.get('primaryIdentityRemoteId'),
     });
+  }
+
+  function replyFromIdx(preferredIdentityEmails: readonly string[]): number {
+    return resolveReplyIdentityIndex(identities.value, preferredIdentityEmails, {
+      primaryIdentityRemoteId: settingsStore.get('primaryIdentityRemoteId'),
+    });
+  }
+
+  function automaticFromIdx(session: ComposeSession): number {
+    return session.preferredIdentityEmails.length > 0
+      ? replyFromIdx(session.preferredIdentityEmails)
+      : defaultFromIdx();
+  }
+
+  function reselectAutomaticFromIdentities(): void {
+    for (const session of sessions.value) {
+      if (!session.automaticFromSelection || session.unresolvedFrom) continue;
+      const previousIdentity = identityForSession(session);
+      const nextIdx = automaticFromIdx(session);
+      if (nextIdx === session.draft.fromIdx) continue;
+      const wasClean = canonicalSessionJson(session) === session.seedJson;
+      session.draft.fromIdx = nextIdx;
+      applyIdentityDefaultsAfterRefresh(
+        session,
+        previousIdentity,
+        identityForSession(session),
+      );
+      if (wasClean) session.seedJson = canonicalSessionJson(session);
+    }
   }
 
   function identityForSession(session: ComposeSession | null): IdentityRow | null {
@@ -970,7 +1095,10 @@ export const useComposeStore = defineStore('compose', () => {
     return String(text ?? '').replace(/\r\n?/g, '\n').replace(/\n+$/, '');
   }
 
-  function canonicalSessionJson(session: ComposeSession): string {
+  function canonicalSessionJson(
+    session: ComposeSession,
+    attachmentClientIds: ReadonlySet<string> | null = null,
+  ): string {
     const identity = identityForSession(session);
     const recipients = (field: RecipientField) => ({
       entries: session.recipientEntriesByField[field].map((entry) =>
@@ -996,14 +1124,35 @@ export const useComposeStore = defineStore('compose', () => {
       htmlBody: semanticHtml(session.draft.htmlBody),
       inReplyTo: [...session.draft.inReplyTo],
       references: [...session.draft.references],
-      attachments: session.draft.attachments.map((attachment) => ({
-        name: attachment.name,
-        type: attachment.mime_type,
-        size: attachment.size,
-        disposition: attachment.disposition,
-        cid: attachment.cid,
-      })),
+      attachments: session.attachments
+        .filter((attachment) =>
+          attachmentClientIds === null || attachmentClientIds.has(attachment.clientId))
+        .map((attachment) => ({
+          clientId: attachment.clientId,
+          name: attachment.name,
+          type: attachment.type,
+          size: attachment.size,
+        })),
     });
+  }
+
+  function readyAttachmentClientIds(session: ComposeSession): Set<string> {
+    return new Set(
+      session.attachments
+        .filter((attachment) =>
+          attachment.status === 'ready'
+          && !!(attachment.canonicalBlobId ?? attachment.uploadBlobId))
+        .map((attachment) => attachment.clientId),
+    );
+  }
+
+  function canonicalReadySessionJson(session: ComposeSession): string {
+    return canonicalSessionJson(session, readyAttachmentClientIds(session));
+  }
+
+  function isSessionSaveableDirty(sessionId: string): boolean {
+    const session = sessionById(sessionId);
+    return !!session && canonicalReadySessionJson(session) !== session.seedJson;
   }
 
   function payloadHash(value: string): string {
@@ -1074,7 +1223,7 @@ export const useComposeStore = defineStore('compose', () => {
       || bodyText.trim().length > 0
       || htmlText.length > 0
       || /<(?:img|video|audio)\b/i.test(html)
-      || session.draft.attachments.length > 0;
+      || session.attachments.length > 0;
   }
 
   function reconcileFromIdxAfterIdentityRefresh(
@@ -1094,6 +1243,20 @@ export const useComposeStore = defineStore('compose', () => {
         session.draft.fromIdx = resolvedIdx;
         session.unresolvedFrom = null;
       }
+      return;
+    }
+
+    if (session.automaticFromSelection) {
+      const preferredIdx = findReplyIdentityIndex(
+        identities.value,
+        session.preferredIdentityEmails,
+      );
+      if (preferredIdx >= 0) {
+        session.draft.fromIdx = preferredIdx;
+        return;
+      }
+      const preservedIdx = findMatchingIdentityIndex(identities.value, previousIdentity);
+      session.draft.fromIdx = preservedIdx >= 0 ? preservedIdx : defaultFromIdx();
       return;
     }
 
@@ -1157,7 +1320,7 @@ export const useComposeStore = defineStore('compose', () => {
   }
 
   function open(
-    prefill: Partial<Draft> = {},
+    prefill: DraftPrefill = {},
     options: ComposeOpenOptions = { origin: COMPOSE_OPEN_ORIGIN.NEW },
   ): string {
     prefillGeneration += 1;
@@ -1165,9 +1328,15 @@ export const useComposeStore = defineStore('compose', () => {
     if (expanded?.status === COMPOSE_STATE.SENDING) return expanded.id;
     if (expanded) expanded.presentation = COMPOSE_PRESENTATION.MINIMIZED;
 
+    const initialAttachments = [...(prefill.attachments ?? [])];
     const nextDraft = cloneDraft(prefill);
-    if (!Object.prototype.hasOwnProperty.call(prefill, 'fromIdx')) {
-      nextDraft.fromIdx = defaultFromIdx();
+    const automaticFromSelection =
+      !Object.prototype.hasOwnProperty.call(prefill, 'fromIdx');
+    const preferredIdentityEmails = options.preferredIdentityEmails ?? [];
+    if (automaticFromSelection) {
+      nextDraft.fromIdx = preferredIdentityEmails.length > 0
+        ? replyFromIdx(preferredIdentityEmails)
+        : defaultFromIdx();
     }
     const initialTextBody = nextDraft.textBody;
     const initialEditorHtml = editorHtmlForOpen(nextDraft.htmlBody, options.origin);
@@ -1184,6 +1353,8 @@ export const useComposeStore = defineStore('compose', () => {
       isDiscarding: false,
       closePromptOpen: false,
       draft: nextDraft,
+      attachments: composeAttachmentsFromBody(initialAttachments, id),
+      attachmentPreflights: [],
       recipientEntriesByField: {
         to: nextDraft.to.map((entry) => ({ ...entry })),
         cc: nextDraft.cc.map((entry) => ({ ...entry })),
@@ -1198,9 +1369,13 @@ export const useComposeStore = defineStore('compose', () => {
       confirmedRevision: null,
       sourceMessageId: null,
       unresolvedFrom: null,
+      automaticFromSelection,
+      preferredIdentityEmails: [...preferredIdentityEmails],
       failedSaveMutationId: null,
       failedSaveSeedJson: null,
       failedSaveRequest: null,
+      pendingDiscardMutationId: null,
+      pendingDiscardIntent: null,
       openOrigin: options.origin,
       automaticBccOrigins: [],
       automaticSignatureOrigin: null,
@@ -1279,10 +1454,48 @@ export const useComposeStore = defineStore('compose', () => {
     const hadUnresolvedFrom = !!session.unresolvedFrom;
     session.draft.fromIdx = nextIdx;
     session.unresolvedFrom = null;
+    session.automaticFromSelection = false;
     if (nextIdx === previousIdx && !hadUnresolvedFrom) return;
     applyIdentityDefaultsForChange(session, identityForSession(session));
-    rememberIdentity(authStore.accountId, identityForSession(session));
     touchSession(session.id);
+  }
+
+  function applyRecipientEntries(
+    session: ComposeSession,
+    replacements: Partial<Record<RecipientField, readonly RecipientEntry[]>>,
+  ): void {
+    const seen = new Set<string>();
+    const normalized = {} as Record<RecipientField, RecipientEntry[]>;
+    for (const field of RECIPIENT_FIELDS) {
+      const source = Object.prototype.hasOwnProperty.call(replacements, field)
+        ? replacements[field] ?? []
+        : session.recipientEntriesByField[field];
+      normalized[field] = [];
+      for (const entry of source) {
+        if ('invalid' in entry) {
+          normalized[field].push({ ...entry });
+          continue;
+        }
+        const key = addressKey(entry.email);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized[field].push({ ...entry });
+      }
+    }
+    reconcileAutomaticBccOrigins(session, normalized.bcc);
+    for (const field of RECIPIENT_FIELDS) {
+      session.recipientEntriesByField[field] = normalized[field];
+      session.draft[field] = normalized[field]
+        .filter((entry): entry is ParsedAddress => 'email' in entry)
+        .map((entry) => ({ ...entry }));
+      session.rejectedRecipients[field] = normalized[field]
+        .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
+        .map((entry) => entry.text);
+    }
+    if (!hasInvalidRecipientPills(session)) {
+      if (session.saveError === INVALID_RECIPIENT_MESSAGE) session.saveError = null;
+      if (session.error === INVALID_RECIPIENT_MESSAGE) session.error = null;
+    }
   }
 
   /**
@@ -1299,18 +1512,7 @@ export const useComposeStore = defineStore('compose', () => {
   ): void {
     const session = sessionById(sessionId);
     if (!session) return;
-    if (field === 'bcc') reconcileAutomaticBccOrigins(session, entries);
-    session.recipientEntriesByField[field] = entries.map((entry) => ({ ...entry }));
-    session.draft[field] = session.recipientEntriesByField[field]
-      .filter((entry): entry is ParsedAddress => 'email' in entry)
-      .map((entry) => ({ ...entry }));
-    session.rejectedRecipients[field] = session.recipientEntriesByField[field]
-      .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
-      .map((entry) => entry.text);
-    if (!hasInvalidRecipientPills(session)) {
-      if (session.saveError === INVALID_RECIPIENT_MESSAGE) session.saveError = null;
-      if (session.error === INVALID_RECIPIENT_MESSAGE) session.error = null;
-    }
+    applyRecipientEntries(session, { [field]: entries });
     touchSession(session.id);
   }
 
@@ -1347,6 +1549,7 @@ export const useComposeStore = defineStore('compose', () => {
 
   function commitPendingRecipientText(session: ComposeSession): void {
     let changed = false;
+    const replacements: Partial<Record<RecipientField, readonly RecipientEntry[]>> = {};
     for (const field of RECIPIENT_FIELDS) {
       const text = session.pendingRecipientText[field].trim();
       if (!text) continue;
@@ -1359,17 +1562,17 @@ export const useComposeStore = defineStore('compose', () => {
         if ('address' in entry) additions.push({ ...entry.address });
         else additions.push({ text: entry.rejected, invalid: true });
       }
-      session.recipientEntriesByField[field].push(...additions);
-      session.draft[field] = session.recipientEntriesByField[field]
-        .filter((entry): entry is ParsedAddress => 'email' in entry)
-        .map((entry) => ({ ...entry }));
-      session.rejectedRecipients[field] = session.recipientEntriesByField[field]
-        .filter((entry): entry is InvalidRecipient => 'invalid' in entry)
-        .map((entry) => entry.text);
+      replacements[field] = [
+        ...session.recipientEntriesByField[field],
+        ...additions,
+      ];
       session.pendingRecipientText[field] = '';
       changed = true;
     }
-    if (changed) session.draftEpoch += 1;
+    if (changed) {
+      applyRecipientEntries(session, replacements);
+      session.draftEpoch += 1;
+    }
   }
 
   function scheduleAutosave(sessionId: string): void {
@@ -1382,7 +1585,7 @@ export const useComposeStore = defineStore('compose', () => {
       runtime.firstDirtyAt = null;
       return;
     }
-    if (!isSessionDirty(sessionId)
+    if (!isSessionSaveableDirty(sessionId)
         || (!session.confirmedRevision && !isSessionMeaningfullyNonEmpty(sessionId))) {
       clearAutosaveTimer(sessionId);
       runtime.firstDirtyAt = null;
@@ -1405,6 +1608,363 @@ export const useComposeStore = defineStore('compose', () => {
     scheduleAutosave(sessionId);
   }
 
+  function uploadRuntimeFor(sessionId: string) {
+    let runtime = attachmentUploadRuntime.get(sessionId);
+    if (!runtime) {
+      runtime = { active: 0, concurrency: 1, queue: [] };
+      attachmentUploadRuntime.set(sessionId, runtime);
+    }
+    return runtime;
+  }
+
+  function beginAttachmentPreflight(
+    session: ComposeSession,
+    accountId: number,
+  ): string {
+    const id = makeAttachmentPreflightId();
+    session.attachmentPreflights.push({ id, accountId });
+    return id;
+  }
+
+  function finishAttachmentPreflight(session: ComposeSession, id: string): void {
+    const index = session.attachmentPreflights.findIndex((preflight) => preflight.id === id);
+    if (index >= 0) session.attachmentPreflights.splice(index, 1);
+  }
+
+  function isAttachmentBusy(
+    sessionId: string | null = activeSessionId.value,
+  ): boolean {
+    const session = sessionById(sessionId);
+    return !!session && (
+      session.attachmentPreflights.length > 0
+      || session.attachments.some((attachment) => attachment.status === 'uploading')
+    );
+  }
+
+  function attachmentLimitError(
+    files: readonly File[],
+    limits: AttachmentLimits,
+    existingBytes: number,
+  ): string | null {
+    if (![limits.maxSizeUpload, limits.maxSizeAttachmentsPerEmail, limits.maxConcurrentUpload]
+      .every((value) => Number.isSafeInteger(value) && value > 0)) {
+      return 'The server did not provide valid attachment limits. Nothing was uploaded.';
+    }
+    const oversized = files.find((file) => file.size > limits.maxSizeUpload);
+    if (oversized) {
+      return `"${oversized.name || 'attachment'}" is ${oversized.size} bytes; `
+        + `the server upload limit is ${limits.maxSizeUpload} bytes.`;
+    }
+    const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
+    const totalBytes = existingBytes + selectedBytes;
+    if (!Number.isSafeInteger(totalBytes)) {
+      return 'The selected attachments are too large to measure safely.';
+    }
+    if (totalBytes > limits.maxSizeAttachmentsPerEmail) {
+      return `These attachments total ${totalBytes} bytes; the server message limit is `
+        + `${limits.maxSizeAttachmentsPerEmail} bytes. Nothing was uploaded.`;
+    }
+    return null;
+  }
+
+  function attachmentTotalBytes(session: ComposeSession): number {
+    return session.attachments.reduce((total, attachment) => total + attachment.size, 0);
+  }
+
+  function hasAttachmentBlobFailure(session: ComposeSession): boolean {
+    return session.attachments.some((attachment) =>
+      attachmentBlobFailures.has(attachment.clientId));
+  }
+
+  function unblockRecoveredAttachmentSave(session: ComposeSession): void {
+    if (hasAttachmentBlobFailure(session) || session.failedSaveMutationId != null) return;
+    runtimeFor(session.id).blocked = false;
+  }
+
+  function uploadErrorMessage(error: any, attachment: ComposeAttachment): string {
+    if (error?.name === 'AbortError' || error?.type === 'cancelled') {
+      return 'Upload canceled.';
+    }
+    return error?.message
+      ? `Upload failed: ${error.message}`
+      : `Could not upload "${sanitizeAttachmentFilename(attachment.name)}".`;
+  }
+
+  function updateAttachmentProgress(
+    sessionId: string,
+    clientId: string,
+    attempt: number,
+    progress: BlobTransferProgress,
+  ): void {
+    if (attachmentAttempts.get(clientId) !== attempt) return;
+    const attachment = sessionById(sessionId)?.attachments
+      .find((candidate) => candidate.clientId === clientId);
+    if (!attachment || attachment.status !== 'uploading') return;
+    const total = progress.total && progress.total > 0 ? progress.total : attachment.size;
+    attachment.progress = total > 0
+      ? Math.min(100, Math.max(0, Math.round((progress.loaded / total) * 100)))
+      : progress.phase === 'complete' ? 100 : 0;
+  }
+
+  async function runAttachmentUpload(
+    sessionId: string,
+    clientId: string,
+    totalAttachmentBytes: number,
+  ): Promise<void> {
+    const runtime = uploadRuntimeFor(sessionId);
+    const session = sessionById(sessionId);
+    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
+    const file = attachmentFiles.get(clientId);
+    if (!session || !attachment || attachment.status !== 'uploading' || !file) return;
+    runtime.active += 1;
+    const attempt = (attachmentAttempts.get(clientId) ?? 0) + 1;
+    attachmentAttempts.set(clientId, attempt);
+    const controller = new AbortController();
+    attachmentControllers.set(clientId, controller);
+    try {
+      if (!repo || authStore.accountId == null) {
+        throw new Error('Not connected.');
+      }
+      const result = await repo.uploadComposeAttachment(
+        authStore.accountId,
+        file,
+        {
+          type: attachment.type,
+          totalAttachmentBytes,
+          signal: controller.signal,
+          onProgress: (progress) =>
+            updateAttachmentProgress(sessionId, clientId, attempt, progress),
+        },
+      );
+      const current = sessionById(sessionId);
+      const currentAttachment = current?.attachments
+        .find((candidate) => candidate.clientId === clientId);
+      if (!currentAttachment
+          || attachmentAttempts.get(clientId) !== attempt
+          || currentAttachment.status !== 'uploading') return;
+      currentAttachment.uploadBlobId = result.blobId;
+      currentAttachment.type = result.type || currentAttachment.type;
+      currentAttachment.size = result.size;
+      currentAttachment.status = 'ready';
+      currentAttachment.error = null;
+      currentAttachment.progress = 100;
+      attachmentBlobFailures.delete(clientId);
+      unblockRecoveredAttachmentSave(current);
+      void saveDraft(sessionId);
+    } catch (uploadError: any) {
+      const currentAttachment = sessionById(sessionId)?.attachments
+        .find((candidate) => candidate.clientId === clientId);
+      if (!currentAttachment
+          || attachmentAttempts.get(clientId) !== attempt
+          || currentAttachment.status !== 'uploading') return;
+      currentAttachment.status = 'failed';
+      currentAttachment.error = uploadErrorMessage(uploadError, currentAttachment);
+    } finally {
+      if (attachmentControllers.get(clientId) === controller) {
+        attachmentControllers.delete(clientId);
+      }
+      runtime.active = Math.max(0, runtime.active - 1);
+      if (attachmentUploadRuntime.get(sessionId) === runtime) {
+        pumpAttachmentUploads(sessionId);
+      }
+    }
+  }
+
+  function pumpAttachmentUploads(sessionId: string): void {
+    const runtime = attachmentUploadRuntime.get(sessionId);
+    if (!runtime) return;
+    while (runtime.active < runtime.concurrency && runtime.queue.length > 0) {
+      const next = runtime.queue.shift()!;
+      const attachment = sessionById(sessionId)?.attachments
+        .find((candidate) => candidate.clientId === next.clientId);
+      if (!attachment || attachment.status !== 'uploading' || !attachmentFiles.has(next.clientId)) {
+        continue;
+      }
+      void runAttachmentUpload(sessionId, next.clientId, next.totalAttachmentBytes);
+    }
+  }
+
+  async function addAttachments(
+    filesInput: readonly File[] | FileList,
+    source: Exclude<ComposeAttachmentSource, 'draft'> = 'picker',
+    sessionId: string | null = activeSessionId.value,
+  ): Promise<boolean> {
+    const files = Array.from(filesInput);
+    if (files.length === 0) return true;
+    const session = sessionById(sessionId);
+    const accountId = authStore.accountId;
+    if (!session || !repo || accountId == null) return false;
+    const preflightId = beginAttachmentPreflight(session, accountId);
+    try {
+      let limits: AttachmentLimits;
+      try {
+        limits = await repo.getAttachmentLimits(accountId);
+      } catch (limitError: any) {
+        if (sessionById(session.id) === session && authStore.accountId === accountId) {
+          session.error = limitError?.message
+            ? `Could not read attachment limits: ${limitError.message}`
+            : 'Could not read attachment limits.';
+        }
+        return false;
+      }
+      if (sessionById(session.id) !== session || authStore.accountId !== accountId) return false;
+      const limitError = attachmentLimitError(files, limits, attachmentTotalBytes(session));
+      if (limitError) {
+        session.error = limitError;
+        return false;
+      }
+      const totalAttachmentBytes = attachmentTotalBytes(session)
+        + files.reduce((total, file) => total + file.size, 0);
+      const added = files.map<ComposeAttachment>((file) => {
+        const clientId = makeAttachmentClientId();
+        attachmentFiles.set(clientId, file);
+        return {
+          clientId,
+          name: file.name || 'attachment',
+          type: file.type || 'application/octet-stream',
+          size: file.size,
+          source,
+          status: 'uploading',
+          uploadBlobId: null,
+          canonicalBlobId: null,
+          partId: null,
+          error: null,
+          progress: 0,
+        };
+      });
+      session.attachments.push(...added);
+      session.error = null;
+      touchSession(session.id);
+      const runtime = uploadRuntimeFor(session.id);
+      runtime.concurrency = limits.maxConcurrentUpload;
+      runtime.queue.push(...added.map((attachment) => ({
+        clientId: attachment.clientId,
+        totalAttachmentBytes,
+      })));
+      pumpAttachmentUploads(session.id);
+      return true;
+    } finally {
+      finishAttachmentPreflight(session, preflightId);
+    }
+  }
+
+  async function retryAttachment(
+    clientId: string,
+    sessionId: string | null = activeSessionId.value,
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
+    const file = attachmentFiles.get(clientId);
+    const accountId = authStore.accountId;
+    if (!session || !attachment || attachment.status !== 'failed') return false;
+    if (!file) {
+      attachment.error = 'The original file is no longer available. Remove it and select it again.';
+      return false;
+    }
+    if (!repo || accountId == null) {
+      attachment.error = 'Could not retry while disconnected.';
+      return false;
+    }
+    const preflightId = beginAttachmentPreflight(session, accountId);
+    try {
+      const limits = await repo.getAttachmentLimits(accountId);
+      if (sessionById(session.id) !== session || authStore.accountId !== accountId) return false;
+      const limitError = attachmentLimitError([file], limits, attachmentTotalBytes(session) - file.size);
+      if (limitError) {
+        attachment.error = limitError;
+        return false;
+      }
+      attachment.status = 'uploading';
+      attachment.error = null;
+      attachment.progress = 0;
+      attachment.uploadBlobId = null;
+      const runtime = uploadRuntimeFor(session.id);
+      runtime.concurrency = limits.maxConcurrentUpload;
+      runtime.queue.push({
+        clientId,
+        totalAttachmentBytes: attachmentTotalBytes(session),
+      });
+      pumpAttachmentUploads(session.id);
+      return true;
+    } catch (limitError: any) {
+      if (sessionById(session.id) === session && authStore.accountId === accountId) {
+        attachment.error = limitError?.message
+          ? `Could not read attachment limits: ${limitError.message}`
+          : 'Could not read attachment limits.';
+      }
+      return false;
+    } finally {
+      finishAttachmentPreflight(session, preflightId);
+    }
+  }
+
+  function cancelAttachment(
+    clientId: string,
+    sessionId: string | null = activeSessionId.value,
+  ): boolean {
+    const session = sessionById(sessionId);
+    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
+    if (!session || !attachment || attachment.status !== 'uploading') return false;
+    attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
+    attachmentControllers.get(clientId)?.abort();
+    attachmentControllers.delete(clientId);
+    const runtime = attachmentUploadRuntime.get(session.id);
+    if (runtime) {
+      runtime.queue = runtime.queue.filter((queued) => queued.clientId !== clientId);
+    }
+    attachment.status = 'failed';
+    attachment.error = 'Upload canceled.';
+    pumpAttachmentUploads(session.id);
+    return true;
+  }
+
+  function removeAttachment(
+    clientId: string,
+    sessionId: string | null = activeSessionId.value,
+  ): boolean {
+    const session = sessionById(sessionId);
+    if (!session) return false;
+    const index = session.attachments.findIndex((attachment) => attachment.clientId === clientId);
+    if (index < 0) return false;
+    attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
+    attachmentControllers.get(clientId)?.abort();
+    attachmentControllers.delete(clientId);
+    attachmentFiles.delete(clientId);
+    attachmentAttempts.delete(clientId);
+    attachmentBlobFailures.delete(clientId);
+    const runtime = attachmentUploadRuntime.get(session.id);
+    if (runtime) {
+      runtime.queue = runtime.queue.filter((queued) => queued.clientId !== clientId);
+    }
+    session.attachments.splice(index, 1);
+    unblockRecoveredAttachmentSave(session);
+    touchSession(session.id);
+    pumpAttachmentUploads(session.id);
+    return true;
+  }
+
+  function capturedAttachments(session: ComposeSession) {
+    return session.attachments.flatMap((attachment, order) => {
+      const blobId = attachment.canonicalBlobId ?? attachment.uploadBlobId;
+      if (attachment.status !== 'ready' || !blobId) return [];
+      return [{
+        attachment: {
+          part_id: attachment.partId ?? '',
+          blob_id: blobId,
+          name: attachment.name,
+          mime_type: attachment.type,
+          size: attachment.size,
+          disposition: 'attachment',
+          cid: null,
+        },
+        client: {
+          clientId: attachment.clientId,
+          order,
+        },
+      }];
+    });
+  }
+
   function draftMutationRequest(
     session: ComposeSession,
     identity: IdentityRow,
@@ -1412,6 +1972,7 @@ export const useComposeStore = defineStore('compose', () => {
   ) {
     const folders = mailStore.folders as FolderRow[];
     const drafts = folders.find((folder) => folder.role === 'drafts');
+    const captured = capturedAttachments(session);
     return {
       operationId: makeOperationId(),
       draftSessionId: session.id,
@@ -1426,7 +1987,8 @@ export const useComposeStore = defineStore('compose', () => {
       subject: session.draft.subject,
       textBody: session.draft.textBody,
       htmlBody: stripInternalProvenanceHtml(session.draft.htmlBody),
-      attachments: session.draft.attachments.map((attachment) => ({ ...attachment })),
+      attachments: captured.map(({ attachment }) => attachment),
+      attachmentClientMap: captured.map(({ client }) => client),
       inReplyTo: [...session.draft.inReplyTo],
       references: [...session.draft.references],
       draftsFolderId: drafts?.id ?? null,
@@ -1434,6 +1996,67 @@ export const useComposeStore = defineStore('compose', () => {
         ? [session.confirmedRevision.emailId]
         : [],
     };
+  }
+
+  function attachmentIdsForBlobFailure(
+    request: Record<string, any>,
+    result: any,
+  ): string[] {
+    const clientMap = Array.isArray(request.attachmentClientMap)
+      ? request.attachmentClientMap
+      : [];
+    const hasIndexes = Array.isArray(result?.result?.attachmentIndexes);
+    const indexes = hasIndexes
+      ? result.result.attachmentIndexes.filter((index) =>
+        Number.isSafeInteger(index) && index >= 0 && index < clientMap.length)
+      : [];
+    const selected = hasIndexes
+      ? indexes.map((index) => clientMap[index])
+      : clientMap;
+    return selected
+      .map((entry) => entry?.clientId)
+      .filter((clientId): clientId is string =>
+        typeof clientId === 'string' && clientId.length > 0);
+  }
+
+  async function releaseBlobFailedDraftMutation(session: ComposeSession): Promise<boolean> {
+    const abandoned = await abandonFailedDraftSave(session, 'keep-confirmed');
+    if (!abandoned.ok || abandoned.parked) return false;
+    if (abandoned.mutationId != null) {
+      if (!repo || authStore.accountId == null) return false;
+      const result = await repo.runMutation(authStore.accountId, abandoned.mutationId);
+      if (!(result?.succeeded > 0 && result?.failed === 0)) return false;
+      session.pendingDiscardMutationId = null;
+      session.pendingDiscardIntent = null;
+    }
+    return true;
+  }
+
+  function markAttachmentBlobsMissing(
+    session: ComposeSession,
+    clientIds: string[],
+  ): boolean {
+    let needsReselection = false;
+    for (const clientId of clientIds) {
+      const attachment = session.attachments.find((candidate) =>
+        candidate.clientId === clientId);
+      if (!attachment) continue;
+      const canRetry = attachmentFiles.has(clientId);
+      attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
+      attachmentControllers.get(clientId)?.abort();
+      attachmentControllers.delete(clientId);
+      attachment.uploadBlobId = null;
+      attachment.canonicalBlobId = null;
+      attachment.partId = null;
+      attachment.status = 'failed';
+      attachment.progress = 0;
+      attachment.error = canRetry
+        ? 'The server no longer has this upload. Retry it.'
+        : 'The server no longer has this attachment. Remove it and select the file again.';
+      attachmentBlobFailures.add(clientId);
+      needsReselection ||= !canRetry;
+    }
+    return needsReselection;
   }
 
   async function applyDraftSaveResult(
@@ -1468,6 +2091,22 @@ export const useComposeStore = defineStore('compose', () => {
       }
     }
     if (!(result?.succeeded > 0 && result?.failed === 0)
+        && result?.errorType === 'blobNotFound') {
+      const released = await releaseBlobFailedDraftMutation(session);
+      if (!released) {
+        session.saveError = 'Draft could not be saved.';
+        return false;
+      }
+      const clientIds = attachmentIdsForBlobFailure(request, result);
+      const needsReselection = markAttachmentBlobsMissing(session, clientIds);
+      session.saveError = needsReselection
+        ? 'An attachment is no longer available. Remove it and select the file again.'
+        : clientIds.length > 0
+          ? 'An attachment upload expired. Retry the attachment.'
+          : 'Draft image data expired. Retry saving the draft.';
+      return false;
+    }
+    if (!(result?.succeeded > 0 && result?.failed === 0)
         || typeof detail?.emailId !== 'string') {
       session.saveError = 'Draft could not be saved.';
       return false;
@@ -1486,21 +2125,46 @@ export const useComposeStore = defineStore('compose', () => {
       messageId: String(detail.messageId ?? request.revisionMessageId),
       payloadHash: String(detail.payloadHash ?? request.payloadHash),
     };
-    if (Array.isArray(detail.attachments)) {
-      current.draft.attachments = detail.attachments
-        .filter((attachment) => {
-          const cid = attachment?.cid?.replace(/^<|>$/g, '');
-          return attachment?.disposition !== 'inline'
-            || !cid
-            || new RegExp(`cid:${cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i')
-              .test(current.draft.htmlBody);
-        })
-        .map((attachment) => ({ ...attachment }));
+    const capturedClientMap = Array.isArray(request.attachmentClientMap)
+      ? request.attachmentClientMap
+      : [];
+    const canonicalAttachments = Array.isArray(detail.attachments)
+      ? detail.attachments.filter((attachment) =>
+        attachment?.disposition !== 'inline' && !attachment?.cid)
+      : [];
+    const mappedClientIds = new Set<string>();
+    capturedClientMap.forEach((captured, index) => {
+      const clientId = typeof captured?.clientId === 'string' ? captured.clientId : '';
+      const canonical = canonicalAttachments[index];
+      if (!clientId || typeof canonical?.blob_id !== 'string' || !canonical.blob_id) return;
+      mappedClientIds.add(clientId);
+      const attachment = current.attachments.find((candidate) => candidate.clientId === clientId);
+      if (!attachment) return;
+      attachment.canonicalBlobId = canonical.blob_id;
+      attachment.partId = typeof canonical.part_id === 'string' && canonical.part_id
+        ? canonical.part_id
+        : attachment.partId;
+      attachmentFiles.delete(clientId);
+    });
+    let checkpointJson = capturedJson;
+    if (mappedClientIds.size < capturedClientMap.length) {
+      try {
+        const parsed = JSON.parse(capturedJson);
+        parsed.attachments = Array.isArray(parsed.attachments)
+          ? parsed.attachments.filter((attachment) =>
+            mappedClientIds.has(String(attachment?.clientId ?? '')))
+          : [];
+        checkpointJson = JSON.stringify(parsed);
+      } catch {
+        checkpointJson = capturedJson;
+      }
     }
-    current.seedJson = capturedJson;
+    current.seedJson = checkpointJson;
     current.saveError = hasInvalidRecipientPills(current)
       ? INVALID_RECIPIENT_MESSAGE
-      : null;
+      : current.attachments.some((attachment) => !attachment.canonicalBlobId)
+        ? UNCHECKPOINTED_ATTACHMENT_MESSAGE
+        : null;
     current.failedSaveMutationId = null;
     current.failedSaveSeedJson = null;
     current.failedSaveRequest = null;
@@ -1552,23 +2216,70 @@ export const useComposeStore = defineStore('compose', () => {
       session.error = session.saveError;
       return false;
     }
-    if (isSessionDirty(session.id)) {
+    if (isSessionSaveableDirty(session.id)) {
       return saveDraft(session.id, { explicit: true });
     }
     return true;
   }
 
-  async function abandonFailedDraftSave(session: ComposeSession): Promise<void> {
-    if (!repo
-        || authStore.accountId == null
-        || session.failedSaveMutationId == null) return;
-    await repo.abandonPendingDraftMutation(
-      authStore.accountId,
-      session.failedSaveMutationId,
-    );
+  function clearFailedDraftSave(session: ComposeSession): void {
     session.failedSaveMutationId = null;
     session.failedSaveSeedJson = null;
     session.failedSaveRequest = null;
+  }
+
+  async function abandonFailedDraftSave(
+    session: ComposeSession,
+    intent: PendingDiscardIntent,
+  ): Promise<{ ok: boolean; mutationId: number | null; parked: boolean }> {
+    if (session.pendingDiscardMutationId != null) {
+      if (session.pendingDiscardIntent !== intent) {
+        return { ok: false, mutationId: null, parked: true };
+      }
+      return {
+        ok: true,
+        mutationId: session.pendingDiscardMutationId,
+        parked: false,
+      };
+    }
+    if (session.failedSaveMutationId == null) {
+      return { ok: true, mutationId: null, parked: false };
+    }
+    if (!repo || authStore.accountId == null) {
+      return { ok: false, mutationId: null, parked: false };
+    }
+    const drafts = (mailStore.folders as FolderRow[])
+      .find((folder) => folder.role === 'drafts');
+    const result = await repo.abandonPendingDraftMutation(
+      authStore.accountId,
+      session.failedSaveMutationId,
+      {
+        intent,
+        confirmedEmailIds: session.confirmedRevision
+          ? [session.confirmedRevision.emailId]
+          : [],
+        draftSessionId: session.id,
+        draftsFolderId: drafts?.id ?? null,
+      },
+    );
+    if (result?.inFlight > 0) {
+      return { ok: false, mutationId: null, parked: false };
+    }
+    if (result?.parked > 0) {
+      if (intent === 'discard-all') {
+        return { ok: false, mutationId: null, parked: true };
+      }
+      clearFailedDraftSave(session);
+      return { ok: true, mutationId: null, parked: true };
+    }
+    const mutationId = result?.converted > 0
+      && Number.isSafeInteger(result?.mutationId)
+      ? Number(result.mutationId)
+      : null;
+    session.pendingDiscardMutationId = mutationId;
+    session.pendingDiscardIntent = mutationId == null ? null : intent;
+    clearFailedDraftSave(session);
+    return { ok: true, mutationId, parked: false };
   }
 
   async function saveDraft(
@@ -1592,13 +2303,13 @@ export const useComposeStore = defineStore('compose', () => {
       const prior = await runtime.inFlight;
       if (!prior && explicit) return false;
       const current = sessionById(session.id);
-      if (!current || !isSessionDirty(session.id)) return prior;
+      if (!current || !isSessionSaveableDirty(session.id)) return prior;
       return saveDraft(session.id, { explicit });
     }
     const needsInitialExplicitSave = explicit
       && !session.confirmedRevision
       && isSessionMeaningfullyNonEmpty(session.id);
-    if (!isSessionDirty(session.id) && !needsInitialExplicitSave) return true;
+    if (!isSessionSaveableDirty(session.id) && !needsInitialExplicitSave) return true;
     if (!session.confirmedRevision && !isSessionMeaningfullyNonEmpty(session.id)) return true;
     if (!repo || authStore.accountId == null) {
       session.saveError = 'Draft could not be saved while disconnected.';
@@ -1612,7 +2323,7 @@ export const useComposeStore = defineStore('compose', () => {
       return false;
     }
 
-    const capturedJson = canonicalSessionJson(session);
+    const capturedJson = canonicalReadySessionJson(session);
     const request = draftMutationRequest(session, identity, capturedJson);
     session.isSaving = true;
     session.saveError = null;
@@ -1648,12 +2359,13 @@ export const useComposeStore = defineStore('compose', () => {
     const saved = await task;
     runtime.inFlight = null;
     session.isSaving = false;
-    const needsFollowUp = runtime.queued || isSessionDirty(session.id);
+    const needsFollowUp = runtime.queued || isSessionSaveableDirty(session.id);
     runtime.queued = false;
     if (saved && needsFollowUp && !runtime.blocked) {
       void saveDraft(session.id);
     } else if (!saved) {
-      runtime.blocked = true;
+      runtime.blocked = session.failedSaveMutationId != null
+        || hasAttachmentBlobFailure(session);
     }
     return saved;
   }
@@ -1663,7 +2375,25 @@ export const useComposeStore = defineStore('compose', () => {
     if (!session) return false;
     const saved = await saveDraft(session.id, { explicit: true });
     if (!saved) return false;
+    const current = sessionById(session.id);
+    if (current?.attachments.some((attachment) => !attachment.canonicalBlobId)) {
+      if (hasInvalidRecipientPills(current)) {
+        current.saveError = INVALID_RECIPIENT_MESSAGE;
+        current.error = `${INVALID_RECIPIENT_MESSAGE} ${UNCHECKPOINTED_ATTACHMENT_MESSAGE}`;
+      } else {
+        current.saveError = UNCHECKPOINTED_ATTACHMENT_MESSAGE;
+        current.error = UNCHECKPOINTED_ATTACHMENT_MESSAGE;
+      }
+      return false;
+    }
     return close(session.id);
+  }
+
+  function uncheckpointedAttachmentCount(
+    sessionId: string | null = activeSessionId.value,
+  ): number {
+    const session = sessionById(sessionId);
+    return session?.attachments.filter((attachment) => !attachment.canonicalBlobId).length ?? 0;
   }
 
   function requestClose(sessionId: string | null = activeSessionId.value): boolean {
@@ -1693,7 +2423,12 @@ export const useComposeStore = defineStore('compose', () => {
     clearAutosaveTimer(session.id);
     if (runtime.inFlight) await runtime.inFlight;
     if (!sessionById(session.id)) return true;
-    await abandonFailedDraftSave(session);
+    const abandoned = await abandonFailedDraftSave(session, 'keep-confirmed');
+    if (!abandoned.ok) {
+      session.error = 'Draft could not be abandoned safely.';
+      runtime.blocked = false;
+      return false;
+    }
     session.closePromptOpen = false;
     return close(session.id);
   }
@@ -1709,9 +2444,9 @@ export const useComposeStore = defineStore('compose', () => {
     if (runtime.inFlight) await runtime.inFlight;
     const current = sessionById(session.id);
     if (!current) return true;
-    const emailIds = current.confirmedRevision ? [current.confirmedRevision.emailId] : [];
-    if (emailIds.length === 0) {
-      await abandonFailedDraftSave(current);
+    if (current.failedSaveMutationId == null
+        && current.pendingDiscardMutationId == null
+        && current.confirmedRevision == null) {
       return close(current.id);
     }
     if (!repo || authStore.accountId == null) {
@@ -1723,26 +2458,46 @@ export const useComposeStore = defineStore('compose', () => {
     current.isDiscarding = true;
     current.error = null;
     try {
-      const mutation = await repo.insertPendingMutation({
-        accountId: authStore.accountId,
-        mutationType: MUTATION_TYPE.DISCARD_DRAFT,
-        targetMessageId: current.confirmedRevision?.localMessageId ?? null,
-        requestJson: JSON.stringify({
-          draftSessionId: current.id,
-          draftsFolderId: drafts?.id ?? null,
-          draftEmailIds: emailIds,
-        }),
-        optimisticPatchJson: null,
-      });
-      const result = typeof repo.runMutation === 'function' && mutation?.id != null
-        ? await repo.runMutation(authStore.accountId, mutation.id)
+      let mutationId = current.pendingDiscardMutationId;
+      if (current.failedSaveMutationId != null) {
+        const abandoned = await abandonFailedDraftSave(current, 'discard-all');
+        if (!abandoned.ok) {
+          current.error = abandoned.parked
+            ? 'Draft copies conflict and could not be discarded safely.'
+            : 'Draft could not be discarded safely.';
+          runtime.blocked = false;
+          return false;
+        }
+        mutationId = abandoned.mutationId;
+      } else if (mutationId == null) {
+        const emailIds = current.confirmedRevision ? [current.confirmedRevision.emailId] : [];
+        if (emailIds.length === 0) return close(current.id);
+        const mutation = await repo.insertPendingMutation({
+          accountId: authStore.accountId,
+          mutationType: MUTATION_TYPE.DISCARD_DRAFT,
+          targetMessageId: current.confirmedRevision?.localMessageId ?? null,
+          requestJson: JSON.stringify({
+            draftSessionId: current.id,
+            draftsFolderId: drafts?.id ?? null,
+            draftEmailIds: emailIds,
+          }),
+          optimisticPatchJson: null,
+        });
+        mutationId = Number.isSafeInteger(mutation?.id) ? Number(mutation.id) : null;
+        current.pendingDiscardMutationId = mutationId;
+        current.pendingDiscardIntent = mutationId == null ? null : 'discard-all';
+      }
+      if (mutationId == null) return close(current.id);
+      const result = typeof repo.runMutation === 'function'
+        ? await repo.runMutation(authStore.accountId, mutationId)
         : await repo.drainOutbox(authStore.accountId);
       if (!(result?.succeeded > 0 && result?.failed === 0)) {
         current.error = 'Draft could not be discarded.';
         runtime.blocked = false;
         return false;
       }
-      await abandonFailedDraftSave(current);
+      current.pendingDiscardMutationId = null;
+      current.pendingDiscardIntent = null;
       current.isDiscarding = false;
       return close(current.id);
     } catch (discardError: any) {
@@ -1812,6 +2567,10 @@ export const useComposeStore = defineStore('compose', () => {
     const audience = addresses
       ? buildReplyAudience({ addresses, ownedEmails: ownedEmails(), all })
       : { to: parseAddressList(message.from_text ?? '').addresses, cc: [] };
+    const preferredIdentityEmails = (addresses ?? [])
+      .filter((address) => address.kind === 'to' && address.email)
+      .sort((left, right) => left.position - right.position)
+      .map((address) => address.email as string);
     const { inReplyTo, references } = buildThreadHeaders(message);
     open({
       to: audience.to,
@@ -1834,6 +2593,7 @@ export const useComposeStore = defineStore('compose', () => {
       }),
     }, {
       origin: all ? COMPOSE_OPEN_ORIGIN.REPLY_ALL : COMPOSE_OPEN_ORIGIN.REPLY,
+      preferredIdentityEmails,
     });
   }
 
@@ -2088,6 +2848,28 @@ export const useComposeStore = defineStore('compose', () => {
     return false;
   }
 
+  function attachmentSendError(session: ComposeSession): string | null {
+    if (session.attachmentPreflights.length > 0) {
+      return 'Wait for attachment checks to finish before sending.';
+    }
+    const uploading = session.attachments.find((attachment) => attachment.status === 'uploading');
+    if (uploading) {
+      return `Wait for "${sanitizeAttachmentFilename(uploading.name)}" `
+        + 'to finish uploading before sending.';
+    }
+    const failed = session.attachments.find((attachment) => attachment.status === 'failed');
+    if (failed) {
+      return `Retry or remove "${sanitizeAttachmentFilename(failed.name)}" before sending.`;
+    }
+    const missing = session.attachments.find((attachment) =>
+      !(attachment.canonicalBlobId ?? attachment.uploadBlobId));
+    if (missing) {
+      return `"${sanitizeAttachmentFilename(missing.name)}" has no uploaded data. `
+        + 'Retry or remove it before sending.';
+    }
+    return null;
+  }
+
   /**
    * What a finished mutation row says about a send whose confirmation
    * never arrived: whether the outcome is recorded as unknown, and
@@ -2139,6 +2921,8 @@ export const useComposeStore = defineStore('compose', () => {
     if (!session
         || session.status === COMPOSE_STATE.SENDING
         || session.isDiscarding) return false;
+    const initialAttachmentError = attachmentSendError(session);
+    if (initialAttachmentError) return failSend(initialAttachmentError, session.id);
     if (runtimeFor(session.id).blocked && session.saveError) {
       return failSend('Resolve the draft save failure before sending.', session.id);
     }
@@ -2177,6 +2961,8 @@ export const useComposeStore = defineStore('compose', () => {
     sessionRuntime.blocked = true;
     if (sessionRuntime.inFlight) await sessionRuntime.inFlight;
     if (!sessionById(session.id)) return false;
+    const currentAttachmentError = attachmentSendError(session);
+    if (currentAttachmentError) return failSend(currentAttachmentError, session.id);
     session.presentation = COMPOSE_PRESENTATION.EXPANDED;
     activeSessionId.value = session.id;
     session.status = COMPOSE_STATE.SENDING;
@@ -2188,6 +2974,28 @@ export const useComposeStore = defineStore('compose', () => {
     const generation = session.generation;
     const stillCurrent = () => sessionById(session.id)?.generation === generation;
     try {
+      const captured = capturedAttachments(session);
+      const sendRequest = {
+        draftSessionId: session.id,
+        identityId: identity.id,
+        to: sessionDraft.to,
+        cc: sessionDraft.cc,
+        bcc: sessionDraft.bcc,
+        replyTo: replyToForSession(session, identity),
+        subject: sessionDraft.subject,
+        textBody: sessionDraft.textBody,
+        htmlBody: stripInternalProvenanceHtml(sessionDraft.htmlBody),
+        attachments: captured.map(({ attachment }) => attachment),
+        attachmentClientMap: captured.map(({ client }) => client),
+        inReplyTo: sessionDraft.inReplyTo,
+        references: sessionDraft.references,
+        draftsFolderId: drafts?.id ?? null,
+        sentFolderId: sent?.id ?? null,
+        outboxFolderId: outbox?.id ?? null,
+        draftEmailIds: session.confirmedRevision
+          ? [session.confirmedRevision.emailId]
+          : [],
+      };
       // Mutation payload carries local row ids only; the JMAP outbox
       // resolves identity and folder remote ids at dispatch time, the
       // same way moveToFolders / setKeywords / destroy already do.
@@ -2198,26 +3006,7 @@ export const useComposeStore = defineStore('compose', () => {
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SEND,
         targetMessageId: session.confirmedRevision?.localMessageId ?? null,
-        requestJson: JSON.stringify({
-          draftSessionId: session.id,
-          identityId: identity.id,
-          to: sessionDraft.to,
-          cc: sessionDraft.cc,
-          bcc: sessionDraft.bcc,
-          replyTo: replyToForSession(session, identity),
-          subject: sessionDraft.subject,
-          textBody: sessionDraft.textBody,
-          htmlBody: stripInternalProvenanceHtml(sessionDraft.htmlBody),
-          attachments: sessionDraft.attachments.map((attachment) => ({ ...attachment })),
-          inReplyTo: sessionDraft.inReplyTo,
-          references: sessionDraft.references,
-          draftsFolderId: drafts?.id ?? null,
-          sentFolderId: sent?.id ?? null,
-          outboxFolderId: outbox?.id ?? null,
-          draftEmailIds: session.confirmedRevision
-            ? [session.confirmedRevision.emailId]
-            : [],
-        }),
+        requestJson: JSON.stringify(sendRequest),
         optimisticPatchJson: null,
       });
       // Wait on THIS row specifically rather than draining the whole
@@ -2273,6 +3062,20 @@ export const useComposeStore = defineStore('compose', () => {
             session.id,
           );
         }
+        if (result.errorType === 'blobNotFound') {
+          const clientIds = attachmentIdsForBlobFailure(sendRequest, result);
+          const needsReselection = markAttachmentBlobsMissing(session, clientIds);
+          const failed = failSend(
+            needsReselection
+              ? 'An attachment is no longer available. Remove it and select the file again.'
+              : clientIds.length > 0
+                ? 'An attachment upload expired. Retry the attachment.'
+                : 'Inline image data expired. Send again to retry it.',
+            session.id,
+          );
+          runtimeFor(session.id).blocked = hasAttachmentBlobFailure(session);
+          return failed;
+        }
         return failSend('Send failed; the message stays in your outbox.', session.id);
       }
       if (!stillCurrent()) return true;
@@ -2319,9 +3122,15 @@ export const useComposeStore = defineStore('compose', () => {
     restore,
     isSessionDirty,
     isSessionMeaningfullyNonEmpty,
+    uncheckpointedAttachmentCount,
+    isAttachmentBusy,
     setBodyContent,
     updateTrackedOrigins,
     touchSession,
+    addAttachments,
+    retryAttachment,
+    cancelAttachment,
+    removeAttachment,
     saveDraft,
     saveAndClose,
     requestClose,

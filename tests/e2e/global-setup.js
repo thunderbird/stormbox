@@ -1,7 +1,5 @@
 import fs from 'node:fs';
 
-import { configureKeycloak } from '../fixtures/configure-keycloak.mjs';
-import { configureStalwart } from '../fixtures/configure-stalwart.mjs';
 import { STATUS_PATH } from '../fixtures/ws-proxy/inject.mjs';
 import { acquireLaneLock, releaseLaneLock } from './helpers/lane-lock.js';
 
@@ -26,15 +24,15 @@ async function checkUrl(label, url, { okStatuses = [200] } = {}) {
     throw new Error(
       `${label} unreachable at ${url}: ${err?.message ?? err}\n`
       + 'Start the stack: cd thunderbird-accounts && docker compose up --build\n'
+      + 'Provision accounts: npm run stack:configure\n'
       + 'Start WS proxy: node tests/fixtures/ws-proxy/server.mjs',
     );
   }
 }
 
 export default async function globalSetup() {
-  // Taken before anything touches the shared stack: `configureKeycloak` and
-  // `configureStalwart` reconfigure servers that a lane already in progress
-  // is relying on.
+  // Taken before this lane starts. The lock is only for the shared
+  // mailbox; setup must not rewrite Keycloak or Stalwart.
   await acquireLaneLock();
   try {
     await prepareStack();
@@ -47,8 +45,6 @@ export default async function globalSetup() {
 }
 
 async function prepareStack() {
-  await configureKeycloak();
-  await configureStalwart();
   await checkUrl(
     'Keycloak',
     `${OIDC_ISSUER.replace(/\/$/, '')}/.well-known/openid-configuration`,

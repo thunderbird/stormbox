@@ -2,11 +2,16 @@ import { DB_RPC } from '../../../../db/protocol';
 import { JMAP_CAPS } from '../transport';
 import { callJmap, pickResponse, pickResponseById } from '../invoke';
 import { EMAIL_LIST_PROPERTIES, persistEmails } from '../messages';
+import { fetchAndCheckpointComposeBody } from '../compose-body-checkpoint';
+import {
+  regularAttachmentSources,
+  type ComposeRegularAttachmentSource,
+} from '../compose-email';
 import type { SendOutcome } from './send-outcome';
 
 async function fileSentCopy({
   transport, account, handlers, useWebSocket,
-  result, createdRemoteId, submissionRemoteId, sentRemoteId,
+  result, createdRemoteId, submissionRemoteId, sentRemoteId, request,
 }): Promise<SendOutcome> {
   // onSuccessUpdateEmail generates a second, implicit Email/set response
   // under the submission's call id (RFC 8621 §7.5). When that patch
@@ -31,6 +36,7 @@ async function fileSentCopy({
     useWebSocket,
     createdRemoteId,
     sentRemoteId,
+    expectedRegularAttachments: regularAttachmentSources(request?.attachments),
   });
 
   if (!applied.filed || filingRejected) {
@@ -110,7 +116,15 @@ async function markFolderViewsStale(handlers, accountId, folderRemoteId) {
  */
 export async function applySendLocally({
   transport, account, handlers, useWebSocket = false,
-  createdRemoteId, sentRemoteId,
+  createdRemoteId, sentRemoteId, expectedRegularAttachments = [],
+}: {
+  transport: any;
+  account: any;
+  handlers: Record<string, (params: any) => Promise<any>>;
+  useWebSocket?: boolean;
+  createdRemoteId: string | null;
+  sentRemoteId: string | null;
+  expectedRegularAttachments?: ComposeRegularAttachmentSource[];
 }): Promise<{ filed: boolean }> {
   if (!createdRemoteId) return { filed: false };
   const payload = await callJmap(transport, {
@@ -131,6 +145,16 @@ export async function applySendLocally({
   if (!email) return { filed: false };
 
   await persistEmails({ account, emails: [email], handlers });
+  if (expectedRegularAttachments.length > 0) {
+    await fetchAndCheckpointComposeBody({
+      transport,
+      account,
+      handlers,
+      remoteId: createdRemoteId,
+      expectedRegularAttachments,
+      useWebSocket,
+    });
+  }
 
   if (!sentRemoteId) return { filed: false };
   // Trust the server's mailboxIds, not the target we asked for.

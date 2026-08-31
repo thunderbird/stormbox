@@ -209,5 +209,6 @@ are rejected:
   by another tab or client.
 - General offline compose-session synchronization across devices.
 - Undo Send, scheduled send, or a user-visible Outbox.
-- File-attachment picking; this work preserves and reconciles attachment and
-  inline-part data already present in a reopened or pasted-image draft.
+- Recovery of file bytes that were selected but never reached a confirmed
+  draft checkpoint. Picker and upload behavior is defined by
+  [Attachment Support](../010-attachments/spec.md).

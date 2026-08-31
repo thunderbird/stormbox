@@ -1,6 +1,9 @@
 import DOMPurify from 'dompurify';
 
-import { ALLOWED_URI_REGEXP } from './message-html';
+import { buildInlineImageDataUrl } from './message-html';
+
+const EDITOR_ALLOWED_URI_REGEXP =
+  /^(?:(?:https?|mailto|tel|cid|blob):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i;
 
 const EDITOR_STYLE_PROPERTIES = new Set([
   'background-color',
@@ -23,6 +26,13 @@ const EDITOR_STYLE_PROPERTIES = new Set([
   'width',
 ]);
 
+function isLocalImageSource(value: string): boolean {
+  const trimmed = value.trim();
+  if (/^(?:cid|blob):/i.test(trimmed)) return true;
+  const data = /^data:([^;,]+);base64,(.*)$/is.exec(trimmed);
+  return !!data && buildInlineImageDataUrl(data[2], data[1]) != null;
+}
+
 /**
  * Sanitize HTML before mounting it in Squire's host document.
  *
@@ -32,28 +42,39 @@ const EDITOR_STYLE_PROPERTIES = new Set([
  */
 export function editSafeDraftHtml(html: string): string {
   const sanitized = DOMPurify.sanitize(String(html ?? ''), {
-    ALLOWED_URI_REGEXP,
+    ALLOWED_URI_REGEXP: EDITOR_ALLOWED_URI_REGEXP,
     FORBID_TAGS: [
       'script', 'iframe', 'object', 'embed', 'form', 'input', 'button',
       'textarea', 'select', 'option', 'svg', 'math', 'base', 'link', 'meta', 'style',
+      'audio', 'video', 'source', 'track',
     ],
-    FORBID_ATTR: ['srcdoc', 'class', 'id'],
+    FORBID_ATTR: ['srcdoc', 'srcset', 'poster', 'background', 'ping', 'class', 'id'],
   });
   const template = document.createElement('template');
   template.innerHTML = sanitized;
   for (const active of template.content.querySelectorAll(
-    'script,iframe,object,embed,form,input,button,textarea,select,option,svg,math,base,link,meta,style',
+    'script,iframe,object,embed,form,input,button,textarea,select,option,svg,math,base,link,meta,style,audio,video,source,track',
   )) {
     active.remove();
   }
   for (const element of template.content.querySelectorAll<HTMLElement>('*')) {
     for (const attribute of Array.from(element.attributes)) {
-      if (attribute.name === 'class'
-          || attribute.name === 'id'
-          || attribute.name === 'srcdoc'
-          || attribute.name.toLowerCase().startsWith('on')) {
+      const name = attribute.name.toLowerCase();
+      if (name === 'class'
+          || name === 'id'
+          || name === 'srcdoc'
+          || name === 'srcset'
+          || name === 'poster'
+          || name === 'background'
+          || name === 'ping'
+          || name.startsWith('on')) {
         element.removeAttribute(attribute.name);
       }
+    }
+    const source = element.getAttribute('src');
+    if (source != null
+        && (element.tagName !== 'IMG' || !isLocalImageSource(source))) {
+      element.removeAttribute('src');
     }
   }
   for (const element of template.content.querySelectorAll<HTMLElement>('[style]')) {

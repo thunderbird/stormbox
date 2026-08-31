@@ -1,5 +1,6 @@
 import { DB_RPC } from '../../../../db/protocol';
-import { fetchEmailBodies } from '../bodies';
+import { fetchAndCheckpointComposeBody } from '../compose-body-checkpoint';
+import type { ComposeRegularAttachmentSource } from '../compose-email';
 import { callJmap, pickResponseById } from '../invoke';
 import { EMAIL_LIST_PROPERTIES, persistEmails } from '../messages';
 import { JMAP_CAPS } from '../transport';
@@ -111,8 +112,21 @@ export async function persistDraftSuccessor({
   handlers,
   draftsRemoteId,
   successorId,
+  expectedBodyStructure,
+  expectedBodyValues,
+  expectedRegularAttachments,
   useWebSocket = false,
-}): Promise<{ localMessageId: number; attachments: any[] }> {
+}: {
+  transport: any;
+  account: any;
+  handlers: Record<string, (params: any) => Promise<any>>;
+  draftsRemoteId: string;
+  successorId: string;
+  expectedBodyStructure: any;
+  expectedBodyValues: Record<string, any>;
+  expectedRegularAttachments: ComposeRegularAttachmentSource[];
+  useWebSocket?: boolean;
+}): Promise<{ localMessageId: number; attachments: any[]; regularAttachments: any[] }> {
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[
@@ -134,14 +148,16 @@ export async function persistDraftSuccessor({
     throw new Error('Created draft could not be confirmed in Drafts');
   }
   await persistEmails({ account, emails: [email], handlers });
-  const bodyResult = await fetchEmailBodies({
+  const body = await fetchAndCheckpointComposeBody({
     transport,
     account,
     handlers,
-    remoteIds: [successorId],
+    remoteId: successorId,
+    expectedBodyStructure,
+    expectedBodyValues,
+    expectedRegularAttachments,
     useWebSocket,
   });
-  if (bodyResult.fetched !== 1) throw new Error('Created draft body could not be reconciled');
   await reconcileDraftViews({
     transport,
     account,
@@ -150,14 +166,7 @@ export async function persistDraftSuccessor({
     successorId,
     useWebSocket,
   });
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: 'SELECT id FROM messages WHERE account_id = ? AND remote_id = ? LIMIT 1',
-    params: [account.id, successorId],
-  });
-  const localMessageId = Number(rows[0]?.id);
-  if (!Number.isFinite(localMessageId)) throw new Error('Created draft is missing locally');
-  const body = await handlers[DB_RPC.MESSAGE_BODY_READ]({ messageId: localMessageId });
-  return { localMessageId, attachments: body?.attachments ?? [] };
+  return body;
 }
 
 export async function dropDraftPredecessors({

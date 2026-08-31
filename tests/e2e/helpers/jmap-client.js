@@ -54,6 +54,8 @@ const cachedTokens = new Map();
  * the password did not, and the cache — then keyed by username alone —
  * handed back the default account's token. The caller believed it held a
  * connection to the second account and was reading the first one's mail.
+ *
+ * @param {{ username?: string, email?: string, password?: string }} [credentials]
  */
 export async function getAccessToken({
   username,

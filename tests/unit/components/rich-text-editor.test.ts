@@ -83,6 +83,7 @@ async function pasteImageIntoEditor(
   editor: HTMLElement,
   wrapper: ReturnType<typeof mount>,
 ) {
+  vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close: vi.fn() })));
   const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
   const file = new File([bytes], 'paste.png', { type: 'image/png' });
   const clipboardData = {
@@ -103,11 +104,37 @@ async function pasteImageIntoEditor(
   }
 }
 
+async function pasteFilesIntoEditor(
+  editor: HTMLElement,
+  wrapper: ReturnType<typeof mount>,
+  files: readonly File[],
+  text = '',
+  html = '',
+) {
+  const clipboardData = {
+    items: files.map((file) => ({
+      kind: 'file',
+      type: file.type,
+      getAsFile: () => file,
+    })),
+    types: ['Files', ...(text ? ['text/plain'] : []), ...(html ? ['text/html'] : [])],
+    getData: (type: string) => type === 'text/plain' ? text : type === 'text/html' ? html : '',
+  };
+  const pasteEvent = new window.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(pasteEvent, 'clipboardData', { value: clipboardData });
+  editor.dispatchEvent(pasteEvent);
+  for (let index = 0; index < 50 && !(wrapper.emitted('paste-files')?.length); index += 1) {
+    await new Promise((resolve) => { setTimeout(resolve, 5); });
+    await nextTick();
+  }
+}
+
 afterEach(() => {
   mountedWrapper?.unmount();
   mountedWrapper = null;
   document.body.innerHTML = '';
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('RichTextEditor content contract', () => {
@@ -464,6 +491,21 @@ describe('RichTextEditor toolbar', () => {
     });
   });
 
+  it('opens the shared link editor and links the selected text', async () => {
+    const wrapper = await mountEditor('<p>hello world</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    selectEditorText(editor);
+
+    await wrapper.get('[aria-label="Insert or remove link"]').trigger('click');
+    const form = wrapper.get('.editor-link-form');
+    await form.get('input[type="url"]').setValue('https://example.com/docs');
+    await form.trigger('submit');
+
+    expect(latestUpdate(wrapper)?.html)
+      .toMatch(/<a[^>]+href="https:\/\/example\.com\/docs"[^>]*>hello<\/a>/i);
+    expect(wrapper.find('.editor-link-form').exists()).toBe(false);
+  });
+
   it('inlines a pasted image as a data URL', async () => {
     const wrapper = await mountEditor('<p>hello</p>');
     const editor = wrapper.get('.editor').element as HTMLElement;
@@ -473,6 +515,96 @@ describe('RichTextEditor toolbar', () => {
     expect(latestUpdate(wrapper)?.html)
       .toMatch(/<img[^>]+src="data:image\/png;base64,/i);
     expect(latestUpdate(wrapper)?.html).toMatch(/text-align:\s*center/i);
+  });
+
+  it('opens an image picker and inserts the selected raster image', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close: vi.fn() })));
+    const wrapper = await mountEditor('<p>hello</p>');
+    const input = wrapper.get('input[type="file"]');
+    const click = vi.spyOn(input.element as HTMLInputElement, 'click')
+      .mockImplementation(() => {});
+    const file = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      'picked.png',
+      { type: 'image/png' },
+    );
+
+    await wrapper.get('[aria-label="Insert image"]').trigger('click');
+    expect(click).toHaveBeenCalledOnce();
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [file],
+    });
+    await input.trigger('change');
+    for (let index = 0; index < 50 && !/<img[^>]+src="data:image\/png/i.test(
+      latestUpdate(wrapper)?.html ?? '',
+    ); index += 1) {
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+      await nextTick();
+    }
+
+    expect(latestUpdate(wrapper)?.html)
+      .toMatch(/<img[^>]+src="data:image\/png;base64,/i);
+    expect(latestUpdate(wrapper)?.html).toContain('alt="picked.png"');
+  });
+
+  it('emits every pasted file, attaches unsafe images, and preserves mixed text once', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async (file: File) => {
+      if (file.name === 'broken.png') throw new Error('decode failed');
+      return { close: vi.fn() };
+    }));
+    const wrapper = await mountEditor('<p>Before</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    const files = [
+      new File(['png'], 'safe.png', { type: 'image/png' }),
+      new File(['svg'], 'vector.svg', { type: 'image/svg+xml' }),
+      new File(['note'], 'note.txt', { type: 'text/plain' }),
+      new File(['bad'], 'broken.png', { type: 'image/png' }),
+    ];
+
+    await pasteFilesIntoEditor(
+      editor,
+      wrapper,
+      files,
+      'Mixed clipboard text',
+      '<p>Mixed clipboard text</p><img src="data:image/png;base64,cG5n">',
+    );
+
+    const emitted = wrapper.emitted('paste-files')?.[0]?.[0] as Array<{
+      file: File;
+      kind: string;
+    }>;
+    expect(emitted.map(({ file, kind }) => [file.name, kind])).toEqual([
+      ['safe.png', 'inline'],
+      ['vector.svg', 'attachment'],
+      ['note.txt', 'attachment'],
+      ['broken.png', 'attachment'],
+    ]);
+    expect(latestUpdate(wrapper)?.html.match(/<img\b/gi)).toHaveLength(1);
+    expect(latestUpdate(wrapper)?.text.match(/Mixed clipboard text/g)).toHaveLength(1);
+  });
+
+  it('routes an oversized apparent raster to attachments without decoding it', async () => {
+    const createImageBitmap = vi.fn();
+    vi.stubGlobal('createImageBitmap', createImageBitmap);
+    const wrapper = await mountEditor();
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    const oversized = new File(
+      [new Uint8Array((10 * 1024 * 1024) + 1)],
+      'large.png',
+      { type: 'image/png' },
+    );
+
+    await pasteFilesIntoEditor(editor, wrapper, [oversized]);
+
+    const emitted = wrapper.emitted('paste-files')?.[0]?.[0] as Array<{
+      file: File;
+      kind: string;
+    }>;
+    expect(emitted.map(({ file, kind }) => [file.name, kind]))
+      .toEqual([['large.png', 'attachment']]);
+    expect(createImageBitmap).not.toHaveBeenCalled();
+    expect(latestUpdate(wrapper)?.html ?? '').not.toContain('data:image/');
   });
 
   it('re-aligns a pasted image with toolbar alignment controls', async () => {

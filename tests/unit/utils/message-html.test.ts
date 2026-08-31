@@ -30,6 +30,7 @@ import {
   isInlineImageType,
   normalizeContentId,
   referencedContentIds,
+  referencedInlineImageContentIds,
   sanitizeMessageDocument,
   sanitizeMessageHtml,
 } from '../../../src/utils/message-html';
@@ -90,7 +91,7 @@ describe('buildMessageSrcDoc', () => {
     // fallback for messages without their own background.
     expect(css).toMatch(/html\s*\{[^}]*background:\s*transparent/);
     expect(css).toContain(`color: ${BODY_THEME_COLORS.light.color};`);
-    expect(css).toMatch(/body\s*\{[^}]*min-height:\s*100vh/);
+    expect(css).not.toMatch(/body\s*\{[^}]*min-height:\s*100vh/);
 
     // We DO ship a sans-serif default for unstyled bodies. Almost all
     // marketing emails set their own font-family inline so this only
@@ -341,6 +342,7 @@ describe('Content-ID matching helpers', () => {
     expect(normalizeContentId('<logo@example.com>')).toBe('logo@example.com');
     expect(normalizeContentId(' < logo@example.com > ')).toBe('logo@example.com');
     expect(normalizeContentId('cid:%3Clogo%40example.com%3E')).toBe('logo@example.com');
+    expect(normalizeContentId('cid:LOGO@EXAMPLE.COM')).toBe('logo@example.com');
   });
 
   it('finds cid references in HTML attributes without matching unrelated attachments', () => {
@@ -356,6 +358,17 @@ describe('Content-ID matching helpers', () => {
       'hero@example.com',
       'logo@example.com',
     ]);
+  });
+
+  it('limits authored inline resolution to image src references', () => {
+    const ids = referencedInlineImageContentIds(`
+      <img src="cid:logo@example.com">
+      <source srcset="cid:hero@example.com 1x">
+      <a href="cid:download@example.com">download</a>
+      <div style="background:url(cid:bg@example.com)"></div>
+    `);
+
+    expect([...ids]).toEqual(['logo@example.com']);
   });
 });
 
