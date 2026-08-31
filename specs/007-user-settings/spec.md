@@ -56,7 +56,7 @@ that mirror.
 |---|---|---|---|
 | `theme` | `light \| dark \| system` | `system` | Color scheme; `system` follows the OS preference. |
 | `primaryIdentityRemoteId` | `string \| null` | `null` | Client-selected JMAP Identity used as the default From address. |
-| `scheduledMailboxRemoteId` | `string \| null` | `null` | Cached remote id for the hidden Send Later backing Mailbox; name discovery remains authoritative. |
+| `scheduledMailboxRemoteId` | `string \| null` | `null` | Cached canonical remote id for the managed top-level Scheduled mailbox; cached ids are verified before reuse. |
 | `timeZone` | IANA time-zone string | detected IANA zone, else `UTC` | Wall-time zone used by Send Later presets and custom scheduling. |
 
 ## Non-goals
