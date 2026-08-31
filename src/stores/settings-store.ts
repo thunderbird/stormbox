@@ -10,6 +10,7 @@ import { getRepositoryAsync } from '../composables/useRepository';
 import { resolveSetting, type Settings } from '../constants/settings';
 import { TABLE_FAMILIES } from '../db/protocol';
 import type { Repository } from '../db/repository';
+import { detectTimeZone, isUsableTimeZone } from '../utils/schedule-time';
 import { useAuthStore } from './auth-store';
 
 const LOCAL_SETTINGS_KEY = 'stormbox.settings.v1';
@@ -150,6 +151,8 @@ export const useSettingsStore = defineStore('settings', () => {
   let attachGeneration = 0;
   const writesInFlight = new Map<number, number>();
   const refreshAfterWrite = new Set<number>();
+  const initializedTimeZoneAccounts = new Set<number>();
+  const timeZoneSyncInFlight = new Map<number, Promise<boolean>>();
 
   async function attach(): Promise<void> {
     if (repo) return;
@@ -159,8 +162,8 @@ export const useSettingsStore = defineStore('settings', () => {
     repo = nextRepo;
     unsubscribe = repo.subscribe(onTablesTouched);
     stopAccountWatch = watch(
-      () => authStore.accountId,
-      async (newId) => {
+      () => [authStore.accountId, authStore.isConnected] as const,
+      async ([newId, connected]) => {
         activeAccountId = newId;
         stateRevision += 1;
         if (newId == null) {
@@ -174,7 +177,7 @@ export const useSettingsStore = defineStore('settings', () => {
           settings.value = pending;
         }
         try {
-          await refresh(newId);
+          await refresh(newId, connected);
         } catch (error) {
           console.warn('[settings-store] account refresh failed', error);
         }
@@ -210,8 +213,34 @@ export const useSettingsStore = defineStore('settings', () => {
     });
   }
 
-  async function refresh(accountId = activeAccountId): Promise<void> {
+  async function refresh(
+    accountId = activeAccountId,
+    initializeTimeZone = authStore.isConnected,
+  ): Promise<void> {
     if (!repo || accountId == null || accountId !== activeAccountId) return;
+    let mayInitializeTimeZone = false;
+    if (initializeTimeZone && !initializedTimeZoneAccounts.has(accountId)) {
+      const existingSync = timeZoneSyncInFlight.get(accountId);
+      if (existingSync) {
+        await existingSync;
+      } else {
+        const currentRepo = repo;
+        const sync = (async () => {
+          if (typeof currentRepo.ensureSettings !== 'function') return true;
+          try {
+            await currentRepo.ensureSettings(accountId);
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+        timeZoneSyncInFlight.set(accountId, sync);
+        mayInitializeTimeZone = await sync;
+        if (timeZoneSyncInFlight.get(accountId) === sync) {
+          timeZoneSyncInFlight.delete(accountId);
+        }
+      }
+    }
     const revision = stateRevision;
     let result = await repo.getSettings(accountId);
     const pending = pendingForAccount(accountId);
@@ -222,6 +251,12 @@ export const useSettingsStore = defineStore('settings', () => {
     if (accountId !== activeAccountId || revision !== stateRevision) return;
     settings.value = result?.doc?.settings ?? {};
     writeMirror(settings.value, accountId);
+    if (mayInitializeTimeZone && !initializedTimeZoneAccounts.has(accountId)) {
+      initializedTimeZoneAccounts.add(accountId);
+      if (!isUsableTimeZone(settings.value.timeZone)) {
+        await update({ timeZone: detectTimeZone() });
+      }
+    }
   }
 
   function get<K extends keyof Settings>(key: K): Settings[K] {

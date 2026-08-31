@@ -48,6 +48,7 @@ that mirror.
 | R-SET.12 🟩 Done | Without FileNode capability, settings shall remain functional and device-local and queued pushes shall retire as successful no-ops. |
 | R-SET.13 🟩 Done | The browser may apply the last theme before authentication, but the boot mirror shall not seed a different authenticated account. |
 | R-SET.14 🟩 Done | Pre-authentication changes shall be tracked separately and account-safely, and the legacy `stormbox.theme.v1` value shall migrate without becoming an unmarked cross-account seed. |
+| R-SET.15 🟩 Done | The Send Later time zone shall use the same validated setting locally and across FileNode-capable devices; changing it shall not reinterpret already accepted absolute schedule targets. |
 
 ## Current registry
 
@@ -55,6 +56,8 @@ that mirror.
 |---|---|---|---|
 | `theme` | `light \| dark \| system` | `system` | Color scheme; `system` follows the OS preference. |
 | `primaryIdentityRemoteId` | `string \| null` | `null` | Client-selected JMAP Identity used as the default From address. |
+| `scheduledMailboxRemoteId` | `string \| null` | `null` | Cached remote id for the hidden Send Later backing Mailbox; name discovery remains authoritative. |
+| `timeZone` | IANA time-zone string | detected IANA zone, else `UTC` | Wall-time zone used by Send Later presets and custom scheduling. |
 
 ## Non-goals
 

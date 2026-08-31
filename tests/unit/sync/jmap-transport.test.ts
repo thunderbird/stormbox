@@ -36,11 +36,22 @@ function makeFetch(handlers) {
   });
 }
 
-function jsonResponse(body: any, init: { status?: number; statusText?: string } = {}) {
+function jsonResponse(
+  body: any,
+  init: {
+    status?: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+  } = {},
+) {
   return {
     ok: init.status == null || (init.status >= 200 && init.status < 300),
     status: init.status ?? 200,
     statusText: init.statusText ?? 'OK',
+    headers: {
+      get: (name: string) => Object.entries(init.headers ?? {})
+        .find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1] ?? null,
+    },
     text: async () => JSON.stringify(body),
     json: async () => body,
   };
@@ -174,6 +185,84 @@ describe('JmapTransport HTTP', () => {
     await t.fetchSession();
     await t.fetchSession({ force: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('captures a bounded server clock reference from HTTP Date headers', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime('2026-08-31T12:00:00.500Z');
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION, {
+          headers: { Date: 'Mon, 31 Aug 2026 12:00:01 GMT' },
+        }),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+      });
+
+      await t.fetchSession();
+
+      expect(t.serverClockReference).toEqual({
+        capturedAtMs: Date.parse('2026-08-31T12:00:00.500Z'),
+        lowerOffsetMs: 500,
+        uncertaintyMs: 999,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes the server clock reference from JMAP responses', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime('2026-08-31T12:00:00.000Z');
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+        'https://mail.example.com/jmap': () => jsonResponse(
+          { methodResponses: [] },
+          { headers: { Date: 'Mon, 31 Aug 2026 12:00:01 GMT' } },
+        ),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+      });
+
+      await t.request([JMAP_CAPS.CORE], []);
+
+      expect(t.serverClockReference).toMatchObject({
+        capturedAtMs: Date.parse('2026-08-31T12:00:00.000Z'),
+        lowerOffsetMs: 1_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores invalid or unbounded HTTP Date headers', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime('2026-08-31T12:00:00Z');
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION, {
+          headers: { Date: 'Wed, 02 Sep 2026 12:00:00 GMT' },
+        }),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+      });
+
+      await t.fetchSession();
+
+      expect(t.serverClockReference).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('throws a descriptive error on session fetch failure', async () => {

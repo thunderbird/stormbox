@@ -89,5 +89,24 @@ merges per-key and removes it.
 `src/constants/settings.ts` declares each setting's type, default, and raw
 value validator. UI code reads through `settingsStore.get` and writes
 through `settingsStore.update`; it does not branch on sync availability.
-The registry contains the `theme` setting and the client-selected
-`primaryIdentityRemoteId`.
+The current registry contains:
+
+| Key | Default | Purpose |
+|---|---|---|
+| `theme` | `system` | Color scheme; `system` follows the OS preference. |
+| `primaryIdentityRemoteId` | `null` | Client-selected JMAP Identity used as the default From address. |
+| `scheduledMailboxRemoteId` | `null` | Cached JMAP id for the hidden Send Later backing Mailbox; exact-name discovery remains authoritative. |
+| `timeZone` | detected IANA zone, else `UTC` | Wall-time zone shared by Send Later presets and the custom picker. |
+
+`timeZone` accepts only values supported by the runtime's
+`Intl.DateTimeFormat`; invalid remote or browser-mirror values resolve to the
+detected default. Changing it through the custom schedule dialog uses the
+normal settings patch/outbox path, so a FileNode-capable account converges
+across devices and a non-FileNode account remains device-local. Scheduled
+mutations store an absolute target instant, so a later setting change does not
+reinterpret already accepted mail.
+
+`scheduledMailboxRemoteId` is a cache rather than user-facing state. Send
+Later startup still discovers the exact
+`__stormbox_internal_scheduled__` name and repairs its hidden shape before
+using it. See [Send Later](send-later.md).
