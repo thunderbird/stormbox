@@ -375,6 +375,24 @@ function onAvatarError(fromText) {
   failedAvatarDomains.value = new Set([...failedAvatarDomains.value, domain]);
 }
 
+/** Sent and Drafts list the people you wrote to, not yourself (Fixes #98). */
+const listShowsRecipients = computed(() => {
+  const role = mailStore.currentFolder?.role;
+  return role === 'sent' || role === 'drafts';
+});
+
+function rowCorrespondent(row) {
+  return listShowsRecipients.value ? row?.to_text : row?.from_text;
+}
+
+function correspondentLabel(row) {
+  const text = rowCorrespondent(row);
+  if (!text) {
+    return listShowsRecipients.value ? '(no recipient)' : '(no sender)';
+  }
+  return shortFrom(text);
+}
+
 const allLoadedSelected = computed(() => {
   const loadedIds = [];
   for (const row of selectAllTargetMessages.value) {
@@ -683,24 +701,24 @@ function normalizeFilterText(value) {
               </div>
               <div
                 class="msg-list__avatar"
-                :style="senderAvatar(visibleMessages[v.index].from_text).style"
+                :style="senderAvatar(rowCorrespondent(visibleMessages[v.index])).style"
                 aria-hidden="true"
               >
                 <img
-                  v-if="senderAvatar(visibleMessages[v.index].from_text).imageUrl"
+                  v-if="senderAvatar(rowCorrespondent(visibleMessages[v.index])).imageUrl"
                   class="msg-list__avatar-image"
-                  :src="senderAvatar(visibleMessages[v.index].from_text).imageUrl"
+                  :src="senderAvatar(rowCorrespondent(visibleMessages[v.index])).imageUrl"
                   alt=""
                   loading="lazy"
                   decoding="async"
                   referrerpolicy="no-referrer"
-                  @error="onAvatarError(visibleMessages[v.index].from_text)"
+                  @error="onAvatarError(rowCorrespondent(visibleMessages[v.index]))"
                 />
-                <span>{{ senderAvatar(visibleMessages[v.index].from_text).initials }}</span>
+                <span>{{ senderAvatar(rowCorrespondent(visibleMessages[v.index])).initials }}</span>
               </div>
               <div class="msg-list__content">
                 <div class="msg-list__summary">
-                  <span class="msg-list__from">{{ shortFrom(visibleMessages[v.index].from_text) }}</span>
+                  <span class="msg-list__from">{{ correspondentLabel(visibleMessages[v.index]) }}</span>
                   <span class="msg-list__subject">{{ visibleMessages[v.index].subject || '(no subject)' }}</span>
                   <span class="msg-list__icons">
                     <Star v-if="Number(visibleMessages[v.index].is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
