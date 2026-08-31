@@ -34,6 +34,8 @@
 
 import DOMPurify from 'dompurify';
 
+import { isInlineRasterType } from './raster-images';
+
 /**
  * URI scheme allowlist for DOMPurify: standard web schemes plus `cid:`
  * so inline images survive sanitisation (sanitizeMessageHtml resolves
@@ -58,10 +60,6 @@ export const ALLOWED_URI_REGEXP =
 //    mode), excluding it keeps our own attack surface minimal. Pasted
 //    clipboard images are always raster (PNG/JPEG), so nothing the
 //    feature targets is affected.
-const INLINE_IMAGE_TYPES = new Set([
-  'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
-  'image/bmp', 'image/avif', 'image/x-icon', 'image/vnd.microsoft.icon',
-]);
 const LEGACY_BODY_COLOR_ATTRIBUTES = new Set(['text', 'link', 'vlink', 'alink']);
 const BASE64_ONLY = /^[A-Za-z0-9+/]*={0,2}$/;
 const CID_URL_RE = /cid:\s*(?:<([^>]+)>|([^"'\s)>]+))/gi;
@@ -72,7 +70,7 @@ const CID_URL_RE = /cid:\s*(?:<([^>]+)>|([^"'\s)>]+))/gi;
  * refused so they never become a renderable inline URL.
  */
 export function isInlineImageType(type: string | null | undefined): boolean {
-  return !!type && INLINE_IMAGE_TYPES.has(type.trim().toLowerCase());
+  return isInlineRasterType(type);
 }
 
 /**
@@ -118,7 +116,7 @@ function decodeCidComponent(value: string): string {
 export function normalizeContentId(value: string | null | undefined): string {
   if (value == null) return '';
   const trimmed = String(value).trim().replace(/^cid:/i, '');
-  return stripCidBrackets(decodeCidComponent(stripCidBrackets(trimmed)));
+  return stripCidBrackets(decodeCidComponent(stripCidBrackets(trimmed))).toLowerCase();
 }
 
 export function cidUrlContentId(value: string | null | undefined): string {
@@ -169,6 +167,33 @@ export function referencedContentIds(html: string | null | undefined): Set<strin
     addCidReferencesInText(out, html);
   }
 
+  return out;
+}
+
+/**
+ * Return only cid references that the renderer can author in place.
+ * sanitizeMessageMarkup rewrites IMG src attributes; references in links,
+ * CSS, poster, or srcset remain inert and do not justify hiding a part from
+ * the attachment bar.
+ */
+export function referencedInlineImageContentIds(
+  html: string | null | undefined,
+): Set<string> {
+  const out = new Set<string>();
+  if (!html) return out;
+
+  if (typeof DOMParser === 'function') {
+    const doc = new DOMParser().parseFromString(String(html), 'text/html');
+    doc.querySelectorAll('img[src]').forEach((node) => {
+      addCidReference(out, node.getAttribute('src'));
+    });
+    return out;
+  }
+
+  const imageSource = /<img\b[^>]*\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  for (const match of String(html).matchAll(imageSource)) {
+    addCidReference(out, match[1] ?? match[2] ?? match[3]);
+  }
   return out;
 }
 
@@ -248,7 +273,7 @@ function sanitizeMessageMarkup(
       const value = node.getAttribute(attr);
       if (!value) continue;
       const trimmed = value.trim();
-      if (/^data:/i.test(trimmed) && !INLINE_IMAGE_TYPES.has(dataUrlMediaType(trimmed))) {
+      if (/^data:/i.test(trimmed) && !isInlineRasterType(dataUrlMediaType(trimmed))) {
         node.removeAttribute(attr);
       }
     }
@@ -346,7 +371,6 @@ export function buildBodyCss(colorScheme = 'light') {
   body {
     margin: 0;
     padding: 0;
-    min-height: 100vh;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     overflow-wrap: anywhere;
     overflow: hidden;

@@ -101,6 +101,25 @@ export const IDENTITY_PHASE = {
 } as const;
 export type IdentityPhase = (typeof IDENTITY_PHASE)[keyof typeof IDENTITY_PHASE];
 
+export const ADDRESSBOOK_PHASE = {
+  CREATE_SUBMITTING: 'addressbook_create_submitting',
+  DESTROY_SUBMITTING: 'addressbook_destroy_submitting',
+  CACHE_PENDING: 'addressbook_cache_pending',
+} as const;
+export type AddressBookPhase =
+  (typeof ADDRESSBOOK_PHASE)[keyof typeof ADDRESSBOOK_PHASE];
+
+export const CONTACT_TRASH_PHASE = {
+  SNAPSHOT_SAVED: 'contact_trash_snapshot_saved',
+  DOCUMENT_CONFIRMED: 'contact_trash_document_confirmed',
+  SERVER_WRITE_PENDING: 'contact_trash_server_write_pending',
+  CACHE_PENDING: 'contact_trash_cache_pending',
+  RESTORE_PENDING: 'contact_trash_restore_pending',
+  TOMBSTONE_PENDING: 'contact_trash_tombstone_pending',
+} as const;
+export type ContactTrashPhase =
+  (typeof CONTACT_TRASH_PHASE)[keyof typeof CONTACT_TRASH_PHASE];
+
 export const DRAFT_PHASE = {
   QUEUED: 'draft_queued',
   CREATED: 'draft_created',
@@ -109,7 +128,12 @@ export const DRAFT_PHASE = {
   CONFLICT: 'draft_conflict',
 } as const;
 export type DraftPhase = (typeof DRAFT_PHASE)[keyof typeof DRAFT_PHASE];
-export type MutationPhase = SendPhase | DraftPhase | IdentityPhase;
+export type MutationPhase =
+  | SendPhase
+  | DraftPhase
+  | IdentityPhase
+  | AddressBookPhase
+  | ContactTrashPhase;
 
 export const SYNC_JOB_STATUS = {
   PENDING: 'pending',
@@ -151,13 +175,19 @@ export const MUTATION_TYPE = {
   UPDATE_CONTACT: 'updateContact',
   DELETE_CONTACT: 'deleteContact',
   CONTACT_BATCH: 'contactBatch',
+  CONTACT_TRASH: 'contactTrash',
   CREATE_IDENTITY: 'createIdentity',
   UPDATE_IDENTITY: 'updateIdentity',
   DELETE_IDENTITY: 'deleteIdentity',
+  CREATE_ADDRESSBOOK: 'createAddressbook',
+  UPDATE_ADDRESSBOOK: 'updateAddressbook',
+  DESTROY_ADDRESSBOOK: 'destroyAddressbook',
   SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
   CREATE_MAILBOX: 'createMailbox',
   UPDATE_MAILBOX: 'updateMailbox',
   DESTROY_MAILBOX: 'destroyMailbox',
+  PUSH_SETTINGS: 'pushSettings',
+  PUSH_CONTACTS_TRASH: 'pushContactsTrash',
 } as const;
 export type MutationType = (typeof MUTATION_TYPE)[keyof typeof MUTATION_TYPE];
 
@@ -222,7 +252,8 @@ export type JmapType =
   | 'EmailSubmission'
   | 'EmailDelivery'
   | 'AddressBook'
-  | 'ContactCard';
+  | 'ContactCard'
+  | 'FileNode';
 
 /**
  * `sort: [{ property }]` value for an Email/query mailbox-window view.

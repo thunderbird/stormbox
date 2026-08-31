@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 
 /**
- * One e2e lane at a time.
+ * One live-stack test lane at a time.
  *
  * `workers: 1` serialises tests inside one Playwright process and says
  * nothing about a second process. Two lanes against the one shared Stalwart
@@ -87,7 +87,13 @@ function holderAlive(holder) {
   if (!processExists(holder.pid)) return false;
 
   const command = commandOf(holder.pid);
-  if (command !== null) return command.includes('playwright');
+  if (command !== null) {
+    const recordedLane = holder.argv.includes('playwright')
+      || holder.argv.includes('vitest');
+    const runningLane = command.includes('playwright')
+      || command.includes('vitest');
+    return recordedLane && runningLane;
+  }
 
   const startedAt = Date.parse(holder.startedAt ?? '');
   if (Number.isNaN(startedAt)) return true;

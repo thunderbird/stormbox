@@ -14,6 +14,7 @@ import { __resetRepositoryForTests, __setRepositoryForTests } from '../../../src
 import { COMPOSE_STATE, MUTATION_TYPE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   COMPOSE_OPEN_ORIGIN,
   COMPOSE_PRESENTATION,
@@ -81,12 +82,16 @@ function sourceAddresses() {
 async function storeWithParentAddresses(addresses = sourceAddresses(), identities = [
   identity({ id: 1, name: 'Me', email: 'me@example.com' }),
 ]) {
+  let currentIdentities = identities;
   const repo = {
     subscribe: vi.fn(() => () => {}),
     getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
-    listIdentities: vi.fn(async () => identities),
+    listIdentities: vi.fn(async () => currentIdentities),
     ensureIdentities: vi.fn(async () => {}),
     listMessageAddresses: vi.fn(async () => addresses),
+    setIdentities(next: IdentityRow[]) {
+      currentIdentities = next;
+    },
   };
   __setRepositoryForTests(repo);
   const authStore = useAuthStore();
@@ -119,6 +124,79 @@ describe('compose-store reply and forward prefills', () => {
     expect(composeStore.draft.htmlBody).toContain('From: Alice &lt;alice@example.com&gt;');
     expect(composeStore.draft.htmlBody).toContain('<blockquote type="cite"><p>Hello from Alice</p></blockquote>');
     expect(composeStore.draft.textBody).toContain('> Hello from Alice');
+  });
+
+  it('replies from the identity matching the original To field', async () => {
+    const { composeStore } = await storeWithParentAddresses(
+      sourceAddresses(),
+      [
+        identity({
+          id: 1,
+          remote_id: 'primary',
+          email: 'primary@example.com',
+          may_delete: 0,
+        }),
+        identity({
+          id: 2,
+          remote_id: 'addressed-alias',
+          email: 'me@example.com',
+          may_delete: 1,
+        }),
+      ],
+    );
+
+    await composeStore.prepareReplyFromMessage(sourceMessage(), {});
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('addressed-alias');
+  });
+
+  it('replies from Primary when the original To field matches no identity', async () => {
+    const { composeStore } = await storeWithParentAddresses(
+      sourceAddresses().map((address) =>
+        address.kind === 'to' ? { ...address, email: 'recipient@example.com' } : address),
+      [
+        identity({ id: 1, remote_id: 'first', email: 'first@example.com' }),
+        identity({ id: 2, remote_id: 'chosen', email: 'chosen@example.com' }),
+      ],
+    );
+    useSettingsStore().settings = { primaryIdentityRemoteId: 'chosen' };
+
+    await composeStore.prepareReplyFromMessage(sourceMessage(), {});
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('chosen');
+  });
+
+  it('adopts a matching reply identity when it arrives after the reply opens', async () => {
+    const { composeStore, repo } = await storeWithParentAddresses(
+      sourceAddresses(),
+      [identity({
+        id: 1,
+        remote_id: 'primary',
+        email: 'primary@example.com',
+        may_delete: 0,
+      })],
+    );
+
+    await composeStore.prepareReplyFromMessage(sourceMessage(), {});
+    expect(composeStore.fromIdentity?.remote_id).toBe('primary');
+
+    repo.setIdentities([
+      identity({
+        id: 1,
+        remote_id: 'primary',
+        email: 'primary@example.com',
+        may_delete: 0,
+      }),
+      identity({
+        id: 2,
+        remote_id: 'addressed-alias',
+        email: 'me@example.com',
+        may_delete: 1,
+      }),
+    ]);
+    await composeStore.refreshIdentities();
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('addressed-alias');
   });
 
   it('prepares reply-all with the sender in To and everyone else in Cc', async () => {
@@ -389,11 +467,16 @@ describe('compose-store from identity selection', () => {
     return { composeStore, repo };
   }
 
-  it('opens new compose windows from the account primary identity', async () => {
+  it('opens new compose windows from the non-deletable identity by default', async () => {
     const { composeStore } = await attachedStore({
       identities: [
         identity({ id: 1, remote_id: 'alias', email: 'alias@example.com' }),
-        identity({ id: 2, remote_id: 'primary', email: 'primary@thundermail.com' }),
+        identity({
+          id: 2,
+          remote_id: 'primary',
+          email: 'primary@thundermail.com',
+          may_delete: 0,
+        }),
       ],
     });
 
@@ -401,6 +484,85 @@ describe('compose-store from identity selection', () => {
 
     expect(composeStore.draft.fromIdx).toBe(1);
     expect(composeStore.fromIdentity?.email).toBe('primary@thundermail.com');
+  });
+
+  it('opens new compose windows from the client-selected Primary identity', async () => {
+    const { composeStore } = await attachedStore({
+      identities: [
+        identity({
+          id: 1,
+          remote_id: 'server-main',
+          email: 'main@example.com',
+          may_delete: 0,
+        }),
+        identity({
+          id: 2,
+          remote_id: 'selected-primary',
+          email: 'alias@example.com',
+          may_delete: 1,
+        }),
+      ],
+    });
+    useSettingsStore().settings = {
+      primaryIdentityRemoteId: 'selected-primary',
+    };
+
+    composeStore.open();
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('selected-primary');
+  });
+
+  it('updates an automatic From selection when the Primary setting arrives late', async () => {
+    const { composeStore } = await attachedStore({
+      identities: [
+        identity({
+          id: 1,
+          remote_id: 'server-main',
+          email: 'main@example.com',
+          may_delete: 0,
+        }),
+        identity({
+          id: 2,
+          remote_id: 'synced-primary',
+          email: 'alias@example.com',
+          may_delete: 1,
+        }),
+      ],
+    });
+
+    composeStore.open();
+    expect(composeStore.fromIdentity?.remote_id).toBe('server-main');
+
+    useSettingsStore().settings = { primaryIdentityRemoteId: 'synced-primary' };
+    await waitForAsyncWatchers();
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('synced-primary');
+  });
+
+  it('does not replace a manually selected From when the Primary setting changes', async () => {
+    const { composeStore } = await attachedStore({
+      identities: [
+        identity({
+          id: 1,
+          remote_id: 'server-main',
+          email: 'main@example.com',
+          may_delete: 0,
+        }),
+        identity({
+          id: 2,
+          remote_id: 'manual-alias',
+          email: 'alias@example.com',
+          may_delete: 1,
+        }),
+      ],
+    });
+
+    composeStore.open();
+    composeStore.selectFromIndex(1);
+    useSettingsStore().settings = { primaryIdentityRemoteId: 'server-main' };
+    await waitForAsyncWatchers();
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('manual-alias');
   });
 
   it('asks the server for the identity list each time compose opens', async () => {
@@ -446,11 +608,16 @@ describe('compose-store from identity selection', () => {
     expect(composeStore.error).toBeNull();
   });
 
-  it('remembers an explicitly selected From identity for later compose windows', async () => {
+  it('uses Primary again after an explicit From selection in an earlier compose window', async () => {
     const { composeStore } = await attachedStore({
       identities: [
         identity({ id: 1, remote_id: 'alias', email: 'alias@example.com' }),
-        identity({ id: 2, remote_id: 'primary', email: 'primary@thundermail.com' }),
+        identity({
+          id: 2,
+          remote_id: 'primary',
+          email: 'primary@thundermail.com',
+          may_delete: 0,
+        }),
       ],
     });
 
@@ -459,8 +626,8 @@ describe('compose-store from identity selection', () => {
     composeStore.close();
     composeStore.open();
 
-    expect(composeStore.draft.fromIdx).toBe(0);
-    expect(composeStore.fromIdentity?.remote_id).toBe('alias');
+    expect(composeStore.draft.fromIdx).toBe(1);
+    expect(composeStore.fromIdentity?.remote_id).toBe('primary');
   });
 
   it('applies the primary identity when identities arrive after compose opens', async () => {
@@ -471,7 +638,12 @@ describe('compose-store from identity selection', () => {
 
     repo.setIdentities([
       identity({ id: 1, remote_id: 'alias', email: 'alias@example.com' }),
-      identity({ id: 2, remote_id: 'primary', email: 'primary@thundermail.com' }),
+      identity({
+        id: 2,
+        remote_id: 'primary',
+        email: 'primary@thundermail.com',
+        may_delete: 0,
+      }),
     ]);
     await composeStore.refreshIdentities();
 
@@ -2035,6 +2207,31 @@ describe('compose-store sessions and draft autosave', () => {
     expect(composeStore.sessionById(sessionId)?.saveError).toBeNull();
   });
 
+  it('deduplicates pending recipients across To, Cc, and Bcc before saving', async () => {
+    const { composeStore, repo } = await autosaveStore();
+    const sessionId = composeStore.open({ subject: 'Recipient union' });
+    composeStore.setRecipientEntries('to', [
+      { name: 'Alice', email: 'alice@example.com' },
+    ], sessionId);
+    composeStore.setPendingRecipientText(
+      'cc',
+      'Alice again <ALICE@example.com>, Bob <bob@example.com>',
+      sessionId,
+    );
+    composeStore.setPendingRecipientText(
+      'bcc',
+      'Bob again <BOB@example.com>, Carol <carol@example.com>',
+      sessionId,
+    );
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
+
+    const request = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(request.to).toEqual([{ name: 'Alice', email: 'alice@example.com' }]);
+    expect(request.cc).toEqual([{ name: 'Bob', email: 'bob@example.com' }]);
+    expect(request.bcc).toEqual([{ name: 'Carol', email: 'carol@example.com' }]);
+  });
+
   it('recovers the confirmed revision when auto-drain retired the row first', async () => {
     const { composeStore, repo } = await autosaveStore(async () => ({
       attempted: 0,
@@ -2102,6 +2299,7 @@ describe('compose-store sessions and draft autosave', () => {
         size: 123,
         disposition: 'attachment',
         cid: null,
+        charset: null,
       }],
     });
 
@@ -2132,6 +2330,7 @@ describe('compose-store sessions and draft autosave', () => {
           size: 123,
           disposition: 'attachment',
           cid: null,
+          charset: null,
         }],
       },
     }));
@@ -2145,12 +2344,13 @@ describe('compose-store sessions and draft autosave', () => {
         size: 123,
         disposition: 'attachment',
         cid: null,
+        charset: null,
       }],
     });
 
     await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(true);
 
-    expect(composeStore.sessionById(sessionId)?.draft.attachments[0]?.blob_id)
+    expect(composeStore.sessionById(sessionId)?.attachments[0]?.canonicalBlobId)
       .toBe('refreshed-part-blob');
     expect(composeStore.isSessionDirty(sessionId)).toBe(false);
     expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
@@ -2206,6 +2406,7 @@ describe('compose-store sessions and draft autosave', () => {
         size: 12,
         disposition: 'inline',
         cid: 'image-1',
+        charset: null,
       }],
     });
 
@@ -2222,7 +2423,7 @@ describe('compose-store sessions and draft autosave', () => {
     expect(session?.automaticBccOrigins).toEqual([]);
     expect(session?.automaticSignatureOrigin).toBeNull();
     expect(session?.draft.htmlBody).not.toMatch(/script|onclick|position|id="cover"/i);
-    expect(session?.draft.attachments).toEqual([]);
+    expect(session?.attachments).toEqual([]);
     expect(session?.confirmedRevision?.emailId).toBe('remote-draft');
     expect(composeStore.isSessionDirty(sessionId)).toBe(false);
 
@@ -2475,6 +2676,107 @@ describe('compose-store sessions and draft autosave', () => {
     const input = repo.insertPendingMutation.mock.calls[0][0];
     expect(input.mutationType).toBe(MUTATION_TYPE.DISCARD_DRAFT);
     expect(JSON.parse(input.requestJson).draftEmailIds).toEqual(['draft-to-destroy']);
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+  });
+
+  it("refuses Don't Save while a discard-all obligation remains unresolved", async () => {
+    const { composeStore, repo } = await autosaveStore(async () => ({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+    }));
+    const sessionId = composeStore.open({ subject: 'Saved draft' });
+    const session = composeStore.sessionById(sessionId)!;
+    session.confirmedRevision = {
+      emailId: 'draft-to-preserve',
+      localMessageId: 23,
+      revision: 1,
+      messageId: '<draft@example.com>',
+      payloadHash: 'hash',
+    };
+
+    await expect(composeStore.discardDraft(sessionId)).resolves.toBe(false);
+    await expect(composeStore.closeWithoutSaving(sessionId)).resolves.toBe(false);
+
+    expect(session.pendingDiscardMutationId).toBe(1);
+    expect(session.pendingDiscardIntent).toBe('discard-all');
+    expect(composeStore.sessionById(sessionId)).toBe(session);
+    expect(repo.abandonPendingDraftMutation).not.toHaveBeenCalled();
+  });
+
+  it('abandons a failed replacement without scheduling its confirmed predecessor', async () => {
+    const { composeStore, repo } = await autosaveStore(async () => ({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+    }));
+    repo.abandonPendingDraftMutation.mockResolvedValue({
+      abandoned: 0,
+      converted: 1,
+      parked: 0,
+      inFlight: 0,
+      mutationId: 1,
+    } as any);
+    const sessionId = composeStore.open({ subject: 'Saved version' });
+    const session = composeStore.sessionById(sessionId)!;
+    session.confirmedRevision = {
+      emailId: 'confirmed-draft',
+      localMessageId: 23,
+      revision: 1,
+      messageId: '<confirmed@example.com>',
+      payloadHash: 'confirmed-hash',
+    };
+    session.draft.subject = 'Failed replacement';
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+    await expect(composeStore.closeWithoutSaving(sessionId)).resolves.toBe(true);
+
+    expect(repo.abandonPendingDraftMutation).toHaveBeenCalledWith(1, 1, {
+      intent: 'keep-confirmed',
+      confirmedEmailIds: ['confirmed-draft'],
+      draftSessionId: sessionId,
+      draftsFolderId: 10,
+    });
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+  });
+
+  it('converts a failed replacement into one discard obligation and waits for it', async () => {
+    let attempts = 0;
+    const { composeStore, repo } = await autosaveStore(async () => {
+      attempts += 1;
+      return attempts === 1
+        ? { attempted: 1, succeeded: 0, failed: 1 }
+        : { attempted: 1, succeeded: 1, failed: 0 };
+    });
+    repo.abandonPendingDraftMutation.mockResolvedValue({
+      abandoned: 0,
+      converted: 1,
+      parked: 0,
+      inFlight: 0,
+      mutationId: 1,
+    } as any);
+    const sessionId = composeStore.open({ subject: 'Saved version' });
+    const session = composeStore.sessionById(sessionId)!;
+    session.confirmedRevision = {
+      emailId: 'confirmed-draft',
+      localMessageId: 23,
+      revision: 1,
+      messageId: '<confirmed@example.com>',
+      payloadHash: 'confirmed-hash',
+    };
+    session.draft.subject = 'Failed replacement';
+
+    await expect(composeStore.saveDraft(sessionId, { explicit: true })).resolves.toBe(false);
+    await expect(composeStore.discardDraft(sessionId)).resolves.toBe(true);
+
+    expect(repo.abandonPendingDraftMutation).toHaveBeenCalledWith(1, 1, {
+      intent: 'discard-all',
+      confirmedEmailIds: ['confirmed-draft'],
+      draftSessionId: sessionId,
+      draftsFolderId: 10,
+    });
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+    expect(repo.runMutation).toHaveBeenNthCalledWith(2, 1, 1);
     expect(composeStore.sessionById(sessionId)).toBeNull();
   });
 });

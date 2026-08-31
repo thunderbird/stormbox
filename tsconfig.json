@@ -40,6 +40,7 @@
     "src/**/*.ts",
     "src/**/*.vue",
     "src/**/*.js",
+    "tests/integration/**/*.ts",
     "tests/unit/**/*.ts",
     "tests/unit/**/*.js",
     "vite.config.*",

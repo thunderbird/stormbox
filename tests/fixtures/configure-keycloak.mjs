@@ -2,6 +2,8 @@
 import fs from 'node:fs';
 
 import {
+  INTEGRATION_TEST_OIDC_EMAIL,
+  INTEGRATION_TEST_OIDC_PASSWORD,
   OIDC_CLIENT_ID,
   SHARED_TEST_OIDC_EMAIL,
   SHARED_TEST_OIDC_PASSWORD,
@@ -18,9 +20,11 @@ function stackHost() {
 const host = stackHost();
 const KEYCLOAK_BASE = process.env.KEYCLOAK_BASE_URL ?? `http://${host}:8999`;
 const REALM = process.env.KEYCLOAK_REALM ?? 'tbpro';
-const PUBLIC_ORIGIN = process.env.VITE_LOCAL_PUBLIC_ORIGIN
-  ?? process.env.PLAYWRIGHT_BASE_URL
-  ?? `http://localhost:${process.env.PLAYWRIGHT_PORT ?? 3000}`;
+// Pin the shared realm to the developer origin. Vite rewrites this per
+// worktree via KEYCLOAK_FRONTEND_ORIGIN / VITE_LOCAL_PUBLIC_ORIGIN.
+// Playwright must not pass a lane port here.
+const PUBLIC_ORIGIN = process.env.KEYCLOAK_FRONTEND_ORIGIN
+  ?? 'http://localhost:3000';
 const ADMIN_USER = process.env.KEYCLOAK_ADMIN_USER ?? 'admin';
 const ADMIN_PASSWORD = process.env.KEYCLOAK_ADMIN_PASSWORD ?? 'admin';
 const DEV_OIDC_USERNAME = process.env.DEV_OIDC_USERNAME ?? 'admin@example.org';
@@ -209,6 +213,13 @@ export async function configureKeycloak() {
     firstName: 'Stormbox',
     lastName: 'Shared E2E',
     password: SHARED_TEST_OIDC_PASSWORD,
+  });
+  await ensureUser(token, {
+    username: INTEGRATION_TEST_OIDC_EMAIL,
+    email: INTEGRATION_TEST_OIDC_EMAIL,
+    firstName: 'Stormbox',
+    lastName: 'Integration',
+    password: INTEGRATION_TEST_OIDC_PASSWORD,
   });
   // Keep the local developer login deterministic too. Existing
   // Keycloak volumes can otherwise preserve an unknown imported

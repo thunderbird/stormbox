@@ -274,7 +274,51 @@ describe('OutboxRunner per-target serialization', () => {
     await runner.stop();
   });
 
-  it('serializes account-wide ContactCard writes with null message targets', async () => {
+  it('does not execute stale saves abandoned after dequeue', async () => {
+    const firstBlocked = deferred();
+    const processed = [];
+    const firstId = await insertComposeMutation('saveDraft', 'compose-1');
+    const deletedId = await insertComposeMutation('saveDraft', 'compose-1');
+    const convertedId = await insertComposeMutation('saveDraft', 'compose-1');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        processed.push({ id: row.id, type: row.mutation_type });
+        if (row.id === firstId) await firstBlocked.promise;
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+
+    const draining = runner.drain();
+    await waitFor(() => processed.some(({ id }) => id === firstId));
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId,
+      mutationId: deletedId,
+      intent: 'keep-confirmed',
+    })).resolves.toMatchObject({ abandoned: 1 });
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId,
+      mutationId: convertedId,
+      intent: 'discard-all',
+      confirmedEmailIds: ['confirmed-draft'],
+      draftSessionId: 'compose-1',
+    })).resolves.toMatchObject({ converted: 1 });
+
+    firstBlocked.resolve();
+    await draining;
+
+    expect(processed).toEqual([
+      { id: firstId, type: 'saveDraft' },
+      { id: convertedId, type: 'discardDraft' },
+    ]);
+    expect(await loadRow(deletedId)).toBeNull();
+    expect(await loadRow(convertedId)).toBeNull();
+    await runner.stop();
+  });
+
+  it('serializes contact and address-book writes on one account lane', async () => {
     const firstBlocked = deferred();
     const order = [];
     const firstId = await insertTargetlessWrite('whitelistSender');
@@ -291,11 +335,15 @@ describe('OutboxRunner per-target serialization', () => {
     });
     const secondId = await insertTargetlessWrite('createContact');
     const thirdId = await insertTargetlessWrite('contactBatch');
+    const fourthId = await insertTargetlessWrite('createAddressbook');
+    const fifthId = await insertTargetlessWrite('destroyAddressbook');
     const drainPromise = runner.drain();
 
     await waitFor(() => order.includes(`start:${firstId}`));
     expect(order).not.toContain(`start:${secondId}`);
     expect(order).not.toContain(`start:${thirdId}`);
+    expect(order).not.toContain(`start:${fourthId}`);
+    expect(order).not.toContain(`start:${fifthId}`);
     firstBlocked.resolve();
     await drainPromise;
 
@@ -306,6 +354,10 @@ describe('OutboxRunner per-target serialization', () => {
       `end:${secondId}`,
       `start:${thirdId}`,
       `end:${thirdId}`,
+      `start:${fourthId}`,
+      `end:${fourthId}`,
+      `start:${fifthId}`,
+      `end:${fifthId}`,
     ]);
     await runner.stop();
   });
@@ -326,6 +378,38 @@ describe('OutboxRunner per-target serialization', () => {
       options: { notifyDelayMs: 0 },
     });
     const secondId = await insertTargetlessWrite('updateIdentity');
+    const drainPromise = runner.drain();
+
+    await waitFor(() => order.includes(`start:${firstId}`));
+    expect(order).not.toContain(`start:${secondId}`);
+    firstBlocked.resolve();
+    await drainPromise;
+
+    expect(order).toEqual([
+      `start:${firstId}`,
+      `end:${firstId}`,
+      `start:${secondId}`,
+      `end:${secondId}`,
+    ]);
+    await runner.stop();
+  });
+
+  it('serializes settings document writes in one account lane', async () => {
+    const firstBlocked = deferred();
+    const order = [];
+    const firstId = await insertTargetlessWrite('pushSettings');
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (row) => {
+        order.push(`start:${row.id}`);
+        if (row.id === firstId) await firstBlocked.promise;
+        order.push(`end:${row.id}`);
+        return { ok: true };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const secondId = await insertTargetlessWrite('pushSettings');
     const drainPromise = runner.drain();
 
     await waitFor(() => order.includes(`start:${firstId}`));
@@ -695,10 +779,10 @@ describe('OutboxRunner crash recovery', () => {
     });
     runner.notify({ immediate: true });
     await runner.drain();
-    expect(calls).toEqual([{ id: mutationId, attempts: 4 }]);
+    expect(calls).toEqual([{ id: mutationId, attempts: 5 }]);
     // Attempt counter preserved through the crash: the row that
-    // got partway through several retries should continue aging
-    // toward the cap, not start over.
+    // got partway through several retries continues at the next
+    // attempt rather than starting over.
     const row = await loadRow(mutationId);
     expect(row).toBeNull(); // succeeded -> deleted
     await runner.stop();

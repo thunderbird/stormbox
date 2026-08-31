@@ -12,6 +12,12 @@ import {
   processMutationRow,
 } from '../../../src/sync/backends/jmap/outbox';
 import { prepareComposeEmail } from '../../../src/sync/backends/jmap/compose-email';
+import {
+  draftCheckpointConflictReason,
+  newDraftCheckpoint,
+  readDraftCheckpoint,
+  saveDraftCheckpoint,
+} from '../../../src/sync/backends/jmap/draft-checkpoint';
 import { findDraftRevision } from '../../../src/sync/backends/jmap/draft-reconcile';
 import { MockTransport } from './_mock-transport';
 
@@ -26,15 +32,55 @@ let nextEmail = 1;
 let rejectNextCreate = false;
 let loseNextCreateResponse = false;
 let deleteBaseAfterNextCreate = false;
+let blobNotFoundNextCreate = false;
+let malformNextSuccessor = false;
+let protocolEvents: string[] = [];
 const serverEmails = new Map<string, any>();
 
+function canonicalBody(id: string, create: any) {
+  const bodyValues: Record<string, any> = {};
+  const textBody: any[] = [];
+  const htmlBody: any[] = [];
+  const attachments: any[] = [];
+  let position = 0;
+  const convert = (part: any): any => {
+    if (Array.isArray(part?.subParts)) {
+      return {
+        ...part,
+        subParts: part.subParts.map(convert),
+      };
+    }
+    position += 1;
+    const partId = `part-${id}-${position}`;
+    const converted = {
+      ...part,
+      partId,
+      blobId: `blob-${id}-${position}`,
+      ...(part.disposition ? { size: 3 } : {}),
+    };
+    const value = create.bodyValues?.[part.partId];
+    if (value) bodyValues[partId] = value;
+    if (part.disposition === 'attachment' || part.disposition === 'inline') {
+      attachments.push(converted);
+    } else if (part.type === 'text/plain') {
+      textBody.push(converted);
+    } else if (part.type === 'text/html') {
+      htmlBody.push(converted);
+    }
+    return converted;
+  };
+  const bodyStructure = convert(create.bodyStructure);
+  return {
+    bodyStructure,
+    bodyValues,
+    textBody,
+    htmlBody: htmlBody.length > 0 ? htmlBody : textBody,
+    attachments,
+  };
+}
+
 function serverEmail(id: string, create: any) {
-  const bodyStructure = create.bodyStructure;
-  const bodyValues = create.bodyValues ?? {};
-  const textPart = bodyStructure?.type === 'text/plain'
-    ? bodyStructure
-    : bodyStructure?.subParts?.find((part) => part.type === 'text/plain');
-  const htmlPart = bodyStructure?.subParts?.find((part) => part.type === 'text/html');
+  const body = canonicalBody(id, create);
   return {
     id,
     blobId: `blob-${id}`,
@@ -50,15 +96,9 @@ function serverEmail(id: string, create: any) {
     cc: create.cc ?? [],
     bcc: create.bcc ?? [],
     subject: create.subject,
-    preview: bodyValues.p1?.value ?? '',
-    hasAttachment: false,
-    bodyStructure,
-    textBody: textPart ? [{ ...textPart, blobId: `part-${id}-text` }] : [],
-    htmlBody: htmlPart
-      ? [{ ...htmlPart, blobId: `part-${id}-html` }]
-      : (textPart ? [{ ...textPart, blobId: `part-${id}-text` }] : []),
-    attachments: [],
-    bodyValues,
+    preview: create.bodyValues?.p1?.value ?? '',
+    hasAttachment: body.attachments.length > 0,
+    ...body,
   };
 }
 
@@ -89,6 +129,25 @@ async function enqueueSave(revision: number, priorIds: string[] = []) {
     targetMessageId: null,
     requestJson: JSON.stringify(requestFor(revision, priorIds)),
   });
+}
+
+async function enqueueDraftRequest(request: any) {
+  return handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+    accountId: account.id,
+    mutationType: MUTATION_TYPES.SAVE_DRAFT,
+    targetMessageId: null,
+    requestJson: JSON.stringify(request),
+  });
+}
+
+async function localRegularAttachments(remoteId: string) {
+  const row = await engine.get(
+    'SELECT id FROM messages WHERE account_id = ? AND remote_id = ?',
+    [account.id, remoteId],
+  );
+  const body = await handlers[DB_RPC.MESSAGE_BODY_READ]({ messageId: row.id });
+  return body.attachments.filter((attachment) =>
+    attachment.disposition === 'attachment' && !attachment.cid);
 }
 
 beforeEach(async () => {
@@ -133,18 +192,39 @@ beforeEach(async () => {
   rejectNextCreate = false;
   loseNextCreateResponse = false;
   deleteBaseAfterNextCreate = false;
+  blobNotFoundNextCreate = false;
+  malformNextSuccessor = false;
+  protocolEvents = [];
   serverEmails.clear();
   transport = new MockTransport();
   transport.handle('Email/set', (params) => {
     if (params.create) {
+      protocolEvents.push('create');
       if (rejectNextCreate) {
         rejectNextCreate = false;
         return { notCreated: { draft: { type: 'invalidProperties' } } };
+      }
+      if (blobNotFoundNextCreate) {
+        blobNotFoundNextCreate = false;
+        return { notCreated: { draft: { type: 'blobNotFound' } } };
       }
       const [creationId, create] = Object.entries(params.create)[0] as [string, any];
       const id = creationId === 'draft' ? `draft-${nextEmail}` : `send-${nextEmail}`;
       nextEmail += 1;
       const email = serverEmail(id, create);
+      if (malformNextSuccessor) {
+        malformNextSuccessor = false;
+        const attachment = email.attachments[0];
+        if (attachment) attachment.blobId = null;
+        const removeBlobId = (part: any): boolean => {
+          if (part?.partId === attachment?.partId) {
+            part.blobId = null;
+            return true;
+          }
+          return (part?.subParts ?? []).some(removeBlobId);
+        };
+        removeBlobId(email.bodyStructure);
+      }
       serverEmails.set(id, email);
       if (deleteBaseAfterNextCreate) {
         deleteBaseAfterNextCreate = false;
@@ -157,6 +237,7 @@ beforeEach(async () => {
       return { created: { [creationId]: { id } } };
     }
     const destroyed: string[] = [];
+    protocolEvents.push('destroy');
     const notDestroyed: Record<string, any> = {};
     for (const id of params.destroy ?? []) {
       if (serverEmails.delete(id)) destroyed.push(id);
@@ -164,11 +245,16 @@ beforeEach(async () => {
     }
     return { destroyed, notDestroyed };
   });
-  transport.handle('Email/get', (params) => ({
-    list: (params.ids ?? []).map((id) => serverEmails.get(id)).filter(Boolean),
-    notFound: (params.ids ?? []).filter((id) => !serverEmails.has(id)),
-    state: `email-state-${serverEmails.size}`,
-  }));
+  transport.handle('Email/get', (params) => {
+    if (params.fetchTextBodyValues || params.fetchHTMLBodyValues) {
+      protocolEvents.push('body-fetch');
+    }
+    return {
+      list: (params.ids ?? []).map((id) => serverEmails.get(id)).filter(Boolean),
+      notFound: (params.ids ?? []).filter((id) => !serverEmails.has(id)),
+      state: `email-state-${serverEmails.size}`,
+    };
+  });
   transport.handle('Email/query', (params) => {
     const ids = [...serverEmails.keys()];
     const start = Number(params.position ?? 0);
@@ -198,6 +284,279 @@ afterEach(async () => {
 });
 
 describe('JMAP draft replacement', () => {
+  it('requires the durable fields owned by each resumable phase', () => {
+    const queued = {
+      ...newDraftCheckpoint(requestFor(1, ['base']), identity.email),
+      preparedEmail: {},
+    };
+    const created = { ...queued, newEmailId: 'successor' };
+    const cached = { ...created, localMessageId: 42 };
+
+    expect(draftCheckpointConflictReason(queued, DRAFT_PHASE.QUEUED)).toBeNull();
+    expect(draftCheckpointConflictReason(created, DRAFT_PHASE.CREATED)).toBeNull();
+    expect(draftCheckpointConflictReason(cached, DRAFT_PHASE.CACHE_PENDING)).toBeNull();
+    expect(draftCheckpointConflictReason(
+      { ...cached, pendingDestroyIds: [] },
+      DRAFT_PHASE.CLEANUP_PENDING,
+    )).toBeNull();
+    expect(draftCheckpointConflictReason(
+      { ...queued, pendingDestroyIds: [] },
+      DRAFT_PHASE.QUEUED,
+    )).toBe('queuedDestroySetChanged');
+    expect(draftCheckpointConflictReason(queued, DRAFT_PHASE.CREATED))
+      .toBe('createdMissingSuccessor');
+    expect(draftCheckpointConflictReason(
+      { ...created, newEmailId: '' },
+      DRAFT_PHASE.CREATED,
+    )).toBe('createdMissingSuccessor');
+    expect(draftCheckpointConflictReason(created, DRAFT_PHASE.CACHE_PENDING))
+      .toBe('pendingMissingLocalSuccessor');
+  });
+
+  it.each([
+    ['mixed base ids', { baseEmailIds: ['base', 42] }],
+    ['missing destroy ids', { pendingDestroyIds: undefined }],
+    ['duplicate destroy ids', { pendingDestroyIds: ['base', 'base'] }],
+    ['array prepared email', { preparedEmail: [] }],
+  ])('rejects a checkpoint with %s', (_description, patch) => {
+    const checkpoint = {
+      ...newDraftCheckpoint(requestFor(1, ['base']), identity.email),
+      preparedEmail: {},
+      ...patch,
+    };
+
+    expect(readDraftCheckpoint({
+      server_response_json: JSON.stringify(checkpoint),
+    })).toBeNull();
+  });
+
+  it('keeps a checkpoint-without-phase abandonment terminal on retry', async () => {
+    const { id } = await enqueueSave(1);
+    const checkpoint = {
+      ...newDraftCheckpoint(requestFor(1), identity.email),
+      preparedEmail: {},
+    };
+    await engine.run(
+      `UPDATE pending_mutations
+          SET server_response_json = ?
+        WHERE id = ?`,
+      [JSON.stringify(checkpoint), id],
+    );
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId: account.id,
+      mutationId: id,
+      intent: 'keep-confirmed',
+    })).resolves.toMatchObject({ parked: 1 });
+    await expect(handlers[DB_RPC.PENDING_MUTATION_RETRY]({
+      accountId: account.id,
+      mutationId: id,
+    })).resolves.toMatchObject({ retried: 0 });
+    const row = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [id]);
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: 'draftCheckpointConflict',
+        terminal: true,
+        detail: { reason: 'checkpointWithoutPhase' },
+      },
+    });
+    expect(transport.requests).toHaveLength(0);
+  });
+
+  it.each([
+    [null, 'createdMissingSuccessor'],
+    ['', 'unreadableCheckpoint'],
+    [' ', 'unreadableCheckpoint'],
+    [123, 'unreadableCheckpoint'],
+  ])(
+    'rejects a created checkpoint with invalid successor id %j',
+    async (newEmailId, reason) => {
+    const request = requestFor(1);
+    const { id } = await enqueueSave(1);
+    const checkpoint = {
+      ...newDraftCheckpoint(request, identity.email),
+      preparedEmail: {},
+      newEmailId,
+    };
+    await engine.run(
+      `UPDATE pending_mutations
+          SET phase = ?, server_response_json = ?
+        WHERE id = ?`,
+      [DRAFT_PHASE.CREATED, JSON.stringify(checkpoint), id],
+    );
+    const row = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [id]);
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: 'draftCheckpointConflict',
+        terminal: true,
+        detail: { reason },
+      },
+    });
+    expect(transport.requests).toHaveLength(0);
+    },
+  );
+
+  it('refuses to persist a checkpoint that contradicts its phase', async () => {
+    const { id } = await enqueueSave(1);
+    const checkpoint = {
+      ...newDraftCheckpoint(requestFor(1), identity.email),
+      preparedEmail: {},
+    };
+
+    await expect(saveDraftCheckpoint(
+      handlers,
+      id,
+      checkpoint,
+      DRAFT_PHASE.CREATED,
+    )).rejects.toThrow('createdMissingSuccessor');
+    expect(await engine.get(
+      'SELECT phase FROM pending_mutations WHERE id = ?',
+      [id],
+    )).toMatchObject({ phase: null });
+  });
+
+  it('converts an abandoned successor into cleanup without deleting its predecessor', async () => {
+    const request = requestFor(2, ['draft-old']);
+    const { id } = await enqueueSave(2, ['draft-old']);
+    const checkpoint = {
+      ...newDraftCheckpoint(request, identity.email),
+      preparedEmail: {},
+      newEmailId: 'draft-new',
+    };
+    await engine.run(
+      `UPDATE pending_mutations
+          SET local_status = 'retry',
+              phase = ?,
+              server_response_json = ?
+        WHERE id = ?`,
+      [DRAFT_PHASE.CREATED, JSON.stringify(checkpoint), id],
+    );
+
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId: account.id,
+      mutationId: id,
+      intent: 'keep-confirmed',
+      confirmedEmailIds: ['draft-old'],
+      draftSessionId: 'session-1',
+      draftsFolderId: drafts.id,
+    })).resolves.toMatchObject({
+      abandoned: 0,
+      converted: 1,
+      parked: 0,
+      mutationId: id,
+    });
+    const converted = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [id],
+    );
+    expect(converted).toMatchObject({
+      mutation_type: MUTATION_TYPES.DISCARD_DRAFT,
+      local_status: 'pending',
+      phase: null,
+      server_response_json: null,
+    });
+    expect(JSON.parse(converted.request_json)).toMatchObject({
+      draftEmailIds: ['draft-new'],
+    });
+  });
+
+  it('merges the confirmed and checkpoint-owned revisions for Discard', async () => {
+    const request = requestFor(2, ['draft-old']);
+    const { id } = await enqueueSave(2, ['draft-old']);
+    const checkpoint = {
+      ...newDraftCheckpoint(request, identity.email),
+      preparedEmail: {},
+      newEmailId: 'draft-new',
+    };
+    await engine.run(
+      `UPDATE pending_mutations
+          SET local_status = 'retry', phase = ?, server_response_json = ?
+        WHERE id = ?`,
+      [DRAFT_PHASE.CREATED, JSON.stringify(checkpoint), id],
+    );
+
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId: account.id,
+      mutationId: id,
+      intent: 'discard-all',
+      confirmedEmailIds: ['draft-old'],
+      draftSessionId: 'session-1',
+      draftsFolderId: drafts.id,
+    })).resolves.toMatchObject({ converted: 1, mutationId: id });
+    const converted = await engine.get(
+      'SELECT request_json FROM pending_mutations WHERE id = ?',
+      [id],
+    );
+    expect(new Set(JSON.parse(converted.request_json).draftEmailIds))
+      .toEqual(new Set(['draft-old', 'draft-new']));
+  });
+
+  it('turns an ambiguous queued create into a probe-only discard', async () => {
+    loseNextCreateResponse = true;
+    const { id } = await enqueueSave(1);
+    const initial = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [id]);
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: initial,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { type: 'draftCreateAmbiguous' },
+    });
+    expect([...serverEmails.keys()]).toEqual(['draft-1']);
+
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId: account.id,
+      mutationId: id,
+      intent: 'keep-confirmed',
+      confirmedEmailIds: [],
+      draftSessionId: 'session-1',
+      draftsFolderId: drafts.id,
+    })).resolves.toMatchObject({ converted: 1, mutationId: id });
+    const converted = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [id],
+    );
+    expect(JSON.parse(converted.request_json)).toMatchObject({
+      draftEmailIds: [],
+      probeRevision: true,
+    });
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: converted,
+    })).resolves.toMatchObject({ ok: true });
+    expect([...serverEmails.keys()]).toEqual([]);
+  });
+
+  it('deletes an unstarted save with no possible server effect', async () => {
+    const untouched = await enqueueSave(2);
+    await expect(handlers[DB_RPC.PENDING_MUTATION_ABANDON_DRAFT]({
+      accountId: account.id,
+      mutationId: untouched.id,
+      intent: 'keep-confirmed',
+    })).resolves.toMatchObject({ abandoned: 1, converted: 0, parked: 0 });
+    await expect(engine.get(
+      'SELECT id FROM pending_mutations WHERE id = ?',
+      [untouched.id],
+    )).resolves.toBeNull();
+  });
+
   it('makes an HTTP authentication rejection terminal without retrying creation', async () => {
     await enqueueSave(1);
     await drainOutbox({ transport, account, handlers });
@@ -276,6 +635,205 @@ describe('JMAP draft replacement', () => {
     expect(local).toEqual([
       expect.objectContaining({ remote_id: 'draft-2', subject: 'Draft 2', is_draft: 1 }),
     ]);
+  });
+
+  it('uploads once, then reuses canonical regular parts across two revisions', async () => {
+    const upload = await transport.upload({
+      accountId: account.remote_account_id,
+      type: 'application/pdf',
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const first = requestFor(1);
+    first.attachments = [{
+      part_id: '',
+      blob_id: upload.blobId,
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(first);
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    const [firstPart] = await localRegularAttachments('draft-1');
+    const second = requestFor(2, ['draft-1']);
+    second.attachments = [firstPart];
+    await enqueueDraftRequest(second);
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    const [secondPart] = await localRegularAttachments('draft-2');
+    const third = requestFor(3, ['draft-2']);
+    third.attachments = [secondPart];
+    await enqueueDraftRequest(third);
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    expect(transport.uploads).toHaveLength(1);
+    const createParts = transport.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name, params]) => name === 'Email/set' && params.create)
+      .map(([, params]) => params.create.draft.bodyStructure.subParts[1]);
+    expect(createParts.map((part) => part.blobId)).toEqual([
+      upload.blobId,
+      firstPart.blob_id,
+      secondPart.blob_id,
+    ]);
+    expect([...serverEmails.keys()]).toEqual(['draft-3']);
+  });
+
+  it('checkpoints successor parts before destroying the predecessor', async () => {
+    const first = requestFor(1);
+    first.attachments = [{
+      part_id: '',
+      blob_id: 'temporary-upload',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(first);
+    await drainOutbox({ transport, account, handlers });
+    const [source] = await localRegularAttachments('draft-1');
+
+    protocolEvents = [];
+    const query = handlers[DB_RPC.QUERY];
+    handlers[DB_RPC.QUERY] = async (params) => {
+      if (String(params?.sql).includes('UPDATE pending_mutations')
+          && params?.params?.[0] === DRAFT_PHASE.CACHE_PENDING) {
+        protocolEvents.push('checkpoint');
+      }
+      return query(params);
+    };
+    const second = requestFor(2, ['draft-1']);
+    second.attachments = [source];
+    await enqueueDraftRequest(second);
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    expect(protocolEvents.indexOf('body-fetch')).toBeGreaterThan(
+      protocolEvents.indexOf('create'),
+    );
+    expect(protocolEvents.indexOf('checkpoint')).toBeGreaterThan(
+      protocolEvents.indexOf('body-fetch'),
+    );
+    expect(protocolEvents.indexOf('destroy')).toBeGreaterThan(
+      protocolEvents.indexOf('checkpoint'),
+    );
+  });
+
+  it('preserves the predecessor when successor attachment handles are malformed', async () => {
+    const first = requestFor(1);
+    first.attachments = [{
+      part_id: '',
+      blob_id: 'temporary-upload',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(first);
+    await drainOutbox({ transport, account, handlers });
+    const [source] = await localRegularAttachments('draft-1');
+
+    malformNextSuccessor = true;
+    protocolEvents = [];
+    const second = requestFor(2, ['draft-1']);
+    second.attachments = [source];
+    await enqueueDraftRequest(second);
+    await expect(drainOutbox({ transport, account, handlers }))
+      .resolves.toMatchObject({ succeeded: 0, failed: 1 });
+
+    expect(serverEmails.has('draft-1')).toBe(true);
+    expect(serverEmails.has('draft-2')).toBe(true);
+    expect(protocolEvents).not.toContain('destroy');
+  });
+
+  it('preserves the predecessor when successor body persistence fails', async () => {
+    const first = requestFor(1);
+    first.attachments = [{
+      part_id: '',
+      blob_id: 'temporary-upload',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(first);
+    await drainOutbox({ transport, account, handlers });
+    const [source] = await localRegularAttachments('draft-1');
+    const second = requestFor(2, ['draft-1']);
+    second.attachments = [source];
+    const inserted = await enqueueDraftRequest(second);
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    const failingHandlers = {
+      ...handlers,
+      [DB_RPC.MESSAGE_BODY_PERSIST_BATCH]: async () => {
+        throw new Error('cache unavailable');
+      },
+    };
+    protocolEvents = [];
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers: failingHandlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { type: 'draftCacheReconcileFailed' },
+    });
+
+    expect(serverEmails.has('draft-1')).toBe(true);
+    expect(serverEmails.has('draft-2')).toBe(true);
+    expect(protocolEvents).not.toContain('destroy');
+  });
+
+  it('preserves the predecessor when a reused part returns blobNotFound', async () => {
+    const first = requestFor(1);
+    first.attachments = [{
+      part_id: '',
+      blob_id: 'temporary-upload',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(first);
+    await drainOutbox({ transport, account, handlers });
+    const [source] = await localRegularAttachments('draft-1');
+
+    blobNotFoundNextCreate = true;
+    protocolEvents = [];
+    const second = requestFor(2, ['draft-1']);
+    second.attachments = [source];
+    const row = await enqueueDraftRequest(second);
+    const pending = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [row.id]);
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: pending,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: 'blobNotFound',
+        terminal: true,
+        result: { attachmentIndexes: [0] },
+      },
+    });
+
+    expect(serverEmails.has('draft-1')).toBe(true);
+    expect(protocolEvents).not.toContain('destroy');
   });
 
   it('preserves the predecessor when successor creation is rejected', async () => {
@@ -420,6 +978,138 @@ describe('JMAP draft replacement', () => {
     expect(oldDraft).toBeNull();
   });
 
+  it('checkpoints sent attachment handles before draft cleanup and never resubmits repair', async () => {
+    const draftRequest = requestFor(1);
+    draftRequest.attachments = [{
+      part_id: '',
+      blob_id: 'temporary-upload',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 3,
+      disposition: 'attachment',
+      cid: null,
+    }];
+    await enqueueDraftRequest(draftRequest);
+    await drainOutbox({ transport, account, handlers });
+    const [source] = await localRegularAttachments('draft-1');
+    let submissions = 0;
+    transport.handle('EmailSubmission/set', (params) => {
+      submissions += 1;
+      const submitted = params.create.s1;
+      const email = serverEmails.get(submitted.emailId);
+      email.mailboxIds = { 'mb-sent': true };
+      email.keywords = { $seen: true };
+      return { created: { s1: { id: 'submission-attachment' } } };
+    });
+    const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        draftSessionId: 'session-1',
+        identityId: identity.id,
+        to: [{ email: 'recipient@example.com' }],
+        cc: [],
+        bcc: [],
+        subject: 'Send attachment',
+        textBody: 'Attached',
+        htmlBody: '',
+        attachments: [source],
+        attachmentClientMap: [{ clientId: 'client-1', order: 0 }],
+        inReplyTo: [],
+        references: [],
+        draftsFolderId: drafts.id,
+        sentFolderId: sent.id,
+        outboxFolderId: null,
+        draftEmailIds: ['draft-1'],
+      }),
+    });
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    let failSentBodyPersist = true;
+    const failingHandlers = {
+      ...handlers,
+      [DB_RPC.MESSAGE_BODY_PERSIST_BATCH]: async (params) => {
+        if (failSentBodyPersist && params.bodies?.[0]?.remoteId === 'send-2') {
+          failSentBodyPersist = false;
+          throw new Error('sent body cache unavailable');
+        }
+        return handlers[DB_RPC.MESSAGE_BODY_PERSIST_BATCH](params);
+      },
+    };
+
+    const first = await processMutationRow({
+      transport,
+      account,
+      handlers: failingHandlers,
+      row,
+    });
+    expect(first).toMatchObject({
+      ok: false,
+      error: {
+        type: 'cacheReconcileFailed',
+        result: { submitted: true, filed: false },
+      },
+    });
+    expect(submissions).toBe(1);
+    expect(serverEmails.has('draft-1')).toBe(true);
+    const sentCreate = transport.requests
+      .flatMap((request) => request.methodCalls)
+      .find(([name, params]) => name === 'Email/set' && params.create?.c1)?.[1]
+      ?.create?.c1;
+    expect(sentCreate.attachments).toBeUndefined();
+    expect(sentCreate.bodyStructure).toMatchObject({
+      type: 'multipart/mixed',
+      subParts: [
+        { type: 'text/plain' },
+        {
+          blobId: source.blob_id,
+          name: 'report.pdf',
+          disposition: 'attachment',
+        },
+      ],
+    });
+    expect(transport.uploads).toHaveLength(0);
+
+    const retryRow = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: retryRow,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { createdRemoteId: 'send-2', filed: true },
+    });
+
+    expect(submissions).toBe(1);
+    expect(serverEmails.has('draft-1')).toBe(false);
+    expect(serverEmails.has('send-2')).toBe(true);
+    const [sentPart] = await localRegularAttachments('send-2');
+    expect(sentPart).toMatchObject({
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      disposition: 'attachment',
+    });
+    (transport as any).download = vi.fn(async ({ blobId }) => {
+      const downloadable = [...serverEmails.values()].some((email) =>
+        email.attachments.some((attachment) => attachment.blobId === blobId));
+      if (!downloadable) throw new Error('blobNotFound');
+      return new Uint8Array([1, 2, 3]);
+    });
+    await expect((transport as any).download({
+      accountId: account.remote_account_id,
+      blobId: sentPart.blob_id,
+      type: sentPart.mime_type,
+      name: sentPart.name,
+    })).resolves.toEqual(new Uint8Array([1, 2, 3]));
+  });
+
   it('stores a marker-free CID body for a draft with a default image', async () => {
     const request = requestFor(1);
     request.textBody = 'Image signature';
@@ -436,7 +1126,7 @@ describe('JMAP draft replacement', () => {
       .resolves.toMatchObject({ succeeded: 1, failed: 0 });
 
     const saved = serverEmails.get('draft-1');
-    const html = saved.bodyValues.h1.value;
+    const html = saved.bodyValues[saved.htmlBody[0].partId].value;
     expect(html).toContain('Image signature');
     expect(html).toMatch(/src="cid:[^"]+@stormbox"/);
     expect(html).not.toContain('data:image/');
@@ -446,9 +1136,9 @@ describe('JMAP draft replacement', () => {
 });
 
 describe('draft attachment preparation', () => {
-  it('reuploads predecessor-owned part blobs before building the successor', async () => {
-    const download = vi.fn(async () => new Uint8Array([1, 2, 3]));
-    const upload = vi.fn(async () => ({ blobId: 'blob-refreshed' }));
+  it('reuses a predecessor-owned regular part without downloading or uploading it', async () => {
+    const download = vi.fn();
+    const upload = vi.fn();
     const prepared = await prepareComposeEmail({
       transport: { download, upload },
       account: { remote_account_id: 'account-1' },
@@ -459,24 +1149,33 @@ describe('draft attachment preparation', () => {
         to: [{ email: 'recipient@example.com' }],
         subject: 'Attachment',
         textBody: 'See image',
-        htmlBody: '<p><img src="cid:image-1"></p>',
+        htmlBody: '<p>See the attached image.</p>',
         attachments: [{
+          part_id: 'old-part-1',
           blob_id: 'part-blob-on-old-draft',
           mime_type: 'image/png',
-          disposition: 'inline',
-          cid: 'image-1',
+          name: 'image.png',
+          size: 3,
+          disposition: 'attachment',
+          cid: null,
         }],
       },
     });
 
-    expect(download).toHaveBeenCalledWith(expect.objectContaining({
-      blobId: 'part-blob-on-old-draft',
-    }));
-    expect(upload).toHaveBeenCalledWith(expect.objectContaining({
-      body: new Uint8Array([1, 2, 3]),
-    }));
-    expect(JSON.stringify(prepared.bodyStructure)).toContain('blob-refreshed');
-    expect(JSON.stringify(prepared.bodyStructure)).not.toContain('part-blob-on-old-draft');
+    expect(download).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+    expect(prepared.bodyStructure).toMatchObject({
+      type: 'multipart/mixed',
+      subParts: [
+        { type: 'multipart/alternative' },
+        {
+          blobId: 'part-blob-on-old-draft',
+          type: 'image/png',
+          name: 'image.png',
+          disposition: 'attachment',
+        },
+      ],
+    });
   });
 
   it('uploads a default data image from a marker-free draft request', async () => {
@@ -510,9 +1209,333 @@ describe('draft attachment preparation', () => {
       disposition: 'inline',
     }));
   });
+
+  it('nests inline images inside related before ordered regular parts', async () => {
+    const download = vi.fn();
+    const upload = vi.fn(async () => ({ blobId: 'inline-blob' }));
+    const prepared = await prepareComposeEmail({
+      transport: { download, upload },
+      account: { remote_account_id: 'account-1' },
+      identity: { email: 'writer@example.com' },
+      mailboxRemoteId: 'mb-drafts',
+      isDraft: true,
+      request: {
+        to: [{ email: 'recipient@example.com' }],
+        subject: 'Mixed MIME',
+        textBody: 'Body and files',
+        htmlBody: '<p>Body<img src="data:image/png;base64,iVBORw0KGgo="></p>',
+        attachments: [
+          {
+            part_id: '',
+            blob_id: 'regular-one',
+            mime_type: 'application/pdf',
+            name: 'one.pdf',
+            size: 1,
+            disposition: 'attachment',
+            cid: null,
+          },
+          {
+            part_id: '',
+            blob_id: 'regular-two',
+            mime_type: 'text/plain',
+            name: 'two.txt',
+            size: 2,
+            disposition: 'attachment',
+            cid: null,
+          },
+        ],
+      },
+    });
+
+    expect(download).not.toHaveBeenCalled();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(prepared.bodyStructure).toMatchObject({
+      type: 'multipart/mixed',
+      subParts: [
+        {
+          type: 'multipart/related',
+          subParts: [
+            { type: 'multipart/alternative' },
+            { blobId: 'inline-blob', disposition: 'inline' },
+          ],
+        },
+        { blobId: 'regular-one', name: 'one.pdf', disposition: 'attachment' },
+        { blobId: 'regular-two', name: 'two.txt', disposition: 'attachment' },
+      ],
+    });
+    expect(prepared).not.toHaveProperty('attachments');
+  });
 });
 
 describe('draft reconciliation paging', () => {
+  function preparedRevision(body = 'complete body') {
+    return {
+      subject: 'Recovered draft',
+      from: [{ name: '', email: 'writer@example.com' }],
+      to: [{ name: '', email: 'recipient@example.com' }],
+      cc: [],
+      bcc: [],
+      bodyValues: { p1: { value: body } },
+    };
+  }
+
+  function recoveredRevision(
+    id: string,
+    body = 'complete body',
+    isTruncated = false,
+  ) {
+    return {
+      id,
+      messageId: ['wanted@example.com'],
+      mailboxIds: { 'mb-drafts': true },
+      keywords: { $draft: true },
+      subject: 'Recovered draft',
+      from: [{ name: '', email: 'writer@example.com' }],
+      to: [{ name: '', email: 'recipient@example.com' }],
+      cc: [],
+      bcc: [],
+      textBody: [{ partId: 'p1' }],
+      htmlBody: [],
+      bodyValues: { p1: { value: body, isTruncated } },
+    };
+  }
+
+  it('hydrates bodies only for Message-ID candidates', async () => {
+    const paged = new MockTransport();
+    paged.handle('Email/query', () => ({
+      ids: ['unrelated', 'wanted'],
+      total: 2,
+      position: 0,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => {
+        if (params.properties.length === 2) {
+          return {
+            id,
+            messageId: id === 'wanted' ? ['wanted@example.com'] : ['other@example.com'],
+          };
+        }
+        return recoveredRevision(id);
+      }),
+      state: 'email-state',
+    }));
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toMatchObject({
+      outcome: 'found',
+      emailIds: ['wanted'],
+    });
+
+    const getCalls = paged.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name]) => name === 'Email/get');
+    expect(getCalls).toHaveLength(2);
+    expect(getCalls[0][1]).toMatchObject({
+      properties: ['id', 'messageId'],
+    });
+    expect(getCalls[0][1]).not.toHaveProperty('fetchTextBodyValues');
+    expect(getCalls[1][1]).toMatchObject({
+      ids: ['wanted'],
+      fetchTextBodyValues: true,
+      fetchHTMLBodyValues: true,
+    });
+  });
+
+  it('does not classify a truncated matching body as conflicting', async () => {
+    const paged = new MockTransport();
+    paged.handle('Email/query', () => ({
+      ids: ['wanted'],
+      total: 1,
+      position: 0,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', (params) => ({
+      list: params.properties.length === 2
+        ? [{ id: 'wanted', messageId: ['wanted@example.com'] }]
+        : [recoveredRevision('wanted', 'complete bod', true)],
+      state: 'email-state',
+    }));
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toEqual({
+      outcome: 'inconclusive',
+      reason: 'incompleteBodyValue',
+    });
+  });
+
+  it('does not compare a body with an encoding problem', async () => {
+    const paged = new MockTransport();
+    paged.handle('Email/query', () => ({
+      ids: ['wanted'],
+      total: 1,
+      position: 0,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', (params) => {
+      if (params.properties.length === 2) {
+        return {
+          list: [{ id: 'wanted', messageId: ['wanted@example.com'] }],
+          state: 'email-state',
+        };
+      }
+      const recovered: any = recoveredRevision('wanted');
+      recovered.bodyValues.p1 = {
+        value: 'complete body',
+        isTruncated: false,
+        isEncodingProblem: true,
+      };
+      return { list: [recovered], state: 'email-state' };
+    });
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toEqual({
+      outcome: 'inconclusive',
+      reason: 'incompleteBodyValue',
+    });
+  });
+
+  it.each([
+    [false, { outcome: 'conflict', emailIds: ['wanted'] }],
+    [true, { outcome: 'inconclusive', reason: 'incompleteBodyValue' }],
+  ])(
+    'does not accept unexpected HTML when truncation is %s',
+    async (isTruncated, expected) => {
+      const paged = new MockTransport();
+      paged.handle('Email/query', () => ({
+        ids: ['wanted'],
+        total: 1,
+        position: 0,
+        queryState: 'stable',
+      }));
+      paged.handle('Email/get', (params) => {
+        if (params.properties.length === 2) {
+          return {
+            list: [{ id: 'wanted', messageId: ['wanted@example.com'] }],
+            state: 'email-state',
+          };
+        }
+        const recovered: any = recoveredRevision('wanted');
+        recovered.htmlBody = [{ partId: 'h1', type: 'text/html' }];
+        recovered.bodyValues.h1 = {
+          value: '<p>Unexpected HTML</p>',
+          isTruncated,
+        };
+        return { list: [recovered], state: 'email-state' };
+      });
+
+      await expect(findDraftRevision({
+        transport: paged,
+        account: { remote_account_id: 'account-1' },
+        draftsRemoteId: 'mb-drafts',
+        revisionMessageId: '<wanted@example.com>',
+        preparedEmail: preparedRevision(),
+      })).resolves.toEqual(expected);
+    },
+  );
+
+  it('rejects a candidate that no longer belongs to Drafts', async () => {
+    const paged = new MockTransport();
+    paged.handle('Email/query', () => ({
+      ids: ['wanted'],
+      total: 1,
+      position: 0,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', (params) => {
+      if (params.properties.length === 2) {
+        return {
+          list: [{ id: 'wanted', messageId: ['wanted@example.com'] }],
+          state: 'email-state',
+        };
+      }
+      return {
+        list: [{
+          ...recoveredRevision('wanted'),
+          mailboxIds: { elsewhere: true },
+        }],
+        state: 'email-state',
+      };
+    });
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toEqual({
+      outcome: 'inconclusive',
+      reason: 'candidateChanged',
+    });
+  });
+
+  it.each([null, false, '0'])('rejects malformed query total %j', async (total) => {
+    const paged = new MockTransport();
+    paged.handle('Email/query', () => ({
+      ids: [],
+      total,
+      position: 0,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', () => ({ list: [], state: 'email-state' }));
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toEqual({
+      outcome: 'inconclusive',
+      reason: 'malformedQuery',
+    });
+  });
+
+  it('rejects a repeated query page instead of proving absence', async () => {
+    const paged = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': { maxObjectsInGet: 2, maxObjectsInSet: 500 },
+      },
+    });
+    paged.handle('Email/query', (params) => ({
+      ids: ['one', 'two'],
+      total: 4,
+      position: params.position,
+      queryState: 'stable',
+    }));
+    paged.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({ id, messageId: [] })),
+      state: 'email-state',
+    }));
+
+    await expect(findDraftRevision({
+      transport: paged,
+      account: { remote_account_id: 'account-1' },
+      draftsRemoteId: 'mb-drafts',
+      revisionMessageId: '<wanted@example.com>',
+      preparedEmail: preparedRevision(),
+    })).resolves.toEqual({
+      outcome: 'inconclusive',
+      reason: 'repeatedQueryPage',
+    });
+  });
+
   it('stays inconclusive when query state changes between pages', async () => {
     const paged = new MockTransport({
       capabilities: {

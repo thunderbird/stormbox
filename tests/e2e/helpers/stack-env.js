@@ -28,13 +28,8 @@ export const OIDC_CLIENT_ID =
 // e2e tests run against a dedicated, isolated account so the
 // developer's own dev account (`admin@example.org`) doesn't get
 // polluted with seed mail, sweep deletions, or stray test artifacts.
-// `tests/fixtures/configure-keycloak.mjs` and
-// `tests/fixtures/configure-stalwart.mjs` create this account
-// idempotently on first run (and on every re-run, in case the
-// stack was wiped). The account is provisioned through the same
-// HTTP APIs the accounts service would use (Keycloak admin API +
-// Stalwart management API), without touching the
-// thunderbird-accounts submodule.
+// `npm run stack:configure` creates this account. Tests only
+// health-check the stack; they must not rewrite Keycloak or Stalwart.
 export const TEST_OIDC_EMAIL =
   process.env.TEST_OIDC_EMAIL ?? 'e2e@example.org';
 
@@ -46,6 +41,12 @@ export const SHARED_TEST_OIDC_EMAIL =
 
 export const SHARED_TEST_OIDC_PASSWORD =
   process.env.SHARED_TEST_OIDC_PASSWORD ?? 'shared-e2e';
+
+export const INTEGRATION_TEST_OIDC_EMAIL =
+  process.env.INTEGRATION_TEST_OIDC_EMAIL ?? 'integration@example.org';
+
+export const INTEGRATION_TEST_OIDC_PASSWORD =
+  process.env.INTEGRATION_TEST_OIDC_PASSWORD ?? 'integration';
 
 /** Provisioned primary Thundermail / JMAP From address for fixtures and JMAP helpers. */
 export const TEST_THUNDERMAIL =

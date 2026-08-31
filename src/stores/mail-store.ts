@@ -24,6 +24,11 @@ import { computed, ref, watch } from 'vue';
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
+import {
+  canDecodeRasterBlob,
+  hasMatchingRasterSignature,
+} from '../utils/attachment-presentation';
+import { base64ToBytes } from '../utils/inline-images';
 import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-html';
 import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
@@ -1284,26 +1289,38 @@ export const useMailStore = defineStore('mail', () => {
    * Resolve an inline message part (a cid: image) to a data: URL the
    * message viewer can render. The blob download runs in the worker
    * (which holds the authenticated transport). We only resolve parts the
-   * server typed as an image and build the URL through
-   * buildInlineImageDataUrl, which enforces a safe MIME type, validates
-   * the base64, and sanitises SVG. Returns null on any failure or for a
-   * non-image part, so the viewer leaves the original reference in place.
+   * server typed as an image whose bytes match that declared type and
+   * decode as a raster in the browser. Returns null on any failure or for
+   * a non-image part, so the viewer leaves the original reference in place.
    */
   async function loadInlineImageUrl(
     blobId: string,
     mimeType: string | null = null,
     name: string | null = null,
+    messageAccountId: number | null = null,
   ): Promise<string | null> {
-    if (!repo || authStore.accountId == null || !blobId) return null;
+    const ownerAccountId = messageAccountId ?? accountIdForFolder(currentFolderId.value);
+    if (!repo || ownerAccountId == null || !blobId) return null;
     if (!isInlineImageType(mimeType)) return null;
     try {
-      const result = await repo.downloadBlob(authStore.accountId, {
+      const result = await repo.downloadBlob(ownerAccountId, {
         blobId,
         type: mimeType,
         name,
       });
       if (!result?.base64) return null;
-      return buildInlineImageDataUrl(result.base64, mimeType);
+      const dataUrl = buildInlineImageDataUrl(result.base64, mimeType);
+      if (!dataUrl) return null;
+      const bytes = base64ToBytes(result.base64);
+      const buffer = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(buffer).set(bytes);
+      const blob = new Blob(
+        [buffer],
+        { type: String(mimeType).trim().toLowerCase() },
+      );
+      if (!await hasMatchingRasterSignature(blob, mimeType)) return null;
+      if (!await canDecodeRasterBlob(blob)) return null;
+      return dataUrl;
     } catch (err) {
       console.warn('[mail-store] inline image download failed', err);
       return null;

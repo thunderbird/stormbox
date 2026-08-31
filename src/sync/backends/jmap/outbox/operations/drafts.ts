@@ -1,7 +1,15 @@
 import { DRAFT_PHASE } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
-import { prepareComposeEmail } from '../../compose-email';
 import {
+  missingRegularAttachmentIndexes,
+  prepareComposeEmail,
+  regularAttachmentSources,
+  type ComposeRegularAttachmentSource,
+} from '../../compose-email';
+import { assertCanonicalAttachmentOwnership } from '../../compose-body-checkpoint';
+import {
+  draftCheckpointConflictReason,
+  isDraftEmailId,
   newDraftCheckpoint,
   readDraftCheckpoint,
   readDraftPhase,
@@ -22,12 +30,13 @@ const RETRYABLE_DRAFT_METHOD_ERRORS = new Set([
   'serverUnavailable',
 ]);
 
-function draftFailure(type: string, detail: any, retryable = true) {
+function draftFailure(type: string, detail: any, retryable = true, result?: any) {
   return {
     ok: false,
     error: {
       type,
       detail,
+      ...(result != null ? { result } : {}),
       ...(!retryable ? { terminal: true } : {}),
     },
   };
@@ -86,10 +95,23 @@ async function verifyDraftBases({
   account,
   draftsRemoteId,
   ids,
+  attachments,
   useWebSocket,
-}): Promise<'present' | 'stale' | 'inconclusive'> {
-  if (ids.length === 0) return 'present';
+}: {
+  transport: any;
+  account: any;
+  draftsRemoteId: string;
+  ids: string[];
+  attachments: ComposeRegularAttachmentSource[];
+  useWebSocket: boolean;
+}): Promise<'present' | 'stale' | 'attachment-missing' | 'inconclusive'> {
+  if (ids.length === 0) {
+    return attachments.some((attachment) => attachment.partId != null)
+      ? 'attachment-missing'
+      : 'present';
+  }
   try {
+    const needsBodyParts = attachments.some((attachment) => attachment.partId != null);
     const result = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
       methodCalls: [[
@@ -97,7 +119,15 @@ async function verifyDraftBases({
         {
           accountId: account.remote_account_id,
           ids,
-          properties: ['id', 'mailboxIds', 'keywords'],
+          properties: [
+            'id', 'mailboxIds', 'keywords',
+            ...(needsBodyParts ? ['bodyStructure', 'attachments'] : []),
+          ],
+          ...(needsBodyParts ? {
+            bodyProperties: [
+              'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
+            ],
+          } : {}),
         },
         'db1',
       ]],
@@ -113,7 +143,13 @@ async function verifyDraftBases({
           email?.mailboxIds?.[draftsRemoteId] === true && email?.keywords?.$draft === true)
         .map((email) => email.id),
     );
-    return ids.every((id) => present.has(id)) ? 'present' : 'stale';
+    if (!ids.every((id) => present.has(id))) return 'stale';
+    try {
+      assertCanonicalAttachmentOwnership(attachments, response.list);
+    } catch (error: any) {
+      return error?.type === 'blobNotFound' ? 'attachment-missing' : 'inconclusive';
+    }
+    return 'present';
   } catch (error) {
     if (isAuthenticationError(error)) throw error;
     return 'inconclusive';
@@ -129,11 +165,20 @@ async function runSaveDraft({
   if (row?.phase != null && !recordedPhase) {
     return draftFailure('draftCheckpointConflict', { reason: 'unrecognizedPhase' }, false);
   }
+  if (row?.phase == null && row?.server_response_json != null) {
+    return draftFailure('draftCheckpointConflict', { reason: 'checkpointWithoutPhase' }, false);
+  }
   if (recordedPhase === DRAFT_PHASE.CONFLICT) {
     return draftFailure('draftCheckpointConflict', { reason: 'alreadyConflicted' }, false);
   }
   if (recordedPhase && !checkpoint) {
     return draftFailure('draftCheckpointConflict', { reason: 'unreadableCheckpoint' }, false);
+  }
+  if (recordedPhase && checkpoint) {
+    const reason = draftCheckpointConflictReason(checkpoint, recordedPhase);
+    if (reason) {
+      return draftFailure('draftCheckpointConflict', { reason }, false);
+    }
   }
 
   const identity = await resolveIdentity(handlers, account, request.identityId);
@@ -143,6 +188,16 @@ async function runSaveDraft({
     [request.draftsFolderId],
   ))[0] ?? null;
   if (!draftsRemoteId) return draftFailure('unknownFolder', { role: 'drafts' }, false);
+  let regularAttachments: ComposeRegularAttachmentSource[];
+  try {
+    regularAttachments = regularAttachmentSources(request.attachments);
+  } catch (error: any) {
+    return draftFailure(
+      error?.type ?? 'invalidAttachment',
+      { message: error?.message ?? String(error) },
+      false,
+    );
+  }
   const shouldProbe = recordedPhase === DRAFT_PHASE.QUEUED;
 
   if (!checkpoint) {
@@ -152,6 +207,7 @@ async function runSaveDraft({
       account,
       draftsRemoteId,
       ids: checkpoint.baseEmailIds,
+      attachments: regularAttachments,
       useWebSocket,
     });
     if (baseStatus === 'inconclusive') {
@@ -160,6 +216,14 @@ async function runSaveDraft({
     if (baseStatus === 'stale') {
       await saveDraftCheckpoint(handlers, rowId, checkpoint, DRAFT_PHASE.CONFLICT);
       return draftFailure('draftRevisionConflict', { reason: 'staleBase' }, false);
+    }
+    if (baseStatus === 'attachment-missing') {
+      return draftFailure(
+        'blobNotFound',
+        { reason: 'canonicalAttachmentOwnerMissing' },
+        false,
+        { attachmentIndexes: regularAttachments.map((attachment) => attachment.index) },
+      );
     }
     let preparedEmail;
     try {
@@ -203,6 +267,13 @@ async function runSaveDraft({
     }
     if (probe.outcome === 'found') {
       const [newEmailId, ...duplicateIds] = probe.emailIds;
+      if (!isDraftEmailId(newEmailId)) {
+        return draftFailure(
+          'draftRevisionProbeFailed',
+          { reason: 'invalidSuccessorId' },
+          false,
+        );
+      }
       checkpoint = await saveDraftCheckpoint(
         handlers,
         rowId,
@@ -222,6 +293,7 @@ async function runSaveDraft({
         account,
         draftsRemoteId,
         ids: checkpoint.baseEmailIds,
+        attachments: regularAttachments,
         useWebSocket,
       });
       if (baseStatus === 'inconclusive') {
@@ -231,9 +303,25 @@ async function runSaveDraft({
         await saveDraftCheckpoint(handlers, rowId, checkpoint, DRAFT_PHASE.CONFLICT);
         return draftFailure('draftRevisionConflict', { reason: 'staleBase' }, false);
       }
+      if (baseStatus === 'attachment-missing') {
+        return draftFailure(
+          'blobNotFound',
+          { reason: 'canonicalAttachmentOwnerMissing' },
+          false,
+          { attachmentIndexes: regularAttachments.map((attachment) => attachment.index) },
+        );
+      }
     }
   }
 
+  const phaseMayCreate = recordedPhase == null || recordedPhase === DRAFT_PHASE.QUEUED;
+  if (!checkpoint.newEmailId && !phaseMayCreate) {
+    return draftFailure(
+      'draftCheckpointConflict',
+      { reason: 'createNotAllowedForPhase' },
+      false,
+    );
+  }
   if (!checkpoint.newEmailId) {
     let result;
     try {
@@ -267,8 +355,16 @@ async function runSaveDraft({
       );
     }
     const newEmailId = response.created?.draft?.id;
-    if (!newEmailId) {
+    if (!isDraftEmailId(newEmailId)) {
       const detail = response.notCreated?.draft ?? { type: 'notCreated' };
+      if (detail?.type === 'blobNotFound') {
+        return draftFailure(
+          'blobNotFound',
+          detail,
+          false,
+          { attachmentIndexes: missingRegularAttachmentIndexes(detail, regularAttachments) },
+        );
+      }
       return draftFailure('draftCreateFailed', detail, isRetryableMethodError(detail));
     }
     checkpoint = await saveDraftCheckpoint(
@@ -288,6 +384,11 @@ async function runSaveDraft({
         handlers,
         draftsRemoteId,
         successorId: checkpoint.newEmailId,
+        expectedBodyStructure: checkpoint.preparedEmail?.bodyStructure,
+        expectedBodyValues: (
+          checkpoint.preparedEmail?.bodyValues ?? {}
+        ) as Record<string, any>,
+        expectedRegularAttachments: regularAttachments,
         useWebSocket,
       });
       checkpoint = await saveDraftCheckpoint(
@@ -407,21 +508,51 @@ async function runSaveDraft({
 }
 
 async function runDiscardDraft({
-  transport, account, handlers, request, useWebSocket,
+  transport, account, handlers, row, request, useWebSocket,
 }) {
   const inputIds: unknown[] = Array.isArray(request?.draftEmailIds)
     ? request.draftEmailIds
     : [];
-  const ids = [...new Set<string>(
-    inputIds.filter((id): id is string => typeof id === 'string' && !!id),
+  let ids = [...new Set<string>(
+    inputIds.filter(isDraftEmailId),
   )];
-  if (ids.length === 0) {
-    return { ok: true, result: { draftSessionId: request?.draftSessionId, destroyed: [] } };
-  }
   const draftsRemoteId = (await resolveFolderRemoteIds(
     handlers,
     [request.draftsFolderId],
   ))[0] ?? null;
+  if (request?.probeRevision === true) {
+    const checkpoint = readDraftCheckpoint(row);
+    if (!checkpoint || !draftsRemoteId) {
+      return draftFailure(
+        'draftDiscardProbeFailed',
+        { reason: checkpoint ? 'unknownDraftsFolder' : 'unreadableCheckpoint' },
+        false,
+      );
+    }
+    const probe = await findDraftRevision({
+      transport,
+      account,
+      draftsRemoteId,
+      revisionMessageId: checkpoint.revisionMessageId,
+      preparedEmail: checkpoint.preparedEmail,
+      useWebSocket,
+    });
+    if (probe.outcome === 'inconclusive') {
+      if (isAuthenticationError(probe.detail)) {
+        return draftTransportFailure('draftDiscardProbeFailed', probe.detail);
+      }
+      return draftFailure('draftDiscardProbeFailed', probe);
+    }
+    if (probe.outcome === 'conflict') {
+      return draftFailure('draftDiscardProbeConflict', probe, false);
+    }
+    if (probe.outcome === 'found') {
+      ids = [...new Set([...ids, ...probe.emailIds.filter(isDraftEmailId)])];
+    }
+  }
+  if (ids.length === 0) {
+    return { ok: true, result: { draftSessionId: request?.draftSessionId, destroyed: [] } };
+  }
   const result = await callJmap(transport, {
     using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
     methodCalls: [[

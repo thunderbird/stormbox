@@ -24,7 +24,7 @@ vi.mock('../../../src/services/auth', () => ({
   getOidc: () => null,
 }));
 
-import { mount } from '@vue/test-utils';
+import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { nextTick } from 'vue';
 
@@ -37,9 +37,10 @@ import {
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository';
 
-function makeRepo() {
+function makeRepo(overrides: Record<string, any> = {}) {
   return {
     subscribe() { return () => {}; },
+    async listAccounts() { return []; },
     async listFolders() { return []; },
     async listMessagesForView() { return []; },
     async queryViewProgress() { return { total: 0, covered: 0, percent: 0 }; },
@@ -50,10 +51,12 @@ function makeRepo() {
     async insertPendingMutation() { return undefined; },
     async replaceMessageKeywords() { return undefined; },
     async downloadBlob() { return null; },
+    async downloadAttachment() { return new Blob([]); },
     async filterExistingMessageIds(_accountId, ids) {
       return (ids ?? []).map(Number).filter((id) => Number.isFinite(id));
     },
     async getPendingMutationError() { return null; },
+    ...overrides,
   };
 }
 
@@ -71,6 +74,7 @@ function setDocumentTheme(theme: 'dark' | 'light') {
 afterEach(() => {
   __resetRepositoryForTests();
   document.documentElement.classList.remove('dark', 'light');
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -439,15 +443,16 @@ describe('MessageView with a sparse messages array', () => {
 });
 
 describe('MessageView HTML body rendering', () => {
-  function makeSelectedMessage(messageBody) {
+  function makeSelectedMessage(messageBody, repoOverrides: Record<string, any> = {}) {
     const authStore = useAuthStore();
     authStore.accountId = 1;
-    __setRepositoryForTests(makeRepo());
+    __setRepositoryForTests(makeRepo(repoOverrides));
 
     const mailStore = useMailStore() as any;
     return mailStore.attach().then(() => {
       const selected = {
         id: 7,
+        account_id: 1,
         subject: 'Wide marketing email',
         from_text: 'newsletter@example.com',
         received_at: 1_700_000_000_000,
@@ -503,7 +508,7 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('uses the visible body pane as the initial iframe height instead of 120px', async () => {
+  it('starts short HTML at its natural-height floor instead of stretching to the pane', async () => {
     const originalClientHeight = Object.getOwnPropertyDescriptor(
       HTMLElement.prototype,
       'clientHeight',
@@ -529,7 +534,8 @@ describe('MessageView HTML body rendering', () => {
       await nextTick();
 
       const iframe = wrapper.find('iframe.message-view__html-frame');
-      expect(iframe.attributes('style')).toContain('height: 640px');
+      expect(iframe.attributes('style')).toContain('height: 120px');
+      expect(iframe.attributes('srcdoc')).not.toMatch(/min-height:\s*100vh/);
 
       wrapper.unmount();
     } finally {
@@ -952,24 +958,20 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('places the body directly under a grid-laid article (so overflow-y: auto can actually scroll)', async () => {
-    // Layout regression: previously, .message-view itself was the
-    // grid (with `grid-template-rows: auto 1fr`) but its only direct
-    // child was the <article>. The header + body lived ONE LEVEL
-    // DOWN from the grid, so the auto/1fr template never applied to
-    // them — the article got the 'auto' row and grew to its full
-    // content height, the 1fr row stayed empty, and the body's
-    // overflow-y: auto rule had nothing to overflow because the body
-    // itself had unconstrained height. Tall marketing emails were
-    // therefore unscrollable.
-    //
-    // The fix moves the grid down onto a .message-view__article
-    // container so the header (auto) and body (1fr) split happens
-    // where it should. We pin that structure here.
+  it('keeps the body scroller and bounded attachment bar as article siblings', async () => {
     await makeSelectedMessage({
       text: '',
       html: '<p>email body</p>',
-      attachments: [],
+      attachments: [{
+        part_id: 'report',
+        blob_id: 'report-blob',
+        name: 'report.pdf',
+        mime_type: 'application/pdf',
+        size: 1024,
+        disposition: 'attachment',
+        cid: null,
+        charset: null,
+      }],
     });
 
     const wrapper = mount(MessageView, {
@@ -980,17 +982,14 @@ describe('MessageView HTML body rendering', () => {
     const article = wrapper.find('.message-view__article');
     expect(article.exists()).toBe(true);
 
-    // The header and body must be direct children of the grid
-    // container, otherwise the grid template doesn't apply to them.
     const headerEl = article.find(':scope > header.message-view__header');
     const bodyEl = article.find(':scope > .message-view__body');
+    const barEl = article.find(':scope > .message-attachment-bar');
     expect(headerEl.exists()).toBe(true);
     expect(bodyEl.exists()).toBe(true);
+    expect(barEl.exists()).toBe(true);
+    expect(bodyEl.find('.message-attachment-bar').exists()).toBe(false);
 
-    // The article must be a direct grid item of .message-view (so it
-    // takes the column's full height) — i.e. there is nothing
-    // wedged between section.message-view and article that would
-    // re-wrap the layout.
     const section = wrapper.find('.message-view');
     const directArticle = section.find(':scope > article.message-view__article');
     expect(directArticle.exists()).toBe(true);
@@ -999,11 +998,6 @@ describe('MessageView HTML body rendering', () => {
   });
 
   it('renders attachment metadata (name, type, size) for each attachment on the open message', async () => {
-    // R-2.5 / R-6.1: the message detail must surface the attachment
-    // list (name, MIME type, size) even though MVP attachment
-    // *download* is Planned. The component receives attachments via
-    // mailStore.messageBody.attachments; they render under
-    // .message-view__attachments.
     await makeSelectedMessage({
       text: 'see attachments',
       html: '',
@@ -1018,25 +1012,318 @@ describe('MessageView HTML body rendering', () => {
     });
     await nextTick();
 
-    const items = wrapper.findAll('.message-view__attachments li');
+    const items = wrapper.findAll('.message-attachment-row');
     expect(items).toHaveLength(2);
 
     const first = items[0].text();
     expect(first).toContain('report.pdf');
     expect(first).toContain('application/pdf');
-    // 2048 bytes -> 2 KB (Math.ceil(2048/1024)).
-    expect(first).toContain('2 KB');
+    expect(first).toContain('2 KiB');
 
     const second = items[1].text();
     expect(second).toContain('photo.png');
     expect(second).toContain('image/png');
     // No size segment when size is null.
-    expect(second).not.toContain('KB');
+    expect(second).not.toContain('KiB');
 
     wrapper.unmount();
   });
 
-  it('hides inline cid images from the attachment list when the HTML references them', async () => {
+  it('opens PDFs in a dedicated browser tab and retains the download action', async () => {
+    const pdf = new Blob(['%PDF-1.4\n%%EOF\n'], { type: 'application/pdf' });
+    const downloadAttachment = vi.fn(async () => pdf);
+    class FakeBroadcastChannel {
+      name: string;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      postMessage = vi.fn();
+      close = vi.fn();
+
+      constructor(name: string) {
+        this.name = name;
+        viewerChannels.push(this);
+        queueMicrotask(() => this.onmessage?.(
+          new MessageEvent('message', { data: { type: 'ready' } }),
+        ));
+      }
+    }
+    const viewerChannels: FakeBroadcastChannel[] = [];
+    vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel);
+    await makeSelectedMessage({
+      text: 'see attachment',
+      html: '',
+      attachments: [{
+        part_id: 'pdf',
+        blob_id: 'blob-pdf',
+        name: 'report.pdf',
+        mime_type: 'application/pdf',
+        size: pdf.size,
+        disposition: 'attachment',
+        cid: null,
+        charset: null,
+      }],
+    }, { downloadAttachment });
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    const open = wrapper.get('[aria-label="Open report.pdf"]');
+    expect(open.element.tagName).toBe('A');
+    expect(open.attributes('href')).toMatch(/^\/pdf-viewer\.html#[0-9a-f-]{36}$/u);
+    expect(open.attributes('target')).toBe('_blank');
+    expect(open.attributes('rel')).toBe('noopener noreferrer');
+    expect(wrapper.find('[aria-label="Download report.pdf"]').exists()).toBe(true);
+
+    open.element.addEventListener('click', (event) => event.preventDefault());
+    await open.trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    expect(downloadAttachment).toHaveBeenCalledWith(1, expect.objectContaining({
+      blobId: 'blob-pdf',
+      type: 'application/pdf',
+      name: 'report.pdf',
+    }));
+    const viewerChannel = viewerChannels[0];
+    expect(viewerChannel.name).toMatch(/^stormbox-pdf-viewer:[0-9a-f-]{36}$/u);
+    expect(viewerChannel.postMessage).toHaveBeenCalledWith({
+      type: 'pdf',
+      blob: pdf,
+      name: 'report.pdf',
+    });
+    expect(viewerChannel.close).toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it('sanitizes untrusted attachment names in visible and accessible labels', async () => {
+    await makeSelectedMessage({
+      text: 'see attachment',
+      html: '',
+      attachments: [{
+        part_id: 'archive',
+        blob_id: 'archive-blob',
+        name: '../../CON\u202e.zip',
+        mime_type: 'application/zip',
+        size: 22,
+        disposition: 'attachment',
+        cid: null,
+        charset: null,
+      }],
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    expect(wrapper.get('.message-attachment-row__name').text()).toBe('_CON.zip');
+    expect(wrapper.get('[aria-label="Download _CON.zip"]').attributes('aria-label'))
+      .toBe('Download _CON.zip');
+    expect(wrapper.text()).not.toContain('\u202e');
+
+    wrapper.unmount();
+  });
+
+  it('auto-previews validated rasters after the authored body and keeps their rows', async () => {
+    const pngBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
+      width: 1,
+      height: 1,
+      close: vi.fn(),
+    })));
+    const createUrl = vi.spyOn(URL, 'createObjectURL')
+      .mockReturnValueOnce('blob:first')
+      .mockReturnValueOnce('blob:second');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    await makeSelectedMessage({
+      text: 'authored body',
+      html: '',
+      attachments: [
+        {
+          part_id: 'first',
+          blob_id: 'blob-first',
+          name: 'first.png',
+          mime_type: 'image/png',
+          size: pngBytes.byteLength,
+          disposition: 'attachment',
+          cid: null,
+          charset: null,
+        },
+        {
+          part_id: 'second',
+          blob_id: 'blob-second',
+          name: 'second.png',
+          mime_type: 'image/png',
+          size: pngBytes.byteLength,
+          disposition: 'attachment',
+          cid: null,
+          charset: null,
+        },
+      ],
+    }, {
+      async downloadAttachment() {
+        return new Blob([pngBytes], { type: 'image/png' });
+      },
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    await nextTick();
+
+    const body = wrapper.find('.message-view__body');
+    const previews = body.find('.message-attachment-previews');
+    expect(previews.exists()).toBe(true);
+    expect(body.element.lastElementChild).toBe(previews.element);
+    expect(previews.findAll('figure figcaption').map((caption) => caption.text()))
+      .toEqual(['first.png', 'second.png']);
+    expect(wrapper.findAll('.message-attachment-row')).toHaveLength(2);
+    expect(createUrl).toHaveBeenCalledTimes(2);
+
+    wrapper.unmount();
+  });
+
+  it('previews plain text only on request with escaped capped output and owner routing', async () => {
+    const calls: Array<{ accountId: number; options: Record<string, any> }> = [];
+    const mailStore = await makeSelectedMessage({
+      text: 'authored body',
+      html: '',
+      attachments: [{
+        part_id: 'notes',
+        blob_id: 'blob-notes',
+        name: 'notes.txt',
+        mime_type: 'text/plain',
+        size: 300_000,
+        disposition: 'attachment',
+        cid: null,
+        charset: 'utf-8',
+      }],
+    }, {
+      async downloadAttachment(accountId, options) {
+        calls.push({ accountId, options });
+        return new Blob(['<img src=x onerror=alert(1)>']);
+      },
+    });
+    mailStore.messages[0].account_id = 9;
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+    expect(wrapper.find('.message-attachment-preview--text').exists()).toBe(false);
+
+    await wrapper.find('[aria-label="Preview notes.txt"]').trigger('click');
+    await flushPromises();
+    await nextTick();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].accountId).toBe(9);
+    expect(calls[0].options.maxBytes).toBe((256 * 1024) + 1);
+    expect(calls[0].options.truncateAtMaxBytes).toBe(true);
+    const preview = wrapper.find('.message-attachment-preview--text');
+    expect(preview.find('pre').text()).toBe('<img src=x onerror=alert(1)>');
+    expect(preview.find('pre img').exists()).toBe(false);
+    expect(preview.text()).toContain('Preview truncated at 256 KiB.');
+
+    wrapper.unmount();
+  });
+
+  it('keeps an attachment transfer running while the selected row reloads', async () => {
+    let resolveDownload: (blob: Blob) => void = () => {};
+    const deferred = new Promise<Blob>((resolve) => {
+      resolveDownload = resolve;
+    });
+    let transferSignal: AbortSignal | undefined;
+    const mailStore = await makeSelectedMessage({
+      text: 'authored body',
+      html: '',
+      attachments: [{
+        part_id: 'notes',
+        blob_id: 'blob-notes',
+        name: 'notes.txt',
+        mime_type: 'text/plain',
+        size: 16,
+        disposition: 'attachment',
+        cid: null,
+        charset: 'utf-8',
+      }],
+    }, {
+      async downloadAttachment(_accountId, options) {
+        transferSignal = options.signal;
+        return deferred;
+      },
+    });
+    const selected = mailStore.messages[0];
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    await wrapper.get('[aria-label="Preview notes.txt"]').trigger('click');
+    await flushPromises();
+
+    mailStore.messages = [];
+    await nextTick();
+    expect(mailStore.selectedMessageId).toBe(7);
+    expect(transferSignal?.aborted).toBe(false);
+
+    mailStore.messages = [selected];
+    await nextTick();
+    expect(transferSignal?.aborted).toBe(false);
+
+    resolveDownload(new Blob(['restored preview'], { type: 'text/plain' }));
+    await flushPromises();
+    await nextTick();
+
+    expect(wrapper.get('.message-attachment-preview--text pre').text())
+      .toBe('restored preview');
+    wrapper.unmount();
+  });
+
+  it('shows per-row pending, error, and retry state for preview failures', async () => {
+    let rejectFirst: (error: Error) => void = () => {};
+    const first = new Promise<Blob>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let attempts = 0;
+    await makeSelectedMessage({
+      text: 'authored body',
+      html: '',
+      attachments: [{
+        part_id: 'notes',
+        blob_id: 'blob-notes',
+        name: 'notes.txt',
+        mime_type: 'text/plain',
+        size: 5,
+        disposition: 'attachment',
+        cid: null,
+        charset: 'utf-8',
+      }],
+    }, {
+      async downloadAttachment() {
+        attempts += 1;
+        return attempts === 1 ? first : new Blob(['ready']);
+      },
+    });
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await nextTick();
+
+    await wrapper.find('[aria-label="Preview notes.txt"]').trigger('click');
+    await nextTick();
+    expect(wrapper.find('[role="status"]').text()).toContain('Preparing preview');
+
+    rejectFirst(new Error('offline'));
+    await flushPromises();
+    await nextTick();
+    expect(wrapper.find('[role="alert"]').text()).toContain('Preview failed');
+    const retry = wrapper.find('[aria-label="Retry preview for notes.txt"]');
+    expect(retry.exists()).toBe(true);
+
+    await retry.trigger('click');
+    await flushPromises();
+    await nextTick();
+    expect(wrapper.find('.message-attachment-preview--text pre').text()).toBe('ready');
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it('keeps referenced CID parts listed when inline resolution fails', async () => {
     await makeSelectedMessage({
       text: '',
       html: '<p>logo <img src="cid:%3Clogo%40example.com%3E"></p>',
@@ -1065,12 +1352,130 @@ describe('MessageView HTML body rendering', () => {
     const wrapper = mount(MessageView, {
       attachTo: document.body,
     });
+    await flushPromises();
     await nextTick();
 
-    const items = wrapper.findAll('.message-view__attachments li');
-    expect(items).toHaveLength(1);
-    expect(items[0].text()).toContain('report.pdf');
-    expect(wrapper.text()).not.toContain('logo.png');
+    const items = wrapper.findAll('.message-attachment-row');
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.text())).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('logo.png'),
+        expect.stringContaining('report.pdf'),
+      ]),
+    );
+
+    wrapper.unmount();
+  });
+
+  it('suppresses a CID row only after its permitted image reference resolves', async () => {
+    const onePixelPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ'
+      + 'AAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({
+      width: 1,
+      height: 1,
+      close: vi.fn(),
+    })));
+    await makeSelectedMessage({
+      text: '',
+      html: [
+        '<img src="cid:LOGO@example.com">',
+        '<img src="cid:explicit@example.com">',
+        '<a href="cid:linked@example.com">linked only</a>',
+      ].join(''),
+      attachments: [
+        {
+          part_id: 'logo',
+          blob_id: 'blob-logo',
+          name: 'logo.png',
+          mime_type: 'image/png',
+          size: 1024,
+          disposition: 'inline',
+          cid: '<logo@example.com>',
+        },
+        {
+          part_id: 'explicit',
+          blob_id: 'blob-explicit',
+          name: 'explicit.png',
+          mime_type: 'image/png',
+          size: 1024,
+          disposition: 'attachment',
+          cid: '<explicit@example.com>',
+        },
+        {
+          part_id: 'linked',
+          blob_id: 'blob-linked',
+          name: 'linked.png',
+          mime_type: 'image/png',
+          size: 1024,
+          disposition: 'inline',
+          cid: '<linked@example.com>',
+        },
+      ],
+    }, {
+      async downloadBlob() {
+        return { base64: onePixelPng, type: 'image/png' };
+      },
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    await nextTick();
+
+    const rowText = wrapper.findAll('.message-attachment-row').map((item) => item.text());
+    expect(rowText).toHaveLength(2);
+    expect(rowText.join(' ')).not.toContain('logo.png');
+    expect(rowText.join(' ')).toContain('explicit.png');
+    expect(rowText.join(' ')).toContain('linked.png');
+
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('data:image/png;base64,');
+    expect(srcdoc).toContain('href="cid:linked@example.com"');
+
+    wrapper.unmount();
+  });
+
+  it.each([
+    ['mismatched', 'bm90IGEgcG5n', 0],
+    ['corrupt', 'iVBORw0KGgo=', 1],
+  ])('keeps %s CID raster bytes in the attachment bar', async (
+    _kind,
+    base64,
+    expectedDecodeCalls,
+  ) => {
+    const decode = vi.fn(async () => {
+      throw new Error('decode failed');
+    });
+    vi.stubGlobal('createImageBitmap', decode);
+    await makeSelectedMessage({
+      text: '',
+      html: '<img src="cid:logo@example.com">',
+      attachments: [{
+        part_id: 'logo',
+        blob_id: 'blob-logo',
+        name: 'logo.png',
+        mime_type: 'image/png',
+        size: 8,
+        disposition: 'inline',
+        cid: '<logo@example.com>',
+      }],
+    }, {
+      async downloadBlob() {
+        return { base64, type: 'image/png' };
+      },
+    });
+
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    await nextTick();
+
+    const rows = wrapper.findAll('.message-attachment-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text()).toContain('logo.png');
+    expect(wrapper.find('[aria-label="Download logo.png"]').exists()).toBe(true);
+    const srcdoc = wrapper.find('iframe.message-view__html-frame').attributes('srcdoc') ?? '';
+    expect(srcdoc).toContain('src="cid:logo@example.com"');
+    expect(srcdoc).not.toContain('data:image/png;base64,');
+    expect(decode).toHaveBeenCalledTimes(expectedDecodeCalls);
 
     wrapper.unmount();
   });

@@ -22,6 +22,7 @@ export class MockTransport {
         'urn:ietf:params:jmap:core': {
           maxObjectsInGet: 500,
           maxObjectsInSet: 500,
+          maxSizeUpload: 50_000_000,
         },
       },
     };

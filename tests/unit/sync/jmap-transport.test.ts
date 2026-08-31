@@ -46,10 +46,94 @@ function jsonResponse(body: any, init: { status?: number; statusText?: string } 
   };
 }
 
+class FakeEventTarget {
+  _listeners = new Map<string, Set<(event?: any) => void>>();
+
+  addEventListener(type: string, listener: (event?: any) => void) {
+    const listeners = this._listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this._listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: (event?: any) => void) {
+    this._listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type: string, event: any = {}) {
+    for (const listener of [...(this._listeners.get(type) ?? [])]) {
+      listener({ type, ...event });
+    }
+  }
+}
+
+class FakeXMLHttpRequest extends FakeEventTarget {
+  static instances: FakeXMLHttpRequest[] = [];
+
+  upload = new FakeEventTarget();
+  method = '';
+  url = '';
+  async = true;
+  headers: Record<string, string> = {};
+  body: any = null;
+  status = 0;
+  statusText = '';
+  responseText = '';
+  aborted = false;
+
+  constructor() {
+    super();
+    FakeXMLHttpRequest.instances.push(this);
+  }
+
+  static reset() {
+    FakeXMLHttpRequest.instances = [];
+  }
+
+  open(method: string, url: string, async = true) {
+    this.method = method;
+    this.url = url;
+    this.async = async;
+  }
+
+  setRequestHeader(name: string, value: string) {
+    this.headers[name] = value;
+  }
+
+  send(body: any) {
+    this.body = body;
+  }
+
+  abort() {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.dispatch('abort');
+  }
+
+  uploadProgress(loaded: number, total: number) {
+    this.upload.dispatch('progress', {
+      loaded,
+      total,
+      lengthComputable: true,
+    });
+  }
+
+  finishUpload() {
+    this.upload.dispatch('load');
+  }
+
+  respond(body: any, status = 200, statusText = 'OK') {
+    this.status = status;
+    this.statusText = statusText;
+    this.responseText = JSON.stringify(body);
+    this.dispatch('load');
+  }
+}
+
 describe('JmapTransport HTTP', () => {
   let auth;
 
   beforeEach(() => {
+    FakeXMLHttpRequest.reset();
     auth = vi.fn(async () => FAKE_BASIC_AUTH);
   });
 
@@ -382,6 +466,570 @@ describe('JmapTransport HTTP', () => {
     for (const [, init] of calls) {
       expect(init.headers.Authorization).toBe(FAKE_BASIC_AUTH);
     }
+  });
+
+  it('rejects an oversized declared download before reading the body', async () => {
+    const arrayBuffer = vi.fn();
+    const cancel = vi.fn(async () => {});
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-1/photo': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => '9' },
+        body: { cancel },
+        arrayBuffer,
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    await expect(t.download({
+      accountId: 'acct-1',
+      blobId: 'blob-1',
+      name: 'photo',
+      maxBytes: 8,
+    })).rejects.toMatchObject({
+      type: 'tooLarge',
+      status: 413,
+      maxBytes: 8,
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a streamed download when cumulative bytes exceed the cap', async () => {
+    const chunks = [
+      new Uint8Array([1, 2, 3, 4]),
+      new Uint8Array([5, 6, 7, 8]),
+    ];
+    const read = vi.fn(async () => (
+      chunks.length > 0
+        ? { done: false, value: chunks.shift() }
+        : { done: true, value: undefined }
+    ));
+    const cancel = vi.fn(async () => {});
+    const releaseLock = vi.fn();
+    const arrayBuffer = vi.fn();
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-1/photo': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({ read, cancel, releaseLock }),
+        },
+        arrayBuffer,
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    await expect(t.download({
+      accountId: 'acct-1',
+      blobId: 'blob-1',
+      name: 'photo',
+      maxBytes: 6,
+    })).rejects.toMatchObject({
+      type: 'tooLarge',
+      status: 413,
+      actualBytes: 8,
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('returns a streamed prefix when the caller requests truncation at the cap', async () => {
+    const chunks = [
+      new Uint8Array([1, 2, 3, 4]),
+      new Uint8Array([5, 6, 7, 8]),
+    ];
+    const read = vi.fn(async () => (
+      chunks.length > 0
+        ? { done: false, value: chunks.shift() }
+        : { done: true, value: undefined }
+    ));
+    const cancel = vi.fn(async () => {});
+    const releaseLock = vi.fn();
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-1/photo': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => '8' },
+        body: {
+          getReader: () => ({ read, cancel, releaseLock }),
+        },
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    await expect(t.download({
+      accountId: 'acct-1',
+      blobId: 'blob-1',
+      name: 'photo',
+      maxBytes: 6,
+      truncateAtMaxBytes: true,
+    })).resolves.toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('truncates an unknown-length stream without reading its remaining chunks', async () => {
+    const chunks = [
+      new Uint8Array([1, 2, 3, 4]),
+      new Uint8Array([5, 6, 7, 8]),
+      new Uint8Array([9, 10]),
+    ];
+    const read = vi.fn(async () => (
+      chunks.length > 0
+        ? { done: false, value: chunks.shift() }
+        : { done: true, value: undefined }
+    ));
+    const cancel = vi.fn(async () => {});
+    const releaseLock = vi.fn();
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-1/photo': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => null },
+        body: {
+          getReader: () => ({ read, cancel, releaseLock }),
+        },
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    await expect(t.download({
+      accountId: 'acct-1',
+      blobId: 'blob-1',
+      name: 'photo',
+      maxBytes: 6,
+      truncateAtMaxBytes: true,
+    })).resolves.toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never buffers a full non-streaming response in truncating mode', async () => {
+    const arrayBuffer = vi.fn(async () => new Uint8Array(20).buffer);
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-1/photo': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => '20' },
+        arrayBuffer,
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    await expect(t.download({
+      accountId: 'acct-1',
+      blobId: 'blob-1',
+      name: 'photo',
+      maxBytes: 6,
+      truncateAtMaxBytes: true,
+    })).rejects.toMatchObject({
+      type: 'streamingUnavailable',
+    });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('builds attachment Blobs directly from streamed chunks', async () => {
+    const chunks = [
+      new Uint8Array([0x64, 0x6f, 0x77, 0x6e]),
+      new Uint8Array([0x6c, 0x6f, 0x61, 0x64]),
+    ];
+    const arrayBuffer = vi.fn();
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/download/acct-1/blob-direct/file': () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => '8' },
+        body: {
+          getReader: () => ({
+            read: vi.fn(async () => (
+              chunks.length > 0
+                ? { done: false, value: chunks.shift() }
+                : { done: true, value: undefined }
+            )),
+            cancel: vi.fn(async () => {}),
+            releaseLock: vi.fn(),
+          }),
+        },
+        arrayBuffer,
+      }),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+
+    const blob = await t.downloadBlob({
+      accountId: 'acct-1',
+      blobId: 'blob-direct',
+      name: 'file',
+      type: 'text/plain',
+    });
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe('text/plain');
+    expect(await blob.text()).toBe('download');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('streams correlated download progress and resets the idle timeout per chunk', async () => {
+    vi.useFakeTimers();
+    try {
+      const chunks = [
+        new Uint8Array([1, 2]),
+        new Uint8Array([3, 4]),
+      ];
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+        'https://mail.example.com/jmap/download/acct-1/blob-progress/file': () => ({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { get: () => '4' },
+          body: {
+            getReader: () => ({
+              read: () => new Promise((resolve) => {
+                setTimeout(() => {
+                  resolve(chunks.length > 0
+                    ? { done: false, value: chunks.shift() }
+                    : { done: true, value: undefined });
+                }, 20);
+              }),
+              cancel: vi.fn(async () => {}),
+              releaseLock: vi.fn(),
+            }),
+          },
+        }),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+        httpBlobIdleTimeoutMs: 25,
+      });
+      await t.fetchSession();
+      const progress = [];
+      const pending = t.download({
+        accountId: 'acct-1',
+        blobId: 'blob-progress',
+        name: 'file',
+        onProgress: (event) => progress.push(event),
+      });
+
+      await vi.advanceTimersByTimeAsync(60);
+      await expect(pending).resolves.toEqual(new Uint8Array([1, 2, 3, 4]));
+      expect(progress).toEqual([
+        {
+          direction: 'download',
+          phase: 'transferring',
+          loaded: 0,
+          total: 4,
+        },
+        {
+          direction: 'download',
+          phase: 'transferring',
+          loaded: 2,
+          total: 4,
+        },
+        {
+          direction: 'download',
+          phase: 'transferring',
+          loaded: 4,
+          total: 4,
+        },
+        {
+          direction: 'download',
+          phase: 'complete',
+          loaded: 4,
+          total: 4,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a stalled blob after its progress idle timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+        'https://mail.example.com/jmap/download/acct-1/blob-stalled/file': (init) => ({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: { get: () => null },
+          body: {
+            getReader: () => ({
+              read: () => new Promise((_resolve, reject) => {
+                init.signal.addEventListener('abort', () => {
+                  const error: any = new Error('aborted');
+                  error.name = 'AbortError';
+                  reject(error);
+                }, { once: true });
+              }),
+              cancel: vi.fn(async () => {}),
+              releaseLock: vi.fn(),
+            }),
+          },
+        }),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+        httpBlobIdleTimeoutMs: 25,
+      });
+      await t.fetchSession();
+      const pending = t.download({
+        accountId: 'acct-1',
+        blobId: 'blob-stalled',
+        name: 'file',
+      });
+      const rejected = expect(pending).rejects.toMatchObject({
+        type: 'httpIdleTimeout',
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+      await rejected;
+      expect((t as any)._inFlightHttp.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows a progressing upload to outlive repeated 15-second windows', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = makeFetch({
+        'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      });
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: fetchMock,
+        XMLHttpRequestImpl: FakeXMLHttpRequest as any,
+      });
+      await t.fetchSession();
+      const source = new Blob(['slow upload'], { type: 'text/plain' });
+      const progress: any[] = [];
+      const pending = t.upload({
+        accountId: 'acct-1',
+        type: 'text/plain',
+        body: source,
+        onProgress: (event) => progress.push(event),
+      });
+      await Promise.resolve();
+      const request = FakeXMLHttpRequest.instances[0];
+
+      expect(request.method).toBe('POST');
+      expect(request.url).toBe('https://mail.example.com/jmap/upload/acct-1/');
+      expect(request.headers).toEqual({
+        Authorization: FAKE_BASIC_AUTH,
+        'Content-Type': 'text/plain',
+        Accept: 'application/json',
+      });
+      expect(request.body).toBe(source);
+
+      for (const loaded of [2, 4, 6, 8, source.size]) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        request.uploadProgress(loaded, source.size);
+        expect(request.aborted).toBe(false);
+      }
+      request.finishUpload();
+      request.respond({
+        accountId: 'acct-1',
+        blobId: 'slow-blob',
+        type: 'text/plain',
+        size: source.size,
+      });
+
+      await expect(pending).resolves.toMatchObject({ blobId: 'slow-blob' });
+      expect(progress.at(0)).toEqual({
+        direction: 'upload',
+        phase: 'transferring',
+        loaded: 0,
+        total: source.size,
+      });
+      expect(progress.at(-1)).toEqual({
+        direction: 'upload',
+        phase: 'complete',
+        loaded: source.size,
+        total: source.size,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an upload after 15 seconds without byte progress', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: auth,
+        fetch: makeFetch({
+          'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+        }),
+        XMLHttpRequestImpl: FakeXMLHttpRequest as any,
+      });
+      await t.fetchSession();
+      const pending = t.upload({
+        accountId: 'acct-1',
+        type: 'application/octet-stream',
+        body: new Blob(['stalled']),
+      });
+      await Promise.resolve();
+      const request = FakeXMLHttpRequest.instances[0];
+      const rejected = expect(pending).rejects.toMatchObject({
+        type: 'httpIdleTimeout',
+        elapsedMs: 15_000,
+      });
+
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(request.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(request.aborted).toBe(true);
+      expect((t as any)._inFlightHttp.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps observable upload progress in the non-XHR fetch fallback', async () => {
+    const uploadedChunks: Uint8Array[] = [];
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+      'https://mail.example.com/jmap/upload/acct-1/': async (init) => {
+        expect(init.duplex).toBe('half');
+        const reader = init.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          uploadedChunks.push(value);
+        }
+        return jsonResponse({
+          accountId: 'acct-1',
+          blobId: 'fallback-blob',
+          type: 'text/plain',
+          size: 8,
+        });
+      },
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+    });
+    await t.fetchSession();
+    const progress: any[] = [];
+
+    await expect(t.upload({
+      accountId: 'acct-1',
+      type: 'text/plain',
+      body: new Blob(['fallback'], { type: 'text/plain' }),
+      onProgress: (event) => progress.push(event),
+    })).resolves.toMatchObject({ blobId: 'fallback-blob' });
+
+    const uploadedBytes = new Uint8Array(
+      uploadedChunks.reduce((total, chunk) => total + chunk.byteLength, 0),
+    );
+    let offset = 0;
+    for (const chunk of uploadedChunks) {
+      uploadedBytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    expect(new TextDecoder().decode(uploadedBytes)).toBe('fallback');
+    expect(progress.some((event) =>
+      event.phase === 'transferring' && event.loaded === 8)).toBe(true);
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'complete',
+      loaded: 8,
+      total: 8,
+    });
+  });
+
+  it('cancels one upload signal without latching global transport teardown', async () => {
+    const fetchMock = makeFetch({
+      'https://mail.example.com/.well-known/jmap': () => jsonResponse(SESSION),
+    });
+    const t = new JmapTransport({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      getAuthHeader: auth,
+      fetch: fetchMock,
+      XMLHttpRequestImpl: FakeXMLHttpRequest as any,
+    });
+    await t.fetchSession();
+    const controller = new AbortController();
+    const cancelled = t.upload({
+      accountId: 'acct-1',
+      type: 'text/plain',
+      body: new Blob(['cancel me']),
+      signal: controller.signal,
+    });
+    const unaffected = t.upload({
+      accountId: 'acct-1',
+      type: 'text/plain',
+      body: new Blob(['keep']),
+    });
+
+    await vi.waitFor(() => expect(FakeXMLHttpRequest.instances).toHaveLength(2));
+    controller.abort();
+    FakeXMLHttpRequest.instances[1].respond({
+      accountId: 'acct-1',
+      blobId: 'kept',
+      type: 'text/plain',
+      size: 4,
+    });
+
+    await expect(cancelled).rejects.toMatchObject({
+      name: 'AbortError',
+      type: 'cancelled',
+    });
+    await expect(unaffected).resolves.toMatchObject({ blobId: 'kept' });
+    expect((t as any)._aborted).toBe(false);
+    expect((t as any)._inFlightHttp.size).toBe(0);
   });
 });
 

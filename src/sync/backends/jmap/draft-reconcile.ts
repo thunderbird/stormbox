@@ -29,13 +29,33 @@ function addresses(value: unknown): Array<{ name: string; email: string }> {
   }));
 }
 
-function bodyValueFor(email: any, kind: 'textBody' | 'htmlBody'): string {
+interface ReconciledBodyPart {
+  partId: string;
+  type: string | null;
+  value: string;
+}
+
+function bodyPartsFor(
+  email: any,
+  kind: 'textBody' | 'htmlBody',
+): { parts: ReconciledBodyPart[]; isComplete: boolean } {
   const parts = Array.isArray(email?.[kind]) ? email[kind] : [];
+  const values: ReconciledBodyPart[] = [];
   for (const part of parts) {
-    const value = email?.bodyValues?.[part?.partId]?.value;
-    if (typeof value === 'string') return value;
+    const bodyValue = email?.bodyValues?.[part?.partId];
+    if (bodyValue?.isTruncated === true || bodyValue?.isEncodingProblem === true) {
+      return { parts: [], isComplete: false };
+    }
+    if (typeof part?.partId !== 'string' || typeof bodyValue?.value !== 'string') {
+      return { parts: [], isComplete: false };
+    }
+    values.push({
+      partId: part.partId,
+      type: typeof part.type === 'string' ? part.type.toLowerCase() : null,
+      value: bodyValue.value,
+    });
   }
-  return '';
+  return { parts: values, isComplete: true };
 }
 
 function preparedBodyValue(preparedEmail: any, partId: string): string {
@@ -43,16 +63,32 @@ function preparedBodyValue(preparedEmail: any, partId: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-function sameSemanticEmail(email: any, preparedEmail: any): boolean {
-  if (!preparedEmail || typeof preparedEmail !== 'object') return false;
+function compareSemanticEmail(
+  email: any,
+  preparedEmail: any,
+): 'same' | 'different' | 'inconclusive' {
+  if (!preparedEmail || typeof preparedEmail !== 'object') return 'different';
+  const expectedText = preparedBodyValue(preparedEmail, 'p1');
   const expectedHtml = preparedBodyValue(preparedEmail, 'h1');
-  return String(email?.subject ?? '') === String(preparedEmail.subject ?? '')
+  const expectedHasHtml = typeof preparedEmail?.bodyValues?.h1?.value === 'string';
+  const textBody = bodyPartsFor(email, 'textBody');
+  const htmlBody = bodyPartsFor(email, 'htmlBody');
+  if (!textBody.isComplete || !htmlBody.isComplete) {
+    return 'inconclusive';
+  }
+  const textPartIds = new Set(textBody.parts.map((part) => part.partId));
+  const semanticHtmlParts = htmlBody.parts.filter((part) =>
+    part.type === 'text/html' || !textPartIds.has(part.partId));
+  const same = String(email?.subject ?? '') === String(preparedEmail.subject ?? '')
     && JSON.stringify(addresses(email?.from)) === JSON.stringify(addresses(preparedEmail.from))
     && JSON.stringify(addresses(email?.to)) === JSON.stringify(addresses(preparedEmail.to))
     && JSON.stringify(addresses(email?.cc)) === JSON.stringify(addresses(preparedEmail.cc))
     && JSON.stringify(addresses(email?.bcc)) === JSON.stringify(addresses(preparedEmail.bcc))
-    && bodyValueFor(email, 'textBody') === preparedBodyValue(preparedEmail, 'p1')
-    && (!expectedHtml || bodyValueFor(email, 'htmlBody') === expectedHtml);
+    && textBody.parts.length === 1
+    && textBody.parts[0].value === expectedText
+    && semanticHtmlParts.length === (expectedHasHtml ? 1 : 0)
+    && (!expectedHasHtml || semanticHtmlParts[0].value === expectedHtml);
+  return same ? 'same' : 'different';
 }
 
 /**
@@ -80,9 +116,11 @@ export async function findDraftRevision({
   if (!draftsRemoteId || !revisionMessageId) return { outcome: 'absent' };
   const pageSize = Math.max(1, Math.min(maxObjectsInGet(transport), 500));
   const wanted = bareMessageId(revisionMessageId);
-  const candidates: any[] = [];
+  const candidateIds: string[] = [];
+  const seenIds = new Set<string>();
   let position = 0;
   let firstQueryState: string | null = null;
+  let firstTotal: number | null = null;
 
   try {
     for (;;) {
@@ -106,17 +144,7 @@ export async function findDraftRevision({
             {
               accountId: account.remote_account_id,
               '#ids': { resultOf: 'q1', name: 'Email/query', path: '/ids' },
-              properties: [
-                'id', 'messageId', 'mailboxIds', 'keywords', 'from', 'to', 'cc', 'bcc',
-                'subject', 'bodyStructure', 'textBody', 'htmlBody', 'bodyValues',
-              ],
-              bodyProperties: [
-                'partId', 'blobId', 'size', 'name', 'type', 'charset',
-                'disposition', 'cid', 'language', 'location', 'subParts',
-              ],
-              fetchTextBodyValues: true,
-              fetchHTMLBodyValues: true,
-              maxBodyValueBytes: 256 * 1024,
+              properties: ['id', 'messageId'],
             },
             'g1',
           ],
@@ -128,29 +156,122 @@ export async function findDraftRevision({
       if (!query || !got || !Array.isArray(query.ids) || !Array.isArray(got.list)) {
         return { outcome: 'inconclusive', reason: 'scanRejected' };
       }
-      if (typeof query.queryState !== 'string' || !Number.isFinite(Number(query.total))) {
+      if (typeof query.queryState !== 'string') {
+        return { outcome: 'inconclusive', reason: 'malformedQuery' };
+      }
+      const total = query.total;
+      if (!Number.isSafeInteger(query.position)
+          || query.position !== position
+          || !Number.isSafeInteger(total)
+          || total < 0
+          || query.ids.length > pageSize
+          || query.ids.some((id) => typeof id !== 'string' || !id)) {
         return { outcome: 'inconclusive', reason: 'malformedQuery' };
       }
       if (firstQueryState == null) firstQueryState = query.queryState;
       if (query.queryState !== firstQueryState) {
         return { outcome: 'inconclusive', reason: 'queryStateChanged' };
       }
-      const total = Number(query.total);
-      const returned = new Set(got.list.map((email) => email?.id).filter(Boolean));
-      if (query.ids.some((id) => !returned.has(id))) {
+      if (firstTotal == null) firstTotal = total;
+      if (total !== firstTotal) {
+        return { outcome: 'inconclusive', reason: 'queryTotalChanged' };
+      }
+      if (query.ids.some((id) => seenIds.has(id))) {
+        return { outcome: 'inconclusive', reason: 'repeatedQueryPage' };
+      }
+      const returnedIds = got.list.map((email) => email?.id);
+      const returned = new Set(returnedIds);
+      if (returned.size !== returnedIds.length
+          || returned.size !== query.ids.length
+          || query.ids.some((id) => !returned.has(id))) {
         return { outcome: 'inconclusive', reason: 'emailGetIncomplete' };
       }
-      for (const email of got.list) {
+      const byId = new Map<string, any>(got.list.map((email) => [email.id, email]));
+      for (const id of query.ids) {
+        seenIds.add(id);
+        const email = byId.get(id);
         const ids = messageIds(email);
         if (ids === null) return { outcome: 'inconclusive', reason: 'malformedMessageId' };
-        if (ids.some((id) => bareMessageId(id) === wanted)) candidates.push(email);
+        if (ids.some((messageId) => bareMessageId(messageId) === wanted)) {
+          candidateIds.push(id);
+        }
       }
-      position += query.ids.length;
-      if (position >= total) break;
+      position = query.position + query.ids.length;
+      if (position > total) {
+        return { outcome: 'inconclusive', reason: 'malformedQuery' };
+      }
+      if (position === total) break;
       if (query.ids.length === 0) {
         return { outcome: 'inconclusive', reason: 'truncatedQuery' };
       }
     }
+
+    if (candidateIds.length === 0) return { outcome: 'absent' };
+
+    const candidates: any[] = [];
+    for (let offset = 0; offset < candidateIds.length; offset += pageSize) {
+      const ids = candidateIds.slice(offset, offset + pageSize);
+      const callId = `g2-${offset / pageSize}`;
+      const payload = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [[
+          'Email/get',
+          {
+            accountId: account.remote_account_id,
+            ids,
+            properties: [
+              'id', 'messageId', 'mailboxIds', 'keywords', 'from', 'to', 'cc', 'bcc',
+              'subject', 'textBody', 'htmlBody', 'bodyValues',
+            ],
+            bodyProperties: ['partId', 'type'],
+            fetchTextBodyValues: true,
+            fetchHTMLBodyValues: true,
+            maxBodyValueBytes: 256 * 1024,
+          },
+          callId,
+        ]],
+        useWebSocket,
+      });
+      const got = pickResponseById(payload, 'Email/get', callId);
+      if (!got || !Array.isArray(got.list)) {
+        return { outcome: 'inconclusive', reason: 'candidateGetRejected' };
+      }
+      const returnedIds = got.list.map((email) => email?.id);
+      const returned = new Set(returnedIds);
+      if (returned.size !== returnedIds.length
+          || returned.size !== ids.length
+          || ids.some((id) => !returned.has(id))) {
+        return { outcome: 'inconclusive', reason: 'candidateGetIncomplete' };
+      }
+      const byId = new Map<string, any>(got.list.map((email) => [email.id, email]));
+      for (const id of ids) {
+        const email = byId.get(id);
+        const idsForEmail = messageIds(email);
+        if (idsForEmail === null
+            || !idsForEmail.some((messageId) => bareMessageId(messageId) === wanted)
+            || email?.mailboxIds?.[draftsRemoteId] !== true
+            || email?.keywords?.$draft !== true) {
+          return { outcome: 'inconclusive', reason: 'candidateChanged' };
+        }
+        candidates.push(email);
+      }
+    }
+
+    const comparisons = candidates.map((email) => compareSemanticEmail(email, preparedEmail));
+    if (comparisons.includes('inconclusive')) {
+      return { outcome: 'inconclusive', reason: 'incompleteBodyValue' };
+    }
+    if (comparisons.some((comparison) => comparison !== 'same')) {
+      return {
+        outcome: 'conflict',
+        emailIds: candidates.map((email) => String(email.id)).filter(Boolean),
+      };
+    }
+    return {
+      outcome: 'found',
+      emailIds: candidates.map((email) => String(email.id)),
+      email: candidates[0],
+    };
   } catch (error: any) {
     return {
       outcome: 'inconclusive',
@@ -161,18 +282,4 @@ export async function findDraftRevision({
       },
     };
   }
-
-  if (candidates.length === 0) return { outcome: 'absent' };
-  const matching = candidates.filter((email) => sameSemanticEmail(email, preparedEmail));
-  if (matching.length !== candidates.length || matching.length === 0) {
-    return {
-      outcome: 'conflict',
-      emailIds: candidates.map((email) => String(email.id)).filter(Boolean),
-    };
-  }
-  return {
-    outcome: 'found',
-    emailIds: matching.map((email) => String(email.id)),
-    email: matching[0],
-  };
 }

@@ -3,7 +3,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
-import { SERVICE_KIND } from '../../../src/constants/states';
+import {
+  MUTATION_TYPE,
+  SERVICE_KIND,
+} from '../../../src/constants/states';
 import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
 import { JmapTransport, JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
@@ -132,6 +135,7 @@ describe('JmapBackend.start', () => {
       serverOrigin: 'https://mail.example.com',
       handlers,
     });
+    const ensureSettings = vi.spyOn(backend, 'ensureSettings');
 
     const startPromise = backend.start();
     // Start opens the WS once mailboxes/identities/contacts are synced;
@@ -145,6 +149,7 @@ describe('JmapBackend.start', () => {
     // contacts, and the WebSocket bootstrap continue in the background;
     // wait for that chain before checking their effects.
     await backend.bootstrapped();
+    expect(ensureSettings).toHaveBeenCalled();
 
     const accounts = await handlers[DB_RPC.ACCOUNT_LIST]();
     expect(accounts).toHaveLength(1);
@@ -1999,6 +2004,100 @@ describe('JmapBackend.stop with a stalled request', () => {
 });
 
 describe('JmapBackend shared-account reconciliation', () => {
+  it('does not strand trash mutations when reconnect push-state loading fails', async () => {
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = { id: 1, remote_account_id: 'acct-1' };
+    backend._started = true;
+    backend._loadPushState = vi.fn(async () => {
+      throw new Error('push state unavailable');
+    });
+    backend._onTransportClose = vi.fn();
+    backend.ensureContactsTrash = vi.fn(async () => {
+      throw Object.assign(new Error('trash marker collision'), {
+        type: 'invalidDocument',
+        terminal: true,
+      });
+    });
+
+    await expect(backend._reconnect()).resolves.toBeUndefined();
+    expect(backend._onTransportClose).toHaveBeenCalledTimes(1);
+    await expect(backend._processMutationRow({
+      mutation_type: MUTATION_TYPE.DELETE_CONTACT,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: 'invalidDocument',
+        message: 'trash marker collision',
+        terminal: true,
+      },
+    });
+    expect(backend.ensureContactsTrash).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches owned FileNode changes only for the primary account', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend.ensureSettings = vi.fn(async () => ({ ok: true as const, pulled: true }));
+    backend.ensureContactsTrash = vi.fn(async () => ({ ok: true as const, pulled: true }));
+
+    await backend._syncAccountStateChange(primary, { FileNode: 'files-2' });
+    await backend._syncAccountStateChange(shared, { FileNode: 'shared-files-2' });
+
+    expect(backend.ensureSettings).toHaveBeenCalledTimes(1);
+    expect(backend.ensureContactsTrash).toHaveBeenCalledTimes(1);
+  });
+
+  it('still syncs contacts trash when settings FileNode sync fails', async () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const backend = new JmapBackend({
+      transport: new MockTransport(),
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [];
+    backend.ensureSettings = vi.fn(async () => {
+      throw new Error('invalid settings document');
+    });
+    backend.ensureContactsTrash = vi.fn(async () => ({ ok: true as const, pulled: true }));
+
+    await backend._syncAccountStateChange(primary, { FileNode: 'files-2' });
+
+    expect(backend.ensureContactsTrash).toHaveBeenCalledTimes(1);
+  });
+
+  it('subscribes to FileNode only with primary account capability', () => {
+    const primary = { id: 1, remote_account_id: 'acct-1' };
+    const transport = new MockTransport({
+      capabilities: { [JMAP_CAPS.FILENODE]: {} },
+      accounts: { 'acct-1': { accountCapabilities: {} } },
+    });
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+    });
+    backend.account = primary;
+    expect(backend._subscribedTypes()).not.toContain('FileNode');
+
+    transport.session.accounts['acct-1'].accountCapabilities[JMAP_CAPS.FILENODE] = {};
+    expect(backend._subscribedTypes()).toContain('FileNode');
+  });
+
   it('acknowledges push state only after all account work succeeds', async () => {
     const primary = { id: 1, remote_account_id: 'acct-1' };
     const shared = { id: 2, remote_account_id: 'acct-shared' };
@@ -2107,10 +2206,12 @@ describe('JmapBackend shared-account reconciliation', () => {
     backend._started = true;
     backend._refreshActiveQueryViews = vi.fn(async () => {});
     backend.ensureIdentities = vi.fn(async () => ({ count: 0, state: null, removed: 0 }));
+    backend.ensureSettings = vi.fn(async () => ({ ok: true as const, skipped: true }));
 
     await backend._reconnect();
 
     expect(backend.ensureIdentities).toHaveBeenCalled();
+    expect(backend.ensureSettings).toHaveBeenCalled();
   });
 
   it('still refreshes the views when the identity re-read fails', async () => {
@@ -2267,6 +2368,167 @@ describe('JmapBackend shared-account reconciliation', () => {
       objectType: 'Email',
       scope: '',
     })).toBeNull();
+  });
+});
+
+describe('JmapBackend attachment transfers', () => {
+  function makeAttachmentBackend() {
+    const primary = { id: 1, remote_account_id: 'acct-primary' };
+    const shared = { id: 2, remote_account_id: 'acct-shared' };
+    const uploadResult = {
+      accountId: 'acct-shared',
+      blobId: 'uploaded-1',
+      type: 'text/plain',
+      size: 4,
+      serverMetadata: 'preserved',
+    };
+    const transport = {
+      session: {
+        capabilities: {
+          [JMAP_CAPS.CORE]: {
+            maxObjectsInGet: 500,
+            maxObjectsInSet: 500,
+            maxSizeUpload: 10,
+            maxConcurrentUpload: 3,
+          },
+        },
+        accounts: {
+          'acct-primary': {
+            accountCapabilities: {
+              [JMAP_CAPS.MAIL]: { maxSizeAttachmentsPerEmail: 20 },
+            },
+          },
+          'acct-shared': {
+            accountCapabilities: {
+              [JMAP_CAPS.MAIL]: { maxSizeAttachmentsPerEmail: 15 },
+            },
+          },
+        },
+      },
+      upload: vi.fn(async () => uploadResult),
+      download: vi.fn(async () => new Uint8Array([1, 2, 3])),
+      downloadBlob: vi.fn(async ({ type }) =>
+        new Blob([new Uint8Array([1, 2, 3])], { type })),
+    };
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = primary;
+    backend.sharedAccounts = [shared];
+    backend._accountsByLocalId = new Map([
+      [primary.id, primary],
+      [shared.id, shared],
+    ]);
+    return {
+      backend,
+      primary,
+      shared,
+      transport,
+      uploadResult,
+    };
+  }
+
+  it('exposes live limits and routes upload/download through the supplied local account', async () => {
+    const {
+      backend,
+      shared,
+      transport,
+      uploadResult,
+    } = makeAttachmentBackend();
+
+    expect(backend.attachmentLimits(shared.id)).toEqual({
+      maxSizeUpload: 10,
+      maxSizeAttachmentsPerEmail: 15,
+      maxConcurrentUpload: 3,
+    });
+    const upload = await backend.uploadComposeAttachment({
+      accountId: shared.id,
+      blob: new Blob(['data'], { type: 'text/plain' }),
+      totalAttachmentBytes: 12,
+    });
+    expect(upload).toBe(uploadResult);
+    expect(transport.upload).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'acct-shared',
+      type: 'text/plain',
+      body: expect.any(Blob),
+    }));
+
+    const downloaded = await backend.downloadAttachment({
+      accountId: shared.id,
+      blobId: 'part-1',
+      type: 'application/octet-stream',
+      maxBytes: 5,
+    });
+    expect(await downloaded.arrayBuffer()).toEqual(
+      new Uint8Array([1, 2, 3]).buffer,
+    );
+    expect(transport.downloadBlob).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'acct-shared',
+      blobId: 'part-1',
+      maxBytes: 5,
+      truncateAtMaxBytes: false,
+    }));
+
+    await backend.downloadAttachment({
+      accountId: shared.id,
+      blobId: 'part-prefix',
+      type: 'text/plain',
+      maxBytes: 6,
+      truncateAtMaxBytes: true,
+    });
+    expect(transport.downloadBlob).toHaveBeenLastCalledWith(expect.objectContaining({
+      accountId: 'acct-shared',
+      blobId: 'part-prefix',
+      maxBytes: 6,
+      truncateAtMaxBytes: true,
+    }));
+
+    const legacy = await backend.downloadBlob({
+      accountId: shared.id,
+      blobId: 'cid-1',
+      type: 'image/png',
+      name: 'inline.png',
+    });
+    expect(legacy).toEqual({ base64: 'AQID', type: 'image/png' });
+    expect(transport.download).toHaveBeenLastCalledWith(expect.objectContaining({
+      accountId: 'acct-shared',
+      blobId: 'cid-1',
+    }));
+  });
+
+  it('rejects per-file and aggregate limits before upload', async () => {
+    const { backend, primary, transport } = makeAttachmentBackend();
+
+    await expect(backend.uploadComposeAttachment({
+      accountId: primary.id,
+      blob: new Blob(['01234567890']),
+    })).rejects.toMatchObject({
+      type: 'tooLarge',
+      maxBytes: 10,
+      actualBytes: 11,
+    });
+    await expect(backend.uploadComposeAttachment({
+      accountId: primary.id,
+      blob: new Blob(['small']),
+      totalAttachmentBytes: 21,
+    })).rejects.toMatchObject({
+      type: 'tooLarge',
+      maxBytes: 20,
+      actualBytes: 21,
+    });
+    expect(transport.upload).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an account attachment capability is missing', () => {
+    const { backend, shared, transport } = makeAttachmentBackend();
+    delete transport.session.accounts['acct-shared'].accountCapabilities[JMAP_CAPS.MAIL];
+
+    expect(() => backend.attachmentLimits(shared.id)).toThrow(
+      /maxSizeAttachmentsPerEmail/,
+    );
   });
 });
 
@@ -2447,6 +2709,7 @@ describe('JmapBackend recent recipient import', () => {
       {
         email: 'recent@example.com',
         name: 'Recent',
+        sourceSentAt: Date.UTC(2026, 7, 7, 12),
         uid: expect.stringMatching(/^urn:uuid:/),
       },
     ]);

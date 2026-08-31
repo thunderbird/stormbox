@@ -50,6 +50,11 @@ Stormbox-specific backend.
 - User actions shall enqueue rows in `pending_mutations` and drain
   through the outbox runner. UI code shall not issue ad-hoc protocol
   writes.
+- Ephemeral JMAP upload and download byte transfers that create no
+  durable mail object may use cancellable worker RPCs with progress
+  reporting. They shall not enqueue `pending_mutations` rows. Every
+  `Email/set`, draft replacement, send, and submission mutation shall
+  remain on the outbox path.
 - After a successful protocol write, the local cache shall already
   match the server before the mutation RPC resolves; waiting only for
   an asynchronous push is not sufficient.
@@ -173,7 +178,7 @@ architectural constraints. Feature specs, plans, and tasks must call
 out any conflict before implementation begins. Amendments require an
 update to this file with a brief reason.
 
-**Version**: 1.5.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-08-29
+**Version**: 1.6.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-08-30
 
 <!-- 1.2.0: Mutation Pipeline (IV) now requires every mail operation to
 support both single and batched messages, with the single action as the
@@ -187,4 +192,8 @@ by the composer's font and size menus shipping as native selects whose
 OS popups sat beside the toolbar's styled menus.
 1.5.0: New principle X — stable interactive surfaces. Selection and
 loading updates preserve applicable UI chrome, geometry, and focus
-instead of replacing the entire surface. -->
+instead of replacing the entire surface.
+1.6.0: Mutation Pipeline (IV) now permits ephemeral cancellable JMAP
+upload/download byte-transfer RPCs that create no durable mail object,
+while keeping every Email/set, draft replacement, send, and submission
+mutation on the outbox path. -->
