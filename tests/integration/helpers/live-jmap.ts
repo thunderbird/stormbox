@@ -98,7 +98,12 @@ export async function createLiveTransport(credentials: {
     sessionUrl: `${JMAP_BASE_URL.replace(/\/$/, '')}/.well-known/jmap`,
     getAuthHeader: async () => authHeader,
   });
-  const session = rewriteSessionEndpoints(await transport.fetchSession(), publicOrigin);
+  const fetchSession = transport.fetchSession.bind(transport);
+  transport.fetchSession = async (options = {}) => rewriteSessionEndpoints(
+    await fetchSession(options),
+    publicOrigin,
+  );
+  const session = await transport.fetchSession();
   const accountId = session.primaryAccounts?.[JMAP_CAPS.MAIL];
   if (typeof accountId !== 'string' || !accountId) {
     throw new Error(`JMAP session for ${credentials.email} has no primary mail account`);
