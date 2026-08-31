@@ -15,7 +15,12 @@
  *   'destroy'          Email/set destroy
  *   'send'             Email/set create + EmailSubmission/set with
  *                      onSuccessUpdateEmail moving the email out of
- *                      drafts/outbox into sent
+ *                      drafts/outbox into sent; a request.scheduledAt
+ *                      switches it to a held (FUTURERELEASE) submission
+ *                      filed into the Scheduled mailbox
+ *   'cancelScheduledSend'
+ *                      EmailSubmission/set undoStatus:canceled + an
+ *                      Email/set restoring the message to Drafts
  *   'setMailboxSubscription' / 'createMailbox' / 'updateMailbox' /
  *   'destroyMailbox'   Mailbox/set subscription toggle, create,
  *                      rename/move, and destroy (RFC 8621 §2.5)
@@ -57,6 +62,7 @@ import {
   runDestroyAddressBook,
   runUpdateAddressBook,
 } from './operations/addressbooks';
+import { runCancelScheduledSend } from './operations/cancel-scheduled-send';
 import { runCopyToFolders } from './operations/copy-to-folders';
 import { runCreateMailbox } from './operations/create-mailbox';
 import {
@@ -94,6 +100,7 @@ export const MUTATION_TYPES = Object.freeze({
   COPY_TO_FOLDERS: 'copyToFolders',
   DESTROY: 'destroy',
   SEND: 'send',
+  CANCEL_SCHEDULED_SEND: 'cancelScheduledSend',
   SAVE_DRAFT: 'saveDraft',
   DISCARD_DRAFT: 'discardDraft',
   WHITELIST_SENDER: 'whitelistSender',
@@ -199,6 +206,10 @@ export async function processMutationRow({
       return toProcessResult(
         await runSend({ transport, account, handlers, row, request, useWebSocket }),
       );
+    case MUTATION_TYPES.CANCEL_SCHEDULED_SEND:
+      return runCancelScheduledSend({
+        transport, account, handlers, row, request, useWebSocket,
+      });
     case MUTATION_TYPES.SAVE_DRAFT:
       return runSaveDraft({ transport, account, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.DISCARD_DRAFT:

@@ -224,6 +224,24 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_IDENTITIES]: async ({ accountId }) =>
       syncClient.ensureIdentities(accountId),
 
+    [DB_RPC.SYNC_ENSURE_SETTINGS]: async ({ accountId }) => {
+      const backend = backends.get(accountId);
+      if (!backend) throw accountUnavailableError(accountId);
+      return backend.ensureSettings();
+    },
+
+    [DB_RPC.SYNC_GET_SCHEDULE_CAPABILITY]: async ({ accountId }) => {
+      const backend = backends.get(accountId);
+      if (!backend) {
+        return {
+          supported: false,
+          maxDelayedSend: 0,
+          serverClockReference: null,
+        };
+      }
+      return backend.getScheduleCapability();
+    },
+
     [DB_RPC.SYNC_GET_STORAGE_QUOTA]: async ({ accountId }) => {
       await syncClient.ensureQuota(accountId);
       const row = await handlers[DB_RPC.ACCOUNT_GET]({ accountId });

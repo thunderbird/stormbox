@@ -94,6 +94,7 @@ export const DB_RPC = Object.freeze({
   MESSAGE_BODY_PERSIST_BATCH: 'message.bodyPersistBatch',
   MESSAGE_DESTROY_REMOTE_IDS_BATCH: 'message.destroyRemoteIdsBatch',
   MESSAGE_BODY_READ: 'message.bodyRead',
+  MESSAGE_SET_SCHEDULED: 'message.setScheduled',
 
   FOLDER_MEMBERSHIP_REPLACE: 'folderMembership.replace',
   FOLDER_MEMBERSHIP_REPLACE_MANY: 'folderMembership.replaceMany',
@@ -177,6 +178,8 @@ export const DB_RPC = Object.freeze({
   SYNC_ENSURE_MESSAGE_BODIES: 'sync.ensureMessageBodies',
   SYNC_MESSAGE_BODY_FOR_DISPLAY: 'sync.messageBodyForDisplay',
   SYNC_ENSURE_IDENTITIES: 'sync.ensureIdentities',
+  SYNC_ENSURE_SETTINGS: 'sync.ensureSettings',
+  SYNC_GET_SCHEDULE_CAPABILITY: 'sync.getScheduleCapability',
   SYNC_GET_STORAGE_QUOTA: 'sync.getStorageQuota',
   SYNC_ENSURE_ADDRESSBOOKS: 'sync.ensureAddressbooks',
   SYNC_INVENTORY_ADDRESSBOOK: 'sync.inventoryAddressbook',

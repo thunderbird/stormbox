@@ -1807,6 +1807,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       folderId,
       folderRemoteId,
       sortProp = 'receivedAt',
+      sortAscending = false,
       collapseThreads = false,
       queryState = null,
       canCalculateChanges = null,
@@ -1827,7 +1828,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
       await engine.transaction(async (tx) => {
         const filterJson = JSON.stringify({ inMailbox: folderRemoteId });
-        const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+        const sortJson = JSON.stringify([{ property: sortProp, isAscending: !!sortAscending }]);
         await tx.run(
           `INSERT INTO query_views(
               account_id, view_type, folder_id, filter_json, sort_json,
@@ -2065,6 +2066,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       folderId,
       folderRemoteId,
       sortProp = 'receivedAt',
+      sortAscending = false,
       collapseThreads = false,
       queryState,
       total = null,
@@ -2091,7 +2093,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
       await engine.transaction(async (tx) => {
         const filterJson = JSON.stringify({ inMailbox: folderRemoteId });
-        const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+        const sortJson = JSON.stringify([{ property: sortProp, isAscending: !!sortAscending }]);
         const view = await tx.get(
           `SELECT id FROM query_views
             WHERE account_id = ? AND view_type = 'mailbox-window'
@@ -2247,6 +2249,41 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         [accountId, remoteId],
       ),
 
+    /**
+     * Send Later scheduling state on a normal message row, keyed by the
+     * Email's remote id. A null undoStatus clears both columns (the
+     * schedule resolved and the row is ordinary mail again); otherwise
+     * the status is replaced and the submission id is kept unless a
+     * better one is supplied, because acceptance can be proven before
+     * the record's id is known.
+     */
+    [DB_RPC.MESSAGE_SET_SCHEDULED]: async ({
+      accountId, emailRemoteId, submissionRemoteId = null, undoStatus,
+    }) => {
+      const statuses = new Set(['pending', 'final', 'canceled', 'unknown']);
+      if (undoStatus != null && !statuses.has(undoStatus)) {
+        throw new Error(`message.setScheduled got an unknown undo status: ${undoStatus}`);
+      }
+      const result = undoStatus == null
+        ? await engine.run(
+          `UPDATE messages
+              SET scheduled_submission_remote_id = NULL,
+                  scheduled_undo_status = NULL
+            WHERE account_id = ? AND remote_id = ?`,
+          [accountId, emailRemoteId],
+        )
+        : await engine.run(
+          `UPDATE messages
+              SET scheduled_submission_remote_id =
+                    COALESCE(?, scheduled_submission_remote_id),
+                  scheduled_undo_status = ?
+            WHERE account_id = ? AND remote_id = ?`,
+          [submissionRemoteId, undoStatus, accountId, emailRemoteId],
+        );
+      if (result.changes) broadcaster.touch(TABLE_FAMILIES.MESSAGES);
+      return { updated: result.changes ?? 0 };
+    },
+
     [DB_RPC.MESSAGE_LIST_FOR_THREAD]: async ({ threadId }) =>
       engine.all(
         `SELECT * FROM messages WHERE thread_id = ? ORDER BY received_at ASC, id ASC`,
@@ -2344,7 +2381,9 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * a mutation so a stale UI id (e.g. a row the user double-clicked
      * Delete on) is dropped instead of failing the mutation FK check.
      */
-    [DB_RPC.MESSAGE_FILTER_EXISTING_IDS]: async ({ accountId, ids }) => {
+    [DB_RPC.MESSAGE_FILTER_EXISTING_IDS]: async ({
+      accountId, ids, excludeScheduled = false,
+    }) => {
       const numeric = (Array.isArray(ids) ? ids : [])
         .map(Number)
         .filter((id) => Number.isFinite(id));
@@ -2352,7 +2391,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const placeholders = numeric.map(() => '?').join(',');
       const rows = await engine.all(
         `SELECT id FROM messages
-          WHERE account_id = ? AND id IN (${placeholders})`,
+          WHERE account_id = ? AND id IN (${placeholders})
+            ${excludeScheduled ? 'AND scheduled_undo_status IS NULL' : ''}`,
         [accountId, ...numeric],
       );
       return rows.map((r) => Number(r.id));
@@ -5600,15 +5640,26 @@ async function rebuildRecipientUsage(
   return { scanned: messages.length, ranked: entries.length };
 }
 
+/**
+ * The Email/query sort spec a JmapViewSort value stands for. The JSON
+ * string of this spec is part of the query_views identity, so writers
+ * (FOLDER_WINDOW_* batches) and readers must agree on it exactly.
+ */
+function mailboxViewSortSpec(sort) {
+  if (sort === 'sent') return { property: 'sentAt', isAscending: false };
+  // Soonest scheduled send first.
+  if (sort === 'scheduled') return { property: 'sentAt', isAscending: true };
+  return { property: 'receivedAt', isAscending: false };
+}
+
 async function loadMailboxQueryView(engine, { accountId, folderId, sort = 'received' }) {
   const folder = await engine.get(
     `SELECT id, remote_id FROM folders WHERE id = ? AND account_id = ?`,
     [folderId, accountId],
   );
   if (!folder?.remote_id) return null;
-  const sortProp = sort === 'sent' ? 'sentAt' : 'receivedAt';
   const filterJson = JSON.stringify({ inMailbox: folder.remote_id });
-  const sortJson = JSON.stringify([{ property: sortProp, isAscending: false }]);
+  const sortJson = JSON.stringify([mailboxViewSortSpec(sort)]);
   return engine.get(
     `SELECT *
        FROM query_views

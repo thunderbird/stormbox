@@ -250,4 +250,69 @@ describe('fetchEmailBodies', () => {
     expect(Number(att.is_attachment)).toBe(1);
     expect(att.name).toBe('doc.pdf');
   });
+
+  it('classifies inline parts by disposition and falls back by list membership', async () => {
+    // Pins the reviewed classification rules: is_inline comes from the
+    // part's own disposition, and a body value with no readable media
+    // type is HTML only when it appears exclusively in htmlBody.
+    const transport = new MockTransport();
+    transport.handle('Email/get', () => ({
+      list: [{
+        id: 'e-1',
+        blobId: 'blob-e-1',
+        threadId: 'thr-e-1',
+        mailboxIds: { 'mb-inbox': true },
+        keywords: {},
+        bodyStructure: {
+          partId: '0',
+          type: 'multipart/related',
+          subParts: [
+            // No type on the HTML part: forces the fallback branch.
+            { partId: '1' },
+            {
+              partId: '2',
+              type: 'image/png',
+              name: 'logo.png',
+              disposition: 'inline',
+              cid: '<logo@example.com>',
+              size: 200,
+            },
+          ],
+        },
+        textBody: [],
+        htmlBody: [{ partId: '1' }],
+        attachments: [{ partId: '2', type: 'image/png', name: 'logo.png' }],
+        bodyValues: { 1: { value: '<p>hi <img src="cid:logo@example.com"></p>' } },
+      }],
+      state: 'es',
+    }));
+    await fetchEmailBodies({ transport, account, handlers, remoteIds: ['e-1'] });
+
+    const image = await engine.get(
+      `SELECT is_inline, is_attachment, cid FROM body_parts
+        WHERE message_id = (SELECT id FROM messages WHERE remote_id = ?)
+          AND part_id = ?`,
+      ['e-1', '2'],
+    );
+    expect(Number(image.is_inline)).toBe(1);
+    expect(Number(image.is_attachment)).toBe(1);
+    // Angle brackets are stripped so cid: references resolve directly.
+    expect(image.cid).toBe('logo@example.com');
+
+    const html = await engine.get(
+      `SELECT is_inline FROM body_parts
+        WHERE message_id = (SELECT id FROM messages WHERE remote_id = ?)
+          AND part_id = ?`,
+      ['e-1', '1'],
+    );
+    expect(Number(html.is_inline)).toBe(0);
+
+    const value = await engine.get(
+      `SELECT kind FROM body_values
+        WHERE message_id = (SELECT id FROM messages WHERE remote_id = ?)
+          AND part_id = ?`,
+      ['e-1', '1'],
+    );
+    expect(value.kind).toBe('html');
+  });
 });
