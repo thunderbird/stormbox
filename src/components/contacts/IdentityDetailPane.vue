@@ -17,6 +17,7 @@ import {
   IDENTITY_ERROR,
   type IdentityError,
 } from '../../constants/identity-errors';
+import { useDetailPaneEditor } from '../../composables/useDetailPaneEditor';
 import {
   type IdentityCreateInput,
   type IdentityUpdateInput,
@@ -97,9 +98,6 @@ const signatureHtml = ref('');
 const signatureText = ref('');
 const signatureTouched = ref(false);
 const operationId = ref(createIdentityOperationId());
-const initialSerialized = ref('');
-const localError = ref<string | null>(null);
-const saveAttempted = ref(false);
 
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
 const title = computed(() => {
@@ -156,10 +154,7 @@ function formSnapshot(): string {
   });
 }
 
-const dirty = computed(() =>
-  editing.value && formSnapshot() !== initialSerialized.value);
-
-function resetEditor(): void {
+function resetForm(): void {
   const identity = props.mode === 'create' ? null : props.identity;
   originalName.value = identity?.name ?? '';
   name.value = identity?.name ?? '';
@@ -173,18 +168,30 @@ function resetEditor(): void {
   signatureText.value = identity?.text_signature ?? '';
   signatureTouched.value = false;
   operationId.value = createIdentityOperationId();
-  initialSerialized.value = formSnapshot();
-  saveAttempted.value = false;
-  localError.value = null;
-  emit('dirtyChange', false);
-  emit('stateChange', null);
 }
 
-watch(
-  [() => props.mode, () => props.identity?.id],
-  resetEditor,
-  { immediate: true },
-);
+const {
+  beginSave,
+  localError,
+  markSaved,
+  reportFailure,
+  saveAttempted,
+} = useDetailPaneEditor({
+  changeSource: () => [
+    name.value,
+    email.value,
+    replyToRows.value,
+    bccRows.value,
+    signatureHtml.value,
+    signatureText.value,
+  ] as const,
+  editing,
+  emitDirtyChange: (value) => emit('dirtyChange', value),
+  emitStateChange: (state) => emit('stateChange', state),
+  resetForm,
+  resetSource: () => `${props.mode}:${props.identity?.id ?? ''}`,
+  snapshot: formSnapshot,
+});
 
 onMounted(() => {
   if (editing.value) nameEl.value?.focus();
@@ -197,11 +204,6 @@ watch(
   },
   { flush: 'post' },
 );
-
-watch(dirty, (value) => {
-  emit('dirtyChange', value);
-  if (value) emit('stateChange', null);
-});
 
 function rowErrors(
   rows: IdentityAddressFormRow[],
@@ -255,17 +257,6 @@ watch(hasValidationErrors, (invalid) => {
   if (invalid) emit('stateChange', 'validation-error');
   else if (editing.value) emit('stateChange', null);
 });
-
-watch(
-  [name, email, replyToRows, bccRows, signatureHtml, signatureText],
-  () => {
-    if (!saveAttempted.value && !localError.value) return;
-    saveAttempted.value = false;
-    localError.value = null;
-    emit('stateChange', null);
-  },
-  { deep: true },
-);
 
 function handleSignatureUpdate(content: RichTextUpdate): void {
   const containsImage = /<img\b/iu.test(content.html);
@@ -333,10 +324,12 @@ const validationErrors = new Set<IdentityError>([
 
 async function save(): Promise<boolean> {
   if (!editing.value || contactsStore.saving) return false;
-  saveAttempted.value = true;
+  beginSave();
   if (hasValidationErrors.value) {
-    localError.value = 'Correct the highlighted identity fields.';
-    emit('stateChange', 'validation-error');
+    reportFailure(
+      'validation-error',
+      'Correct the highlighted identity fields.',
+    );
     return false;
   }
 
@@ -357,21 +350,17 @@ async function save(): Promise<boolean> {
     };
     result = await contactsStore.updateIdentity(input);
   } else {
-    localError.value = 'This identity is no longer available.';
-    emit('stateChange', 'save-error');
+    reportFailure('save-error', 'This identity is no longer available.');
     return false;
   }
   if (result.ok === false) {
-    emit(
-      'stateChange',
+    reportFailure(
       validationErrors.has(result.error) ? 'validation-error' : 'save-error',
     );
     return false;
   }
 
-  initialSerialized.value = formSnapshot();
-  emit('dirtyChange', false);
-  emit('stateChange', null);
+  markSaved();
   emit('saved', `identity:${result.identity.id}`);
   return true;
 }

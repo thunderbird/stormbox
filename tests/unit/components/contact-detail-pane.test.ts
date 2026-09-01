@@ -586,6 +586,7 @@ describe('ContactDetailPane', () => {
       .toBe('Enter an email address or remove this email row.');
     await wrapper.get('button[aria-label="Remove email"]').trigger('click');
     expect(wrapper.find('.contact-resource__error').exists()).toBe(false);
+    expect(wrapper.emitted('stateChange')?.at(-1)).toEqual([null]);
   });
 
   it('connects every repeated-row error and focuses the first invalid field', async () => {
@@ -757,10 +758,13 @@ describe('IdentityDetailPane', () => {
     await nextTick();
     expect(document.activeElement).toBe(wrapper.get('input[autocomplete="name"]').element);
 
+    await wrapper.get('input[autocomplete="name"]').setValue('Local alias');
     outside.focus();
     await wrapper.setProps({ identity: { ...identity } });
     await nextTick();
     expect(document.activeElement).toBe(outside);
+    expect(wrapper.get('input[autocomplete="name"]').element)
+      .toHaveProperty('value', 'Local alias');
 
     await wrapper.setProps({ identity: null, mode: 'create' });
     await nextTick();
@@ -787,6 +791,7 @@ describe('IdentityDetailPane', () => {
     await wrapper.get('input[autocomplete="name"]').setValue('Still editing');
     await nextTick();
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.emitted('stateChange')?.at(-1)).toEqual([null]);
   });
 
   it('uses the shared rich editor and safely initializes a text-only signature', () => {
