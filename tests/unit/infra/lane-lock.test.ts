@@ -33,17 +33,21 @@ function writeLock(fields: Record<string, unknown>) {
   }));
 }
 
+/** The test runners whose processes the lock recognises as live lanes. */
+type Runner = 'playwright' | 'vitest';
+const RUNNERS: Runner[] = ['playwright', 'vitest'];
+
 /**
  * A lane in its own process, which is the only way to test exclusion between
- * lanes: a holder is recognised by being a live playwright run, and one
- * process cannot be two of those.
+ * lanes: a holder is recognised by being a live playwright or vitest run, and
+ * one process cannot be two of those.
  *
- * The script is named for playwright so the running command says so, exactly
- * as `node …/playwright test` does.
+ * The script is named for its runner so the running command says so, exactly
+ * as `node …/playwright test` and `node …/vitest run` do.
  */
-async function startLane({ hold }: { hold: number }) {
+async function startLane({ hold, runner }: { hold: number; runner: Runner }) {
   const dir = path.dirname(lockPath);
-  const script = path.join(dir, 'playwright-lane.mjs');
+  const script = path.join(dir, `${runner}-lane.mjs`);
   const helper = path.resolve(__dirname, '../../e2e/helpers/lane-lock.js');
   fs.writeFileSync(script, `
     import { acquireLaneLock, releaseLaneLock } from ${JSON.stringify(helper)};
@@ -106,8 +110,8 @@ describe('e2e lane lock', () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
-  it('refuses a second lane while the first is running', async () => {
-    const holder = await startLane({ hold: 5_000 });
+  it.each(RUNNERS)('refuses a second lane while a %s lane is running', async (runner) => {
+    const holder = await startLane({ hold: 5_000, runner });
 
     try {
       const { acquireLaneLock } = await loadLock();
@@ -119,23 +123,52 @@ describe('e2e lane lock', () => {
     }
   });
 
-  it('admits only one of two lanes racing for an abandoned lock', async () => {
-    // The case the first version of this lock got wrong: both lanes find a
-    // dead holder, both take it over, and both run against one mailbox. It
-    // takes two real processes to show — inside one, neither can tell the
-    // other is alive.
-    writeLock({ pid: DEAD_PID });
+  it.each([
+    { holder: 'playwright', challenger: 'vitest' },
+    { holder: 'vitest', challenger: 'playwright' },
+  ] as const)(
+    'refuses a $challenger lane while a $holder lane is running',
+    async ({ holder, challenger }) => {
+      // The integration suites and the browser specs share one Stalwart
+      // account, so each runner has to see the other's lane as live.
+      const first = await startLane({ hold: 5_000, runner: holder });
 
-    const lanes = [await startLane({ hold: 800 }), await startLane({ hold: 800 })];
-    const outcomes = await Promise.all(lanes.map((lane) => lane.settled()));
+      try {
+        const second = await startLane({ hold: 800, runner: challenger });
+        const outcome = await second.settled();
+        expect(outcome.held, outcome.message).toBe(false);
+        expect(outcome.message).toMatch(/Another e2e lane is running: pid/);
+      } finally {
+        await first.stop();
+      }
+    },
+  );
 
-    expect(
-      outcomes.filter((outcome) => outcome.held),
-      `exactly one lane may hold the lock, got ${JSON.stringify(outcomes)}`,
-    ).toHaveLength(1);
-    expect(outcomes.find((outcome) => !outcome.held)?.message)
-      .toMatch(/Another e2e lane is running/);
-  });
+  it.each([
+    { runners: ['playwright', 'playwright'] },
+    { runners: ['vitest', 'vitest'] },
+    { runners: ['playwright', 'vitest'] },
+  ] as const)(
+    'admits only one of two lanes ($runners) racing for an abandoned lock',
+    async ({ runners }) => {
+      // The case the first version of this lock got wrong: both lanes find a
+      // dead holder, both take it over, and both run against one mailbox. It
+      // takes two real processes to show — inside one, neither can tell the
+      // other is alive.
+      writeLock({ pid: DEAD_PID });
+
+      const lanes: Array<Awaited<ReturnType<typeof startLane>>> = [];
+      for (const runner of runners) lanes.push(await startLane({ hold: 800, runner }));
+      const outcomes = await Promise.all(lanes.map((lane) => lane.settled()));
+
+      expect(
+        outcomes.filter((outcome) => outcome.held),
+        `exactly one lane may hold the lock, got ${JSON.stringify(outcomes)}`,
+      ).toHaveLength(1);
+      expect(outcomes.find((outcome) => !outcome.held)?.message)
+        .toMatch(/Another e2e lane is running/);
+    },
+  );
 
   it('takes over from a lane that was killed', async () => {
     writeLock({ pid: DEAD_PID });

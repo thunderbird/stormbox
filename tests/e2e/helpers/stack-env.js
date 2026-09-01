@@ -25,6 +25,10 @@ export const OIDC_ISSUER =
 export const OIDC_CLIENT_ID =
   process.env.OIDC_CLIENT_ID ?? 'thunderbird-stormbox-test';
 
+/** Fault-injecting WebSocket proxy the browser reaches Stalwart through. */
+export const WS_PROXY_URL =
+  process.env.WS_PROXY_URL ?? 'http://127.0.0.1:8787';
+
 // e2e tests run against a dedicated, isolated account so the
 // developer's own dev account (`admin@example.org`) doesn't get
 // polluted with seed mail, sweep deletions, or stray test artifacts.
