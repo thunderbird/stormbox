@@ -92,6 +92,9 @@ describe('send outcomes', () => {
 
     expect(outcomeFor('serverUnavailable').outcome).toBe('rejectedRetryable');
     expect(outcomeFor('forbidden').outcome).toBe('rejectedTerminal');
+    // A rejected credential is not on the send allowlist either, so it
+    // must not hold compose's sending state through the backoff budget.
+    expect(outcomeFor('authenticationFailed').outcome).toBe('rejectedTerminal');
 
     const noResponse = extractMethodErrorById({ methodResponses: [] }, 's1');
     expect(
