@@ -378,6 +378,33 @@ describe('JMAP FileNode JSON transport', () => {
     expect(terminal).toHaveBeenCalledOnce();
   });
 
+  it('retries the failures its caller names', async () => {
+    const unavailable = vi.fn(async () => ({
+      ok: false as const,
+      error: { type: 'serverUnavailable' as const },
+    }));
+    await expect(retryFileNodeWrite(unavailable)).resolves.toEqual({
+      ok: false,
+      error: { type: 'serverUnavailable' },
+    });
+    expect(unavailable).toHaveBeenCalledOnce();
+
+    unavailable.mockClear();
+    await expect(retryFileNodeWrite(unavailable, isRetryableFileNodeDocumentError))
+      .resolves.toEqual({
+        ok: false,
+        error: { type: 'serverUnavailable' },
+      });
+    expect(unavailable).toHaveBeenCalledTimes(3);
+
+    const exists = vi.fn(async () => ({
+      ok: false as const,
+      error: { type: 'alreadyExists' as const },
+    }));
+    await retryFileNodeWrite(exists, isRetryableFileNodeDocumentError);
+    expect(exists).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['method', 'authenticationFailed', 401, true, false],
     ['method', 'authorizationFailed', 403, false, true],
