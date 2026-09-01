@@ -44,6 +44,17 @@ describe('compose identity resolution', () => {
       identity({ id: 1, email: 'alias@example.com', may_delete: 1 }),
       identity({ id: 2, email: 'primary@example.com', may_delete: 0 }),
     ], {
+      accountPrimaryEmail: 'alias@example.com',
+      primaryIdentityRemoteId: 'removed',
+    })).toBe(1);
+  });
+
+  it('uses the account primary address when every identity is deletable', () => {
+    expect(resolveComposeIdentityIndex([
+      identity({ id: 2, remote_id: 'alias', email: 'alias@example.com', may_delete: 1 }),
+      identity({ id: 1, remote_id: 'account', email: 'primary@example.com', may_delete: 1 }),
+    ], {
+      accountPrimaryEmail: 'PRIMARY@example.com',
       primaryIdentityRemoteId: 'removed',
     })).toBe(1);
   });

@@ -486,6 +486,38 @@ describe('compose-store from identity selection', () => {
     expect(composeStore.fromIdentity?.email).toBe('primary@thundermail.com');
   });
 
+  it('keeps the account identity selected when a deletable alias sorts first', async () => {
+    const accountIdentity = identity({
+      id: 1,
+      remote_id: 'account-primary',
+      email: 'primary@thundermail.com',
+      may_delete: 1,
+    });
+    const { composeStore, repo } = await attachedStore({
+      identities: [accountIdentity],
+    });
+    useSettingsStore().settings = {
+      primaryIdentityRemoteId: 'removed-primary',
+    };
+
+    composeStore.open();
+    expect(composeStore.fromIdentity?.remote_id).toBe('account-primary');
+
+    repo.setIdentities([
+      identity({
+        id: 2,
+        remote_id: 'alphabetic-alias',
+        email: 'alias@example.com',
+        may_delete: 1,
+      }),
+      accountIdentity,
+    ]);
+    await composeStore.refreshIdentities();
+    composeStore.open();
+
+    expect(composeStore.fromIdentity?.remote_id).toBe('account-primary');
+  });
+
   it('opens new compose windows from the client-selected Primary identity', async () => {
     const { composeStore } = await attachedStore({
       identities: [
@@ -838,6 +870,50 @@ describe('compose-store identity defaults and provenance', () => {
       { name: 'Archive', email: 'archive@example.com' },
       { email: 'audit@example.com' },
     ]);
+  });
+
+  it('preserves automatic and manual Bcc through a paused identity refresh', async () => {
+    const alias = identity({
+      id: 1,
+      remote_id: 'alias',
+      email: 'alias@example.com',
+      bcc: [{ name: 'Alias archive', email: 'alias-archive@example.com' }],
+    });
+    const protectedIdentity = identity({
+      id: 2,
+      remote_id: 'protected',
+      email: 'protected@example.com',
+      bcc: [{ name: 'Protected archive', email: 'protected-archive@example.com' }],
+    });
+    const { composeStore, repo } = await storeWithIdentityDefaults([
+      alias,
+      protectedIdentity,
+    ]);
+    const sessionId = composeStore.open();
+    composeStore.setRecipientEntries('bcc', [
+      { name: 'Alias archive', email: 'alias-archive@example.com' },
+      { email: 'manual@example.com' },
+    ], sessionId);
+
+    let finishRefresh!: (identities: IdentityRow[]) => void;
+    repo.listIdentities.mockImplementationOnce(() =>
+      new Promise<IdentityRow[]>((resolve) => {
+        finishRefresh = resolve;
+      }));
+    const refresh = composeStore.refreshIdentities();
+
+    composeStore.selectFromIndex(1, sessionId);
+    composeStore.selectFromIndex(0, sessionId);
+    finishRefresh([protectedIdentity, alias]);
+    await refresh;
+
+    expect(composeStore.sessionById(sessionId)?.draft.bcc).toEqual([
+      { name: 'Alias archive', email: 'alias-archive@example.com' },
+      { email: 'manual@example.com' },
+    ]);
+    expect(composeStore.identityForSession(
+      composeStore.sessionById(sessionId)!,
+    )?.remote_id).toBe('alias');
   });
 
   it('does not apply the Identity storage limit to the expanded compose body', async () => {
