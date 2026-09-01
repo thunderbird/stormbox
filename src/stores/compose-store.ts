@@ -28,12 +28,17 @@ import type {
   MessageRow,
 } from '../types';
 import type {
-  AttachmentLimits,
-  BlobTransferProgress,
   Repository,
   ScheduleCapability,
 } from '../db/repository';
 import { TABLE_FAMILIES } from '../db/protocol';
+import {
+  createComposeAttachmentController,
+  type AttachmentPreflightObligation,
+  type ComposeAttachment,
+  type ComposeAttachmentSource,
+  type ComposeAttachmentStatus,
+} from './compose-attachments';
 import {
   findMatchingIdentityIndex,
   findReplyIdentityIndex,
@@ -87,32 +92,7 @@ export const UNCHECKPOINTED_ATTACHMENT_MESSAGE =
   'Some attachments have not reached the draft. Wait for uploads to finish, '
   + 'then retry or remove failed attachments.';
 
-export type ComposeAttachmentSource = 'picker' | 'paste' | 'draft';
-export type ComposeAttachmentStatus = 'uploading' | 'ready' | 'failed';
-
-export interface ComposeAttachment {
-  clientId: string;
-  name: string;
-  type: string;
-  size: number;
-  source: ComposeAttachmentSource;
-  status: ComposeAttachmentStatus;
-  uploadBlobId: string | null;
-  canonicalBlobId: string | null;
-  partId: string | null;
-  error: string | null;
-  progress: number;
-}
-
-interface AttachmentPreflightObligation {
-  id: string;
-  accountId: number;
-}
-
-const attachmentFiles = new Map<string, File>();
-const attachmentControllers = new Map<string, AbortController>();
-const attachmentAttempts = new Map<string, number>();
-const attachmentBlobFailures = new Set<string>();
+export type { ComposeAttachment, ComposeAttachmentSource, ComposeAttachmentStatus };
 
 /**
  * Text a user committed as a recipient that is not a readable address.
@@ -285,14 +265,6 @@ export function isExpandedPresentation(presentation: ComposePresentation): boole
 
 function makeSessionId(): string {
   return `compose-${randomToken()}`;
-}
-
-function makeAttachmentClientId(): string {
-  return `attachment-${randomToken()}`;
-}
-
-function makeAttachmentPreflightId(): string {
-  return `preflight-${makeAttachmentClientId()}`;
 }
 
 function cloneDraft(prefill: DraftPrefill = {}): Draft {
@@ -590,11 +562,25 @@ export const useComposeStore = defineStore('compose', () => {
     queued: boolean;
     blocked: boolean;
   }>();
-  const attachmentUploadRuntime = new Map<string, {
-    active: number;
-    concurrency: number;
-    queue: Array<{ clientId: string; totalAttachmentBytes: number }>;
-  }>();
+  const attachments = createComposeAttachmentController({
+    sessionById,
+    sessions: () => sessions.value,
+    activeSessionId: () => activeSessionId.value,
+    accountId: () => authStore.accountId,
+    repo: () => repo,
+    touchSession,
+    saveDraft,
+    unblockAutosave: (sessionId) => {
+      runtimeFor(sessionId).blocked = false;
+    },
+  });
+  const {
+    isAttachmentBusy,
+    addAttachments,
+    retryAttachment,
+    cancelAttachment,
+    removeAttachment,
+  } = attachments;
   const AUTOSAVE_DEBOUNCE_MS = 2_000;
   const AUTOSAVE_MAX_DELAY_MS = 30_000;
 
@@ -625,30 +611,7 @@ export const useComposeStore = defineStore('compose', () => {
     const runtime = autosaveRuntime.get(sessionId);
     if (runtime) runtime.blocked = true;
     autosaveRuntime.delete(sessionId);
-    const session = sessionById(sessionId);
-    session?.attachmentPreflights.splice(0);
-    for (const attachment of session?.attachments ?? []) {
-      attachmentAttempts.set(
-        attachment.clientId,
-        (attachmentAttempts.get(attachment.clientId) ?? 0) + 1,
-      );
-      attachmentControllers.get(attachment.clientId)?.abort();
-      attachmentControllers.delete(attachment.clientId);
-      attachmentFiles.delete(attachment.clientId);
-      attachmentAttempts.delete(attachment.clientId);
-      attachmentBlobFailures.delete(attachment.clientId);
-    }
-    attachmentUploadRuntime.delete(sessionId);
-  }
-
-  function clearAttachmentPreflightsOutsideAccount(accountId: number | null): void {
-    for (const session of sessions.value) {
-      for (let index = session.attachmentPreflights.length - 1; index >= 0; index -= 1) {
-        if (session.attachmentPreflights[index].accountId !== accountId) {
-          session.attachmentPreflights.splice(index, 1);
-        }
-      }
-    }
+    attachments.disposeSession(sessionId);
   }
 
   async function attach(): Promise<void> {
@@ -668,7 +631,7 @@ export const useComposeStore = defineStore('compose', () => {
     stopAccountWatch = watch(
       () => authStore.accountId,
       async (newId) => {
-        clearAttachmentPreflightsOutsideAccount(newId);
+        attachments.clearPreflightsOutsideAccount(newId);
         if (newId != null) {
           await Promise.all([
             refreshAccount(),
@@ -721,7 +684,7 @@ export const useComposeStore = defineStore('compose', () => {
     Object.assign(fallbackRejectedRecipients, emptyRejectedRecipients());
     fallbackStatus.value = COMPOSE_STATE.IDLE;
     fallbackError.value = null;
-    attachmentBlobFailures.clear();
+    attachments.reset();
     clearNotice();
   }
 
@@ -1705,341 +1668,6 @@ export const useComposeStore = defineStore('compose', () => {
     scheduleAutosave(sessionId);
   }
 
-  function uploadRuntimeFor(sessionId: string) {
-    let runtime = attachmentUploadRuntime.get(sessionId);
-    if (!runtime) {
-      runtime = { active: 0, concurrency: 1, queue: [] };
-      attachmentUploadRuntime.set(sessionId, runtime);
-    }
-    return runtime;
-  }
-
-  function beginAttachmentPreflight(
-    session: ComposeSession,
-    accountId: number,
-  ): string {
-    const id = makeAttachmentPreflightId();
-    session.attachmentPreflights.push({ id, accountId });
-    return id;
-  }
-
-  function finishAttachmentPreflight(session: ComposeSession, id: string): void {
-    const index = session.attachmentPreflights.findIndex((preflight) => preflight.id === id);
-    if (index >= 0) session.attachmentPreflights.splice(index, 1);
-  }
-
-  function isAttachmentBusy(
-    sessionId: string | null = activeSessionId.value,
-  ): boolean {
-    const session = sessionById(sessionId);
-    return !!session && (
-      session.attachmentPreflights.length > 0
-      || session.attachments.some((attachment) => attachment.status === 'uploading')
-    );
-  }
-
-  function attachmentLimitError(
-    files: readonly File[],
-    limits: AttachmentLimits,
-    existingBytes: number,
-  ): string | null {
-    if (![limits.maxSizeUpload, limits.maxSizeAttachmentsPerEmail, limits.maxConcurrentUpload]
-      .every((value) => Number.isSafeInteger(value) && value > 0)) {
-      return 'The server did not provide valid attachment limits. Nothing was uploaded.';
-    }
-    const oversized = files.find((file) => file.size > limits.maxSizeUpload);
-    if (oversized) {
-      return `"${oversized.name || 'attachment'}" is ${oversized.size} bytes; `
-        + `the server upload limit is ${limits.maxSizeUpload} bytes.`;
-    }
-    const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
-    const totalBytes = existingBytes + selectedBytes;
-    if (!Number.isSafeInteger(totalBytes)) {
-      return 'The selected attachments are too large to measure safely.';
-    }
-    if (totalBytes > limits.maxSizeAttachmentsPerEmail) {
-      return `These attachments total ${totalBytes} bytes; the server message limit is `
-        + `${limits.maxSizeAttachmentsPerEmail} bytes. Nothing was uploaded.`;
-    }
-    return null;
-  }
-
-  function attachmentTotalBytes(session: ComposeSession): number {
-    return session.attachments.reduce((total, attachment) => total + attachment.size, 0);
-  }
-
-  function hasAttachmentBlobFailure(session: ComposeSession): boolean {
-    return session.attachments.some((attachment) =>
-      attachmentBlobFailures.has(attachment.clientId));
-  }
-
-  function unblockRecoveredAttachmentSave(session: ComposeSession): void {
-    if (hasAttachmentBlobFailure(session) || session.failedSaveMutationId != null) return;
-    runtimeFor(session.id).blocked = false;
-  }
-
-  function uploadErrorMessage(error: any, attachment: ComposeAttachment): string {
-    if (error?.name === 'AbortError' || error?.type === 'cancelled') {
-      return 'Upload canceled.';
-    }
-    return error?.message
-      ? `Upload failed: ${error.message}`
-      : `Could not upload "${sanitizeAttachmentFilename(attachment.name)}".`;
-  }
-
-  function updateAttachmentProgress(
-    sessionId: string,
-    clientId: string,
-    attempt: number,
-    progress: BlobTransferProgress,
-  ): void {
-    if (attachmentAttempts.get(clientId) !== attempt) return;
-    const attachment = sessionById(sessionId)?.attachments
-      .find((candidate) => candidate.clientId === clientId);
-    if (!attachment || attachment.status !== 'uploading') return;
-    const total = progress.total && progress.total > 0 ? progress.total : attachment.size;
-    attachment.progress = total > 0
-      ? Math.min(100, Math.max(0, Math.round((progress.loaded / total) * 100)))
-      : progress.phase === 'complete' ? 100 : 0;
-  }
-
-  async function runAttachmentUpload(
-    sessionId: string,
-    clientId: string,
-    totalAttachmentBytes: number,
-  ): Promise<void> {
-    const runtime = uploadRuntimeFor(sessionId);
-    const session = sessionById(sessionId);
-    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
-    const file = attachmentFiles.get(clientId);
-    if (!session || !attachment || attachment.status !== 'uploading' || !file) return;
-    runtime.active += 1;
-    const attempt = (attachmentAttempts.get(clientId) ?? 0) + 1;
-    attachmentAttempts.set(clientId, attempt);
-    const controller = new AbortController();
-    attachmentControllers.set(clientId, controller);
-    try {
-      if (!repo || authStore.accountId == null) {
-        throw new Error('Not connected.');
-      }
-      const result = await repo.uploadComposeAttachment(
-        authStore.accountId,
-        file,
-        {
-          type: attachment.type,
-          totalAttachmentBytes,
-          signal: controller.signal,
-          onProgress: (progress) =>
-            updateAttachmentProgress(sessionId, clientId, attempt, progress),
-        },
-      );
-      const current = sessionById(sessionId);
-      const currentAttachment = current?.attachments
-        .find((candidate) => candidate.clientId === clientId);
-      if (!currentAttachment
-          || attachmentAttempts.get(clientId) !== attempt
-          || currentAttachment.status !== 'uploading') return;
-      currentAttachment.uploadBlobId = result.blobId;
-      currentAttachment.type = result.type || currentAttachment.type;
-      currentAttachment.size = result.size;
-      currentAttachment.status = 'ready';
-      currentAttachment.error = null;
-      currentAttachment.progress = 100;
-      attachmentBlobFailures.delete(clientId);
-      unblockRecoveredAttachmentSave(current);
-      void saveDraft(sessionId);
-    } catch (uploadError: any) {
-      const currentAttachment = sessionById(sessionId)?.attachments
-        .find((candidate) => candidate.clientId === clientId);
-      if (!currentAttachment
-          || attachmentAttempts.get(clientId) !== attempt
-          || currentAttachment.status !== 'uploading') return;
-      currentAttachment.status = 'failed';
-      currentAttachment.error = uploadErrorMessage(uploadError, currentAttachment);
-    } finally {
-      if (attachmentControllers.get(clientId) === controller) {
-        attachmentControllers.delete(clientId);
-      }
-      runtime.active = Math.max(0, runtime.active - 1);
-      if (attachmentUploadRuntime.get(sessionId) === runtime) {
-        pumpAttachmentUploads(sessionId);
-      }
-    }
-  }
-
-  function pumpAttachmentUploads(sessionId: string): void {
-    const runtime = attachmentUploadRuntime.get(sessionId);
-    if (!runtime) return;
-    while (runtime.active < runtime.concurrency && runtime.queue.length > 0) {
-      const next = runtime.queue.shift()!;
-      const attachment = sessionById(sessionId)?.attachments
-        .find((candidate) => candidate.clientId === next.clientId);
-      if (!attachment || attachment.status !== 'uploading' || !attachmentFiles.has(next.clientId)) {
-        continue;
-      }
-      void runAttachmentUpload(sessionId, next.clientId, next.totalAttachmentBytes);
-    }
-  }
-
-  async function addAttachments(
-    filesInput: readonly File[] | FileList,
-    source: Exclude<ComposeAttachmentSource, 'draft'> = 'picker',
-    sessionId: string | null = activeSessionId.value,
-  ): Promise<boolean> {
-    const files = Array.from(filesInput);
-    if (files.length === 0) return true;
-    const session = sessionById(sessionId);
-    const accountId = authStore.accountId;
-    if (!session || !repo || accountId == null) return false;
-    const preflightId = beginAttachmentPreflight(session, accountId);
-    try {
-      let limits: AttachmentLimits;
-      try {
-        limits = await repo.getAttachmentLimits(accountId);
-      } catch (limitError: any) {
-        if (sessionById(session.id) === session && authStore.accountId === accountId) {
-          session.error = limitError?.message
-            ? `Could not read attachment limits: ${limitError.message}`
-            : 'Could not read attachment limits.';
-        }
-        return false;
-      }
-      if (sessionById(session.id) !== session || authStore.accountId !== accountId) return false;
-      const limitError = attachmentLimitError(files, limits, attachmentTotalBytes(session));
-      if (limitError) {
-        session.error = limitError;
-        return false;
-      }
-      const totalAttachmentBytes = attachmentTotalBytes(session)
-        + files.reduce((total, file) => total + file.size, 0);
-      const added = files.map<ComposeAttachment>((file) => {
-        const clientId = makeAttachmentClientId();
-        attachmentFiles.set(clientId, file);
-        return {
-          clientId,
-          name: file.name || 'attachment',
-          type: file.type || 'application/octet-stream',
-          size: file.size,
-          source,
-          status: 'uploading',
-          uploadBlobId: null,
-          canonicalBlobId: null,
-          partId: null,
-          error: null,
-          progress: 0,
-        };
-      });
-      session.attachments.push(...added);
-      session.error = null;
-      touchSession(session.id);
-      const runtime = uploadRuntimeFor(session.id);
-      runtime.concurrency = limits.maxConcurrentUpload;
-      runtime.queue.push(...added.map((attachment) => ({
-        clientId: attachment.clientId,
-        totalAttachmentBytes,
-      })));
-      pumpAttachmentUploads(session.id);
-      return true;
-    } finally {
-      finishAttachmentPreflight(session, preflightId);
-    }
-  }
-
-  async function retryAttachment(
-    clientId: string,
-    sessionId: string | null = activeSessionId.value,
-  ): Promise<boolean> {
-    const session = sessionById(sessionId);
-    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
-    const file = attachmentFiles.get(clientId);
-    const accountId = authStore.accountId;
-    if (!session || !attachment || attachment.status !== 'failed') return false;
-    if (!file) {
-      attachment.error = 'The original file is no longer available. Remove it and select it again.';
-      return false;
-    }
-    if (!repo || accountId == null) {
-      attachment.error = 'Could not retry while disconnected.';
-      return false;
-    }
-    const preflightId = beginAttachmentPreflight(session, accountId);
-    try {
-      const limits = await repo.getAttachmentLimits(accountId);
-      if (sessionById(session.id) !== session || authStore.accountId !== accountId) return false;
-      const limitError = attachmentLimitError([file], limits, attachmentTotalBytes(session) - file.size);
-      if (limitError) {
-        attachment.error = limitError;
-        return false;
-      }
-      attachment.status = 'uploading';
-      attachment.error = null;
-      attachment.progress = 0;
-      attachment.uploadBlobId = null;
-      const runtime = uploadRuntimeFor(session.id);
-      runtime.concurrency = limits.maxConcurrentUpload;
-      runtime.queue.push({
-        clientId,
-        totalAttachmentBytes: attachmentTotalBytes(session),
-      });
-      pumpAttachmentUploads(session.id);
-      return true;
-    } catch (limitError: any) {
-      if (sessionById(session.id) === session && authStore.accountId === accountId) {
-        attachment.error = limitError?.message
-          ? `Could not read attachment limits: ${limitError.message}`
-          : 'Could not read attachment limits.';
-      }
-      return false;
-    } finally {
-      finishAttachmentPreflight(session, preflightId);
-    }
-  }
-
-  function cancelAttachment(
-    clientId: string,
-    sessionId: string | null = activeSessionId.value,
-  ): boolean {
-    const session = sessionById(sessionId);
-    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
-    if (!session || !attachment || attachment.status !== 'uploading') return false;
-    attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
-    attachmentControllers.get(clientId)?.abort();
-    attachmentControllers.delete(clientId);
-    const runtime = attachmentUploadRuntime.get(session.id);
-    if (runtime) {
-      runtime.queue = runtime.queue.filter((queued) => queued.clientId !== clientId);
-    }
-    attachment.status = 'failed';
-    attachment.error = 'Upload canceled.';
-    pumpAttachmentUploads(session.id);
-    return true;
-  }
-
-  function removeAttachment(
-    clientId: string,
-    sessionId: string | null = activeSessionId.value,
-  ): boolean {
-    const session = sessionById(sessionId);
-    if (!session) return false;
-    const index = session.attachments.findIndex((attachment) => attachment.clientId === clientId);
-    if (index < 0) return false;
-    attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
-    attachmentControllers.get(clientId)?.abort();
-    attachmentControllers.delete(clientId);
-    attachmentFiles.delete(clientId);
-    attachmentAttempts.delete(clientId);
-    attachmentBlobFailures.delete(clientId);
-    const runtime = attachmentUploadRuntime.get(session.id);
-    if (runtime) {
-      runtime.queue = runtime.queue.filter((queued) => queued.clientId !== clientId);
-    }
-    session.attachments.splice(index, 1);
-    unblockRecoveredAttachmentSave(session);
-    touchSession(session.id);
-    pumpAttachmentUploads(session.id);
-    return true;
-  }
-
   function capturedAttachments(session: ComposeSession) {
     return session.attachments.flatMap((attachment, order) => {
       const blobId = attachment.canonicalBlobId ?? attachment.uploadBlobId;
@@ -2129,33 +1757,6 @@ export const useComposeStore = defineStore('compose', () => {
     return true;
   }
 
-  function markAttachmentBlobsMissing(
-    session: ComposeSession,
-    clientIds: string[],
-  ): boolean {
-    let needsReselection = false;
-    for (const clientId of clientIds) {
-      const attachment = session.attachments.find((candidate) =>
-        candidate.clientId === clientId);
-      if (!attachment) continue;
-      const canRetry = attachmentFiles.has(clientId);
-      attachmentAttempts.set(clientId, (attachmentAttempts.get(clientId) ?? 0) + 1);
-      attachmentControllers.get(clientId)?.abort();
-      attachmentControllers.delete(clientId);
-      attachment.uploadBlobId = null;
-      attachment.canonicalBlobId = null;
-      attachment.partId = null;
-      attachment.status = 'failed';
-      attachment.progress = 0;
-      attachment.error = canRetry
-        ? 'The server no longer has this upload. Retry it.'
-        : 'The server no longer has this attachment. Remove it and select the file again.';
-      attachmentBlobFailures.add(clientId);
-      needsReselection ||= !canRetry;
-    }
-    return needsReselection;
-  }
-
   async function applyDraftSaveResult(
     session: ComposeSession,
     request: Record<string, any>,
@@ -2195,7 +1796,7 @@ export const useComposeStore = defineStore('compose', () => {
         return false;
       }
       const clientIds = attachmentIdsForBlobFailure(request, result);
-      const needsReselection = markAttachmentBlobsMissing(session, clientIds);
+      const needsReselection = attachments.markBlobsMissing(session, clientIds);
       session.saveError = needsReselection
         ? 'An attachment is no longer available. Remove it and select the file again.'
         : clientIds.length > 0
@@ -2241,7 +1842,7 @@ export const useComposeStore = defineStore('compose', () => {
       attachment.partId = typeof canonical.part_id === 'string' && canonical.part_id
         ? canonical.part_id
         : attachment.partId;
-      attachmentFiles.delete(clientId);
+      attachments.forgetFile(clientId);
     });
     let checkpointJson = capturedJson;
     if (mappedClientIds.size < capturedClientMap.length) {
@@ -2462,7 +2063,7 @@ export const useComposeStore = defineStore('compose', () => {
       void saveDraft(session.id);
     } else if (!saved) {
       runtime.blocked = session.failedSaveMutationId != null
-        || hasAttachmentBlobFailure(session);
+        || attachments.hasBlobFailure(session);
     }
     return saved;
   }
@@ -3175,7 +2776,7 @@ export const useComposeStore = defineStore('compose', () => {
         }
         if (result.errorType === 'blobNotFound') {
           const clientIds = attachmentIdsForBlobFailure(sendRequest, result);
-          const needsReselection = markAttachmentBlobsMissing(session, clientIds);
+          const needsReselection = attachments.markBlobsMissing(session, clientIds);
           const failed = failSend(
             needsReselection
               ? 'An attachment is no longer available. Remove it and select the file again.'
@@ -3184,7 +2785,7 @@ export const useComposeStore = defineStore('compose', () => {
                 : 'Inline image data expired. Send again to retry it.',
             session.id,
           );
-          runtimeFor(session.id).blocked = hasAttachmentBlobFailure(session);
+          runtimeFor(session.id).blocked = attachments.hasBlobFailure(session);
           return failed;
         }
         if (scheduledAt) {
