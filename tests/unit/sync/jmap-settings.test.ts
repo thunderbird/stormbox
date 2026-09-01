@@ -274,6 +274,50 @@ describe('settings sync', () => {
     expect(relocation?.[1].update).toHaveProperty('settings-node');
   });
 
+  it('restarts duplicate-location reads when their collection states differ', async () => {
+    const current = markedDocument({ currentOnly: true }, { currentOnly: 10 });
+    const legacy = markedDocument({ legacyOnly: true }, { legacyOnly: 20 });
+    const concurrent = markedDocument({ concurrentOnly: true }, { concurrentOnly: 30 });
+    const { transport, state } = makeTransport(
+      current,
+      'thundermail-folder',
+      legacy,
+    );
+    let settingsGets = 0;
+    transport.handle('FileNode/get', ({ ids }) => {
+      const settingsRead = ids.includes('settings-node')
+        || ids.includes('legacy-settings-node');
+      if (settingsRead) {
+        settingsGets += 1;
+        if (settingsGets === 2) {
+          state.blobs.set('concurrent-blob', JSON.stringify(concurrent));
+          state.node.blobId = 'concurrent-blob';
+          state.version += 1;
+        }
+      }
+      return {
+        accountId: REMOTE_ACCOUNT_ID,
+        state: `state-${state.version}`,
+        list: [state.folder, state.node, state.legacyNode]
+          .filter((node) => node && ids.includes(node.id)),
+        notFound: [],
+      };
+    });
+
+    await expect(pushSettings({ transport, account, handlers }))
+      .resolves.toEqual({ ok: true });
+
+    expect(settingsGets).toBe(4);
+    expect(JSON.parse(state.blobs.get(state.node.blobId)!).settings).toEqual({
+      concurrentOnly: true,
+      legacyOnly: true,
+    });
+    const consolidation = transport.requests.flatMap((request) => request.methodCalls)
+      .find(([name, params]) =>
+        name === 'FileNode/set' && params.destroy?.includes('legacy-settings-node'));
+    expect(consolidation?.[1].ifInState).toBe('state-2');
+  });
+
   it('re-reads and retries a conditional write after stateMismatch', async () => {
     await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
       accountId: account.id,

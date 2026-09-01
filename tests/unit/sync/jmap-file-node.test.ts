@@ -10,8 +10,10 @@ import {
   discoverJsonFileNodes,
   ensureContactsTrashFileNodeFolder,
   hasFileNodeCapability,
+  isFileNodeWriteConflictError,
   moveFileNodes,
   readJsonFileNode,
+  retryFileNodeWrite,
   THUNDERMAIL_FILE_NODE_FOLDER,
   writeJsonFileNode,
 } from '../../../src/sync/backends/jmap/file-node';
@@ -283,6 +285,30 @@ describe('JMAP FileNode JSON transport', () => {
     expect(result).toMatchObject({ ok: false, error: { type: 'stateMismatch' } });
     const set = transport.requests[1].methodCalls[0][1];
     expect(set).toMatchObject({ ifInState: 'state-1', onExists: null });
+  });
+
+  it('retries only bounded FileNode write conflicts', async () => {
+    expect(isFileNodeWriteConflictError({ type: 'stateMismatch' })).toBe(true);
+    expect(isFileNodeWriteConflictError({ type: 'alreadyExists' })).toBe(true);
+    expect(isFileNodeWriteConflictError({ type: 'notFound' })).toBe(true);
+    expect(isFileNodeWriteConflictError({ type: 'serverFail' })).toBe(false);
+
+    const conflict = vi.fn(async () => ({
+      ok: false as const,
+      error: { type: 'stateMismatch' as const },
+    }));
+    await expect(retryFileNodeWrite(conflict)).resolves.toEqual({
+      ok: false,
+      error: { type: 'stateMismatch' },
+    });
+    expect(conflict).toHaveBeenCalledTimes(3);
+
+    const terminal = vi.fn(async () => ({
+      ok: false as const,
+      error: { type: 'serverFail' as const },
+    }));
+    await retryFileNodeWrite(terminal);
+    expect(terminal).toHaveBeenCalledOnce();
   });
 
   it('preserves create alreadyExists and update notFound errors', async () => {

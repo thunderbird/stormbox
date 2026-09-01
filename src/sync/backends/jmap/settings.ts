@@ -12,6 +12,7 @@ import {
   hasFileNodeCapability,
   moveFileNodes,
   readJsonFileNode,
+  retryFileNodeWrite,
   writeJsonFileNode,
   type FileNodeDocumentError,
   type FileNodeDocumentRead,
@@ -24,9 +25,6 @@ const SETTINGS_MARKER = {
   documentType: SETTINGS_DOCUMENT_TYPE,
   version: SETTINGS_DOCUMENT_VERSION,
 };
-
-const MAX_WRITE_ATTEMPTS = 3;
-const CONFLICT_ERRORS = new Set(['stateMismatch', 'alreadyExists', 'notFound']);
 
 export { hasFileNodeCapability };
 
@@ -87,6 +85,12 @@ async function readSettingsLocations({
     useWebSocket,
   });
   if (legacy.ok === false) return legacy;
+  if (
+    folder.state !== legacy.state
+    || (current != null && current.state !== legacy.state)
+  ) {
+    return { ok: false, error: { type: 'stateMismatch' } };
+  }
   return {
     ok: true,
     parentId: folderMissing ? null : folder.node.id,
@@ -109,12 +113,13 @@ export async function syncSettingsFromServer({
   if (!hasFileNodeCapability(transport, account)) {
     return { ok: true, skipped: true };
   }
-  const locations = await readSettingsLocations({
-    transport,
-    account,
-    createFolder: false,
-    useWebSocket,
-  });
+  const locations = await retryFileNodeWrite(() =>
+    readSettingsLocations({
+      transport,
+      account,
+      createFolder: false,
+      useWebSocket,
+    }));
   if (locations.ok === false) return locations;
   let pulled = false;
   let needsPush = locations.current == null || locations.current.status === 'missing';
@@ -166,23 +171,21 @@ export async function pushSettings({
     return { ok: true, skipped: true };
   }
 
-  let lastError: FileNodeDocumentError = { type: 'stateMismatch' };
-  for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt += 1) {
+  return retryFileNodeWrite(async () => {
     const locations = await readSettingsLocations({
       transport,
       account,
       createFolder: true,
       useWebSocket,
     });
-    if (locations.ok === false) {
-      lastError = locations.error;
-      if (CONFLICT_ERRORS.has(locations.error.type)) continue;
-      return locations;
-    }
+    if (locations.ok === false) return locations;
     if (locations.parentId == null || locations.current == null) {
       return {
-        ok: false,
-        error: { type: 'serverFail', message: 'Settings folder was not created' },
+        ok: false as const,
+        error: {
+          type: 'serverFail' as const,
+          message: 'Settings folder was not created',
+        },
       };
     }
     let local = await handlers[DB_RPC.SETTINGS_GET]({ accountId: account.id });
@@ -223,24 +226,10 @@ export async function pushSettings({
           parentId: locations.parentId,
           useWebSocket,
         });
-        if (moved.ok === false) {
-          lastError = moved.error;
-          if (CONFLICT_ERRORS.has(moved.error.type)) continue;
-          return moved;
-        }
-        snapshot = {
-          ...locations.legacy,
-          state: moved.state ?? locations.legacy.state,
-          node: {
-            ...locations.legacy.node,
-            parentId: locations.parentId,
-          },
-        };
+        if (moved.ok === false) return moved;
+        return { ok: false, error: { type: 'stateMismatch' as const } };
       } else {
-        snapshot = {
-          ...locations.current,
-          state: locations.legacy.state,
-        };
+        snapshot = locations.current;
         destroyNodeIds = [locations.legacy.node.id];
       }
     }
@@ -262,8 +251,6 @@ export async function pushSettings({
       });
       return { ok: true };
     }
-    lastError = write.error;
-    if (!CONFLICT_ERRORS.has(write.error.type)) return write;
-  }
-  return { ok: false, error: lastError };
+    return write;
+  });
 }
