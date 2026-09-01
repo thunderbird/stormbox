@@ -711,6 +711,7 @@ export async function discoverJsonFileNodes({
   account,
   nameMatch,
   acceptName,
+  queryExactName = false,
   parentId = null,
   useWebSocket = false,
 }: {
@@ -718,6 +719,7 @@ export async function discoverJsonFileNodes({
   account: FileNodeAccount;
   nameMatch: string;
   acceptName: (name: string) => boolean;
+  queryExactName?: boolean;
   parentId?: string | null;
   useWebSocket?: boolean;
 }): Promise<FileNodeCollectionRead> {
@@ -740,7 +742,7 @@ export async function discoverJsonFileNodes({
           methodCalls: [
             ['FileNode/query', {
               accountId: account.remote_account_id,
-              filter: { nameMatch },
+              filter: queryExactName ? { name: nameMatch } : { nameMatch },
               position,
               limit: pageLimit,
               calculateTotal: true,
@@ -957,6 +959,7 @@ export async function readJsonFileNode<T>({
     account,
     nameMatch: fileName,
     acceptName: (name) => name === fileName,
+    queryExactName: true,
     parentId,
     useWebSocket,
   });

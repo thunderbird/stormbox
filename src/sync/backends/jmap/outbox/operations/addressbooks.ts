@@ -4,7 +4,6 @@ import {
   SERVICE_KIND,
 } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
-import { wlog } from '../../../../../db/worker-log';
 import type {
   AddressBookInventory,
   AddressBookInventoryContact,
@@ -19,16 +18,43 @@ import {
 } from '../../contacts';
 import { callJmap, pickResponse } from '../../invoke';
 import {
-  CACHE_REPAIR_MAX_ATTEMPTS,
   readMutationCheckpoint,
   saveMutationCheckpoint,
   type MutationCheckpointRead,
 } from '../../mutation-checkpoint';
 import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
+import {
+  ambiguousWriteCreateFailure,
+  localWriteFailure,
+  readAcceptedWrite,
+  recoverUniqueWriteCreate,
+  runAcceptedWriteRepair,
+  setErrorTypeFromTable,
+  setWriteFailure,
+} from '../write-scaffold';
 
 const ADDRESSBOOK_CREATION_KEY = 'addressbook';
 const ADDRESSBOOK_ERROR_TYPES = new Set<string>(Object.values(ADDRESSBOOK_ERROR));
+const ADDRESSBOOK_PERMISSION_ERRORS = new Set([
+  'accountNotFound',
+  'accountNotSupportedByMethod',
+  'accountReadOnly',
+  'forbidden',
+]);
+const ADDRESSBOOK_SET_ERROR_TYPES: Readonly<Record<string, string>> = {
+  accountNotFound: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+  accountNotSupportedByMethod: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+  accountReadOnly: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+  forbidden: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
+  stateMismatch: ADDRESSBOOK_ERROR.STATE_MISMATCH,
+  notFound: ADDRESSBOOK_ERROR.MISSING,
+  rateLimit: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  serverFail: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  serverPartialFail: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  serverUnavailable: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  noResponse: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+};
 
 type AddressBookSetOperation = 'create' | 'destroy' | 'update';
 
@@ -67,15 +93,7 @@ function localFailure(
   detail: Record<string, unknown> = {},
   terminal = true,
 ) {
-  return {
-    ok: false,
-    error: {
-      type,
-      protocolType: 'clientValidation',
-      detail,
-      ...(terminal ? { terminal: true } : {}),
-    },
-  };
+  return localWriteFailure(type, detail, terminal);
 }
 
 export function addressBookErrorType(
@@ -99,27 +117,19 @@ export function addressBookErrorType(
     }
     return ADDRESSBOOK_ERROR.INVALID_ARGUMENTS;
   }
-  switch (protocolType) {
-    case 'accountNotFound':
-    case 'accountNotSupportedByMethod':
-    case 'accountReadOnly':
-    case 'forbidden':
-      return operation === 'update' && touchesSubscription
-        ? ADDRESSBOOK_ERROR.UNSUPPORTED_SUBSCRIPTION
-        : ADDRESSBOOK_ERROR.PERMISSION_DENIED;
-    case 'stateMismatch':
-      return ADDRESSBOOK_ERROR.STATE_MISMATCH;
-    case 'notFound':
-      return ADDRESSBOOK_ERROR.MISSING;
-    case 'rateLimit':
-    case 'serverFail':
-    case 'serverPartialFail':
-    case 'serverUnavailable':
-    case 'noResponse':
-      return ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE;
-    default:
-      return ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE;
+  if (
+    ADDRESSBOOK_PERMISSION_ERRORS.has(protocolType)
+    && operation === 'update'
+    && touchesSubscription
+  ) {
+    return ADDRESSBOOK_ERROR.UNSUPPORTED_SUBSCRIPTION;
   }
+  return setErrorTypeFromTable(
+    reason,
+    fallbackType,
+    ADDRESSBOOK_SET_ERROR_TYPES,
+    ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  );
 }
 
 function setFailure(
@@ -128,23 +138,20 @@ function setFailure(
   operation: AddressBookSetOperation,
   touchesSubscription = false,
 ) {
-  const protocolType = reason?.type ?? fallbackType;
-  const type = addressBookErrorType(
+  return setWriteFailure({
     reason,
     fallbackType,
     operation,
-    touchesSubscription,
-  );
-  const retryable = type === ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE;
-  return {
-    ok: false,
-    error: {
-      type,
-      protocolType,
-      ...(reason ? { detail: reason } : {}),
-      ...(!retryable ? { terminal: true } : {}),
-    },
-  };
+    classify: (value, fallback, currentOperation) =>
+      addressBookErrorType(
+        value,
+        fallback,
+        currentOperation,
+        touchesSubscription,
+      ),
+    isRetryable: (_protocolType, type) =>
+      type === ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+  });
 }
 
 function caughtFailure(error: any) {
@@ -504,16 +511,22 @@ async function savePhase(
 }
 
 function appliedWrite(row: any): AddressBookCheckpoint | null {
-  if (row?.phase !== ADDRESSBOOK_PHASE.CACHE_PENDING) return null;
-  const result = parseCheckpoint(row);
-  if (
-    result.status !== 'valid'
-    || typeof result.checkpoint.remoteId !== 'string'
-    || !result.checkpoint.remoteId
-  ) {
-    return null;
-  }
-  return result.checkpoint;
+  return readAcceptedWrite(
+    row,
+    ADDRESSBOOK_PHASE.CACHE_PENDING,
+    (value: any) => {
+      const checkpoint = value?.addressBook;
+      if (
+        checkpoint?.version !== 1
+        || !['create', 'update', 'destroy'].includes(checkpoint.operation)
+        || typeof checkpoint.remoteId !== 'string'
+        || !checkpoint.remoteId
+      ) {
+        return null;
+      }
+      return checkpoint as AddressBookCheckpoint;
+    },
+  );
 }
 
 async function reconcileAcceptedWrite({
@@ -526,94 +539,68 @@ async function reconcileAcceptedWrite({
   attempts,
   useWebSocket,
 }: any) {
-  const attempting = attempts + 1;
-  await savePhase(
+  return runAcceptedWriteRepair({
     handlers,
-    row.id,
-    ADDRESSBOOK_PHASE.CACHE_PENDING,
-    {
-      version: 1,
-      operation,
-      remoteId,
-      attempts: attempting,
-    },
-  );
-  try {
-    const addressBooks = await syncAddressBooks({
-      transport,
-      account,
-      handlers,
-      useWebSocket,
-    });
-    if (!addressBooks.complete) {
-      throw new Error('AddressBook/get reconciliation was incomplete');
-    }
-    if (operation === 'destroy') {
-      const contacts = await syncContacts({
+    rowId: row.id,
+    phase: ADDRESSBOOK_PHASE.CACHE_PENDING,
+    remoteId,
+    attempts,
+    checkpoint: (attempting) => ({
+      addressBook: {
+        version: 1,
+        operation,
+        remoteId,
+        attempts: attempting,
+      },
+    }),
+    cacheRepairErrorType: ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+    failureLog: (message) =>
+      `address book write applied but cache reconciliation failed: ${message}`,
+    repair: async () => {
+      const addressBooks = await syncAddressBooks({
         transport,
         account,
         handlers,
         useWebSocket,
       });
-      if (contacts.unstable || contacts.needsFullSync) {
-        throw new Error('ContactCard reconciliation was incomplete');
+      if (!addressBooks.complete) {
+        throw new Error('AddressBook/get reconciliation was incomplete');
       }
-    }
-    const list = await handlers[DB_RPC.ADDRESSBOOK_LIST]({
-      accountId: account.id,
-    });
-    const addressbook = list.find(
-      (book: any) => book.remote_id === remoteId,
-    ) ?? null;
-    if (operation === 'destroy' ? addressbook !== null : addressbook === null) {
-      throw new Error(
-        operation === 'destroy'
-          ? 'Destroyed address book is still present after reconciliation'
-          : 'Address book is missing after reconciliation',
-      );
-    }
-    return {
-      ok: true,
-      result: {
-        ids: [remoteId],
-        addressbooks: list,
-        addressbook,
-      },
-    };
-  } catch (error: any) {
-    wlog.warn(
-      'jmap-outbox',
-      `address book write applied but cache reconciliation failed: ${
-        error?.message ?? error
-      }`,
-    );
-    return {
-      ok: false,
-      error: {
-        type: ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
-        protocolType: 'cacheReconcileFailed',
-        message: error?.message ?? String(error),
-        ...(attempting >= CACHE_REPAIR_MAX_ATTEMPTS ? { terminal: true } : {}),
-        result: {
-          applied: true,
-          cached: false,
-          ids: [remoteId],
-        },
-      },
-    };
-  }
+      if (operation === 'destroy') {
+        const contacts = await syncContacts({
+          transport,
+          account,
+          handlers,
+          useWebSocket,
+        });
+        if (contacts.unstable || contacts.needsFullSync) {
+          throw new Error('ContactCard reconciliation was incomplete');
+        }
+      }
+      const addressbooks = await handlers[DB_RPC.ADDRESSBOOK_LIST]({
+        accountId: account.id,
+      });
+      const addressbook = addressbooks.find(
+        (book: any) => book.remote_id === remoteId,
+      ) ?? null;
+      if (operation === 'destroy' ? addressbook !== null : addressbook === null) {
+        throw new Error(
+          operation === 'destroy'
+            ? 'Destroyed address book is still present after reconciliation'
+            : 'Address book is missing after reconciliation',
+        );
+      }
+      return { addressbooks, addressbook };
+    },
+    success: ({ addressbooks, addressbook }) => ({
+      addressbooks,
+      addressbook,
+    }),
+  });
 }
 
 function ambiguousCreateFailure(detail: Record<string, unknown>) {
-  return {
-    ok: false,
-    error: {
-      type: ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE,
-      protocolType: 'createOutcomeUnknown',
-      detail,
-      terminal: true,
-    },
-  };
+  return ambiguousWriteCreateFailure(ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE, detail);
 }
 
 async function recoverCreate({
@@ -624,49 +611,39 @@ async function recoverCreate({
   checkpoint,
   useWebSocket,
 }: any) {
-  try {
-    const reconciled = await syncAddressBooks({
+  const expected = JSON.stringify(checkpoint.requestAddressBook);
+  return recoverUniqueWriteCreate({
+    baselineIds: checkpoint.baselineAddressBooks.map(
+      (book: CanonicalAddressBook) => book.id as string,
+    ),
+    refreshSnapshot: async () => {
+      const reconciled = await syncAddressBooks({
+        transport,
+        account,
+        handlers,
+        useWebSocket,
+      });
+      return reconciled.complete;
+    },
+    readCandidates: () =>
+      handlers[DB_RPC.ADDRESSBOOK_LIST]({ accountId: account.id }),
+    candidateRemoteId: (book: any) =>
+      typeof book?.remote_id === 'string' ? book.remote_id : null,
+    matchesRequest: (book: any) => {
+      const { id: _id, ...fields } = canonicalCachedBook(book);
+      return JSON.stringify(fields) === expected;
+    },
+    ambiguousErrorType: ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE,
+    reconcile: (remoteId) => reconcileAcceptedWrite({
       transport,
       account,
       handlers,
+      row,
+      operation: 'create',
+      remoteId,
+      attempts: 0,
       useWebSocket,
-    });
-    if (!reconciled.complete) {
-      return ambiguousCreateFailure({ reason: 'snapshotIncomplete' });
-    }
-  } catch (error: any) {
-    return ambiguousCreateFailure({
-      reason: 'snapshotIncomplete',
-      message: error?.message ?? String(error),
-    });
-  }
-  const baselineIds = new Set(
-    checkpoint.baselineAddressBooks.map((book: CanonicalAddressBook) => book.id),
-  );
-  const expected = JSON.stringify(checkpoint.requestAddressBook);
-  const books = await handlers[DB_RPC.ADDRESSBOOK_LIST]({
-    accountId: account.id,
-  });
-  const matches = books.filter((book: any) => {
-    const canonical = canonicalCachedBook(book);
-    const { id, ...fields } = canonical;
-    return !baselineIds.has(id) && JSON.stringify(fields) === expected;
-  });
-  if (matches.length !== 1) {
-    return ambiguousCreateFailure({
-      reason: matches.length === 0 ? 'noUniqueMatch' : 'multipleMatches',
-      candidateIds: matches.map((book: any) => book.remote_id),
-    });
-  }
-  return reconcileAcceptedWrite({
-    transport,
-    account,
-    handlers,
-    row,
-    operation: 'create',
-    remoteId: matches[0].remote_id,
-    attempts: 0,
-    useWebSocket,
+    }),
   });
 }
 

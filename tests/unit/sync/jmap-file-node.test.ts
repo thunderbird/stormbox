@@ -193,7 +193,7 @@ describe('JMAP FileNode JSON transport', () => {
       document,
     });
     const query = transport.requests[0].methodCalls[0][1];
-    expect(query.filter).toEqual({ nameMatch: 'document.json' });
+    expect(query.filter).toEqual({ name: 'document.json' });
     expect(query.limit).toBe(500);
     expect(transport.requests[0].methodCalls[1][1].properties)
       .not.toContain('nodeType');
