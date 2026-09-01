@@ -69,8 +69,6 @@ function transportFolderError(error: any) {
 
 function isTerminalPerObjectFolderError(error: any): boolean {
   if (!SET_ERROR_WRAPPERS.has(error?.type)) return false;
-  const authentication = classifyAuthenticationOrAuthorizationError(error?.detail);
-  if (authentication) return authentication.terminal;
   const detailType = error?.detail?.type;
   return !RETRYABLE_FOLDER_ERROR_TYPES.has(detailType);
 }
@@ -97,8 +95,6 @@ function isRetryableSubmissionError(detail: any): boolean {
     && RETRYABLE_SUBMISSION_ERROR_TYPES.has(detailType);
 }
 function isRetryableMethodError(error: any): boolean {
-  const authentication = classifyAuthenticationOrAuthorizationError(error);
-  if (authentication) return authentication.retryable;
   return error?.type === 'noResponse'
     || RETRYABLE_METHOD_ERROR_TYPES.has(error?.type);
 }
