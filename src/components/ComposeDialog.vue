@@ -20,12 +20,10 @@ import {
   type RecipientField,
 } from '../stores/compose-store';
 import { useModalFocus } from '../composables/useModalFocus';
-import { getRepositoryAsync } from '../composables/useRepository';
-import { useAuthStore } from '../stores/auth-store';
 import { useContactsStore } from '../stores/contacts-store';
 import { useSettingsStore } from '../stores/settings-store';
 import { COMPOSE_STATE } from '../constants/states';
-import type { ContactListRow, IdentityRow } from '../types/db';
+import type { IdentityRow } from '../types/db';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import { formatBytes } from '../utils/format-bytes';
@@ -52,7 +50,6 @@ const props = defineProps<{
 }>();
 
 const composeStore = useComposeStore();
-const authStore = useAuthStore();
 const contactsStore = useContactsStore();
 const settingsStore = useSettingsStore();
 const session = computed<ComposeSession | null>(() =>
@@ -541,17 +538,7 @@ function queryContacts(prefix: string, limit: number, exclude: string[]) {
  * CS-3.12 requires every contact to be selectable from the browse list.
  */
 async function browseAllContacts() {
-  const accountId = authStore.accountId;
-  if (accountId == null) return [];
-  const repo = await getRepositoryAsync();
-  const contacts: ContactListRow[] = await repo.listContacts(accountId);
-  return contacts
-    .filter((contact) => !!contact.email)
-    .map((contact) => ({
-      ...(contact.display_name ? { name: contact.display_name } : {}),
-      email: contact.email as string,
-      source: 'contact' as const,
-    }));
+  return contactsStore.browseAutocompleteCandidates();
 }
 
 async function send() {

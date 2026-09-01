@@ -88,35 +88,6 @@ export function addressBookDisplayName(book: AddressbookRow): string {
   return book.name?.trim() || 'Address book';
 }
 
-export function isTrustedSendersAddressBook(book: AddressbookRow): boolean {
-  return addressBookDisplayName(book).toLocaleLowerCase() === 'trusted senders';
-}
-
-export function addressBookDeleteDisabledReason(
-  book: AddressbookRow,
-  addressbooks: readonly AddressbookRow[],
-): string | null {
-  if (isTrustedSendersAddressBook(book)) {
-    return 'Trusted Senders cannot be deleted.';
-  }
-  const regularBooks = addressbooks.filter((candidate) =>
-    candidate.is_deleted === 0 && !isTrustedSendersAddressBook(candidate));
-  if (regularBooks.length <= 1) {
-    return 'The final non-Trusted-Senders address book cannot be deleted.';
-  }
-  if (book.may_delete !== 1) {
-    return 'You don’t have permission to delete this address book.';
-  }
-  return null;
-}
-
-export function addressBookMayDelete(
-  book: AddressbookRow,
-  addressbooks: readonly AddressbookRow[],
-): boolean {
-  return addressBookDeleteDisabledReason(book, addressbooks) === null;
-}
-
 export function directoryOptionId(key: string): string {
   return `directory-option-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 }

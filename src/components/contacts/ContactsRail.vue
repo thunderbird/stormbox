@@ -11,10 +11,10 @@ import { ref } from 'vue';
 
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import type { AddressbookRow } from '../../types';
+import { isTrustedSendersBook } from '../../utils/address-book-policy';
 import AppButton from '../AppButton.vue';
 import {
   addressBookDisplayName,
-  isTrustedSendersAddressBook,
   type DirectoryKind,
 } from './directory-types';
 
@@ -183,7 +183,7 @@ function onInvalidDrop(event: DragEvent): void {
         @drop.prevent="onBookDrop(book, $event)"
       >
         <BookUser
-          v-if="isTrustedSendersAddressBook(book)"
+          v-if="isTrustedSendersBook(book)"
           :size="16"
           :stroke-width="1.75"
           aria-hidden="true"

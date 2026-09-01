@@ -22,13 +22,14 @@ import AppIconButton from '../AppIconButton.vue';
 import SelectableListHeader from '../SelectableListHeader.vue';
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import { useListSelection } from '../../composables/useListSelection';
+import { addressBookErrorMessage } from '../../constants/addressbook-errors';
 import type { AddressbookRow } from '../../types';
+import { addressBookDeleteDisabledReason } from '../../utils/address-book-policy';
 import {
   isDeleteKey,
   isModKey,
 } from '../../utils/keyboard';
 import {
-  addressBookDeleteDisabledReason,
   addressBookDisplayName,
   directoryOptionId,
   type DirectoryEntry,
@@ -96,13 +97,14 @@ const concreteAddressBook = computed(() =>
   props.listKind === 'contacts' && props.sourceAddressbookId != null
     ? props.addressbooks.find((book) => book.id === props.sourceAddressbookId) ?? null
     : null);
-const addressBookDeleteReason = computed(() =>
-  concreteAddressBook.value
-    ? addressBookDeleteDisabledReason(
-        concreteAddressBook.value,
-        props.addressbooks,
-      )
-    : null);
+const addressBookDeleteReason = computed(() => {
+  if (!concreteAddressBook.value) return null;
+  const reason = addressBookDeleteDisabledReason(
+    concreteAddressBook.value,
+    props.addressbooks,
+  );
+  return reason ? addressBookErrorMessage(reason) : null;
+});
 const showAddressbookColumn = computed(() =>
   props.listKind === 'contacts' && props.sourceAddressbookId == null);
 const addressbookLabels = computed(() => {

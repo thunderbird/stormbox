@@ -8,13 +8,15 @@ import type {
   AddressBookInventory,
   AddressBookInventoryContact,
 } from '../../../../../types/db';
+import {
+  addressBookDeleteDisabledReason,
+} from '../../../../../utils/address-book-policy';
 import { hasOwn } from '../../../../../utils/identity-fields';
 import {
   ADDRESSBOOK_PROPERTIES,
   inventoryAddressBook,
   syncAddressBooks,
   syncContacts,
-  TRUSTED_SENDERS_BOOK_NAME,
 } from '../../contacts';
 import { callJmap, pickResponse } from '../../invoke';
 import {
@@ -947,11 +949,6 @@ function isNotMoreDestructive(
   });
 }
 
-function isTrustedSendersBook(book: any): boolean {
-  return canonicalName(book?.name).toLocaleLowerCase()
-    === TRUSTED_SENDERS_BOOK_NAME.toLocaleLowerCase();
-}
-
 async function checkDestroy({
   transport,
   account,
@@ -981,21 +978,18 @@ async function checkDestroy({
       absent: false,
     };
   }
-  if (isTrustedSendersBook(current)) {
-    return {
-      failure: localFailure(ADDRESSBOOK_ERROR.PROTECTED, {
-        remoteId,
-        reason: 'trustedSenders',
-      }),
-      absent: false,
-    };
-  }
-  const remainingPersonalBooks = snapshot.list.filter(
-    (book: any) => !isTrustedSendersBook(book),
+  const disabledReason = addressBookDeleteDisabledReason(
+    current,
+    snapshot.list,
   );
-  if (remainingPersonalBooks.length <= 1) {
+  if (disabledReason) {
     return {
-      failure: localFailure(ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK, { remoteId }),
+      failure: localFailure(disabledReason, {
+        remoteId,
+        ...(disabledReason === ADDRESSBOOK_ERROR.PROTECTED
+          ? { reason: 'trustedSenders' }
+          : {}),
+      }),
       absent: false,
     };
   }

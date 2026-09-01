@@ -16,6 +16,7 @@ import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
 import {
   ADDRESSBOOK_ERROR,
+  addressBookErrorMessage,
 } from '../constants/addressbook-errors';
 import type { AddressBookError } from '../constants/addressbook-errors';
 import {
@@ -57,7 +58,9 @@ import type {
   UpdateIdentityMutationRequest,
 } from '../types';
 import type { Repository } from '../db/repository';
-import { addressKey } from '../utils/address-key';
+import {
+  addressBookDeleteDisabledReason,
+} from '../utils/address-book-policy';
 import {
   contactFieldsAreEmpty,
   contactMutationFieldsFromDetail,
@@ -114,7 +117,6 @@ const ADDRESSBOOK_MUTATION_TYPES = new Set<MutationType>([
 ]);
 
 const JMAP_CONTACTS_CAPABILITY = 'urn:ietf:params:jmap:contacts';
-const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
 
 export interface IdentityCreateInput extends IdentityMutableFields {
   operationId?: string;
@@ -172,32 +174,15 @@ export interface AutocompleteCandidate {
   last_sent_at?: number | null;
 }
 
-/**
- * Pragmatic email shape check used to gate the contact form. The server
- * is the real authority; this just stops obviously-invalid input from
- * being queued.
- */
-function isValidEmail(value: string): boolean {
-  return /^\S+@\S+\.\S+$/.test(value.trim());
-}
-
-/**
- * Trim/de-duplicate an email list and validate each non-empty entry.
- * Returns { ok:false } when any non-empty entry is malformed.
- */
-function cleanEmailList(emails: string[]): { ok: boolean; list: string[] } {
-  const seen = new Set<string>();
-  const list: string[] = [];
-  for (const raw of emails ?? []) {
-    const addr = String(raw ?? '').trim();
-    if (!addr) continue;
-    if (!isValidEmail(addr)) return { ok: false, list: [] };
-    const key = addressKey(addr);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    list.push(addr);
-  }
-  return { ok: true, list };
+function autocompleteCandidate(
+  contact: ContactListRow,
+): AutocompleteCandidate | null {
+  if (!contact.email) return null;
+  return {
+    ...(contact.display_name ? { name: contact.display_name } : {}),
+    email: contact.email,
+    source: 'contact',
+  };
 }
 
 function preparedIdentityFields(
@@ -453,35 +438,6 @@ function failedContactTrash(
   };
 }
 
-const ADDRESSBOOK_ERROR_MESSAGE: Record<AddressBookError, string> = {
-  [ADDRESSBOOK_ERROR.INVALID_NAME]:
-    'Enter an address book name without a line break.',
-  [ADDRESSBOOK_ERROR.PERMISSION_DENIED]:
-    'You don’t have permission to manage this address book.',
-  [ADDRESSBOOK_ERROR.UNSUPPORTED_SUBSCRIPTION]:
-    'The server does not allow this subscription change.',
-  [ADDRESSBOOK_ERROR.STATE_MISMATCH]:
-    'The address book changed on the server. Refresh and try again.',
-  [ADDRESSBOOK_ERROR.MISSING]:
-    'This address book no longer exists.',
-  [ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE]:
-    'The address book service is temporarily unavailable.',
-  [ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED]:
-    'The address book changed on the server, but the local list could not be refreshed.',
-  [ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE]:
-    'The server may have created this address book, but it could not be identified safely.',
-  [ADDRESSBOOK_ERROR.CONFIRMATION_REQUIRED]:
-    'Review the address book contents before deleting it.',
-  [ADDRESSBOOK_ERROR.CONFIRMATION_STALE]:
-    'The address book contents changed. Review them again before deleting.',
-  [ADDRESSBOOK_ERROR.PROTECTED]:
-    'Trusted Senders cannot be deleted.',
-  [ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK]:
-    'The last address book cannot be deleted.',
-  [ADDRESSBOOK_ERROR.INVALID_ARGUMENTS]:
-    'Enter valid address book details.',
-};
-
 const ADDRESSBOOK_ERROR_TYPES = new Set<string>(
   Object.values(ADDRESSBOOK_ERROR),
 );
@@ -516,11 +472,6 @@ function validAddressBookMetadata(input: Record<string, unknown>): boolean {
 
 function createAddressBookOperationId(): string {
   return `addressbook-${randomToken()}`;
-}
-
-function isTrustedSendersBook(book: AddressbookRow): boolean {
-  return canonicalAddressBookName(book.name)?.toLocaleLowerCase()
-    === TRUSTED_SENDERS_BOOK_NAME.toLocaleLowerCase();
 }
 
 export const useContactsStore = defineStore('contacts', () => {
@@ -747,6 +698,19 @@ export const useContactsStore = defineStore('contacts', () => {
     return repo.autocompleteContacts(authStore.accountId, prefix, limit, exclude);
   }
 
+  async function browseAutocompleteCandidates(): Promise<AutocompleteCandidate[]> {
+    const accountId = authStore.accountId;
+    if (accountId == null) return [];
+    const repository = repo ?? await getRepositoryAsync();
+    if (authStore.accountId !== accountId) return [];
+    const rows = await repository.listContacts(accountId);
+    if (authStore.accountId !== accountId) return [];
+    return rows.flatMap((contact) => {
+      const candidate = autocompleteCandidate(contact);
+      return candidate ? [candidate] : [];
+    });
+  }
+
   /**
    * Insert a pending mutation and run it, returning whether it actually
    * applied. Mirrors mail-store's runChunkedMutation success criteria:
@@ -857,12 +821,7 @@ export const useContactsStore = defineStore('contacts', () => {
       selectedAddressbookIds = input.addressbookIds ?? [];
     } else {
       const name = input.name?.trim() || null;
-      const { ok, list } = cleanEmailList(input.emails);
-      if (!ok) {
-        error.value = 'Enter a valid email address.';
-        return failedContactCreate(retryUid);
-      }
-      fields = legacyCreateContactFields(name, list);
+      fields = legacyCreateContactFields(name, input.emails);
       selectedAddressbookIds = input.addressbookId == null ? [] : [input.addressbookId];
     }
     const invalid = invalidContactFields(fields);
@@ -976,12 +935,11 @@ export const useContactsStore = defineStore('contacts', () => {
       next = withContactDetailKeys(input.contact, baseline);
     } else {
       baseline = contactMutationFieldsFromDetail(detail);
-      const { ok, list } = cleanEmailList(input.emails);
-      if (!ok) {
-        error.value = 'Enter a valid email address.';
-        return false;
-      }
-      next = legacyUpdatedContactFields(baseline, input.name?.trim() || null, list);
+      next = legacyUpdatedContactFields(
+        baseline,
+        input.name?.trim() || null,
+        input.emails,
+      );
     }
     const invalid = invalidContactFields(next, baseline);
     if (invalid) {
@@ -1332,7 +1290,7 @@ export const useContactsStore = defineStore('contacts', () => {
   function addressBookFailure(
     code: AddressBookError,
   ): { ok: false; error: AddressBookError } {
-    error.value = ADDRESSBOOK_ERROR_MESSAGE[code];
+    error.value = addressBookErrorMessage(code);
     return { ok: false, error: code };
   }
 
@@ -1526,19 +1484,8 @@ export const useContactsStore = defineStore('contacts', () => {
 
   function updateAddressBook(
     input: AddressBookUpdateInput,
-  ): Promise<AddressBookUpdateResult>;
-  function updateAddressBook(
-    addressbookId: number,
-    fields: Omit<AddressBookUpdateInput, 'addressbookId'>,
-  ): Promise<AddressBookUpdateResult>;
-  function updateAddressBook(
-    inputOrId: AddressBookUpdateInput | number,
-    fields: Omit<AddressBookUpdateInput, 'addressbookId'> = {},
   ): Promise<AddressBookUpdateResult> {
     error.value = null;
-    const input: AddressBookUpdateInput = typeof inputOrId === 'number'
-      ? { addressbookId: inputOrId, ...fields }
-      : inputOrId;
     const runtimeInput = input as unknown as Record<string, unknown>;
     if (!repo || authStore.accountId == null) {
       return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
@@ -1658,25 +1605,8 @@ export const useContactsStore = defineStore('contacts', () => {
 
   function deleteAddressBook(
     input: AddressBookDeleteInput,
-  ): Promise<AddressBookDeleteResult>;
-  function deleteAddressBook(
-    addressbookId: number,
-    confirmationInventory: AddressBookInventory,
-    operationId?: string,
-  ): Promise<AddressBookDeleteResult>;
-  function deleteAddressBook(
-    inputOrId: AddressBookDeleteInput | number,
-    confirmationInventory?: AddressBookInventory,
-    operationId?: string,
   ): Promise<AddressBookDeleteResult> {
     error.value = null;
-    const input: AddressBookDeleteInput = typeof inputOrId === 'number'
-      ? {
-          addressbookId: inputOrId,
-          confirmationInventory: confirmationInventory!,
-          operationId,
-        }
-      : inputOrId;
     if (!repo || authStore.accountId == null) {
       return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE));
     }
@@ -1691,16 +1621,16 @@ export const useContactsStore = defineStore('contacts', () => {
     if (current.may_delete !== 1) {
       return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.PERMISSION_DENIED));
     }
-    if (isTrustedSendersBook(current)) {
-      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.PROTECTED));
-    }
     const personalBooks = addressbooks.value.filter((book) =>
       book.account_id === authStore.accountId
       && book.service_kind === SERVICE_KIND.JMAP_CONTACTS
-      && book.is_deleted === 0
-      && !isTrustedSendersBook(book));
-    if (personalBooks.length <= 1) {
-      return Promise.resolve(addressBookFailure(ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK));
+      && book.is_deleted === 0);
+    const disabledReason = addressBookDeleteDisabledReason(
+      current,
+      personalBooks,
+    );
+    if (disabledReason) {
+      return Promise.resolve(addressBookFailure(disabledReason));
     }
     if (
       !input.confirmationInventory
@@ -2148,6 +2078,7 @@ export const useContactsStore = defineStore('contacts', () => {
     refreshIdentities,
     listContacts,
     listIdentities,
+    browseAutocompleteCandidates,
     getContact,
     getContactTrash,
     autocomplete,

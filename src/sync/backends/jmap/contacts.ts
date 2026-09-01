@@ -49,6 +49,10 @@ import {
 } from '../../../utils/contact-fields';
 import type { ContactFieldValidationIssue } from '../../../utils/contact-fields';
 import { createContactMapKey, createContactUid, isContactUid } from '../../../utils/contact-uid';
+import {
+  isTrustedSendersBook,
+  TRUSTED_SENDERS_BOOK_NAME,
+} from '../../../utils/address-book-policy';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { maxObjectsInGet, maxObjectsInSet } from './limits';
@@ -1414,8 +1418,6 @@ function knownLocalBooks(bookRemoteIds: string[], abMap: Map<string, number>): n
   return found;
 }
 
-export const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
-
 /**
  * Find (or lazily create) the dedicated "Trusted senders" address book
  * and return its remote id. Stalwart's contact trust (trustContacts /
@@ -1435,9 +1437,7 @@ export async function ensureTrustedSendersBook({ transport, account, useWebSocke
     useWebSocket,
   });
   const list = pickResponse(got, 'AddressBook/get')?.list ?? [];
-  const existing = list.find(
-    (book) => (book.name ?? '').toLowerCase() === TRUSTED_SENDERS_BOOK_NAME.toLowerCase(),
-  );
+  const existing = list.find(isTrustedSendersBook);
   if (existing) return existing.id;
 
   const created = await callJmap(transport, {
@@ -3481,10 +3481,8 @@ async function resolveDefaultBook({ transport, account, useWebSocket = false }):
     useWebSocket,
   });
   const list = pickResponse(got, 'AddressBook/get')?.list ?? [];
-  const isTrusted = (book) =>
-    (book.name ?? '').toLowerCase() === TRUSTED_SENDERS_BOOK_NAME.toLowerCase();
   const chosen = list.find((book) => book.isDefault)
-    ?? list.find((book) => !isTrusted(book))
+    ?? list.find((book) => !isTrustedSendersBook(book))
     ?? list[0];
   if (chosen) return chosen.id;
 

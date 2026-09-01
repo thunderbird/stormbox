@@ -166,6 +166,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('autocomplete candidates', () => {
+  it('maps browse rows without replacing the contacts collection', async () => {
+    const store = useContactsStore();
+    const visible = contact(1, [1]);
+    store.contacts = [visible];
+    repo.listContacts.mockResolvedValue([
+      {
+        ...contact(2, [1]),
+        display_name: 'Browse row',
+        email: 'browse@example.com',
+      },
+      {
+        ...contact(3, [1]),
+        display_name: 'No address',
+        email: null,
+      },
+    ]);
+
+    await expect(store.browseAutocompleteCandidates()).resolves.toEqual([{
+      name: 'Browse row',
+      email: 'browse@example.com',
+      source: 'contact',
+    }]);
+    expect(repo.listContacts).toHaveBeenCalledWith(1);
+    expect(store.contacts).toEqual([visible]);
+  });
+});
+
 describe('address book capability and actions', () => {
   it.each([
     [undefined],
@@ -328,28 +356,28 @@ describe('address book capability and actions', () => {
     const last = addressbook(3, 1);
 
     store.addressbooks = [denied, addressbook(4, 1)];
-    await expect(store.deleteAddressBook(
-      denied.id,
-      addressBookInventory(denied),
-    )).resolves.toEqual({
+    await expect(store.deleteAddressBook({
+      addressbookId: denied.id,
+      confirmationInventory: addressBookInventory(denied),
+    })).resolves.toEqual({
       ok: false,
       error: ADDRESSBOOK_ERROR.PERMISSION_DENIED,
     });
 
     store.addressbooks = [trusted, addressbook(4, 1)];
-    await expect(store.deleteAddressBook(
-      trusted.id,
-      addressBookInventory(trusted),
-    )).resolves.toEqual({
+    await expect(store.deleteAddressBook({
+      addressbookId: trusted.id,
+      confirmationInventory: addressBookInventory(trusted),
+    })).resolves.toEqual({
       ok: false,
       error: ADDRESSBOOK_ERROR.PROTECTED,
     });
 
     store.addressbooks = [last];
-    await expect(store.deleteAddressBook(
-      last.id,
-      addressBookInventory(last),
-    )).resolves.toEqual({
+    await expect(store.deleteAddressBook({
+      addressbookId: last.id,
+      confirmationInventory: addressBookInventory(last),
+    })).resolves.toEqual({
       ok: false,
       error: ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK,
     });
@@ -983,6 +1011,18 @@ describe('identity mutation requests', () => {
 });
 
 describe('contact mutation requests', () => {
+  it('validates legacy email lists through contact field validation', async () => {
+    const store = useContactsStore();
+
+    await expect(store.createContact({
+      name: 'Malformed',
+      emails: ['not-an-address'],
+    })).resolves.toBe(false);
+
+    expect(store.error).toBe('Enter a valid email address.');
+    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+  });
+
   it('treats a vanished edit target as terminal instead of temporarily unsynced', async () => {
     repo.getContact.mockResolvedValue(null);
     const store = useContactsStore();
