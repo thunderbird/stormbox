@@ -677,6 +677,55 @@ describe('ContactDetailPane', () => {
     expect(wrapper.get('.contact-detail__error').text()).toBe(CONTACT_MISSING_MESSAGE);
     expect(wrapper.emitted('saved')).toBeUndefined();
   });
+
+  it('shows a form-level save error ahead of the fields and scrolls it into view', async () => {
+    // Save lives in a sticky footer while the form scrolls, so the message
+    // must lead the form and be brought into view rather than sit below the
+    // last field.
+    const store = useContactsStore();
+    vi.spyOn(store, 'updateContact').mockImplementation(async () => {
+      store.error = 'Could not save this contact.';
+      return false;
+    });
+    const scrollIntoView = vi.fn();
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollIntoView',
+    );
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: ['Personal'],
+        createAddressbookIds: [],
+        detail: contactDetail(),
+        mode: 'edit',
+      },
+    });
+    try {
+      await wrapper.get('input[autocomplete="name"]').setValue('Updated name');
+
+      await wrapper.get('form').trigger('submit');
+      await flushPromises();
+      await nextTick();
+
+      const form = wrapper.get('form').element;
+      const error = wrapper.get('.contact-detail__error').element;
+      expect(error.textContent?.trim()).toBe('Could not save this contact.');
+      expect(form.firstElementChild).toBe(error);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView.mock.instances[0]).toBe(error);
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+      wrapper.unmount();
+    }
+  });
 });
 
 describe('ContactLabelDropdown', () => {
