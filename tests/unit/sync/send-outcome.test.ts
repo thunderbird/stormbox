@@ -109,4 +109,16 @@ describe('send outcomes', () => {
     expect(outcomeFor('rateLimit').outcome).toBe('rejectedRetryable');
     expect(outcomeFor('invalidEmail').outcome).toBe('rejectedTerminal');
   });
+
+  it('treats an authenticationFailed submission rejection as terminal', () => {
+    // Send is an allowlist: only rateLimit earns a retry, so a rejected
+    // credential on EmailSubmission/set must not re-run create-and-submit.
+    const detail = { type: 'authenticationFailed' };
+    const error = submissionError('notSubmitted', detail);
+
+    expect(isRetryableSubmissionError(detail)).toBe(false);
+    expect(error).toHaveProperty('terminal', true);
+    expect(rejectedSendOutcome(error, isRetryableSubmissionError(detail)).outcome)
+      .toBe('rejectedTerminal');
+  });
 });

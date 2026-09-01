@@ -92,8 +92,6 @@ function isRetryableMessageError(failure: any): boolean {
   return true;
 }
 function isRetryableSubmissionError(detail: any): boolean {
-  const authentication = classifyAuthenticationOrAuthorizationError(detail);
-  if (authentication) return authentication.retryable;
   const detailType = detail?.type;
   return typeof detailType === 'string'
     && RETRYABLE_SUBMISSION_ERROR_TYPES.has(detailType);
