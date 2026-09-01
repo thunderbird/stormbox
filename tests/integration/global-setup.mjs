@@ -1,22 +1,9 @@
-import {
-  JMAP_BASE_URL,
-  OIDC_ISSUER,
-  localStackEnabled,
-} from '../e2e/helpers/stack-env';
+import { localStackEnabled } from '../e2e/helpers/stack-env';
 import {
   acquireLaneLock,
   releaseLaneLock,
 } from '../e2e/helpers/lane-lock';
-
-async function requireUrl(label, url, statuses) {
-  const response = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!statuses.includes(response.status)) {
-    throw new Error(`${label} at ${url} returned ${response.status}`);
-  }
-}
+import { requireStack } from '../e2e/helpers/stack-health';
 
 export async function setup() {
   if (!localStackEnabled) {
@@ -24,17 +11,10 @@ export async function setup() {
   }
   await acquireLaneLock();
   try {
-    await requireUrl(
-      'Keycloak',
-      `${OIDC_ISSUER.replace(/\/$/, '')}/.well-known/openid-configuration`,
-      [200],
-    );
-    await requireUrl(
-      'Stalwart JMAP',
-      `${JMAP_BASE_URL.replace(/\/$/, '')}/.well-known/jmap`,
-      [200, 401],
-    );
+    await requireStack({ wsProxy: false });
   } catch (error) {
+    // A setup that throws gets no teardown, and a lock left behind would
+    // lock out every later run.
     releaseLaneLock();
     throw error;
   }
