@@ -11,6 +11,7 @@ import { onClickOutside, useTitle } from '@vueuse/core';
 import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 import AppButton from './components/AppButton.vue';
 
+import { useColumnResize } from './composables/useColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
 import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
@@ -146,7 +147,6 @@ const shouldUseSingleMailColumn = computed(() =>
 const displayedMessageList = computed(() =>
   !(space.value === 'mail' && shouldUseSingleMailColumn.value),
 );
-const activeResizePane = ref<ResizePane | null>(null);
 let messageViewTimer: number | null = null;
 let quickFilterSpotlightTimer: number | null = null;
 let resizeLayoutSpotlightTimer: number | null = null;
@@ -154,13 +154,6 @@ let composeActionSpotlightTimer: number | null = null;
 let resizeLayoutDemoStart: { folderList: number; messageList: number } | null = null;
 let resizeLayoutDemoTimers: number[] = [];
 let responsiveFolderListHidden = false;
-
-let resizeState: {
-  pane: ResizePane;
-  startX: number;
-  startFolderListWidth: number;
-  startMessageListWidth: number;
-} | null = null;
 
 const shellStyle = computed(() => ({
   '--folder-list-width': `${folderListWidth.value}px`,
@@ -170,6 +163,35 @@ const shellStyle = computed(() => ({
   '--column-resizer-width': `${RESIZER_WIDTH}px`,
   '--folder-list-transition-ms': `${FOLDER_LIST_TRANSITION_MS}ms`,
 }));
+
+const {
+  activeResizePane,
+  clampPane,
+  onResizeHandleKeydown,
+  startColumnResize,
+} = useColumnResize<ResizePane>({
+  panes: {
+    folderList: {
+      get: () => folderListWidth.value,
+      max: (widths) => maxFolderListWidth(widths.messageList),
+      min: () => MIN_COLUMN_WIDTHS.folderList,
+      set: (width) => {
+        folderListWidth.value = width;
+      },
+      storageKey: 'folderList',
+    },
+    messageList: {
+      get: () => messageListWidth.value,
+      max: (widths) => maxMessageListWidth(widths.folderList),
+      min: () => MIN_COLUMN_WIDTHS.messageList,
+      set: (width) => {
+        messageListWidth.value = width;
+      },
+      storageKey: 'messageList',
+    },
+  },
+  storageKey: RESIZE_STORAGE_KEY,
+});
 
 useThunderbirdShortcuts({
   space,
@@ -187,7 +209,6 @@ onMounted(async () => {
   appMounted = true;
   applyTheme(theme.value);
   watchSystemTheme();
-  loadColumnWidths();
   applyResponsiveLayout();
   clampColumnWidths();
   window.addEventListener('resize', onWindowResize);
@@ -206,7 +227,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   appMounted = false;
-  stopColumnResize();
   clearMessageViewTimer();
   clearQuickFilterSpotlightTimer();
   clearResizeLayoutSpotlightTimer();
@@ -441,56 +461,6 @@ function restoreResizeLayoutDemo() {
   }
 }
 
-function startColumnResize(pane: ResizePane, event: PointerEvent) {
-  if (event.button !== 0) return;
-
-  event.preventDefault();
-  resizeState = {
-    pane,
-    startX: event.clientX,
-    startFolderListWidth: folderListWidth.value,
-    startMessageListWidth: messageListWidth.value,
-  };
-  activeResizePane.value = pane;
-  document.body.classList.add('is-column-resizing');
-  window.addEventListener('pointermove', onColumnResizeMove);
-  window.addEventListener('pointerup', stopColumnResize, { once: true });
-  window.addEventListener('pointercancel', stopColumnResize, { once: true });
-}
-
-function onColumnResizeMove(event: PointerEvent) {
-  if (!resizeState) return;
-
-  const delta = event.clientX - resizeState.startX;
-  if (resizeState.pane === 'folderList') {
-    const nextWidth = resizeState.startFolderListWidth + delta;
-    folderListWidth.value = clamp(
-      nextWidth,
-      MIN_COLUMN_WIDTHS.folderList,
-      maxFolderListWidth(resizeState.startMessageListWidth),
-    );
-  } else {
-    const nextWidth = resizeState.startMessageListWidth + delta;
-    messageListWidth.value = clamp(
-      nextWidth,
-      MIN_COLUMN_WIDTHS.messageList,
-      maxMessageListWidth(folderListWidth.value),
-    );
-  }
-}
-
-function stopColumnResize() {
-  if (!resizeState && activeResizePane.value == null) return;
-
-  resizeState = null;
-  activeResizePane.value = null;
-  document.body.classList.remove('is-column-resizing');
-  window.removeEventListener('pointermove', onColumnResizeMove);
-  window.removeEventListener('pointerup', stopColumnResize);
-  window.removeEventListener('pointercancel', stopColumnResize);
-  saveColumnWidths();
-}
-
 function onWindowResize() {
   windowWidth.value = window.innerWidth;
   applyResponsiveLayout();
@@ -544,28 +514,6 @@ function clearMessageViewTimer() {
   messageViewTimer = null;
 }
 
-function onResizeHandleKeydown(pane: ResizePane, event: KeyboardEvent) {
-  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-
-  event.preventDefault();
-  const direction = event.key === 'ArrowRight' ? 1 : -1;
-  const step = event.shiftKey ? 40 : 10;
-  if (pane === 'folderList') {
-    folderListWidth.value = clamp(
-      folderListWidth.value + direction * step,
-      MIN_COLUMN_WIDTHS.folderList,
-      maxFolderListWidth(messageListWidth.value),
-    );
-  } else {
-    messageListWidth.value = clamp(
-      messageListWidth.value + direction * step,
-      MIN_COLUMN_WIDTHS.messageList,
-      maxMessageListWidth(folderListWidth.value),
-    );
-  }
-  saveColumnWidths();
-}
-
 function availablePaneWidth() {
   const shellWidth = shellEl.value?.clientWidth || window.innerWidth || 0;
   const resizerCount = (folderListHidden.value ? 0 : 1) + (displayedMessageView.value ? 1 : 0);
@@ -587,45 +535,9 @@ function maxMessageListWidth(folderList: number) {
 
 function clampColumnWidths() {
   if (!folderListHidden.value) {
-    folderListWidth.value = clamp(
-      folderListWidth.value,
-      MIN_COLUMN_WIDTHS.folderList,
-      maxFolderListWidth(messageListWidth.value),
-    );
+    clampPane('folderList');
   }
-  messageListWidth.value = clamp(
-    messageListWidth.value,
-    MIN_COLUMN_WIDTHS.messageList,
-    maxMessageListWidth(folderListWidth.value),
-  );
-}
-
-function loadColumnWidths() {
-  try {
-    const raw = window.localStorage?.getItem(RESIZE_STORAGE_KEY);
-    if (!raw) return;
-
-    const parsed = JSON.parse(raw);
-    if (Number.isFinite(parsed?.folderList)) {
-      folderListWidth.value = parsed.folderList;
-    }
-    if (Number.isFinite(parsed?.messageList)) {
-      messageListWidth.value = parsed.messageList;
-    }
-  } catch {
-    // Layout preferences are best-effort; blocked storage should not affect mail.
-  }
-}
-
-function saveColumnWidths() {
-  try {
-    window.localStorage?.setItem(RESIZE_STORAGE_KEY, JSON.stringify({
-      folderList: folderListWidth.value,
-      messageList: messageListWidth.value,
-    }));
-  } catch {
-    // Ignore storage failures; the current drag still applies for this session.
-  }
+  clampPane('messageList');
 }
 
 function resolveTheme(value: Theme): 'dark' | 'light' {

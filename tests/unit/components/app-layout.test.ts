@@ -1020,12 +1020,31 @@ describe('App mail layout', () => {
 
     const handle = wrapper.get('[aria-label="Resize folder list"]').element;
     handle.dispatchEvent(makePointerEvent('pointerdown', 200));
+    expect(document.body.classList.contains('is-column-resizing')).toBe(true);
     window.dispatchEvent(makePointerEvent('pointermove', 260));
     window.dispatchEvent(makePointerEvent('pointerup', 260));
     await nextTick();
 
+    expect(document.body.classList.contains('is-column-resizing')).toBe(false);
     expect(wrapper.get('.shell').attributes('style'))
       .toContain('--folder-list-width: 300px');
+    expect(JSON.parse(
+      window.localStorage.getItem('stormbox.mailColumnWidths.v1') ?? '',
+    )).toEqual({ folderList: 300, messageList: 360 });
+  });
+
+  it('resizes and persists the folder column from its keyboard separator', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    await wrapper.get('[aria-label="Resize folder list"]')
+      .trigger('keydown', { key: 'ArrowRight', shiftKey: true });
+
+    expect(wrapper.get('.shell').attributes('style'))
+      .toContain('--folder-list-width: 280px');
+    expect(JSON.parse(
+      window.localStorage.getItem('stormbox.mailColumnWidths.v1') ?? '',
+    )).toEqual({ folderList: 280, messageList: 360 });
   });
 
   it('resizes the message list column by dragging the message-view border', async () => {
