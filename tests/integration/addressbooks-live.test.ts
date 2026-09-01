@@ -14,6 +14,7 @@ import {
   syncAddressBooks,
   syncContacts,
 } from '../../src/sync/backends/jmap/contacts';
+import { maxObjectsInGet, maxObjectsInSet } from '../../src/sync/backends/jmap/limits';
 import { MUTATION_TYPES } from '../../src/sync/backends/jmap/outbox';
 import type {
   AddressBookInventory,
@@ -59,23 +60,51 @@ describe.sequential('live Stalwart address book management', () => {
   }
 
   /**
+   * Every card in the account whose full name starts with the family
+   * prefix. ContactCard/query has no name filter, so the whole account is
+   * paged to exhaustion; each page is sized so its ids fit one
+   * ContactCard/get.
+   */
+  async function familyCardIds(): Promise<string[]> {
+    const pageSize = maxObjectsInGet(context.transport);
+    const doomed: string[] = [];
+    let position = 0;
+    for (;;) {
+      const queried = await contacts('ContactCard/query', {
+        position,
+        limit: pageSize,
+      }, 'sweep-card-query');
+      const ids: string[] = Array.isArray(queried.ids) ? queried.ids : [];
+      if (ids.length > 0) {
+        const fetched = await contacts('ContactCard/get', {
+          ids,
+          properties: ['id', 'name'],
+        }, 'sweep-card-get');
+        doomed.push(...(fetched.list ?? [])
+          .filter((card: any) => String(card.name?.full ?? '').startsWith(BOOK_FAMILY))
+          .map((card: any) => card.id));
+      }
+      // A server that clamps the requested limit reports the one it served.
+      const served = Number.isSafeInteger(queried.limit) && Number(queried.limit) > 0
+        ? Math.min(pageSize, Number(queried.limit))
+        : pageSize;
+      if (ids.length < served) return doomed;
+      position += ids.length;
+    }
+  }
+
+  /**
    * Cards and books left by any run of this suite, including one that
    * died before its own teardown. A card shared into a retained book
    * survives its test book's destruction, so cards go by name first.
    */
   async function sweepFamilyArtifacts(): Promise<void> {
-    const queried = await contacts('ContactCard/query', { limit: 500 }, 'sweep-card-query');
-    if (queried.ids?.length) {
-      const fetched = await contacts('ContactCard/get', {
-        ids: queried.ids,
-        properties: ['id', 'name'],
-      }, 'sweep-card-get');
-      const doomed = (fetched.list ?? [])
-        .filter((card: any) => String(card.name?.full ?? '').startsWith(BOOK_FAMILY))
-        .map((card: any) => card.id);
-      if (doomed.length > 0) {
-        await contacts('ContactCard/set', { destroy: doomed }, 'sweep-cards');
-      }
+    const doomed = await familyCardIds();
+    const destroyChunk = maxObjectsInSet(context.transport);
+    for (let start = 0; start < doomed.length; start += destroyChunk) {
+      await contacts('ContactCard/set', {
+        destroy: doomed.slice(start, start + destroyChunk),
+      }, 'sweep-cards');
     }
     const bookIds = (await remoteBooks())
       .filter((book) => String(book.name ?? '').startsWith(BOOK_FAMILY))
