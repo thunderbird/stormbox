@@ -106,6 +106,119 @@ async function destroyMessagesByRemoteIdsInTransaction(
   return { removed, views: byView.size };
 }
 
+interface OperationMutationInput {
+  accountId: number;
+  mutationType: MutationType;
+  operationId: string;
+  requestJson: string;
+}
+
+interface EnsuredOperationMutation {
+  id: number;
+  reused: boolean;
+  requestMatches: boolean;
+  storedRequestJson: string;
+  errorType?: string;
+}
+
+/**
+ * What a conflicted operation row becomes when its operation is ensured
+ * again: kept as it is, surfacing the recorded error type, or revived as
+ * a retry resuming from the given checkpoint.
+ */
+type ConflictedOperationVerdict =
+  | { revive: false; errorType?: string }
+  | { revive: true; serverResponseJson: string | null };
+
+/**
+ * The per-family rules of `ensureOperationMutationInTx`. Address-book and
+ * identity operations share the row lifecycle and differ only here.
+ */
+interface OperationMutationFamily {
+  /** Whether the stored request is the one being ensured. */
+  sameRequest(row: any, storedRequest: any, requestJson: string): boolean;
+  /** Whether a phase means the server has not been written yet. */
+  isPrewrite(phase: unknown): boolean;
+  judgeConflicted(
+    row: any,
+    context: { prewrite: boolean; recordedError: any },
+  ): ConflictedOperationVerdict;
+}
+
+const ADDRESSBOOK_OPERATION_FAMILY: OperationMutationFamily = {
+  sameRequest: (row, _storedRequest, requestJson) => row.request_json === requestJson,
+  isPrewrite: (phase) => phase == null,
+  judgeConflicted(row, { prewrite, recordedError }) {
+    let checkpoint;
+    try {
+      checkpoint = JSON.parse(row.server_response_json ?? 'null')?.addressBook;
+    } catch {
+      checkpoint = null;
+    }
+    const cachePending = row.phase === ADDRESSBOOK_PHASE.CACHE_PENDING
+      && checkpoint?.version === 1
+      && typeof checkpoint.remoteId === 'string';
+    const destroyPending =
+      row.phase === ADDRESSBOOK_PHASE.DESTROY_SUBMITTING
+      && checkpoint?.version === 1
+      && checkpoint.operation === 'destroy'
+      && typeof checkpoint.remoteId === 'string'
+      && checkpoint.confirmationInventory?.version === 1;
+    const retryablePrewrite = prewrite
+      && recordedError
+      && recordedError.terminal !== true;
+    if (!cachePending && !destroyPending && !retryablePrewrite) {
+      return {
+        revive: false,
+        ...(typeof recordedError?.type === 'string'
+          ? { errorType: recordedError.type }
+          : {}),
+      };
+    }
+    if (cachePending) checkpoint.attempts = 0;
+    return {
+      revive: true,
+      serverResponseJson: checkpoint
+        ? JSON.stringify({ addressBook: checkpoint })
+        : row.server_response_json,
+    };
+  },
+};
+
+const IDENTITY_OPERATION_FAMILY: OperationMutationFamily = {
+  sameRequest: (_row, storedRequest, requestJson) =>
+    JSON.stringify(storedRequest) === JSON.stringify(JSON.parse(requestJson)),
+  isPrewrite: (phase) => phase == null || phase === SEND_PHASE.QUEUED,
+  judgeConflicted(row, { prewrite, recordedError }) {
+    const errorType = typeof recordedError?.type === 'string'
+      ? recordedError.type
+      : undefined;
+    const recoverable = row.phase === SEND_PHASE.CACHE_PENDING
+      || (prewrite && recordedError && recordedError.terminal !== true);
+    if (!recoverable) {
+      return { revive: false, ...(errorType ? { errorType } : {}) };
+    }
+    let checkpoint;
+    try {
+      checkpoint = JSON.parse(row.server_response_json ?? 'null');
+    } catch {
+      checkpoint = null;
+    }
+    const validCheckpoint = row.phase !== SEND_PHASE.CACHE_PENDING
+      || typeof checkpoint?.identityRemoteId === 'string';
+    if (!validCheckpoint) {
+      return { revive: false, errorType: IDENTITY_ERROR.AMBIGUOUS_CREATE };
+    }
+    if (row.phase === SEND_PHASE.CACHE_PENDING) checkpoint.attempts = 0;
+    return {
+      revive: true,
+      serverResponseJson: row.phase === SEND_PHASE.CACHE_PENDING
+        ? JSON.stringify(checkpoint)
+        : row.server_response_json,
+    };
+  },
+};
+
 /**
  * Build the handler map for a given engine. Broadcaster is optional in
  * tests; pass a no-op when you don't care about cross-tab invalidation.
@@ -228,6 +341,121 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
   async function ensureSettingsPushInTx(tx: any, accountId: number, ts: number) {
     return ensureSinglePushInTx(tx, accountId, MUTATION_TYPE.PUSH_SETTINGS, ts);
+  }
+
+  /**
+   * Find or create the pending mutation carrying an operation id, so a
+   * repeated ensure resumes the same durable row instead of queueing a
+   * second write. A row the server has not seen takes the newer request;
+   * a conflicted row is kept or revived by the family's rules; anything
+   * else is reused as stored.
+   */
+  async function ensureOperationMutationInTx(
+    tx: any,
+    input: OperationMutationInput,
+    ts: number,
+    family: OperationMutationFamily,
+  ): Promise<EnsuredOperationMutation> {
+    const rows = await tx.all(
+      `SELECT *
+         FROM pending_mutations
+        WHERE account_id = ?
+          AND mutation_type = ?
+          AND local_status IN ('pending','retry','in_flight','conflicted')
+        ORDER BY id`,
+      [input.accountId, input.mutationType],
+    );
+    for (const row of rows) {
+      let request;
+      try {
+        request = JSON.parse(row.request_json);
+      } catch {
+        continue;
+      }
+      if (request?.operationId !== input.operationId) continue;
+      const requestMatches = family.sameRequest(row, request, input.requestJson);
+      const prewrite = family.isPrewrite(row.phase);
+      if (
+        prewrite
+        && !requestMatches
+        && row.local_status !== 'in_flight'
+      ) {
+        await tx.run(
+          `UPDATE pending_mutations
+              SET local_status = 'pending',
+                  request_json = ?,
+                  attempts = 0,
+                  not_before = NULL,
+                  error_json = NULL,
+                  updated_at = ?
+            WHERE id = ?`,
+          [input.requestJson, ts, row.id],
+        );
+        return {
+          id: Number(row.id),
+          reused: true,
+          requestMatches: true,
+          storedRequestJson: input.requestJson,
+        };
+      }
+      if (row.local_status !== 'conflicted') {
+        return {
+          id: Number(row.id),
+          reused: true,
+          requestMatches,
+          storedRequestJson: row.request_json,
+        };
+      }
+
+      let recordedError;
+      try {
+        recordedError = JSON.parse(row.error_json ?? 'null');
+      } catch {
+        recordedError = null;
+      }
+      const verdict = family.judgeConflicted(row, { prewrite, recordedError });
+      if (verdict.revive === false) {
+        return {
+          id: Number(row.id),
+          reused: true,
+          requestMatches,
+          storedRequestJson: row.request_json,
+          ...(verdict.errorType !== undefined ? { errorType: verdict.errorType } : {}),
+        };
+      }
+      await tx.run(
+        `UPDATE pending_mutations
+            SET local_status = 'retry',
+                attempts = 0,
+                not_before = NULL,
+                error_json = NULL,
+                server_response_json = ?,
+                updated_at = ?
+          WHERE id = ?`,
+        [verdict.serverResponseJson, ts, row.id],
+      );
+      return {
+        id: Number(row.id),
+        reused: true,
+        requestMatches,
+        storedRequestJson: row.request_json,
+      };
+    }
+
+    const inserted = await tx.run(
+      `INSERT INTO pending_mutations(
+          account_id, mutation_type, local_status, target_message_id,
+          request_json, optimistic_patch_json, server_response_json, error_json,
+          created_at, updated_at
+       ) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL, NULL, ?, ?)`,
+      [input.accountId, input.mutationType, input.requestJson, ts, ts],
+    );
+    return {
+      id: Number(inserted.lastInsertRowid),
+      reused: false,
+      requestMatches: true,
+      storedRequestJson: input.requestJson,
+    };
   }
 
   function parseContactsTrashDocument(
@@ -3387,149 +3615,10 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       }
 
       const ts = now();
-      let ensured: {
-        id: number;
-        reused: boolean;
-        requestMatches: boolean;
-        storedRequestJson: string;
-        errorType?: string;
-      } | null = null;
-      await engine.transaction(async (tx) => {
-        const rows = await tx.all(
-          `SELECT *
-             FROM pending_mutations
-            WHERE account_id = ?
-              AND mutation_type = ?
-              AND local_status IN ('pending','retry','in_flight','conflicted')
-            ORDER BY id`,
-          [input.accountId, input.mutationType],
-        );
-        for (const row of rows) {
-          let request;
-          try {
-            request = JSON.parse(row.request_json);
-          } catch {
-            continue;
-          }
-          if (request?.operationId !== input.operationId) continue;
-          const requestMatches = row.request_json === input.requestJson;
-          const prewrite = row.phase == null;
-          if (
-            prewrite
-            && !requestMatches
-            && row.local_status !== 'in_flight'
-          ) {
-            await tx.run(
-              `UPDATE pending_mutations
-                  SET local_status = 'pending',
-                      request_json = ?,
-                      attempts = 0,
-                      not_before = NULL,
-                      error_json = NULL,
-                      updated_at = ?
-                WHERE id = ?`,
-              [input.requestJson, ts, row.id],
-            );
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches: true,
-              storedRequestJson: input.requestJson,
-            };
-            return;
-          }
-          if (row.local_status !== 'conflicted') {
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches,
-              storedRequestJson: row.request_json,
-            };
-            return;
-          }
-
-          let recordedError;
-          let checkpoint;
-          try {
-            recordedError = JSON.parse(row.error_json ?? 'null');
-          } catch {
-            recordedError = null;
-          }
-          try {
-            checkpoint = JSON.parse(
-              row.server_response_json ?? 'null',
-            )?.addressBook;
-          } catch {
-            checkpoint = null;
-          }
-          const cachePending = row.phase === ADDRESSBOOK_PHASE.CACHE_PENDING
-            && checkpoint?.version === 1
-            && typeof checkpoint.remoteId === 'string';
-          const destroyPending =
-            row.phase === ADDRESSBOOK_PHASE.DESTROY_SUBMITTING
-            && checkpoint?.version === 1
-            && checkpoint.operation === 'destroy'
-            && typeof checkpoint.remoteId === 'string'
-            && checkpoint.confirmationInventory?.version === 1;
-          const retryablePrewrite = prewrite
-            && recordedError
-            && recordedError.terminal !== true;
-          if (!cachePending && !destroyPending && !retryablePrewrite) {
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches,
-              storedRequestJson: row.request_json,
-              ...(typeof recordedError?.type === 'string'
-                ? { errorType: recordedError.type }
-                : {}),
-            };
-            return;
-          }
-          if (cachePending) checkpoint.attempts = 0;
-          await tx.run(
-            `UPDATE pending_mutations
-                SET local_status = 'retry',
-                    attempts = 0,
-                    not_before = NULL,
-                    error_json = NULL,
-                    server_response_json = ?,
-                    updated_at = ?
-              WHERE id = ?`,
-            [
-              checkpoint
-                ? JSON.stringify({ addressBook: checkpoint })
-                : row.server_response_json,
-              ts,
-              row.id,
-            ],
-          );
-          ensured = {
-            id: Number(row.id),
-            reused: true,
-            requestMatches,
-            storedRequestJson: row.request_json,
-          };
-          return;
-        }
-
-        const inserted = await tx.run(
-          `INSERT INTO pending_mutations(
-              account_id, mutation_type, local_status, target_message_id,
-              request_json, optimistic_patch_json, server_response_json, error_json,
-              created_at, updated_at
-           ) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL, NULL, ?, ?)`,
-          [input.accountId, input.mutationType, input.requestJson, ts, ts],
-        );
-        ensured = {
-          id: Number(inserted.lastInsertRowid),
-          reused: false,
-          requestMatches: true,
-          storedRequestJson: input.requestJson,
-        };
-      });
+      const ensured: EnsuredOperationMutation = await engine.transaction((tx) =>
+        ensureOperationMutationInTx(tx, input, ts, ADDRESSBOOK_OPERATION_FAMILY));
       broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
-      notifyMutation(input.accountId, ensured!.id);
+      notifyMutation(input.accountId, ensured.id);
       return ensured;
     },
 
@@ -4829,161 +4918,10 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       }
 
       const ts = now();
-      let ensured: {
-        id: number;
-        reused: boolean;
-        requestMatches: boolean;
-        storedRequestJson: string;
-        errorType?: string;
-      } | null = null;
-      await engine.transaction(async (tx) => {
-        const rows = await tx.all(
-          `SELECT *
-             FROM pending_mutations
-            WHERE account_id = ?
-              AND mutation_type = ?
-              AND local_status IN ('pending','retry','in_flight','conflicted')
-            ORDER BY id`,
-          [input.accountId, input.mutationType],
-        );
-        for (const row of rows) {
-          let request;
-          try {
-            request = JSON.parse(row.request_json);
-          } catch {
-            continue;
-          }
-          if (request?.operationId !== input.operationId) continue;
-          const requestMatches = JSON.stringify(request) === JSON.stringify(
-            JSON.parse(input.requestJson),
-          );
-          const prewrite = row.phase == null || row.phase === SEND_PHASE.QUEUED;
-          if (
-            prewrite
-            && !requestMatches
-            && ['pending', 'retry', 'failed', 'conflicted'].includes(row.local_status)
-          ) {
-            await tx.run(
-              `UPDATE pending_mutations
-                  SET local_status = 'pending',
-                      request_json = ?,
-                      attempts = 0,
-                      not_before = NULL,
-                      error_json = NULL,
-                      updated_at = ?
-                WHERE id = ?`,
-              [input.requestJson, ts, row.id],
-            );
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches: true,
-              storedRequestJson: input.requestJson,
-            };
-            return;
-          }
-          if (row.local_status !== 'conflicted') {
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches,
-              storedRequestJson: row.request_json,
-            };
-            return;
-          }
-          let recordedError;
-          try {
-            recordedError = JSON.parse(row.error_json ?? 'null');
-          } catch {
-            recordedError = null;
-          }
-          const errorType = typeof recordedError?.type === 'string'
-            ? recordedError.type
-            : undefined;
-          const recoverable = row.phase === SEND_PHASE.CACHE_PENDING
-            || (prewrite && recordedError && recordedError.terminal !== true);
-          if (!recoverable) {
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches,
-              storedRequestJson: row.request_json,
-              ...(errorType ? { errorType } : {}),
-            };
-            return;
-          }
-          let checkpoint;
-          try {
-            checkpoint = JSON.parse(row.server_response_json ?? 'null');
-          } catch {
-            checkpoint = null;
-          }
-          const validCheckpoint = row.phase !== SEND_PHASE.CACHE_PENDING
-            || typeof checkpoint?.identityRemoteId === 'string';
-          if (!validCheckpoint) {
-            ensured = {
-              id: Number(row.id),
-              reused: true,
-              requestMatches,
-              storedRequestJson: row.request_json,
-              errorType: IDENTITY_ERROR.AMBIGUOUS_CREATE,
-            };
-            return;
-          }
-          if (row.phase === SEND_PHASE.CACHE_PENDING) checkpoint.attempts = 0;
-          await tx.run(
-            `UPDATE pending_mutations
-                SET local_status = 'retry',
-                    attempts = 0,
-                    not_before = NULL,
-                    error_json = NULL,
-                    server_response_json = ?,
-                    updated_at = ?
-              WHERE id = ?`,
-            [
-              row.phase === SEND_PHASE.CACHE_PENDING
-                ? JSON.stringify(checkpoint)
-                : row.server_response_json,
-              ts,
-              row.id,
-            ],
-          );
-          ensured = {
-            id: Number(row.id),
-            reused: true,
-            requestMatches,
-            storedRequestJson: row.request_json,
-          };
-          return;
-        }
-
-        const inserted = await tx.run(
-          `INSERT INTO pending_mutations(
-              account_id, mutation_type, local_status, target_message_id,
-              request_json, optimistic_patch_json, server_response_json, error_json,
-              created_at, updated_at
-           ) VALUES (?, ?, 'pending', NULL, ?, NULL, NULL, NULL, ?, ?)`,
-          [input.accountId, input.mutationType, input.requestJson, ts, ts],
-        );
-        ensured = {
-          id: Number(inserted.lastInsertRowid),
-          reused: false,
-          requestMatches: true,
-          storedRequestJson: input.requestJson,
-        };
-      });
+      const ensured: EnsuredOperationMutation = await engine.transaction((tx) =>
+        ensureOperationMutationInTx(tx, input, ts, IDENTITY_OPERATION_FAMILY));
       broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
-      try {
-        const maybePromise = onMutationInserted({
-          accountId: input.accountId,
-          mutationId: ensured!.id,
-        });
-        if (maybePromise && typeof maybePromise.then === 'function') {
-          maybePromise.catch(() => {});
-        }
-      } catch {
-        // The durable row is sufficient; another outbox wake will find it.
-      }
+      notifyMutation(input.accountId, ensured.id);
       return ensured;
     },
 
