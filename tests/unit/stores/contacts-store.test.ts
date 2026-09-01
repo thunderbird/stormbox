@@ -905,6 +905,81 @@ describe('identity mutation requests', () => {
     });
     expect(continuation.operationId).not.toBe('update-operation');
   });
+
+  it('keeps a newer identity continuation after an older save finishes', async () => {
+    const repaired = identity({ remote_id: 'identity-race', name: 'Repaired' });
+    const updated = identity({ ...repaired, name: 'Updated' });
+    const runResolvers: Array<(result: any) => void> = [];
+    repo.ensureIdentityMutation.mockImplementation(async () => {
+      const call = repo.ensureIdentityMutation.mock.calls.length;
+      return {
+        id: call,
+        reused: call === 1,
+        requestMatches: call !== 1,
+      };
+    });
+    repo.runMutation.mockImplementation(() => new Promise((resolve) => {
+      runResolvers.push(resolve);
+    }));
+    repo.listIdentities.mockResolvedValue([repaired]);
+    const store = useContactsStore();
+    store.identities = [identity({ remote_id: 'identity-race', name: 'Before' })];
+
+    const first = store.updateIdentity({
+      remoteId: 'identity-race',
+      name: 'Updated',
+    });
+    const second = store.updateIdentity({
+      remoteId: 'identity-race',
+      name: 'Updated',
+    });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(2));
+
+    runResolvers[0]({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { ids: ['identity-race'], identity: repaired },
+    });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(3));
+    const continuationOperationId =
+      repo.ensureIdentityMutation.mock.calls[2][0].operationId;
+
+    runResolvers[1]({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { ids: ['identity-race'], identity: repaired },
+    });
+    await expect(second).resolves.toEqual({ ok: true, identity: repaired });
+
+    runResolvers[2]({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      errorType: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+    });
+    await expect(first).resolves.toEqual({
+      ok: false,
+      error: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+    });
+
+    repo.listIdentities.mockResolvedValue([updated]);
+    const retry = store.updateIdentity({
+      remoteId: 'identity-race',
+      name: 'Updated',
+    });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(4));
+    runResolvers[3]({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { ids: ['identity-race'], identity: updated },
+    });
+    await expect(retry).resolves.toEqual({ ok: true, identity: updated });
+    expect(repo.ensureIdentityMutation.mock.calls[3][0].operationId)
+      .toBe(continuationOperationId);
+  });
 });
 
 describe('contact mutation requests', () => {
@@ -1044,9 +1119,92 @@ describe('contact mutation requests', () => {
 
     expect(result).toMatchObject({
       ok: true,
+      status: 'hydrated',
       contactId: 88,
       detail: { id: 88, full_name: 'Phone only' },
     });
+  });
+
+  it('reports a persisted create when its cached detail is not hydrated', async () => {
+    repo.listContacts.mockImplementation(async () => {
+      const inserted = repo.insertPendingMutation.mock.calls.at(-1)?.[0];
+      const { uid } = JSON.parse(inserted.requestJson);
+      return [{
+        id: 88,
+        remote_id: 'created',
+        uid,
+        addressbook_ids: [1],
+        display_name: 'Persisted contact',
+        email: null,
+      }];
+    });
+    repo.getContact.mockResolvedValue(null);
+    const store = useContactsStore();
+
+    const result = await store.createContactResult({
+      contact: contactFields({ fullName: 'Persisted contact' }),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'persisted',
+      contactId: 88,
+      detail: null,
+    });
+  });
+
+  it('reuses the returned contact UID for an explicit create retry', async () => {
+    mutationErrorType = 'serverFail';
+    const store = useContactsStore();
+    const input = {
+      contact: contactFields({ fullName: 'Retried contact' }),
+    };
+
+    const first = await store.createContactResult(input);
+    expect(first).toMatchObject({
+      ok: false,
+      status: 'failed',
+      uid: expect.stringMatching(/^urn:uuid:/),
+    });
+
+    mutationErrorType = undefined;
+    repo.listContacts.mockImplementation(async () => {
+      const inserted = repo.insertPendingMutation.mock.calls.at(-1)?.[0];
+      const { uid } = JSON.parse(inserted.requestJson);
+      return [{
+        id: 89,
+        remote_id: 'retried',
+        uid,
+        addressbook_ids: [1],
+        display_name: 'Retried contact',
+        email: null,
+      }];
+    });
+    repo.getContact.mockResolvedValue({
+      id: 89,
+      remote_id: 'retried',
+      addressbook_ids: [1],
+      display_name: 'Retried contact',
+      full_name: 'Retried contact',
+      emails: [],
+      phones: [],
+      links: [],
+      anniversaries: [],
+      notes: [],
+      organizations: [],
+      titles: [],
+    });
+    const second = await store.createContactResult({
+      ...input,
+      ...(first.uid ? { uid: first.uid } : {}),
+    });
+
+    expect(second).toMatchObject({ ok: true, status: 'hydrated', contactId: 89 });
+    const queuedUids = repo.insertPendingMutation.mock.calls.map(
+      ([request]: any[]) => JSON.parse(request.requestJson).uid,
+    );
+    expect(queuedUids).toHaveLength(2);
+    expect(queuedUids[1]).toBe(queuedUids[0]);
   });
 
   it('uses the confirmed server id when create enriches an existing card', async () => {
@@ -1087,6 +1245,7 @@ describe('contact mutation requests', () => {
 
     expect(result).toMatchObject({
       ok: true,
+      status: 'hydrated',
       contactId: 66,
       detail: { id: 66 },
     });

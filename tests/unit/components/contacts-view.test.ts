@@ -875,7 +875,7 @@ describe('ContactsView directory shell', () => {
         value: 'Copied note',
       }],
     });
-    const { store, wrapper } = await mountContacts({
+    const { details, store, wrapper } = await mountContacts({
       contacts: [source, existingCopy],
       details: new Map([[source.id, detail]]),
     });
@@ -886,19 +886,23 @@ describe('ContactsView directory shell', () => {
       display_name: `${source.display_name} (Copy 2)`,
       full_name: `${source.display_name} (Copy 2)`,
     };
+    details.set(99, duplicatedDetail);
+    const refreshContacts = vi.spyOn(store, 'refreshContacts').mockResolvedValue();
     const duplicate = vi.spyOn(store, 'createContactResult').mockImplementation(async (input) => {
       store.contacts = [...store.contacts, {
         id: 99,
         remote_id: 'contact-copy',
+        uid: 'urn:uuid:00000000-0000-4000-8000-000000000099',
         addressbook_ids: [...source.addressbook_ids],
         display_name: duplicatedDetail.display_name,
         email: source.email,
       }];
       return {
         ok: true,
-        uid: 'copy-uid',
-        contactId: 99,
-        detail: duplicatedDetail,
+        status: 'persisted',
+        uid: 'urn:uuid:00000000-0000-4000-8000-000000000099',
+        contactId: null,
+        detail: null,
       };
     });
 
@@ -919,6 +923,7 @@ describe('ContactsView directory shell', () => {
     });
     expect(wrapper.get('[aria-selected="true"]').attributes('data-entry-key'))
       .toBe('contact:99');
+    expect(refreshContacts).toHaveBeenCalledOnce();
   });
 
   it('duplicates an identity with its defaults and the next copy number', async () => {

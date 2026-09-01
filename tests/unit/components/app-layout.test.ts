@@ -502,6 +502,42 @@ describe('App mail layout', () => {
     expect(wrapper.find('.msg-list').exists()).toBe(true);
   });
 
+  it('commits only the latest contact filter queued behind confirmation', async () => {
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [{
+      id: 1,
+      remote_id: 'alice',
+      addressbook_ids: [],
+      display_name: 'Alice Example',
+      email: 'alice@example.com',
+    }];
+    const wrapper = mountApp();
+    await flushPromises();
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-entry-key="contact:1"]').trigger('click');
+    await flushPromises();
+    const edit = wrapper.findAll('button')
+      .find((button) => button.attributes('aria-label') === 'Edit')!;
+    await edit.trigger('click');
+    await wrapper.get('input[autocomplete="name"]').setValue('Dirty Alice');
+    const filter = wrapper.get('.quick-filter__input');
+
+    await filter.setValue('first query');
+    await nextTick();
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('Save your changes');
+    await filter.setValue('latest query');
+    await nextTick();
+    await wrapper.findAll('button')
+      .find((button) => button.text().trim() === 'Discard')!
+      .trigger('click');
+    await flushPromises();
+
+    expect((filter.element as HTMLInputElement).value).toBe('latest query');
+    expect(wrapper.getComponent(ContactsView).props('filterQuery')).toBe('latest query');
+    expect(wrapper.find('[role="alertdialog"]').exists()).toBe(false);
+  });
+
   it('does not change mail selection when the Contacts filter query changes', async () => {
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;

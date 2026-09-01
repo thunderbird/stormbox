@@ -237,11 +237,13 @@ export type ContactCreateInput =
       contact: ContactMutationFields;
       addressbookIds?: number[];
       allowDuplicate?: boolean;
+      uid?: string;
     }
   | {
       name?: string | null;
       emails: string[];
       addressbookId?: number | null;
+      uid?: string;
     };
 
 export type ContactUpdateInput =
@@ -259,11 +261,23 @@ export type ContactUpdateInput =
 export type ContactCreateResult =
   | {
       ok: true;
+      status: 'hydrated';
       uid: string;
       contactId: number;
       detail: ContactDetail;
     }
-  | { ok: false };
+  | {
+      ok: true;
+      status: 'persisted';
+      uid: string;
+      contactId: number | null;
+      detail: null;
+    }
+  | {
+      ok: false;
+      status: 'failed';
+      uid: string | null;
+    };
 
 export type ContactBatchActionResult = ContactBatchMutationResult & {
   ok: boolean;
@@ -276,19 +290,11 @@ export type ContactTrashActionResult = ContactTrashMutationResult & {
 export const CONTACT_MISSING_MESSAGE =
   'This contact no longer exists. Discard these changes or create a new contact.';
 
-interface ContactCreateExecution {
-  ok: boolean;
-  uid: string | null;
-  contactId: number | null;
-  detail: ContactDetail | null;
-}
-
-function failedContactCreate(): ContactCreateExecution {
+function failedContactCreate(uid: string | null = null): ContactCreateResult {
   return {
     ok: false,
-    uid: null,
-    contactId: null,
-    detail: null,
+    status: 'failed',
+    uid,
   };
 }
 
@@ -837,11 +843,12 @@ export const useContactsStore = defineStore('contacts', () => {
    */
   async function executeContactCreate(
     input: ContactCreateInput,
-  ): Promise<ContactCreateExecution> {
+  ): Promise<ContactCreateResult> {
     error.value = null;
+    const retryUid = normalizeContactUid(input.uid);
     if (!repo || authStore.accountId == null) {
       error.value = 'Not connected.';
-      return failedContactCreate();
+      return failedContactCreate(retryUid);
     }
     let fields: ContactMutationFields;
     let selectedAddressbookIds: number[];
@@ -853,7 +860,7 @@ export const useContactsStore = defineStore('contacts', () => {
       const { ok, list } = cleanEmailList(input.emails);
       if (!ok) {
         error.value = 'Enter a valid email address.';
-        return failedContactCreate();
+        return failedContactCreate(retryUid);
       }
       fields = legacyCreateContactFields(name, list);
       selectedAddressbookIds = input.addressbookId == null ? [] : [input.addressbookId];
@@ -861,13 +868,13 @@ export const useContactsStore = defineStore('contacts', () => {
     const invalid = invalidContactFields(fields);
     if (invalid) {
       error.value = invalid;
-      return failedContactCreate();
+      return failedContactCreate(retryUid);
     }
     if (contactFieldsAreEmpty(fields)) {
       error.value = 'Enter at least one contact detail.';
-      return failedContactCreate();
+      return failedContactCreate(retryUid);
     }
-    const uid = createContactUid();
+    const uid = retryUid ?? createContactUid();
     const request: CreateContactMutationRequest = {
       ...fields,
       uid,
@@ -884,7 +891,7 @@ export const useContactsStore = defineStore('contacts', () => {
       });
       if (!mutation.ok) {
         error.value = 'Could not add the contact. Please try again.';
-        return failedContactCreate();
+        return failedContactCreate(uid);
       }
       await refreshContacts();
       const normalizedUid = normalizeContactUid(uid);
@@ -894,18 +901,33 @@ export const useContactsStore = defineStore('contacts', () => {
         ?? contacts.value.find((contact) =>
           normalizeContactUid(contact.uid) === normalizedUid)
         ?? null;
-      const detail = created == null
-        ? null
-        : await repo.getContact(authStore.accountId, created.id);
+      let detail: ContactDetail | null = null;
+      if (created) {
+        try {
+          detail = await repo.getContact(authStore.accountId, created.id);
+        } catch (err: any) {
+          error.value = err?.message ?? String(err);
+        }
+      }
+      if (created && detail) {
+        return {
+          ok: true,
+          status: 'hydrated',
+          uid,
+          contactId: created.id,
+          detail,
+        };
+      }
       return {
         ok: true,
+        status: 'persisted',
         uid,
         contactId: created?.id ?? null,
-        detail,
+        detail: null,
       };
     } catch (err: any) {
       error.value = err?.message ?? String(err);
-      return failedContactCreate();
+      return failedContactCreate(uid);
     } finally {
       saving.value = false;
     }
@@ -918,24 +940,7 @@ export const useContactsStore = defineStore('contacts', () => {
   async function createContactResult(
     input: ContactCreateInput,
   ): Promise<ContactCreateResult> {
-    const result = await executeContactCreate(input);
-    if (
-      !result.ok
-      || result.uid == null
-      || result.contactId == null
-      || result.detail == null
-    ) {
-      if (result.ok) {
-        error.value = 'The contact was saved, but its cached detail is unavailable.';
-      }
-      return { ok: false };
-    }
-    return {
-      ok: true,
-      uid: result.uid,
-      contactId: result.contactId,
-      detail: result.detail,
-    };
+    return executeContactCreate(input);
   }
 
   /**
@@ -1837,9 +1842,14 @@ export const useContactsStore = defineStore('contacts', () => {
     return operationId;
   }
 
-  function finishIdentityOperation(key: string, errorCode: IdentityError | null): void {
+  function finishIdentityOperation(
+    key: string,
+    operationId: string,
+    errorCode: IdentityError | null,
+  ): void {
     if (
-      errorCode !== IDENTITY_ERROR.CACHE_REPAIR_FAILED
+      identityOperationIds.get(key) === operationId
+      && errorCode !== IDENTITY_ERROR.CACHE_REPAIR_FAILED
       && errorCode !== IDENTITY_ERROR.AMBIGUOUS_CREATE
       && errorCode !== IDENTITY_ERROR.SERVER_UNAVAILABLE
     ) {
@@ -1874,11 +1884,16 @@ export const useContactsStore = defineStore('contacts', () => {
 
   async function applyIdentityContinuation(
     operationKey: string,
+    operationId: string,
     remoteId: string,
     fields: IdentityMutableFields,
   ): Promise<IdentitySaveResult> {
     if (Object.keys(fields).length === 0) {
-      finishIdentityOperation(operationKey, IDENTITY_ERROR.INVALID_PATCH);
+      finishIdentityOperation(
+        operationKey,
+        operationId,
+        IDENTITY_ERROR.INVALID_PATCH,
+      );
       return identityFailure(IDENTITY_ERROR.INVALID_PATCH);
     }
     const nextOperationId = createIdentityOperationId();
@@ -1896,15 +1911,19 @@ export const useContactsStore = defineStore('contacts', () => {
     });
     if (!result.ok) {
       const code = identityErrorForMutation(result.errorType);
-      finishIdentityOperation(operationKey, code);
+      finishIdentityOperation(operationKey, nextOperationId, code);
       return identityFailure(code);
     }
     const identity = await identityFromMutation(result, remoteId);
     if (!identity) {
-      finishIdentityOperation(operationKey, IDENTITY_ERROR.CACHE_REPAIR_FAILED);
+      finishIdentityOperation(
+        operationKey,
+        nextOperationId,
+        IDENTITY_ERROR.CACHE_REPAIR_FAILED,
+      );
       return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
     }
-    finishIdentityOperation(operationKey, null);
+    finishIdentityOperation(operationKey, nextOperationId, null);
     return { ok: true, identity };
   }
 
@@ -1938,12 +1957,16 @@ export const useContactsStore = defineStore('contacts', () => {
       });
       if (!result.ok) {
         const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, code);
+        finishIdentityOperation(operationKey, operationId, code);
         return identityFailure(code);
       }
       const identity = await identityFromMutation(result);
       if (!identity) {
-        finishIdentityOperation(operationKey, IDENTITY_ERROR.CACHE_REPAIR_FAILED);
+        finishIdentityOperation(
+          operationKey,
+          operationId,
+          IDENTITY_ERROR.CACHE_REPAIR_FAILED,
+        );
         return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
       }
       if (result.requestMatches === false) {
@@ -1952,19 +1975,28 @@ export const useContactsStore = defineStore('contacts', () => {
           typeof stored?.email !== 'string'
           || stored.email.toLowerCase() !== email.toLowerCase()
         ) {
-          finishIdentityOperation(operationKey, IDENTITY_ERROR.IMMUTABLE_FIELD);
+          finishIdentityOperation(
+            operationKey,
+            operationId,
+            IDENTITY_ERROR.IMMUTABLE_FIELD,
+          );
           return identityFailure(IDENTITY_ERROR.IMMUTABLE_FIELD);
         }
         return applyIdentityContinuation(
           operationKey,
+          operationId,
           identity.remote_id,
           prepared.fields,
         );
       }
-      finishIdentityOperation(operationKey, null);
+      finishIdentityOperation(operationKey, operationId, null);
       return { ok: true, identity };
     } catch {
-      finishIdentityOperation(operationKey, IDENTITY_ERROR.SERVER_UNAVAILABLE);
+      finishIdentityOperation(
+        operationKey,
+        operationId,
+        IDENTITY_ERROR.SERVER_UNAVAILABLE,
+      );
       return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
     } finally {
       saving.value = false;
@@ -2012,25 +2044,34 @@ export const useContactsStore = defineStore('contacts', () => {
       });
       if (!result.ok) {
         const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, code);
+        finishIdentityOperation(operationKey, operationId, code);
         return identityFailure(code);
       }
       const identity = await identityFromMutation(result, input.remoteId);
       if (!identity) {
-        finishIdentityOperation(operationKey, IDENTITY_ERROR.CACHE_REPAIR_FAILED);
+        finishIdentityOperation(
+          operationKey,
+          operationId,
+          IDENTITY_ERROR.CACHE_REPAIR_FAILED,
+        );
         return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
       }
       if (result.requestMatches === false) {
         return applyIdentityContinuation(
           operationKey,
+          operationId,
           input.remoteId,
           prepared.fields,
         );
       }
-      finishIdentityOperation(operationKey, null);
+      finishIdentityOperation(operationKey, operationId, null);
       return { ok: true, identity };
     } catch {
-      finishIdentityOperation(operationKey, IDENTITY_ERROR.SERVER_UNAVAILABLE);
+      finishIdentityOperation(
+        operationKey,
+        operationId,
+        IDENTITY_ERROR.SERVER_UNAVAILABLE,
+      );
       return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
     } finally {
       saving.value = false;
@@ -2062,14 +2103,18 @@ export const useContactsStore = defineStore('contacts', () => {
       });
       if (!result.ok) {
         const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, code);
+        finishIdentityOperation(operationKey, operationId, code);
         await refreshIdentities();
         return identityFailure(code);
       }
-      finishIdentityOperation(operationKey, null);
+      finishIdentityOperation(operationKey, operationId, null);
       return { ok: true };
     } catch {
-      finishIdentityOperation(operationKey, IDENTITY_ERROR.SERVER_UNAVAILABLE);
+      finishIdentityOperation(
+        operationKey,
+        operationId,
+        IDENTITY_ERROR.SERVER_UNAVAILABLE,
+      );
       await refreshIdentities();
       return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
     } finally {
