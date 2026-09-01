@@ -70,8 +70,8 @@ export type MutationStatus = (typeof MUTATION_STATUS)[keyof typeof MUTATION_STAT
  * a resume can skip work that already happened. Only CREATED and
  * SUBMITTED describe irreversible server state; the rest are local
  * bookkeeping. Contact and Identity writes reuse CACHE_PENDING for their own
- * server-applied-cache-behind windows; every other mutation type leaves
- * phase NULL.
+ * server-applied-cache-behind windows; contact creates also record a phase
+ * while their idempotency key is being reconciled.
  *
  * UNKNOWN is terminal for automation on purpose: it means a response was
  * lost and reconciliation could not decide, so the choice belongs to the
@@ -100,6 +100,11 @@ export const IDENTITY_PHASE = {
   CREATE_SUBMITTING: 'identity_create_submitting',
 } as const;
 export type IdentityPhase = (typeof IDENTITY_PHASE)[keyof typeof IDENTITY_PHASE];
+
+export const CONTACT_PHASE = {
+  CREATE_PENDING: 'contact_create_pending',
+} as const;
+export type ContactPhase = (typeof CONTACT_PHASE)[keyof typeof CONTACT_PHASE];
 
 export const ADDRESSBOOK_PHASE = {
   CREATE_SUBMITTING: 'addressbook_create_submitting',
@@ -132,6 +137,7 @@ export type MutationPhase =
   | SendPhase
   | DraftPhase
   | IdentityPhase
+  | ContactPhase
   | AddressBookPhase
   | ContactTrashPhase;
 
@@ -162,7 +168,7 @@ export type ServiceKind = (typeof SERVICE_KIND)[keyof typeof SERVICE_KIND];
  * a JMAP wire value — the outbox dispatcher maps each one to the right
  * Email/set / EmailSubmission/set call shape.
  */
-export const MUTATION_TYPE = {
+export const MUTATION_TYPE = Object.freeze({
   SET_KEYWORDS: 'setKeywords',
   MOVE_TO_FOLDERS: 'moveToFolders',
   COPY_TO_FOLDERS: 'copyToFolders',
@@ -189,8 +195,37 @@ export const MUTATION_TYPE = {
   DESTROY_MAILBOX: 'destroyMailbox',
   PUSH_SETTINGS: 'pushSettings',
   PUSH_CONTACTS_TRASH: 'pushContactsTrash',
-} as const;
+} as const);
 export type MutationType = (typeof MUTATION_TYPE)[keyof typeof MUTATION_TYPE];
+
+export interface MutationRecoveryPolicy {
+  mutationType: MutationType;
+  replayablePhases: readonly MutationPhase[];
+  completedPhases: readonly MutationPhase[];
+}
+
+export const MUTATION_RECOVERY_POLICIES = [
+  {
+    mutationType: MUTATION_TYPE.SEND,
+    replayablePhases: [SEND_PHASE.QUEUED, SEND_PHASE.CREATED],
+    completedPhases: [SEND_PHASE.SUBMITTED, SEND_PHASE.CACHE_PENDING],
+  },
+  {
+    mutationType: MUTATION_TYPE.CREATE_IDENTITY,
+    replayablePhases: [IDENTITY_PHASE.CREATE_SUBMITTING],
+    completedPhases: [SEND_PHASE.CACHE_PENDING],
+  },
+  {
+    mutationType: MUTATION_TYPE.CREATE_ADDRESSBOOK,
+    replayablePhases: [ADDRESSBOOK_PHASE.CREATE_SUBMITTING],
+    completedPhases: [ADDRESSBOOK_PHASE.CACHE_PENDING],
+  },
+  {
+    mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
+    replayablePhases: [ADDRESSBOOK_PHASE.DESTROY_SUBMITTING],
+    completedPhases: [ADDRESSBOOK_PHASE.CACHE_PENDING],
+  },
+] as const satisfies readonly MutationRecoveryPolicy[];
 
 /**
  * query_views.view_type. Stormbox-internal label for the cached

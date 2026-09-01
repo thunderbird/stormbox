@@ -55,6 +55,7 @@
  *     OutboxRunner instead.
  */
 
+import { MUTATION_TYPE as MUTATION_TYPES } from '../../../../constants/states';
 import { DB_RPC } from '../../../../db/protocol';
 import { deleteRow, markFailed, markRow } from './batch';
 import {
@@ -91,37 +92,9 @@ import { runUpdateMailbox } from './operations/update-mailbox';
 import { toProcessResult } from './send-outcome';
 
 export { applySendLocally } from './send-apply';
+export { MUTATION_TYPES };
 export type { FolderBatchResult, FolderProcessResult } from './batch';
 export type { FolderContext, FolderId, FolderMutationHandlerArgs } from './resolve';
-
-export const MUTATION_TYPES = Object.freeze({
-  SET_KEYWORDS: 'setKeywords',
-  MOVE_TO_FOLDERS: 'moveToFolders',
-  COPY_TO_FOLDERS: 'copyToFolders',
-  DESTROY: 'destroy',
-  SEND: 'send',
-  CANCEL_SCHEDULED_SEND: 'cancelScheduledSend',
-  SAVE_DRAFT: 'saveDraft',
-  DISCARD_DRAFT: 'discardDraft',
-  WHITELIST_SENDER: 'whitelistSender',
-  CREATE_CONTACT: 'createContact',
-  UPDATE_CONTACT: 'updateContact',
-  DELETE_CONTACT: 'deleteContact',
-  CONTACT_BATCH: 'contactBatch',
-  CONTACT_TRASH: 'contactTrash',
-  CREATE_IDENTITY: 'createIdentity',
-  UPDATE_IDENTITY: 'updateIdentity',
-  DELETE_IDENTITY: 'deleteIdentity',
-  CREATE_ADDRESSBOOK: 'createAddressbook',
-  UPDATE_ADDRESSBOOK: 'updateAddressbook',
-  DESTROY_ADDRESSBOOK: 'destroyAddressbook',
-  SET_MAILBOX_SUBSCRIPTION: 'setMailboxSubscription',
-  CREATE_MAILBOX: 'createMailbox',
-  UPDATE_MAILBOX: 'updateMailbox',
-  DESTROY_MAILBOX: 'destroyMailbox',
-  PUSH_SETTINGS: 'pushSettings',
-  PUSH_CONTACTS_TRASH: 'pushContactsTrash',
-});
 /**
  * Drain pending mutations for the given account. When mutationId is
  * provided, run only that row so a user action is not blocked behind

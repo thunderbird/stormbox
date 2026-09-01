@@ -1,4 +1,5 @@
 import {
+  CONTACT_PHASE,
   CONTACT_TRASH_PHASE,
   SEND_PHASE,
   SERVICE_KIND,
@@ -34,8 +35,6 @@ import {
 } from '../../contacts-trash';
 import { readPhase } from '../../send-checkpoint';
 
-const CONTACT_CREATE_PENDING = 'contact_create_pending';
-
 /**
  * Whitelist one or more senders: add each From address to the trusted-
  * senders address book so Stalwart delivers future authenticated mail
@@ -51,7 +50,7 @@ const CONTACT_CREATE_PENDING = 'contact_create_pending';
  */
 async function runWhitelistSender({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
-  const recoverCreate = row?.phase === CONTACT_CREATE_PENDING;
+  const recoverCreate = row?.phase === CONTACT_PHASE.CREATE_PENDING;
   let ids = applied?.ids;
   if (!applied) {
     const requestedSenders = Array.isArray(request?.senders)
@@ -152,7 +151,7 @@ async function runWhitelistSender({ transport, account, handlers, row, request, 
  */
 async function runCreateContact({ transport, account, handlers, row, request, useWebSocket }) {
   const applied = contactWriteApplied(row);
-  const recoverCreate = row?.phase === CONTACT_CREATE_PENDING;
+  const recoverCreate = row?.phase === CONTACT_PHASE.CREATE_PENDING;
   let ids = applied?.ids;
   if (!applied) {
     const durableRequest = await ensureCreateContactUid({ handlers, row, request });
@@ -968,7 +967,7 @@ function checkpointContactCreate({ handlers, row, uids }: any): Promise<unknown>
              SET phase = ?, server_response_json = ?, updated_at = ?
            WHERE id = ?`,
     params: [
-      CONTACT_CREATE_PENDING,
+      CONTACT_PHASE.CREATE_PENDING,
       JSON.stringify({ contactCreateUids: uids }),
       Date.now(),
       row.id,

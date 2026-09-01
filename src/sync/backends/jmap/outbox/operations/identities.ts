@@ -15,6 +15,7 @@ import {
 } from '../../../../../utils/identity-fields';
 import { syncIdentities, syncIdentityById } from '../../identities';
 import { callJmap, pickResponse } from '../../invoke';
+import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
 
 const CACHE_RECONCILE_MAX_ATTEMPTS = 3;
@@ -27,22 +28,6 @@ const RETRYABLE_SET_ERRORS = new Set([
 ]);
 
 type IdentitySetOperation = 'create' | 'delete' | 'update';
-
-function errorProperties(reason: any): string[] {
-  const properties = Array.isArray(reason?.properties) ? reason.properties : [];
-  return properties
-    .filter((property: unknown): property is string => typeof property === 'string')
-    .map((property: string) => property.toLowerCase().replace(/^\/+/u, ''));
-}
-
-function hasErrorProperty(properties: string[], name: string): boolean {
-  const lowerName = name.toLowerCase();
-  return properties.some((property) =>
-    property === lowerName
-    || property.startsWith(`${lowerName}/`)
-    || property.startsWith(`${lowerName}.`)
-    || property.startsWith(`${lowerName}[`));
-}
 
 function descriptionMentions(description: string, ...terms: string[]): boolean {
   return terms.some((term) => description.includes(term));

@@ -26,9 +26,7 @@
 
 import { DB_RPC } from '../../../db/protocol';
 import {
-  ADDRESSBOOK_PHASE,
-  IDENTITY_PHASE,
-  SEND_PHASE,
+  MUTATION_RECOVERY_POLICIES,
   SERVICE_KIND,
 } from '../../../constants/states';
 import { wlog } from '../../../db/worker-log';
@@ -105,6 +103,14 @@ const ACTIVE_VIEW_REFRESH_LIMIT = 5;
 // round trip per folder per tick.
 const INDEXER_MAX_FAILED_ATTEMPTS_PER_TICK = 3;
 const DRAFT_SAVE_MAX_ATTEMPTS = 3;
+const UNSAFE_TO_REPLAY_MUTATION_TYPES = MUTATION_RECOVERY_POLICIES
+  .map(({ mutationType }) => mutationType);
+const REPLAYABLE_MUTATION_PHASES = [
+  ...new Set(MUTATION_RECOVERY_POLICIES.flatMap(({ replayablePhases }) => replayablePhases)),
+];
+const COMPLETED_MUTATION_PHASES = [
+  ...new Set(MUTATION_RECOVERY_POLICIES.flatMap(({ completedPhases }) => completedPhases)),
+];
 
 // Concurrent account starts can briefly create overlapping backend instances.
 // The shared handler map identifies one local database, so automatic historical
@@ -415,24 +421,9 @@ export class JmapBackend {
       },
       // These writes have irreversible or ambiguous calls. Their durable
       // phases route recovered rows through protocol-specific verification.
-      unsafeToReplayTypes: [
-        MUTATION_TYPES.SEND,
-        MUTATION_TYPES.CREATE_IDENTITY,
-        MUTATION_TYPES.CREATE_ADDRESSBOOK,
-        MUTATION_TYPES.DESTROY_ADDRESSBOOK,
-      ],
-      replayablePhases: [
-        SEND_PHASE.QUEUED,
-        SEND_PHASE.CREATED,
-        IDENTITY_PHASE.CREATE_SUBMITTING,
-        ADDRESSBOOK_PHASE.CREATE_SUBMITTING,
-        ADDRESSBOOK_PHASE.DESTROY_SUBMITTING,
-      ],
-      completedPhases: [
-        SEND_PHASE.SUBMITTED,
-        SEND_PHASE.CACHE_PENDING,
-        ADDRESSBOOK_PHASE.CACHE_PENDING,
-      ],
+      unsafeToReplayTypes: UNSAFE_TO_REPLAY_MUTATION_TYPES,
+      replayablePhases: REPLAYABLE_MUTATION_PHASES,
+      completedPhases: COMPLETED_MUTATION_PHASES,
       onForegroundChange: (delta) => {
         this._foregroundFolderWindowCount = Math.max(
           0,

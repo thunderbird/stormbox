@@ -18,6 +18,7 @@ import {
   TRUSTED_SENDERS_BOOK_NAME,
 } from '../../contacts';
 import { callJmap, pickResponse } from '../../invoke';
+import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
 
 const ADDRESSBOOK_CACHE_MAX_ATTEMPTS = 3;
@@ -70,21 +71,6 @@ function localFailure(
       ...(terminal ? { terminal: true } : {}),
     },
   };
-}
-
-function errorProperties(reason: any): string[] {
-  return (Array.isArray(reason?.properties) ? reason.properties : [])
-    .filter((property: unknown): property is string => typeof property === 'string')
-    .map((property: string) => property.toLowerCase().replace(/^\/+/u, ''));
-}
-
-function hasErrorProperty(properties: string[], name: string): boolean {
-  const lowerName = name.toLowerCase();
-  return properties.some((property) =>
-    property === lowerName
-    || property.startsWith(`${lowerName}/`)
-    || property.startsWith(`${lowerName}.`)
-    || property.startsWith(`${lowerName}[`));
 }
 
 export function addressBookErrorType(
