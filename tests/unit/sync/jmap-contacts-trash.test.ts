@@ -362,6 +362,70 @@ describe('contacts trash FileNode sync', () => {
     }
   });
 
+  it('surfaces a lost folder-create response instead of retrying past it', async () => {
+    // The wide retry set belongs to the relocation step only. A retry of
+    // the whole preparation would find the folder from the lost response
+    // already present and report success for a write that never confirmed.
+    const engine = await bootTestEngine();
+    try {
+      const handlers = makeHandlers(engine);
+      const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+        displayName: 'Lost Folder User',
+        primaryEmail: 'lost-folder@example.com',
+        serverOrigin: 'https://mail.example.com',
+        remoteAccountId: 'lost-folder-account',
+        isPrimary: true,
+      })).row;
+      const nodes = fileNodeFolders().filter((node) => node.id === THUNDERMAIL_FOLDER_ID);
+      const transport = new MockTransport(mockSession({
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
+        accounts: {
+          'lost-folder-account': {
+            accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
+          },
+        },
+      })) as any;
+      transport.handle('FileNode/query', (args) => fileNodeQuery(nodes, args));
+      transport.handle('FileNode/get', ({ ids }) => ({
+        list: ids ? nodes.filter((node) => ids.includes(node.id)) : [...nodes],
+        notFound: [],
+        state: 'files-1',
+      }));
+      let createCalls = 0;
+      transport.handle('FileNode/set', ({ create }) => {
+        if (!create) return { oldState: 'files-1', newState: 'files-1', updated: {} };
+        createCalls += 1;
+        if (createCalls === 1) {
+          throw new Error('socket closed before FileNode/set answered');
+        }
+        const [creationId, spec] = Object.entries<any>(create)[0];
+        const node = {
+          id: CONTACTS_TRASH_FOLDER_ID,
+          ...spec,
+          blobId: null,
+          type: null,
+          myRights: { mayRead: true, mayWrite: true },
+        };
+        nodes.push(node);
+        return {
+          oldState: 'files-1',
+          newState: 'files-2',
+          created: { [creationId]: { id: node.id } },
+        };
+      });
+
+      await expect(pushContactsTrash({
+        transport,
+        account,
+        handlers,
+      })).resolves.toMatchObject({ ok: false, error: { type: 'transport' } });
+      expect(createCalls).toBe(1);
+      expect(nodes.some((node) => node.id === CONTACTS_TRASH_FOLDER_ID)).toBe(false);
+    } finally {
+      await engine.close();
+    }
+  });
+
   it('merges duplicate shard locations before removing the root copy', async () => {
     const engine = await bootTestEngine();
     try {
