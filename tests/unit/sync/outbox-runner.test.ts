@@ -18,6 +18,11 @@ import {
   describe, it, expect, beforeEach, afterEach, vi,
 } from 'vitest';
 
+import {
+  ADDRESSBOOK_PHASE,
+  IDENTITY_PHASE,
+  MUTATION_TYPE,
+} from '../../../src/constants/states';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
@@ -1041,6 +1046,43 @@ describe('OutboxRunner replay safety', () => {
   };
   // 'submitting' is deliberately in neither list: a crash there is
   // indistinguishable from a delivered message.
+
+  it.each([
+    [MUTATION_TYPE.CREATE_IDENTITY, IDENTITY_PHASE.CREATE_SUBMITTING],
+    [MUTATION_TYPE.CREATE_ADDRESSBOOK, ADDRESSBOOK_PHASE.CREATE_SUBMITTING],
+  ])('preserves a stranded %s checkpoint for fail-closed recovery', async (
+    mutationType,
+    phase,
+  ) => {
+    const mutationId = await insertTargetlessWrite(mutationType);
+    await engine.run(
+      `UPDATE pending_mutations
+          SET phase = ?, server_response_json = '{'
+        WHERE id = ?`,
+      [phase, mutationId],
+    );
+    await strand(mutationId);
+
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => ({ ok: true }),
+      options: {
+        notifyDelayMs: 0,
+        unsafeToReplayTypes: [mutationType],
+        replayablePhases: [phase],
+      },
+    });
+    await runner.recoverStranded();
+
+    const row = await loadRow(mutationId);
+    expect(row).toMatchObject({
+      local_status: 'pending',
+      phase,
+      server_response_json: '{',
+    });
+    await runner.stop();
+  });
 
   it('returns a stranded row to pending so a later boot can retry it', async () => {
     // Migration 002 resets in_flight rows, but migrations run once per
