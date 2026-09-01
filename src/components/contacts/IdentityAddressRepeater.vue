@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
+import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import { createIdentityOperationId } from '../../utils/identity-fields';
 import AppIconButton from '../AppIconButton.vue';
 
@@ -27,6 +28,24 @@ const emit = defineEmits<{
   update: [rows: IdentityAddressFormRow[]];
 }>();
 
+const {
+  appendRow: addRow,
+  removeRow,
+  updateRow: patchRow,
+} = useRepeaterRows<IdentityAddressFormRow>({
+  rows: () => props.rows,
+  createRow: () => ({
+    formKey: `address:${createIdentityOperationId()}`,
+    originalName: null,
+    name: '',
+    email: '',
+  }),
+  update: (rows) => {
+    emit('update', rows);
+    emit('touched');
+  },
+});
+
 const label = computed(() => {
   switch (props.kind) {
     case 'replyTo':
@@ -47,27 +66,7 @@ function updateRow(
   property: 'email' | 'name',
   value: string,
 ): void {
-  emit('update', props.rows.map((row) =>
-    row.formKey === formKey ? { ...row, [property]: value } : row));
-  emit('touched');
-}
-
-function addRow(): void {
-  emit('update', [
-    ...props.rows,
-    {
-      formKey: `address:${createIdentityOperationId()}`,
-      originalName: null,
-      name: '',
-      email: '',
-    },
-  ]);
-  emit('touched');
-}
-
-function removeRow(formKey: string): void {
-  emit('update', props.rows.filter((row) => row.formKey !== formKey));
-  emit('touched');
+  patchRow(formKey, { [property]: value });
 }
 </script>
 
@@ -111,7 +110,7 @@ function removeRow(formKey: string): void {
         />
       </label>
       <AppIconButton
-        class="identity-addresses__remove"
+        class="contact-editor__remove identity-addresses__remove"
         :aria-label="`Remove ${shortLabel} address ${index + 1}`"
         @click="removeRow(row.formKey)"
       >
@@ -124,7 +123,11 @@ function removeRow(formKey: string): void {
         role="alert"
       >{{ errors[row.formKey] }}</p>
     </div>
-    <button class="identity-addresses__add" type="button" @click="addRow">
+    <button
+      class="contact-editor__add identity-addresses__add"
+      type="button"
+      @click="addRow"
+    >
       <Plus :size="15" aria-hidden="true" />
       Add {{ shortLabel }} address
     </button>
@@ -187,32 +190,17 @@ function removeRow(formKey: string): void {
   outline: none;
 }
 
-.identity-addresses__remove,
-.identity-addresses__add {
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-}
-
 .identity-addresses__remove {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
+  border: 1px solid var(--border, #d6d9e2);
   color: #c93838;
 }
 
 .identity-addresses__add {
-  display: inline-flex;
   width: max-content;
-  align-items: center;
-  gap: 5px;
   min-height: 32px;
   padding: 5px 9px;
-  font-size: 12px;
+  border: 1px solid var(--border, #d6d9e2);
+  color: inherit;
 }
 
 .identity-addresses__error {

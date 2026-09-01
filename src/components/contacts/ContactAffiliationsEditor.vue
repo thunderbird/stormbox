@@ -7,6 +7,7 @@ import {
 } from 'vue';
 import { Plus, Trash2 } from '@lucide/vue';
 
+import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import type { ContactTitleKind } from '../../types';
 import { closeContainingDropdown } from '../../utils/dropdown';
 import AppDropdown from '../AppDropdown.vue';
@@ -28,6 +29,12 @@ const emit = defineEmits<{
   'update:organizations': [organizations: ContactEditorOrganization[]];
   'update:titles': [titles: ContactEditorTitle[]];
 }>();
+
+const organizationRows = useRepeaterRows<ContactEditorOrganization>({
+  rows: () => props.organizations,
+  createRow: (position) => createContactEditorOrganization(position),
+  update: (organizations) => emit('update:organizations', organizations),
+});
 
 const selectedFormId = ref<string | null>(null);
 const organizationNameEl = ref<HTMLInputElement | null>(null);
@@ -96,8 +103,7 @@ function chooseOrganization(formId: string, event: Event): void {
 }
 
 async function addOrganization(): Promise<void> {
-  const organization = createContactEditorOrganization(props.organizations.length);
-  emit('update:organizations', [...props.organizations, organization]);
+  const organization = organizationRows.appendRow();
   selectedFormId.value = organization.formId;
   await nextTick();
   organizationNameEl.value?.focus();
@@ -108,24 +114,14 @@ function updateOrganization(
 ): void {
   const organization = selectedOrganization.value;
   if (!organization) return;
-  emit(
-    'update:organizations',
-    props.organizations.map((candidate) =>
-      candidate.formId === organization.formId
-        ? { ...candidate, ...patch }
-        : candidate),
-  );
+  organizationRows.updateRow(organization.formKey, patch);
 }
 
 function updateDepartment(value: string): void {
   const organization = selectedOrganization.value;
   if (!organization) return;
   const updated = setPrimaryOrganizationUnit(organization, value);
-  emit(
-    'update:organizations',
-    props.organizations.map((candidate) =>
-      candidate.formId === organization.formId ? updated : candidate),
-  );
+  organizationRows.replaceRow(updated);
 }
 
 function updateTitle(kind: ContactTitleKind, value: string): void {
@@ -149,11 +145,9 @@ function updateTitle(kind: ContactTitleKind, value: string): void {
 function removeSelectedOrganization(): void {
   const organization = selectedOrganization.value;
   if (!organization) return;
-  const index = props.organizations.findIndex((candidate) =>
-    candidate.formId === organization.formId);
-  const remaining = props.organizations.filter((candidate) =>
-    candidate.formId !== organization.formId);
-  emit('update:organizations', remaining);
+  const { index, rows: remaining } = organizationRows.removeRow(
+    organization.formKey,
+  );
   emit(
     'update:titles',
     props.titles.filter((title) => !titleBelongsTo(title, organization)),
@@ -170,7 +164,7 @@ function removeSelectedOrganization(): void {
     <div class="contact-affiliations__toolbar">
       <AppDropdown v-if="organizations.length > 0" group="contact-affiliations">
         <summary
-          class="contact-affiliations__summary app-dropdown__summary"
+          class="app-dropdown__summary app-dropdown__summary--control contact-affiliations__summary"
           aria-label="Choose work affiliation"
         >
           {{
@@ -203,7 +197,7 @@ function removeSelectedOrganization(): void {
         </div>
       </AppDropdown>
       <button
-        class="contact-affiliations__add"
+        class="contact-editor__add contact-affiliations__add"
         type="button"
         @click="addOrganization"
       >
@@ -322,23 +316,7 @@ function removeSelectedOrganization(): void {
 }
 
 .contact-affiliations__summary {
-  display: inline-flex;
   min-width: 170px;
-  min-height: 34px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 9px;
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 6px;
-  background: var(--panel, #fff);
-  color: var(--text, #1a1d24);
-  font: inherit;
-  font-size: 13px;
-}
-
-.contact-affiliations__summary:focus-visible {
-  border-color: var(--accent);
-  outline: none;
 }
 
 .contact-affiliations__menu {
@@ -360,7 +338,6 @@ function removeSelectedOrganization(): void {
   font-weight: 400;
 }
 
-.contact-affiliations__add,
 .contact-affiliations__remove {
   display: inline-flex;
   align-items: center;
@@ -368,25 +345,18 @@ function removeSelectedOrganization(): void {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: var(--accent);
+  color: #c93838;
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.contact-affiliations__add {
-  padding: 4px 6px;
-}
-
 .contact-affiliations__remove {
   justify-self: start;
   padding: 5px 7px;
-  color: #c93838;
 }
 
-.contact-affiliations__add:hover,
-.contact-affiliations__add:focus-visible,
 .contact-affiliations__remove:hover,
 .contact-affiliations__remove:focus-visible {
   background: var(--rowHover, #f0f1f6);

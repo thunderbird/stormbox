@@ -77,7 +77,7 @@ watch(
   <div class="contact-label">
     <AppDropdown group="contact-labels">
       <summary
-        class="contact-label__summary app-dropdown__summary"
+        class="app-dropdown__summary app-dropdown__summary--control contact-label__summary"
         :aria-label="`Choose ${kind} label; current label ${summary}`"
       >
         {{ summary }}
@@ -119,7 +119,6 @@ watch(
   gap: 6px;
 }
 
-.contact-label__summary,
 .contact-label__custom {
   min-height: 34px;
   border: 1px solid var(--border, #d6d9e2);
@@ -131,11 +130,7 @@ watch(
 }
 
 .contact-label__summary {
-  display: inline-flex;
   min-width: 88px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 9px;
 }
 
 .contact-label__custom {
@@ -144,7 +139,6 @@ watch(
   padding: 6px 8px;
 }
 
-.contact-label__summary:focus-visible,
 .contact-label__custom:focus-visible {
   border-color: var(--accent);
   outline: none;
