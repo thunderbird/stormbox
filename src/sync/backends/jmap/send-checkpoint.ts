@@ -49,12 +49,31 @@ export interface SendCheckpoint {
   pendingDraftDestroyIds: string[] | null;
 }
 
+/**
+ * Strict form used when reading a persisted checkpoint: any non-string,
+ * blank, or duplicate entry invalidates the whole list.
+ */
 function draftEmailIds(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const ids = value.filter((id): id is string =>
     typeof id === 'string' && id.trim().length > 0);
   if (ids.length !== value.length || new Set(ids).size !== ids.length) return null;
   return ids;
+}
+
+/**
+ * Lenient form used when writing a new checkpoint from a compose request:
+ * every well-formed id is kept (deduplicated, order preserved) so a stray
+ * malformed entry cannot make the checkpoint claim that no draft copies
+ * need cleanup after the send.
+ */
+function wellFormedDraftEmailIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set<string>();
+  for (const id of value) {
+    if (typeof id === 'string' && id.trim().length > 0) ids.add(id);
+  }
+  return [...ids];
 }
 
 /** Read the checkpoint off a pending_mutations row, if it has one. */
@@ -98,7 +117,7 @@ export function newCheckpoint(
     submissionRemoteId: null,
     cacheAttempts: 0,
     trustedRecipientsQueued: false,
-    pendingDraftDestroyIds: draftEmailIds(pendingDraftDestroyIds) ?? [],
+    pendingDraftDestroyIds: wellFormedDraftEmailIds(pendingDraftDestroyIds),
   };
 }
 
