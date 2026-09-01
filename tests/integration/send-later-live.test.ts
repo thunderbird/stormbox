@@ -284,15 +284,15 @@ describe.sequential('live Stalwart Send Later', () => {
     }
   });
 
-  const holdSubject = `${prefix} hold`;
-  const holdTargetAt = futureTargetAt(2 * 60 * 60);
+  it('holds a schedule on every surface, then cancels it back to an editable draft', async () => {
+    const holdSubject = `${prefix} hold`;
+    const holdTargetAt = futureTargetAt(2 * 60 * 60);
 
-  it('schedules a message and the target instant shows on every surface', async () => {
-    const outcome = await runMutation(MUTATION_TYPES.SEND, sendRequest({
+    const scheduled = await runMutation(MUTATION_TYPES.SEND, sendRequest({
       subject: holdSubject,
       scheduledAt: holdTargetAt,
     }));
-    expect(outcome.ok).toBe(true);
+    expect(scheduled.ok).toBe(true);
 
     const row = await trackedRowBySubject(holdSubject);
     expect(row).toBeTruthy();
@@ -304,17 +304,17 @@ describe.sequential('live Stalwart Send Later', () => {
     // send time, read, and not a draft.
     const scheduledRemoteId = await scheduledMailboxRemoteId();
     expect(scheduledRemoteId).toBeTruthy();
-    const email = await remoteEmail(mail, row.remote_id);
-    expect(email.mailboxIds).toEqual({ [scheduledRemoteId as string]: true });
-    expect(Date.parse(email.sentAt)).toBe(Date.parse(holdTargetAt));
-    expect(email.keywords?.$seen).toBe(true);
-    expect(email.keywords?.$draft).toBeUndefined();
+    const held = await remoteEmail(mail, row.remote_id);
+    expect(held.mailboxIds).toEqual({ [scheduledRemoteId as string]: true });
+    expect(Date.parse(held.sentAt)).toBe(Date.parse(holdTargetAt));
+    expect(held.keywords?.$seen).toBe(true);
+    expect(held.keywords?.$draft).toBeUndefined();
 
     // The raw MIME Date header carries the same instant, so external
     // clients date the message by when it will leave, Fastmail-style.
     const bytes = await context.transport.download({
       accountId: context.account.remote_account_id,
-      blobId: email.blobId,
+      blobId: held.blobId,
       type: 'message/rfc822',
       name: 'scheduled.eml',
     });
@@ -325,11 +325,11 @@ describe.sequential('live Stalwart Send Later', () => {
 
     // The submission is held (pending) with sendAt at/near the target;
     // HOLDFOR rounds up from the clock window, never early.
-    const submissions = await submissionForEmail(row.remote_id);
-    expect(submissions).toHaveLength(1);
-    expect(submissions[0].id).toBe(row.scheduled_submission_remote_id);
-    expect(submissions[0].undoStatus).toBe('pending');
-    const sendAtMs = Date.parse(String(submissions[0].sendAt));
+    const heldSubmissions = await submissionForEmail(row.remote_id);
+    expect(heldSubmissions).toHaveLength(1);
+    expect(heldSubmissions[0].id).toBe(row.scheduled_submission_remote_id);
+    expect(heldSubmissions[0].undoStatus).toBe('pending');
+    const sendAtMs = Date.parse(String(heldSubmissions[0].sendAt));
     expect(Math.abs(sendAtMs - Date.parse(holdTargetAt))).toBeLessThanOrEqual(120_000);
 
     // The managed mailbox remains subscribed and visible to every client.
@@ -346,26 +346,20 @@ describe.sequential('live Stalwart Send Later', () => {
     expect(sync.nearestPendingAt).toBe(Date.parse(holdTargetAt));
     expect(sync.unresolvedSettled).toBe(false);
     expect((await trackedRowBySubject(holdSubject)).scheduled_undo_status).toBe('pending');
-  });
 
-  it('cancels the held schedule back to an editable draft and keeps the mailbox visible', async () => {
-    const row = await trackedRowBySubject(holdSubject);
-    expect(row?.scheduled_undo_status).toBe('pending');
-    const scheduledRemoteId = await scheduledMailboxRemoteId();
-
-    const outcome = await runMutation(MUTATION_TYPES.CANCEL_SCHEDULED_SEND, {
+    // Cancel the hold this test created.
+    const canceled = await runMutation(MUTATION_TYPES.CANCEL_SCHEDULED_SEND, {
       messageId: row.id,
     });
-    expect(outcome.ok).toBe(true);
+    expect(canceled.ok).toBe(true);
 
     // Server: submission revoked, Email back in Drafts as a draft.
-    const submissions = await submissionForEmail(row.remote_id);
-    for (const record of submissions) {
+    for (const record of await submissionForEmail(row.remote_id)) {
       expect(record.undoStatus).toBe('canceled');
     }
-    const email = await remoteEmail(mail, row.remote_id);
-    expect(email.mailboxIds).toEqual({ [draftsFolder.remote_id]: true });
-    expect(email.keywords?.$draft).toBe(true);
+    const draft = await remoteEmail(mail, row.remote_id);
+    expect(draft.mailboxIds).toEqual({ [draftsFolder.remote_id]: true });
+    expect(draft.keywords?.$draft).toBe(true);
 
     // Local: scheduling columns cleared, placement follows the server.
     const after = await trackedRowBySubject(holdSubject);
