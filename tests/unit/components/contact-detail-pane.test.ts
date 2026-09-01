@@ -30,6 +30,7 @@ import {
   useContactsStore,
 } from '../../../src/stores/contacts-store';
 import type { ContactDetail, IdentityRow } from '../../../src/types';
+import { identityRow } from '../_fixtures/rows';
 
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
@@ -166,22 +167,13 @@ function contactDetail(): ContactDetail {
 }
 
 function identityDetail(overrides: Partial<IdentityRow> = {}): IdentityRow {
-  return {
-    id: overrides.id ?? 10,
-    account_id: overrides.account_id ?? 1,
-    remote_id: overrides.remote_id ?? 'identity-10',
-    name: overrides.name ?? '',
-    email: overrides.email ?? 'identity@example.com',
-    reply_to_json: overrides.reply_to_json ?? null,
-    bcc_json: overrides.bcc_json ?? null,
-    text_signature: overrides.text_signature ?? null,
-    html_signature: overrides.html_signature ?? null,
-    may_delete: overrides.may_delete ?? 1,
-    raw_json: overrides.raw_json ?? null,
-    updated_at: overrides.updated_at ?? 1,
-    reply_to: overrides.reply_to ?? null,
-    bcc: overrides.bcc ?? null,
-  };
+  return identityRow({
+    id: 10,
+    email: 'identity@example.com',
+    may_delete: 1,
+    updated_at: 1,
+    ...overrides,
+  });
 }
 
 beforeEach(() => {

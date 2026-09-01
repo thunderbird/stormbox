@@ -16,7 +16,7 @@ import {
 } from '../../../src/sync/backends/jmap/settings';
 import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
-import { MockTransport } from './_mock-transport';
+import { MockTransport, mockSession } from './_mock-transport';
 
 const REMOTE_ACCOUNT_ID = 'settings-account';
 
@@ -35,11 +35,8 @@ function makeTransport(
   initialParentId: string | null = 'thundermail-folder',
   legacyDocument: any | null = null,
 ) {
-  const transport = new MockTransport({
-    capabilities: {
-      [JMAP_CAPS.CORE]: {},
-      [JMAP_CAPS.FILENODE]: {},
-    },
+  const transport = new MockTransport(mockSession({
+    capabilities: { [JMAP_CAPS.FILENODE]: {} },
     accounts: {
       [REMOTE_ACCOUNT_ID]: {
         accountCapabilities: {
@@ -47,7 +44,7 @@ function makeTransport(
         },
       },
     },
-  }) as any;
+  })) as any;
   const state = {
     version: 1,
     folder: {

@@ -16,6 +16,7 @@ import {
 } from '../../../src/sync/backends/jmap/outbox';
 import { identityErrorType } from '../../../src/sync/backends/jmap/outbox/operations/identities';
 import { MockTransport } from './_mock-transport';
+import { queuePendingMutation, reloadPendingMutation } from './_pending-mutations';
 
 let engine: any;
 let handlers: any;
@@ -37,24 +38,12 @@ afterEach(async () => {
   await engine.close();
 });
 
-async function queueRow(mutationType: string, request: any) {
-  const { id } = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-    accountId: account.id,
-    mutationType,
-    targetMessageId: null,
-    requestJson: JSON.stringify(request),
-  });
-  return handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [id],
-  }).then((rows: any[]) => rows[0]);
+function queueRow(mutationType: string, request: any) {
+  return queuePendingMutation(handlers, { accountId: account.id, mutationType, request });
 }
 
 function reload(rowId: number) {
-  return handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [rowId],
-  }).then((rows: any[]) => rows[0]);
+  return reloadPendingMutation(handlers, rowId);
 }
 
 function identityServer() {

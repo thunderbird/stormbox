@@ -7,8 +7,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory';
-import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { MUTATION_TYPE } from '../../../src/constants/states';
 import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
@@ -21,13 +19,18 @@ import {
   reconcileScheduledSubscription,
 } from '../../../src/sync/backends/jmap/scheduled-mailbox';
 import { MockTransport } from './_mock-transport';
+import {
+  bootScheduledAccount,
+  FUTURE_AT,
+  NOW,
+  PAST_AT,
+  scheduledEmailFixture,
+  seedScheduledMessage as seedScheduled,
+  type ScheduledAccountContext,
+  type SeedScheduledMessageOptions,
+} from './_scheduled-fixtures';
 
-// The synchronizer validates targets against the real clock (via
-// scheduleClockWindow), so future/past fixtures must be relative to it.
-const NOW = Date.now();
-const FUTURE_AT = new Date(NOW + 60 * 60_000).toISOString();
-const PAST_AT = new Date(NOW - 60 * 60_000).toISOString();
-
+let ctx: ScheduledAccountContext;
 let engine;
 let handlers;
 let account;
@@ -35,22 +38,7 @@ let scheduledFolder;
 let sentFolder;
 
 function emailFixture(id: string, { sentAt = FUTURE_AT, mailbox = 'mb-sched' } = {}) {
-  return {
-    id,
-    blobId: `b-${id}`,
-    threadId: `t-${id}`,
-    mailboxIds: { [mailbox]: true },
-    keywords: { $seen: true },
-    size: 1,
-    receivedAt: new Date(NOW).toISOString(),
-    sentAt,
-    messageId: [`<${id}@example.com>`],
-    from: [{ email: 'me@example.com' }],
-    to: [{ email: 'rcpt@example.com' }],
-    subject: `s-${id}`,
-    preview: 'p',
-    hasAttachment: false,
-  };
+  return scheduledEmailFixture(id, { sentAt, mailboxIds: { [mailbox]: true } });
 }
 
 /**
@@ -93,30 +81,8 @@ function submissionTransport(records: any[], emailsById: Record<string, any> = {
   return t;
 }
 
-async function seedScheduledMessage(remoteId: string, {
-  sentAt = FUTURE_AT,
-  submissionId = `sub-${remoteId}`,
-  undoStatus = 'pending',
-}: { sentAt?: string; submissionId?: string | null; undoStatus?: string } = {}) {
-  const t = new MockTransport();
-  t.handle('Email/query', () => ({
-    ids: [remoteId], total: 1, queryState: `qs-${remoteId}`, canCalculateChanges: true, position: 0,
-  }));
-  t.handle('Email/get', (params) => ({
-    list: params.ids.map((id) => emailFixture(id, { sentAt })),
-    state: 'es',
-  }));
-  await syncFolderWindow({ transport: t, account, folder: scheduledFolder, handlers });
-  await handlers[DB_RPC.MESSAGE_SET_SCHEDULED]({
-    accountId: account.id,
-    emailRemoteId: remoteId,
-    submissionRemoteId: submissionId,
-    undoStatus,
-  });
-  return engine.get(
-    'SELECT * FROM messages WHERE account_id = ? AND remote_id = ?',
-    [account.id, remoteId],
-  );
+function seedScheduledMessage(remoteId: string, options: SeedScheduledMessageOptions = {}) {
+  return seedScheduled(ctx, remoteId, options);
 }
 
 async function messageRow(remoteId: string, accountId = account.id) {
@@ -147,37 +113,8 @@ async function pendingMutations(type?: string) {
 }
 
 beforeEach(async () => {
-  engine = await bootTestEngine();
-  handlers = makeHandlers(engine);
-  account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
-    displayName: 'T',
-    primaryEmail: 't@example.com',
-    serverOrigin: 'https://mail.example.com',
-    remoteAccountId: 'acct-1',
-    isPrimary: true,
-  })).row;
-  await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
-    accountId: account.id,
-    folders: [
-      { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
-      { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
-      {
-        remoteId: 'mb-sched', name: 'Scheduled', role: null, sortOrder: 3, isSubscribed: true,
-      },
-    ],
-  });
-  await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-    accountId: account.id,
-    patch: { scheduledMailboxRemoteId: 'mb-sched' },
-  });
-  scheduledFolder = await engine.get(
-    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'mb-sched'],
-  );
-  sentFolder = await engine.get(
-    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'mb-sent'],
-  );
+  ctx = await bootScheduledAccount();
+  ({ engine, handlers, account, scheduledFolder, sentFolder } = ctx);
 });
 
 afterEach(async () => {

@@ -30,43 +30,25 @@ import type {
   ContactMutationFields,
   IdentityRow,
 } from '../../../src/types';
+import { contactMutationFields, identityRow } from '../_fixtures/rows';
 
 let mutationErrorType: string | undefined;
 let repo: any;
 
 function identity(overrides: Partial<IdentityRow> = {}): IdentityRow {
-  return {
-    id: overrides.id ?? 1,
-    account_id: overrides.account_id ?? 1,
-    remote_id: overrides.remote_id ?? 'identity-1',
-    name: overrides.name ?? '',
-    email: overrides.email ?? 'alias@example.com',
-    reply_to_json: overrides.reply_to_json ?? null,
-    bcc_json: overrides.bcc_json ?? null,
-    text_signature: overrides.text_signature ?? null,
-    html_signature: overrides.html_signature ?? null,
-    may_delete: overrides.may_delete ?? 1,
-    raw_json: overrides.raw_json ?? null,
-    updated_at: overrides.updated_at ?? 1,
-    reply_to: overrides.reply_to ?? null,
-    bcc: overrides.bcc ?? null,
-  };
+  return identityRow({
+    remote_id: 'identity-1',
+    email: 'alias@example.com',
+    may_delete: 1,
+    updated_at: 1,
+    ...overrides,
+  });
 }
 
 function contactFields(
   overrides: Partial<ContactMutationFields> = {},
 ): ContactMutationFields {
-  return {
-    fullName: 'Old',
-    emails: [],
-    phones: [],
-    links: [],
-    anniversaries: [],
-    notes: [],
-    organizations: [],
-    titles: [],
-    ...overrides,
-  };
+  return contactMutationFields({ fullName: 'Old', ...overrides });
 }
 
 function addressbook(

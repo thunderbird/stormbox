@@ -11,7 +11,8 @@ import {
 import { MUTATION_TYPES, processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { withContactDetailKeys } from '../../../src/utils/contact-fields';
-import { MockTransport } from './_mock-transport';
+import { MockTransport, mockSession } from './_mock-transport';
+import { queuePendingMutation, reloadPendingMutation } from './_pending-mutations';
 
 /**
  * What a contact mutation says when the server took the write and the local
@@ -48,24 +49,12 @@ afterEach(async () => {
   await engine.close();
 });
 
-async function queueRow(mutationType: string, request: any) {
-  const { id } = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-    accountId: account.id,
-    mutationType,
-    targetMessageId: null,
-    requestJson: JSON.stringify(request),
-  });
-  return handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [id],
-  }).then((rows: any[]) => rows[0]);
+function queueRow(mutationType: string, request: any) {
+  return queuePendingMutation(handlers, { accountId: account.id, mutationType, request });
 }
 
 function reload(rowId: number) {
-  return handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [rowId],
-  }).then((rows: any[]) => rows[0]);
+  return reloadPendingMutation(handlers, rowId);
 }
 
 /**
@@ -614,16 +603,8 @@ describe('a contact write the cache did not follow', () => {
       }],
     });
     const row = await queueRow(MUTATION_TYPES.DELETE_CONTACT, { remoteId: 'card-old' });
-    const transport = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 500,
-          maxObjectsInSet: 500,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-        [JMAP_CAPS.FILENODE]: {},
-      },
+    const transport = new MockTransport(mockSession({
+      capabilities: { [JMAP_CAPS.CONTACTS]: {}, [JMAP_CAPS.FILENODE]: {} },
       accounts: {
         'acct-1': {
           accountCapabilities: {
@@ -632,7 +613,7 @@ describe('a contact write the cache did not follow', () => {
           },
         },
       },
-    });
+    }));
     let cardExists = true;
     transport.handle('AddressBook/get', () => ({
       list: [{

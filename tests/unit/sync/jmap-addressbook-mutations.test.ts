@@ -20,7 +20,9 @@ import {
   MUTATION_TYPES,
   processMutationRow,
 } from '../../../src/sync/backends/jmap/outbox';
-import { MockTransport } from './_mock-transport';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { MockTransport, mockSession } from './_mock-transport';
+import { queuePendingMutation, reloadPendingMutation } from './_pending-mutations';
 
 let engine: any;
 let handlers: any;
@@ -46,25 +48,19 @@ function transportSession(
   mayCreateAddressBook: boolean | null = true,
   maxObjectsInGet = 2,
 ) {
-  return {
-    capabilities: {
-      'urn:ietf:params:jmap:core': {
-        maxObjectsInGet,
-        maxObjectsInSet: 500,
-        maxSizeUpload: 50_000_000,
-      },
-    },
+  return mockSession({
+    core: { maxObjectsInGet },
     accounts: {
       'acct-1': {
         accountCapabilities: {
-          'urn:ietf:params:jmap:contacts': mayCreateAddressBook === undefined
+          [JMAP_CAPS.CONTACTS]: mayCreateAddressBook === undefined
             || mayCreateAddressBook === null
             ? {}
             : { mayCreateAddressBook },
         },
       },
     },
-  };
+  });
 }
 
 function makeBook(
@@ -145,21 +141,12 @@ function addressBookServer({
   return { transport, state };
 }
 
-async function queueRow(mutationType: string, request: any) {
-  const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-    accountId: account.id,
-    mutationType,
-    targetMessageId: null,
-    requestJson: JSON.stringify(request),
-  });
-  return reload(inserted.id);
+function queueRow(mutationType: string, request: any) {
+  return queuePendingMutation(handlers, { accountId: account.id, mutationType, request });
 }
 
 function reload(id: number) {
-  return handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [id],
-  }).then((rows: any[]) => rows[0]);
+  return reloadPendingMutation(handlers, id);
 }
 
 describe('AddressBook mutations', () => {

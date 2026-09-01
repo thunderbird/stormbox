@@ -16,7 +16,6 @@ import {
   syncContacts,
   updateContactCard,
 } from '../../src/sync/backends/jmap/contacts';
-import { JMAP_CAPS } from '../../src/sync/backends/jmap/transport';
 import {
   CONTACTS_TRASH_FILE_NODE_FOLDER,
   THUNDERMAIL_FILE_NODE_FOLDER,
@@ -38,10 +37,14 @@ import {
 import { contactMutationFieldsFromDetail } from '../../src/utils/contact-fields';
 import { contactDetailFromTrash } from '../../src/utils/contact-trash-display';
 import {
+  callMethod,
   CONTACTS_USING,
   createLiveIntegrationContext,
+  FILE_NODE_USING,
   requireResponseById,
 } from './helpers/live-jmap';
+
+const FILE_NODE_PROPERTIES = ['id', 'name', 'parentId', 'blobId', 'type'];
 
 describe.sequential('live Stalwart contacts backend', () => {
   const pngPhotoUri =
@@ -51,12 +54,23 @@ describe.sequential('live Stalwart contacts backend', () => {
   let context: Awaited<ReturnType<typeof createLiveIntegrationContext>>;
   let writableBookId: string;
 
-  async function request(methodCalls: any[], using: readonly string[] = CONTACTS_USING) {
-    return context.transport.request([...using], methodCalls);
+  function contacts(name: string, args: Record<string, unknown>, callId: string) {
+    return callMethod(context.transport, CONTACTS_USING, name, {
+      accountId: context.account.remote_account_id,
+      ...args,
+    }, callId);
   }
 
+  function files(name: string, args: Record<string, unknown>, callId: string) {
+    return callMethod(context.transport, FILE_NODE_USING, name, {
+      accountId: context.account.remote_account_id,
+      ...args,
+    }, callId);
+  }
+
+  /** FileNodes matching `filter`, fetched through a query back-reference. */
   async function fileNodes(filter: Record<string, unknown>): Promise<any[]> {
-    const response = await request([
+    const response = await context.transport.request([...FILE_NODE_USING], [
       [
         'FileNode/query',
         {
@@ -76,11 +90,11 @@ describe.sequential('live Stalwart contacts backend', () => {
             name: 'FileNode/query',
             path: '/ids',
           },
-          properties: ['id', 'name', 'parentId', 'blobId', 'type'],
+          properties: FILE_NODE_PROPERTIES,
         },
         'hierarchy-get',
       ],
-    ], [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE]);
+    ]);
     return requireResponseById(
       response,
       'FileNode/get',
@@ -89,19 +103,10 @@ describe.sequential('live Stalwart contacts backend', () => {
   }
 
   async function allFileNodes(): Promise<any[]> {
-    const response = await request([[
-      'FileNode/get',
-      {
-        accountId: context.account.remote_account_id,
-        properties: ['id', 'name', 'parentId', 'blobId', 'type'],
-      },
-      'hierarchy-all',
-    ]], [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE]);
-    return requireResponseById(
-      response,
-      'FileNode/get',
-      'hierarchy-all',
-    ).list ?? [];
+    const result = await files('FileNode/get', {
+      properties: FILE_NODE_PROPERTIES,
+    }, 'hierarchy-all');
+    return result.list ?? [];
   }
 
   async function expectContactsTrashHierarchy() {
@@ -124,32 +129,12 @@ describe.sequential('live Stalwart contacts backend', () => {
   }
 
   async function destroyTestArtifacts() {
-    const contacts = requireResponseById(
-      await request([[
-        'ContactCard/query',
-        {
-          accountId: context.account.remote_account_id,
-          calculateTotal: false,
-          limit: 500,
-        },
-        'cleanup-contact-query',
-      ]]),
-      'ContactCard/query',
-      'cleanup-contact-query',
-    );
-    if (contacts.ids?.length) {
-      requireResponseById(
-        await request([[
-          'ContactCard/set',
-          {
-            accountId: context.account.remote_account_id,
-            destroy: contacts.ids,
-          },
-          'cleanup-contact-set',
-        ]]),
-        'ContactCard/set',
-        'cleanup-contact-set',
-      );
+    const cards = await contacts('ContactCard/query', {
+      calculateTotal: false,
+      limit: 500,
+    }, 'cleanup-contact-query');
+    if (cards.ids?.length) {
+      await contacts('ContactCard/set', { destroy: cards.ids }, 'cleanup-contact-set');
     }
 
     const fileIds = (await allFileNodes())
@@ -159,34 +144,12 @@ describe.sequential('live Stalwart contacts backend', () => {
         || /^stormbox-contacts-trash-[0-9a-f-]{36}\.json$/i.test(node.name))
       .map((node) => node.id);
     if (fileIds.length) {
-      requireResponseById(
-        await request([[
-          'FileNode/set',
-          {
-            accountId: context.account.remote_account_id,
-            destroy: fileIds,
-          },
-          'cleanup-file-set',
-        ]], [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE]),
-        'FileNode/set',
-        'cleanup-file-set',
-      );
+      await files('FileNode/set', { destroy: fileIds }, 'cleanup-file-set');
     }
   }
 
   async function remoteCard(remoteId: string): Promise<any | null> {
-    const result = requireResponseById(
-      await request([[
-        'ContactCard/get',
-        {
-          accountId: context.account.remote_account_id,
-          ids: [remoteId],
-        },
-        'get-card',
-      ]]),
-      'ContactCard/get',
-      'get-card',
-    );
+    const result = await contacts('ContactCard/get', { ids: [remoteId] }, 'get-card');
     return result.list?.[0] ?? null;
   }
 
@@ -198,18 +161,9 @@ describe.sequential('live Stalwart contacts backend', () => {
   }
 
   async function createRawCard(card: Record<string, unknown>): Promise<string> {
-    const result = requireResponseById(
-      await request([[
-        'ContactCard/set',
-        {
-          accountId: context.account.remote_account_id,
-          create: { integration: card },
-        },
-        'create-raw-card',
-      ]]),
-      'ContactCard/set',
-      'create-raw-card',
-    );
+    const result = await contacts('ContactCard/set', {
+      create: { integration: card },
+    }, 'create-raw-card');
     if (result.notCreated?.integration) {
       throw new Error(JSON.stringify(result.notCreated.integration));
     }
@@ -223,18 +177,9 @@ describe.sequential('live Stalwart contacts backend', () => {
   beforeAll(async () => {
     context = await createLiveIntegrationContext();
     await destroyTestArtifacts();
-    const books = requireResponseById(
-      await request([[
-        'AddressBook/get',
-        {
-          accountId: context.account.remote_account_id,
-          properties: ['id', 'myRights'],
-        },
-        'get-books',
-      ]]),
-      'AddressBook/get',
-      'get-books',
-    );
+    const books = await contacts('AddressBook/get', {
+      properties: ['id', 'myRights'],
+    }, 'get-books');
     writableBookId = books.list?.find(
       (book: any) => book.myRights?.mayWrite === true,
     )?.id;
@@ -464,25 +409,16 @@ describe.sequential('live Stalwart contacts backend', () => {
       type: 'application/json',
       body: JSON.stringify(legacyDocument),
     });
-    requireResponseById(
-      await request([[
-        'FileNode/set',
-        {
-          accountId: context.account.remote_account_id,
-          create: {
-            legacy: {
-              parentId: null,
-              name: SETTINGS_FILE_NAME,
-              blobId: upload.blobId,
-              type: 'application/json',
-            },
-          },
+    await files('FileNode/set', {
+      create: {
+        legacy: {
+          parentId: null,
+          name: SETTINGS_FILE_NAME,
+          blobId: upload.blobId,
+          type: 'application/json',
         },
-        'create-legacy-settings',
-      ]], [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE]),
-      'FileNode/set',
-      'create-legacy-settings',
-    );
+      },
+    }, 'create-legacy-settings');
 
     await expect(syncSettingsFromServer({
       transport: context.transport,

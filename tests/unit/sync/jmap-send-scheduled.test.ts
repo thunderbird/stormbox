@@ -11,16 +11,18 @@ import {
   describe, it, expect, beforeEach, afterEach, vi,
 } from 'vitest';
 
-import { bootTestEngine } from '../../../src/db/bootstrap-memory';
-import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { MUTATION_TYPE, SEND_PHASE } from '../../../src/constants/states';
 import { MUTATION_TYPES, processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
-import { MockTransport } from './_mock-transport';
+import { MockTransport, mockSession } from './_mock-transport';
+import {
+  bootScheduledAccount,
+  FUTURE_AT as TARGET_AT,
+  scheduledEmailFixture,
+} from './_scheduled-fixtures';
 
 const MAX_DELAYED_SEND = 7 * 24 * 60 * 60;
-const TARGET_AT = new Date(Date.now() + 60 * 60_000).toISOString();
 
 let engine;
 let handlers;
@@ -34,10 +36,7 @@ function sessionWithSubmission(capability: any = {
   maxDelayedSend: MAX_DELAYED_SEND,
   submissionExtensions: { FUTURERELEASE: [] },
 }) {
-  return {
-    capabilities: {
-      [JMAP_CAPS.CORE]: { maxObjectsInGet: 500, maxObjectsInSet: 500 },
-    },
+  return mockSession({
     accounts: {
       'acct-1': {
         accountCapabilities: {
@@ -45,26 +44,20 @@ function sessionWithSubmission(capability: any = {
         },
       },
     },
-  };
+  });
 }
 
+/** The Email the server reports after the phase-1 create. */
 function scheduledEmail(id: string) {
-  return {
-    id,
-    blobId: `b-${id}`,
+  return scheduledEmailFixture(id, {
     threadId: 'thr-new',
-    mailboxIds: { 'mb-sched': true },
-    keywords: { $seen: true },
     size: 100,
     receivedAt: new Date().toISOString(),
     sentAt: TARGET_AT,
-    messageId: [`<${id}@example.com>`],
     from: [{ email: 'tester@example.com' }],
-    to: [{ email: 'rcpt@example.com' }],
     subject: 'Hello',
     preview: 'Hi.',
-    hasAttachment: false,
-  };
+  });
 }
 
 /** Transport answering the whole happy path; records the writes. */
@@ -132,29 +125,14 @@ function scheduledSendRow({
 }
 
 beforeEach(async () => {
-  engine = await bootTestEngine();
-  handlers = makeHandlers(engine);
-  account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
-    displayName: 'T',
-    primaryEmail: 't@example.com',
-    serverOrigin: 'https://mail.example.com',
-    remoteAccountId: 'acct-1',
-    isPrimary: true,
-  })).row;
-  await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
-    accountId: account.id,
-    folders: [
-      { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
-      { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
-      {
-        remoteId: 'mb-sched', name: 'Scheduled', role: null, sortOrder: 3, isSubscribed: false,
-      },
-    ],
-  });
-  await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-    accountId: account.id,
-    patch: { scheduledMailboxRemoteId: 'mb-sched' },
-  });
+  ({
+    engine,
+    handlers,
+    account,
+    draftsFolder: drafts,
+    sentFolder: sent,
+    scheduledFolder: scheduled,
+  } = await bootScheduledAccount({ scheduledSubscribed: false }));
   await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
     accountId: account.id,
     identities: [{
@@ -165,15 +143,6 @@ beforeEach(async () => {
       rawJson: null,
     }],
   });
-  drafts = await engine.get(
-    "SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-drafts'", [account.id],
-  );
-  sent = await engine.get(
-    "SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-sent'", [account.id],
-  );
-  scheduled = await engine.get(
-    "SELECT id FROM folders WHERE account_id = ? AND remote_id = 'mb-sched'", [account.id],
-  );
   identity = await engine.get(
     "SELECT id FROM identities WHERE account_id = ? AND remote_id = 'id-1'", [account.id],
   );
