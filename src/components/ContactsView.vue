@@ -12,6 +12,7 @@ import { ArrowLeft } from '@lucide/vue';
 
 import {
   ADDRESSBOOK_ERROR,
+  addressBookErrorMessage,
 } from '../constants/addressbook-errors';
 import {
   useContactsStore,
@@ -30,6 +31,7 @@ import type {
   IdentityRow,
 } from '../types';
 import { resolveComposeIdentityIndex } from '../utils/compose-identity';
+import { addressBookDeleteDisabledReason } from '../utils/address-book-policy';
 import { contactMutationFieldsFromDetail } from '../utils/contact-fields';
 import { copyableContactPhoto } from '../utils/contact-photo';
 import { normalizeContactUid } from '../utils/contact-uid';
@@ -47,7 +49,6 @@ import DirectoryList from './contacts/DirectoryList.vue';
 import IdentityDetailPane from './contacts/IdentityDetailPane.vue';
 import RestoreContactDestinationDialog from './contacts/RestoreContactDestinationDialog.vue';
 import {
-  addressBookDeleteDisabledReason,
   addressBookDisplayName,
   contactEntry,
   identityEntry,
@@ -207,13 +208,14 @@ const bookCounts = computed(() => {
 
 const selectedBook = computed(() =>
   addressbooks.value.find((book) => book.id === selectedBookId.value) ?? null);
-const addressBookDetailDeleteReason = computed(() =>
-  addressBookDetail.value
-    ? addressBookDeleteDisabledReason(
-        addressBookDetail.value,
-        addressbooks.value,
-      )
-    : null);
+const addressBookDetailDeleteReason = computed(() => {
+  if (!addressBookDetail.value) return null;
+  const reason = addressBookDeleteDisabledReason(
+    addressBookDetail.value,
+    addressbooks.value,
+  );
+  return reason ? addressBookErrorMessage(reason) : null;
+});
 const hasBulkSelection = computed(() => selectedContactIds.value.size > 0);
 const selectedContacts = computed(() => {
   const selected = selectedContactIds.value;
@@ -1343,7 +1345,7 @@ function closeAddressBookDeleteDialog(): void {
 async function requestAddressBookDelete(book: AddressbookRow): Promise<void> {
   const reason = addressBookDeleteDisabledReason(book, addressbooks.value);
   if (reason) {
-    operationNotice.value = reason;
+    operationNotice.value = addressBookErrorMessage(reason);
     return;
   }
   addressBookDeleteBusy.value = true;

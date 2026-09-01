@@ -198,7 +198,7 @@ describe('address book directory controls', () => {
       title: other.name,
     });
     expect(wrapper.get('[aria-label="Delete address book"]').attributes('title'))
-      .toContain('final non-Trusted-Senders');
+      .toContain('last address book');
 
     await wrapper.setProps({
       addressbooks: [other],

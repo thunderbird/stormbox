@@ -13,6 +13,7 @@ import {
 
 import {
   ADDRESSBOOK_ERROR,
+  addressBookErrorMessage,
   type AddressBookError,
 } from '../../constants/addressbook-errors';
 import {
@@ -88,44 +89,12 @@ const nameError = computed(() => {
   return null;
 });
 
-function structuredErrorMessage(error: AddressBookError): string {
-  switch (error) {
-    case ADDRESSBOOK_ERROR.INVALID_NAME:
-      return 'Enter an address book name without a line break.';
-    case ADDRESSBOOK_ERROR.PERMISSION_DENIED:
-      return 'You don’t have permission to manage this address book.';
-    case ADDRESSBOOK_ERROR.UNSUPPORTED_SUBSCRIPTION:
-      return 'The server does not allow this subscription change.';
-    case ADDRESSBOOK_ERROR.STATE_MISMATCH:
-      return 'The address book changed on the server. Refresh and try again.';
-    case ADDRESSBOOK_ERROR.MISSING:
-      return 'This address book no longer exists.';
-    case ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE:
-      return 'The address book service is temporarily unavailable.';
-    case ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED:
-      return 'The address book was saved, but the local list could not be refreshed.';
-    case ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE:
-      return 'The server may have created this address book, but it could not be identified safely.';
-    case ADDRESSBOOK_ERROR.CONFIRMATION_REQUIRED:
-    case ADDRESSBOOK_ERROR.CONFIRMATION_STALE:
-    case ADDRESSBOOK_ERROR.PROTECTED:
-    case ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK:
-      return 'The address book could not be saved.';
-    case ADDRESSBOOK_ERROR.INVALID_ARGUMENTS:
-      return 'Enter valid address book details.';
-    default: {
-      const exhaustive: never = error;
-      return exhaustive;
-    }
-  }
-}
-
 const displayError = computed(() => {
   if (!saveAttempted.value) return null;
   if (localError.value) return localError.value;
   if (contactsStore.error) return contactsStore.error;
   return structuredError.value
-    ? structuredErrorMessage(structuredError.value)
+    ? addressBookErrorMessage(structuredError.value)
     : null;
 });
 
