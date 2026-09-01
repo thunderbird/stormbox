@@ -1,7 +1,6 @@
 import {
   computed,
   nextTick,
-  onBeforeUnmount,
   onMounted,
   ref,
   watch,
@@ -10,6 +9,7 @@ import {
 } from 'vue';
 
 import type { DirectoryLayout } from '../components/contacts/directory-types';
+import { useColumnResize } from './useColumnResize';
 
 export type DirectoryResizePane = 'list' | 'rail';
 
@@ -45,14 +45,7 @@ function clamp(value: number, min: number, max: number): number {
 export function useDirectoryColumnResize(options: DirectoryColumnResizeOptions) {
   const railWidth = ref<number>(DIRECTORY_COLUMN_DEFAULT_WIDTHS.rail);
   const listWidth = ref<number>(DIRECTORY_COLUMN_DEFAULT_WIDTHS.list);
-  const activeResizePane = ref<DirectoryResizePane | null>(null);
   let usingDefaultWidths = true;
-  let resizeState: {
-    pane: DirectoryResizePane;
-    startX: number;
-    startListWidth: number;
-    startRailWidth: number;
-  } | null = null;
 
   const columnStyle = computed(() => ({
     '--contacts-column-resizer-width': `${DIRECTORY_RESIZER_WIDTH}px`,
@@ -107,6 +100,48 @@ export function useDirectoryColumnResize(options: DirectoryColumnResizeOptions) 
     );
   }
 
+  function paneCanResize(pane: DirectoryResizePane): boolean {
+    if (pane === 'rail') return options.layout.value === 'desktop';
+    return options.layout.value !== 'phone' && options.detailVisible.value;
+  }
+
+  const {
+    activeResizePane,
+    clampPane,
+    onResizeHandleKeydown,
+    startColumnResize,
+  } = useColumnResize<DirectoryResizePane>({
+    panes: {
+      list: {
+        canResize: () => paneCanResize('list'),
+        get: () => listWidth.value,
+        max: (widths) => maxListWidth(widths.rail),
+        min: () => DIRECTORY_COLUMN_MIN_WIDTHS.list,
+        set: (width) => {
+          listWidth.value = width;
+        },
+        storageKey: 'list',
+      },
+      rail: {
+        canResize: () => paneCanResize('rail'),
+        get: () => railWidth.value,
+        max: (widths) => maxRailWidth(widths.list),
+        min: () => DIRECTORY_COLUMN_MIN_WIDTHS.rail,
+        set: (width) => {
+          railWidth.value = width;
+        },
+        storageKey: 'rail',
+      },
+    },
+    storageKey: options.storageKey,
+    onLoad: () => {
+      usingDefaultWidths = false;
+    },
+    onUserResize: () => {
+      usingDefaultWidths = false;
+    },
+  });
+
   function clampColumnWidths(): void {
     if (
       usingDefaultWidths
@@ -116,129 +151,11 @@ export function useDirectoryColumnResize(options: DirectoryColumnResizeOptions) 
       listWidth.value = defaultListWidth();
     }
     if (options.layout.value === 'desktop') {
-      railWidth.value = clamp(
-        railWidth.value,
-        DIRECTORY_COLUMN_MIN_WIDTHS.rail,
-        maxRailWidth(listWidth.value),
-      );
+      clampPane('rail');
     }
     if (options.layout.value !== 'phone') {
-      listWidth.value = clamp(
-        listWidth.value,
-        DIRECTORY_COLUMN_MIN_WIDTHS.list,
-        maxListWidth(railWidth.value),
-      );
+      clampPane('list');
     }
-  }
-
-  function saveColumnWidths(): void {
-    try {
-      window.localStorage?.setItem(options.storageKey, JSON.stringify({
-        list: listWidth.value,
-        rail: railWidth.value,
-      }));
-    } catch {
-      // The current resize still applies when layout preferences cannot persist.
-    }
-  }
-
-  function loadColumnWidths(): void {
-    try {
-      const raw = window.localStorage?.getItem(options.storageKey);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Number.isFinite(parsed?.rail)) {
-        railWidth.value = parsed.rail;
-        usingDefaultWidths = false;
-      }
-      if (Number.isFinite(parsed?.list)) {
-        listWidth.value = parsed.list;
-        usingDefaultWidths = false;
-      }
-    } catch {
-      // Invalid or unavailable storage falls back to the default widths.
-    }
-  }
-
-  function paneCanResize(pane: DirectoryResizePane): boolean {
-    if (pane === 'rail') return options.layout.value === 'desktop';
-    return options.layout.value !== 'phone' && options.detailVisible.value;
-  }
-
-  function startColumnResize(pane: DirectoryResizePane, event: PointerEvent): void {
-    if (event.button !== 0 || !paneCanResize(pane)) return;
-    event.preventDefault();
-    usingDefaultWidths = false;
-    resizeState = {
-      pane,
-      startX: event.clientX,
-      startListWidth: listWidth.value,
-      startRailWidth: railWidth.value,
-    };
-    activeResizePane.value = pane;
-    document.body.classList.add('is-column-resizing');
-    window.addEventListener('pointermove', onColumnResizeMove);
-    window.addEventListener('pointerup', stopColumnResize, { once: true });
-    window.addEventListener('pointercancel', stopColumnResize, { once: true });
-  }
-
-  function onColumnResizeMove(event: PointerEvent): void {
-    if (!resizeState) return;
-    const delta = event.clientX - resizeState.startX;
-    if (resizeState.pane === 'rail') {
-      railWidth.value = clamp(
-        resizeState.startRailWidth + delta,
-        DIRECTORY_COLUMN_MIN_WIDTHS.rail,
-        maxRailWidth(resizeState.startListWidth),
-      );
-      return;
-    }
-    listWidth.value = clamp(
-      resizeState.startListWidth + delta,
-      DIRECTORY_COLUMN_MIN_WIDTHS.list,
-      maxListWidth(railWidth.value),
-    );
-  }
-
-  function stopColumnResize(): void {
-    if (!resizeState && activeResizePane.value == null) return;
-    resizeState = null;
-    activeResizePane.value = null;
-    document.body.classList.remove('is-column-resizing');
-    window.removeEventListener('pointermove', onColumnResizeMove);
-    window.removeEventListener('pointerup', stopColumnResize);
-    window.removeEventListener('pointercancel', stopColumnResize);
-    saveColumnWidths();
-  }
-
-  function onResizeHandleKeydown(
-    pane: DirectoryResizePane,
-    event: KeyboardEvent,
-  ): void {
-    if (
-      !paneCanResize(pane)
-      || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')
-    ) {
-      return;
-    }
-    event.preventDefault();
-    usingDefaultWidths = false;
-    const direction = event.key === 'ArrowRight' ? 1 : -1;
-    const step = event.shiftKey ? 40 : 10;
-    if (pane === 'rail') {
-      railWidth.value = clamp(
-        railWidth.value + direction * step,
-        DIRECTORY_COLUMN_MIN_WIDTHS.rail,
-        maxRailWidth(listWidth.value),
-      );
-    } else {
-      listWidth.value = clamp(
-        listWidth.value + direction * step,
-        DIRECTORY_COLUMN_MIN_WIDTHS.list,
-        maxListWidth(railWidth.value),
-      );
-    }
-    saveColumnWidths();
   }
 
   watch(
@@ -250,12 +167,9 @@ export function useDirectoryColumnResize(options: DirectoryColumnResizeOptions) 
   );
 
   onMounted(async () => {
-    loadColumnWidths();
     await nextTick();
     clampColumnWidths();
   });
-
-  onBeforeUnmount(stopColumnResize);
 
   return {
     activeResizePane,
