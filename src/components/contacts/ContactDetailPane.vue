@@ -4,6 +4,7 @@ import {
   nextTick,
   onBeforeUnmount,
   ref,
+  watch,
 } from 'vue';
 import {
   ArrowLeft,
@@ -69,6 +70,7 @@ const emit = defineEmits<{
 
 const contactsStore = useContactsStore();
 const formEl = ref<HTMLFormElement | null>(null);
+const errorEl = ref<HTMLParagraphElement | null>(null);
 const fullNameEl = ref<HTMLInputElement | null>(null);
 const photoInputEl = ref<HTMLInputElement | null>(null);
 const detailViewEl = ref<{ focusHeading: () => Promise<void> } | null>(null);
@@ -124,6 +126,16 @@ const {
 const displayError = computed(() =>
   localError.value || (saveAttempted.value ? contactsStore.error : null));
 const firstErrorFieldKey = computed(() => Object.keys(fieldErrors.value)[0] ?? null);
+
+// The form scrolls while Save stays in its sticky footer, so a form-level
+// error at the top must be brought into view when it appears.
+watch(
+  () => (firstErrorFieldKey.value ? null : displayError.value),
+  (message) => {
+    if (!message) return;
+    void nextTick(() => errorEl.value?.scrollIntoView?.({ block: 'nearest' }));
+  },
+);
 
 function choosePhoto(): void {
   photoInputEl.value?.click();
@@ -316,6 +328,15 @@ defineExpose({ focusDetail, save });
       novalidate
       @submit.prevent="save"
     >
+      <p
+        v-if="displayError && !firstErrorFieldKey"
+        ref="errorEl"
+        class="contact-detail__error"
+        role="alert"
+      >
+        {{ displayError }}
+      </p>
+
       <div class="contact-detail__photo-editor">
         <ContactAvatar
           :email="preferredEmail"
@@ -387,14 +408,6 @@ defineExpose({ focusDetail, save });
         v-model:organizations="model.organizations"
         v-model:titles="model.titles"
       />
-
-      <p
-        v-if="displayError && !firstErrorFieldKey"
-        class="contact-detail__error"
-        role="alert"
-      >
-        {{ displayError }}
-      </p>
 
       <footer class="contact-detail__footer">
         <span v-if="mode === 'create'" class="contact-detail__hint">
