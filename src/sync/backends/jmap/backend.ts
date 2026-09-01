@@ -618,10 +618,7 @@ export class JmapBackend {
     // Catch up on schedules that released or were canceled while this
     // client was away, and arm the nearest-sendAt wake-up. Nothing later
     // in bootstrap depends on it, so it does not gate bootstrapped().
-    this._syncSubmissions().catch((err) => {
-      wlog.warn('jmap-backend', 'startup submission sync failed', err);
-      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
-    });
+    void this._syncSubmissionsWithRetry('startup submission sync failed');
     this._scheduleMetadataIndexer(1_000);
   }
 
@@ -748,10 +745,9 @@ export class JmapBackend {
         this.account.id,
       );
       if (!scheduledRemoteId || folder.remote_id !== scheduledRemoteId) return;
-      await this._syncSubmissions();
+      await this._syncSubmissionsWithRetry('scheduled-folder submission sync failed');
     })().catch((err) => {
-      wlog.warn('jmap-backend', 'scheduled-folder submission sync failed', err);
-      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+      this._handleSubmissionSyncFailure('scheduled-folder submission sync failed', err);
     });
   }
 
@@ -1667,13 +1663,21 @@ export class JmapBackend {
     });
     // EmailSubmission pushes emitted while the socket was down are not
     // replayed either; one pass re-reads whatever settled meanwhile.
-    await this._syncSubmissions().catch((err) => {
-      wlog.warn('jmap-backend', 'reconnect submission sync failed', err);
-      this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
-    });
+    await this._syncSubmissionsWithRetry('reconnect submission sync failed');
   }
 
   // ----- Send Later submission sync ------------------------------------
+
+  _handleSubmissionSyncFailure(label: string, error: unknown) {
+    wlog.warn('jmap-backend', label, error);
+    this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
+  }
+
+  _syncSubmissionsWithRetry(label: string): Promise<void> {
+    return this._syncSubmissions().catch((error) => {
+      this._handleSubmissionSyncFailure(label, error);
+    });
+  }
 
   /**
    * Run one level-based submission-sync pass for the primary account
@@ -1751,10 +1755,7 @@ export class JmapBackend {
     );
     this._submissionWakeTimer = setTimeout(() => {
       this._submissionWakeTimer = null;
-      this._syncSubmissions().catch((err) => {
-        wlog.warn('jmap-backend', 'submission wake-up sync failed', err);
-        this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
-      });
+      void this._syncSubmissionsWithRetry('submission wake-up sync failed');
     }, delay);
   }
 
@@ -1925,10 +1926,9 @@ export class JmapBackend {
               && !Object.hasOwn(types, 'EmailSubmission')
               && await this._hasTrackedSchedules(account.id)
             ) {
-              void this._syncSubmissions().catch((err) => {
-                wlog.warn('jmap-backend', 'mailbox-triggered submission sync failed', err);
-                this._armSubmissionWake(Date.now() + this._submissionRetryDelayMs());
-              });
+              void this._syncSubmissionsWithRetry(
+                'mailbox-triggered submission sync failed',
+              );
             }
             break;
           }
