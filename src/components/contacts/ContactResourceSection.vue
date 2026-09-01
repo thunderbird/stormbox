@@ -8,6 +8,7 @@ import {
   type ContactEditorResource,
   type ContactResourceKind,
 } from './contact-editor';
+import AppIconButton from '../AppIconButton.vue';
 import ContactLabelDropdown from './ContactLabelDropdown.vue';
 
 const props = defineProps<{
@@ -177,14 +178,13 @@ function errorFor(formKey: string): string | null {
       >
         Primary
       </button>
-      <button
+      <AppIconButton
         class="contact-editor__remove"
-        type="button"
         :aria-label="`Remove ${kind}`"
         @click="removeResource(resource.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />
-      </button>
+      </AppIconButton>
       <p
         v-if="errorFor(resource.formKey)"
         :id="errorId(resource.formKey)"

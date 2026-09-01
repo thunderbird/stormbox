@@ -14,6 +14,7 @@ import {
 
 import { useModalFocus } from '../composables/useModalFocus';
 import { useSettingsStore } from '../stores/settings-store';
+import { closeContainingDropdown } from '../utils/dropdown';
 import {
   detectTimeZone,
   instantToWallTime,
@@ -172,13 +173,8 @@ function close(): void {
   if (!props.busy) emit('close');
 }
 
-function closeDropdown(event: Event): void {
-  const details = (event.currentTarget as HTMLElement).closest('details');
-  if (details instanceof HTMLDetailsElement) details.open = false;
-}
-
 async function chooseTimeZone(timeZone: string, event: Event): Promise<void> {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   if (!isUsableTimeZone(timeZone)) return;
   selectedTimeZone.value = timeZone;
   zoneSearch.value = '';

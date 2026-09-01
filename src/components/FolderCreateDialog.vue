@@ -6,6 +6,7 @@ import { useModalFocus } from '../composables/useModalFocus';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { FolderRow } from '../types';
+import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
 import { folderSortKey } from '../utils/folder-presentation';
@@ -87,8 +88,7 @@ const selectedParentLabel = computed(() => {
 
 function pickParent(id: number | null, event: Event) {
   parentFolderId.value = id;
-  const details = (event.currentTarget as HTMLElement).closest('details');
-  if (details) details.open = false;
+  closeContainingDropdown(event);
 }
 
 function flatten(accountFolders: FolderRow[]): Array<{ folder: FolderRow; depth: number }> {

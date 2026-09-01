@@ -25,6 +25,7 @@ import { useSettingsStore } from '../stores/settings-store';
 import { COMPOSE_STATE } from '../constants/states';
 import type { IdentityRow } from '../types/db';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
+import { closeContainingDropdown } from '../utils/dropdown';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import { formatBytes } from '../utils/format-bytes';
 import {
@@ -41,6 +42,7 @@ import {
 } from '../utils/compose-provenance';
 import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
+import AppIconButton from './AppIconButton.vue';
 import RecipientInput from './RecipientInput.vue';
 import RichTextEditor from './RichTextEditor.vue';
 import ScheduleSendDialog from './ScheduleSendDialog.vue';
@@ -225,19 +227,8 @@ function attachmentDisplayName(name: string): string {
   return sanitizeAttachmentFilename(name);
 }
 
-/**
- * Close the <details> dropdown a picked item belongs to. A single-choice
- * menu that stays open after the choice reads as a menu that did not
- * work; <details> provides no close-on-activate of its own.
- */
-function closeDropdown(event: Event) {
-  const details = (event.currentTarget as HTMLElement).closest('details');
-  if (details) details.open = false;
-}
-
 function closeScheduleMenu(): void {
-  const details = scheduleMenuTriggerEl.value?.closest('details');
-  if (details instanceof HTMLDetailsElement) details.open = false;
+  closeContainingDropdown(scheduleMenuTriggerEl.value);
 }
 
 function refreshResolvedPresets(): void {
@@ -297,7 +288,7 @@ function stageScheduleTarget(
 }
 
 function clearStagedSchedule(event: Event): void {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   stagedSchedule.value = null;
   scheduleUiError.value = null;
 }
@@ -324,7 +315,7 @@ function stageCustomScheduleTarget(targetAt: string, timeZone: string): void {
 
 function openCustomSchedule(event: Event): void {
   if (scheduleChoiceDisabled.value) return;
-  closeDropdown(event);
+  closeContainingDropdown(event);
   scheduleUiError.value = null;
   customScheduleError.value = null;
   customScheduleOpen.value = true;
@@ -347,7 +338,7 @@ function activateCloseTrigger(event: MouseEvent) {
 async function discardFromCloseMenu(event: Event) {
   const sessionId = session.value?.id;
   if (!sessionId) return;
-  closeDropdown(event);
+  closeContainingDropdown(event);
   if (!await composeStore.discardDraft(sessionId)) {
     await nextTick();
     closeMenuTriggerEl.value?.focus();
@@ -357,7 +348,7 @@ async function discardFromCloseMenu(event: Event) {
 async function saveFromCloseMenu(event: Event) {
   const sessionId = session.value?.id;
   if (!sessionId) return;
-  closeDropdown(event);
+  closeContainingDropdown(event);
   if (!await composeStore.saveAndClose(sessionId)) {
     await nextTick();
     closeMenuTriggerEl.value?.focus();
@@ -574,7 +565,7 @@ async function send() {
 }
 
 function pickFromIdentity(idx: number, event: Event) {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   composeStore.selectFromIndex(idx, session.value?.id ?? null);
 }
 
@@ -816,35 +807,32 @@ function identityInitials(id: IdentityRow): string {
             >{{ attachment.error }}</span>
           </div>
           <div class="compose-attachment__actions">
-            <button
+            <AppIconButton
               v-if="attachment.status === 'failed'"
-              type="button"
               class="compose-attachment__action"
               :aria-label="`Retry ${attachmentDisplayName(attachment.name)}`"
               :title="`Retry ${attachmentDisplayName(attachment.name)}`"
               @click="composeStore.retryAttachment(attachment.clientId, session.id)"
             >
               <RotateCw :size="15" aria-hidden="true" />
-            </button>
-            <button
+            </AppIconButton>
+            <AppIconButton
               v-if="attachment.status === 'uploading'"
-              type="button"
               class="compose-attachment__action"
               :aria-label="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
               :title="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
               @click="composeStore.cancelAttachment(attachment.clientId, session.id)"
             >
               <X :size="15" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
+            </AppIconButton>
+            <AppIconButton
               class="compose-attachment__action"
               :aria-label="`Remove ${attachmentDisplayName(attachment.name)}`"
               :title="`Remove ${attachmentDisplayName(attachment.name)}`"
               @click="composeStore.removeAttachment(attachment.clientId, session.id)"
             >
               <Trash2 :size="15" aria-hidden="true" />
-            </button>
+            </AppIconButton>
           </div>
         </article>
       </section>
@@ -1298,16 +1286,12 @@ function identityInitials(id: IdentityRow): string {
   flex: none;
 }
 .compose-attachment__action {
-  display: inline-grid;
-  place-items: center;
   width: 32px;
   height: 32px;
-  padding: 0;
+  flex-basis: 32px;
   border: 1px solid var(--border, #d6d9e2);
   border-radius: 7px;
-  background: transparent;
   color: inherit;
-  cursor: pointer;
 }
 .compose-attachment__action:hover {
   border-color: var(--accent, #0060df);

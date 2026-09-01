@@ -421,6 +421,8 @@ describe('ContactDetailPane', () => {
     const emailSection = wrapper.findAll('.contact-resource')[0];
     const before = emailSection.findAll('.contact-resource__row')
       .map((row) => row.attributes('data-field-key'));
+    expect(emailSection.findAll('button[aria-label="Remove email"]').every((button) =>
+      button.classes('app-icon-button'))).toBe(true);
 
     await emailSection.findAll('button[aria-label="Remove email"]')[1].trigger('click');
     const after = emailSection.findAll('.contact-resource__row')
@@ -876,6 +878,8 @@ describe('IdentityDetailPane', () => {
     });
     const before = wrapper.findAll('[data-form-key]')
       .map((row) => row.attributes('data-form-key'));
+    expect(wrapper.get('[aria-label="Remove Reply-To address 1"]').classes())
+      .toContain('app-icon-button');
 
     await wrapper.get('[aria-label="Remove Reply-To address 1"]').trigger('click');
 

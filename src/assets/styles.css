@@ -231,6 +231,10 @@ html.dark .base.primary.filled:not(:disabled) {
   box-sizing: border-box;
 }
 
+details:not([open]) > :not(summary) {
+  display: none;
+}
+
 :root {
   --app-viewport-height: 100vh;
 }

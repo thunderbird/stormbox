@@ -920,9 +920,6 @@ html.light,
   z-index: 30;
   margin-left: -7px;
 }
-.app-menu:not([open]) > :not(summary) {
-  display: none;
-}
 .quick-filter > .quick-filter__search {
   justify-self: center;
 }
