@@ -3027,16 +3027,11 @@ export interface ContactBatchWireTarget {
   remoteId: string;
 }
 
-export type ContactBatchWireOperation =
-  | {
-      operation: 'move';
-      sourceAddressbookRemoteId: string;
-      targetAddressbookRemoteId: string;
-    }
-  | {
-      operation: 'scoped-delete';
-      sourceAddressbookRemoteId: string | null;
-    };
+export interface ContactBatchWireOperation {
+  operation: 'move';
+  sourceAddressbookRemoteId: string;
+  targetAddressbookRemoteId: string;
+}
 
 interface ContactBatchChunkResult extends ContactBatchMutationResult {
   destroyedRemoteIds: string[];
@@ -3160,12 +3155,10 @@ function prepareContactBatchChunk(
   rights: Map<string, boolean>,
   operation: ContactBatchWireOperation,
 ): {
-  destroy: string[];
   result: ContactBatchChunkResult;
   update: Record<string, Record<string, unknown>>;
   writeTargets: Map<string, ContactBatchWireTarget>;
 } {
-  const destroy: string[] = [];
   const result = emptyContactBatchChunkResult();
   const update: Record<string, Record<string, unknown>> = {};
   const writeTargets = new Map<string, ContactBatchWireTarget>();
@@ -3187,70 +3180,37 @@ function prepareContactBatchChunk(
       continue;
     }
 
-    if (operation.operation === 'move') {
-      const source = operation.sourceAddressbookRemoteId;
-      const destination = operation.targetAddressbookRemoteId;
-      if (rights.get(source) !== true || rights.get(destination) !== true) {
-        result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
-        continue;
-      }
-      const inSource = memberships.includes(source);
-      const inDestination = memberships.includes(destination);
-      if (!inSource) {
-        if (inDestination) {
-          result.succeededContactIds.push(target.contactId);
-          result.updatedContactIds.push(target.contactId);
-          result.updatedRemoteIds.push(target.remoteId);
-        } else {
-          result.failures.push(contactBatchFailure(
-            target.contactId,
-            'sourceMembershipMissing',
-          ));
-        }
-        continue;
-      }
-      const patch: Record<string, unknown> = {
-        [`addressBookIds/${jmapPatchSegment(source)}`]: null,
-      };
-      if (!inDestination) {
-        patch[`addressBookIds/${jmapPatchSegment(destination)}`] = true;
-      }
-      update[target.remoteId] = patch;
-      writeTargets.set(target.remoteId, target);
-      continue;
-    }
-
     const source = operation.sourceAddressbookRemoteId;
-    if (source == null) {
-      if (memberships.some((bookId) => rights.get(bookId) !== true)) {
-        result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
-        continue;
-      }
-      destroy.push(target.remoteId);
-      writeTargets.set(target.remoteId, target);
-      continue;
-    }
-    if (rights.get(source) !== true) {
+    const destination = operation.targetAddressbookRemoteId;
+    if (rights.get(source) !== true || rights.get(destination) !== true) {
       result.failures.push(contactBatchFailure(target.contactId, 'forbidden'));
       continue;
     }
-    if (!memberships.includes(source)) {
-      result.succeededContactIds.push(target.contactId);
-      result.updatedContactIds.push(target.contactId);
-      result.updatedRemoteIds.push(target.remoteId);
+    const inSource = memberships.includes(source);
+    const inDestination = memberships.includes(destination);
+    if (!inSource) {
+      if (inDestination) {
+        result.succeededContactIds.push(target.contactId);
+        result.updatedContactIds.push(target.contactId);
+        result.updatedRemoteIds.push(target.remoteId);
+      } else {
+        result.failures.push(contactBatchFailure(
+          target.contactId,
+          'sourceMembershipMissing',
+        ));
+      }
       continue;
     }
-    if (memberships.length === 1) {
-      destroy.push(target.remoteId);
-    } else {
-      update[target.remoteId] = {
-        [`addressBookIds/${jmapPatchSegment(source)}`]: null,
-      };
+    const patch: Record<string, unknown> = {
+      [`addressBookIds/${jmapPatchSegment(source)}`]: null,
+    };
+    if (!inDestination) {
+      patch[`addressBookIds/${jmapPatchSegment(destination)}`] = true;
     }
+    update[target.remoteId] = patch;
     writeTargets.set(target.remoteId, target);
   }
   return {
-    destroy,
     result,
     update,
     writeTargets,
@@ -3264,36 +3224,13 @@ function applyContactBatchSetResponse(
   const result = prepared.result;
   let retryableError: ContactWriteError | null = null;
   for (const [remoteId, target] of prepared.writeTargets) {
-    if (remoteId in prepared.update) {
-      if (response.updated && remoteId in response.updated) {
-        result.succeededContactIds.push(target.contactId);
-        result.updatedContactIds.push(target.contactId);
-        result.updatedRemoteIds.push(remoteId);
-        continue;
-      }
-      const reason = response.notUpdated?.[remoteId];
-      const errorType = contactBatchSetErrorType(reason, 'noResponse');
-      if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
-        retryableError ??= { type: errorType, detail: reason };
-      } else {
-        result.failures.push(contactBatchFailure(target.contactId, errorType, reason));
-      }
-      continue;
-    }
-
-    if ((response.destroyed ?? []).includes(remoteId)) {
+    if (response.updated && remoteId in response.updated) {
       result.succeededContactIds.push(target.contactId);
-      result.destroyedContactIds.push(target.contactId);
-      result.destroyedRemoteIds.push(remoteId);
+      result.updatedContactIds.push(target.contactId);
+      result.updatedRemoteIds.push(remoteId);
       continue;
     }
-    const reason = response.notDestroyed?.[remoteId];
-    if (reason?.type === 'notFound') {
-      result.succeededContactIds.push(target.contactId);
-      result.destroyedContactIds.push(target.contactId);
-      result.destroyedRemoteIds.push(remoteId);
-      continue;
-    }
+    const reason = response.notUpdated?.[remoteId];
     const errorType = contactBatchSetErrorType(reason, 'noResponse');
     if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
       retryableError ??= { type: errorType, detail: reason };
@@ -3347,10 +3284,7 @@ async function runContactBatchChunk({
       rights,
       operation,
     );
-    if (
-      Object.keys(prepared.update).length === 0
-      && prepared.destroy.length === 0
-    ) {
+    if (Object.keys(prepared.update).length === 0) {
       return { result: prepared.result, retryableError: null };
     }
 
@@ -3361,12 +3295,7 @@ async function runContactBatchChunk({
         {
           accountId: account.remote_account_id,
           ifInState: answer.state,
-          ...(Object.keys(prepared.update).length > 0
-            ? { update: prepared.update }
-            : {}),
-          ...(prepared.destroy.length > 0
-            ? { destroy: prepared.destroy }
-            : {}),
+          update: prepared.update,
         },
         'cbset',
       ]],
@@ -3452,37 +3381,6 @@ export async function mutateContactCardsBatch({
     }
   }
   return { complete: true, result };
-}
-
-/**
- * Destroy a ContactCard by its remote id. Returns { ok, error? }. A
- * card that no longer exists server-side is treated as success so a
- * retry after a partial failure converges.
- */
-export async function deleteContactCard({
-  transport, account, remoteId, useWebSocket = false,
-}): Promise<ContactWriteResult> {
-  const id = String(remoteId ?? '').trim();
-  if (!id) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
-  }
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-    methodCalls: [[
-      'ContactCard/set',
-      { accountId: account.remote_account_id, destroy: [id] },
-      'cdel',
-    ]],
-    useWebSocket,
-  });
-  const set = pickResponse(result, 'ContactCard/set');
-  if (!set) return { ok: false, error: { type: 'serverFail' } };
-  if ((set.destroyed ?? []).includes(id)) return { ok: true };
-  const reason = set.notDestroyed?.[id];
-  // notFound means it is already gone — converge to success.
-  if (reason && reason.type === 'notFound') return { ok: true };
-  if (reason) return { ok: false, error: { type: 'notDestroyed', detail: reason } };
-  return { ok: false, error: { type: 'noResponse' } };
 }
 
 async function fetchRawContactCards({

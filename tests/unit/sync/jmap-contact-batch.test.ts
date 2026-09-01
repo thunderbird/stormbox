@@ -386,10 +386,12 @@ describe('durable ContactCard batches', () => {
         failures: [],
       },
     });
-    expect(setRequests(server.transport)[0].update['card-1']).toEqual({
+    const [wireRequest] = setRequests(server.transport);
+    expect(wireRequest.update['card-1']).toEqual({
       'addressBookIds/source': null,
       'addressBookIds/target': true,
     });
+    expect(wireRequest).not.toHaveProperty('destroy');
     expect(Object.keys(server.cards.get('card-1')!.addressBookIds).sort())
       .toEqual(['target', 'third']);
     const [cached] = await handlers[DB_RPC.CONTACT_LIST]({ accountId: account.id });
