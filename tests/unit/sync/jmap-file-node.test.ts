@@ -175,7 +175,7 @@ describe('JMAP FileNode JSON transport', () => {
     expect(transport.requests).toHaveLength(0);
   });
 
-  it('queries by exact name and validates the top-level owned document', async () => {
+  it('resolves by name and validates the top-level owned document', async () => {
     const node = ownedNode();
     const transport = makeTransport({ node });
     const result = await readJsonFileNode({
@@ -193,10 +193,46 @@ describe('JMAP FileNode JSON transport', () => {
       document,
     });
     const query = transport.requests[0].methodCalls[0][1];
-    expect(query.filter).toEqual({ name: 'document.json' });
+    expect(query.filter).toEqual({ nameMatch: 'document.json' });
     expect(query.limit).toBe(500);
     expect(transport.requests[0].methodCalls[1][1].properties)
       .not.toContain('nodeType');
+    expect(transport.download).toHaveBeenCalledOnce();
+  });
+
+  it('reads only the exact node from an overmatching name lookup', async () => {
+    const exact = ownedNode();
+    const neighbor = ownedNode({
+      id: 'node-2',
+      name: 'document.json.backup',
+      blobId: 'blob-2',
+    });
+    const transport = makeTransport();
+    transport.handle('FileNode/query', () => ({
+      queryState: 'query-1',
+      ids: [neighbor.id, exact.id],
+      total: 2,
+    }));
+    transport.handle('FileNode/get', () => ({
+      state: 'state-1',
+      list: [neighbor, exact],
+      notFound: [],
+    }));
+
+    await expect(readJsonFileNode({
+      transport,
+      account,
+      fileName: 'document.json',
+      marker,
+      maxBytes: MAX_DOCUMENT_BYTES,
+    })).resolves.toMatchObject({
+      ok: true,
+      node: { id: exact.id },
+      document,
+    });
+    expect(transport.download).toHaveBeenCalledWith(
+      expect.objectContaining({ blobId: exact.blobId, name: exact.name }),
+    );
   });
 
   it('refuses an unowned or incompatible document', async () => {
