@@ -1018,13 +1018,13 @@ describe('MessageView HTML body rendering', () => {
     const first = items[0].text();
     expect(first).toContain('report.pdf');
     expect(first).toContain('application/pdf');
-    expect(first).toContain('2 KB');
+    expect(first).toContain('2 KiB');
 
     const second = items[1].text();
     expect(second).toContain('photo.png');
     expect(second).toContain('image/png');
     // No size segment when size is null.
-    expect(second).not.toContain('KB');
+    expect(second).not.toContain('KiB');
 
     wrapper.unmount();
   });

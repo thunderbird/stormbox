@@ -67,6 +67,17 @@ export function shouldSuppressResolvedCidPart(
   return resolvedPartIds.has(part.part_id);
 }
 
+/**
+ * Size label for a message attachment: exact bytes below 1 KiB, whole
+ * KiB rounded up below 1 MiB, otherwise MiB to one decimal. Callers pass
+ * a finite, non-negative count.
+ */
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
 export function sanitizeAttachmentFilename(
   untrustedName: string | null | undefined,
 ): string {

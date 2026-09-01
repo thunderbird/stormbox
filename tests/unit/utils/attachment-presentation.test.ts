@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attachmentPreviewKind,
   decodePlainTextPreview,
+  formatAttachmentSize,
   hasMatchingRasterSignature,
   MAX_RASTER_PREVIEW_BYTES,
   MAX_TEXT_PREVIEW_BYTES,
@@ -10,6 +11,24 @@ import {
   shouldSuppressResolvedCidPart,
 } from '../../../src/utils/attachment-presentation';
 import { attachmentPart as part } from '../_fixtures/rows';
+
+describe('formatAttachmentSize', () => {
+  it.each([
+    [0, '0 B'],
+    [900, '900 B'],
+    [1023, '1023 B'],
+    [1024, '1 KiB'],
+    [1500, '2 KiB'],
+    [1024 * 1024 - 1, '1024 KiB'],
+    [1024 * 1024, '1.0 MiB'],
+    [1_101_005, '1.1 MiB'],
+    [1.5 * 1024 * 1024, '1.5 MiB'],
+    [2_034_237, '1.9 MiB'],
+    [1024 ** 3, '1024.0 MiB'],
+  ])('labels %d bytes as %s', (bytes, label) => {
+    expect(formatAttachmentSize(bytes)).toBe(label);
+  });
+});
 
 describe('attachment presentation classification', () => {
   it('auto-previews only bounded allowlisted rasters', () => {
