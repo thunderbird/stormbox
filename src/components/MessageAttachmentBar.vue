@@ -8,8 +8,10 @@ import {
 } from '@lucide/vue';
 
 import type { MessageAttachmentRow } from '../composables/useMessageAttachments';
-import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
-import { formatBytes } from '../utils/format-bytes';
+import {
+  formatAttachmentSize,
+  sanitizeAttachmentFilename,
+} from '../utils/attachment-presentation';
 import AppIconButton from './AppIconButton.vue';
 
 defineProps<{
@@ -33,7 +35,7 @@ function metadata(row: MessageAttachmentRow): string {
   if (row.part.size == null) return type;
   const bytes = Number(row.part.size);
   if (!Number.isFinite(bytes) || bytes < 0) return type;
-  return `${type} · ${formatBytes(bytes) ?? `${bytes} B`}`;
+  return `${type} · ${formatAttachmentSize(bytes)}`;
 }
 
 function pendingLabel(row: MessageAttachmentRow): string {
