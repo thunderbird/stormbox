@@ -12,6 +12,15 @@
  */
 
 import { wlog } from '../../../db/worker-log';
+import {
+  SERVER_CLOCK_MAX_ABS_OFFSET_MS,
+  SERVER_CLOCK_MAX_AGE_MS,
+  SERVER_CLOCK_MAX_UNCERTAINTY_MS,
+  type ServerClockReferenceLike,
+} from '../../../utils/schedule-time';
+
+export { SERVER_CLOCK_MAX_UNCERTAINTY_MS };
+export type ServerClockReference = ServerClockReferenceLike;
 
 const JMAP_CORE = 'urn:ietf:params:jmap:core';
 const JMAP_MAIL = 'urn:ietf:params:jmap:mail';
@@ -30,16 +39,6 @@ export const JMAP_CAPS = Object.freeze({
   FILENODE: JMAP_FILENODE,
   WEBSOCKET: JMAP_WEBSOCKET_CAP,
 });
-
-export interface ServerClockReference {
-  capturedAtMs: number;
-  lowerOffsetMs: number;
-  uncertaintyMs: number;
-}
-
-const SERVER_CLOCK_MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
-const SERVER_CLOCK_MAX_AGE_MS = 10 * 60 * 1_000;
-export const SERVER_CLOCK_MAX_UNCERTAINTY_MS = 31_000;
 
 function httpResponseError(
   label: string,

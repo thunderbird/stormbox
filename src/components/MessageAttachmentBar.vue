@@ -9,6 +9,7 @@ import {
 
 import type { MessageAttachmentRow } from '../composables/useMessageAttachments';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
+import { formatBytes } from '../utils/format-bytes';
 import AppIconButton from './AppIconButton.vue';
 
 defineProps<{
@@ -32,9 +33,7 @@ function metadata(row: MessageAttachmentRow): string {
   if (row.part.size == null) return type;
   const bytes = Number(row.part.size);
   if (!Number.isFinite(bytes) || bytes < 0) return type;
-  if (bytes < 1024) return `${type} · ${bytes} B`;
-  if (bytes < 1024 * 1024) return `${type} · ${Math.ceil(bytes / 1024)} KiB`;
-  return `${type} · ${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${type} · ${formatBytes(bytes) ?? `${bytes} B`}`;
 }
 
 function pendingLabel(row: MessageAttachmentRow): string {

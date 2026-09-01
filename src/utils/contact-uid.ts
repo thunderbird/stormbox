@@ -1,5 +1,7 @@
+import { randomToken } from './random-token';
+
 export function createContactUid(): string {
-  return `urn:uuid:${crypto.randomUUID()}`;
+  return `urn:uuid:${randomToken()}`;
 }
 
 export async function createContactUidFromSeed(seed: string): Promise<string> {
@@ -14,7 +16,7 @@ export async function createContactUidFromSeed(seed: string): Promise<string> {
 }
 
 export function createContactMapKey(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`;
+  return `${prefix}-${randomToken()}`;
 }
 
 export function isContactUid(value: unknown): value is string {

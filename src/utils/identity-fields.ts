@@ -3,6 +3,7 @@ import type {
   IdentityMutableFields,
 } from '../types';
 import { parseAddressEntries } from './address-parse';
+import { randomToken } from './random-token';
 
 export const IDENTITY_SIGNATURE_BYTE_LIMIT = 2048;
 
@@ -16,17 +17,12 @@ const MUTABLE_IDENTITY_FIELDS = [
   'htmlSignature',
 ] as const satisfies readonly (keyof IdentityMutableFields)[];
 
-let fallbackOperationSequence = 0;
-
 export function hasOwn(value: object, key: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 export function createIdentityOperationId(): string {
-  const randomUuid = globalThis.crypto?.randomUUID?.();
-  if (randomUuid) return `identity-${randomUuid}`;
-  fallbackOperationSequence += 1;
-  return `identity-${Date.now()}-${fallbackOperationSequence}`;
+  return `identity-${randomToken()}`;
 }
 
 export function utf8ByteLength(value: string): number {
