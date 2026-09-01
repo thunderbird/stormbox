@@ -899,6 +899,11 @@ async function closeDetail(): Promise<void> {
     else restoreDetailFocus();
     return;
   }
+  if (layout.value === 'phone') {
+    mobilePane.value = 'list';
+    await restoreListFocus();
+    return;
+  }
   clearSelection();
   await restoreListFocus();
 }

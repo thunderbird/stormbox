@@ -364,9 +364,10 @@ describe('ContactsView directory shell', () => {
     expect(wrapper.find('.contact-detail__photo-editor img').exists()).toBe(false);
   });
 
-  it('hides an unselected detail pane and uses a 639px drill-in', async () => {
-    const contact = makeContact(0);
-    const { wrapper } = await mountContacts({ contacts: [contact] });
+  it('hides an unselected detail pane and preserves the phone list cursor', async () => {
+    const first = makeContact(0);
+    const second = makeContact(1);
+    const { wrapper } = await mountContacts({ contacts: [first, second] });
 
     expect(wrapper.attributes('data-layout')).toBe('desktop');
     expect(wrapper.findAll('[data-directory-pane]')).toHaveLength(1);
@@ -386,10 +387,11 @@ describe('ContactsView directory shell', () => {
     expect(wrapper.attributes('data-layout')).toBe('phone');
     expect(wrapper.get('[data-directory-pane]').attributes('data-directory-pane')).toBe('list');
 
-    await option(wrapper, 'contact:1').trigger('click');
+    await option(wrapper, 'contact:2').trigger('click');
     await settle();
     expect(wrapper.get('[data-directory-pane]').attributes('data-directory-pane')).toBe('detail');
     expect(wrapper.find('.contacts__list').exists()).toBe(false);
+    expect(wrapper.get('.contact-detail__display-name').text()).toContain(second.display_name);
     expect(document.activeElement).toBe(wrapper.get('.contact-detail__display-name').element);
 
     await wrapper.get('[aria-label="Back"]').trigger('click');
@@ -400,6 +402,7 @@ describe('ContactsView directory shell', () => {
     await wrapper.get('[role="listbox"]').trigger('keydown', { key: 'Enter' });
     await settle();
     expect(wrapper.get('[data-directory-pane]').attributes('data-directory-pane')).toBe('detail');
+    expect(wrapper.get('.contact-detail__display-name').text()).toContain(second.display_name);
     expect(document.activeElement).toBe(wrapper.get('.contact-detail__display-name').element);
   });
 
