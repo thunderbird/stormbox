@@ -89,7 +89,7 @@ to the UI.
 - SVG, HTML, XML, archives, executables, and other unsafe types are
   download-only.
 
-See `specs/010-attachments/spec.md` for layout, classification, and
+See `specs/008-attachments/spec.md` for layout, classification, and
 compose-upload rules.
 
 ## `v-html` and our own assets

@@ -156,7 +156,7 @@ the full owned-address set, not on the currently selected From identity.
 | CS-2.5 🟩 Done | Reply All shall be computed from the parent message's structured addresses, not its rendered header text. It shall carry forward the original To and Cc, target Reply-To when present and From otherwise, remove every owned address and exact duplicate, and never copy Bcc. Plain Reply shall remain narrow, targeting Reply-To or From only, with the user's own addresses removed from that target and From standing in when a Reply-To names nobody else. Whether a message is the user's own shall be determined from From alone: a Reply-To that happens to name an owned address does not make someone else's message the user's, and shall not widen a plain Reply to that message's other recipients. Replying to a message the user did send is the exception to narrowness — plain Reply shall target the addresses it was sent To, because replying to oneself addresses nobody, and Reply All shall add its Cc. |
 | CS-2.6 🟩 Done | Reply and Reply All shall set `In-Reply-To` to the parent's Message-ID and extend `References` with it, drawn from the cached `rfc822_message_id` and `references_json` columns, so external clients thread the response. Subject prefixing alone is not threading. |
 | CS-2.7 🟩 Done | The message detail view shall display Cc so the user can see the audience before replying. |
-| CS-2.8 🟩 Done | New compose sessions shall use the client-selected Primary Identity. Replies shall use the first Identity matching the original message's To addresses and fall back to Primary. The system shall apply that Identity's `replyTo`, `bcc`, `htmlSignature`, and `textSignature` defaults per RFC 8621 §6. Reply-To is applied on save/send. Bcc and signatures shall be materialized before a new/reply/forward session captures its clean seed; changing From shall replace only intact auto-added values, and a reopened server draft shall receive no inferred defaults. The complete selection and provenance rules are `specs/005-contact-details/spec.md` CT-5.3 through CT-5.6. |
+| CS-2.8 🟩 Done | New compose sessions shall use the client-selected Primary Identity. Replies shall use the first Identity matching the original message's To addresses and fall back to Primary. The system shall apply that Identity's `replyTo`, `bcc`, `htmlSignature`, and `textSignature` defaults per RFC 8621 §6. Reply-To is applied on save/send. Bcc and signatures shall be materialized before a new/reply/forward session captures its clean seed; changing From shall replace only intact auto-added values, and a reopened server draft shall receive no inferred defaults. The complete selection and provenance rules are `specs/005-contacts-workspace/spec.md` CT-5.3 through CT-5.6. |
 | CS-2.9 🟩 Done | The compose dialog shall remain visible and interactive above the folder navigation overlay on small viewports, so opening compose on iOS does not leave the user with an obscured or unreachable form. |
 
 ## 3. Recipient autocomplete
@@ -192,7 +192,7 @@ the full owned-address set, not on the currently selected From identity.
 | CS-4.6 🟩 Done | The system shall paint cached identities immediately when compose opens and refresh them in the background on compose open and on reconnect, so an alias added since the last sync appears without requiring an app restart. |
 | CS-4.7 🟩 Done | Identity fidelity shall be verified at the protocol level: the selected local identity shall map to the expected JMAP Identity id, Email `from` name and address, and the From header of the externally received message. Reported alias and display-name defects shall be diagnosed from a captured transaction before assigning a cause to Stormbox or to the server. |
 | CS-4.8 🟩 Done | `AddressBook/get` shall be applied as an authoritative snapshot with deletion handling, on the same reasoning as CS-4.2. `syncAddressBooks()` persists the result with `snapshot: true`, retiring live local rows omitted by the complete server list so removed books are no longer offered as filing targets. |
-| CS-4.9 🟩 Done | Identity management shall live in the Contacts space behind **Manage identities** and shall reuse the contact list, third-column shell, and shared rich-text editor. The client-selected Primary Identity shall be marked in the list and persisted as a user setting because JMAP Identity has no primary property; absent a valid setting, the first Identity with `mayDelete: false` shall be Primary. Create, sparse update, and permitted delete actions shall use durable `Identity/set` outbox rows; accepted writes shall be checkpointed before targeted cache reconciliation and shall never be replayed during cache repair. Existing email is immutable, `mayDelete` is enforced in UI and store, protected Identities omit the delete action and explain the server restriction, and every mutable RFC 8621 field is exposed. Stalwart validation responses shall be normalized at the JMAP boundary into stable field-specific outcomes while retaining diagnostic detail. See `specs/005-contact-details/spec.md` CT-4. |
+| CS-4.9 🟩 Done | Identity management shall live in the Contacts space behind **Manage identities** and shall reuse the contact list, third-column shell, and shared rich-text editor. The client-selected Primary Identity shall be marked in the list and persisted as a user setting because JMAP Identity has no primary property; absent a valid setting, the first Identity with `mayDelete: false` shall be Primary. Create, sparse update, and permitted delete actions shall use durable `Identity/set` outbox rows; accepted writes shall be checkpointed before targeted cache reconciliation and shall never be replayed during cache repair. Existing email is immutable, `mayDelete` is enforced in UI and store, protected Identities omit the delete action and explain the server restriction, and every mutable RFC 8621 field is exposed. Stalwart validation responses shall be normalized at the JMAP boundary into stable field-specific outcomes while retaining diagnostic detail. See `specs/005-contacts-workspace/spec.md` CT-4. |
 
 ## 5. Verification
 
@@ -246,7 +246,7 @@ These are out of scope for this specification and are recorded here so
 later work has a home rather than being absorbed silently:
 
 Server-backed scheduled sending is defined by
-[Send Later](../011-send-later/spec.md).
+[Send Later](../009-send-later/spec.md).
 
 - **Uncheckpointed compose recovery.** Server draft replacement, autosave,
   minimized compose sessions, and Close-versus-Discard semantics are defined
@@ -254,7 +254,7 @@ Server-backed scheduled sending is defined by
   reached a durable draft checkpoint before every tab or worker closed remains
   outside both specifications.
 - **Attachment reminders.** Received and compose attachment behavior is
-  defined by [Attachment Support](../010-attachments/spec.md); reminder
+  defined by [Attachment Support](../008-attachments/spec.md); reminder
   heuristics remain outside both specifications.
 - **Undo Send.** A client-local delay is not durable once every tab closes;
   implementing this requires an explicit product contract distinct from the

@@ -921,7 +921,7 @@ Message detail:
 1. Render metadata from SQLite immediately.
 2. If body values are missing or stale, fetch `Email/get` with `bodyStructure`, `textBody`, `htmlBody`, `attachments`, body properties, and `fetchTextBodyValues`/`fetchHTMLBodyValues`.
 3. Store body part, attachment metadata, and fetched text/html body values.
-4. If a body value is truncated, fetch the body part blob as text for display, but do not store attachment blobs. Attachment preview and download bytes remain ephemeral worker transfers (`specs/010-attachments/spec.md` AT-3).
+4. If a body value is truncated, fetch the body part blob as text for display, but do not store attachment blobs. Attachment preview and download bytes remain ephemeral worker transfers (`specs/008-attachments/spec.md` AT-3).
 
 Mutation flow:
 

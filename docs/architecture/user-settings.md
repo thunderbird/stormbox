@@ -6,7 +6,7 @@ SQLite is the worker-side cache, and a JMAP FileNode named
 advertises `urn:ietf:params:jmap:filenode`. Accounts without the capability
 remain fully device-local.
 
-The product requirements are in `specs/007-user-settings/spec.md`.
+The product requirements are in `specs/006-user-settings/spec.md`.
 
 ## Document format
 

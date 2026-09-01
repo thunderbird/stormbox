@@ -211,4 +211,4 @@ are rejected:
 - Undo Send, scheduled send, or a user-visible Outbox.
 - Recovery of file bytes that were selected but never reached a confirmed
   draft checkpoint. Picker and upload behavior is defined by
-  [Attachment Support](../010-attachments/spec.md).
+  [Attachment Support](../008-attachments/spec.md).
