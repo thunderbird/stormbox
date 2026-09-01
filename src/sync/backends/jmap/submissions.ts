@@ -22,6 +22,10 @@ import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
 import { EMAIL_LIST_PROPERTIES, persistEmails } from './messages';
 import {
+  pageCompleteQuery,
+  type CompleteQueryFailureReason,
+} from './query-paging';
+import {
   scheduleClockWindow,
   SUBMISSION_RELEASE_OBSERVATION_DELAY_MS,
 } from './schedule-time';
@@ -46,6 +50,25 @@ interface SubmissionSyncArgs {
   useWebSocket?: boolean;
 }
 
+function submissionPagingError(reason: CompleteQueryFailureReason): Error {
+  switch (reason) {
+    case 'queryStateChanged':
+    case 'queryTotalChanged':
+      return new Error('EmailSubmission query changed while paging');
+    case 'truncated':
+    case 'pageLimitReached':
+      return new Error('EmailSubmission query stopped before its reported total');
+    case 'queryStateMissing':
+    case 'cursorStalled':
+    case 'positionPastTotal':
+      return new Error('EmailSubmission paging returned a malformed response');
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
+
 /**
  * Every retained submission the server will show us, validated but not
  * interpreted. An undoStatus outside the RFC 8621 §7 set maps to null so
@@ -57,100 +80,102 @@ export async function fetchSubmissionRecords({
   const records: SubmissionRecord[] = [];
   const seen = new Set<string>();
   const limit = maxObjectsInGet(transport);
-  let position = 0;
-  let queryState: string | null = null;
-  let total: number | null = null;
-
-  for (;;) {
-    const queryCallId = `subq-${position}`;
-    const getCallId = `subg-${position}`;
-    const payload = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
-      methodCalls: [
-        [
-          'EmailSubmission/query',
-          {
-            accountId: account.remote_account_id,
-            position,
-            limit,
-            calculateTotal: true,
-          },
-          queryCallId,
-        ],
-        [
-          'EmailSubmission/get',
-          {
-            accountId: account.remote_account_id,
-            '#ids': {
-              resultOf: queryCallId,
-              name: 'EmailSubmission/query',
-              path: '/ids',
+  const paging = await pageCompleteQuery({
+    pageSize: limit,
+    readPage: async ({ position, limit: pageLimit }) => {
+      const queryCallId = `subq-${position}`;
+      const getCallId = `subg-${position}`;
+      const payload = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
+        methodCalls: [
+          [
+            'EmailSubmission/query',
+            {
+              accountId: account.remote_account_id,
+              position,
+              limit: pageLimit,
+              calculateTotal: true,
             },
-            properties: ['id', 'emailId', 'undoStatus', 'sendAt'],
-          },
-          getCallId,
+            queryCallId,
+          ],
+          [
+            'EmailSubmission/get',
+            {
+              accountId: account.remote_account_id,
+              '#ids': {
+                resultOf: queryCallId,
+                name: 'EmailSubmission/query',
+                path: '/ids',
+              },
+              properties: ['id', 'emailId', 'undoStatus', 'sendAt'],
+            },
+            getCallId,
+          ],
         ],
-      ],
-      useWebSocket,
-    });
-    const query = requireResponse(payload, 'EmailSubmission/query');
-    const got = requireResponse(payload, 'EmailSubmission/get');
-    const ids = Array.isArray(query.ids)
-      ? query.ids.filter((id: unknown): id is string => typeof id === 'string')
-      : null;
-    const pageTotal = Number(query.total);
-    if (
-      ids == null
-      || ids.length !== query.ids.length
-      || ids.length > limit
-      || !Number.isSafeInteger(query.position)
-      || Number(query.position) !== position
-      || !Number.isSafeInteger(pageTotal)
-      || pageTotal < 0
-      || typeof query.queryState !== 'string'
-      || query.queryState.length === 0
-      || !Array.isArray(got.list)
-      || !Array.isArray(got.notFound)
-    ) {
-      throw new Error('EmailSubmission paging returned a malformed response');
-    }
-    if (queryState == null) {
-      queryState = query.queryState;
-      total = pageTotal;
-    } else if (query.queryState !== queryState || pageTotal !== total) {
-      throw new Error('EmailSubmission query changed while paging');
-    }
-    if (got.notFound.length > 0 || got.list.length !== ids.length) {
-      throw new Error('EmailSubmission records changed while paging');
-    }
-    const byId = new Map(got.list.map((raw: any) => [raw?.id, raw]));
-    for (const id of ids) {
-      const raw: any = byId.get(id);
-      if (
-        !raw
-        || typeof raw.emailId !== 'string'
-        || seen.has(id)
-      ) {
-        throw new Error('EmailSubmission paging returned incomplete records');
-      }
-      seen.add(id);
-      records.push({
-        id,
-        emailId: raw.emailId,
-        undoStatus:
-          raw.undoStatus === 'pending'
-          || raw.undoStatus === 'final'
-          || raw.undoStatus === 'canceled'
-            ? raw.undoStatus
-            : null,
-        sendAt: typeof raw.sendAt === 'string' ? raw.sendAt : null,
+        useWebSocket,
       });
-    }
-    position += ids.length;
-    if (position >= (total ?? 0)) break;
-    if (ids.length === 0) {
-      throw new Error('EmailSubmission query stopped before its reported total');
-    }
+      const query = requireResponse(payload, 'EmailSubmission/query');
+      const got = requireResponse(payload, 'EmailSubmission/get');
+      const ids = Array.isArray(query.ids)
+        ? query.ids.filter((id: unknown): id is string => typeof id === 'string')
+        : null;
+      const pageTotal = Number(query.total);
+      if (
+        ids == null
+        || ids.length !== query.ids.length
+        || ids.length > pageLimit
+        || !Number.isSafeInteger(query.position)
+        || Number(query.position) !== position
+        || !Number.isSafeInteger(pageTotal)
+        || pageTotal < 0
+        || typeof query.queryState !== 'string'
+        || query.queryState.length === 0
+        || !Array.isArray(got.list)
+        || !Array.isArray(got.notFound)
+      ) {
+        throw new Error('EmailSubmission paging returned a malformed response');
+      }
+      return {
+        ids,
+        queryState: query.queryState,
+        total: pageTotal,
+        position: query.position,
+        limit: query.limit,
+        value: got,
+      };
+    },
+    visitPage: ({ ids, value: got }) => {
+      const pageIds = ids as string[];
+      if (got.notFound.length > 0 || got.list.length !== ids.length) {
+        throw new Error('EmailSubmission records changed while paging');
+      }
+      const byId = new Map(got.list.map((raw: any) => [raw?.id, raw]));
+      for (const id of pageIds) {
+        const raw: any = byId.get(id);
+        if (
+          !raw
+          || typeof raw.emailId !== 'string'
+          || seen.has(id)
+        ) {
+          throw new Error('EmailSubmission paging returned incomplete records');
+        }
+        seen.add(id);
+        records.push({
+          id,
+          emailId: raw.emailId,
+          undoStatus:
+            raw.undoStatus === 'pending'
+            || raw.undoStatus === 'final'
+            || raw.undoStatus === 'canceled'
+              ? raw.undoStatus
+              : null,
+          sendAt: typeof raw.sendAt === 'string' ? raw.sendAt : null,
+        });
+      }
+    },
+  });
+  if (paging.complete === false) {
+    throw submissionPagingError(paging.reason);
   }
   return records;
 }

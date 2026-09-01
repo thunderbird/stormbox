@@ -40,6 +40,7 @@ import {
 import { fetchEmailBodies } from './bodies';
 import { syncIdentities } from './identities';
 import { syncQuota } from './quota';
+import { pageCompleteQuery } from './query-paging';
 import {
   inventoryAddressBook,
   syncAddressBooks,
@@ -2046,36 +2047,61 @@ export class JmapBackend {
       role: 'sent',
     });
     if (!sent) return { scanned: 0, ranked: 0 };
-    let position = 0;
     let baselineEmailState: string | null = null;
-    let queryState: string | null = null;
-    while (position < 300) {
-      const page = await syncFolderWindow({
-        transport: this.transport,
-        account: this.account,
-        folder: sent,
-        handlers: this.handlers,
-        sortProp: 'sentAt',
-        position,
-        limit: 300 - position,
-        useWebSocket: this._wsReady(),
-      });
-      if (baselineEmailState == null) {
-        if (!page.emailState) {
-          throw new Error('Sent snapshot did not include an Email object state');
+    const paging = await pageCompleteQuery({
+      pageSize: 300,
+      maxPosition: 300,
+      readPage: async ({ position, limit }) => {
+        const page = await syncFolderWindow({
+          transport: this.transport,
+          account: this.account,
+          folder: sent,
+          handlers: this.handlers,
+          sortProp: 'sentAt',
+          position,
+          limit,
+          useWebSocket: this._wsReady(),
+        });
+        const total = page.total == null ? null : Number(page.total);
+        return {
+          ids: page.ids,
+          queryState: typeof page.queryState === 'string' ? page.queryState : null,
+          total: total != null && Number.isFinite(total) ? total : null,
+          position: Number.isFinite(page.position) ? Number(page.position) : null,
+          value: page,
+        };
+      },
+      visitPage: ({ value: page }) => {
+        if (baselineEmailState == null) {
+          if (!page.emailState) {
+            throw new Error('Sent snapshot did not include an Email object state');
+          }
+          baselineEmailState = page.emailState;
         }
-        baselineEmailState = page.emailState;
-      }
-      if (queryState == null) queryState = page.queryState ?? null;
-      else if (!page.queryState || page.queryState !== queryState) {
+      },
+    });
+    if (
+      paging.complete === false
+      && (paging.reason === 'queryStateChanged' || paging.reason === 'queryTotalChanged')
+    ) {
+      throw new Error('Sent query changed while rebuilding recipient usage');
+    }
+    if (
+      (paging.complete === false && paging.reason === 'queryStateMissing')
+      || (
+        paging.complete
+        && paging.total != null
+        && paging.position < paging.total
+        && !paging.queryState
+      )
+    ) {
+      throw new Error('Sent query did not provide stable paging state');
+    }
+    if (paging.complete === false) {
+      if (paging.reason === 'cursorStalled') {
         throw new Error('Sent query changed while rebuilding recipient usage');
       }
-      const fetched = Number(page.fetched ?? 0);
-      position += fetched;
-      if (fetched === 0 || position >= Number(page.total ?? position)) break;
-      if (!queryState) {
-        throw new Error('Sent query did not provide stable paging state');
-      }
+      throw new Error('Sent query did not complete while rebuilding recipient usage');
     }
     const current = await this.handlers[DB_RPC.SYNC_STATE_GET]({
       accountId: this.account.id,

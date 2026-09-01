@@ -4,6 +4,10 @@ import {
 } from '../../../utils/message-id';
 import { callJmap, pickResponseById } from './invoke';
 import { maxObjectsInGet } from './limits';
+import {
+  pageCompleteQuery,
+  type CompleteQueryFailureReason,
+} from './query-paging';
 import { JMAP_CAPS } from './transport';
 
 export type DraftRevisionProbe =
@@ -11,6 +15,32 @@ export type DraftRevisionProbe =
   | { outcome: 'absent' }
   | { outcome: 'conflict'; emailIds: string[] }
   | { outcome: 'inconclusive'; reason: string; detail?: any };
+
+class DraftPagingFailure extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+function draftPagingFailureReason(reason: CompleteQueryFailureReason): string {
+  switch (reason) {
+    case 'queryStateChanged':
+      return 'queryStateChanged';
+    case 'queryTotalChanged':
+      return 'queryTotalChanged';
+    case 'truncated':
+    case 'pageLimitReached':
+      return 'truncatedQuery';
+    case 'queryStateMissing':
+    case 'cursorStalled':
+    case 'positionPastTotal':
+      return 'malformedQuery';
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
 
 function addresses(value: unknown): Array<{ name: string; email: string }> {
   if (!Array.isArray(value)) return [];
@@ -109,92 +139,92 @@ export async function findDraftRevision({
   const wanted = normalizeMessageId(revisionMessageId);
   const candidateIds: string[] = [];
   const seenIds = new Set<string>();
-  let position = 0;
-  let firstQueryState: string | null = null;
-  let firstTotal: number | null = null;
 
   try {
-    for (;;) {
-      const payload = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [
-          [
-            'Email/query',
-            {
-              accountId: account.remote_account_id,
-              filter: { inMailbox: draftsRemoteId },
-              sort: [{ property: 'receivedAt', isAscending: false }],
-              position,
-              limit: pageSize,
-              calculateTotal: true,
-            },
-            'q1',
+    const paging = await pageCompleteQuery({
+      pageSize,
+      readPage: async ({ position, limit }) => {
+        const payload = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+          methodCalls: [
+            [
+              'Email/query',
+              {
+                accountId: account.remote_account_id,
+                filter: { inMailbox: draftsRemoteId },
+                sort: [{ property: 'receivedAt', isAscending: false }],
+                position,
+                limit,
+                calculateTotal: true,
+              },
+              'q1',
+            ],
+            [
+              'Email/get',
+              {
+                accountId: account.remote_account_id,
+                '#ids': { resultOf: 'q1', name: 'Email/query', path: '/ids' },
+                properties: ['id', 'messageId'],
+              },
+              'g1',
+            ],
           ],
-          [
-            'Email/get',
-            {
-              accountId: account.remote_account_id,
-              '#ids': { resultOf: 'q1', name: 'Email/query', path: '/ids' },
-              properties: ['id', 'messageId'],
-            },
-            'g1',
-          ],
-        ],
-        useWebSocket,
-      });
-      const query = pickResponseById(payload, 'Email/query', 'q1');
-      const got = pickResponseById(payload, 'Email/get', 'g1');
-      if (!query || !got || !Array.isArray(query.ids) || !Array.isArray(got.list)) {
-        return { outcome: 'inconclusive', reason: 'scanRejected' };
-      }
-      if (typeof query.queryState !== 'string') {
-        return { outcome: 'inconclusive', reason: 'malformedQuery' };
-      }
-      const total = query.total;
-      if (!Number.isSafeInteger(query.position)
+          useWebSocket,
+        });
+        const query = pickResponseById(payload, 'Email/query', 'q1');
+        const got = pickResponseById(payload, 'Email/get', 'g1');
+        if (!query || !got || !Array.isArray(query.ids) || !Array.isArray(got.list)) {
+          throw new DraftPagingFailure('scanRejected');
+        }
+        if (typeof query.queryState !== 'string') {
+          throw new DraftPagingFailure('malformedQuery');
+        }
+        const total = query.total;
+        if (!Number.isSafeInteger(query.position)
           || query.position !== position
           || !Number.isSafeInteger(total)
           || total < 0
-          || query.ids.length > pageSize
+          || query.ids.length > limit
           || query.ids.some((id) => typeof id !== 'string' || !id)) {
-        return { outcome: 'inconclusive', reason: 'malformedQuery' };
-      }
-      if (firstQueryState == null) firstQueryState = query.queryState;
-      if (query.queryState !== firstQueryState) {
-        return { outcome: 'inconclusive', reason: 'queryStateChanged' };
-      }
-      if (firstTotal == null) firstTotal = total;
-      if (total !== firstTotal) {
-        return { outcome: 'inconclusive', reason: 'queryTotalChanged' };
-      }
-      if (query.ids.some((id) => seenIds.has(id))) {
-        return { outcome: 'inconclusive', reason: 'repeatedQueryPage' };
-      }
-      const returnedIds = got.list.map((email) => email?.id);
-      const returned = new Set(returnedIds);
-      if (returned.size !== returnedIds.length
-          || returned.size !== query.ids.length
-          || query.ids.some((id) => !returned.has(id))) {
-        return { outcome: 'inconclusive', reason: 'emailGetIncomplete' };
-      }
-      const byId = new Map<string, any>(got.list.map((email) => [email.id, email]));
-      for (const id of query.ids) {
-        seenIds.add(id);
-        const email = byId.get(id);
-        const ids = normalizeMessageIds(email?.messageId);
-        if (ids === null) return { outcome: 'inconclusive', reason: 'malformedMessageId' };
-        if (ids.includes(wanted)) {
-          candidateIds.push(id);
+          throw new DraftPagingFailure('malformedQuery');
         }
-      }
-      position = query.position + query.ids.length;
-      if (position > total) {
-        return { outcome: 'inconclusive', reason: 'malformedQuery' };
-      }
-      if (position === total) break;
-      if (query.ids.length === 0) {
-        return { outcome: 'inconclusive', reason: 'truncatedQuery' };
-      }
+        return {
+          ids: query.ids,
+          queryState: query.queryState,
+          total,
+          position: query.position,
+          limit: query.limit,
+          value: got,
+        };
+      },
+      visitPage: ({ ids, value: got }) => {
+        if (ids.some((id) => seenIds.has(String(id)))) {
+          throw new DraftPagingFailure('repeatedQueryPage');
+        }
+        const returnedIds = got.list.map((email) => email?.id);
+        const returned = new Set(returnedIds);
+        if (returned.size !== returnedIds.length
+          || returned.size !== ids.length
+          || ids.some((id) => !returned.has(id))) {
+          throw new DraftPagingFailure('emailGetIncomplete');
+        }
+        const byId = new Map<string, any>(got.list.map((email) => [email.id, email]));
+        for (const id of ids as string[]) {
+          seenIds.add(id);
+          const email = byId.get(id);
+          const messageIds = normalizeMessageIds(email?.messageId);
+          if (messageIds === null) throw new DraftPagingFailure('malformedMessageId');
+          if (messageIds.includes(wanted)) {
+            candidateIds.push(id);
+          }
+        }
+      },
+    });
+    if (paging.complete === false) {
+      return {
+        outcome: 'inconclusive',
+        reason: draftPagingFailureReason(paging.reason),
+      };
     }
 
     if (candidateIds.length === 0) return { outcome: 'absent' };
@@ -264,6 +294,9 @@ export async function findDraftRevision({
       email: candidates[0],
     };
   } catch (error: any) {
+    if (error instanceof DraftPagingFailure) {
+      return { outcome: 'inconclusive', reason: error.reason };
+    }
     return {
       outcome: 'inconclusive',
       reason: error?.type ?? 'requestFailed',

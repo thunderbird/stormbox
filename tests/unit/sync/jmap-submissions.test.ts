@@ -240,6 +240,32 @@ describe('fetchSubmissionRecords (Stalwart 0.15.4 read path)', () => {
     expect(queries.map(([, params]) => params.position)).toEqual([0, 500, 1_000]);
     expect(queries.every(([, params]) => params.filter == null)).toBe(true);
   });
+
+  it('rejects submission pages from different query states', async () => {
+    const records = [
+      { id: 'sub-1', emailId: 'email-1', undoStatus: 'final', sendAt: FUTURE_AT },
+      { id: 'sub-2', emailId: 'email-2', undoStatus: 'pending', sendAt: FUTURE_AT },
+    ];
+    const t = submissionTransport(records);
+    t.session = {
+      capabilities: {
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 1,
+          maxObjectsInSet: 500,
+        },
+      },
+    };
+    t.handle('EmailSubmission/query', ({ position, limit }) => ({
+      ids: records.slice(position, position + limit).map((record) => record.id),
+      position,
+      limit,
+      total: records.length,
+      queryState: `submissions-${position}`,
+    }));
+
+    await expect(fetchSubmissionRecords({ transport: t, account }))
+      .rejects.toThrow('EmailSubmission query changed while paging');
+  });
 });
 
 describe('syncSubmissionsForAccount', () => {
@@ -764,5 +790,61 @@ describe('ensureScheduledMailbox', () => {
 
     const settings = await handlers[DB_RPC.SETTINGS_GET]({ accountId: account.id });
     expect(settings.doc.settings.scheduledMailboxRemoteId).toBe('mb-sched');
+  });
+
+  it('pages past nested name matches before adopting the managed mailbox', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
+      accountId: account.id,
+      patch: { scheduledMailboxRemoteId: null },
+    });
+    const mailboxes = [
+      {
+        id: 'mb-nested',
+        name: 'Scheduled',
+        parentId: 'mb-parent',
+        role: null,
+        isSubscribed: true,
+      },
+      {
+        id: 'mb-managed',
+        name: 'Scheduled',
+        parentId: null,
+        role: null,
+        isSubscribed: true,
+      },
+    ];
+    const t = new MockTransport({
+      capabilities: {
+        'urn:ietf:params:jmap:core': {
+          maxObjectsInGet: 1,
+          maxObjectsInSet: 500,
+        },
+      },
+    });
+    t.handle('Mailbox/query', ({ position }) => ({
+      ids: mailboxes.slice(position, position + 1).map((mailbox) => mailbox.id),
+      position,
+      limit: 1,
+      total: mailboxes.length,
+      queryState: 'mailboxes-1',
+    }));
+    t.handle('Mailbox/get', ({ ids }) => ({
+      list: mailboxes.filter((mailbox) => ids.includes(mailbox.id)),
+      notFound: [],
+      state: 'mailboxes-state-1',
+    }));
+
+    await expect(ensureScheduledMailbox({
+      transport: t,
+      account,
+      handlers,
+    })).resolves.toBe('mb-managed');
+
+    const positions = t.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([method]) => method === 'Mailbox/query')
+      .map(([, params]) => params.position);
+    expect(positions).toEqual([0, 1]);
   });
 });
