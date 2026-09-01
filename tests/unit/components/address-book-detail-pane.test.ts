@@ -153,5 +153,11 @@ describe('AddressBookDetailPane', () => {
     expect(wrapper.get('.address-book-detail__error').text())
       .toContain('don’t have permission');
     expect(wrapper.emitted('stateChange')?.at(-1)).toEqual(['save-error']);
+
+    await wrapper.get('textarea').setValue('Changed again');
+    await nextTick();
+
+    expect(wrapper.find('.address-book-detail__error').exists()).toBe(false);
+    expect(wrapper.emitted('stateChange')?.at(-1)).toEqual([null]);
   });
 });

@@ -8,9 +8,12 @@ import {
   computed,
   nextTick,
   ref,
-  watch,
 } from 'vue';
 
+import {
+  type DetailFailureState,
+  useDetailPaneEditor,
+} from '../../composables/useDetailPaneEditor';
 import {
   ADDRESSBOOK_ERROR,
   addressBookErrorMessage,
@@ -29,7 +32,6 @@ import AppIconButton from '../AppIconButton.vue';
 import { addressBookDisplayName } from './directory-types';
 
 type AddressBookDetailPaneMode = 'create' | 'edit' | 'view';
-type DetailFailureState = 'save-error' | 'validation-error';
 
 const props = withDefaults(defineProps<{
   addressbook: AddressbookRow | null;
@@ -57,9 +59,6 @@ const nameEl = ref<HTMLInputElement | null>(null);
 const name = ref('');
 const description = ref('');
 const setAsDefault = ref(false);
-const initialSerialized = ref('');
-const saveAttempted = ref(false);
-const localError = ref<string | null>(null);
 const structuredError = ref<AddressBookError | null>(null);
 
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
@@ -79,8 +78,37 @@ function formSnapshot(): string {
   });
 }
 
-const dirty = computed(() =>
-  editing.value && formSnapshot() !== initialSerialized.value);
+function resetForm(): void {
+  const book = props.mode === 'create' ? null : props.addressbook;
+  name.value = book?.name ?? '';
+  description.value = book?.description ?? '';
+  setAsDefault.value = book?.is_default === 1;
+  if (editing.value) void nextTick(() => nameEl.value?.focus());
+}
+
+const {
+  beginSave,
+  localError,
+  markSaved,
+  reportFailure,
+  saveAttempted,
+} = useDetailPaneEditor({
+  changeSource: () => [
+    name.value,
+    description.value,
+    setAsDefault.value,
+  ] as const,
+  clearValidationErrors: () => {
+    structuredError.value = null;
+  },
+  editing,
+  emitDirtyChange: (value) => emit('dirtyChange', value),
+  emitStateChange: (state) => emit('stateChange', state),
+  resetForm,
+  resetSource: () => [props.mode, props.addressbook?.id] as const,
+  snapshot: formSnapshot,
+});
+
 const nameError = computed(() => {
   if (!saveAttempted.value) return null;
   const trimmed = name.value.trim();
@@ -96,36 +124,6 @@ const displayError = computed(() => {
   return structuredError.value
     ? addressBookErrorMessage(structuredError.value)
     : null;
-});
-
-function resetEditor(): void {
-  const book = props.mode === 'create' ? null : props.addressbook;
-  name.value = book?.name ?? '';
-  description.value = book?.description ?? '';
-  setAsDefault.value = book?.is_default === 1;
-  initialSerialized.value = formSnapshot();
-  saveAttempted.value = false;
-  localError.value = null;
-  structuredError.value = null;
-  emit('dirtyChange', false);
-  emit('stateChange', null);
-  if (editing.value) void nextTick(() => nameEl.value?.focus());
-}
-
-watch(
-  () => [props.mode, props.addressbook?.id] as const,
-  resetEditor,
-  { immediate: true },
-);
-
-watch(dirty, (value) => {
-  emit('dirtyChange', value);
-  if (value) {
-    saveAttempted.value = false;
-    localError.value = null;
-    structuredError.value = null;
-    emit('stateChange', null);
-  }
 });
 
 function canonicalDescription(): string | null {
@@ -146,11 +144,9 @@ function updateFields(): AddressBookMutableFields {
 
 async function save(): Promise<boolean> {
   if (!editing.value || contactsStore.saving) return false;
-  saveAttempted.value = true;
-  localError.value = null;
-  structuredError.value = null;
+  beginSave();
   if (nameError.value) {
-    emit('stateChange', 'validation-error');
+    reportFailure('validation-error');
     await nextTick();
     nameEl.value?.focus();
     return false;
@@ -169,15 +165,13 @@ async function save(): Promise<boolean> {
       ...updateFields(),
     });
   } else {
-    localError.value = 'This address book is no longer available.';
-    emit('stateChange', 'save-error');
+    reportFailure('save-error', 'This address book is no longer available.');
     return false;
   }
 
   if (result.ok === false) {
     structuredError.value = result.error;
-    emit(
-      'stateChange',
+    reportFailure(
       result.error === ADDRESSBOOK_ERROR.INVALID_NAME
         || result.error === ADDRESSBOOK_ERROR.INVALID_ARGUMENTS
         ? 'validation-error'
@@ -189,9 +183,7 @@ async function save(): Promise<boolean> {
   name.value = result.addressbook.name ?? '';
   description.value = result.addressbook.description ?? '';
   setAsDefault.value = result.addressbook.is_default === 1;
-  initialSerialized.value = formSnapshot();
-  emit('dirtyChange', false);
-  emit('stateChange', null);
+  markSaved();
   emit('saved', result.addressbook);
   return true;
 }

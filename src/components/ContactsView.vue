@@ -24,6 +24,10 @@ import {
   useDirectoryColumnResize,
 } from '../composables/useDirectoryColumnResize';
 import type {
+  DetailFailureState,
+  DetailPaneHandle,
+} from '../composables/useDetailPaneEditor';
+import type {
   AddressBookInventory,
   AddressbookRow,
   ContactDetail,
@@ -76,23 +80,11 @@ type DetailState =
   | 'error'
   | 'loading'
   | 'view';
-type DetailFailureState = 'save-error' | 'validation-error';
 type DetailSubject = 'addressbook' | 'entry';
-
-interface ContactPaneHandle {
-  focusDetail: () => Promise<void>;
-  save: () => Promise<boolean>;
-}
-
-interface IdentityPaneHandle {
-  focusDetail: () => Promise<void>;
-  save: () => Promise<boolean>;
-}
-
-interface AddressBookPaneHandle {
-  focusDetail: () => Promise<void>;
-  save: () => Promise<boolean>;
-}
+type ExternalChangeConfirmationKind = Extract<
+  ContactsConfirmationKind,
+  'external-addressbook-change' | 'external-change'
+>;
 
 interface DirectoryListHandle {
   focusSelected: () => Promise<void>;
@@ -150,9 +142,9 @@ const resetSequence = ref(0);
 const windowWidth = ref(typeof window === 'undefined' ? 1024 : window.innerWidth);
 const mobilePane = ref<DirectoryMobilePane>('list');
 const contactsEl = ref<HTMLElement | null>(null);
-const contactPaneEl = ref<ContactPaneHandle | null>(null);
-const identityPaneEl = ref<IdentityPaneHandle | null>(null);
-const addressBookPaneEl = ref<AddressBookPaneHandle | null>(null);
+const contactPaneEl = ref<DetailPaneHandle | null>(null);
+const identityPaneEl = ref<DetailPaneHandle | null>(null);
+const addressBookPaneEl = ref<DetailPaneHandle | null>(null);
 const trashPaneEl = ref<{ focusDetail: () => Promise<void> } | null>(null);
 const directoryListEl = ref<DirectoryListHandle | null>(null);
 const confirmation = ref<PendingConfirmation | null>(null);
@@ -1462,29 +1454,32 @@ async function requestFilterChange(next: string): Promise<boolean> {
   return prepareNavigation();
 }
 
-async function resolveExternalChange(): Promise<void> {
+async function resolveExternalChange(
+  confirmationKind: ExternalChangeConfirmationKind,
+  resolveMissing: () => void,
+  remainsMissing: () => boolean,
+): Promise<void> {
   if (externalDecisionActive) return;
-  if (detailSubject.value === 'addressbook') return;
   if (
     detailState.value !== 'create'
     && detailState.value !== 'edit'
   ) {
-    clearSelection();
+    resolveMissing();
     return;
   }
   if (!editorDirty.value) {
-    clearSelection();
+    resolveMissing();
     return;
   }
 
   externalDecisionActive = true;
   try {
-    const choice = await askConfirmation('external-change');
+    const choice = await askConfirmation(confirmationKind);
     switch (choice) {
       case 'cancel':
         return;
       case 'discard':
-        clearSelection();
+        resolveMissing();
         return;
       case 'save': {
         let saved = false;
@@ -1493,12 +1488,7 @@ async function resolveExternalChange(): Promise<void> {
         } finally {
           finishBusyConfirmation();
         }
-        if (
-          saved
-          && !availableEntries.value.some((entry) => entry.key === selectedKey.value)
-        ) {
-          clearSelection();
-        }
+        if (saved && remainsMissing()) resolveMissing();
         return;
       }
       case 'delete':
@@ -1522,57 +1512,6 @@ function finishMissingAddressBook(addressbookId: number): void {
   restoreEntryDetailFromAddressBook();
   if (detailState.value === 'empty') void restoreListFocus();
   else restoreDetailFocus();
-}
-
-async function resolveExternalAddressBookChange(
-  missingBook: AddressbookRow,
-): Promise<void> {
-  if (externalDecisionActive) return;
-  if (
-    detailState.value !== 'create'
-    && detailState.value !== 'edit'
-  ) {
-    finishMissingAddressBook(missingBook.id);
-    return;
-  }
-  if (!editorDirty.value) {
-    finishMissingAddressBook(missingBook.id);
-    return;
-  }
-
-  externalDecisionActive = true;
-  try {
-    const choice = await askConfirmation('external-addressbook-change');
-    switch (choice) {
-      case 'cancel':
-        return;
-      case 'discard':
-        finishMissingAddressBook(missingBook.id);
-        return;
-      case 'save': {
-        try {
-          const saved = await saveActiveEditor();
-          if (
-            saved
-            && !addressbooks.value.some((book) => book.id === missingBook.id)
-          ) {
-            finishMissingAddressBook(missingBook.id);
-          }
-        } finally {
-          finishBusyConfirmation();
-        }
-        return;
-      }
-      case 'delete':
-        return;
-      default: {
-        const exhaustive: never = choice;
-        return exhaustive;
-      }
-    }
-  } finally {
-    externalDecisionActive = false;
-  }
 }
 
 watch(
@@ -1620,7 +1559,11 @@ watch(
       && !addressbooks.value.some((book) => book.id === editedBook.id)
       && !deletingAddressBookIds.value.includes(editedBook.id)
     ) {
-      void resolveExternalAddressBookChange(editedBook);
+      void resolveExternalChange(
+        'external-addressbook-change',
+        () => finishMissingAddressBook(editedBook.id),
+        () => !addressbooks.value.some((book) => book.id === editedBook.id),
+      );
       return;
     }
     if (
@@ -1662,7 +1605,13 @@ watch(
     if (detailSubject.value === 'addressbook') return;
     if (!selectedKey.value || selectedKey.value === deletingKey.value) return;
     if (availableEntries.value.some((entry) => entry.key === selectedKey.value)) return;
-    void resolveExternalChange();
+    void resolveExternalChange(
+      'external-change',
+      clearSelection,
+      () => !availableEntries.value.some(
+        (entry) => entry.key === selectedKey.value,
+      ),
+    );
   },
 );
 

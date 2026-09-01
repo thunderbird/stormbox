@@ -4,7 +4,6 @@ import {
   nextTick,
   onBeforeUnmount,
   ref,
-  watch,
 } from 'vue';
 import {
   ArrowLeft,
@@ -13,6 +12,7 @@ import {
   Trash2,
 } from '@lucide/vue';
 
+import { useDetailPaneEditor } from '../../composables/useDetailPaneEditor';
 import { useContactsStore } from '../../stores/contacts-store';
 import type {
   ContactDetail,
@@ -73,27 +73,19 @@ const fullNameEl = ref<HTMLInputElement | null>(null);
 const photoInputEl = ref<HTMLInputElement | null>(null);
 const detailViewEl = ref<{ focusHeading: () => Promise<void> } | null>(null);
 const model = ref<ContactEditorModel>(createContactEditorModel(props.detail));
-const initialSerialized = ref('');
 const initialFields = ref<ContactMutationFields | null>(null);
 const createRetryUid = ref<string | null>(null);
-const localError = ref<string | null>(null);
 const fieldErrors = ref<Record<string, string>>({});
-const saveAttempted = ref(false);
 const photoReading = ref(false);
 let photoReadGeneration = 0;
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
-const displayError = computed(() =>
-  localError.value || (saveAttempted.value ? contactsStore.error : null));
-const firstErrorFieldKey = computed(() => Object.keys(fieldErrors.value)[0] ?? null);
-const dirty = computed(() =>
-  editing.value && JSON.stringify(model.value) !== initialSerialized.value);
 const preferredEmail = computed(() =>
   model.value.emails.find((email) => email.isPreferred)?.value
     ?? model.value.emails.find((email) => email.value.trim())?.value
     ?? null);
 const photoAccept = CONTACT_PHOTO_ACCEPT.join(',');
 
-function resetEditor(): void {
+function resetForm(): void {
   photoReadGeneration += 1;
   photoReading.value = false;
   const detail = props.mode === 'create' ? null : props.detail;
@@ -102,17 +94,36 @@ function resetEditor(): void {
   initialFields.value = props.mode === 'edit' && detail
     ? contactMutationFieldsFromDetail(detail)
     : null;
-  initialSerialized.value = JSON.stringify(model.value);
-  localError.value = null;
-  fieldErrors.value = {};
-  saveAttempted.value = false;
   if (photoInputEl.value) photoInputEl.value.value = '';
-  emit('dirtyChange', false);
-  emit('stateChange', null);
   if (editing.value) {
     void nextTick(() => fullNameEl.value?.focus());
   }
 }
+
+const {
+  beginSave,
+  clearFailure,
+  dirty,
+  localError,
+  markSaved,
+  reportFailure,
+  saveAttempted,
+} = useDetailPaneEditor({
+  additionalDirty: () => photoReading.value,
+  changeSource: () => model.value,
+  clearValidationErrors: () => {
+    fieldErrors.value = {};
+  },
+  editing,
+  emitDirtyChange: (value) => emit('dirtyChange', value),
+  emitStateChange: (state) => emit('stateChange', state),
+  resetForm,
+  resetSource: () => [props.mode, props.detail?.id] as const,
+  snapshot: () => JSON.stringify(model.value),
+});
+const displayError = computed(() =>
+  localError.value || (saveAttempted.value ? contactsStore.error : null));
+const firstErrorFieldKey = computed(() => Object.keys(fieldErrors.value)[0] ?? null);
 
 function choosePhoto(): void {
   photoInputEl.value?.click();
@@ -138,11 +149,13 @@ async function onPhotoSelected(event: Event): Promise<void> {
       mediaType: photo.mediaType,
       pref: previousPhoto ? previousPhoto.pref : 1,
     };
-    emit('stateChange', null);
+    clearFailure();
   } catch (error: any) {
     if (generation !== photoReadGeneration) return;
-    localError.value = error?.message ?? 'Could not read the selected image.';
-    emit('stateChange', 'validation-error');
+    reportFailure(
+      'validation-error',
+      error?.message ?? 'Could not read the selected image.',
+    );
   } finally {
     if (generation === photoReadGeneration) {
       photoReading.value = false;
@@ -155,30 +168,8 @@ function removePhoto(): void {
   photoReadGeneration += 1;
   photoReading.value = false;
   model.value.photo = null;
-  localError.value = null;
-  emit('stateChange', null);
+  clearFailure();
 }
-
-watch(
-  () => [props.mode, props.detail?.id] as const,
-  resetEditor,
-  { immediate: true },
-);
-
-watch(
-  model,
-  () => {
-    const value = photoReading.value || dirty.value;
-    emit('dirtyChange', value);
-    if (saveAttempted.value) {
-      saveAttempted.value = false;
-      localError.value = null;
-      fieldErrors.value = {};
-      emit('stateChange', null);
-    }
-  },
-  { deep: true },
-);
 
 onBeforeUnmount(() => {
   photoReadGeneration += 1;
@@ -197,13 +188,11 @@ async function focusFirstInvalidField(fieldKey: string): Promise<void> {
 
 async function save(): Promise<boolean> {
   if (!editing.value || contactsStore.saving || photoReading.value) return false;
-  saveAttempted.value = true;
-  localError.value = null;
+  beginSave();
   const result = contactEditorFields(model.value);
   if (!result.fields) {
-    localError.value = result.error;
     fieldErrors.value = result.errors;
-    emit('stateChange', 'validation-error');
+    reportFailure('validation-error', result.error);
     if (result.errorFieldKey) await focusFirstInvalidField(result.errorFieldKey);
     return false;
   }
@@ -227,8 +216,10 @@ async function save(): Promise<boolean> {
     }
   } else if (props.detail) {
     if (!initialFields.value) {
-      localError.value = 'Contact details changed. Close and reopen the editor before saving.';
-      emit('stateChange', 'save-error');
+      reportFailure(
+        'save-error',
+        'Contact details changed. Close and reopen the editor before saving.',
+      );
       return false;
     }
     contactId = props.detail.id;
@@ -242,8 +233,7 @@ async function save(): Promise<boolean> {
     ok = false;
   }
   if (!ok) {
-    emit(
-      'stateChange',
+    reportFailure(
       contactsStore.error?.startsWith('Enter ')
         ? 'validation-error'
         : 'save-error',
@@ -251,10 +241,8 @@ async function save(): Promise<boolean> {
     return false;
   }
 
-  initialSerialized.value = JSON.stringify(model.value);
   if (props.mode === 'edit') initialFields.value = result.fields;
-  emit('dirtyChange', false);
-  emit('stateChange', null);
+  markSaved();
   emit('saved', {
     detail,
     key: contactId == null ? null : `contact:${contactId}`,
