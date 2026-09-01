@@ -47,7 +47,10 @@ import {
 } from './file-node';
 import { callJmap, pickResponse, pickResponseById } from './invoke';
 import { maxObjectsInGet, maxObjectsInSet, maxSizeUpload } from './limits';
-import { JMAP_CAPS } from './transport';
+import {
+  classifyAuthenticationOrAuthorizationError,
+  JMAP_CAPS,
+} from './transport';
 
 export const CONTACTS_TRASH_FILE_NAME = CONTACTS_TRASH_LEGACY_FILE_NAME;
 
@@ -67,7 +70,6 @@ const CONTACTS_TRASH_SHARD_FILE_PATTERN = new RegExp(
   'i',
 );
 const RETRYABLE_CONTACT_WRITE_ERRORS = new Set([
-  'authenticationFailed',
   'noResponse',
   'rateLimit',
   'serverFail',
@@ -76,6 +78,14 @@ const RETRYABLE_CONTACT_WRITE_ERRORS = new Set([
   'stateMismatch',
   'transport',
 ]);
+
+function isRetryableContactWriteError(errorType: string, detail?: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(
+    detail ?? { type: errorType },
+  );
+  if (authentication) return authentication.retryable;
+  return RETRYABLE_CONTACT_WRITE_ERRORS.has(errorType);
+}
 
 export function contactsTrashSnapshotWriteMaxBytes(transport: any): number {
   return Math.min(CONTACTS_TRASH_MAX_DOCUMENT_BYTES, maxSizeUpload(transport));
@@ -881,11 +891,14 @@ function contactWriteTransportError(error: any): {
 } {
   const status = error?.status;
   const message = error?.message ?? String(error);
-  if (status === 401) {
-    return { type: 'authenticationFailed', message, status, terminal: true };
-  }
-  if (status === 403) {
-    return { type: 'authorizationFailed', message, status, terminal: true };
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  if (authentication) {
+    return {
+      type: authentication.type,
+      message,
+      ...(typeof status === 'number' ? { status } : {}),
+      ...(authentication.terminal ? { terminal: true } : {}),
+    };
   }
   if (status === 404) {
     return { type: 'notFound', message, status, terminal: true };
@@ -1331,7 +1344,7 @@ export async function deleteContactCardsWithTrash({
         const errorType = detail?.type ?? 'noResponse';
         if (errorType === 'stateMismatch' && attempt < 2) continue;
         if (
-          !RETRYABLE_CONTACT_WRITE_ERRORS.has(errorType)
+          !isRetryableContactWriteError(errorType, detail)
           && destroys.length > 0
         ) {
           const cleaned = await tombstoneEntries({
@@ -1351,7 +1364,7 @@ export async function deleteContactCardsWithTrash({
           error: {
             type: errorType,
             detail,
-            ...(!RETRYABLE_CONTACT_WRITE_ERRORS.has(errorType)
+            ...(!isRetryableContactWriteError(errorType, detail)
               ? { terminal: true }
               : {}),
           },
@@ -1369,7 +1382,7 @@ export async function deleteContactCardsWithTrash({
           }
           const reason = set.notUpdated?.[remoteId];
           const errorType = reason?.type ?? 'noResponse';
-          if (RETRYABLE_CONTACT_WRITE_ERRORS.has(errorType)) {
+          if (isRetryableContactWriteError(errorType, reason)) {
             retryableError ??= { type: errorType, detail: reason };
           } else {
             result.failures.push(failure(target.contactId, errorType, reason));
@@ -1384,7 +1397,7 @@ export async function deleteContactCardsWithTrash({
         }
         const reason = set.notDestroyed?.[remoteId];
         const errorType = reason?.type ?? 'noResponse';
-        if (RETRYABLE_CONTACT_WRITE_ERRORS.has(errorType)) {
+        if (isRetryableContactWriteError(errorType, reason)) {
           retryableError ??= { type: errorType, detail: reason };
         } else {
           result.failures.push(failure(target.contactId, errorType, reason));

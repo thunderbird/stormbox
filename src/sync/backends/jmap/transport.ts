@@ -245,8 +245,42 @@ async function readDownloadBody(response: any, {
   return downloaded;
 }
 
+export type AuthenticationAuthorizationClassification =
+  | {
+      type: 'authenticationFailed';
+      retryable: true;
+      terminal: false;
+    }
+  | {
+      type: 'authorizationFailed';
+      retryable: false;
+      terminal: true;
+    };
+
+export function classifyAuthenticationOrAuthorizationError(
+  error: any,
+): AuthenticationAuthorizationClassification | null {
+  const status = error?.status ?? error?.detail?.status;
+  const protocolType = error?.type ?? error?.detail?.type;
+  if (status === 401 || protocolType === 'authenticationFailed') {
+    return {
+      type: 'authenticationFailed',
+      retryable: true,
+      terminal: false,
+    };
+  }
+  if (status === 403 || protocolType === 'authorizationFailed') {
+    return {
+      type: 'authorizationFailed',
+      retryable: false,
+      terminal: true,
+    };
+  }
+  return null;
+}
+
 export function isAuthenticationError(error: any): boolean {
-  return error?.status === 401 || error?.status === 403;
+  return classifyAuthenticationOrAuthorizationError(error) != null;
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   discoverJsonFileNodes,
   ensureContactsTrashFileNodeFolder,
   hasFileNodeCapability,
+  isRetryableFileNodeDocumentError,
   isFileNodeWriteConflictError,
   moveFileNodes,
   readJsonFileNode,
@@ -310,6 +311,50 @@ describe('JMAP FileNode JSON transport', () => {
     await retryFileNodeWrite(terminal);
     expect(terminal).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ['method', 'authenticationFailed', 401, true, false],
+    ['method', 'authorizationFailed', 403, false, true],
+    ['HTTP', 'authenticationFailed', 401, true, false],
+    ['HTTP', 'authorizationFailed', 403, false, true],
+  ])(
+    'classifies %s %s failures consistently',
+    async (source, type, status, retryable, terminal) => {
+      const transport = makeTransport({
+        node: source === 'HTTP' ? ownedNode() : null,
+      });
+      if (source === 'method') {
+        transport.handleError('FileNode/query', { type });
+      } else {
+        transport.download = vi.fn(async () => {
+          const error: any = new Error(`HTTP ${status}`);
+          error.status = status;
+          throw error;
+        });
+      }
+
+      const result = await readJsonFileNode({
+        transport,
+        account,
+        fileName: 'document.json',
+        marker,
+        maxBytes: MAX_DOCUMENT_BYTES,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          type,
+          ...(terminal ? { terminal: true } : {}),
+        },
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok === false) {
+        expect(isRetryableFileNodeDocumentError(result.error)).toBe(retryable);
+        expect(result.error.terminal === true).toBe(terminal);
+      }
+    },
+  );
 
   it('preserves create alreadyExists and update notFound errors', async () => {
     const createTransport = makeTransport();

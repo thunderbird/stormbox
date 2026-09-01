@@ -18,18 +18,14 @@ import {
 } from '../../draft-checkpoint';
 import { findDraftRevision } from '../../draft-reconcile';
 import { callJmap, pickResponseById } from '../../invoke';
-import { isAuthenticationError, JMAP_CAPS } from '../../transport';
-import { extractMethodErrorById, isRetryableMethodError } from '../errors';
+import {
+  classifyAuthenticationOrAuthorizationError,
+  isAuthenticationError,
+  JMAP_CAPS,
+} from '../../transport';
+import { extractMethodErrorById, isRetryableDraftError } from '../errors';
 import { dropDraftPredecessors, persistDraftSuccessor } from '../draft-apply';
 import { resolveFolderRemoteIds, resolveIdentity } from '../resolve';
-
-const RETRYABLE_DRAFT_METHOD_ERRORS = new Set([
-  'noResponse',
-  'rateLimit',
-  'serverFail',
-  'serverPartialFail',
-  'serverUnavailable',
-]);
 
 function draftFailure(type: string, detail: any, retryable = true, result?: any) {
   return {
@@ -44,18 +40,13 @@ function draftFailure(type: string, detail: any, retryable = true, result?: any)
 }
 
 function draftTransportFailure(type: string, error: any) {
-  const authenticationFailed = error?.status === 401;
-  const authorizationFailed = error?.status === 403;
-  const failureType = authenticationFailed
-    ? 'authenticationFailed'
-    : authorizationFailed
-      ? 'authorizationFailed'
-      : type;
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  const failureType = authentication?.type ?? type;
   return draftFailure(failureType, {
     message: error?.message ?? String(error),
     status: error?.status,
-    ...((authenticationFailed || authorizationFailed) ? { operation: type } : {}),
-  }, !isAuthenticationError(error));
+    ...(authentication ? { operation: type } : {}),
+  }, authentication?.retryable ?? true);
 }
 
 async function reconcileDestroyedIds({
@@ -352,7 +343,7 @@ async function runSaveDraft({
       return draftFailure(
         'draftCreateFailed',
         error,
-        isRetryableMethodError(error) || RETRYABLE_DRAFT_METHOD_ERRORS.has(error?.type),
+        isRetryableDraftError(error),
       );
     }
     const newEmailId = response.created?.draft?.id;
@@ -366,7 +357,7 @@ async function runSaveDraft({
           { attachmentIndexes: missingRegularAttachmentIndexes(detail, regularAttachments) },
         );
       }
-      return draftFailure('draftCreateFailed', detail, isRetryableMethodError(detail));
+      return draftFailure('draftCreateFailed', detail, isRetryableDraftError(detail));
     }
     checkpoint = await saveDraftCheckpoint(
       handlers,

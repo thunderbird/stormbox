@@ -39,6 +39,7 @@ import {
   saveMutationCheckpoint,
 } from '../../mutation-checkpoint';
 import { readPhase } from '../../send-checkpoint';
+import { classifyAuthenticationOrAuthorizationError } from '../../transport';
 
 /**
  * Whitelist one or more senders: add each From address to the trusted-
@@ -326,7 +327,6 @@ interface DurableContactBatchCheckpoint extends ContactBatchMutationResult {
 }
 
 const RETRYABLE_CONTACT_BATCH_ERRORS = new Set([
-  'authenticationFailed',
   'cacheReconcileFailed',
   'noResponse',
   'rateLimit',
@@ -336,6 +336,14 @@ const RETRYABLE_CONTACT_BATCH_ERRORS = new Set([
   'stateMismatch',
   'transport',
 ]);
+
+function isRetryableContactBatchError(errorType: string, error?: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(
+    error ?? { type: errorType },
+  );
+  if (authentication) return authentication.retryable;
+  return RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType);
+}
 
 function emptyContactBatchCheckpoint(): DurableContactBatchCheckpoint {
   return {
@@ -723,7 +731,7 @@ async function runContactBatch({
         });
       if (!protocol.complete) {
         const errorType = protocol.error?.type ?? 'serverFail';
-        if (RETRYABLE_CONTACT_BATCH_ERRORS.has(errorType)) {
+        if (isRetryableContactBatchError(errorType, protocol.error)) {
           return {
             ok: false,
             error: {

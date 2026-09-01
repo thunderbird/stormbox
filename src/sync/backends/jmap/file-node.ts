@@ -4,7 +4,10 @@
 
 import type { JmapFileNode } from '../../../types/jmap';
 import { callJmap, pickResponse, pickResponseById } from './invoke';
-import { JMAP_CAPS } from './transport';
+import {
+  classifyAuthenticationOrAuthorizationError,
+  JMAP_CAPS,
+} from './transport';
 
 const FILE_NODE_PROPERTIES = [
   'id',
@@ -144,7 +147,6 @@ function methodError(result: any, callId: string): unknown {
 }
 
 const RETRYABLE_FILE_NODE_ERROR_TYPES = new Set<FileNodeDocumentErrorType>([
-  'authenticationFailed',
   'noResponse',
   'rateLimit',
   'serverFail',
@@ -199,6 +201,8 @@ const TYPED_FILE_NODE_ERROR_TYPES = new Set<FileNodeDocumentErrorType>([
 export function isRetryableFileNodeDocumentError(
   error: Pick<FileNodeDocumentError, 'type'>,
 ): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  if (authentication) return authentication.retryable;
   return RETRYABLE_FILE_NODE_ERROR_TYPES.has(error.type);
 }
 
@@ -235,11 +239,14 @@ function typedError(detail: any, fallback: FileNodeDocumentErrorType): FileNodeD
 }
 
 function transportError(error: any): FileNodeDocumentError {
-  if (error?.status === 401) {
-    return { type: 'authenticationFailed', message: error?.message };
-  }
-  if (error?.status === 403) {
-    return { type: 'forbidden', message: error?.message, terminal: true };
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  if (authentication) {
+    return {
+      type: authentication.type,
+      message: error?.message,
+      ...(error?.status != null ? { detail: { status: error.status } } : {}),
+      ...(authentication.terminal ? { terminal: true } : {}),
+    };
   }
   if (error?.status === 404) {
     return { type: 'notFound', message: error?.message, terminal: true };

@@ -1,3 +1,5 @@
+import { classifyAuthenticationOrAuthorizationError } from '../transport';
+
 const RETRYABLE_FOLDER_ERROR_TYPES = new Set([
   'transport',
   'serverUnavailable',
@@ -32,6 +34,13 @@ const RETRYABLE_SUBMISSION_ERROR_TYPES = new Set(['rateLimit']);
 // while compose-store waits for a terminal outcome to leave its sending
 // state. Only a type where waiting is the right response earns that.
 const RETRYABLE_METHOD_ERROR_TYPES = new Set(['serverUnavailable', 'rateLimit']);
+const RETRYABLE_DRAFT_ERROR_TYPES = new Set([
+  'noResponse',
+  'rateLimit',
+  'serverFail',
+  'serverPartialFail',
+  'serverUnavailable',
+]);
 const TERMINAL_MESSAGE_ERROR_TYPES = new Set([
   'unknownMessage',
   'unknownFolder',
@@ -60,10 +69,14 @@ function transportFolderError(error: any) {
 
 function isTerminalPerObjectFolderError(error: any): boolean {
   if (!SET_ERROR_WRAPPERS.has(error?.type)) return false;
+  const authentication = classifyAuthenticationOrAuthorizationError(error?.detail);
+  if (authentication) return authentication.terminal;
   const detailType = error?.detail?.type;
   return !RETRYABLE_FOLDER_ERROR_TYPES.has(detailType);
 }
 function isRetryableMessageError(failure: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(failure);
+  if (authentication) return authentication.retryable;
   const type = failure?.type;
   const detailType = failure?.detail?.type;
   if (
@@ -79,13 +92,22 @@ function isRetryableMessageError(failure: any): boolean {
   return true;
 }
 function isRetryableSubmissionError(detail: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(detail);
+  if (authentication) return authentication.retryable;
   const detailType = detail?.type;
   return typeof detailType === 'string'
     && RETRYABLE_SUBMISSION_ERROR_TYPES.has(detailType);
 }
 function isRetryableMethodError(error: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  if (authentication) return authentication.retryable;
   return error?.type === 'noResponse'
     || RETRYABLE_METHOD_ERROR_TYPES.has(error?.type);
+}
+function isRetryableDraftError(error: any): boolean {
+  const authentication = classifyAuthenticationOrAuthorizationError(error);
+  if (authentication) return authentication.retryable;
+  return RETRYABLE_DRAFT_ERROR_TYPES.has(error?.type);
 }
 /**
  * Shape a send rejection for the outbox runner. Only the transient
@@ -158,6 +180,7 @@ function extractMethodError(raw: any, hint: { count?: number } = {}) {
 export {
   extractMethodError,
   extractMethodErrorById,
+  isRetryableDraftError,
   isRetryableMethodError,
   isRetryableMessageError,
   isRetryableSubmissionError,
