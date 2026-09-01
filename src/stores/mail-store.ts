@@ -1298,7 +1298,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   function selectMessage(messageId: number | null) {
     selectedMessageId.value = messageId;
-    // Plain nav/click/global-shortcut/delete-advance all couple the
+    // Plain navigation, row clicks, list commands, and delete-advance couple the
     // cursor to the preview. Shift+Arrow range extension is the one
     // path that moves the cursor without calling selectMessage.
     focusedMessageId.value = messageId;

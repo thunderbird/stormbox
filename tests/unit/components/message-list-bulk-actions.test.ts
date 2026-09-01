@@ -14,7 +14,12 @@ import {
 } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { computed, nextTick } from 'vue';
+import {
+  computed,
+  defineComponent,
+  nextTick,
+  ref,
+} from 'vue';
 
 vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
@@ -31,6 +36,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 }));
 
 import MessageList from '../../../src/components/MessageList.vue';
+import { useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 
@@ -68,13 +74,44 @@ function makeRow(id, overrides = {}) {
   } as any;
 }
 
-function mountList({ folder = makeFolder(1, { name: 'Inbox' }) } = {}) {
+function mountList({
+  folder = makeFolder(1, { name: 'Inbox' }),
+  quickFilterQuery = '',
+  rows = [makeRow(1), makeRow(2), makeRow(3)],
+} = {}) {
   const mailStore = useMailStore();
   mailStore.folders = [folder];
   mailStore.currentFolderId = folder.id;
-  mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
-  mailStore.totalForFolder = 3;
-  return { mailStore, wrapper: mount(MessageList) };
+  mailStore.messages = rows;
+  mailStore.totalForFolder = rows.length;
+  return {
+    mailStore,
+    wrapper: mount(MessageList, { props: { quickFilterQuery } }),
+  };
+}
+
+function mountShortcutBroker() {
+  const Harness = defineComponent({
+    setup() {
+      useThunderbirdShortcuts({
+        enabled: ref(true),
+        space: ref('mail'),
+      });
+      return () => null;
+    },
+  });
+  return mount(Harness);
+}
+
+function fireKey(key: string, init: Partial<KeyboardEventInit> = {}) {
+  const event = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key,
+    ...init,
+  });
+  document.dispatchEvent(event);
+  return event;
 }
 
 beforeEach(() => {
@@ -87,6 +124,46 @@ afterEach(() => {
 });
 
 describe('MessageList bulk actions header', () => {
+  it('selects only quick-filtered rows through the global command broker', async () => {
+    const { mailStore, wrapper } = mountList({
+      quickFilterQuery: 'match',
+      rows: [
+        makeRow(1, { subject: 'Match one' }),
+        makeRow(2, { subject: 'Hidden' }),
+        makeRow(3, { subject: 'Match two' }),
+      ],
+    });
+    const shortcuts = mountShortcutBroker();
+    mailStore.selectedIds = new Set([2]);
+
+    const event = fireKey('a', { ctrlKey: true });
+    await nextTick();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([1, 3]);
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
+  it('selects only unread rows through the global command broker', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [
+        makeRow(1, { is_seen: 1 }),
+        makeRow(2, { is_seen: 0 }),
+        makeRow(3, { is_seen: 1 }),
+      ],
+    });
+    const shortcuts = mountShortcutBroker();
+    await wrapper.get('.msg-list__filter').trigger('click');
+
+    fireKey('a', { ctrlKey: true });
+    await nextTick();
+
+    expect([...mailStore.selectedIds]).toEqual([2]);
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
   it('shows the filter buttons and no bulk actions without a selection', async () => {
     const { wrapper } = mountList();
     await nextTick();

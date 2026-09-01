@@ -11,6 +11,10 @@ import {
 import { useMailStore } from '../stores/mail-store';
 import { useListSelection } from '../composables/useListSelection';
 import { useMessageDragDrop } from '../composables/useMessageDragDrop';
+import {
+  registerMessageListCommands,
+  type MessageListNavigationCommand,
+} from '../composables/useThunderbirdShortcuts';
 import { SENDER_AVATAR_PROXY_URL } from '../defines';
 import { senderAvatarFor, shortFrom } from '../utils/sender-avatar';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
@@ -76,8 +80,8 @@ const {
   total: computed(() => rowCount.value),
   selectedIds,
   // The keyboard cursor is the store's focusedMessageId, so the global
-  // shortcut handler (F/B/N/P via selectMessage) and arrow nav share
-  // one source of truth and the scroll-follow watcher below tracks it.
+  // list commands and arrow navigation share one source of truth, and
+  // the scroll-follow watcher below tracks it.
   focusedId: focusedMessageId,
 });
 
@@ -88,6 +92,7 @@ const {
 } = useMessageDragDrop();
 
 function handleKeyDown(event) {
+  if (event.defaultPrevented) return;
   if ((event.metaKey || event.ctrlKey) && (event.key === 'a' || event.key === 'A')) {
     event.preventDefault();
     selectAllForCurrentFilter();
@@ -99,6 +104,67 @@ function handleKeyDown(event) {
   if (result.consumed && result.focusChanged && result.focusedId != null
       && !event.shiftKey) {
     mailStore.selectMessage(result.focusedId);
+  }
+}
+
+function navigateMessageList(command: MessageListNavigationCommand): void {
+  switch (command) {
+    case 'first':
+      navigateToBoundary(1);
+      return;
+    case 'last':
+      navigateToBoundary(-1);
+      return;
+    case 'next':
+      navigateRelative(1, false);
+      return;
+    case 'nextUnread':
+      navigateRelative(1, true);
+      return;
+    case 'previous':
+      navigateRelative(-1, false);
+      return;
+    case 'previousUnread':
+      navigateRelative(-1, true);
+      return;
+    default: {
+      const exhaustive: never = command;
+      return exhaustive;
+    }
+  }
+}
+
+function navigateToBoundary(direction: 1 | -1): void {
+  const rows = visibleMessages.value;
+  for (
+    let index = direction > 0 ? 0 : rows.length - 1;
+    direction > 0 ? index < rows.length : index >= 0;
+    index += direction
+  ) {
+    const id = rows[index]?.id;
+    if (id == null) continue;
+    mailStore.selectMessage(id);
+    return;
+  }
+}
+
+function navigateRelative(direction: 1 | -1, unreadOnly: boolean): void {
+  const rows = visibleMessages.value;
+  if (rows.length === 0) return;
+  let index = focusedMessageId.value == null
+    ? -1
+    : rows.findIndex((row) => row?.id === focusedMessageId.value);
+  if (index < 0) index = direction > 0 ? -1 : rows.length;
+  for (
+    let next = index + direction;
+    direction > 0 ? next < rows.length : next >= 0;
+    next += direction
+  ) {
+    const row = rows[next];
+    if (row?.id == null) continue;
+    if (unreadOnly && Number(row.is_seen) === 1) continue;
+    mailStore.selectMessage(row.id);
+    return;
   }
 }
 
@@ -142,6 +208,7 @@ const virtualItems = computed(() => virtualizer.value.getVirtualItems());
 const THROTTLE_MS = 100;
 let lastPrefetch = 0;
 let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+let unregisterMessageListCommands: (() => void) | null = null;
 
 function fireLoad(first: number, last: number) {
   lastPrefetch = performance.now();
@@ -225,8 +292,8 @@ function onScroll() {
 
 // Keep the virtualized viewport following the keyboard cursor. Every
 // path that moves the cursor — Arrow and Shift+Arrow (useListSelection),
-// the global Thunderbird shortcuts (F/B/N/P/Home/End ->
-// selectMessage), a row click, and the neighbour that becomes current
+// the registered list commands (F/B/N/P/Home/End), a row click, and the
+// neighbour that becomes current
 // after a delete/archive — funnels through mailStore.focusedMessageId.
 // Because the list is virtualized, an off-screen cursor row isn't even
 // in the DOM to scroll to, so watching this single source of truth and
@@ -288,6 +355,10 @@ watch(
 );
 
 onMounted(() => {
+  unregisterMessageListCommands = registerMessageListCommands({
+    navigate: navigateMessageList,
+    selectAll: selectAllForCurrentFilter,
+  });
   if (msgListEl.value) {
     listWidth.value = msgListEl.value.clientWidth;
     if (typeof ResizeObserver === 'function') {
@@ -301,6 +372,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  unregisterMessageListCommands?.();
+  unregisterMessageListCommands = null;
   if (trailingTimer != null) {
     clearTimeout(trailingTimer);
     trailingTimer = null;
