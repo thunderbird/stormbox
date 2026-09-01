@@ -7,7 +7,7 @@ timer. Stormbox owns crash-safe acceptance, presentation, cancellation, and
 post-release filing — all through machinery that already existed for
 immediate send.
 
-The product contract is in `../../specs/011-send-later/spec.md`.
+The product contract is in `../../specs/009-send-later/spec.md`.
 
 ## Design shape
 

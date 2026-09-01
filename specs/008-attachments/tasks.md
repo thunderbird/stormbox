@@ -2,7 +2,7 @@
 
 ## Phase 1 — Contract and architecture
 
-- [ ] A001 Record AT-1 through AT-6 in `specs/010-attachments/spec.md`
+- [ ] A001 Record AT-1 through AT-6 in `specs/008-attachments/spec.md`
 - [ ] A002 Add `research.md`, `plan.md`, and this task list
 - [ ] A003 Update `specs/001-mvp-scope/spec.md` attachment and compose rows;
       remove file picking from deferred scope

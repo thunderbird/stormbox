@@ -1,7 +1,7 @@
 # Attachment Support — Research
 
 Concise protocol, server, and reference-client notes for
-`specs/010-attachments/spec.md`. Reproduced findings only; requirement
+`specs/008-attachments/spec.md`. Reproduced findings only; requirement
 ids live in the spec.
 
 ## RFC 8620 — binary transfer

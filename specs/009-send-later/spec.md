@@ -3,8 +3,8 @@
 This specification defines Stormbox's server-backed Send Later behavior. It
 refines the compose, folder, attachment, and settings requirements in
 `specs/001-mvp-scope/spec.md`, `specs/003-folder-management/spec.md`,
-`specs/004-compose-improvements/spec.md`, `specs/007-user-settings/spec.md`,
-and `specs/010-attachments/spec.md`.
+`specs/004-compose-improvements/spec.md`, `specs/006-user-settings/spec.md`,
+and `specs/008-attachments/spec.md`.
 
 The architectural invariants in `.specify/memory/constitution.md` remain
 controlling: the server is authoritative, protocol mutations enter the
