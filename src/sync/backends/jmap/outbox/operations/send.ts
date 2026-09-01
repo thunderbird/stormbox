@@ -12,6 +12,7 @@ import {
 } from '../../compose-email';
 import { assertCanonicalAttachmentOwnership } from '../../compose-body-checkpoint';
 import { callJmap, pickResponse, pickResponseById } from '../../invoke';
+import { CACHE_REPAIR_MAX_ATTEMPTS } from '../../mutation-checkpoint';
 import {
   newCheckpoint,
   readCheckpoint,
@@ -49,14 +50,6 @@ const TRANSPORT_FAILURE_TYPES = new Set([
   'wsRequestTimeout',
   'transportAborted',
 ]);
-// How many times a send may retry local filing after its submission was
-// accepted. Small on purpose: the composer is still waiting, the work is
-// idempotent but cheap to abandon, and the fallback — flagging the Sent
-// view for rebuild — repairs the same disagreement without holding the
-// row open. Three covers a filing that failed on a momentarily
-// unreachable server without letting the row age toward the runner's own
-// attempt cap, which would conflict a message that was already sent.
-const CACHE_RECONCILE_MAX_ATTEMPTS = 3;
 /**
  * Build the explicit RFC 8621 §7 envelope recipients in header order.
  * Canonical keys de-duplicate addresses while each entry keeps the
@@ -1138,7 +1131,7 @@ async function postSubmissionFailure({
     `send succeeded but local filing failed: ${err?.message ?? err}`,
   );
   const cacheAttempts = (checkpoint?.cacheAttempts ?? 0) + 1;
-  if (rowId != null && checkpoint && cacheAttempts < CACHE_RECONCILE_MAX_ATTEMPTS) {
+  if (rowId != null && checkpoint && cacheAttempts < CACHE_REPAIR_MAX_ATTEMPTS) {
     let recorded = true;
     try {
       await saveCheckpoint(

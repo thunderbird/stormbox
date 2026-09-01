@@ -17,9 +17,12 @@
  * exists to close.
  */
 
-import { DB_RPC } from '../../../db/protocol';
 import { SEND_PHASE, type SendPhase } from '../../../constants/states';
 import { makeMessageId, makeOperationId } from '../../../utils/message-id';
+import {
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+} from './mutation-checkpoint';
 
 export { makeMessageId } from '../../../utils/message-id';
 
@@ -46,25 +49,25 @@ export interface SendCheckpoint {
 
 /** Read the checkpoint off a pending_mutations row, if it has one. */
 export function readCheckpoint(row: any): SendCheckpoint | null {
-  if (!row?.server_response_json) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(row.server_response_json);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed.operationId !== 'string' || typeof parsed.messageId !== 'string') {
-    return null;
-  }
-  return {
-    operationId: parsed.operationId,
-    messageId: parsed.messageId,
-    emailRemoteId: typeof parsed.emailRemoteId === 'string' ? parsed.emailRemoteId : null,
-    submissionRemoteId:
-      typeof parsed.submissionRemoteId === 'string' ? parsed.submissionRemoteId : null,
-    cacheAttempts: Number.isInteger(parsed.cacheAttempts) ? parsed.cacheAttempts : 0,
-    trustedRecipientsQueued: parsed.trustedRecipientsQueued === true,
-  };
+  const result = readMutationCheckpoint<SendCheckpoint>(row, (parsed: any) => {
+    if (
+      !parsed
+      || typeof parsed.operationId !== 'string'
+      || typeof parsed.messageId !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      operationId: parsed.operationId,
+      messageId: parsed.messageId,
+      emailRemoteId: typeof parsed.emailRemoteId === 'string' ? parsed.emailRemoteId : null,
+      submissionRemoteId:
+        typeof parsed.submissionRemoteId === 'string' ? parsed.submissionRemoteId : null,
+      cacheAttempts: Number.isInteger(parsed.cacheAttempts) ? parsed.cacheAttempts : 0,
+      trustedRecipientsQueued: parsed.trustedRecipientsQueued === true,
+    };
+  });
+  return result.status === 'valid' ? result.checkpoint : null;
 }
 
 export function newCheckpoint(identityEmail: string | null | undefined): SendCheckpoint {
@@ -106,20 +109,12 @@ export async function saveCheckpoint(
   checkpoint: SendCheckpoint,
   phase: SendPhase,
 ): Promise<SendCheckpoint> {
-  if (rowId == null) {
-    // Durability is the entire point of this mechanism, so a send with
-    // nowhere to record its progress is a programming error rather than a
-    // degraded mode to tolerate silently.
-    throw new Error('saveCheckpoint requires a pending_mutations row id');
-  }
-  await handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?,
-                 server_response_json = ?,
-                 ${POST_SUBMISSION_PHASES.has(phase) ? 'attempts = 0,' : ''}
-                 updated_at = ?
-           WHERE id = ?`,
-    params: [phase, JSON.stringify(checkpoint), Date.now(), rowId],
+  await saveMutationCheckpoint({
+    handlers,
+    rowId,
+    phase,
+    checkpoint,
+    resetAttempts: POST_SUBMISSION_PHASES.has(phase),
   });
   return checkpoint;
 }

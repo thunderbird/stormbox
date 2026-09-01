@@ -1,6 +1,9 @@
 import { DRAFT_PHASE, type DraftPhase } from '../../../constants/states';
-import { DB_RPC } from '../../../db/protocol';
 import { makeMessageId, makeOperationId } from '../../../utils/message-id';
+import {
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+} from './mutation-checkpoint';
 
 export interface DraftCheckpoint {
   operationId: string;
@@ -92,53 +95,49 @@ export function newDraftCheckpoint(request: any, identityEmail: string): DraftCh
 }
 
 export function readDraftCheckpoint(row: any): DraftCheckpoint | null {
-  if (!row?.server_response_json) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(row.server_response_json);
-  } catch {
-    return null;
-  }
-  if (!parsed
-      || typeof parsed !== 'object'
-      || Array.isArray(parsed)
-      || !isDraftEmailId(parsed.operationId)
-      || !isDraftEmailId(parsed.draftSessionId)
-      || !Number.isSafeInteger(parsed.revision)
-      || parsed.revision < 1
-      || !isDraftEmailId(parsed.revisionMessageId)
-      || typeof parsed.payloadHash !== 'string'
-      || !parsed.preparedEmail
-      || typeof parsed.preparedEmail !== 'object'
-      || Array.isArray(parsed.preparedEmail)) {
-    return null;
-  }
-  const baseEmailIds = exactDraftEmailIds(parsed.baseEmailIds);
-  const pendingDestroyIds = exactDraftEmailIds(parsed.pendingDestroyIds);
-  if (!baseEmailIds || !pendingDestroyIds) return null;
-  const newEmailId = parsed.newEmailId == null
-    ? null
-    : (isDraftEmailId(parsed.newEmailId) ? parsed.newEmailId : undefined);
-  const localMessageId = parsed.localMessageId == null
-    ? null
-    : (
-      Number.isSafeInteger(parsed.localMessageId) && parsed.localMessageId > 0
-        ? parsed.localMessageId
-        : undefined
-    );
-  if (newEmailId === undefined || localMessageId === undefined) return null;
-  return {
-    operationId: parsed.operationId,
-    draftSessionId: parsed.draftSessionId,
-    revision: parsed.revision,
-    revisionMessageId: parsed.revisionMessageId,
-    payloadHash: parsed.payloadHash,
-    baseEmailIds,
-    preparedEmail: parsed.preparedEmail,
-    newEmailId,
-    localMessageId,
-    pendingDestroyIds,
-  };
+  const result = readMutationCheckpoint<DraftCheckpoint>(row, (parsed: any) => {
+    if (!parsed
+        || typeof parsed !== 'object'
+        || Array.isArray(parsed)
+        || !isDraftEmailId(parsed.operationId)
+        || !isDraftEmailId(parsed.draftSessionId)
+        || !Number.isSafeInteger(parsed.revision)
+        || parsed.revision < 1
+        || !isDraftEmailId(parsed.revisionMessageId)
+        || typeof parsed.payloadHash !== 'string'
+        || !parsed.preparedEmail
+        || typeof parsed.preparedEmail !== 'object'
+        || Array.isArray(parsed.preparedEmail)) {
+      return null;
+    }
+    const baseEmailIds = exactDraftEmailIds(parsed.baseEmailIds);
+    const pendingDestroyIds = exactDraftEmailIds(parsed.pendingDestroyIds);
+    if (!baseEmailIds || !pendingDestroyIds) return null;
+    const newEmailId = parsed.newEmailId == null
+      ? null
+      : (isDraftEmailId(parsed.newEmailId) ? parsed.newEmailId : undefined);
+    const localMessageId = parsed.localMessageId == null
+      ? null
+      : (
+        Number.isSafeInteger(parsed.localMessageId) && parsed.localMessageId > 0
+          ? parsed.localMessageId
+          : undefined
+      );
+    if (newEmailId === undefined || localMessageId === undefined) return null;
+    return {
+      operationId: parsed.operationId,
+      draftSessionId: parsed.draftSessionId,
+      revision: parsed.revision,
+      revisionMessageId: parsed.revisionMessageId,
+      payloadHash: parsed.payloadHash,
+      baseEmailIds,
+      preparedEmail: parsed.preparedEmail,
+      newEmailId,
+      localMessageId,
+      pendingDestroyIds,
+    };
+  });
+  return result.status === 'valid' ? result.checkpoint : null;
 }
 
 export function readDraftPhase(row: any): DraftPhase | null {
@@ -156,11 +155,11 @@ export async function saveDraftCheckpoint(
   if (reason) {
     throw new Error(`Invalid draft checkpoint for ${phase}: ${reason}`);
   }
-  await handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [phase, JSON.stringify(checkpoint), Date.now(), rowId],
+  await saveMutationCheckpoint({
+    handlers,
+    rowId,
+    phase,
+    checkpoint,
   });
   return checkpoint;
 }

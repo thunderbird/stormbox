@@ -15,10 +15,15 @@ import {
 } from '../../../../../utils/identity-fields';
 import { syncIdentities, syncIdentityById } from '../../identities';
 import { callJmap, pickResponse } from '../../invoke';
+import {
+  CACHE_REPAIR_MAX_ATTEMPTS,
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+  type MutationCheckpointRead,
+} from '../../mutation-checkpoint';
 import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
 
-const CACHE_RECONCILE_MAX_ATTEMPTS = 3;
 const RETRYABLE_SET_ERRORS = new Set([
   'noResponse',
   'rateLimit',
@@ -28,6 +33,11 @@ const RETRYABLE_SET_ERRORS = new Set([
 ]);
 
 type IdentitySetOperation = 'create' | 'delete' | 'update';
+
+interface IdentityCreateCheckpoint {
+  baselineIdentityIds: string[];
+  requestIdentity: Record<string, unknown>;
+}
 
 function descriptionMentions(description: string, ...terms: string[]): boolean {
   return terms.some((term) => description.includes(term));
@@ -378,56 +388,37 @@ async function deleteIdentity({
 
 function appliedWrite(row: any): { remoteId: string; attempts: number } | null {
   if (row?.phase !== SEND_PHASE.CACHE_PENDING) return null;
-  try {
-    const checkpoint = JSON.parse(row.server_response_json ?? 'null');
+  const result = readMutationCheckpoint(row, (checkpoint: any) => {
     if (typeof checkpoint?.identityRemoteId !== 'string') return null;
     return {
       remoteId: checkpoint.identityRemoteId,
       attempts: Number.isInteger(checkpoint.attempts) ? checkpoint.attempts : 0,
     };
-  } catch {
-    return null;
-  }
-}
-
-function saveIdentityPhase(
-  handlers: any,
-  rowId: number,
-  phase: string,
-  checkpoint: Record<string, unknown> | null,
-) {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      phase,
-      checkpoint === null ? null : JSON.stringify(checkpoint),
-      Date.now(),
-      rowId,
-    ],
   });
+  return result.status === 'valid' ? result.checkpoint : null;
 }
 
-function pendingCreateCheckpoint(row: any) {
-  if (row?.phase !== IDENTITY_PHASE.CREATE_SUBMITTING) return null;
-  try {
-    const checkpoint = JSON.parse(row.server_response_json ?? 'null');
+function pendingCreateCheckpoint(
+  row: any,
+): MutationCheckpointRead<IdentityCreateCheckpoint> {
+  return readMutationCheckpoint(row, (checkpoint: any) => {
     if (
       !Array.isArray(checkpoint?.baselineIdentityIds)
-      || !checkpoint.baselineIdentityIds.every((id: unknown) => typeof id === 'string')
+      || !checkpoint.baselineIdentityIds.every(
+        (id: unknown) => typeof id === 'string' && id.length > 0,
+      )
+      || new Set(checkpoint.baselineIdentityIds).size
+        !== checkpoint.baselineIdentityIds.length
       || !checkpoint.requestIdentity
       || typeof checkpoint.requestIdentity !== 'object'
+      || Array.isArray(checkpoint.requestIdentity)
+      || typeof checkpoint.requestIdentity.email !== 'string'
+      || checkpoint.requestIdentity.email.length === 0
     ) {
       return null;
     }
-    return checkpoint as {
-      baselineIdentityIds: string[];
-      requestIdentity: Record<string, unknown>;
-    };
-  } catch {
-    return null;
-  }
+    return checkpoint as IdentityCreateCheckpoint;
+  });
 }
 
 function identityMatchesCreateRequest(
@@ -544,25 +535,6 @@ async function recoverAmbiguousCreate({
   });
 }
 
-function checkpointWrite({
-  handlers,
-  row,
-  remoteId,
-  attempts,
-}: any) {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      SEND_PHASE.CACHE_PENDING,
-      JSON.stringify({ identityRemoteId: remoteId, attempts }),
-      Date.now(),
-      row.id,
-    ],
-  });
-}
-
 async function reconcileWrite({
   transport,
   account,
@@ -573,8 +545,11 @@ async function reconcileWrite({
   useWebSocket,
 }: any) {
   const attempting = attempts + 1;
-  await checkpointWrite({
-    handlers, row, remoteId, attempts: attempting,
+  await saveMutationCheckpoint({
+    handlers,
+    rowId: row.id,
+    phase: SEND_PHASE.CACHE_PENDING,
+    checkpoint: { identityRemoteId: remoteId, attempts: attempting },
   });
   try {
     let identity = null;
@@ -610,7 +585,7 @@ async function reconcileWrite({
         type: IDENTITY_ERROR.CACHE_REPAIR_FAILED,
         protocolType: 'cacheReconcileFailed',
         message: error?.message ?? String(error),
-        ...(attempting >= CACHE_RECONCILE_MAX_ATTEMPTS ? { terminal: true } : {}),
+        ...(attempting >= CACHE_REPAIR_MAX_ATTEMPTS ? { terminal: true } : {}),
         result: {
           applied: true,
           cached: false,
@@ -638,7 +613,13 @@ async function runIdentityWrite(args: any, write: (args: any) => Promise<any>) {
 
 async function runCreateIdentitySafely(args: any) {
   const applied = appliedWrite(args.row);
-  if (applied) {
+  if (args.row.phase === SEND_PHASE.CACHE_PENDING) {
+    if (!applied) {
+      return ambiguousCreateFailure({
+        reason: 'unreadableCheckpoint',
+        phase: args.row.phase,
+      });
+    }
     return reconcileWrite({
       ...args,
       remoteId: applied.remoteId,
@@ -648,9 +629,15 @@ async function runCreateIdentitySafely(args: any) {
 
   const recorded = pendingCreateCheckpoint(args.row);
   if (args.row.phase === IDENTITY_PHASE.CREATE_SUBMITTING) {
-    return recorded
-      ? recoverAmbiguousCreate({ ...args, checkpoint: recorded })
+    return recorded.status === 'valid'
+      ? recoverAmbiguousCreate({ ...args, checkpoint: recorded.checkpoint })
       : ambiguousCreateFailure({ reason: 'unreadableCheckpoint' });
+  }
+  if (args.row.phase !== null || recorded.status !== 'absent') {
+    return ambiguousCreateFailure({
+      reason: 'unreadableCheckpoint',
+      phase: args.row.phase ?? null,
+    });
   }
 
   const prepared = createIdentityPayload(args.request);
@@ -681,12 +668,12 @@ async function runCreateIdentitySafely(args: any) {
     baselineIdentityIds: baselineRows.map((identity: any) => identity.remote_id),
     requestIdentity: prepared.payload,
   };
-  await saveIdentityPhase(
-    args.handlers,
-    args.row.id,
-    IDENTITY_PHASE.CREATE_SUBMITTING,
+  await saveMutationCheckpoint({
+    handlers: args.handlers,
+    rowId: args.row.id,
+    phase: IDENTITY_PHASE.CREATE_SUBMITTING,
     checkpoint,
-  );
+  });
 
   let created;
   try {
@@ -696,12 +683,12 @@ async function runCreateIdentitySafely(args: any) {
   }
   if (!created.ok) {
     if (created.definitive) {
-      await saveIdentityPhase(
-        args.handlers,
-        args.row.id,
-        SEND_PHASE.QUEUED,
-        checkpoint,
-      );
+      await saveMutationCheckpoint({
+        handlers: args.handlers,
+        rowId: args.row.id,
+        phase: null,
+        checkpoint: null,
+      });
       return created;
     }
     return recoverAmbiguousCreate({ ...args, checkpoint });

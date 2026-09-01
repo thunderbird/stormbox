@@ -620,6 +620,51 @@ describe('identity management mutations', () => {
     expect(setCalls).toBe(1);
   });
 
+  it.each([
+    ['malformed checkpoint without a phase', null, '{'],
+    ['missing create checkpoint', IDENTITY_PHASE.CREATE_SUBMITTING, null],
+    [
+      'create checkpoint without its phase',
+      null,
+      JSON.stringify({
+        baselineIdentityIds: [],
+        requestIdentity: { email: 'checkpoint@example.com' },
+      }),
+    ],
+    [
+      'invalid accepted-create checkpoint',
+      SEND_PHASE.CACHE_PENDING,
+      JSON.stringify({ identityRemoteId: 42, attempts: 1 }),
+    ],
+  ])('fails closed for %s', async (_label, phase, serverResponseJson) => {
+    const server = identityServer();
+    const row = await queueRow(MUTATION_TYPES.CREATE_IDENTITY, {
+      operationId: 'invalid-checkpoint',
+      email: 'checkpoint@example.com',
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE pending_mutations
+               SET phase = ?, server_response_json = ?
+             WHERE id = ?`,
+      params: [phase, serverResponseJson, row.id],
+    });
+
+    await expect(processMutationRow({
+      transport: server.transport,
+      account,
+      handlers,
+      row: await reload(row.id),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: IDENTITY_ERROR.AMBIGUOUS_CREATE,
+        terminal: true,
+        detail: { reason: 'unreadableCheckpoint' },
+      },
+    });
+    expect(server.setCalls).toBe(0);
+  });
+
   it('retries cache reconciliation without repeating an accepted create', async () => {
     const server = identityServer();
     server.transport.handleError('Identity/get', (params: any) =>

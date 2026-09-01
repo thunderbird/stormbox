@@ -323,6 +323,73 @@ describe('AddressBook mutations', () => {
       .toBe(ADDRESSBOOK_PHASE.CREATE_SUBMITTING);
   });
 
+  it.each([
+    ['malformed checkpoint without a phase', null, '{'],
+    ['missing create checkpoint', ADDRESSBOOK_PHASE.CREATE_SUBMITTING, null],
+    [
+      'create checkpoint without its phase',
+      null,
+      JSON.stringify({
+        addressBook: {
+          version: 1,
+          operation: 'create',
+          baselineAddressBooks: [],
+          baselineState: 'addressbooks-1',
+          requestAddressBook: {
+            name: 'Projects',
+            description: null,
+            sortOrder: 0,
+            isSubscribed: true,
+          },
+        },
+      }),
+    ],
+    [
+      'invalid accepted-create checkpoint',
+      ADDRESSBOOK_PHASE.CACHE_PENDING,
+      JSON.stringify({
+        addressBook: {
+          version: 1,
+          operation: 'create',
+          remoteId: 42,
+          attempts: 1,
+        },
+      }),
+    ],
+  ])('fails closed for %s', async (_label, phase, serverResponseJson) => {
+    const server = addressBookServer();
+    let setCalls = 0;
+    server.transport.handle('AddressBook/set', () => {
+      setCalls += 1;
+      return { created: { addressbook: { id: 'duplicate-book' } } };
+    });
+    const row = await queueRow(MUTATION_TYPES.CREATE_ADDRESSBOOK, {
+      operationId: 'invalid-checkpoint',
+      name: 'Projects',
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE pending_mutations
+               SET phase = ?, server_response_json = ?
+             WHERE id = ?`,
+      params: [phase, serverResponseJson, row.id],
+    });
+
+    await expect(processMutationRow({
+      transport: server.transport,
+      account,
+      handlers,
+      row: await reload(row.id),
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE,
+        terminal: true,
+        detail: { reason: 'unreadableCheckpoint' },
+      },
+    });
+    expect(setCalls).toBe(0);
+  });
+
   it('sends sparse metadata and default changes without patching isDefault', async () => {
     const server = addressBookServer({
       books: [

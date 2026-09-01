@@ -33,6 +33,11 @@ import {
   pushContactsTrash,
   restoreContactTrash,
 } from '../../contacts-trash';
+import {
+  CACHE_REPAIR_MAX_ATTEMPTS,
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+} from '../../mutation-checkpoint';
 import { readPhase } from '../../send-checkpoint';
 
 /**
@@ -399,13 +404,10 @@ function readContactBatchCheckpoint(row: any): DurableContactBatchCheckpoint {
   ) {
     return emptyContactBatchCheckpoint();
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(row?.server_response_json ?? 'null')?.contactBatch;
-  } catch {
-    return emptyContactBatchCheckpoint();
-  }
-  if (parsed?.version !== 1) return emptyContactBatchCheckpoint();
+  const result = readMutationCheckpoint(row, (value: any) =>
+    value?.contactBatch?.version === 1 ? value.contactBatch : null);
+  if (result.status !== 'valid') return emptyContactBatchCheckpoint();
+  const parsed = result.checkpoint;
   return {
     version: 1,
     succeededContactIds: numericContactIds(parsed.succeededContactIds),
@@ -520,16 +522,11 @@ function checkpointContactBatch({
   row: any;
   checkpoint: DurableContactBatchCheckpoint;
 }): Promise<unknown> {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      SEND_PHASE.CACHE_PENDING,
-      JSON.stringify({ contactBatch: checkpoint }),
-      Date.now(),
-      row.id,
-    ],
+  return saveMutationCheckpoint({
+    handlers,
+    rowId: row.id,
+    phase: SEND_PHASE.CACHE_PENDING,
+    checkpoint: { contactBatch: checkpoint },
   });
 }
 
@@ -546,19 +543,14 @@ function checkpointContactTrashPhase({
   phase: string;
   detail?: unknown;
 }): Promise<unknown> {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      phase,
-      JSON.stringify({
-        contactBatch: checkpoint,
-        contactTrash: { phase, detail: detail ?? null },
-      }),
-      Date.now(),
-      row.id,
-    ],
+  return saveMutationCheckpoint({
+    handlers,
+    rowId: row.id,
+    phase,
+    checkpoint: {
+      contactBatch: checkpoint,
+      contactTrash: { phase, detail: detail ?? null },
+    },
   });
 }
 
@@ -962,16 +954,11 @@ async function persistMutationRequest(handlers: any, row: any, request: any): Pr
 }
 
 function checkpointContactCreate({ handlers, row, uids }: any): Promise<unknown> {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      CONTACT_PHASE.CREATE_PENDING,
-      JSON.stringify({ contactCreateUids: uids }),
-      Date.now(),
-      row.id,
-    ],
+  return saveMutationCheckpoint({
+    handlers,
+    rowId: row.id,
+    phase: CONTACT_PHASE.CREATE_PENDING,
+    checkpoint: { contactCreateUids: uids },
   });
 }
 
@@ -1015,13 +1002,6 @@ async function resolveAddressBookRemoteIds({
 }
 
 /**
- * How many times the cache repair is retried before the row retires. The
- * server write is done by then and the next full sync will reconcile the
- * account anyway, so this only bounds how long a row sits in the outbox.
- */
-const CONTACT_CACHE_MAX_ATTEMPTS = 3;
-
-/**
  * Was this row's server write already made on an earlier attempt?
  *
  * A contact row parked at `cache_pending` has a card on the server and a
@@ -1032,17 +1012,14 @@ const CONTACT_CACHE_MAX_ATTEMPTS = 3;
  */
 function contactWriteApplied(row: any): { ids: string[]; attempts: number } | null {
   if (readPhase(row) !== SEND_PHASE.CACHE_PENDING) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(row?.server_response_json ?? 'null');
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed?.reconcileIds)) return null;
-  return {
-    ids: parsed.reconcileIds.filter((id: unknown) => typeof id === 'string'),
-    attempts: Number.isInteger(parsed.attempts) ? parsed.attempts : 0,
-  };
+  const result = readMutationCheckpoint(row, (parsed: any) => {
+    if (!Array.isArray(parsed?.reconcileIds)) return null;
+    return {
+      ids: parsed.reconcileIds.filter((id: unknown) => typeof id === 'string'),
+      attempts: Number.isInteger(parsed.attempts) ? parsed.attempts : 0,
+    };
+  });
+  return result.status === 'valid' ? result.checkpoint : null;
 }
 
 /**
@@ -1050,16 +1027,11 @@ function contactWriteApplied(row: any): { ids: string[]; attempts: number } | nu
  * ids a repair needs and how many repairs have been tried.
  */
 function checkpointContactWrite({ handlers, row, ids, attempts }: any) {
-  return handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      SEND_PHASE.CACHE_PENDING,
-      JSON.stringify({ reconcileIds: ids ?? [], attempts }),
-      Date.now(),
-      row.id,
-    ],
+  return saveMutationCheckpoint({
+    handlers,
+    rowId: row.id,
+    phase: SEND_PHASE.CACHE_PENDING,
+    checkpoint: { reconcileIds: ids ?? [], attempts },
   });
 }
 
@@ -1123,7 +1095,7 @@ async function reconcileOrReport({
       'jmap-outbox',
       `contact write applied but the cache did not follow: ${err?.message ?? err}`,
     );
-    if (row?.id == null || attempted >= CONTACT_CACHE_MAX_ATTEMPTS) {
+    if (row?.id == null || attempted >= CACHE_REPAIR_MAX_ATTEMPTS) {
       // Out of attempts. The card is right on the server, so the account's
       // own copy is what is wrong: drop the contact checkpoint and the next
       // sync rebuilds from scratch rather than trusting a delta from a

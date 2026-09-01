@@ -18,10 +18,15 @@ import {
   TRUSTED_SENDERS_BOOK_NAME,
 } from '../../contacts';
 import { callJmap, pickResponse } from '../../invoke';
+import {
+  CACHE_REPAIR_MAX_ATTEMPTS,
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+  type MutationCheckpointRead,
+} from '../../mutation-checkpoint';
 import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
 
-const ADDRESSBOOK_CACHE_MAX_ATTEMPTS = 3;
 const ADDRESSBOOK_CREATION_KEY = 'addressbook';
 const ADDRESSBOOK_ERROR_TYPES = new Set<string>(Object.values(ADDRESSBOOK_ERROR));
 
@@ -440,15 +445,48 @@ async function resolveRemoteId(
     : null;
 }
 
-function parseCheckpoint(row: any): AddressBookCheckpoint | null {
-  try {
-    const checkpoint = JSON.parse(row?.server_response_json ?? 'null')?.addressBook;
+function parseCheckpoint(
+  row: any,
+): MutationCheckpointRead<AddressBookCheckpoint> {
+  return readMutationCheckpoint(row, (value: any) => {
+    const checkpoint = value?.addressBook;
     if (checkpoint?.version !== 1) return null;
     if (!['create', 'update', 'destroy'].includes(checkpoint.operation)) return null;
-    return checkpoint;
-  } catch {
-    return null;
+    return checkpoint as AddressBookCheckpoint;
+  });
+}
+
+function validCanonicalAddressBook(
+  value: unknown,
+  requireId: boolean,
+): value is CanonicalAddressBook {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const book = value as Record<string, unknown>;
+  return (!requireId || (typeof book.id === 'string' && book.id.length > 0))
+    && typeof book.name === 'string'
+    && book.name.length > 0
+    && (book.description === null || typeof book.description === 'string')
+    && Number.isSafeInteger(book.sortOrder)
+    && Number(book.sortOrder) >= 0
+    && typeof book.isSubscribed === 'boolean';
+}
+
+function parseCreateCheckpoint(
+  row: any,
+): MutationCheckpointRead<AddressBookCheckpoint> {
+  const result = parseCheckpoint(row);
+  if (result.status !== 'valid') return result;
+  const checkpoint = result.checkpoint;
+  if (
+    checkpoint.operation !== 'create'
+    || !Array.isArray(checkpoint.baselineAddressBooks)
+    || !checkpoint.baselineAddressBooks.every((book) =>
+      validCanonicalAddressBook(book, true))
+    || !validCanonicalAddressBook(checkpoint.requestAddressBook, false)
+  ) {
+    return { status: 'invalid' };
   }
+  return result;
 }
 
 async function savePhase(
@@ -457,24 +495,25 @@ async function savePhase(
   phase: string | null,
   checkpoint: AddressBookCheckpoint | null,
 ) {
-  await handlers[DB_RPC.QUERY]({
-    sql: `UPDATE pending_mutations
-             SET phase = ?, server_response_json = ?, updated_at = ?
-           WHERE id = ?`,
-    params: [
-      phase,
-      checkpoint ? JSON.stringify({ addressBook: checkpoint }) : null,
-      Date.now(),
-      rowId,
-    ],
+  await saveMutationCheckpoint({
+    handlers,
+    rowId,
+    phase,
+    checkpoint: checkpoint ? { addressBook: checkpoint } : null,
   });
 }
 
 function appliedWrite(row: any): AddressBookCheckpoint | null {
   if (row?.phase !== ADDRESSBOOK_PHASE.CACHE_PENDING) return null;
-  const checkpoint = parseCheckpoint(row);
-  if (!checkpoint || typeof checkpoint.remoteId !== 'string') return null;
-  return checkpoint;
+  const result = parseCheckpoint(row);
+  if (
+    result.status !== 'valid'
+    || typeof result.checkpoint.remoteId !== 'string'
+    || !result.checkpoint.remoteId
+  ) {
+    return null;
+  }
+  return result.checkpoint;
 }
 
 async function reconcileAcceptedWrite({
@@ -554,7 +593,7 @@ async function reconcileAcceptedWrite({
         type: ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
         protocolType: 'cacheReconcileFailed',
         message: error?.message ?? String(error),
-        ...(attempting >= ADDRESSBOOK_CACHE_MAX_ATTEMPTS ? { terminal: true } : {}),
+        ...(attempting >= CACHE_REPAIR_MAX_ATTEMPTS ? { terminal: true } : {}),
         result: {
           applied: true,
           cached: false,
@@ -633,7 +672,13 @@ async function recoverCreate({
 
 export async function runCreateAddressBook(args: any) {
   const applied = appliedWrite(args.row);
-  if (applied?.operation === 'create') {
+  if (args.row?.phase === ADDRESSBOOK_PHASE.CACHE_PENDING) {
+    if (applied?.operation !== 'create') {
+      return ambiguousCreateFailure({
+        reason: 'unreadableCheckpoint',
+        phase: args.row.phase,
+      });
+    }
     return reconcileAcceptedWrite({
       ...args,
       operation: 'create',
@@ -641,17 +686,18 @@ export async function runCreateAddressBook(args: any) {
       attempts: applied.attempts ?? 0,
     });
   }
+  const checkpointRead = parseCreateCheckpoint(args.row);
   if (args.row?.phase === ADDRESSBOOK_PHASE.CREATE_SUBMITTING) {
-    const checkpoint = parseCheckpoint(args.row);
-    if (
-      !checkpoint
-      || checkpoint.operation !== 'create'
-      || !Array.isArray(checkpoint.baselineAddressBooks)
-      || !checkpoint.requestAddressBook
-    ) {
+    if (checkpointRead.status !== 'valid') {
       return ambiguousCreateFailure({ reason: 'unreadableCheckpoint' });
     }
-    return recoverCreate({ ...args, checkpoint });
+    return recoverCreate({ ...args, checkpoint: checkpointRead.checkpoint });
+  }
+  if (args.row?.phase !== null || checkpointRead.status !== 'absent') {
+    return ambiguousCreateFailure({
+      reason: 'unreadableCheckpoint',
+      phase: args.row?.phase ?? null,
+    });
   }
 
   const capability = addressBookAccountCapability(args.transport, args.account);
@@ -1027,7 +1073,10 @@ export async function runDestroyAddressBook(args: any) {
   }
 
   const recovering = args.row?.phase === ADDRESSBOOK_PHASE.DESTROY_SUBMITTING;
-  const checkpoint = recovering ? parseCheckpoint(args.row) : null;
+  const checkpointResult = recovering ? parseCheckpoint(args.row) : null;
+  const checkpoint = checkpointResult?.status === 'valid'
+    ? checkpointResult.checkpoint
+    : null;
   const remoteId = recovering
     ? checkpoint?.remoteId ?? null
     : await resolveRemoteId(args.handlers, args.account.id, args.request);
