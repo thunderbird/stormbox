@@ -802,18 +802,86 @@ describe('App mail layout', () => {
     expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
   });
 
-  it('does not render folder-list controls in the Contacts space', async () => {
+  it('hosts the address-book rail in the shared sidebar slot in Contacts (R-8.5)', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--contacts');
-    expect(wrapper.find('.sidebar-slot').exists()).toBe(false);
+    const slot = wrapper.get('.sidebar-slot');
+    expect(slot.classes()).not.toContain('sidebar-slot--hidden');
+    expect(slot.find('.contacts-rail').exists()).toBe(true);
+    expect(slot.find('.sidebar__compose').exists()).toBe(false);
+    expect(wrapper.find('.contacts .contacts-rail').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="Hide address book list"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Resize address book list"]').exists()).toBe(true);
     expect(wrapper.find('[aria-label="Hide folder list"]').exists()).toBe(false);
-    expect(wrapper.find('[aria-label="Show folder list"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="Resize folder list"]').exists()).toBe(false);
+
+    await wrapper.get('[aria-label="Hide address book list"]').trigger('click');
+    await nextTick();
+    expect(slot.classes()).toContain('sidebar-slot--hidden');
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+
+    await wrapper.get('[aria-label="Mail"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.contacts-rail').exists()).toBe(false);
+    expect(wrapper.find('.sidebar-slot .sidebar__compose').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Show folder list"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="Resize folder list"]').exists()).toBe(true);
+  });
+
+  it('collapses the address-book rail below 1024px while a contact detail is open (CT-1.3)', async () => {
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [
+      {
+        id: 1,
+        remote_id: 'alice',
+        addressbook_ids: [],
+        display_name: 'Alice Example',
+        email: 'alice@example.com',
+      },
+    ];
+    setWindowWidth(1000);
+    const wrapper = mountApp();
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+
+    await wrapper.get('.contacts__row').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).toContain('sidebar-slot--hidden');
+    expect(wrapper.find('[aria-label="Show address book list"]').exists()).toBe(true);
+
+    setWindowWidth(1024, true);
+    await nextTick();
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
+  });
+
+  it('hides the address-book rail by default below 640px and opens it from the toggle (R-10.10)', async () => {
+    setWindowWidth(639);
+    const wrapper = mountApp();
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).toContain('sidebar-slot--hidden');
+    expect(wrapper.find('.contacts').exists()).toBe(true);
+
+    await wrapper.get('[aria-label="Show address book list"]').trigger('click');
+    await nextTick();
+
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
+    expect(wrapper.find('.sidebar-slot .contacts-rail').exists()).toBe(true);
   });
 
   it('auto-hides the folder list below 1024px when a message is selected', async () => {

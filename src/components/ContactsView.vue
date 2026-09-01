@@ -63,9 +63,17 @@ import {
 
 const props = withDefaults(defineProps<{
   filterQuery?: string;
+  /** Selector of the shell's sidebar element that hosts the address-book
+   * rail (CT-1.3). Without one the rail renders inside the view. */
+  railTarget?: string | null;
 }>(), {
   filterQuery: '',
+  railTarget: null,
 });
+
+const emit = defineEmits<{
+  detailVisibleChange: [visible: boolean];
+}>();
 
 interface DirectoryListHandle {
   focusSelected: () => Promise<void>;
@@ -287,15 +295,14 @@ const detailDisplayState = computed(() =>
   detailFailureState.value ?? detailState.value);
 const showDetailView = computed(() =>
   detailDisplayState.value !== 'empty' && !hasBulkSelection.value);
+watch(showDetailView, (visible) => emit('detailVisibleChange', visible), { immediate: true });
 const {
   activeResizePane,
   clampColumnWidths,
   columnStyle,
   listWidth,
   maxListWidth,
-  maxRailWidth,
   onResizeHandleKeydown,
-  railWidth,
   startColumnResize,
 } = useDirectoryColumnResize({
   detailVisible: showDetailView,
@@ -1101,37 +1108,28 @@ defineExpose({
     :data-detail-state="detailDisplayState"
     :style="columnStyle"
   >
-    <ContactsRail
-      :addressbooks="addressbooks"
-      :book-counts="bookCounts"
-      :can-create-address-book="canCreateAddressBook"
-      :contact-count="contacts.length"
-      :identity-count="identities.length"
-      :trash-count="trash.length"
-      :kind="kind"
-      :selected-book-id="selectedBookId"
-      @add-contact="openCreate('contacts')"
-      @create-address-book="openAddressBookCreate"
-      @move-contacts="moveContactBatch"
-      @select-book="selectBook"
-      @select-identities="selectIdentities"
-      @select-trash="selectTrash"
-    />
-
-    <div
-      v-if="layout === 'desktop'"
-      class="column-resizer contacts__column-resizer contacts__column-resizer--rail"
-      :class="{ 'is-active': activeResizePane === 'rail' }"
-      role="separator"
-      aria-label="Resize address book list"
-      aria-orientation="vertical"
-      :aria-valuemin="DIRECTORY_COLUMN_MIN_WIDTHS.rail"
-      :aria-valuemax="maxRailWidth(listWidth)"
-      :aria-valuenow="railWidth"
-      tabindex="0"
-      @pointerdown="startColumnResize('rail', $event)"
-      @keydown="onResizeHandleKeydown('rail', $event)"
-    />
+    <Teleport
+      :to="props.railTarget ?? 'body'"
+      :disabled="!props.railTarget"
+      defer
+    >
+      <ContactsRail
+        :addressbooks="addressbooks"
+        :book-counts="bookCounts"
+        :can-create-address-book="canCreateAddressBook"
+        :contact-count="contacts.length"
+        :identity-count="identities.length"
+        :trash-count="trash.length"
+        :kind="kind"
+        :selected-book-id="selectedBookId"
+        @add-contact="openCreate('contacts')"
+        @create-address-book="openAddressBookCreate"
+        @move-contacts="moveContactBatch"
+        @select-book="selectBook"
+        @select-identities="selectIdentities"
+        @select-trash="selectTrash"
+      />
+    </Teleport>
 
     <DirectoryDetailShell
       :detail-visible="showDetailView"
@@ -1179,7 +1177,7 @@ defineExpose({
           aria-label="Resize contact list"
           aria-orientation="vertical"
           :aria-valuemin="DIRECTORY_COLUMN_MIN_WIDTHS.list"
-          :aria-valuemax="maxListWidth(railWidth)"
+          :aria-valuemax="maxListWidth()"
           :aria-valuenow="listWidth"
           tabindex="0"
           @pointerdown="startColumnResize('list', $event)"
@@ -1403,28 +1401,9 @@ defineExpose({
   display: grid;
   min-width: 0;
   min-height: 0;
-  grid-template-columns:
-    minmax(
-      var(--directory-rail-min-width, 180px),
-      var(--contacts-rail-width, 240px)
-    )
-    var(--contacts-column-resizer-width, 6px)
-    minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   background: var(--surface, #fff);
-}
-
-.contacts > :deep(.contacts-rail) {
-  grid-column: 1;
-  border-right: 0;
-}
-
-.contacts__column-resizer--rail {
-  grid-column: 2;
-}
-
-.contacts > :deep(.directory-shell) {
-  grid-column: 3;
 }
 
 .contacts :deep(.directory-list) {
@@ -1474,22 +1453,5 @@ defineExpose({
   color: var(--text, #1a1d24);
   font: inherit;
   cursor: pointer;
-}
-
-@media (max-width: 1023px) {
-  .contacts {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .contacts > :deep(.contacts-rail) {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .contacts > :deep(.directory-shell) {
-    grid-column: 1;
-    grid-row: 2;
-  }
 }
 </style>
