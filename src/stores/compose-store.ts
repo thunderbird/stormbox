@@ -562,7 +562,7 @@ export const useComposeStore = defineStore('compose', () => {
     queued: boolean;
     blocked: boolean;
   }>();
-  const attachments = createComposeAttachmentController({
+  const attachmentController = createComposeAttachmentController({
     sessionById,
     sessions: () => sessions.value,
     activeSessionId: () => activeSessionId.value,
@@ -580,7 +580,7 @@ export const useComposeStore = defineStore('compose', () => {
     retryAttachment,
     cancelAttachment,
     removeAttachment,
-  } = attachments;
+  } = attachmentController;
   const AUTOSAVE_DEBOUNCE_MS = 2_000;
   const AUTOSAVE_MAX_DELAY_MS = 30_000;
 
@@ -611,7 +611,7 @@ export const useComposeStore = defineStore('compose', () => {
     const runtime = autosaveRuntime.get(sessionId);
     if (runtime) runtime.blocked = true;
     autosaveRuntime.delete(sessionId);
-    attachments.disposeSession(sessionId);
+    attachmentController.disposeSession(sessionId);
   }
 
   async function attach(): Promise<void> {
@@ -631,7 +631,7 @@ export const useComposeStore = defineStore('compose', () => {
     stopAccountWatch = watch(
       () => authStore.accountId,
       async (newId) => {
-        attachments.clearPreflightsOutsideAccount(newId);
+        attachmentController.clearPreflightsOutsideAccount(newId);
         if (newId != null) {
           await Promise.all([
             refreshAccount(),
@@ -684,7 +684,7 @@ export const useComposeStore = defineStore('compose', () => {
     Object.assign(fallbackRejectedRecipients, emptyRejectedRecipients());
     fallbackStatus.value = COMPOSE_STATE.IDLE;
     fallbackError.value = null;
-    attachments.reset();
+    attachmentController.reset();
     clearNotice();
   }
 
@@ -1796,7 +1796,7 @@ export const useComposeStore = defineStore('compose', () => {
         return false;
       }
       const clientIds = attachmentIdsForBlobFailure(request, result);
-      const needsReselection = attachments.markBlobsMissing(session, clientIds);
+      const needsReselection = attachmentController.markBlobsMissing(session, clientIds);
       session.saveError = needsReselection
         ? 'An attachment is no longer available. Remove it and select the file again.'
         : clientIds.length > 0
@@ -1842,7 +1842,7 @@ export const useComposeStore = defineStore('compose', () => {
       attachment.partId = typeof canonical.part_id === 'string' && canonical.part_id
         ? canonical.part_id
         : attachment.partId;
-      attachments.forgetFile(clientId);
+      attachmentController.forgetFile(clientId);
     });
     let checkpointJson = capturedJson;
     if (mappedClientIds.size < capturedClientMap.length) {
@@ -2063,7 +2063,7 @@ export const useComposeStore = defineStore('compose', () => {
       void saveDraft(session.id);
     } else if (!saved) {
       runtime.blocked = session.failedSaveMutationId != null
-        || attachments.hasBlobFailure(session);
+        || attachmentController.hasBlobFailure(session);
     }
     return saved;
   }
@@ -2776,7 +2776,7 @@ export const useComposeStore = defineStore('compose', () => {
         }
         if (result.errorType === 'blobNotFound') {
           const clientIds = attachmentIdsForBlobFailure(sendRequest, result);
-          const needsReselection = attachments.markBlobsMissing(session, clientIds);
+          const needsReselection = attachmentController.markBlobsMissing(session, clientIds);
           const failed = failSend(
             needsReselection
               ? 'An attachment is no longer available. Remove it and select the file again.'
@@ -2785,7 +2785,7 @@ export const useComposeStore = defineStore('compose', () => {
                 : 'Inline image data expired. Send again to retry it.',
             session.id,
           );
-          runtimeFor(session.id).blocked = attachments.hasBlobFailure(session);
+          runtimeFor(session.id).blocked = attachmentController.hasBlobFailure(session);
           return failed;
         }
         if (scheduledAt) {
