@@ -52,6 +52,10 @@ import { createContactMapKey, createContactUid, isContactUid } from '../../../ut
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { maxObjectsInGet, maxObjectsInSet } from './limits';
+import {
+  pageCompleteQuery,
+  type CompleteQueryFailureReason,
+} from './query-paging';
 
 export const ADDRESSBOOK_PROPERTIES = [
   'id', 'name', 'description', 'sortOrder',
@@ -238,159 +242,149 @@ export async function inventoryAddressBook({
   const cap = maxObjectsInGet(transport);
   const contacts: AddressBookInventoryContact[] = [];
   const seen = new Set<string>();
-  let position = 0;
-  let queryState: string | null = null;
-  let total: number | null = null;
-  for (;;) {
-    let result;
-    try {
-      result = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-        methodCalls: [
-          [
-            'ContactCard/query',
-            {
-              accountId: account.remote_account_id,
-              filter: { inAddressBook: addressBookRemoteId },
-              position,
-              limit: cap,
-              calculateTotal: true,
-            },
-            'abiq',
-          ],
-          [
-            'ContactCard/get',
-            {
-              accountId: account.remote_account_id,
-              '#ids': {
-                resultOf: 'abiq',
-                name: 'ContactCard/query',
-                path: '/ids',
+  const paging = await pageCompleteQuery({
+    pageSize: cap,
+    readPage: async ({ position, limit }) => {
+      let result;
+      try {
+        result = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+          methodCalls: [
+            [
+              'ContactCard/query',
+              {
+                accountId: account.remote_account_id,
+                filter: { inAddressBook: addressBookRemoteId },
+                position,
+                limit,
+                calculateTotal: true,
               },
-            },
-            'abig',
+              'abiq',
+            ],
+            [
+              'ContactCard/get',
+              {
+                accountId: account.remote_account_id,
+                '#ids': {
+                  resultOf: 'abiq',
+                  name: 'ContactCard/query',
+                  path: '/ids',
+                },
+              },
+              'abig',
+            ],
           ],
-        ],
-        useWebSocket,
-      });
-    } catch (error: any) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-        error?.message ?? String(error),
-      );
-    }
-    const query = pickResponse(result, 'ContactCard/query');
-    const methodError = pickResponse(result, 'error');
-    if (!query || !Array.isArray(query.ids)) {
-      throw addressBookInventoryError(
-        methodError?.type === 'stateMismatch'
-          ? ADDRESSBOOK_ERROR.STATE_MISMATCH
-          : ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-        'ContactCard/query did not return a complete inventory page',
-        methodError ?? undefined,
-      );
-    }
-    if (typeof query.queryState !== 'string' || !query.queryState) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'ContactCard/query did not provide stable paging state',
-      );
-    }
-    if (queryState == null) queryState = query.queryState;
-    else if (query.queryState !== queryState) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'Address book contents changed while inventory was being read',
-      );
-    }
-    const pageTotal = Number(query.total);
-    if (!Number.isSafeInteger(pageTotal) || pageTotal < 0
-        || (total != null && total !== pageTotal)) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'Address book inventory total changed while paging',
-      );
-    }
-    total = pageTotal;
-
-    const ids = query.ids as unknown[];
-    if (
-      !Number.isSafeInteger(query.position)
-      || Number(query.position) !== position
-      || ids.length > cap
-    ) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'Address book inventory page did not match its requested window',
-      );
-    }
-    const pageIds = new Set<string>();
-    if (ids.some((id) => {
-      if (typeof id !== 'string' || !id || seen.has(id) || pageIds.has(id)) {
-        return true;
-      }
-      pageIds.add(id);
-      return false;
-    })) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'Address book inventory returned invalid or duplicate ids',
-      );
-    }
-    const got = pickResponse(result, 'ContactCard/get');
-    if (!got || !Array.isArray(got.list)) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-        'ContactCard/get did not return an inventory page',
-        methodError ?? undefined,
-      );
-    }
-    const cards = new Map<string, any>();
-    for (const card of got.list) {
-      if (typeof card?.id !== 'string' || cards.has(card.id)) {
+          useWebSocket,
+        });
+      } catch (error: any) {
         throw addressBookInventoryError(
-          ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'ContactCard/get returned invalid or duplicate cards',
+          ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+          error?.message ?? String(error),
         );
       }
-      cards.set(card.id, card);
-    }
-    for (const id of ids as string[]) {
-      const card = cards.get(id);
-      const addressBookIds = inventoryAddressBookIds(card);
-      if (!card || !addressBookIds?.includes(addressBookRemoteId)) {
+      const query = pickResponse(result, 'ContactCard/query');
+      const methodError = pickResponse(result, 'error');
+      if (!query || !Array.isArray(query.ids)) {
         throw addressBookInventoryError(
-          ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'Address book contents changed during inventory read',
+          methodError?.type === 'stateMismatch'
+            ? ADDRESSBOOK_ERROR.STATE_MISMATCH
+            : ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+          'ContactCard/query did not return a complete inventory page',
+          methodError ?? undefined,
         );
       }
-      seen.add(id);
-      contacts.push({
-        remoteId: id,
-        addressBookIds: [...addressBookIds].sort(),
-        classification: addressBookIds.length === 1 ? 'exclusive' : 'shared',
-        hasMedia: contactCardHasMedia(card),
-      });
-    }
-
-    const nextPosition = position + ids.length;
-    const echoedLimit = Number.isSafeInteger(query.limit) && query.limit > 0
-      ? Number(query.limit)
-      : cap;
-    const served = Math.min(cap, echoedLimit);
-    if (ids.length === 0
-        || (total != null && nextPosition >= total)
-        || ids.length < served) {
-      break;
-    }
-    if (nextPosition <= position) {
-      throw addressBookInventoryError(
-        ADDRESSBOOK_ERROR.STATE_MISMATCH,
-        'Address book inventory cursor did not advance',
-      );
-    }
-    position = nextPosition;
+      if (typeof query.queryState !== 'string' || !query.queryState) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'ContactCard/query did not provide stable paging state',
+        );
+      }
+      const pageTotal = Number(query.total);
+      if (!Number.isSafeInteger(pageTotal) || pageTotal < 0) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'Address book inventory total changed while paging',
+        );
+      }
+      const ids = query.ids as unknown[];
+      if (
+        !Number.isSafeInteger(query.position)
+        || Number(query.position) !== position
+        || ids.length > limit
+      ) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'Address book inventory page did not match its requested window',
+        );
+      }
+      const pageIds = new Set<string>();
+      if (ids.some((id) => {
+        if (typeof id !== 'string' || !id || seen.has(id) || pageIds.has(id)) {
+          return true;
+        }
+        pageIds.add(id);
+        return false;
+      })) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.STATE_MISMATCH,
+          'Address book inventory returned invalid or duplicate ids',
+        );
+      }
+      const got = pickResponse(result, 'ContactCard/get');
+      if (!got || !Array.isArray(got.list)) {
+        throw addressBookInventoryError(
+          ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+          'ContactCard/get did not return an inventory page',
+          methodError ?? undefined,
+        );
+      }
+      return {
+        ids,
+        queryState: query.queryState,
+        total: pageTotal,
+        position: query.position,
+        limit: query.limit,
+        value: got.list,
+      };
+    },
+    visitPage: ({ ids, value: list }) => {
+      const cards = new Map<string, any>();
+      for (const card of list) {
+        if (typeof card?.id !== 'string' || cards.has(card.id)) {
+          throw addressBookInventoryError(
+            ADDRESSBOOK_ERROR.STATE_MISMATCH,
+            'ContactCard/get returned invalid or duplicate cards',
+          );
+        }
+        cards.set(card.id, card);
+      }
+      for (const id of ids as string[]) {
+        const card = cards.get(id);
+        const addressBookIds = inventoryAddressBookIds(card);
+        if (!card || !addressBookIds?.includes(addressBookRemoteId)) {
+          throw addressBookInventoryError(
+            ADDRESSBOOK_ERROR.STATE_MISMATCH,
+            'Address book contents changed during inventory read',
+          );
+        }
+        seen.add(id);
+        contacts.push({
+          remoteId: id,
+          addressBookIds: [...addressBookIds].sort(),
+          classification: addressBookIds.length === 1 ? 'exclusive' : 'shared',
+          hasMedia: contactCardHasMedia(card),
+        });
+      }
+    },
+  });
+  if (paging.complete === false) {
+    throw addressBookInventoryError(
+      ADDRESSBOOK_ERROR.STATE_MISMATCH,
+      'Address book contents changed while inventory was being read',
+      { reason: paging.reason },
+    );
   }
+  const { queryState, total } = paging;
   let verificationResult;
   try {
     verificationResult = await callJmap(transport, {
@@ -523,145 +517,90 @@ async function pageAllContacts({
   // Every row this run sees is stamped with it, and afterwards the rows that
   // still carry an older stamp are the ones the server no longer has.
   const generation = nextGeneration();
-  let position = 0;
   let fetched = 0;
-  let total = null;
   let state = null;
-  // `undefined` is "no page has answered yet"; `null` is "the server sent no
-  // query state". Conflating them is what makes an absent field look like a
-  // state that never changes.
-  let queryState;
   let skipped = 0;
   // Cards the query named that the get did not return. Counted apart from
   // `skipped` because the cause differs, but treated the same way: both are
   // cards this pass knows of and does not have.
   let withheld = 0;
-  let lastPosition = -1;
-  // Set when this pass cannot prove it read one whole list. The sweep is the
-  // only irreversible step, so it is what gets withheld.
-  let unverified = false;
-  for (;;) {
-    const result = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-      methodCalls: [
-        [
-          'ContactCard/query',
-          {
-            accountId: account.remote_account_id,
-            position,
-            limit,
-            calculateTotal: true,
-          },
-          'cq1',
-        ],
-        [
-          'ContactCard/get',
-          {
-            accountId: account.remote_account_id,
-            '#ids': {
-              resultOf: 'cq1',
-              name: 'ContactCard/query',
-              path: '/ids',
+  const paging = await pageCompleteQuery({
+    pageSize: limit,
+    allowMissingQueryState: true,
+    readPage: async ({ position, limit: pageLimit }) => {
+      const result = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+        methodCalls: [
+          [
+            'ContactCard/query',
+            {
+              accountId: account.remote_account_id,
+              position,
+              limit: pageLimit,
+              calculateTotal: true,
             },
-          },
-          'cg1',
+            'cq1',
+          ],
+          [
+            'ContactCard/get',
+            {
+              accountId: account.remote_account_id,
+              '#ids': {
+                resultOf: 'cq1',
+                name: 'ContactCard/query',
+                path: '/ids',
+              },
+            },
+            'cg1',
+          ],
         ],
-      ],
-      useWebSocket,
-    });
-    const query = pickResponse(result, 'ContactCard/query');
-    // No answer is not an empty account. `pickResponse` returns null for a
-    // method-level error too, and reading that as "the server has no cards"
-    // would hand an empty result to the sweep, which would then delete the
-    // entire address book over one failed round trip.
-    if (!query || !Array.isArray(query.ids)) {
-      throw new Error('ContactCard/query did not answer with a list of ids');
-    }
-    const ids = query.ids;
-    if (Number.isFinite(query?.total)) total = query.total;
-
-    // CS-4.2: paging by position alone lets a concurrent deletion shift an
-    // unseen card past the cursor, and a later `changes` catch-up cannot
-    // recover it because that card was never modified. The query state is
-    // what makes the pages one list rather than several.
-    const pageQueryState = query.queryState ?? null;
-    if (queryState === undefined) {
-      queryState = pageQueryState;
-    } else if (pageQueryState !== queryState) {
-      return { restart: true, result: { fetched, total: total ?? fetched, state, swept: 0 } };
-    }
-
-    const got = pickResponse(result, 'ContactCard/get');
-    if (ids.length > 0 && (!got || !Array.isArray(got.list))) {
-      throw new Error('ContactCard/get did not answer for a page that had ids');
-    }
-    // The checkpoint is the object state from `get`, taken on the first
-    // page and kept: `changes` consumes that state (RFC 8620 §5.2), while
-    // the `queryState` a query answers with is a different thing that
-    // `changes` will reject. Reading the state the first page was drawn
-    // from — rather than the last — means anything that happens while the
-    // remaining pages are read is replayed by the catch-up instead of
-    // falling into the gap between them.
-    if (state === null && got?.state) state = got.state;
-
-    const cards = got?.list ?? [];
-    // A page is only as complete as the cards it returned, not as the ids it
-    // asked for. `notFound` is the documented answer for an id a get did not
-    // return (RFC 8620 §5.1), and it arrives without anything being broken: a
-    // server capping objects in a get below the ids its own query listed, a
-    // permission change between the two method calls, or a destroy landing
-    // between them. Only the last makes a local deletion correct, and there is
-    // no way to tell which happened, so the difference is counted and the
-    // irreversible step withheld. Every other measure the loop keeps reads
-    // clean here — the ids were all named, the cursor advanced by all of them,
-    // and `total` is reached — which is what made this deletion silent.
-    withheld += Math.max(0, ids.length - cards.length);
-    if (cards.length > 0) {
-      const persisted = await persistContactCards({ account, cards, handlers, generation });
-      skipped += persisted.skipped;
-      fetched += cards.length;
-    }
-
-    // The server may clamp/adjust the requested position (RFC 8620
-    // §5.5); trust its echo when present so we advance from where the
-    // page actually started.
-    const pageStart = Number.isFinite(query?.position) ? Number(query.position) : position;
-    position = pageStart + ids.length;
-
-    // The same clause lets the server clamp `limit`, and requires it to
-    // return the limit it enforced. Measuring a short page against what we
-    // asked for rather than what it agreed to give is how a server whose
-    // query cap sits below our page size gets read as an account that ran
-    // out of contacts after one page — with the sweep behind it deleting
-    // the rest. Stalwart caps queries at 5000 against our 500, so this
-    // costs nothing there and everything on an instance configured tighter.
-    // Clamping only ever reduces, so a limit above the one requested says
-    // nothing about this page — a server reporting its configured ceiling
-    // while serving the page asked for would otherwise make every page look
-    // short, ending the pass after one and sweeping the rest.
-    const echoed = Number.isFinite(query?.limit) ? Number(query.limit) : limit;
-    const served = Math.min(limit, echoed);
-    if (ids.length === 0) break;
-    if (total != null && position >= total) break;
-    if (ids.length < served) break;
-
-    // The cursor has to move. A server that keeps echoing `position: 0` while
-    // serving full pages would otherwise be read forever, since every page
-    // looks like a full page and the query state never changes.
-    if (position <= lastPosition) {
-      unverified = true;
-      break;
-    }
-    lastPosition = position;
-
-    // Another page is needed, and from here on the pages have to be provably
-    // one list. Without a query state they cannot be: a deletion between two
-    // requests slides an unseen card past the cursor, and the `changes`
-    // catch-up will never name it because nothing modified it. A single-page
-    // account is not exposed to this — its query and get share one request —
-    // which is why this is checked on continuing rather than up front.
-    if (queryState === null) unverified = true;
+        useWebSocket,
+      });
+      const query = pickResponse(result, 'ContactCard/query');
+      // No answer is not an empty account. `pickResponse` returns null for a
+      // method-level error too, and reading that as "the server has no cards"
+      // would hand an empty result to the sweep, which would then delete the
+      // entire address book over one failed round trip.
+      if (!query || !Array.isArray(query.ids)) {
+        throw new Error('ContactCard/query did not answer with a list of ids');
+      }
+      const got = pickResponse(result, 'ContactCard/get');
+      if (query.ids.length > 0 && (!got || !Array.isArray(got.list))) {
+        throw new Error('ContactCard/get did not answer for a page that had ids');
+      }
+      const pageTotal = Number(query.total);
+      return {
+        ids: query.ids,
+        queryState: typeof query.queryState === 'string' ? query.queryState : null,
+        total:
+          query.total != null && Number.isFinite(pageTotal)
+            ? pageTotal
+            : null,
+        position: Number.isFinite(query.position) ? Number(query.position) : null,
+        limit: Number.isFinite(query.limit) ? Number(query.limit) : null,
+        value: got,
+      };
+    },
+    visitPage: async ({ ids, value: got }) => {
+      // The first object state closes the paging window with a changes pass.
+      if (state === null && got?.state) state = got.state;
+      const cards = got?.list ?? [];
+      withheld += Math.max(0, ids.length - cards.length);
+      if (cards.length > 0) {
+        const persisted = await persistContactCards({ account, cards, handlers, generation });
+        skipped += persisted.skipped;
+        fetched += cards.length;
+      }
+    },
+  });
+  if (paging.complete === false && paging.reason === 'queryStateChanged') {
+    return {
+      restart: true,
+      result: { fetched, total: paging.total ?? fetched, state, swept: 0 },
+    };
   }
+  const { position, total } = paging;
+  const unverified = paging.complete === false || !paging.stableQueryState;
 
   // Exhausted the pages without reaching the count the server reported.
   // Something is inconsistent, and the sweep is the one step that cannot be
@@ -3561,11 +3500,40 @@ async function resolveDefaultBook({ transport, account, useWebSocket = false }):
   return pickResponse(created, 'AddressBook/set')?.created?.tb?.id ?? null;
 }
 
-async function findContactCardsForEmails({
-  transport, account, emails, useWebSocket,
-}): Promise<any[]> {
-  const wanted = new Set(emails.map(addressKey).filter(Boolean));
-  if (wanted.size === 0) return [];
+function duplicateCheckPagingError(reason: CompleteQueryFailureReason): Error {
+  switch (reason) {
+    case 'queryStateChanged':
+    case 'queryTotalChanged':
+      return new Error('ContactCard/query changed during the duplicate check');
+    case 'queryStateMissing':
+      return new Error('ContactCard/query did not provide stable paging state');
+    case 'cursorStalled':
+    case 'positionPastTotal':
+    case 'truncated':
+    case 'pageLimitReached':
+      return new Error('ContactCard/query did not complete the duplicate check');
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
+
+async function visitContactCardsForEmails({
+  transport,
+  account,
+  emails,
+  properties,
+  useWebSocket,
+  visitCard,
+}: {
+  transport: any;
+  account: any;
+  emails: string[];
+  properties?: string[];
+  useWebSocket?: boolean;
+  visitCard: (card: any) => void;
+}): Promise<void> {
   const queryEmails = [...new Set(emails.flatMap((email) => {
     const key = addressKey(email);
     return key && key !== email ? [email, key] : [email];
@@ -3574,72 +3542,87 @@ async function findContactCardsForEmails({
     ? { email: queryEmails[0] }
     : { operator: 'OR', conditions: queryEmails.map((email) => ({ email })) };
   const cap = maxObjectsInGet(transport);
-  const matched = new Map<string, any>();
-  let queryState: string | null = null;
-  for (let position = 0; ;) {
-    const found = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-      methodCalls: [[
-        'ContactCard/query',
-        {
-          accountId: account.remote_account_id,
-          filter,
-          position,
-          limit: cap,
-          calculateTotal: true,
-        },
-        'cq',
-      ]],
-      useWebSocket,
-    });
-    const query = pickResponse(found, 'ContactCard/query');
-    if (!query || !Array.isArray(query.ids)) {
-      throw new Error('ContactCard/query did not answer the duplicate check');
-    }
-    if (queryState == null) queryState = query.queryState ?? null;
-    else if (!query.queryState || query.queryState !== queryState) {
-      throw new Error('ContactCard/query changed during the duplicate check');
-    }
-    const ids = query?.ids ?? [];
-    for (let index = 0; index < ids.length; index += cap) {
-      const got = await callJmap(transport, {
+  const paging = await pageCompleteQuery({
+    pageSize: cap,
+    readPage: async ({ position, limit }) => {
+      const found = await callJmap(transport, {
         using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
         methodCalls: [[
-          'ContactCard/get',
-          { accountId: account.remote_account_id, ids: ids.slice(index, index + cap) },
-          'cg',
+          'ContactCard/query',
+          {
+            accountId: account.remote_account_id,
+            filter,
+            position,
+            limit,
+            calculateTotal: true,
+          },
+          'cq',
         ]],
         useWebSocket,
       });
-      const answer = pickResponse(got, 'ContactCard/get');
-      if (!answer || !Array.isArray(answer.list)) {
-        throw new Error('ContactCard/get did not answer the duplicate check');
+      const query = pickResponse(found, 'ContactCard/query');
+      if (!query || !Array.isArray(query.ids)) {
+        throw new Error('ContactCard/query did not answer the duplicate check');
       }
-      const requested = ids.slice(index, index + cap);
-      const returned = new Set(answer.list.map((card) => card.id));
-      if (requested.some((id) => !returned.has(id))) {
-        throw new Error('ContactCard/get omitted a duplicate-check card');
-      }
-      for (const card of answer.list) {
-        if (normalizeEmails(card.emails).some((email) => wanted.has(addressKey(email.email)))) {
-          matched.set(card.id, card);
+      const total = Number(query.total);
+      return {
+        ids: query.ids,
+        queryState: typeof query.queryState === 'string' ? query.queryState : null,
+        total: Number.isFinite(total) ? total : null,
+        limit: query.limit,
+        value: null,
+      };
+    },
+    visitPage: async ({ ids }) => {
+      for (let index = 0; index < ids.length; index += cap) {
+        const requested = ids.slice(index, index + cap);
+        const got = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
+          methodCalls: [[
+            'ContactCard/get',
+            {
+              accountId: account.remote_account_id,
+              ids: requested,
+              ...(properties ? { properties } : {}),
+            },
+            'cg',
+          ]],
+          useWebSocket,
+        });
+        const answer = pickResponse(got, 'ContactCard/get');
+        if (!answer || !Array.isArray(answer.list)) {
+          throw new Error('ContactCard/get did not answer the duplicate check');
         }
+        const returned = new Set(answer.list.map((card) => card.id));
+        if (requested.some((id) => !returned.has(id))) {
+          throw new Error('ContactCard/get omitted a duplicate-check card');
+        }
+        for (const card of answer.list) visitCard(card);
       }
-    }
-    position += ids.length;
-    const total = Number(query?.total);
-    const served = Math.min(
-      cap,
-      Number.isFinite(Number(query?.limit)) && query?.limit != null
-        ? Number(query.limit)
-        : cap,
-    );
-    if (ids.length === 0 || ids.length < served
-      || (Number.isFinite(total) && position >= total)) break;
-    if (!queryState) {
-      throw new Error('ContactCard/query did not provide stable paging state');
-    }
+    },
+  });
+  if (paging.complete === false) {
+    throw duplicateCheckPagingError(paging.reason);
   }
+}
+
+async function findContactCardsForEmails({
+  transport, account, emails, useWebSocket,
+}): Promise<any[]> {
+  const wanted = new Set(emails.map(addressKey).filter(Boolean));
+  if (wanted.size === 0) return [];
+  const matched = new Map<string, any>();
+  await visitContactCardsForEmails({
+    transport,
+    account,
+    emails,
+    useWebSocket,
+    visitCard: (card) => {
+      if (normalizeEmails(card.emails).some((email) => wanted.has(addressKey(email.email)))) {
+        matched.set(card.id, card);
+      }
+    },
+  });
   return [...matched.values()];
 }
 
@@ -3657,93 +3640,26 @@ async function existingCardEmails({
   const cardIds = new Set<string>();
   if (!emails || emails.length === 0) return { keys: present, cardIds };
   const wanted = new Set(emails.map(addressKey).filter(Boolean));
-  const queryEmails = [...new Set(emails.flatMap((email) => {
-    const key = addressKey(email);
-    return key && key !== email ? [email, key] : [email];
-  }))];
-  const filter = queryEmails.length === 1
-    ? { email: queryEmails[0] }
-    : { operator: 'OR', conditions: queryEmails.map((email) => ({ email })) };
-  const cap = maxObjectsInGet(transport);
-  let queryState: string | null = null;
-  for (let position = 0; ;) {
-    const found = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-      methodCalls: [[
-        'ContactCard/query',
-        {
-          accountId: account.remote_account_id,
-          filter,
-          position,
-          limit: cap,
-          calculateTotal: true,
-        },
-        'cq',
-      ]],
-      useWebSocket,
-    });
-    const query = pickResponse(found, 'ContactCard/query');
-    if (!query || !Array.isArray(query.ids)) {
-      throw new Error('ContactCard/query did not answer the duplicate check');
-    }
-    if (queryState == null) queryState = query.queryState ?? null;
-    else if (!query.queryState || query.queryState !== queryState) {
-      throw new Error('ContactCard/query changed during the duplicate check');
-    }
-    const ids = query?.ids ?? [];
-    for (let index = 0; index < ids.length; index += cap) {
-      const got = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.CONTACTS],
-        methodCalls: [[
-          'ContactCard/get',
-          {
-            accountId: account.remote_account_id,
-            ids: ids.slice(index, index + cap),
-            properties: ['emails'],
-          },
-          'cg',
-        ]],
-        useWebSocket,
-      });
-      const answer = pickResponse(got, 'ContactCard/get');
-      if (!answer || !Array.isArray(answer.list)) {
-        throw new Error('ContactCard/get did not answer the duplicate check');
-      }
-      const requested = ids.slice(index, index + cap);
-      const returned = new Set(answer.list.map((card) => card.id));
-      if (requested.some((id) => !returned.has(id))) {
-        throw new Error('ContactCard/get omitted a duplicate-check card');
-      }
-      for (const card of answer.list) {
-        const map = card?.emails;
-        if (!map || typeof map !== 'object') continue;
-        let matched = false;
-        for (const entry of Object.values(map) as any[]) {
-          const key = addressKey(entry?.address);
-          if (key && wanted.has(key)) {
-            present.add(key);
-            matched = true;
-          }
+  await visitContactCardsForEmails({
+    transport,
+    account,
+    emails,
+    properties: ['emails'],
+    useWebSocket,
+    visitCard: (card) => {
+      const map = card?.emails;
+      if (!map || typeof map !== 'object') return;
+      let matched = false;
+      for (const entry of Object.values(map) as any[]) {
+        const key = addressKey(entry?.address);
+        if (key && wanted.has(key)) {
+          present.add(key);
+          matched = true;
         }
-        if (matched && typeof card.id === 'string') cardIds.add(card.id);
       }
-    }
-    position += ids.length;
-    const total = Number(query?.total);
-    // A short page is judged against the limit the server enforced (RFC
-    // 8620 §5.5 echoes it), not the one requested — the same rule
-    // pageAllContacts applies, so a server clamping below our cap is not
-    // read as an account that ran out of matches.
-    const echoed = Number.isFinite(Number(query?.limit)) && query?.limit != null
-      ? Number(query.limit)
-      : cap;
-    const served = Math.min(cap, echoed);
-    if (ids.length === 0 || ids.length < served
-      || (Number.isFinite(total) && position >= total)) break;
-    if (!queryState) {
-      throw new Error('ContactCard/query did not provide stable paging state');
-    }
-  }
+      if (matched && typeof card.id === 'string') cardIds.add(card.id);
+    },
+  });
   return { keys: present, cardIds };
 }
 

@@ -5,6 +5,10 @@
 import type { JmapFileNode } from '../../../types/jmap';
 import { callJmap, pickResponse, pickResponseById } from './invoke';
 import {
+  pageCompleteQuery,
+  type CompleteQueryFailureReason,
+} from './query-paging';
+import {
   classifyAuthenticationOrAuthorizationError,
   JMAP_CAPS,
 } from './transport';
@@ -101,6 +105,36 @@ export type FileNodeCollectionRead =
 export type FileNodeFolderRead =
   | { ok: true; state: string; node: JmapFileNode }
   | { ok: false; error: FileNodeDocumentError };
+
+class FileNodeCollectionFailure extends Error {
+  constructor(readonly documentError: FileNodeDocumentError) {
+    super(documentError.message ?? documentError.type);
+  }
+}
+
+function fileNodePagingError(reason: CompleteQueryFailureReason): FileNodeDocumentError {
+  switch (reason) {
+    case 'pageLimitReached':
+      return {
+        type: 'tooManyChanges',
+        message: 'FileNode collection pagination did not converge',
+      };
+    case 'queryStateChanged':
+    case 'queryStateMissing':
+    case 'queryTotalChanged':
+    case 'cursorStalled':
+    case 'positionPastTotal':
+    case 'truncated':
+      return {
+        type: 'stateMismatch',
+        message: 'FileNode collection changed during discovery',
+      };
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+}
 
 interface FileNodeAccount {
   remote_account_id: string;
@@ -694,111 +728,110 @@ export async function discoverJsonFileNodes({
   const nodes: JmapFileNode[] = [];
   const ids = new Set<string>();
   const names = new Set<string>();
-  let position = 0;
   let state = '';
-  let queryState = '';
-  for (let page = 0; page < 10_000; page += 1) {
-    const callId = `file-node-collection-${page}`;
-    let result;
-    try {
-      result = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE],
-        methodCalls: [
-          ['FileNode/query', {
-            accountId: account.remote_account_id,
-            filter: { nameMatch },
-            position,
-            limit,
-            calculateTotal: true,
-          }, `q-${callId}`],
-          ['FileNode/get', {
-            accountId: account.remote_account_id,
-            '#ids': {
-              resultOf: `q-${callId}`,
-              name: 'FileNode/query',
-              path: '/ids',
-            },
-            properties: FILE_NODE_PROPERTIES,
-          }, `g-${callId}`],
-        ],
-        useWebSocket,
-      });
-    } catch (error) {
-      return { ok: false, error: transportError(error) };
-    }
-    const queryFailure = methodError(result, `q-${callId}`);
-    if (queryFailure) return { ok: false, error: typedError(queryFailure, 'serverFail') };
-    const getFailure = methodError(result, `g-${callId}`);
-    if (getFailure) return { ok: false, error: typedError(getFailure, 'serverFail') };
-    const query = pickResponseById(result, 'FileNode/query', `q-${callId}`);
-    const get = pickResponseById(result, 'FileNode/get', `g-${callId}`);
-    if (
-      !query
-      || !Array.isArray(query.ids)
-      || !get
-      || !Array.isArray(get.list)
-      || !Array.isArray(get.notFound)
-      || typeof get.state !== 'string'
-    ) {
-      return {
-        ok: false,
-        error: { type: 'serverFail', message: 'FileNode collection query was malformed' },
-      };
-    }
-    if (
-      (queryState && query.queryState !== queryState)
-      || (state && get.state !== state)
-    ) {
-      return { ok: false, error: { type: 'stateMismatch' } };
-    }
-    queryState = query.queryState;
-    state = get.state;
-    const selectedIds = new Set(query.ids);
-    if (
-      get.notFound.length > 0
-      || get.list.some((node: any) => !selectedIds.has(node?.id))
-      || get.list.length !== selectedIds.size
-      || query.ids.some((id: unknown) => typeof id !== 'string' || !id || ids.has(id))
-    ) {
-      return {
-        ok: false,
-        error: { type: 'stateMismatch', message: 'FileNode collection changed during discovery' },
-      };
-    }
-    for (const id of query.ids) ids.add(id);
-    for (const candidate of get.list) {
-      const name = typeof candidate?.name === 'string' ? candidate.name : '';
-      if ((candidate?.parentId ?? null) !== parentId || !acceptName(name)) continue;
-      if (names.has(name)) {
+  try {
+    const paging = await pageCompleteQuery({
+      pageSize: limit,
+      maxPages: 10_000,
+      readPage: async ({ page, position, limit: pageLimit }) => {
+        const callId = `file-node-collection-${page}`;
+        const result = await callJmap(transport, {
+          using: [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE],
+          methodCalls: [
+            ['FileNode/query', {
+              accountId: account.remote_account_id,
+              filter: { nameMatch },
+              position,
+              limit: pageLimit,
+              calculateTotal: true,
+            }, `q-${callId}`],
+            ['FileNode/get', {
+              accountId: account.remote_account_id,
+              '#ids': {
+                resultOf: `q-${callId}`,
+                name: 'FileNode/query',
+                path: '/ids',
+              },
+              properties: FILE_NODE_PROPERTIES,
+            }, `g-${callId}`],
+          ],
+          useWebSocket,
+        });
+        const queryFailure = methodError(result, `q-${callId}`);
+        if (queryFailure) {
+          throw new FileNodeCollectionFailure(typedError(queryFailure, 'serverFail'));
+        }
+        const getFailure = methodError(result, `g-${callId}`);
+        if (getFailure) {
+          throw new FileNodeCollectionFailure(typedError(getFailure, 'serverFail'));
+        }
+        const query = pickResponseById(result, 'FileNode/query', `q-${callId}`);
+        const get = pickResponseById(result, 'FileNode/get', `g-${callId}`);
+        if (
+          !query
+          || !Array.isArray(query.ids)
+          || !get
+          || !Array.isArray(get.list)
+          || !Array.isArray(get.notFound)
+          || typeof get.state !== 'string'
+        ) {
+          throw new FileNodeCollectionFailure({
+            type: 'serverFail',
+            message: 'FileNode collection query was malformed',
+          });
+        }
+        const pageTotal = Number(query.total);
         return {
-          ok: false,
-          error: {
-            type: 'alreadyExists',
-            message: `Multiple FileNodes are named ${name} under the same parent`,
-            terminal: true,
-          },
+          ids: query.ids,
+          queryState: typeof query.queryState === 'string' ? query.queryState : null,
+          total: Number.isSafeInteger(pageTotal) && pageTotal >= 0 ? pageTotal : null,
+          limit: query.limit,
+          value: get,
         };
-      }
-      names.add(name);
-      nodes.push(candidate as JmapFileNode);
+      },
+      visitPage: ({ ids: pageIds, value: get }) => {
+        if (state && get.state !== state) {
+          throw new FileNodeCollectionFailure({ type: 'stateMismatch' });
+        }
+        state = get.state;
+        const selectedIds = new Set(pageIds);
+        if (
+          get.notFound.length > 0
+          || get.list.some((node: any) => !selectedIds.has(node?.id))
+          || get.list.length !== selectedIds.size
+          || pageIds.some((id) => typeof id !== 'string' || !id || ids.has(id))
+        ) {
+          throw new FileNodeCollectionFailure({
+            type: 'stateMismatch',
+            message: 'FileNode collection changed during discovery',
+          });
+        }
+        for (const id of pageIds as string[]) ids.add(id);
+        for (const candidate of get.list) {
+          const name = typeof candidate?.name === 'string' ? candidate.name : '';
+          if ((candidate?.parentId ?? null) !== parentId || !acceptName(name)) continue;
+          if (names.has(name)) {
+            throw new FileNodeCollectionFailure({
+              type: 'alreadyExists',
+              message: `Multiple FileNodes are named ${name} under the same parent`,
+              terminal: true,
+            });
+          }
+          names.add(name);
+          nodes.push(candidate as JmapFileNode);
+        }
+      },
+    });
+    if (paging.complete === false) {
+      return { ok: false, error: fileNodePagingError(paging.reason) };
     }
-    position += query.ids.length;
-    const total = Number(query.total);
-    const hasTotal = Number.isSafeInteger(total) && total >= 0;
-    if (
-      query.ids.length === 0
-      || (hasTotal ? position >= total : query.ids.length < limit)
-    ) {
-      return { ok: true, state, nodes };
+    return { ok: true, state, nodes };
+  } catch (error) {
+    if (error instanceof FileNodeCollectionFailure) {
+      return { ok: false, error: error.documentError };
     }
+    return { ok: false, error: transportError(error) };
   }
-  return {
-    ok: false,
-    error: {
-      type: 'tooManyChanges',
-      message: 'FileNode collection pagination did not converge',
-    },
-  };
 }
 
 export async function readJsonFileNodeFromNode<T>({

@@ -18,6 +18,8 @@ import { MUTATION_TYPE } from '../../../constants/states';
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
 import { callJmap, pickResponse, requireResponse } from './invoke';
+import { maxObjectsInGet } from './limits';
+import { pageCompleteQuery } from './query-paging';
 import { JMAP_CAPS } from './transport';
 
 const CREATION_ID = 'stormbox-scheduled';
@@ -81,35 +83,69 @@ interface DiscoveredMailbox {
 async function discoverByName(
   { transport, account, useWebSocket }: ScheduledMailboxArgs,
 ): Promise<DiscoveredMailbox | null> {
-  const payload = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [
-      [
-        'Mailbox/query',
-        {
-          accountId: account.remote_account_id,
-          filter: { name: SCHEDULED_MAILBOX_NAME },
-        },
-        'sm-query',
-      ],
-      [
-        'Mailbox/get',
-        {
-          accountId: account.remote_account_id,
-          '#ids': { resultOf: 'sm-query', name: 'Mailbox/query', path: '/ids' },
-          properties: ['id', 'name', 'parentId', 'role', 'isSubscribed'],
-        },
-        'sm-get',
-      ],
-    ],
-    useWebSocket,
+  const candidates: any[] = [];
+  const paging = await pageCompleteQuery({
+    pageSize: maxObjectsInGet(transport),
+    readPage: async ({ page, position, limit }) => {
+      const queryCallId = `sm-query-${page}`;
+      const getCallId = `sm-get-${page}`;
+      const payload = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [
+          [
+            'Mailbox/query',
+            {
+              accountId: account.remote_account_id,
+              filter: { name: SCHEDULED_MAILBOX_NAME },
+              position,
+              limit,
+              calculateTotal: true,
+            },
+            queryCallId,
+          ],
+          [
+            'Mailbox/get',
+            {
+              accountId: account.remote_account_id,
+              '#ids': { resultOf: queryCallId, name: 'Mailbox/query', path: '/ids' },
+              properties: ['id', 'name', 'parentId', 'role', 'isSubscribed'],
+            },
+            getCallId,
+          ],
+        ],
+        useWebSocket,
+      });
+      const query = requireResponse(payload, 'Mailbox/query');
+      const got = requireResponse(payload, 'Mailbox/get');
+      if (!Array.isArray(query.ids) || !Array.isArray(got.list)) {
+        throw new Error('Scheduled mailbox discovery returned a malformed page');
+      }
+      const returned = new Set(got.list.map((mailbox: any) => mailbox?.id));
+      if (query.ids.some((id: unknown) => !returned.has(id))) {
+        throw new Error('Scheduled mailbox discovery omitted a queried mailbox');
+      }
+      return {
+        ids: query.ids,
+        queryState: typeof query.queryState === 'string' ? query.queryState : null,
+        total:
+          typeof query.total === 'number' && Number.isSafeInteger(query.total)
+            ? query.total
+            : null,
+        limit: query.limit,
+        value: got.list,
+      };
+    },
+    visitPage: ({ value: list }) => {
+      candidates.push(...list.filter(
+        (mailbox: any) => mailbox?.name === SCHEDULED_MAILBOX_NAME,
+      ));
+    },
   });
-  requireResponse(payload, 'Mailbox/query');
-  const got = requireResponse(payload, 'Mailbox/get');
+  if (paging.complete === false) {
+    throw new Error(`Scheduled mailbox discovery did not complete (${paging.reason})`);
+  }
   // The name filter can legitimately match nested folders the user made;
   // only the exact top-level shape is ours to manage.
-  const candidates = (Array.isArray(got.list) ? got.list : [])
-    .filter((m: any) => m?.name === SCHEDULED_MAILBOX_NAME);
   const match = candidates.find(matchesScheduledMailboxShape);
   if (match?.id) {
     return {

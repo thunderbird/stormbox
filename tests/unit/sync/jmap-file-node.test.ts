@@ -121,6 +121,43 @@ describe('JMAP FileNode JSON transport', () => {
       request.methodCalls[0][1].limit === 2)).toBe(true);
   });
 
+  it('rejects collection pages from different query states', async () => {
+    const nodes = [
+      ownedNode({ id: 'node-1', name: 'document-1.json' }),
+      ownedNode({ id: 'node-2', name: 'document-2.json' }),
+    ];
+    const transport = new MockTransport({
+      ...session(),
+      capabilities: {
+        [JMAP_CAPS.CORE]: { maxObjectsInGet: 1 },
+        [JMAP_CAPS.FILENODE]: {},
+      },
+    }) as any;
+    transport.handle('FileNode/query', ({ position }) => ({
+      queryState: `query-${position}`,
+      ids: [nodes[position].id],
+      total: nodes.length,
+    }));
+    transport.handle('FileNode/get', ({ ids }) => ({
+      state: 'state-1',
+      list: nodes.filter((node) => ids.includes(node.id)),
+      notFound: [],
+    }));
+
+    await expect(discoverJsonFileNodes({
+      transport,
+      account,
+      nameMatch: 'document-*.json',
+      acceptName: () => true,
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        type: 'stateMismatch',
+        message: 'FileNode collection changed during discovery',
+      },
+    });
+  });
+
   it('requires the capability on the specific account', async () => {
     const transport = new MockTransport(session(null)) as any;
     expect(hasFileNodeCapability(transport, account)).toBe(false);
