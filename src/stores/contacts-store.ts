@@ -49,6 +49,7 @@ import type {
   CreateAddressBookMutationRequest,
   CreateContactMutationRequest,
   CreateIdentityMutationRequest,
+  DeleteIdentityMutationRequest,
   DestroyAddressBookMutationRequest,
   IdentityAddress,
   IdentityMutableFields,
@@ -474,6 +475,100 @@ function createAddressBookOperationId(): string {
   return `addressbook-${randomToken()}`;
 }
 
+/**
+ * Failures whose server outcome is unknown or that will pass on retry; the
+ * operation keeps its id so the retry lands on the same at-most-once write.
+ */
+const ADDRESSBOOK_STICKY_ERRORS: ReadonlySet<AddressBookError> = new Set([
+  ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE,
+  ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+  ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+]);
+
+const IDENTITY_STICKY_ERRORS: ReadonlySet<IdentityError> = new Set([
+  IDENTITY_ERROR.AMBIGUOUS_CREATE,
+  IDENTITY_ERROR.CACHE_REPAIR_FAILED,
+  IDENTITY_ERROR.SERVER_UNAVAILABLE,
+]);
+
+type MutationFailure<E extends string> = { ok: false; error: E };
+
+/** Operation ids held per operation key for one mutation family. */
+interface OperationTracker<E extends string> {
+  /** The id the key already holds, else `supplied` or a fresh one. */
+  claim(key: string, supplied: string | undefined): string;
+  /** Hands the key to a fresh id for a continuation. */
+  replace(key: string): string;
+  /**
+   * Releases the key once the operation that owns it settles without a
+   * sticky error; a stale finish from a superseded operation is a no-op.
+   */
+  finish(key: string, operationId: string, errorCode: E | null): void;
+  clear(): void;
+}
+
+function createOperationTracker<E extends string>(
+  createOperationId: () => string,
+  stickyErrors: ReadonlySet<E>,
+): OperationTracker<E> {
+  const operationIds = new Map<string, string>();
+  return {
+    claim(key, supplied) {
+      const existing = operationIds.get(key);
+      if (existing) return existing;
+      const operationId = supplied ?? createOperationId();
+      operationIds.set(key, operationId);
+      return operationId;
+    },
+    replace(key) {
+      const operationId = createOperationId();
+      operationIds.set(key, operationId);
+      return operationId;
+    },
+    finish(key, operationId, errorCode) {
+      if (operationIds.get(key) !== operationId) return;
+      if (errorCode != null && stickyErrors.has(errorCode)) return;
+      operationIds.delete(key);
+    },
+    clear() {
+      operationIds.clear();
+    },
+  };
+}
+
+interface MutationFamilyOptions<E extends string> {
+  createOperationId(): string;
+  stickyErrors: ReadonlySet<E>;
+  errorForMutation(errorType?: string): E;
+  errorForThrown(caught: unknown): E;
+  failure(code: E): MutationFailure<E>;
+}
+
+interface TrackedMutationRun<E extends string, TResult extends { ok: boolean }> {
+  operationKey: string;
+  operationId: string;
+  mutationType: MutationType;
+  request: object;
+  /** Brackets the run: busy indicators and optimistic state. */
+  begin?(): void;
+  end?(): void;
+  /**
+   * Turns an acknowledged execution into the run's result. An error code
+   * fails the run; a result stands as-is, including one a continuation
+   * produced under its own operation id.
+   */
+  settle(result: MutationExecution): Promise<TResult | E>;
+  /** Runs before any failure is returned. */
+  onFailure?(): Promise<void>;
+}
+
+interface MutationFamily<E extends string> {
+  operations: OperationTracker<E>;
+  run<TResult extends { ok: boolean }>(
+    spec: TrackedMutationRun<E, TResult>,
+  ): Promise<TResult | MutationFailure<E>>;
+}
+
 export const useContactsStore = defineStore('contacts', () => {
   const authStore = useAuthStore();
   const addressbooks = ref<AddressbookRow[]>([]);
@@ -489,8 +584,21 @@ export const useContactsStore = defineStore('contacts', () => {
   const deletingTrashIds = ref<number[]>([]);
   const deletingIdentityIds = ref<number[]>([]);
   const deletingAddressBookIds = ref<number[]>([]);
-  const identityOperationIds = new Map<string, string>();
-  const addressBookOperationIds = new Map<string, string>();
+  const addressBookMutations = createMutationFamily<AddressBookError>({
+    createOperationId: createAddressBookOperationId,
+    stickyErrors: ADDRESSBOOK_STICKY_ERRORS,
+    errorForMutation: addressBookErrorForMutation,
+    errorForThrown: (caught: any) => addressBookErrorForMutation(caught?.type),
+    failure: addressBookFailure,
+  });
+  const identityMutations = createMutationFamily<IdentityError>({
+    createOperationId: createIdentityOperationId,
+    stickyErrors: IDENTITY_STICKY_ERRORS,
+    errorForMutation: identityErrorForMutation,
+    // Anything thrown while an identity write runs reads as an outage.
+    errorForThrown: () => IDENTITY_ERROR.SERVER_UNAVAILABLE,
+    failure: identityFailure,
+  });
   const addressBookOperations = new Map<string, Promise<unknown>>();
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
@@ -546,8 +654,8 @@ export const useContactsStore = defineStore('contacts', () => {
     deletingTrashIds.value = [];
     deletingIdentityIds.value = [];
     deletingAddressBookIds.value = [];
-    identityOperationIds.clear();
-    addressBookOperationIds.clear();
+    identityMutations.operations.clear();
+    addressBookMutations.operations.clear();
     addressBookOperations.clear();
   }
 
@@ -781,6 +889,52 @@ export const useContactsStore = defineStore('contacts', () => {
         ? { storedRequestJson: inserted.storedRequestJson }
         : {}),
     };
+  }
+
+  /**
+   * One at-most-once mutation family (address books, identities): its
+   * operation ids plus the runner every create/update/delete goes through,
+   * so tracking, error mapping, and cleanup are shared.
+   */
+  function createMutationFamily<E extends string>(
+    options: MutationFamilyOptions<E>,
+  ): MutationFamily<E> {
+    const operations = createOperationTracker(
+      options.createOperationId,
+      options.stickyErrors,
+    );
+
+    async function run<TResult extends { ok: boolean }>(
+      spec: TrackedMutationRun<E, TResult>,
+    ): Promise<TResult | MutationFailure<E>> {
+      const fail = async (code: E): Promise<MutationFailure<E>> => {
+        operations.finish(spec.operationKey, spec.operationId, code);
+        await spec.onFailure?.();
+        return options.failure(code);
+      };
+      spec.begin?.();
+      try {
+        const result = await queueAndRunResult({
+          accountId: authStore.accountId!,
+          mutationType: spec.mutationType,
+          targetMessageId: null,
+          requestJson: JSON.stringify(spec.request),
+        });
+        if (!result.ok) return await fail(options.errorForMutation(result.errorType));
+        const outcome = await spec.settle(result);
+        if (typeof outcome === 'string') return await fail(outcome);
+        // A continuation takes the key over under its own id before it
+        // runs, so this only releases a key the run itself still holds.
+        operations.finish(spec.operationKey, spec.operationId, null);
+        return outcome;
+      } catch (caught) {
+        return await fail(options.errorForThrown(caught));
+      } finally {
+        spec.end?.();
+      }
+    }
+
+    return { operations, run };
   }
 
   /**
@@ -1294,32 +1448,6 @@ export const useContactsStore = defineStore('contacts', () => {
     return { ok: false, error: code };
   }
 
-  function operationIdForAddressBook(
-    key: string,
-    supplied: string | undefined,
-  ): string {
-    const existing = addressBookOperationIds.get(key);
-    if (existing) return existing;
-    const operationId = supplied ?? createAddressBookOperationId();
-    addressBookOperationIds.set(key, operationId);
-    return operationId;
-  }
-
-  function finishAddressBookOperation(
-    key: string,
-    operationId: string,
-    errorCode: AddressBookError | null,
-  ): void {
-    if (
-      errorCode !== ADDRESSBOOK_ERROR.AMBIGUOUS_CREATE
-      && errorCode !== ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED
-      && errorCode !== ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE
-      && addressBookOperationIds.get(key) === operationId
-    ) {
-      addressBookOperationIds.delete(key);
-    }
-  }
-
   function runAddressBookOperation<T>(
     key: string,
     action: () => Promise<T>,
@@ -1364,44 +1492,24 @@ export const useContactsStore = defineStore('contacts', () => {
     addressbook: AddressbookRow,
     fields: AddressBookMutableFields,
   ): Promise<AddressBookSaveResult> {
-    const operationId = createAddressBookOperationId();
-    addressBookOperationIds.set(operationKey, operationId);
+    const operationId = addressBookMutations.operations.replace(operationKey);
     const request: UpdateAddressBookMutationRequest = {
       operationId,
       addressbookId: addressbook.id,
       ...fields,
     };
-    try {
-      const result = await queueAndRunResult({
-        accountId: authStore.accountId!,
-        mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
-        targetMessageId: null,
-        requestJson: JSON.stringify(request),
-      });
-      if (!result.ok) {
-        const code = addressBookErrorForMutation(result.errorType);
-        finishAddressBookOperation(operationKey, operationId, code);
-        return addressBookFailure(code);
-      }
-      const updated = await addressBookFromMutation(
-        result,
-        addressbook.remote_id,
-      );
-      if (!updated) {
-        finishAddressBookOperation(
-          operationKey,
-          operationId,
-          ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
-        );
-        return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
-      }
-      finishAddressBookOperation(operationKey, operationId, null);
-      return { ok: true, addressbook: updated };
-    } catch (caught: any) {
-      const code = addressBookErrorForMutation(caught?.type);
-      finishAddressBookOperation(operationKey, operationId, code);
-      return addressBookFailure(code);
-    }
+    return addressBookMutations.run<AddressBookSaveResult>({
+      operationKey,
+      operationId,
+      mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+      request,
+      settle: async (result) => {
+        const updated = await addressBookFromMutation(result, addressbook.remote_id);
+        return updated
+          ? { ok: true, addressbook: updated }
+          : ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED;
+      },
+    });
   }
 
   function createAddressBook(
@@ -1425,7 +1533,7 @@ export const useContactsStore = defineStore('contacts', () => {
 
     const operationKey = `create:${name.toLocaleLowerCase()}`;
     return runAddressBookOperation(operationKey, async () => {
-      const operationId = operationIdForAddressBook(
+      const operationId = addressBookMutations.operations.claim(
         operationKey,
         typeof input.operationId === 'string' ? input.operationId : undefined,
       );
@@ -1439,46 +1547,28 @@ export const useContactsStore = defineStore('contacts', () => {
         isSubscribed: input.isSubscribed ?? true,
         setAsDefault: input.setAsDefault ?? false,
       };
-      saving.value = true;
-      try {
-        const result = await queueAndRunResult({
-          accountId: authStore.accountId!,
-          mutationType: MUTATION_TYPE.CREATE_ADDRESSBOOK,
-          targetMessageId: null,
-          requestJson: JSON.stringify(request),
-        });
-        if (!result.ok) {
-          const code = addressBookErrorForMutation(result.errorType);
-          finishAddressBookOperation(operationKey, operationId, code);
-          return addressBookFailure(code);
-        }
-        const created = await addressBookFromMutation(result);
-        if (!created) {
-          finishAddressBookOperation(
-            operationKey,
-            operationId,
-            ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
-          );
-          return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
-        }
-        if (result.requestMatches === false) {
-          return applyAddressBookContinuation(operationKey, created, {
-            name: request.name,
-            description: request.description,
-            sortOrder: request.sortOrder,
-            isSubscribed: request.isSubscribed,
-            ...(request.setAsDefault === true ? { setAsDefault: true } : {}),
-          });
-        }
-        finishAddressBookOperation(operationKey, operationId, null);
-        return { ok: true, addressbook: created };
-      } catch (caught: any) {
-        const code = addressBookErrorForMutation(caught?.type);
-        finishAddressBookOperation(operationKey, operationId, code);
-        return addressBookFailure(code);
-      } finally {
-        saving.value = false;
-      }
+      return addressBookMutations.run<AddressBookSaveResult>({
+        operationKey,
+        operationId,
+        mutationType: MUTATION_TYPE.CREATE_ADDRESSBOOK,
+        request,
+        begin: () => { saving.value = true; },
+        end: () => { saving.value = false; },
+        settle: async (result) => {
+          const created = await addressBookFromMutation(result);
+          if (!created) return ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED;
+          if (result.requestMatches === false) {
+            return applyAddressBookContinuation(operationKey, created, {
+              name: request.name,
+              description: request.description,
+              sortOrder: request.sortOrder,
+              isSubscribed: request.isSubscribed,
+              ...(request.setAsDefault === true ? { setAsDefault: true } : {}),
+            });
+          }
+          return { ok: true, addressbook: created };
+        },
+      });
     });
   }
 
@@ -1529,7 +1619,7 @@ export const useContactsStore = defineStore('contacts', () => {
 
     const operationKey = `update:${current.id}`;
     return runAddressBookOperation(operationKey, async () => {
-      const operationId = operationIdForAddressBook(
+      const operationId = addressBookMutations.operations.claim(
         operationKey,
         typeof input.operationId === 'string' ? input.operationId : undefined,
       );
@@ -1538,40 +1628,22 @@ export const useContactsStore = defineStore('contacts', () => {
         addressbookId: current.id,
         ...patch,
       };
-      saving.value = true;
-      try {
-        const result = await queueAndRunResult({
-          accountId: authStore.accountId!,
-          mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
-          targetMessageId: null,
-          requestJson: JSON.stringify(request),
-        });
-        if (!result.ok) {
-          const code = addressBookErrorForMutation(result.errorType);
-          finishAddressBookOperation(operationKey, operationId, code);
-          return addressBookFailure(code);
-        }
-        const updated = await addressBookFromMutation(result, current.remote_id);
-        if (!updated) {
-          finishAddressBookOperation(
-            operationKey,
-            operationId,
-            ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
-          );
-          return addressBookFailure(ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED);
-        }
-        if (result.requestMatches === false) {
-          return applyAddressBookContinuation(operationKey, updated, patch);
-        }
-        finishAddressBookOperation(operationKey, operationId, null);
-        return { ok: true, addressbook: updated };
-      } catch (caught: any) {
-        const code = addressBookErrorForMutation(caught?.type);
-        finishAddressBookOperation(operationKey, operationId, code);
-        return addressBookFailure(code);
-      } finally {
-        saving.value = false;
-      }
+      return addressBookMutations.run<AddressBookSaveResult>({
+        operationKey,
+        operationId,
+        mutationType: MUTATION_TYPE.UPDATE_ADDRESSBOOK,
+        request,
+        begin: () => { saving.value = true; },
+        end: () => { saving.value = false; },
+        settle: async (result) => {
+          const updated = await addressBookFromMutation(result, current.remote_id);
+          if (!updated) return ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED;
+          if (result.requestMatches === false) {
+            return applyAddressBookContinuation(operationKey, updated, patch);
+          }
+          return { ok: true, addressbook: updated };
+        },
+      });
     });
   }
 
@@ -1644,46 +1716,39 @@ export const useContactsStore = defineStore('contacts', () => {
 
     const operationKey = `delete:${current.id}`;
     return runAddressBookOperation(operationKey, async () => {
-      const stableOperationId = operationIdForAddressBook(
+      const operationId = addressBookMutations.operations.claim(
         operationKey,
         typeof input.operationId === 'string' ? input.operationId : undefined,
       );
       const request: DestroyAddressBookMutationRequest = {
-        operationId: stableOperationId,
+        operationId,
         addressbookId: current.id,
         confirmationInventory: input.confirmationInventory,
       };
-      deletingAddressBookIds.value = [
-        ...new Set([...deletingAddressBookIds.value, current.id]),
-      ];
-      try {
-        const result = await queueAndRunResult({
-          accountId: authStore.accountId!,
-          mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
-          targetMessageId: null,
-          requestJson: JSON.stringify(request),
-        });
-        if (!result.ok) {
-          const code = addressBookErrorForMutation(result.errorType);
-          finishAddressBookOperation(operationKey, stableOperationId, code);
-          return addressBookFailure(code);
-        }
-        if (result.addressbooks) {
-          addressbooks.value = result.addressbooks;
-        } else {
-          await refreshAddressbooks();
-        }
-        await refreshContacts();
-        finishAddressBookOperation(operationKey, stableOperationId, null);
-        return { ok: true };
-      } catch (caught: any) {
-        const code = addressBookErrorForMutation(caught?.type);
-        finishAddressBookOperation(operationKey, stableOperationId, code);
-        return addressBookFailure(code);
-      } finally {
-        deletingAddressBookIds.value = deletingAddressBookIds.value
-          .filter((id) => id !== current.id);
-      }
+      return addressBookMutations.run<AddressBookDeleteResult>({
+        operationKey,
+        operationId,
+        mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
+        request,
+        begin: () => {
+          deletingAddressBookIds.value = [
+            ...new Set([...deletingAddressBookIds.value, current.id]),
+          ];
+        },
+        end: () => {
+          deletingAddressBookIds.value = deletingAddressBookIds.value
+            .filter((id) => id !== current.id);
+        },
+        settle: async (result) => {
+          if (result.addressbooks) {
+            addressbooks.value = result.addressbooks;
+          } else {
+            await refreshAddressbooks();
+          }
+          await refreshContacts();
+          return { ok: true };
+        },
+      });
     });
   }
 
@@ -1761,32 +1826,6 @@ export const useContactsStore = defineStore('contacts', () => {
     return { ok: false, error: code };
   }
 
-  function operationIdForIdentity(
-    key: string,
-    supplied: string | undefined,
-  ): string {
-    const existing = identityOperationIds.get(key);
-    if (existing) return existing;
-    const operationId = supplied ?? createIdentityOperationId();
-    identityOperationIds.set(key, operationId);
-    return operationId;
-  }
-
-  function finishIdentityOperation(
-    key: string,
-    operationId: string,
-    errorCode: IdentityError | null,
-  ): void {
-    if (
-      identityOperationIds.get(key) === operationId
-      && errorCode !== IDENTITY_ERROR.CACHE_REPAIR_FAILED
-      && errorCode !== IDENTITY_ERROR.AMBIGUOUS_CREATE
-      && errorCode !== IDENTITY_ERROR.SERVER_UNAVAILABLE
-    ) {
-      identityOperationIds.delete(key);
-    }
-  }
-
   async function identityFromMutation(
     result: MutationExecution,
     remoteId: string | null = null,
@@ -1819,42 +1858,29 @@ export const useContactsStore = defineStore('contacts', () => {
     fields: IdentityMutableFields,
   ): Promise<IdentitySaveResult> {
     if (Object.keys(fields).length === 0) {
-      finishIdentityOperation(
+      identityMutations.operations.finish(
         operationKey,
         operationId,
         IDENTITY_ERROR.INVALID_PATCH,
       );
       return identityFailure(IDENTITY_ERROR.INVALID_PATCH);
     }
-    const nextOperationId = createIdentityOperationId();
-    identityOperationIds.set(operationKey, nextOperationId);
+    const nextOperationId = identityMutations.operations.replace(operationKey);
     const request: UpdateIdentityMutationRequest = {
       operationId: nextOperationId,
       remoteId,
       ...fields,
     };
-    const result = await queueAndRunResult({
-      accountId: authStore.accountId!,
+    return identityMutations.run<IdentitySaveResult>({
+      operationKey,
+      operationId: nextOperationId,
       mutationType: MUTATION_TYPE.UPDATE_IDENTITY,
-      targetMessageId: null,
-      requestJson: JSON.stringify(request),
+      request,
+      settle: async (result) => {
+        const identity = await identityFromMutation(result, remoteId);
+        return identity ? { ok: true, identity } : IDENTITY_ERROR.CACHE_REPAIR_FAILED;
+      },
     });
-    if (!result.ok) {
-      const code = identityErrorForMutation(result.errorType);
-      finishIdentityOperation(operationKey, nextOperationId, code);
-      return identityFailure(code);
-    }
-    const identity = await identityFromMutation(result, remoteId);
-    if (!identity) {
-      finishIdentityOperation(
-        operationKey,
-        nextOperationId,
-        IDENTITY_ERROR.CACHE_REPAIR_FAILED,
-      );
-      return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
-    }
-    finishIdentityOperation(operationKey, nextOperationId, null);
-    return { ok: true, identity };
   }
 
   async function createIdentity(
@@ -1871,66 +1897,40 @@ export const useContactsStore = defineStore('contacts', () => {
       return identityFailure(IDENTITY_ERROR.NOT_CONNECTED);
     }
     const operationKey = `create:${email.toLowerCase()}`;
-    const operationId = operationIdForIdentity(operationKey, input.operationId);
+    const operationId = identityMutations.operations.claim(operationKey, input.operationId);
     const request: CreateIdentityMutationRequest = {
       operationId,
       email,
       ...prepared.fields,
     };
-    saving.value = true;
-    try {
-      const result = await queueAndRunResult({
-        accountId: authStore.accountId,
-        mutationType: MUTATION_TYPE.CREATE_IDENTITY,
-        targetMessageId: null,
-        requestJson: JSON.stringify(request),
-      });
-      if (!result.ok) {
-        const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, operationId, code);
-        return identityFailure(code);
-      }
-      const identity = await identityFromMutation(result);
-      if (!identity) {
-        finishIdentityOperation(
-          operationKey,
-          operationId,
-          IDENTITY_ERROR.CACHE_REPAIR_FAILED,
-        );
-        return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
-      }
-      if (result.requestMatches === false) {
-        const stored = storedIdentityRequest(result);
-        if (
-          typeof stored?.email !== 'string'
-          || stored.email.toLowerCase() !== email.toLowerCase()
-        ) {
-          finishIdentityOperation(
+    return identityMutations.run<IdentitySaveResult>({
+      operationKey,
+      operationId,
+      mutationType: MUTATION_TYPE.CREATE_IDENTITY,
+      request,
+      begin: () => { saving.value = true; },
+      end: () => { saving.value = false; },
+      settle: async (result) => {
+        const identity = await identityFromMutation(result);
+        if (!identity) return IDENTITY_ERROR.CACHE_REPAIR_FAILED;
+        if (result.requestMatches === false) {
+          const stored = storedIdentityRequest(result);
+          if (
+            typeof stored?.email !== 'string'
+            || stored.email.toLowerCase() !== email.toLowerCase()
+          ) {
+            return IDENTITY_ERROR.IMMUTABLE_FIELD;
+          }
+          return applyIdentityContinuation(
             operationKey,
             operationId,
-            IDENTITY_ERROR.IMMUTABLE_FIELD,
+            identity.remote_id,
+            prepared.fields,
           );
-          return identityFailure(IDENTITY_ERROR.IMMUTABLE_FIELD);
         }
-        return applyIdentityContinuation(
-          operationKey,
-          operationId,
-          identity.remote_id,
-          prepared.fields,
-        );
-      }
-      finishIdentityOperation(operationKey, operationId, null);
-      return { ok: true, identity };
-    } catch {
-      finishIdentityOperation(
-        operationKey,
-        operationId,
-        IDENTITY_ERROR.SERVER_UNAVAILABLE,
-      );
-      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
-    } finally {
-      saving.value = false;
-    }
+        return { ok: true, identity };
+      },
+    });
   }
 
   async function updateIdentity(
@@ -1958,54 +1958,33 @@ export const useContactsStore = defineStore('contacts', () => {
         : identityFailure(IDENTITY_ERROR.MISSING);
     }
     const operationKey = `update:${input.remoteId}`;
-    const operationId = operationIdForIdentity(operationKey, input.operationId);
+    const operationId = identityMutations.operations.claim(operationKey, input.operationId);
     const request: UpdateIdentityMutationRequest = {
       operationId,
       remoteId: input.remoteId,
       ...prepared.fields,
     };
-    saving.value = true;
-    try {
-      const result = await queueAndRunResult({
-        accountId: authStore.accountId,
-        mutationType: MUTATION_TYPE.UPDATE_IDENTITY,
-        targetMessageId: null,
-        requestJson: JSON.stringify(request),
-      });
-      if (!result.ok) {
-        const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, operationId, code);
-        return identityFailure(code);
-      }
-      const identity = await identityFromMutation(result, input.remoteId);
-      if (!identity) {
-        finishIdentityOperation(
-          operationKey,
-          operationId,
-          IDENTITY_ERROR.CACHE_REPAIR_FAILED,
-        );
-        return identityFailure(IDENTITY_ERROR.CACHE_REPAIR_FAILED);
-      }
-      if (result.requestMatches === false) {
-        return applyIdentityContinuation(
-          operationKey,
-          operationId,
-          input.remoteId,
-          prepared.fields,
-        );
-      }
-      finishIdentityOperation(operationKey, operationId, null);
-      return { ok: true, identity };
-    } catch {
-      finishIdentityOperation(
-        operationKey,
-        operationId,
-        IDENTITY_ERROR.SERVER_UNAVAILABLE,
-      );
-      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
-    } finally {
-      saving.value = false;
-    }
+    return identityMutations.run<IdentitySaveResult>({
+      operationKey,
+      operationId,
+      mutationType: MUTATION_TYPE.UPDATE_IDENTITY,
+      request,
+      begin: () => { saving.value = true; },
+      end: () => { saving.value = false; },
+      settle: async (result) => {
+        const identity = await identityFromMutation(result, input.remoteId);
+        if (!identity) return IDENTITY_ERROR.CACHE_REPAIR_FAILED;
+        if (result.requestMatches === false) {
+          return applyIdentityContinuation(
+            operationKey,
+            operationId,
+            input.remoteId,
+            prepared.fields,
+          );
+        }
+        return { ok: true, identity };
+      },
+    });
   }
 
   async function deleteIdentity(identity: IdentityRow): Promise<IdentityActionResult> {
@@ -2017,40 +1996,28 @@ export const useContactsStore = defineStore('contacts', () => {
       return identityFailure(IDENTITY_ERROR.NOT_CONNECTED);
     }
     const operationKey = `delete:${identity.remote_id}`;
-    const operationId = operationIdForIdentity(operationKey, undefined);
-    deletingIdentityIds.value = [...deletingIdentityIds.value, identity.id];
-    const previous = identities.value;
-    identities.value = previous.filter((entry) => entry.id !== identity.id);
-    try {
-      const result = await queueAndRunResult({
-        accountId: authStore.accountId,
-        mutationType: MUTATION_TYPE.DELETE_IDENTITY,
-        targetMessageId: null,
-        requestJson: JSON.stringify({
-          operationId,
-          remoteId: identity.remote_id,
-        }),
-      });
-      if (!result.ok) {
-        const code = identityErrorForMutation(result.errorType);
-        finishIdentityOperation(operationKey, operationId, code);
-        await refreshIdentities();
-        return identityFailure(code);
-      }
-      finishIdentityOperation(operationKey, operationId, null);
-      return { ok: true };
-    } catch {
-      finishIdentityOperation(
-        operationKey,
-        operationId,
-        IDENTITY_ERROR.SERVER_UNAVAILABLE,
-      );
-      await refreshIdentities();
-      return identityFailure(IDENTITY_ERROR.SERVER_UNAVAILABLE);
-    } finally {
-      deletingIdentityIds.value = deletingIdentityIds.value
-        .filter((id) => id !== identity.id);
-    }
+    const operationId = identityMutations.operations.claim(operationKey, undefined);
+    const request: DeleteIdentityMutationRequest = {
+      operationId,
+      remoteId: identity.remote_id,
+    };
+    return identityMutations.run<IdentityActionResult>({
+      operationKey,
+      operationId,
+      mutationType: MUTATION_TYPE.DELETE_IDENTITY,
+      request,
+      begin: () => {
+        deletingIdentityIds.value = [...deletingIdentityIds.value, identity.id];
+        identities.value = identities.value.filter((entry) => entry.id !== identity.id);
+      },
+      end: () => {
+        deletingIdentityIds.value = deletingIdentityIds.value
+          .filter((id) => id !== identity.id);
+      },
+      settle: async () => ({ ok: true }),
+      // The optimistic removal is undone from the cache on any failure.
+      onFailure: () => refreshIdentities(),
+    });
   }
 
   return {

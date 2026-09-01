@@ -486,6 +486,63 @@ describe('address book capability and actions', () => {
     await store.createAddressBook(input);
     expect(repo.ensureAddressbookMutation).toHaveBeenCalledTimes(2);
   });
+
+  // Pins the operation-id guard for address books: a save that outlives a
+  // reset finishes without releasing the id a newer save on the same key
+  // holds, so the newer save's retry stays on its own operation.
+  it('keeps a newer address-book operation after a reset-orphaned save finishes', async () => {
+    const book = addressbook(1, 1);
+    const renamed = { ...book, name: 'Renamed' };
+    const runResolvers: Array<(result: any) => void> = [];
+    repo.runMutation.mockImplementation(() => new Promise((resolve) => {
+      runResolvers.push(resolve);
+    }));
+    repo.listAddressbooks.mockResolvedValue([renamed]);
+    const store = useContactsStore();
+    store.addressbooks = [book];
+
+    const first = store.updateAddressBook({ addressbookId: book.id, name: 'Renamed' });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(1));
+    store.$reset();
+    store.addressbooks = [book];
+    const second = store.updateAddressBook({ addressbookId: book.id, name: 'Renamed' });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(2));
+    const operationIds = () => repo.ensureAddressbookMutation.mock.calls.map(
+      ([request]) => request.operationId,
+    );
+    expect(operationIds()[1]).not.toBe(operationIds()[0]);
+
+    runResolvers[0]({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { ids: [book.remote_id], addressbooks: [renamed] },
+    });
+    await expect(first).resolves.toEqual({ ok: true, addressbook: renamed });
+
+    runResolvers[1]({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      errorType: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+    });
+    await expect(second).resolves.toEqual({
+      ok: false,
+      error: ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
+    });
+
+    const retry = store.updateAddressBook({ addressbookId: book.id, name: 'Renamed' });
+    await vi.waitFor(() => expect(runResolvers).toHaveLength(3));
+    runResolvers[2]({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { ids: [book.remote_id], addressbooks: [renamed] },
+    });
+    await expect(retry).resolves.toEqual({ ok: true, addressbook: renamed });
+    expect(operationIds()).toHaveLength(3);
+    expect(operationIds()[2]).toBe(operationIds()[1]);
+  });
 });
 
 describe('identity action errors', () => {
