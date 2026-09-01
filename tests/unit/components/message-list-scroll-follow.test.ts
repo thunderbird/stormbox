@@ -5,7 +5,12 @@ import {
 } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { computed, nextTick } from 'vue';
+import {
+  computed,
+  defineComponent,
+  nextTick,
+  ref,
+} from 'vue';
 
 const virtualizerWindow = vi.hoisted(() => ({
   start: 0,
@@ -47,6 +52,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 }));
 
 import MessageList from '../../../src/components/MessageList.vue';
+import { useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
 import { useMailStore } from '../../../src/stores/mail-store';
 
 function makeFolder(id, overrides = {}) {
@@ -83,13 +89,42 @@ function makeRow(id, overrides = {}) {
   } as any;
 }
 
-function mountList() {
+function mountList({
+  quickFilterQuery = '',
+  rows = Array.from({ length: 30 }, (_, index) => makeRow(index + 1)),
+} = {}) {
   const mailStore = useMailStore();
   mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
   mailStore.currentFolderId = 1;
-  mailStore.messages = Array.from({ length: 30 }, (_, index) => makeRow(index + 1));
-  mailStore.totalForFolder = 30;
-  return { mailStore, wrapper: mount(MessageList) };
+  mailStore.messages = rows;
+  mailStore.totalForFolder = rows.length;
+  return {
+    mailStore,
+    wrapper: mount(MessageList, { props: { quickFilterQuery } }),
+  };
+}
+
+function mountShortcutBroker() {
+  const Harness = defineComponent({
+    setup() {
+      useThunderbirdShortcuts({
+        enabled: ref(true),
+        space: ref('mail'),
+      });
+      return () => null;
+    },
+  });
+  return mount(Harness);
+}
+
+function fireKey(key: string) {
+  const event = new KeyboardEvent('keydown', {
+    bubbles: true,
+    cancelable: true,
+    key,
+  });
+  document.dispatchEvent(event);
+  return event;
 }
 
 beforeEach(() => {
@@ -104,6 +139,36 @@ afterEach(() => {
 });
 
 describe('MessageList scroll follows the selected message (issue #31)', () => {
+  it('keeps global navigation inside the active quick filter', async () => {
+    const { mailStore, wrapper } = mountList({
+      quickFilterQuery: 'match',
+      rows: [
+        makeRow(1, { is_seen: 0, subject: 'Match one' }),
+        makeRow(2, { is_seen: 0, subject: 'Hidden' }),
+        makeRow(3, { is_seen: 0, subject: 'Match three' }),
+        makeRow(4, { is_seen: 1, subject: 'Match four' }),
+      ],
+    });
+    const shortcuts = mountShortcutBroker();
+    mailStore.selectMessage(1);
+
+    expect(fireKey('n').defaultPrevented).toBe(true);
+    expect(mailStore.selectedMessageId).toBe(3);
+    fireKey('f');
+    expect(mailStore.selectedMessageId).toBe(4);
+    fireKey('b');
+    expect(mailStore.selectedMessageId).toBe(3);
+    fireKey('p');
+    expect(mailStore.selectedMessageId).toBe(1);
+    fireKey('End');
+    expect(mailStore.selectedMessageId).toBe(4);
+    fireKey('Home');
+    expect(mailStore.selectedMessageId).toBe(1);
+
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
   it('scrolls the virtual list to a programmatically selected row', async () => {
     const { mailStore, wrapper } = mountList();
     await nextTick();

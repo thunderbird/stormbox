@@ -12,13 +12,20 @@ vi.mock('../../../src/services/auth', () => ({
   getOidc: () => null,
 }));
 
-import { invokeThunderbirdShortcut, useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
+import {
+  invokeThunderbirdShortcut,
+  registerMessageListCommands,
+  useThunderbirdShortcuts,
+  type MessageListCommands,
+} from '../../../src/composables/useThunderbirdShortcuts';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
 } from '../../../src/composables/useRepository';
+
+const mountedWrappers: Array<{ unmount: () => void }> = [];
 
 function makeRepo() {
   return {
@@ -67,9 +74,24 @@ function populatedDraft() {
   };
 }
 
-function mountHarness(options: { focusQuickFilter?: () => void } = {}) {
+let unregisterMessageListCommands: (() => void) | null = null;
+
+function mountHarness(options: {
+  focusQuickFilter?: () => void;
+  messageListCommands?: MessageListCommands | null;
+} = {}) {
   const space = ref('mail');
   const enabled = ref(true);
+  const messageListCommands = options.messageListCommands === undefined
+    ? {
+        navigate: vi.fn(),
+        selectAll: vi.fn(),
+      }
+    : options.messageListCommands;
+  unregisterMessageListCommands?.();
+  unregisterMessageListCommands = messageListCommands
+    ? registerMessageListCommands(messageListCommands)
+    : null;
   const Harness = defineComponent({
     setup() {
       useThunderbirdShortcuts({
@@ -81,7 +103,13 @@ function mountHarness(options: { focusQuickFilter?: () => void } = {}) {
     },
   });
   const wrapper = mount(Harness);
-  return { wrapper, space, enabled };
+  mountedWrappers.push(wrapper);
+  return {
+    wrapper,
+    space,
+    enabled,
+    messageListCommands,
+  };
 }
 
 /** A compose dialog holding a recipient combobox with its list showing. */
@@ -113,6 +141,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const wrapper of mountedWrappers.splice(0)) wrapper.unmount();
+  unregisterMessageListCommands?.();
+  unregisterMessageListCommands = null;
   __resetRepositoryForTests();
 });
 
@@ -151,16 +182,48 @@ describe('useThunderbirdShortcuts', () => {
     expect(destroySpy).toHaveBeenCalledWith([1]);
   });
 
-  it('Ctrl+A selects only loaded rows, not the full folder total', () => {
-    mountHarness();
+  it('delegates Ctrl+A to the registered message list', () => {
+    const { messageListCommands } = mountHarness();
     const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), undefined, makeRow(4)];
     mailStore.totalForFolder = 3000;
 
-    fireKey('a', { ctrlKey: true });
+    const event = fireKey('a', { ctrlKey: true });
 
-    expect(mailStore.selectedIds.size).toBe(3);
-    expect([...mailStore.selectedIds].sort()).toEqual([1, 2, 4]);
+    expect(event.defaultPrevented).toBe(true);
+    expect(messageListCommands?.selectAll).toHaveBeenCalledOnce();
+    expect(mailStore.selectedIds.size).toBe(0);
+  });
+
+  it('stands down for list commands when no message list is registered', () => {
+    mountHarness({ messageListCommands: null });
+
+    const selectAll = fireKey('a', { ctrlKey: true });
+    const navigate = fireKey('f');
+
+    expect(selectAll.defaultPrevented).toBe(false);
+    expect(navigate.defaultPrevented).toBe(false);
+  });
+
+  it('stands down when a prior handler prevented the event', async () => {
+    const { messageListCommands } = mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1)];
+    mailStore.selectedMessageId = 1;
+    const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Delete',
+    });
+    event.preventDefault();
+
+    document.dispatchEvent(event);
+    await Promise.resolve();
+
+    expect(destroySpy).not.toHaveBeenCalled();
+    expect(messageListCommands?.navigate).not.toHaveBeenCalled();
+    expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
   });
 
   it.each(['mail', 'contacts'])('Ctrl+K focuses the shared filter in the %s space', (activeSpace) => {
@@ -207,46 +270,27 @@ describe('useThunderbirdShortcuts', () => {
     expect(focusQuickFilter).not.toHaveBeenCalled();
   });
 
-  it('F and B move the viewed message', () => {
-    mountHarness();
+  it('delegates F and B navigation to the registered message list', () => {
+    const { messageListCommands } = mountHarness();
     const mailStore = useMailStore() as any;
     mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
     mailStore.selectMessage(1);
 
     fireKey('f');
-    expect(mailStore.selectedMessageId).toBe(2);
-
     fireKey('b');
-    expect(mailStore.selectedMessageId).toBe(1);
-  });
 
-  it('F and B move the keyboard cursor in lockstep with the preview', () => {
-    mountHarness();
-    const mailStore = useMailStore() as any;
-    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3)];
-    mailStore.selectMessage(1);
-
-    fireKey('f');
-    expect(mailStore.focusedMessageId).toBe(2);
-    expect(mailStore.selectedMessageId).toBe(2);
-
-    fireKey('b');
+    expect(messageListCommands?.navigate).toHaveBeenNthCalledWith(1, 'next');
+    expect(messageListCommands?.navigate).toHaveBeenNthCalledWith(2, 'previous');
     expect(mailStore.focusedMessageId).toBe(1);
     expect(mailStore.selectedMessageId).toBe(1);
   });
 
-  it('N moves to the next unread message', () => {
-    mountHarness();
-    const mailStore = useMailStore() as any;
-    mailStore.messages = [
-      makeRow(1, { is_seen: 1 }),
-      makeRow(2, { is_seen: 1 }),
-      makeRow(3, { is_seen: 0 }),
-    ];
-    mailStore.selectedMessageId = 1;
+  it('delegates N to next-unread navigation', () => {
+    const { messageListCommands } = mountHarness();
 
     fireKey('n');
-    expect(mailStore.selectedMessageId).toBe(3);
+
+    expect(messageListCommands?.navigate).toHaveBeenCalledWith('nextUnread');
   });
 
   it('plain A archives without selecting all loaded rows', async () => {
@@ -510,32 +554,22 @@ describe('useThunderbirdShortcuts', () => {
     expect(toggleSpy).toHaveBeenCalledWith([1]);
   });
 
-  it('P moves to the previous unread message', () => {
-    mountHarness();
-    const mailStore = useMailStore() as any;
-    mailStore.messages = [
-      makeRow(1, { is_seen: 0 }),
-      makeRow(2, { is_seen: 1 }),
-      makeRow(3, { is_seen: 1 }),
-    ];
-    mailStore.selectedMessageId = 3;
+  it('delegates P to previous-unread navigation', () => {
+    const { messageListCommands } = mountHarness();
 
     fireKey('p');
 
-    expect(mailStore.selectedMessageId).toBe(1);
+    expect(messageListCommands?.navigate).toHaveBeenCalledWith('previousUnread');
   });
 
-  it('Home jumps to the first loaded row, End jumps to the last', () => {
-    mountHarness();
-    const mailStore = useMailStore() as any;
-    mailStore.messages = [makeRow(1), makeRow(2), makeRow(3), makeRow(4)];
-    mailStore.selectedMessageId = 2;
+  it('delegates Home and End to list boundaries', () => {
+    const { messageListCommands } = mountHarness();
 
     fireKey('End');
-    expect(mailStore.selectedMessageId).toBe(4);
-
     fireKey('Home');
-    expect(mailStore.selectedMessageId).toBe(1);
+
+    expect(messageListCommands?.navigate).toHaveBeenNthCalledWith(1, 'last');
+    expect(messageListCommands?.navigate).toHaveBeenNthCalledWith(2, 'first');
   });
 
   it('Shift+Delete permanently destroys the targeted message', async () => {
