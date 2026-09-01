@@ -25,6 +25,7 @@ import {
 } from '@lucide/vue';
 import Squire from 'squire-rte';
 
+import { closeContainingDropdown } from '../utils/dropdown';
 import { shortcutModifierAria, shortcutModifierLabel } from '../utils/keyboard';
 import {
   QUOTED_CONTENT_BOUNDARY_ATTRIBUTE,
@@ -647,18 +648,13 @@ const fontFamilyLabel = computed(() =>
 const fontSizeLabel = computed(() =>
   fontSizeOptions.find((size) => size.value === toolbarState.value.fontSize)?.label ?? 'Size');
 
-function closeDropdown(event: Event) {
-  const details = (event.currentTarget as HTMLElement).closest('details');
-  if (details) details.open = false;
-}
-
 function pickFontFace(value: string, event: Event) {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   applyFontFace(value);
 }
 
 function pickFontSize(value: string, event: Event) {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   applyFontSize(value);
 }
 
@@ -683,7 +679,7 @@ function selectedLink(): HTMLAnchorElement | null {
 function openLinkEditor(event?: Event) {
   if (!squire) return;
   rememberSelection();
-  if (event) closeDropdown(event);
+  if (event) closeContainingDropdown(event);
   const anchor = selectedLink();
   const selectedText = squire.getSelectedText().trim();
   linkEditorHasLink.value = anchor !== null;
@@ -736,7 +732,7 @@ function cancelLinkEditor() {
 }
 
 function chooseImage(event: Event) {
-  closeDropdown(event);
+  closeContainingDropdown(event);
   imageInsertError.value = null;
   rememberSelection();
   imageInputEl.value?.click();
@@ -1190,17 +1186,21 @@ defineExpose({
       <div v-if="isToolbarGroupVisible('font')" class="toolbar-group" data-toolbar-group="font">
         <AppDropdown class="toolbar-dropdown">
           <summary
-            class="toolbar-button toolbar-more__summary"
+            class="app-dropdown__summary toolbar-button toolbar-more__summary"
             aria-label="Font family"
             title="Font family"
             @mousedown.prevent
           >{{ fontFamilyLabel }}</summary>
-          <div class="toolbar-more__menu" role="menu" aria-label="Font family">
+          <div
+            class="app-dropdown__menu toolbar-more__menu"
+            role="menu"
+            aria-label="Font family"
+          >
             <button
               v-for="font in fontFamilyChoices"
               :key="font.value"
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontFamily === font.value"
               @mousedown.prevent
@@ -1214,17 +1214,21 @@ defineExpose({
         </AppDropdown>
         <AppDropdown class="toolbar-dropdown">
           <summary
-            class="toolbar-button toolbar-more__summary"
+            class="app-dropdown__summary toolbar-button toolbar-more__summary"
             aria-label="Font size"
             title="Font size"
             @mousedown.prevent
           >{{ fontSizeLabel }}</summary>
-          <div class="toolbar-more__menu" role="menu" aria-label="Font size">
+          <div
+            class="app-dropdown__menu toolbar-more__menu"
+            role="menu"
+            aria-label="Font size"
+          >
             <button
               v-for="size in fontSizeChoices"
               :key="size.value"
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontSize === size.value"
               @mousedown.prevent
@@ -1349,22 +1353,32 @@ defineExpose({
       </div>
 
       <AppDropdown class="toolbar-more">
-        <summary class="toolbar-button toolbar-more__summary" @mousedown.prevent>
+        <summary
+          class="app-dropdown__summary toolbar-button toolbar-more__summary"
+          @mousedown.prevent
+        >
           More
         </summary>
-        <div class="toolbar-more__menu" role="menu" aria-label="More formatting options">
+        <div
+          class="app-dropdown__menu toolbar-more__menu"
+          role="menu"
+          aria-label="More formatting options"
+        >
           <div
             v-if="!isToolbarGroupVisible('font')"
             class="toolbar-menu-section"
             role="group"
             aria-label="Font formatting"
           >
-            <span class="toolbar-menu-heading" aria-hidden="true">Font</span>
+            <span
+              class="app-dropdown__heading toolbar-menu-heading"
+              aria-hidden="true"
+            >Font</span>
             <button
               v-for="font in fontFamilyChoices"
               :key="`font-${font.value}`"
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontFamily === font.value"
               :aria-label="`Font: ${font.label}`"
@@ -1375,12 +1389,15 @@ defineExpose({
               <span v-else aria-hidden="true" />
               <span :style="font.value ? { fontFamily: font.value } : undefined">{{ font.label }}</span>
             </button>
-            <span class="toolbar-menu-heading" aria-hidden="true">Size</span>
+            <span
+              class="app-dropdown__heading toolbar-menu-heading"
+              aria-hidden="true"
+            >Size</span>
             <button
               v-for="size in fontSizeChoices"
               :key="`size-${size.value}`"
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontSize === size.value"
               :aria-label="`Size: ${size.label}`"
@@ -1421,7 +1438,7 @@ defineExpose({
           >
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitem"
               @mousedown.prevent
               @click="chooseImage"
@@ -1431,7 +1448,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.link }"
               role="menuitem"
               aria-label="Insert or remove link"
@@ -1453,7 +1470,7 @@ defineExpose({
           >
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.unorderedList }"
               role="menuitem"
               @mousedown.prevent
@@ -1464,7 +1481,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.orderedList }"
               role="menuitem"
               @mousedown.prevent
@@ -1475,7 +1492,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.quote }"
               role="menuitem"
               @mousedown.prevent
@@ -1486,7 +1503,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitem"
               @mousedown.prevent
               @click="adjustQuote(-1)"
@@ -1506,7 +1523,7 @@ defineExpose({
               v-for="alignment in alignmentOptions"
               :key="alignment.value"
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitem"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.setTextAlignment(alignment.value))"
@@ -1519,7 +1536,7 @@ defineExpose({
           <div class="toolbar-menu-section" role="group" aria-label="More formatting">
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.direction === 'ltr' }"
               role="menuitem"
               @mousedown.prevent
@@ -1530,7 +1547,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.direction === 'rtl' }"
               role="menuitem"
               @mousedown.prevent
@@ -1541,7 +1558,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.subscript }"
               role="menuitem"
               @mousedown.prevent
@@ -1552,7 +1569,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.superscript }"
               role="menuitem"
               @mousedown.prevent
@@ -1563,7 +1580,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :class="{ active: toolbarState.code }"
               role="menuitem"
               @mousedown.prevent
@@ -1574,7 +1591,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               role="menuitem"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.removeAllFormatting())"
@@ -1584,7 +1601,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :disabled="!toolbarState.canUndo"
               role="menuitem"
               aria-label="Undo"
@@ -1598,7 +1615,7 @@ defineExpose({
             </button>
             <button
               type="button"
-              class="toolbar-menu-button"
+              class="app-dropdown__item toolbar-menu-button"
               :disabled="!toolbarState.canRedo"
               role="menuitem"
               aria-label="Redo"
@@ -1831,41 +1848,15 @@ defineExpose({
 .toolbar-dropdown[open] .toolbar-more__summary {
   background: rgba(127, 127, 127, 0.18);
 }
-.toolbar-menu-heading {
-  padding: 4px 8px 0;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted, #6b7388);
-}
-.toolbar-more__summary {
-  list-style: none;
-}
-.toolbar-more__summary::-webkit-details-marker {
-  display: none;
-}
 .toolbar-more__summary::after {
-  content: '▾';
   margin-left: 5px;
-  font-size: 10px;
-  opacity: 0.7;
 }
 .toolbar-more[open] .toolbar-more__summary {
   background: rgba(127, 127, 127, 0.18);
 }
 .toolbar-more__menu {
-  position: absolute;
-  top: calc(100% + 6px);
+  left: auto;
   right: 0;
-  z-index: 3;
-  display: grid;
-  min-width: 190px;
-  padding: 6px;
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 8px;
-  background: var(--surface, #fff);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
 }
 .toolbar-menu-section {
   display: grid;
@@ -1876,22 +1867,8 @@ defineExpose({
   border-top: 1px solid var(--border, #d6d9e2);
 }
 .toolbar-menu-button {
-  display: grid;
-  grid-template-columns: 24px 1fr;
-  align-items: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
   font-size: 12px;
-  text-align: left;
-  cursor: pointer;
 }
-.toolbar-menu-button:hover,
 .toolbar-menu-button.active {
   background: rgba(127, 127, 127, 0.18);
 }

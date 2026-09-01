@@ -21,6 +21,7 @@ import {
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
 import type { AccountRow, FolderRow } from '../types';
+import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
 import { folderSortKey } from '../utils/folder-presentation';
@@ -796,8 +797,7 @@ const editorParentLabel = computed(() => {
 
 function pickEditorParent(id: number | null, event: Event) {
   editorParentId.value = id;
-  const details = (event.currentTarget as HTMLElement).closest('details');
-  if (details) details.open = false;
+  closeContainingDropdown(event);
 }
 
 async function saveEditor(row: DialogFolderRow) {

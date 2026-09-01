@@ -10,7 +10,9 @@ import {
 import { nextTick, ref } from 'vue';
 
 import type { ContactAnniversaryKind } from '../../types';
+import { closeContainingDropdown } from '../../utils/dropdown';
 import AppDropdown from '../AppDropdown.vue';
+import AppIconButton from '../AppIconButton.vue';
 import {
   contactAnniversaryKindLabel,
   contactDateFromInput,
@@ -70,8 +72,7 @@ function chooseKind(
   event: Event,
 ): void {
   updateDate(formKey, { kind });
-  const details = (event.currentTarget as HTMLElement | null)?.closest('details');
-  if (details instanceof HTMLDetailsElement) details.open = false;
+  closeContainingDropdown(event);
 }
 
 function errorId(formKey: string): string {
@@ -380,14 +381,13 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
           </template>
         </VueDatePicker>
       </div>
-      <button
+      <AppIconButton
         class="contact-editor__remove"
-        type="button"
         aria-label="Remove date"
         @click="removeDate(date.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />
-      </button>
+      </AppIconButton>
       <p
         v-if="errorFor(date.formKey)"
         :id="errorId(date.formKey)"

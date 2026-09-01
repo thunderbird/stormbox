@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
 import { createIdentityOperationId } from '../../utils/identity-fields';
+import AppIconButton from '../AppIconButton.vue';
 
 interface IdentityAddressFormRow {
   formKey: string;
@@ -109,14 +110,13 @@ function removeRow(formKey: string): void {
           )"
         />
       </label>
-      <button
+      <AppIconButton
         class="identity-addresses__remove"
-        type="button"
         :aria-label="`Remove ${shortLabel} address ${index + 1}`"
         @click="removeRow(row.formKey)"
       >
         <X :size="16" aria-hidden="true" />
-      </button>
+      </AppIconButton>
       <p
         v-if="errors[row.formKey]"
         :id="`${row.formKey}-error`"

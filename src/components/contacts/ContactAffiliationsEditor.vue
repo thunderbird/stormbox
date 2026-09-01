@@ -8,6 +8,7 @@ import {
 import { Plus, Trash2 } from '@lucide/vue';
 
 import type { ContactTitleKind } from '../../types';
+import { closeContainingDropdown } from '../../utils/dropdown';
 import AppDropdown from '../AppDropdown.vue';
 import {
   createContactEditorOrganization,
@@ -91,8 +92,7 @@ function affiliationSummary(organization: ContactEditorOrganization): string {
 
 function chooseOrganization(formId: string, event: Event): void {
   selectedFormId.value = formId;
-  const details = (event.currentTarget as HTMLElement | null)?.closest('details');
-  if (details instanceof HTMLDetailsElement) details.open = false;
+  closeContainingDropdown(event);
 }
 
 async function addOrganization(): Promise<void> {

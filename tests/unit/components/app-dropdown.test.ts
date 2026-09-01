@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils';
 import { defineComponent } from 'vue';
 
 import AppDropdown from '../../../src/components/AppDropdown.vue';
+import { closeContainingDropdown } from '../../../src/utils/dropdown';
 
 /**
  * The widget's one behavior: at most one dropdown open per group. The
@@ -86,6 +87,23 @@ describe('AppDropdown', () => {
     wrapper.get('.panel').element.dispatchEvent(new Event('pointerdown', { bubbles: true }));
 
     expect(a.element.open).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('closes the dropdown containing an activated item', async () => {
+    const wrapper = mountDropdowns(`
+      <AppDropdown id="a">
+        <summary>A</summary>
+        <button class="item">pick</button>
+      </AppDropdown>
+    `);
+    const a = wrapper.get('details');
+    await open(a);
+    wrapper.get('.item').element.addEventListener('click', closeContainingDropdown);
+
+    await wrapper.get('.item').trigger('click');
+
+    expect(a.element.open).toBe(false);
     wrapper.unmount();
   });
 

@@ -637,6 +637,19 @@ describe('RichTextEditor toolbar', () => {
     expect(font.element.open).toBe(false);
   });
 
+  it('uses the shared dropdown structure for toolbar menus', async () => {
+    const wrapper = await mountEditor();
+    const toolbarDropdowns = wrapper.get('.compose-toolbar').findAll('details');
+
+    for (const dropdown of toolbarDropdowns) {
+      expect(dropdown.get('summary').classes()).toContain('app-dropdown__summary');
+      expect(dropdown.get('[role="menu"]').classes()).toContain('app-dropdown__menu');
+      for (const item of dropdown.findAll('button[role^="menuitem"]')) {
+        expect(item.classes()).toContain('app-dropdown__item');
+      }
+    }
+  });
+
   it('moves rightmost toolbar groups into More as width shrinks', async () => {
     const wrapper = await mountEditor();
     const toolbar = wrapper.get('.compose-toolbar').element;

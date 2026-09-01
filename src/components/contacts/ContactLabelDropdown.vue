@@ -6,6 +6,7 @@ import {
   watch,
 } from 'vue';
 
+import { closeContainingDropdown } from '../../utils/dropdown';
 import AppDropdown from '../AppDropdown.vue';
 import {
   applyContactLabel,
@@ -42,17 +43,12 @@ const summary = computed(() => {
     ?? 'Other';
 });
 
-function closeMenu(event: Event): void {
-  const details = (event.currentTarget as HTMLElement | null)?.closest('details');
-  if (details instanceof HTMLDetailsElement) details.open = false;
-}
-
 async function choose(choice: ContactLabelChoice, event: Event): Promise<void> {
   customEditing.value = choice === 'custom';
   if (choice !== 'custom') {
     emit('update', applyContactLabel(props.kind, props.resource, choice));
   }
-  closeMenu(event);
+  closeContainingDropdown(event);
   if (choice === 'custom') {
     await nextTick();
     customInputEl.value?.focus();

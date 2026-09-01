@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Plus, X } from '@lucide/vue';
 
+import AppIconButton from '../AppIconButton.vue';
 import {
   createContactEditorNote,
   type ContactEditorNote,
@@ -55,14 +56,13 @@ function removeNote(formKey: string): void {
           ($event.target as HTMLTextAreaElement).value,
         )"
       />
-      <button
+      <AppIconButton
         class="contact-editor__remove"
-        type="button"
         aria-label="Remove note"
         @click="removeNote(note.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />
-      </button>
+      </AppIconButton>
     </div>
     <button class="contact-editor__add" type="button" @click="addNote">
       <Plus :size="14" :stroke-width="2" aria-hidden="true" />

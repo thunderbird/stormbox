@@ -604,6 +604,8 @@ describe('ComposeDialog attachment controls', () => {
     expect(wrapper.text()).toContain('uploading.txt');
     expect(wrapper.text()).toContain('3 B');
     expect(wrapper.text()).toContain('Upload failed: offline');
+    expect(wrapper.findAll('.compose-attachment__action').every((action) =>
+      action.classes('app-icon-button'))).toBe(true);
 
     await wrapper.get('[aria-label="Cancel upload of uploading.txt"]').trigger('click');
     await wrapper.get('[aria-label="Retry failed.txt"]').trigger('click');
