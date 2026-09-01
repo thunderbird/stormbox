@@ -33,6 +33,12 @@ export function composeSubject(page) {
     .locator('input');
 }
 
+/** The primary Send action, scoped away from any surrounding page controls. */
+export function composeSendButton(page) {
+  return page.locator('.compose-dialog--expanded')
+    .getByRole('button', { name: 'Send', exact: true });
+}
+
 /** The text input of a recipient field: what is being typed, not what is committed. */
 export function recipientInput(page, label) {
   return page.locator(`.compose-dialog #${fieldId(label)}`);
@@ -86,6 +92,7 @@ export async function clearRecipients(page, label) {
   const pills = recipientPills(page, label);
   for (let remaining = await pills.count(); remaining > 0; remaining -= 1) {
     await pills.first().locator('.pill__remove').click();
+    await expect(pills).toHaveCount(remaining - 1);
   }
   const input = recipientInput(page, label);
   // Empty Cc/Bcc rows collapse after their last pill is removed.

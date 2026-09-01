@@ -21,6 +21,7 @@ import {
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
+  composeSendButton,
   composeSubject,
   fillRecipient,
   waitForIdentities,
@@ -199,9 +200,6 @@ async function sendAndWait(page, { to, subject }) {
   return { accountId, mutationId, summary };
 }
 
-const sendButton = (page) =>
-  page.locator('.compose-dialog button.primary', { hasText: /^Send$/ });
-
 /** Write a message in the dialog and press Send, without waiting for it. */
 async function composeAndSend(page, { to, subject }) {
   await waitForWebSocketLeg();
@@ -216,7 +214,7 @@ async function composeAndSend(page, { to, subject }) {
   const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
   await editor.click();
   await page.keyboard.type('Interrupted send e2e body.');
-  await sendButton(page).click();
+  await composeSendButton(page).click();
 }
 
 /** The send row this subject produced, whether or not it survived. */
@@ -569,10 +567,13 @@ test.describe('Interrupted send', () => {
     let mutationId = null;
     try {
       await composeAndSend(page, { to: SHARED_TEST_OIDC_EMAIL, subject });
+      const toast = page.locator('.store-error-toast__item--success')
+        .filter({ hasText: /could not confirm/i });
+      const toastText = toast.waitFor({ state: 'visible', timeout: 90_000 })
+        .then(() => toast.textContent());
 
-      // Checked before anything is read from the UI. An uninterrupted send
-      // produces an ordinary success, and waiting on a notice that was
-      // never going to appear only reports a timeout — this says why.
+      // Verify the injected fault before interpreting the captured notice:
+      // an uninterrupted send produces an ordinary success.
       const created = await waitForCreatedEmailId(page, subject);
       const fault = await faultApplied('DROP', created);
       expect(fault.effect, 'the submission must never have reached the server')
@@ -581,11 +582,10 @@ test.describe('Interrupted send', () => {
       // The composer closes: the draft is not lost with it, because the
       // created Email is already sitting in Drafts on the server.
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 90_000 });
-      const toast = page.locator('.store-error-toast__item--success')
-        .filter({ hasText: /could not confirm/i });
-      await expect(toast).toBeVisible();
-      await expect(toast).toContainText(/Sent/);
-      await expect(toast).toContainText(/Drafts/);
+      const notice = await toastText;
+      expect(notice).toMatch(/could not confirm/i);
+      expect(notice).toMatch(/Sent/);
+      expect(notice).toMatch(/Drafts/);
 
       // The same row the programmatic case asserts, reached through the UI.
       const row = await findSendMutation(page, subject);

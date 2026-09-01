@@ -28,6 +28,7 @@ import {
 import {
   clearRecipients,
   composeRow,
+  composeSendButton,
   discardCompose,
   fillRecipient,
   composeSubject,
@@ -59,10 +60,6 @@ const STRANGER = 'stranger@example.org';
 const COLLEAGUE = 'colleague@example.org';
 const CC_WATCHER = 'cc-watcher@example.org';
 const REPLIES_TO = 'replies@example.org';
-
-function sendButton(page) {
-  return page.locator('.compose-dialog button.primary', { hasText: /^Send$/ });
-}
 
 async function closeCompose(page) {
   const dialog = page.locator('.compose-dialog');
@@ -247,12 +244,14 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       // Send it to the second account only, so delivery is provable, and
       // keep the seeded strangers out of the outgoing envelope.
       await clearRecipients(page, 'To');
-      await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
       await clearRecipients(page, 'Cc');
+      await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
+      expect(await recipientAddresses(page, 'To'))
+        .toEqual([SHARED_TEST_OIDC_EMAIL.toLowerCase()]);
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();
       await page.keyboard.type('Replying to all of you.');
-      await sendButton(page).click();
+      await composeSendButton(page).click();
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
       await waitForPendingMutations(page);
 
@@ -395,7 +394,7 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
       await editor.click();
       await page.keyboard.type('Addressed with no To at all.');
-      await sendButton(page).click();
+      await composeSendButton(page).click();
       await expect(page.locator('.compose-dialog'), 'a Cc-only send is permitted')
         .toBeHidden({ timeout: 30_000 });
       await waitForPendingMutations(page);
@@ -447,9 +446,9 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       await fillRecipient(page, 'To', `${selfEmail()}, not an address`);
       await composeSubject(page).fill(`Rejected fragment ${Date.now()}`);
 
-      await sendButton(page).click();
+      await composeSendButton(page).click();
       await expect(page.locator('.compose-dialog .compose-error'))
-        .toContainText('not an address');
+        .toHaveText('Fix invalid recipients before saving or sending this message.');
       await expect(page.locator('.compose-dialog'), 'the draft is kept, not sent')
         .toBeVisible();
       await expect(

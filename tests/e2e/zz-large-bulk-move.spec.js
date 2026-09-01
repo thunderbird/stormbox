@@ -102,7 +102,7 @@ test.describe('Large bulk move e2e', () => {
       await expect(
         page.locator('.msg-list__count'),
         'source folder count should clear without a manual refresh',
-      ).toHaveCount(0);
+      ).toHaveText('');
       const sourceProgress = await readFolderProgressByName(page, SOURCE_FOLDER);
       expect(sourceProgress.total).toBe(0);
 

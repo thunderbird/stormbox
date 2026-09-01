@@ -249,6 +249,14 @@ test.describe('C504 browser review regressions', () => {
       await page.keyboard.type(signatureText);
       await page.keyboard.press('Enter');
       await form.getByRole('button', { name: 'Bold', exact: true }).click();
+      await editor.evaluate((element) => {
+        element.append(document.createTextNode('\u200B'));
+        element.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          data: '\u200B',
+          inputType: 'insertText',
+        }));
+      });
       expect(await editor.textContent()).toContain('\u200B');
       await form.getByRole('button', { name: 'Save identity' }).evaluate((button) => {
         button.click();

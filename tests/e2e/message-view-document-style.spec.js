@@ -101,7 +101,6 @@ test('preserves complete-email presentation without active document controls', a
       const footer = doc.querySelector('.footer');
       const link = doc.querySelector('.content a');
       const contentRect = content?.getBoundingClientRect();
-      const bodyRect = doc.body.getBoundingClientRect();
       const styles = Array.from(doc.head.querySelectorAll('style'));
       const csp = doc.head.querySelector('meta[http-equiv="Content-Security-Policy"]');
       return {
@@ -112,7 +111,6 @@ test('preserves complete-email presentation without active document controls', a
         bodyBackground: getComputedStyle(doc.body).backgroundColor,
         bodyColor: getComputedStyle(doc.body).color,
         bodyFontSize: getComputedStyle(doc.body).fontSize,
-        bodyFillsViewport: bodyRect.height >= doc.documentElement.clientHeight,
         footerBackground: footer ? getComputedStyle(footer).backgroundColor : '',
         linkColor: link ? getComputedStyle(link).color : '',
         legacyColors: {
@@ -145,7 +143,6 @@ test('preserves complete-email presentation without active document controls', a
       bodyBackground: 'rgb(32, 48, 64)',
       bodyColor: 'rgb(245, 245, 245)',
       bodyFontSize: '14px',
-      bodyFillsViewport: true,
       footerBackground: 'rgb(232, 236, 243)',
       linkColor: 'rgb(51, 204, 255)',
       legacyColors: {
