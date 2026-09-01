@@ -56,6 +56,7 @@ import { addressKey } from '../utils/address-key';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { isInlineImageType } from '../utils/message-html';
 import { makeMessageId, makeOperationId } from '../utils/message-id';
+import { randomToken } from '../utils/random-token';
 import {
   isUsableTimeZone,
   validateScheduleTarget,
@@ -283,17 +284,11 @@ export function isExpandedPresentation(presentation: ComposePresentation): boole
 }
 
 function makeSessionId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  return `compose-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `compose-${randomToken()}`;
 }
 
 function makeAttachmentClientId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  return `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `attachment-${randomToken()}`;
 }
 
 function makeAttachmentPreflightId(): string {

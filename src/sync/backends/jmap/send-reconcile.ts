@@ -22,16 +22,16 @@
  *     the submission is accepted.
  */
 
+import {
+  normalizeMessageId,
+  normalizeMessageIds,
+} from '../../../utils/message-id';
 import { JMAP_CAPS } from './transport';
 import { callJmap, pickResponse } from './invoke';
 import { fetchSubmissionRecords } from './submissions';
 
 /** How many recent messages to scan when matching a Message-ID. */
 const MESSAGE_ID_SCAN_LIMIT = 100;
-
-function bareMessageId(messageId: string): string {
-  return messageId.replace(/^<|>$/g, '');
-}
 
 export type EmailProbe =
   /** The scan ran and this Email carries the Message-ID. */
@@ -40,21 +40,6 @@ export type EmailProbe =
   | { outcome: 'absent' }
   /** The scan did not run, or could not be read, so it says nothing. */
   | { outcome: 'inconclusive'; reason: string; detail?: any };
-
-/**
- * The Message-ID values of one Email, or null when they cannot be read.
- *
- * RFC 8621 specifies a list, and a server that sends something else has
- * not told us this Email is a different message — it has told us nothing
- * about it, which is not the same and must not be read as a mismatch.
- */
-function messageIdsOf(email: any): string[] | null {
-  const raw = email?.messageId;
-  if (raw == null) return [];
-  if (typeof raw === 'string') return [raw];
-  if (Array.isArray(raw) && raw.every((id) => typeof id === 'string')) return raw;
-  return null;
-}
 
 /**
  * Look for an Email the client may have created, by the Message-ID it
@@ -77,7 +62,7 @@ export async function findEmailByMessageId({
   // earlier attempt could have filed an Email anywhere this one would
   // look either.
   if (!mailboxId || !messageId) return { outcome: 'absent' };
-  const wanted = bareMessageId(messageId);
+  const wanted = normalizeMessageId(messageId);
   try {
     const payload = await callJmap(transport, {
       using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
@@ -126,7 +111,7 @@ export async function findEmailByMessageId({
     }
     let match: any = null;
     for (const email of got.list) {
-      const ids = messageIdsOf(email);
+      const ids = normalizeMessageIds(email?.messageId);
       // An entry that cannot be read leaves the scan unable to say the
       // mailbox holds no such message, which is the only answer that
       // licenses creating one.
@@ -137,7 +122,7 @@ export async function findEmailByMessageId({
           detail: { emailRemoteId: email?.id ?? null },
         };
       }
-      if (ids.some((id) => bareMessageId(id) === wanted)) {
+      if (ids.includes(wanted)) {
         match = email;
         break;
       }

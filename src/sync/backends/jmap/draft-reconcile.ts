@@ -1,3 +1,7 @@
+import {
+  normalizeMessageId,
+  normalizeMessageIds,
+} from '../../../utils/message-id';
 import { callJmap, pickResponseById } from './invoke';
 import { maxObjectsInGet } from './limits';
 import { JMAP_CAPS } from './transport';
@@ -7,19 +11,6 @@ export type DraftRevisionProbe =
   | { outcome: 'absent' }
   | { outcome: 'conflict'; emailIds: string[] }
   | { outcome: 'inconclusive'; reason: string; detail?: any };
-
-function bareMessageId(value: string): string {
-  return value.replace(/^<|>$/g, '');
-}
-
-function messageIds(email: any): string[] | null {
-  if (email?.messageId == null) return [];
-  if (typeof email.messageId === 'string') return [email.messageId];
-  return Array.isArray(email.messageId)
-    && email.messageId.every((value) => typeof value === 'string')
-    ? email.messageId
-    : null;
-}
 
 function addresses(value: unknown): Array<{ name: string; email: string }> {
   if (!Array.isArray(value)) return [];
@@ -115,7 +106,7 @@ export async function findDraftRevision({
 }): Promise<DraftRevisionProbe> {
   if (!draftsRemoteId || !revisionMessageId) return { outcome: 'absent' };
   const pageSize = Math.max(1, Math.min(maxObjectsInGet(transport), 500));
-  const wanted = bareMessageId(revisionMessageId);
+  const wanted = normalizeMessageId(revisionMessageId);
   const candidateIds: string[] = [];
   const seenIds = new Set<string>();
   let position = 0;
@@ -190,9 +181,9 @@ export async function findDraftRevision({
       for (const id of query.ids) {
         seenIds.add(id);
         const email = byId.get(id);
-        const ids = messageIds(email);
+        const ids = normalizeMessageIds(email?.messageId);
         if (ids === null) return { outcome: 'inconclusive', reason: 'malformedMessageId' };
-        if (ids.some((messageId) => bareMessageId(messageId) === wanted)) {
+        if (ids.includes(wanted)) {
           candidateIds.push(id);
         }
       }
@@ -246,9 +237,9 @@ export async function findDraftRevision({
       const byId = new Map<string, any>(got.list.map((email) => [email.id, email]));
       for (const id of ids) {
         const email = byId.get(id);
-        const idsForEmail = messageIds(email);
+        const idsForEmail = normalizeMessageIds(email?.messageId);
         if (idsForEmail === null
-            || !idsForEmail.some((messageId) => bareMessageId(messageId) === wanted)
+            || !idsForEmail.includes(wanted)
             || email?.mailboxIds?.[draftsRemoteId] !== true
             || email?.keywords?.$draft !== true) {
           return { outcome: 'inconclusive', reason: 'candidateChanged' };

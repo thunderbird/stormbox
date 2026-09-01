@@ -1,5 +1,6 @@
 import { DRAFT_PHASE } from '../../../../../constants/states';
 import { DB_RPC } from '../../../../../db/protocol';
+import { normalizeMessageId } from '../../../../../utils/message-id';
 import {
   missingRegularAttachmentIndexes,
   prepareComposeEmail,
@@ -334,7 +335,7 @@ async function runSaveDraft({
             create: {
               draft: {
                 ...checkpoint.preparedEmail,
-                messageId: [checkpoint.revisionMessageId.replace(/^<|>$/g, '')],
+                messageId: [normalizeMessageId(checkpoint.revisionMessageId)],
               },
             },
           },

@@ -1,11 +1,18 @@
-function randomToken(): string {
-  const cryptoRef = globalThis.crypto;
-  if (cryptoRef?.randomUUID) return cryptoRef.randomUUID().replaceAll('-', '');
-  if (cryptoRef?.getRandomValues) {
-    const bytes = cryptoRef.getRandomValues(new Uint8Array(16));
-    return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-  }
-  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+import { randomToken } from './random-token';
+
+export function normalizeMessageId(value: string): string {
+  return value.replace(/^<|>$/g, '');
+}
+
+/** Returns null when a server value cannot be read as Message-ID values. */
+export function normalizeMessageIds(value: unknown): string[] | null {
+  if (value == null) return [];
+  const messageIds = typeof value === 'string'
+    ? [value]
+    : Array.isArray(value) && value.every((messageId) => typeof messageId === 'string')
+      ? value
+      : null;
+  return messageIds?.map(normalizeMessageId) ?? null;
 }
 
 function isAscii(value: string): boolean {

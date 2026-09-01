@@ -1,14 +1,12 @@
 import {
-  SERVER_CLOCK_MAX_UNCERTAINTY_MS,
-  type ServerClockReference,
-} from './transport';
-import {
+  ABSOLUTE_TIMESTAMP_PATTERN,
+  parseAbsoluteTimestamp,
   scheduleClockWindowFromReference,
+  SERVER_CLOCK_MAX_UNCERTAINTY_MS,
   validateScheduleTarget,
   type ScheduleClockWindow,
+  type ServerClockReferenceLike,
 } from '../../../utils/schedule-time';
-
-const ABSOLUTE_TIMESTAMP = /(?:Z|[+-]\d{2}:\d{2})$/i;
 
 export type { ScheduleClockWindow };
 // Conservative HOLDFOR rounding may release this long after the target.
@@ -40,21 +38,23 @@ export function scheduledSendAtOf(request: unknown): string | null {
 }
 
 export function parseAbsoluteTarget(targetAt: unknown): { targetAt: string; targetMs: number } {
-  if (typeof targetAt !== 'string' || !ABSOLUTE_TIMESTAMP.test(targetAt)) {
+  if (typeof targetAt !== 'string' || !ABSOLUTE_TIMESTAMP_PATTERN.test(targetAt)) {
     throw scheduleError(
       'invalidScheduleTarget',
       'The scheduled time must be an absolute timestamp.',
     );
   }
-  const targetMs = Date.parse(targetAt);
-  if (!Number.isFinite(targetMs)) {
+  const parsed = parseAbsoluteTimestamp(targetAt);
+  if (!parsed) {
     throw scheduleError('invalidScheduleTarget', 'The scheduled time is invalid.');
   }
-  return { targetAt: new Date(targetMs).toISOString(), targetMs };
+  return parsed;
 }
 
 export function scheduleClockWindow(
-  transport: { serverClockReference?: ServerClockReference | null } | null | undefined,
+  transport: {
+    serverClockReference?: ServerClockReferenceLike | null;
+  } | null | undefined,
   localNowMs = Date.now(),
 ): ScheduleClockWindow {
   return scheduleClockWindowFromReference(transport?.serverClockReference, localNowMs);

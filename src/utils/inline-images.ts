@@ -11,6 +11,7 @@
  */
 
 import { isInlineRasterType } from './raster-images';
+import { randomToken } from './random-token';
 
 export interface InlineImage {
   /** Content-ID without angle brackets; matches `src="cid:<cid>"`. */
@@ -34,9 +35,7 @@ export interface ExtractedInlineImages {
 const DATA_URI_IMAGE_SRC = /src\s*=\s*(["'])data:(image\/[a-z0-9.+-]+);base64,([^"']*)\1/gi;
 
 function makeCid(): string {
-  const uuid = globalThis.crypto?.randomUUID?.()
-    ?? `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
-  return `${uuid}@stormbox`;
+  return `${randomToken()}@stormbox`;
 }
 
 /**

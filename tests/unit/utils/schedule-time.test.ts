@@ -10,11 +10,15 @@ import {
   detectTimeZone,
   instantToWallTime,
   isUsableTimeZone,
+  parseAbsoluteTimestamp,
   pickerValueToWallTime,
   resolveCustomSchedule,
   resolveSchedulePreset,
   scheduleClockWindowFromReference,
   searchTimeZoneOptions,
+  SERVER_CLOCK_MAX_ABS_OFFSET_MS,
+  SERVER_CLOCK_MAX_AGE_MS,
+  SERVER_CLOCK_MAX_UNCERTAINTY_MS,
   validateScheduleTarget,
   wallTimeToPickerValue,
   wallTimeToUtc,
@@ -273,6 +277,18 @@ describe('schedule target limits', () => {
     uncertaintyMs: 999,
   };
 
+  it('requires an absolute offset on timestamp strings', () => {
+    expect(parseAbsoluteTimestamp('2026-08-31T12:00:00Z')).toEqual({
+      targetAt: '2026-08-31T12:00:00.000Z',
+      targetMs: now,
+    });
+    expect(parseAbsoluteTimestamp('2026-08-31T14:00:00+02:00')).toEqual({
+      targetAt: '2026-08-31T12:00:00.000Z',
+      targetMs: now,
+    });
+    expect(parseAbsoluteTimestamp('2026-08-31T12:00:00')).toBeNull();
+  });
+
   it('uses the upper clock bound for expiry and lower bound for the cap', () => {
     const clock = scheduleClockWindowFromReference(reference, now);
     expect(validateScheduleTarget({
@@ -306,5 +322,27 @@ describe('schedule target limits', () => {
       maxDelayedSend: '60',
       localNowMs: now,
     })).toMatchObject({ ok: false, reason: 'capabilityUnavailable' });
+  });
+
+  it('defensively rejects references outside every shared clock bound', () => {
+    const valid = {
+      capturedAtMs: now - SERVER_CLOCK_MAX_AGE_MS,
+      lowerOffsetMs: SERVER_CLOCK_MAX_ABS_OFFSET_MS
+        - SERVER_CLOCK_MAX_UNCERTAINTY_MS,
+      uncertaintyMs: SERVER_CLOCK_MAX_UNCERTAINTY_MS,
+    };
+    expect(scheduleClockWindowFromReference(valid, now).source).toBe('server');
+    expect(scheduleClockWindowFromReference({
+      ...valid,
+      capturedAtMs: valid.capturedAtMs - 1,
+    }, now).source).toBe('local');
+    expect(scheduleClockWindowFromReference({
+      ...valid,
+      uncertaintyMs: SERVER_CLOCK_MAX_UNCERTAINTY_MS + 1,
+    }, now).source).toBe('local');
+    expect(scheduleClockWindowFromReference({
+      ...valid,
+      lowerOffsetMs: SERVER_CLOCK_MAX_ABS_OFFSET_MS,
+    }, now).source).toBe('local');
   });
 });

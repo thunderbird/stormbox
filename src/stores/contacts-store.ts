@@ -71,6 +71,7 @@ import {
   createContactUid,
   normalizeContactUid,
 } from '../utils/contact-uid';
+import { randomToken } from '../utils/random-token';
 import {
   cleanIdentityAddresses,
   createIdentityOperationId,
@@ -479,8 +480,6 @@ const ADDRESSBOOK_ERROR_TYPES = new Set<string>(
   Object.values(ADDRESSBOOK_ERROR),
 );
 
-let addressBookOperationSequence = 0;
-
 function canonicalAddressBookText(value: string): string {
   return value.normalize('NFC').replace(/\r\n?/gu, '\n');
 }
@@ -510,10 +509,7 @@ function validAddressBookMetadata(input: Record<string, unknown>): boolean {
 }
 
 function createAddressBookOperationId(): string {
-  const randomUuid = globalThis.crypto?.randomUUID?.();
-  if (randomUuid) return `addressbook-${randomUuid}`;
-  addressBookOperationSequence += 1;
-  return `addressbook-${Date.now()}-${addressBookOperationSequence}`;
+  return `addressbook-${randomToken()}`;
 }
 
 function isTrustedSendersBook(book: AddressbookRow): boolean {

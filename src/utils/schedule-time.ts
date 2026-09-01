@@ -1,7 +1,7 @@
-const ABSOLUTE_TIMESTAMP = /(?:Z|[+-]\d{2}:\d{2})$/i;
-const MAX_REFERENCE_AGE_MS = 10 * 60 * 1_000;
-const MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
-const MAX_UNCERTAINTY_MS = 31_000;
+export const ABSOLUTE_TIMESTAMP_PATTERN = /(?:Z|[+-]\d{2}:\d{2})$/i;
+export const SERVER_CLOCK_MAX_AGE_MS = 10 * 60 * 1_000;
+export const SERVER_CLOCK_MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
+export const SERVER_CLOCK_MAX_UNCERTAINTY_MS = 31_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const OFFSET_SAMPLE_STEP_MS = 6 * 60 * 60 * 1_000;
 
@@ -230,11 +230,12 @@ function validClockReference(
     && Number.isFinite(value.lowerOffsetMs)
     && Number.isFinite(value.uncertaintyMs)
     && ageMs >= 0
-    && ageMs <= MAX_REFERENCE_AGE_MS
-    && Math.abs(value.lowerOffsetMs) <= MAX_ABS_OFFSET_MS
+    && ageMs <= SERVER_CLOCK_MAX_AGE_MS
+    && Math.abs(value.lowerOffsetMs) <= SERVER_CLOCK_MAX_ABS_OFFSET_MS
     && value.uncertaintyMs >= 0
-    && value.uncertaintyMs <= MAX_UNCERTAINTY_MS
-    && Math.abs(value.lowerOffsetMs + value.uncertaintyMs) <= MAX_ABS_OFFSET_MS;
+    && value.uncertaintyMs <= SERVER_CLOCK_MAX_UNCERTAINTY_MS
+    && Math.abs(value.lowerOffsetMs + value.uncertaintyMs)
+      <= SERVER_CLOCK_MAX_ABS_OFFSET_MS;
 }
 
 export function scheduleClockWindowFromReference(
@@ -268,13 +269,18 @@ function normalizedClockWindow(
   return { source: 'local', lowerMs: localNowMs, upperMs: localNowMs };
 }
 
-function parseTarget(targetAt: unknown): { targetAt: string; targetMs: number } | null {
+export function parseAbsoluteTimestamp(
+  targetAt: unknown,
+): { targetAt: string; targetMs: number } | null {
   let targetMs: number;
   if (targetAt instanceof Date) {
     targetMs = targetAt.getTime();
   } else if (typeof targetAt === 'number') {
     targetMs = targetAt;
-  } else if (typeof targetAt === 'string' && ABSOLUTE_TIMESTAMP.test(targetAt)) {
+  } else if (
+    typeof targetAt === 'string'
+    && ABSOLUTE_TIMESTAMP_PATTERN.test(targetAt)
+  ) {
     targetMs = Date.parse(targetAt);
   } else {
     return null;
@@ -299,7 +305,7 @@ export function validateScheduleTarget({
   const clock = clockWindow
     ? normalizedClockWindow(clockWindow, localNowMs)
     : scheduleClockWindowFromReference(serverClockReference, localNowMs);
-  const parsed = parseTarget(targetAt);
+  const parsed = parseAbsoluteTimestamp(targetAt);
   if (!parsed) {
     return {
       ok: false,
@@ -532,7 +538,7 @@ export function instantToWallTime(
   instant: string | number | Date,
   timeZone: string,
 ): WallDateTime | null {
-  const parsed = parseTarget(instant);
+  const parsed = parseAbsoluteTimestamp(instant);
   if (!parsed) return null;
   return wallTimeAt(parsed.targetMs, timeZone);
 }
@@ -547,7 +553,7 @@ export function wallTimeToPickerValue(wallTime: WallDateTime): string | null {
 }
 
 export function pickerValueToWallTime(value: unknown): WallDateTime | null {
-  const parsed = parseTarget(value);
+  const parsed = parseAbsoluteTimestamp(value);
   if (!parsed) return null;
   const wall = utcWallParts(parsed.targetMs);
   return {
@@ -611,7 +617,7 @@ export function formatScheduleTarget(
   timeZone: string,
   locale = 'en-US',
 ): string {
-  const parsed = parseTarget(targetAt);
+  const parsed = parseAbsoluteTimestamp(targetAt);
   if (!parsed) return '';
   const intl = intlObject();
   if (!intl?.DateTimeFormat) return parsed.targetAt;
@@ -667,7 +673,7 @@ export function resolveSchedulePreset(
   if (!preset) {
     throw new TypeError(`Unknown schedule preset: ${id}`);
   }
-  const parsedNow = parseTarget(now);
+  const parsedNow = parseAbsoluteTimestamp(now);
   if (!parsedNow) return unavailablePreset(preset, 'invalidTarget', 'The current time is invalid.');
   const nowWall = wallTimeAt(parsedNow.targetMs, timeZone);
   if (!nowWall) return unavailablePreset(preset, 'invalidTimeZone', 'Choose a valid time zone.');

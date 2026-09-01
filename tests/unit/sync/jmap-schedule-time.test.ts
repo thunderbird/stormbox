@@ -2,12 +2,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
   computeHoldFor,
+  parseAbsoluteTarget,
   scheduleClockWindow,
 } from '../../../src/sync/backends/jmap/schedule-time';
 
 const NOW = Date.parse('2026-08-31T12:00:00Z');
 
 describe('scheduled-send clock policy', () => {
+  it('retains transport-specific validation around the shared parser', () => {
+    expect(parseAbsoluteTarget('2026-08-31T14:00:00+02:00')).toEqual({
+      targetAt: '2026-08-31T12:00:00.000Z',
+      targetMs: NOW,
+    });
+    expect(() => parseAbsoluteTarget('2026-08-31T12:00:00'))
+      .toThrow(/absolute timestamp/);
+    expect(() => parseAbsoluteTarget('2026-99-99T12:00:00Z'))
+      .toThrow(/scheduled time is invalid/i);
+  });
+
   it('falls back deliberately to local time without a valid Date reference', () => {
     expect(scheduleClockWindow({}, NOW)).toEqual({
       source: 'local',

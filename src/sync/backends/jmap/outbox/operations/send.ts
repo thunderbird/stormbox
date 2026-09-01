@@ -3,6 +3,7 @@ import { DB_RPC } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import { addressKey } from '../../../../../utils/address-key';
 import { createContactUid } from '../../../../../utils/contact-uid';
+import { normalizeMessageId } from '../../../../../utils/message-id';
 import {
   missingRegularAttachmentIndexes,
   prepareComposeEmail,
@@ -473,7 +474,7 @@ async function runSend({
                 // Supplying the id makes the created Email findable by it
                 // later; RFC 8621 §4.6 has the server generate one only
                 // when the client omits it.
-                messageId: [checkpoint.messageId.replace(/^<|>$/g, '')],
+                messageId: [normalizeMessageId(checkpoint.messageId)],
               },
             },
           },
