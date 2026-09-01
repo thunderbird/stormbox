@@ -2,6 +2,7 @@ import type { IdentityRow } from '../types';
 import { addressKey } from './address-key';
 
 export interface ResolveComposeIdentityOptions {
+  accountPrimaryEmail?: string | null;
   primaryIdentityRemoteId?: string | null;
 }
 
@@ -28,7 +29,10 @@ export function findMatchingIdentityIndex(
 
 export function resolveComposeIdentityIndex(
   identities: IdentityRow[],
-  { primaryIdentityRemoteId = null }: ResolveComposeIdentityOptions = {},
+  {
+    accountPrimaryEmail = null,
+    primaryIdentityRemoteId = null,
+  }: ResolveComposeIdentityOptions = {},
 ): number {
   if (identities.length === 0) return 0;
 
@@ -37,6 +41,9 @@ export function resolveComposeIdentityIndex(
 
   const nonDeletableMatch = identities.findIndex((identity) => identity.may_delete === 0);
   if (nonDeletableMatch >= 0) return nonDeletableMatch;
+
+  const accountPrimaryMatch = indexByEmail(identities, accountPrimaryEmail);
+  if (accountPrimaryMatch >= 0) return accountPrimaryMatch;
 
   return 0;
 }

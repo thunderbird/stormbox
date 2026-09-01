@@ -838,12 +838,14 @@ export const useComposeStore = defineStore('compose', () => {
 
   function defaultFromIdx(): number {
     return resolveComposeIdentityIndex(identities.value, {
+      accountPrimaryEmail: accountPrimaryEmail.value,
       primaryIdentityRemoteId: settingsStore.get('primaryIdentityRemoteId'),
     });
   }
 
   function replyFromIdx(preferredIdentityEmails: readonly string[]): number {
     return resolveReplyIdentityIndex(identities.value, preferredIdentityEmails, {
+      accountPrimaryEmail: accountPrimaryEmail.value,
       primaryIdentityRemoteId: settingsStore.get('primaryIdentityRemoteId'),
     });
   }
