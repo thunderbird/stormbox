@@ -658,6 +658,71 @@ describe('OutboxRunner exponential backoff', () => {
     await runner.stop();
   });
 
+  it('stops retrying a persistent HTTP authentication failure at the attempt cap', async () => {
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        const error: any = new Error('JMAP request failed: 401 Unauthorized');
+        error.status = 401;
+        throw error;
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 3,
+      },
+    });
+    const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+    await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      errorType: 'authenticationFailed',
+    });
+    expect(attempts).toBe(3);
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('conflicted');
+    expect(Number(row.attempts)).toBe(3);
+    await runner.stop();
+  });
+
+  it('does not replay a send after an HTTP authentication failure', async () => {
+    // The 401 may have arrived after the server accepted the submission,
+    // so the unsafe-to-replay policy wins over the retryable type.
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        const error: any = new Error('JMAP request failed: 401 Unauthorized');
+        error.status = 401;
+        throw error;
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 8,
+        unsafeToReplayTypes: ['send'],
+      },
+    });
+    const mutationId = await insertComposeMutation('send', 'draft-session');
+
+    await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      errorType: 'authenticationFailed',
+    });
+    expect(attempts).toBe(1);
+    const row = await loadRow(mutationId);
+    expect(row.local_status).toBe('conflicted');
+    expect(JSON.parse(row.error_json).terminal).toBe(true);
+    await runner.stop();
+  });
+
   it('does not retry an HTTP authorization failure', async () => {
     let attempts = 0;
     const runner = new OutboxRunner({
@@ -702,13 +767,7 @@ describe('OutboxRunner exponential backoff', () => {
           if (type === 'authenticationFailed' && attempts > 1) {
             return { ok: true };
           }
-          return {
-            ok: false,
-            error: {
-              type,
-              ...(type === 'authenticationFailed' ? { terminal: true } : {}),
-            },
-          };
+          return { ok: false, error: { type } };
         },
         options: {
           notifyDelayMs: 0,
@@ -726,6 +785,33 @@ describe('OutboxRunner exponential backoff', () => {
       await runner.stop();
     },
   );
+
+  it('honours an explicit terminal flag on an authenticationFailed error', async () => {
+    let attempts = 0;
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async () => {
+        attempts += 1;
+        return { ok: false, error: { type: 'authenticationFailed', terminal: true } };
+      },
+      options: {
+        notifyDelayMs: 0,
+        backoffBaseMs: 5,
+        maxAttempts: 8,
+      },
+    });
+    const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+    await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+      succeeded: 0,
+      failed: 1,
+      errorType: 'authenticationFailed',
+    });
+    expect(attempts).toBe(1);
+    expect((await loadRow(mutationId)).local_status).toBe('conflicted');
+    await runner.stop();
+  });
 
   it('records a not_before window in the future after a single transient failure', async () => {
     // Pins the per-attempt backoff math: after attempt N fails, the
