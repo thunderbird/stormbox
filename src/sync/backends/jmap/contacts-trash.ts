@@ -39,7 +39,9 @@ import {
   moveFileNodes,
   readJsonFileNode,
   readJsonFileNodeFromNode,
+  retryFileNodeWrite,
   writeJsonFileNode,
+  type FileNodeCollectionRead,
   type FileNodeDocumentError,
   type FileNodeDocumentRead,
 } from './file-node';
@@ -64,8 +66,6 @@ const CONTACTS_TRASH_SHARD_FILE_PATTERN = new RegExp(
     + '-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.json$',
   'i',
 );
-const MAX_DOCUMENT_WRITE_ATTEMPTS = 3;
-const DOCUMENT_CONFLICT_ERRORS = new Set(['stateMismatch', 'alreadyExists', 'notFound']);
 const RETRYABLE_CONTACT_WRITE_ERRORS = new Set([
   'authenticationFailed',
   'noResponse',
@@ -90,6 +90,11 @@ export type ContactsTrashSyncResult =
       document?: ContactsTrashDocument;
     }
   | { ok: false; error: FileNodeDocumentError };
+
+type SuccessfulFileNodeCollectionRead = Extract<
+  FileNodeCollectionRead,
+  { ok: true }
+>;
 
 function invalidRemoteDocument(): ContactsTrashSyncResult {
   return {
@@ -123,8 +128,7 @@ async function mergeDuplicateTrashShard({
   | { ok: true }
   | { ok: false; error: FileNodeDocumentError }
 > {
-  let lastError: FileNodeDocumentError = { type: 'stateMismatch' };
-  for (let attempt = 0; attempt < MAX_DOCUMENT_WRITE_ATTEMPTS; attempt += 1) {
+  return retryFileNodeWrite(async () => {
     const current = await readJsonFileNode<ContactsTrashShardDocument>({
       transport,
       account,
@@ -144,9 +148,12 @@ async function mergeDuplicateTrashShard({
       useWebSocket,
     });
     if (root.ok === false) return root;
+    if (current.state !== root.state) {
+      return { ok: false, error: { type: 'stateMismatch' as const } };
+    }
     if (root.status === 'missing') return { ok: true };
     if (current.status === 'missing') {
-      return { ok: false, error: { type: 'stateMismatch' } };
+      return { ok: false, error: { type: 'stateMismatch' as const } };
     }
     const currentDocument = validateContactsTrashShardDocument(current.document);
     const rootDocument = validateContactsTrashShardDocument(root.document);
@@ -184,19 +191,13 @@ async function mergeDuplicateTrashShard({
       fileName,
       marker: CONTACTS_TRASH_SHARD_MARKER,
       document,
-      snapshot: {
-        ...current,
-        state: root.state,
-      },
+      snapshot: current,
       parentId,
       destroyNodeIds: [root.node.id],
       useWebSocket,
     });
-    if (write.ok === true) return { ok: true };
-    lastError = write.error;
-    if (!DOCUMENT_CONFLICT_ERRORS.has(write.error.type)) return write;
-  }
-  return { ok: false, error: lastError };
+    return write.ok === true ? { ok: true } : write;
+  });
 }
 
 async function prepareContactsTrashFolder({
@@ -211,14 +212,13 @@ async function prepareContactsTrashFolder({
   | { ok: true; parentId: string }
   | { ok: false; error: FileNodeDocumentError }
 > {
-  const folder = await ensureContactsTrashFileNodeFolder({
-    transport,
-    account,
-    useWebSocket,
-  });
-  if (folder.ok === false) return folder;
-  let lastError: FileNodeDocumentError = { type: 'stateMismatch' };
-  for (let attempt = 0; attempt < MAX_DOCUMENT_WRITE_ATTEMPTS; attempt += 1) {
+  return retryFileNodeWrite(async () => {
+    const folder = await ensureContactsTrashFileNodeFolder({
+      transport,
+      account,
+      useWebSocket,
+    });
+    if (folder.ok === false) return folder;
     const legacy = await discoverJsonFileNodes({
       transport,
       account,
@@ -227,6 +227,9 @@ async function prepareContactsTrashFolder({
       useWebSocket,
     });
     if (legacy.ok === false) return legacy;
+    if (legacy.state !== folder.state) {
+      return { ok: false, error: { type: 'stateMismatch' as const } };
+    }
     if (legacy.nodes.length === 0) {
       return { ok: true, parentId: folder.node.id };
     }
@@ -239,6 +242,9 @@ async function prepareContactsTrashFolder({
       useWebSocket,
     });
     if (current.ok === false) return current;
+    if (current.state !== legacy.state) {
+      return { ok: false, error: { type: 'stateMismatch' as const } };
+    }
     const currentNames = new Set(current.nodes.map((node) => node.name));
     const collisions: string[] = [];
     for (const node of legacy.nodes) {
@@ -303,7 +309,9 @@ async function prepareContactsTrashFolder({
       });
       if (merged.ok === false) return merged;
     }
-    if (collisions.length > 0) continue;
+    if (collisions.length > 0) {
+      return { ok: false, error: { type: 'stateMismatch' as const } };
+    }
     const moved = await moveFileNodes({
       transport,
       account,
@@ -312,13 +320,10 @@ async function prepareContactsTrashFolder({
       parentId: folder.node.id,
       useWebSocket,
     });
-    if (moved.ok === true) {
-      return { ok: true, parentId: folder.node.id };
-    }
-    lastError = moved.error;
-    if (!isRetryableFileNodeDocumentError(moved.error)) return moved;
-  }
-  return { ok: false, error: lastError };
+    return moved.ok === true
+      ? { ok: true, parentId: folder.node.id }
+      : moved;
+  });
 }
 
 export async function syncContactsTrashFromServer({
@@ -335,42 +340,53 @@ export async function syncContactsTrashFromServer({
   if (!hasFileNodeCapability(transport, account)) {
     return { ok: true, skipped: true };
   }
-  const folder = await findContactsTrashFileNodeFolder({
-    transport,
-    account,
-    useWebSocket,
-  });
-  if (folder.ok === false) return folder;
-  const rootCollection = await discoverJsonFileNodes({
-    transport,
-    account,
-    nameMatch: 'stormbox-contacts-trash*.json',
-    acceptName: isContactsTrashFileName,
-    useWebSocket,
-  });
-  if (rootCollection.ok === false) return rootCollection;
-  const collections: Array<{
-    parentId: string | null;
-    collection: Extract<typeof rootCollection, { ok: true }>;
-  }> = [{
-    parentId: null,
-    collection: rootCollection,
-  }];
-  if (folder.status === 'found') {
-    const currentCollection = await discoverJsonFileNodes({
+  const locations = await retryFileNodeWrite(async () => {
+    const folder = await findContactsTrashFileNodeFolder({
+      transport,
+      account,
+      useWebSocket,
+    });
+    if (folder.ok === false) return folder;
+    const rootCollection = await discoverJsonFileNodes({
       transport,
       account,
       nameMatch: 'stormbox-contacts-trash*.json',
       acceptName: isContactsTrashFileName,
-      parentId: folder.node.id,
       useWebSocket,
     });
-    if (currentCollection.ok === false) return currentCollection;
-    collections.push({
-      parentId: folder.node.id,
-      collection: currentCollection,
-    });
-  }
+    if (rootCollection.ok === false) return rootCollection;
+    if (folder.state !== rootCollection.state) {
+      return { ok: false, error: { type: 'stateMismatch' as const } };
+    }
+    const collections: Array<{
+      parentId: string | null;
+      collection: SuccessfulFileNodeCollectionRead;
+    }> = [{
+      parentId: null,
+      collection: rootCollection,
+    }];
+    if (folder.status === 'found') {
+      const currentCollection = await discoverJsonFileNodes({
+        transport,
+        account,
+        nameMatch: 'stormbox-contacts-trash*.json',
+        acceptName: isContactsTrashFileName,
+        parentId: folder.node.id,
+        useWebSocket,
+      });
+      if (currentCollection.ok === false) return currentCollection;
+      if (currentCollection.state !== rootCollection.state) {
+        return { ok: false, error: { type: 'stateMismatch' as const } };
+      }
+      collections.push({
+        parentId: folder.node.id,
+        collection: currentCollection,
+      });
+    }
+    return { ok: true, rootCollection, collections };
+  });
+  if (locations.ok === false) return locations;
+  const { collections, rootCollection } = locations;
   const localShards = await handlers[DB_RPC.CONTACT_TRASH_GET_SHARDS]({
     accountId: account.id,
     metadataOnly: true,
@@ -480,9 +496,7 @@ export async function pushContactsTrash({
   });
   const snapshotWriteMaxBytes = contactsTrashSnapshotWriteMaxBytes(transport);
   for (const initial of pending) {
-    let lastError: FileNodeDocumentError = { type: 'stateMismatch' };
-    let complete = false;
-    for (let attempt = 0; attempt < MAX_DOCUMENT_WRITE_ATTEMPTS; attempt += 1) {
+    const result = await retryFileNodeWrite(async () => {
       const remote = await readJsonFileNode<ContactsTrashShardDocument>({
         transport,
         account,
@@ -492,11 +506,7 @@ export async function pushContactsTrash({
         parentId: folder.parentId,
         useWebSocket,
       });
-      if (remote.ok === false) {
-        lastError = remote.error;
-        if (DOCUMENT_CONFLICT_ERRORS.has(remote.error.type)) continue;
-        return remote;
-      }
+      if (remote.ok === false) return remote;
       if (remote.status === 'found') {
         const remoteDocument = validateContactsTrashShardDocument(remote.document);
         if (!remoteDocument) return invalidRemoteDocument();
@@ -518,8 +528,7 @@ export async function pushContactsTrash({
         shardNames: [initial.shardName],
       });
       if (!local || !local.dirty) {
-        complete = true;
-        break;
+        return { ok: true };
       }
       const document = validateContactsTrashShardDocument(local.doc);
       if (!document) return invalidRemoteDocument();
@@ -571,15 +580,13 @@ export async function pushContactsTrash({
           localRevision: local.localRevision,
         });
         if (confirmed.clean) {
-          complete = true;
-          break;
+          return { ok: true };
         }
-        continue;
+        return { ok: false, error: { type: 'stateMismatch' as const } };
       }
-      lastError = write.error;
-      if (!DOCUMENT_CONFLICT_ERRORS.has(write.error.type)) return write;
-    }
-    if (!complete) return { ok: false, error: lastError };
+      return write;
+    });
+    if (result.ok === false) return result;
   }
   const aggregate = await handlers[DB_RPC.CONTACT_TRASH_GET_DOCUMENT]({
     accountId: account.id,

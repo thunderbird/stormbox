@@ -153,6 +153,12 @@ const RETRYABLE_FILE_NODE_ERROR_TYPES = new Set<FileNodeDocumentErrorType>([
   'transport',
 ]);
 
+const FILE_NODE_WRITE_CONFLICT_TYPES = new Set<FileNodeDocumentErrorType>([
+  'alreadyExists',
+  'notFound',
+  'stateMismatch',
+]);
+
 const TYPED_FILE_NODE_ERROR_TYPES = new Set<FileNodeDocumentErrorType>([
   'unsupported',
   'accountNotFound',
@@ -194,6 +200,25 @@ export function isRetryableFileNodeDocumentError(
   error: Pick<FileNodeDocumentError, 'type'>,
 ): boolean {
   return RETRYABLE_FILE_NODE_ERROR_TYPES.has(error.type);
+}
+
+export function isFileNodeWriteConflictError(
+  error: Pick<FileNodeDocumentError, 'type'>,
+): boolean {
+  return FILE_NODE_WRITE_CONFLICT_TYPES.has(error.type);
+}
+
+export async function retryFileNodeWrite<
+  T extends { ok: true } | { ok: false; error: FileNodeDocumentError },
+>(
+  write: () => Promise<T>,
+): Promise<T> {
+  let result = await write();
+  for (let attempt = 1; attempt < 3 && result.ok === false; attempt += 1) {
+    if (!isFileNodeWriteConflictError(result.error)) return result;
+    result = await write();
+  }
+  return result;
 }
 
 function typedError(detail: any, fallback: FileNodeDocumentErrorType): FileNodeDocumentError {

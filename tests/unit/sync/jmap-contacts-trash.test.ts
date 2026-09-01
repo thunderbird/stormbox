@@ -311,6 +311,9 @@ describe('contacts trash FileNode sync', () => {
       rootDocument.entries.root = entryWithUid('uid-root');
       const currentDocument = emptyContactsTrashShardDocument();
       currentDocument.entries.current = entryWithUid('uid-current');
+      const concurrentDocument = emptyContactsTrashShardDocument();
+      concurrentDocument.entries.current = entryWithUid('uid-current');
+      concurrentDocument.entries.concurrent = entryWithUid('uid-concurrent');
       const blobs = new Map([
         ['root-blob', JSON.stringify(rootDocument)],
         ['current-blob', JSON.stringify(currentDocument)],
@@ -357,17 +360,39 @@ describe('contacts trash FileNode sync', () => {
         blobs.set(blobId, body);
         return { blobId, type: 'application/json', size: body.length };
       });
-      transport.handle('FileNode/query', (args) => ({
-        ...fileNodeQuery(nodes, args),
-        queryState: `query-${state}`,
-      }));
-      transport.handle('FileNode/get', ({ ids }) => ({
-        state: `state-${state}`,
-        list: (ids ?? nodes.map((node) => node.id))
-          .flatMap((id: string) => nodes.filter((node) => node.id === id)),
-        notFound: [],
-      }));
-      transport.handle('FileNode/set', ({ update = {}, destroy = [] }) => {
+      let exactShardQuery = false;
+      let exactShardGets = 0;
+      transport.handle('FileNode/query', (args) => {
+        exactShardQuery = args.filter?.name === fileName;
+        return {
+          ...fileNodeQuery(nodes, args),
+          queryState: `query-${state}`,
+        };
+      });
+      transport.handle('FileNode/get', ({ ids }) => {
+        if (exactShardQuery) {
+          exactShardGets += 1;
+          exactShardQuery = false;
+          if (exactShardGets === 2) {
+            blobs.set('current-concurrent', JSON.stringify(concurrentDocument));
+            const currentNode = nodes.find((node) => node.id === 'current-shard')!;
+            currentNode.blobId = 'current-concurrent';
+            state += 1;
+          }
+        }
+        return {
+          state: `state-${state}`,
+          list: (ids ?? nodes.map((node) => node.id))
+            .flatMap((id: string) => nodes.filter((node) => node.id === id)),
+          notFound: [],
+        };
+      });
+      transport.handle('FileNode/set', ({
+        ifInState,
+        update = {},
+        destroy = [],
+      }) => {
+        expect(ifInState).toBe(`state-${state}`);
         const updated: Record<string, null> = {};
         for (const [id, patch] of Object.entries<any>(update)) {
           const node = nodes.find((candidate) => candidate.id === id);
@@ -403,7 +428,9 @@ describe('contacts trash FileNode sync', () => {
       expect(JSON.parse(blobs.get(shards[0].blobId)!).entries).toMatchObject({
         root: { uid: 'uid-root' },
         current: { uid: 'uid-current' },
+        concurrent: { uid: 'uid-concurrent' },
       });
+      expect(exactShardGets).toBe(4);
     } finally {
       await engine.close();
     }
