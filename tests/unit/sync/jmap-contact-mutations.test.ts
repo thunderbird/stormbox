@@ -3,7 +3,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
-import { SEND_PHASE, SERVICE_KIND } from '../../../src/constants/states';
+import {
+  CONTACT_PHASE,
+  SEND_PHASE,
+  SERVICE_KIND,
+} from '../../../src/constants/states';
 import { MUTATION_TYPES, processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { withContactDetailKeys } from '../../../src/utils/contact-fields';
@@ -158,7 +162,7 @@ describe('a contact write the cache did not follow', () => {
     const lost = await processMutationRow({ transport: first, account, handlers, row });
     expect(lost).toMatchObject({ ok: false, error: { type: 'serverFail' } });
     const uncertain = await reload(row.id);
-    expect(uncertain.phase).toBe('contact_create_pending');
+    expect(uncertain.phase).toBe(CONTACT_PHASE.CREATE_PENDING);
     const request = JSON.parse(uncertain.request_json);
     expect(JSON.parse(uncertain.server_response_json).contactCreateUids).toEqual([request.uid]);
 

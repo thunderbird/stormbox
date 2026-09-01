@@ -1,5 +1,9 @@
 import { randomToken } from './random-token';
 
+function compactRandomToken(): string {
+  return randomToken().replaceAll('-', '');
+}
+
 export function normalizeMessageId(value: string): string {
   return value.replace(/^<|>$/g, '');
 }
@@ -51,9 +55,9 @@ function asciiDomain(domain: string): string {
 export function makeMessageId(identityEmail: string | null | undefined): string {
   const at = String(identityEmail ?? '').lastIndexOf('@');
   const domain = at > -1 ? String(identityEmail).slice(at + 1).trim() : '';
-  return `<${randomToken()}@${asciiDomain(domain) || 'localhost'}>`;
+  return `<${compactRandomToken()}@${asciiDomain(domain) || 'localhost'}>`;
 }
 
 export function makeOperationId(): string {
-  return randomToken();
+  return compactRandomToken();
 }

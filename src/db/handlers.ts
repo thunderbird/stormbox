@@ -5157,9 +5157,9 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
              FROM pending_mutations
             WHERE id = ?
               AND account_id = ?
-              AND mutation_type = 'saveDraft'
+              AND mutation_type = ?
               AND local_status IN ('failed','conflicted','retry')`,
-          [mutationId, accountId],
+          [mutationId, accountId, MUTATION_TYPE.SAVE_DRAFT],
         );
         const error = jsonRecord(row?.error_json);
         if (error?.type === 'draftAbandonedPreserveCopies') {
@@ -5174,9 +5174,9 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                   updated_at = ?
             WHERE id = ?
               AND account_id = ?
-              AND mutation_type = 'saveDraft'
+              AND mutation_type = ?
               AND local_status IN ('failed','conflicted','retry')`,
-          [ts, mutationId, accountId],
+          [ts, mutationId, accountId, MUTATION_TYPE.SAVE_DRAFT],
         );
       });
       if ((result.changes ?? 0) > 0) {
