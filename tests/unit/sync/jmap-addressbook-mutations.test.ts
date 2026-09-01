@@ -361,6 +361,67 @@ describe('AddressBook mutations', () => {
       .toBe(ADDRESSBOOK_PHASE.CREATE_SUBMITTING);
   });
 
+  it('recovers a lost create whose baseline holds a book with a blank name', async () => {
+    // Recovery only needs baseline ids to exclude pre-existing books, so a
+    // server book whose name canonicalises to '' must not make the
+    // checkpoint unreadable and turn a possibly-accepted create terminal.
+    const server = addressBookServer({
+      books: [
+        makeBook('book-blank', '   '),
+        makeBook('book-projects', 'Projects'),
+      ],
+    });
+    let setCalls = 0;
+    server.transport.handle('AddressBook/set', () => {
+      setCalls += 1;
+      return { created: { addressbook: { id: 'duplicate-book' } } };
+    });
+    const row = await queueRow(MUTATION_TYPES.CREATE_ADDRESSBOOK, {
+      operationId: 'blank-name-baseline',
+      name: 'Projects',
+    });
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE pending_mutations
+               SET phase = ?, server_response_json = ?
+             WHERE id = ?`,
+      params: [
+        ADDRESSBOOK_PHASE.CREATE_SUBMITTING,
+        JSON.stringify({
+          addressBook: {
+            version: 1,
+            operation: 'create',
+            baselineAddressBooks: [{
+              id: 'book-blank',
+              name: '',
+              description: null,
+              sortOrder: 0,
+              isSubscribed: true,
+            }],
+            baselineState: 'addressbooks-1',
+            requestAddressBook: {
+              name: 'Projects',
+              description: null,
+              sortOrder: 0,
+              isSubscribed: true,
+            },
+          },
+        }),
+        row.id,
+      ],
+    });
+
+    await expect(processMutationRow({
+      transport: server.transport,
+      account,
+      handlers,
+      row: await reload(row.id),
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { ids: ['book-projects'] },
+    });
+    expect(setCalls).toBe(0);
+  });
+
   it.each([
     ['malformed checkpoint without a phase', null, '{'],
     ['missing create checkpoint', ADDRESSBOOK_PHASE.CREATE_SUBMITTING, null],
@@ -372,6 +433,29 @@ describe('AddressBook mutations', () => {
           version: 1,
           operation: 'create',
           baselineAddressBooks: [],
+          baselineState: 'addressbooks-1',
+          requestAddressBook: {
+            name: 'Projects',
+            description: null,
+            sortOrder: 0,
+            isSubscribed: true,
+          },
+        },
+      }),
+    ],
+    [
+      'create checkpoint with a baseline book missing its id',
+      ADDRESSBOOK_PHASE.CREATE_SUBMITTING,
+      JSON.stringify({
+        addressBook: {
+          version: 1,
+          operation: 'create',
+          baselineAddressBooks: [{
+            name: 'Personal',
+            description: null,
+            sortOrder: 0,
+            isSubscribed: true,
+          }],
           baselineState: 'addressbooks-1',
           requestAddressBook: {
             name: 'Projects',

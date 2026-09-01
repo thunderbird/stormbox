@@ -480,6 +480,17 @@ function validCanonicalAddressBook(
     && typeof book.isSubscribed === 'boolean';
 }
 
+/**
+ * Recovery consumes baseline entries by id alone, so that is all a
+ * persisted entry has to carry: a pre-existing server book with a blank
+ * name is a legitimate baseline member, not a corrupt checkpoint.
+ */
+function validBaselineAddressBook(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const id = (value as Record<string, unknown>).id;
+  return typeof id === 'string' && id.length > 0;
+}
+
 function parseCreateCheckpoint(
   row: any,
 ): MutationCheckpointRead<AddressBookCheckpoint> {
@@ -489,8 +500,7 @@ function parseCreateCheckpoint(
   if (
     checkpoint.operation !== 'create'
     || !Array.isArray(checkpoint.baselineAddressBooks)
-    || !checkpoint.baselineAddressBooks.every((book) =>
-      validCanonicalAddressBook(book, true))
+    || !checkpoint.baselineAddressBooks.every(validBaselineAddressBook)
     || !validCanonicalAddressBook(checkpoint.requestAddressBook, false)
   ) {
     return { status: 'invalid' };
