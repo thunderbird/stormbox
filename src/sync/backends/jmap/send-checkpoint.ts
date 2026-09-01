@@ -45,6 +45,16 @@ export interface SendCheckpoint {
   cacheAttempts: number;
   /** The accepted-send checkpoint and trusted-recipient mutation committed together. */
   trustedRecipientsQueued: boolean;
+  /** Draft revisions whose post-send removal is not durably confirmed yet. */
+  pendingDraftDestroyIds: string[] | null;
+}
+
+function draftEmailIds(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids = value.filter((id): id is string =>
+    typeof id === 'string' && id.trim().length > 0);
+  if (ids.length !== value.length || new Set(ids).size !== ids.length) return null;
+  return ids;
 }
 
 /** Read the checkpoint off a pending_mutations row, if it has one. */
@@ -57,6 +67,12 @@ export function readCheckpoint(row: any): SendCheckpoint | null {
     ) {
       return null;
     }
+    const pendingDraftDestroyIds = parsed.pendingDraftDestroyIds == null
+      ? null
+      : draftEmailIds(parsed.pendingDraftDestroyIds);
+    if (parsed.pendingDraftDestroyIds != null && pendingDraftDestroyIds == null) {
+      return null;
+    }
     return {
       operationId: parsed.operationId,
       messageId: parsed.messageId,
@@ -65,12 +81,16 @@ export function readCheckpoint(row: any): SendCheckpoint | null {
         typeof parsed.submissionRemoteId === 'string' ? parsed.submissionRemoteId : null,
       cacheAttempts: Number.isInteger(parsed.cacheAttempts) ? parsed.cacheAttempts : 0,
       trustedRecipientsQueued: parsed.trustedRecipientsQueued === true,
+      pendingDraftDestroyIds,
     };
   });
   return result.status === 'valid' ? result.checkpoint : null;
 }
 
-export function newCheckpoint(identityEmail: string | null | undefined): SendCheckpoint {
+export function newCheckpoint(
+  identityEmail: string | null | undefined,
+  pendingDraftDestroyIds: unknown = [],
+): SendCheckpoint {
   return {
     operationId: makeOperationId(),
     messageId: makeMessageId(identityEmail),
@@ -78,6 +98,7 @@ export function newCheckpoint(identityEmail: string | null | undefined): SendChe
     submissionRemoteId: null,
     cacheAttempts: 0,
     trustedRecipientsQueued: false,
+    pendingDraftDestroyIds: draftEmailIds(pendingDraftDestroyIds) ?? [],
   };
 }
 

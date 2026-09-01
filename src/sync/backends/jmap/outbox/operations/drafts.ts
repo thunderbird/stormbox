@@ -18,13 +18,21 @@ import {
 } from '../../draft-checkpoint';
 import { findDraftRevision } from '../../draft-reconcile';
 import { callJmap, pickResponseById } from '../../invoke';
+import { maxObjectsInGet } from '../../limits';
+import {
+  readMutationCheckpoint,
+  saveMutationCheckpoint,
+} from '../../mutation-checkpoint';
 import {
   classifyAuthenticationOrAuthorizationError,
   isAuthenticationError,
   JMAP_CAPS,
 } from '../../transport';
+import {
+  destroyDraftEmails,
+  persistDraftSuccessor,
+} from '../draft-apply';
 import { extractMethodErrorById, isRetryableDraftError } from '../errors';
-import { dropDraftPredecessors, persistDraftSuccessor } from '../draft-apply';
 import { resolveFolderRemoteIds, resolveIdentity } from '../resolve';
 
 function draftFailure(type: string, detail: any, retryable = true, result?: any) {
@@ -49,37 +57,47 @@ function draftTransportFailure(type: string, error: any) {
   }, authentication?.retryable ?? true);
 }
 
-async function reconcileDestroyedIds({
-  transport,
-  account,
-  ids,
-  useWebSocket,
-}): Promise<{ conclusive: boolean; gone: string[]; existing: string[] }> {
-  try {
-    const result = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-      methodCalls: [[
-        'Email/get',
-        { accountId: account.remote_account_id, ids, properties: ['id'] },
-        'dr1',
-      ]],
-      useWebSocket,
-    });
-    const response = pickResponseById(result, 'Email/get', 'dr1');
-    if (!response || !Array.isArray(response.list) || !Array.isArray(response.notFound)) {
-      return { conclusive: false, gone: [], existing: ids };
-    }
-    const existing = response.list.map((email) => email?.id).filter(Boolean);
-    const gone = response.notFound.filter((id) => ids.includes(id));
-    return {
-      conclusive: new Set([...existing, ...gone]).size === new Set(ids).size,
-      gone,
-      existing,
-    };
-  } catch (error) {
-    if (isAuthenticationError(error)) throw error;
-    return { conclusive: false, gone: [], existing: ids };
-  }
+interface DiscardDraftCheckpoint {
+  version: 1;
+  pendingDestroyIds: string[];
+  destroyedIds: string[];
+}
+
+function exactDraftIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every(isDraftEmailId)) return null;
+  const ids = value as string[];
+  return new Set(ids).size === ids.length ? [...ids] : null;
+}
+
+function readDiscardDraftCheckpoint(row: any) {
+  return readMutationCheckpoint<DiscardDraftCheckpoint>(row, (parsed: any) => {
+    if (!parsed || parsed.version !== 1) return null;
+    const pendingDestroyIds = exactDraftIds(parsed.pendingDestroyIds);
+    const destroyedIds = exactDraftIds(parsed.destroyedIds);
+    if (!pendingDestroyIds || !destroyedIds) return null;
+    const destroyed = new Set(destroyedIds);
+    if (pendingDestroyIds.some((id) => destroyed.has(id))) return null;
+    return { version: 1, pendingDestroyIds, destroyedIds };
+  });
+}
+
+async function saveDiscardDraftCheckpoint({
+  handlers,
+  rowId,
+  checkpoint,
+}: {
+  handlers: Record<string, (params: any) => Promise<any>>;
+  rowId: number | null;
+  checkpoint: DiscardDraftCheckpoint;
+}): Promise<DiscardDraftCheckpoint> {
+  if (rowId == null) return checkpoint;
+  await saveMutationCheckpoint({
+    handlers,
+    rowId,
+    phase: null,
+    checkpoint,
+  });
+  return checkpoint;
 }
 
 async function verifyDraftBases({
@@ -104,40 +122,61 @@ async function verifyDraftBases({
   }
   try {
     const needsBodyParts = attachments.some((attachment) => attachment.partId != null);
-    const result = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-      methodCalls: [[
-        'Email/get',
-        {
-          accountId: account.remote_account_id,
-          ids,
-          properties: [
-            'id', 'mailboxIds', 'keywords',
-            ...(needsBodyParts ? ['bodyStructure', 'attachments'] : []),
-          ],
-          ...(needsBodyParts ? {
-            bodyProperties: [
-              'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
+    const emails: any[] = [];
+    const getLimit = maxObjectsInGet(transport);
+    for (let offset = 0; offset < ids.length; offset += getLimit) {
+      const chunk = ids.slice(offset, offset + getLimit);
+      const callId = `draft-base-${offset / getLimit}`;
+      const result = await callJmap(transport, {
+        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+        methodCalls: [[
+          'Email/get',
+          {
+            accountId: account.remote_account_id,
+            ids: chunk,
+            properties: [
+              'id', 'mailboxIds', 'keywords',
+              ...(needsBodyParts ? ['bodyStructure', 'attachments'] : []),
             ],
-          } : {}),
-        },
-        'db1',
-      ]],
-      useWebSocket,
-    });
-    const response = pickResponseById(result, 'Email/get', 'db1');
-    if (!response || !Array.isArray(response.list) || !Array.isArray(response.notFound)) {
-      return 'inconclusive';
+            ...(needsBodyParts ? {
+              bodyProperties: [
+                'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
+              ],
+            } : {}),
+          },
+          callId,
+        ]],
+        useWebSocket,
+      });
+      const response = pickResponseById(result, 'Email/get', callId);
+      if (!response || !Array.isArray(response.list) || !Array.isArray(response.notFound)) {
+        const methodError = extractMethodErrorById(result, callId);
+        if (isAuthenticationError(methodError)) throw methodError;
+        return 'inconclusive';
+      }
+      const observedIds = [
+        ...response.list.map((email) => email?.id),
+        ...response.notFound,
+      ];
+      const requested = new Set(chunk);
+      if (
+        observedIds.some((id) => typeof id !== 'string' || !requested.has(id))
+        || new Set(observedIds).size !== observedIds.length
+        || new Set(observedIds).size !== requested.size
+      ) {
+        return 'inconclusive';
+      }
+      emails.push(...response.list);
     }
     const present = new Set(
-      response.list
+      emails
         .filter((email) =>
           email?.mailboxIds?.[draftsRemoteId] === true && email?.keywords?.$draft === true)
         .map((email) => email.id),
     );
     if (!ids.every((id) => present.has(id))) return 'stale';
     try {
-      assertCanonicalAttachmentOwnership(attachments, response.list);
+      assertCanonicalAttachmentOwnership(attachments, emails);
     } catch (error: any) {
       return error?.type === 'blobNotFound' ? 'attachment-missing' : 'inconclusive';
     }
@@ -402,82 +441,30 @@ async function runSaveDraft({
       { ...checkpoint, pendingDestroyIds: pending },
       DRAFT_PHASE.CLEANUP_PENDING,
     );
-    let result;
+    let cleanup;
     try {
-      result = await callJmap(transport, {
-        using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-        methodCalls: [[
-          'Email/set',
-          { accountId: account.remote_account_id, destroy: pending },
-          'dd1',
-        ]],
+      cleanup = await destroyDraftEmails({
+        transport,
+        account,
+        handlers,
+        draftsRemoteId,
+        remoteIds: pending,
         useWebSocket,
+        onProgress: async ({ remainingIds }) => {
+          pending = remainingIds;
+          checkpoint = await saveDraftCheckpoint(
+            handlers,
+            rowId,
+            { ...checkpoint, pendingDestroyIds: pending },
+            DRAFT_PHASE.CLEANUP_PENDING,
+          );
+        },
       });
     } catch (error: any) {
       return draftTransportFailure('draftCleanupFailed', error);
     }
-    const response = pickResponseById(result, 'Email/set', 'dd1');
-    if (!response) {
-      const methodError = extractMethodErrorById(result, 'dd1');
-      if (methodError?.type === 'serverPartialFail') {
-        const reconciled = await reconcileDestroyedIds({
-          transport,
-          account,
-          ids: pending,
-          useWebSocket,
-        });
-        if (reconciled.gone.length > 0) {
-          await dropDraftPredecessors({
-            transport,
-            account,
-            handlers,
-            draftsRemoteId,
-            remoteIds: reconciled.gone,
-            useWebSocket,
-          });
-        }
-        checkpoint = await saveDraftCheckpoint(
-          handlers,
-          rowId,
-          { ...checkpoint, pendingDestroyIds: reconciled.existing },
-          DRAFT_PHASE.CLEANUP_PENDING,
-        );
-        if (reconciled.conclusive && reconciled.existing.length === 0) {
-          pending = [];
-        } else {
-          return draftFailure('draftCleanupFailed', methodError);
-        }
-      } else {
-        return draftFailure('draftCleanupFailed', methodError);
-      }
-    }
-    if (response) {
-      const destroyed = new Set<string>(response.destroyed ?? []);
-      const confirmed = pending.filter((id) =>
-        destroyed.has(id) || response.notDestroyed?.[id]?.type === 'notFound');
-      if (confirmed.length > 0) {
-        await dropDraftPredecessors({
-          transport,
-          account,
-          handlers,
-          draftsRemoteId,
-          remoteIds: confirmed,
-          useWebSocket,
-        });
-      }
-      pending = pending.filter((id) => !confirmed.includes(id));
-      checkpoint = await saveDraftCheckpoint(
-        handlers,
-        rowId,
-        { ...checkpoint, pendingDestroyIds: pending },
-        DRAFT_PHASE.CLEANUP_PENDING,
-      );
-      if (pending.length > 0) {
-        const detail = Object.fromEntries(
-          pending.map((id) => [id, response.notDestroyed?.[id] ?? { type: 'notDestroyed' }]),
-        );
-        return draftFailure('draftCleanupFailed', detail);
-      }
+    if (cleanup.ok === false) {
+      return draftFailure('draftCleanupFailed', cleanup.error);
     }
   }
 
@@ -502,6 +489,7 @@ async function runSaveDraft({
 async function runDiscardDraft({
   transport, account, handlers, row, request, useWebSocket,
 }) {
+  const rowId = row?.id ?? null;
   const inputIds: unknown[] = Array.isArray(request?.draftEmailIds)
     ? request.draftEmailIds
     : [];
@@ -512,12 +500,23 @@ async function runDiscardDraft({
     handlers,
     [request.draftsFolderId],
   ))[0] ?? null;
-  if (request?.probeRevision === true) {
-    const checkpoint = readDraftCheckpoint(row);
-    if (!checkpoint || !draftsRemoteId) {
+  const checkpointRead = readDiscardDraftCheckpoint(row);
+  let checkpoint = checkpointRead.status === 'valid'
+    ? checkpointRead.checkpoint
+    : null;
+  if (!checkpoint && checkpointRead.status === 'invalid' && request?.probeRevision !== true) {
+    return draftFailure(
+      'draftDiscardCheckpointConflict',
+      { reason: 'unreadableCheckpoint' },
+      false,
+    );
+  }
+  if (!checkpoint && request?.probeRevision === true) {
+    const draftCheckpoint = readDraftCheckpoint(row);
+    if (!draftCheckpoint || !draftsRemoteId) {
       return draftFailure(
         'draftDiscardProbeFailed',
-        { reason: checkpoint ? 'unknownDraftsFolder' : 'unreadableCheckpoint' },
+        { reason: draftCheckpoint ? 'unknownDraftsFolder' : 'unreadableCheckpoint' },
         false,
       );
     }
@@ -525,8 +524,8 @@ async function runDiscardDraft({
       transport,
       account,
       draftsRemoteId,
-      revisionMessageId: checkpoint.revisionMessageId,
-      preparedEmail: checkpoint.preparedEmail,
+      revisionMessageId: draftCheckpoint.revisionMessageId,
+      preparedEmail: draftCheckpoint.preparedEmail,
       useWebSocket,
     });
     if (probe.outcome === 'inconclusive') {
@@ -542,70 +541,64 @@ async function runDiscardDraft({
       ids = [...new Set([...ids, ...probe.emailIds.filter(isDraftEmailId)])];
     }
   }
-  if (ids.length === 0) {
-    return { ok: true, result: { draftSessionId: request?.draftSessionId, destroyed: [] } };
-  }
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/set',
-      { accountId: account.remote_account_id, destroy: ids },
-      'dd1',
-    ]],
-    useWebSocket,
-  });
-  const response = pickResponseById(result, 'Email/set', 'dd1');
-  if (!response) {
-    const methodError = extractMethodErrorById(result, 'dd1');
-    if (methodError?.type !== 'serverPartialFail') {
-      return draftFailure('draftDiscardFailed', methodError);
-    }
-    const reconciled = await reconcileDestroyedIds({
-      transport,
-      account,
-      ids,
-      useWebSocket,
+  if (!checkpoint) {
+    checkpoint = await saveDiscardDraftCheckpoint({
+      handlers,
+      rowId,
+      checkpoint: {
+        version: 1,
+        pendingDestroyIds: ids,
+        destroyedIds: [],
+      },
     });
-    if (reconciled.gone.length > 0) {
-      await dropDraftPredecessors({
-        transport,
-        account,
-        handlers,
-        draftsRemoteId,
-        remoteIds: reconciled.gone,
-        useWebSocket,
-      });
-    }
-    return reconciled.conclusive && reconciled.existing.length === 0
-      ? {
-          ok: true,
-          result: { draftSessionId: request?.draftSessionId, destroyed: reconciled.gone },
-        }
-      : draftFailure('draftDiscardFailed', methodError);
   }
-  const destroyed = new Set<string>(response.destroyed ?? []);
-  const confirmed = ids.filter((id) =>
-    destroyed.has(id) || response.notDestroyed?.[id]?.type === 'notFound');
-  if (confirmed.length > 0) {
-    await dropDraftPredecessors({
+  if (checkpoint.pendingDestroyIds.length === 0) {
+    return {
+      ok: true,
+      result: {
+        draftSessionId: request?.draftSessionId,
+        destroyed: checkpoint.destroyedIds,
+      },
+    };
+  }
+  let durableCheckpoint: DiscardDraftCheckpoint = checkpoint;
+  let cleanup;
+  try {
+    cleanup = await destroyDraftEmails({
       transport,
       account,
       handlers,
       draftsRemoteId,
-      remoteIds: confirmed,
+      remoteIds: durableCheckpoint.pendingDestroyIds,
       useWebSocket,
+      onProgress: async ({ confirmedIds, remainingIds }) => {
+        durableCheckpoint = await saveDiscardDraftCheckpoint({
+          handlers,
+          rowId,
+          checkpoint: {
+            ...durableCheckpoint,
+            pendingDestroyIds: remainingIds,
+            destroyedIds: [...new Set([
+              ...durableCheckpoint.destroyedIds,
+              ...confirmedIds,
+            ])],
+          },
+        });
+      },
     });
+  } catch (error: any) {
+    return draftTransportFailure('draftDiscardFailed', error);
   }
-  const remaining = ids.filter((id) => !confirmed.includes(id));
-  if (remaining.length > 0) {
-    return draftFailure('draftDiscardFailed', Object.fromEntries(
-      remaining.map((id) => [id, response.notDestroyed?.[id] ?? { type: 'notDestroyed' }]),
-    ));
+  if (cleanup.ok === false) {
+    return draftFailure('draftDiscardFailed', cleanup.error);
   }
   return {
     ok: true,
-    response: result,
-    result: { draftSessionId: request?.draftSessionId, destroyed: confirmed },
+    response: cleanup.response,
+    result: {
+      draftSessionId: request?.draftSessionId,
+      destroyed: durableCheckpoint.destroyedIds,
+    },
   };
 }
 

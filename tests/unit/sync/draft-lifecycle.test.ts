@@ -19,6 +19,7 @@ import {
   saveDraftCheckpoint,
 } from '../../../src/sync/backends/jmap/draft-checkpoint';
 import { findDraftRevision } from '../../../src/sync/backends/jmap/draft-reconcile';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
 import { MockTransport } from './_mock-transport';
 
 let engine: any;
@@ -504,6 +505,67 @@ describe('JMAP draft replacement', () => {
       .toEqual(new Set(['draft-old', 'draft-new']));
   });
 
+  it('chunks discard cleanup and checkpoints every confirmed chunk', async () => {
+    transport.session.capabilities[JMAP_CAPS.CORE] = {
+      ...transport.session.capabilities[JMAP_CAPS.CORE],
+      maxObjectsInGet: 2,
+      maxObjectsInSet: 2,
+    };
+    const draftEmailIds = Array.from(
+      { length: 5 },
+      (_, index) => `discard-${index + 1}`,
+    );
+    for (const id of draftEmailIds) {
+      serverEmails.set(id, {
+        id,
+        mailboxIds: { 'mb-drafts': true },
+        keywords: { $draft: true },
+      });
+    }
+    const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.DISCARD_DRAFT,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        draftSessionId: 'session-1',
+        draftsFolderId: drafts.id,
+        draftEmailIds,
+      }),
+    });
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { destroyed: draftEmailIds },
+    });
+
+    const destroyCalls = transport.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name, params]) => name === 'Email/set' && params.destroy);
+    expect(destroyCalls.map(([, params]) => params.destroy)).toEqual([
+      draftEmailIds.slice(0, 2),
+      draftEmailIds.slice(2, 4),
+      draftEmailIds.slice(4),
+    ]);
+    const checkpoint = await engine.get(
+      'SELECT server_response_json FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    expect(JSON.parse(checkpoint.server_response_json)).toEqual({
+      version: 1,
+      pendingDestroyIds: [],
+      destroyedIds: draftEmailIds,
+    });
+  });
+
   it('turns an ambiguous queued create into a probe-only discard', async () => {
     loseNextCreateResponse = true;
     const { id } = await enqueueSave(1);
@@ -669,6 +731,80 @@ describe('JMAP draft replacement', () => {
     );
     expect(local).toEqual([
       expect.objectContaining({ remote_id: 'draft-2', subject: 'Draft 2', is_draft: 1 }),
+    ]);
+  });
+
+  it('chunks base checks and checkpoints completed predecessor cleanup', async () => {
+    transport.session.capabilities[JMAP_CAPS.CORE] = {
+      ...transport.session.capabilities[JMAP_CAPS.CORE],
+      maxObjectsInGet: 2,
+      maxObjectsInSet: 2,
+    };
+    const baseIds = Array.from({ length: 5 }, (_, index) => `base-${index + 1}`);
+    for (const id of baseIds) {
+      serverEmails.set(id, {
+        id,
+        mailboxIds: { 'mb-drafts': true },
+        keywords: { $draft: true },
+      });
+    }
+    const defaultEmailSet = transport._handlers.get('Email/set')!;
+    const destroyRequests: string[][] = [];
+    let rejectSecondChunk = true;
+    transport.handle('Email/set', (params) => {
+      if (params.destroy) {
+        destroyRequests.push([...params.destroy]);
+        if (rejectSecondChunk && destroyRequests.length === 2) {
+          rejectSecondChunk = false;
+          return {
+            notDestroyed: Object.fromEntries(
+              params.destroy.map((id) => [id, { type: 'serverFail' }]),
+            ),
+          };
+        }
+      }
+      return defaultEmailSet(params);
+    });
+    const inserted = await enqueueSave(2, baseIds);
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { type: 'draftCleanupFailed' },
+    });
+
+    const afterFailure = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    expect(JSON.parse(afterFailure.server_response_json).pendingDestroyIds)
+      .toEqual(baseIds.slice(2));
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: afterFailure,
+    })).resolves.toMatchObject({ ok: true });
+
+    const baseGets = transport.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name, params]) =>
+        name === 'Email/get' && params.ids?.some((id) => id.startsWith('base-')));
+    expect(baseGets).toHaveLength(3);
+    expect(baseGets.every(([, params]) => params.ids.length <= 2)).toBe(true);
+    expect(destroyRequests).toEqual([
+      baseIds.slice(0, 2),
+      baseIds.slice(2, 4),
+      baseIds.slice(2, 4),
+      baseIds.slice(4),
     ]);
   });
 
@@ -1011,6 +1147,111 @@ describe('JMAP draft replacement', () => {
       [account.id, 'draft-1'],
     );
     expect(oldDraft).toBeNull();
+  });
+
+  it('resumes post-send cleanup from its first unconfirmed chunk', async () => {
+    transport.session.capabilities[JMAP_CAPS.CORE] = {
+      ...transport.session.capabilities[JMAP_CAPS.CORE],
+      maxObjectsInGet: 2,
+      maxObjectsInSet: 2,
+    };
+    const draftEmailIds = Array.from(
+      { length: 5 },
+      (_, index) => `send-draft-${index + 1}`,
+    );
+    for (const id of draftEmailIds) {
+      serverEmails.set(id, {
+        id,
+        mailboxIds: { 'mb-drafts': true },
+        keywords: { $draft: true },
+      });
+    }
+    let submissions = 0;
+    transport.handle('EmailSubmission/set', (params) => {
+      submissions += 1;
+      const submitted = params.create.s1;
+      const email = serverEmails.get(submitted.emailId);
+      email.mailboxIds = { 'mb-sent': true };
+      email.keywords = { $seen: true };
+      return { created: { s1: { id: 'submission-chunked' } } };
+    });
+    const defaultEmailSet = transport._handlers.get('Email/set')!;
+    const destroyRequests: string[][] = [];
+    let rejectSecondChunk = true;
+    transport.handle('Email/set', (params) => {
+      if (params.destroy) {
+        destroyRequests.push([...params.destroy]);
+        if (rejectSecondChunk && destroyRequests.length === 2) {
+          rejectSecondChunk = false;
+          return {
+            notDestroyed: Object.fromEntries(
+              params.destroy.map((id) => [id, { type: 'serverFail' }]),
+            ),
+          };
+        }
+      }
+      return defaultEmailSet(params);
+    });
+    const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SEND,
+      targetMessageId: null,
+      requestJson: JSON.stringify({
+        draftSessionId: 'session-1',
+        identityId: identity.id,
+        to: [{ email: 'recipient@example.com' }],
+        cc: [],
+        bcc: [],
+        subject: 'Chunk cleanup',
+        textBody: 'Final body',
+        htmlBody: '',
+        inReplyTo: [],
+        references: [],
+        draftsFolderId: drafts.id,
+        sentFolderId: sent.id,
+        outboxFolderId: null,
+        draftEmailIds,
+      }),
+    });
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: 'cacheReconcileFailed',
+        result: { submitted: true },
+      },
+    });
+    const afterFailure = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    expect(JSON.parse(afterFailure.server_response_json)).toMatchObject({
+      pendingDraftDestroyIds: draftEmailIds.slice(2),
+      cacheAttempts: 1,
+    });
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row: afterFailure,
+    })).resolves.toMatchObject({ ok: true });
+    expect(submissions).toBe(1);
+    expect(destroyRequests).toEqual([
+      draftEmailIds.slice(0, 2),
+      draftEmailIds.slice(2, 4),
+      draftEmailIds.slice(2, 4),
+      draftEmailIds.slice(4),
+    ]);
   });
 
   it('checkpoints sent attachment handles before draft cleanup and never resubmits repair', async () => {

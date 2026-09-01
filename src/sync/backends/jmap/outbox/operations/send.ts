@@ -12,6 +12,7 @@ import {
 } from '../../compose-email';
 import { assertCanonicalAttachmentOwnership } from '../../compose-body-checkpoint';
 import { callJmap, pickResponse, pickResponseById } from '../../invoke';
+import { maxObjectsInGet } from '../../limits';
 import { CACHE_REPAIR_MAX_ATTEMPTS } from '../../mutation-checkpoint';
 import {
   newCheckpoint,
@@ -36,7 +37,7 @@ import {
   submissionError,
 } from '../errors';
 import { resolveFolderRemoteIds, resolveIdentity } from '../resolve';
-import { dropDraftPredecessors } from '../draft-apply';
+import { destroyDraftEmails } from '../draft-apply';
 import { fileSentCopy, markFolderViewsStale } from '../send-apply';
 import { rejectedSendOutcome } from '../send-outcome';
 import type { SendOutcome } from '../send-outcome';
@@ -72,6 +73,13 @@ function buildEnvelopeRecipients(request: any): Array<{ email: string }> {
   return recipients;
 }
 
+function normalizedDraftEmailIds(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.filter((id): id is string =>
+        typeof id === 'string' && id.trim().length > 0))]
+    : [];
+}
+
 async function verifySendAttachmentSources({
   transport,
   account,
@@ -88,45 +96,54 @@ async function verifySendAttachmentSources({
   useWebSocket: boolean;
 }): Promise<void> {
   if (!attachments.some((attachment) => attachment.partId != null)) return;
-  const ids = Array.isArray(draftEmailIds)
-    ? [...new Set(draftEmailIds.filter((id): id is string =>
-      typeof id === 'string' && id.trim().length > 0))]
-    : [];
+  const ids = normalizedDraftEmailIds(draftEmailIds);
   if (!draftsRemoteId || ids.length === 0) {
     const error: any = new Error('Canonical send attachment has no live draft owner');
     error.type = 'blobNotFound';
     throw error;
   }
-  const payload = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/get',
-      {
-        accountId: account.remote_account_id,
-        ids,
-        properties: [
-          'id', 'mailboxIds', 'keywords', 'bodyStructure', 'attachments',
-        ],
-        bodyProperties: [
-          'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
-        ],
-      },
-      'sa1',
-    ]],
-    useWebSocket,
-  });
-  const response = pickResponseById(payload, 'Email/get', 'sa1');
-  const liveOwners = Array.isArray(response?.list)
-    ? response.list.filter((email) =>
-      email?.mailboxIds?.[draftsRemoteId] === true && email?.keywords?.$draft === true)
-    : [];
-  if (!response
+  const liveOwners: any[] = [];
+  const getLimit = maxObjectsInGet(transport);
+  for (let offset = 0; offset < ids.length; offset += getLimit) {
+    const chunk = ids.slice(offset, offset + getLimit);
+    const callId = `send-attachment-${offset / getLimit}`;
+    const payload = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
+      methodCalls: [[
+        'Email/get',
+        {
+          accountId: account.remote_account_id,
+          ids: chunk,
+          properties: [
+            'id', 'mailboxIds', 'keywords', 'bodyStructure', 'attachments',
+          ],
+          bodyProperties: [
+            'partId', 'blobId', 'type', 'name', 'size', 'disposition', 'cid', 'subParts',
+          ],
+        },
+        callId,
+      ]],
+      useWebSocket,
+    });
+    const response = pickResponseById(payload, 'Email/get', callId);
+    const owners = Array.isArray(response?.list)
+      ? response.list.filter((email) =>
+        email?.mailboxIds?.[draftsRemoteId] === true && email?.keywords?.$draft === true)
+      : [];
+    const returnedIds = owners.map((email) => email?.id);
+    if (
+      !response
       || !Array.isArray(response.list)
       || !Array.isArray(response.notFound)
-      || liveOwners.length !== ids.length) {
-    const error: any = new Error('Canonical send attachment owner could not be confirmed');
-    error.type = 'blobNotFound';
-    throw error;
+      || returnedIds.some((id) => typeof id !== 'string' || !chunk.includes(id))
+      || new Set(returnedIds).size !== returnedIds.length
+      || returnedIds.length !== chunk.length
+    ) {
+      const error: any = new Error('Canonical send attachment owner could not be confirmed');
+      error.type = 'blobNotFound';
+      throw error;
+    }
+    liveOwners.push(...owners);
   }
   assertCanonicalAttachmentOwnership(attachments, liveOwners);
 }
@@ -282,7 +299,7 @@ async function runSend({
     checkpoint = await saveCheckpoint(
       handlers,
       rowId,
-      newCheckpoint(identity.email),
+      newCheckpoint(identity.email, request?.draftEmailIds),
       SEND_PHASE.QUEUED,
     );
   }
@@ -921,17 +938,29 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
   // point has already populated.
   const scheduledAt = scheduledSendAtOf(request);
   let filingRemoteId = sentRemoteId;
+  let currentCheckpoint = checkpoint
+    ? {
+        ...checkpoint,
+        pendingDraftDestroyIds: checkpoint.pendingDraftDestroyIds
+          ?? normalizedDraftEmailIds(request?.draftEmailIds),
+      }
+    : checkpoint;
   try {
     if (scheduledAt) {
       filingRemoteId = await readScheduledMailboxRemoteId(handlers, account.id);
     }
-    const saved = rowId != null && checkpoint
-      ? await saveCheckpoint(handlers, rowId, checkpoint, SEND_PHASE.CACHE_PENDING)
-      : checkpoint;
+    currentCheckpoint = rowId != null && currentCheckpoint
+      ? await saveCheckpoint(
+          handlers,
+          rowId,
+          currentCheckpoint,
+          SEND_PHASE.CACHE_PENDING,
+        )
+      : currentCheckpoint;
     const outcome = await fileSentCopy({
       ...args,
       sentRemoteId: filingRemoteId,
-      checkpoint: saved,
+      checkpoint: currentCheckpoint,
       afterPersist: scheduledAt
         ? async () => {
             await handlers[DB_RPC.MESSAGE_SET_SCHEDULED]({
@@ -948,21 +977,44 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
           }
         : undefined,
     });
-    await cleanupDraftsAfterSend({
+    const cleanup = await destroyDraftEmails({
       transport,
       account,
       handlers,
       draftsRemoteId,
-      draftEmailIds: request?.draftEmailIds ?? [],
+      remoteIds: currentCheckpoint?.pendingDraftDestroyIds ?? [],
       useWebSocket,
+      onProgress: async ({ remainingIds }) => {
+        if (!currentCheckpoint) return;
+        currentCheckpoint = {
+          ...currentCheckpoint,
+          pendingDraftDestroyIds: remainingIds,
+        };
+        if (rowId != null) {
+          currentCheckpoint = await saveCheckpoint(
+            handlers,
+            rowId,
+            currentCheckpoint,
+            SEND_PHASE.CACHE_PENDING,
+          );
+        }
+      },
     });
+    if (cleanup.ok === false) {
+      const error: any = new Error(
+        `Sent draft cleanup was not confirmed for ${cleanup.remainingIds.length} draft(s)`,
+      );
+      error.type = 'draftCleanupFailed';
+      error.detail = cleanup.error;
+      throw error;
+    }
     return outcome;
   } catch (err: any) {
     return postSubmissionFailure({
       handlers,
       account,
       rowId,
-      checkpoint,
+      checkpoint: currentCheckpoint,
       createdRemoteId,
       submissionRemoteId,
       sentRemoteId: filingRemoteId,
@@ -1028,49 +1080,6 @@ async function recordAcceptedSubmission({
     return { checkpoint: saved };
   } catch (err: any) {
     return { err };
-  }
-}
-
-async function cleanupDraftsAfterSend({
-  transport,
-  account,
-  handlers,
-  draftsRemoteId,
-  draftEmailIds,
-  useWebSocket,
-}) {
-  const ids = [...new Set(
-    (Array.isArray(draftEmailIds) ? draftEmailIds : [])
-      .filter((id) => typeof id === 'string' && id),
-  )];
-  if (ids.length === 0) return;
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls: [[
-      'Email/set',
-      { accountId: account.remote_account_id, destroy: ids },
-      'sd1',
-    ]],
-    useWebSocket,
-  });
-  const response = pickResponseById(result, 'Email/set', 'sd1');
-  if (!response) throw new Error('Sent draft cleanup returned no Email/set response');
-  const destroyed = new Set<string>(response.destroyed ?? []);
-  const confirmed = ids.filter((id) =>
-    destroyed.has(id) || response.notDestroyed?.[id]?.type === 'notFound');
-  if (confirmed.length > 0) {
-    await dropDraftPredecessors({
-      transport,
-      account,
-      handlers,
-      draftsRemoteId,
-      remoteIds: confirmed,
-      useWebSocket,
-    });
-  }
-  const remaining = ids.filter((id) => !confirmed.includes(id));
-  if (remaining.length > 0) {
-    throw new Error(`Sent draft cleanup was not confirmed for ${remaining.length} draft(s)`);
   }
 }
 
@@ -1164,7 +1173,12 @@ async function postSubmissionFailure({
     }
   }
   if (err?.type !== 'composeBodyIncomplete') {
-    await queueDraftCleanupRepair({ handlers, account, request }).catch((queueError) => {
+    await queueDraftCleanupRepair({
+      handlers,
+      account,
+      request,
+      draftEmailIds: checkpoint?.pendingDraftDestroyIds,
+    }).catch((queueError) => {
       wlog.warn(
         'jmap-outbox',
         `could not queue sent draft cleanup: ${queueError?.message ?? queueError}`,
@@ -1181,12 +1195,16 @@ async function postSubmissionFailure({
   };
 }
 
-async function queueDraftCleanupRepair({ handlers, account, request }) {
-  const draftEmailIds = [...new Set(
-    (Array.isArray(request?.draftEmailIds) ? request.draftEmailIds : [])
-      .filter((id) => typeof id === 'string' && id),
-  )];
-  if (draftEmailIds.length === 0) return;
+async function queueDraftCleanupRepair({
+  handlers,
+  account,
+  request,
+  draftEmailIds,
+}) {
+  const pendingIds = normalizedDraftEmailIds(
+    draftEmailIds ?? request?.draftEmailIds,
+  );
+  if (pendingIds.length === 0) return;
   await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
     accountId: account.id,
     mutationType: MUTATION_TYPE.DISCARD_DRAFT,
@@ -1194,7 +1212,7 @@ async function queueDraftCleanupRepair({ handlers, account, request }) {
     requestJson: JSON.stringify({
       draftSessionId: request.draftSessionId,
       draftsFolderId: request.draftsFolderId ?? null,
-      draftEmailIds,
+      draftEmailIds: pendingIds,
     }),
     optimisticPatchJson: null,
   });
