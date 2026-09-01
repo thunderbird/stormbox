@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeMessageId } from '../../../src/sync/backends/jmap/send-checkpoint';
+import {
+  makeMessageId,
+  newCheckpoint,
+  readCheckpoint,
+} from '../../../src/sync/backends/jmap/send-checkpoint';
 
 function idRight(messageId: string): string {
   const match = messageId.match(/@([^>]*)>$/);
@@ -34,5 +38,50 @@ describe('makeMessageId', () => {
 
   it('does not let URL parsing discard a suffix from an internationalized domain', () => {
     expect(idRight(makeMessageId('sender@bücher.example/path'))).toBe('localhost');
+  });
+});
+
+describe('newCheckpoint', () => {
+  it('keeps every well-formed draft id and drops the rest', () => {
+    // The writer must not discard the whole list over one bad entry:
+    // an empty list would let post-send cleanup skip real draft copies.
+    const checkpoint = newCheckpoint('sender@example.com', ['a', '', 'a', 42, 'b']);
+    expect(checkpoint.pendingDraftDestroyIds).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    [undefined],
+    [null],
+    ['a'],
+    [{ id: 'a' }],
+  ])('records no pending draft ids for %p', (value) => {
+    expect(newCheckpoint('sender@example.com', value).pendingDraftDestroyIds).toEqual([]);
+  });
+});
+
+describe('readCheckpoint', () => {
+  function rowWith(pendingDraftDestroyIds: unknown) {
+    return {
+      server_response_json: JSON.stringify({
+        operationId: 'op-1',
+        messageId: '<op-1@example.com>',
+        pendingDraftDestroyIds,
+      }),
+    };
+  }
+
+  it('accepts a persisted list of distinct ids', () => {
+    expect(readCheckpoint(rowWith(['a', 'b']))).toMatchObject({
+      operationId: 'op-1',
+      pendingDraftDestroyIds: ['a', 'b'],
+    });
+  });
+
+  it.each([
+    [['a', 'a']],
+    [['a', '']],
+    [['a', 42]],
+  ])('rejects a persisted checkpoint whose draft ids are %j', (ids) => {
+    expect(readCheckpoint(rowWith(ids))).toBeNull();
   });
 });
