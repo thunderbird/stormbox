@@ -25,6 +25,7 @@ import {
   waitForPendingMutations,
 } from './helpers/ui.js';
 import {
+  composeSendButton,
   composeSubject,
   fillRecipient,
   recipientAddresses,
@@ -143,7 +144,7 @@ test.describe('Compose + send e2e', () => {
       await editor.click();
       await page.keyboard.type('Hello from the compose+send e2e.');
 
-      await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+      await composeSendButton(page).click();
 
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
       await waitForPendingMutations(page);

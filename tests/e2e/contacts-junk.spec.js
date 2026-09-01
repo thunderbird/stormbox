@@ -495,9 +495,6 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await page.locator('.contact-detail')
         .getByRole('button', { name: 'Delete', exact: true })
         .click();
-      await page.getByRole('alertdialog')
-        .getByRole('button', { name: 'Delete', exact: true })
-        .click();
       await expect(editedRow).toHaveCount(0, { timeout: 30_000 });
 
       await waitForPendingMutations(page);

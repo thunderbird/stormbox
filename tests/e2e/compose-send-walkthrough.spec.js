@@ -27,6 +27,7 @@ import {
 import {
   clearRecipients,
   composeRow,
+  composeSendButton,
   composeSubject,
   discardCompose,
   fillRecipient,
@@ -438,10 +439,11 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
 
       await test.step('The first suggestion starts selected and Enter takes it (CS-3.8)', async () => {
         await clearRecipients(page, 'To');
-        await typeInTo(page, 'zephyr');
+        const uniqueAddressPrefix = `zephyr-${stamp}`;
+        await typeInTo(page, uniqueAddressPrefix);
         let rows = await settledSuggestions(page);
         if (rows.length === 0) {
-          await typeInTo(page, 'zephyr');
+          await typeInTo(page, uniqueAddressPrefix);
           rows = await settledSuggestions(page);
         }
         expect(rows.length, 'the seeded contact is available for Enter').toBeGreaterThan(0);
@@ -458,7 +460,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('Clicking a suggestion fills the field', async () => {
-        await typeInTo(page, 'zephyr');
+        await typeInTo(page, `zephyr-${stamp}`);
         await expect(suggestions(page).first()).toBeVisible();
         await suggestions(page).first().click();
         await expect(recipientPills(page, 'To')).toHaveCount(1);
@@ -472,7 +474,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await clearRecipients(page, 'To');
         await composeSubject(page).fill('Walkthrough no recipients');
         const sentBefore = await countSentRows(page);
-        await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+        await composeSendButton(page).click();
         const error = page.locator('.compose-dialog .compose-error');
         await expect(error).toBeVisible({ timeout: 10_000 });
         await expect(error).toHaveText(/Add at least one recipient\./);
@@ -489,7 +491,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
         await editor.click();
         await page.keyboard.type('Integrated coverage of the send path.');
-        await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+        await composeSendButton(page).click();
         await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
         await waitForPendingMutations(page);
       });
@@ -602,7 +604,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
         await clearRecipients(page, 'To');
         await fillRecipient(page, 'To', SHARED_TEST_OIDC_EMAIL);
         await composeSubject(page).fill(subjects.reply);
-        await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+        await composeSendButton(page).click();
         await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
         await waitForPendingMutations(page);
         // Stalwart's subject index lags the Email/set commit, so poll

@@ -59,7 +59,7 @@ const CONTACT_DOMAIN = 'integrity-e2e.example';
 const DETAIL_CONTACT_PREFIX = 'Contact detail integrity';
 const DETAIL_DRAFT_PREFIX = 'Identity defaults integrity';
 const PNG_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 async function contactsRequest(jmap, methodCalls) {
   const res = await fetch(jmap.apiUrl, {
@@ -340,7 +340,7 @@ test.describe('Contact and identity integrity', () => {
       await websiteRow.getByLabel('Websites value').fill('https://example.com/contact-integrity');
 
       await form.getByRole('button', { name: 'Add date' }).click();
-      await form.getByLabel('Contact date').fill('1985-07-13');
+      await form.locator('input[aria-label="Contact date"]').fill('1985-07-13');
       await form.getByRole('button', { name: 'Add note' }).click();
       await form.getByLabel('Contact note').fill('Created without an email address.');
 
@@ -591,9 +591,6 @@ test.describe('Contact and identity integrity', () => {
       await list.press('Enter');
 
       await page.locator('.contact-detail')
-        .getByRole('button', { name: 'Delete', exact: true })
-        .click();
-      await page.getByRole('alertdialog')
         .getByRole('button', { name: 'Delete', exact: true })
         .click();
       await waitForPendingMutations(page);

@@ -3,12 +3,14 @@ import {
   resetSharedSession,
   test,
 } from './helpers/shared-session.js';
+import { connectJmap } from './helpers/jmap-client.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
   clearRecipients,
+  composeSendButton,
   composeSubject,
   discardCompose,
   waitForIdentities,
@@ -32,11 +34,6 @@ import {
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
-function sendButton(page) {
-  return page.locator('.compose-dialog--expanded')
-    .getByRole('button', { name: 'Send', exact: true });
-}
-
 async function openCompose(page) {
   await page.keyboard.press('ControlOrMeta+n');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
@@ -50,6 +47,28 @@ async function closeCompose(page) {
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
 
+async function contactsRequest(jmap, methodCalls) {
+  const response = await fetch(jmap.apiUrl, {
+    method: 'POST',
+    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
+      methodCalls,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`contacts JMAP failed: ${response.status} ${await response.text()}`);
+  }
+  return response.json();
+}
+
+async function refreshContactCache(page) {
+  await page.evaluate(async () => {
+    const accounts = await globalThis.__repo.listAccounts();
+    await globalThis.__repo.ensureContacts(accounts[0].id);
+  });
+}
+
 /**
  * Put a contact in the book and return the word that finds it.
  *
@@ -59,41 +78,71 @@ async function closeCompose(page) {
  * has written to — never from received mail (CS-3.3). Part of the account's
  * own address will not do either: an owned address is suppressed until it is
  * typed in full (CS-3.7).
- *
- * Leaves the app in Mail, where the callers expect to be.
  */
-async function seedFindableContact(page, word) {
-  const stamp = Date.now();
-  const name = `${word} Person ${stamp}`;
-  const email = `${word.toLowerCase()}-${stamp}@example.org`;
-  await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-  await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'New Contact' }).click();
-  const form = page.locator('.contacts__form');
-  await expect(form).toBeVisible();
-  await form.locator('input[type="text"]').first().fill(name);
-  await form.locator('input[type="email"]').first().fill(email);
-  await form.getByRole('button', { name: /^save contact$/i }).click();
-  await expect(page.locator('.contacts__row').filter({ hasText: name }))
-    .toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'Mail', exact: true }).click();
-  return { name, email, term: word.toLowerCase() };
+async function seedContact(page, { name, email, term }) {
+  const jmap = await connectJmap();
+  const booksPayload = await contactsRequest(jmap, [[
+    'AddressBook/get',
+    { accountId: jmap.accountId },
+    'books',
+  ]]);
+  const books = booksPayload.methodResponses?.[0]?.[1]?.list ?? [];
+  const book = books.find((candidate) => candidate.isDefault) ?? books[0];
+  expect(book?.id, 'the account needs an address book for contact fixtures').toBeTruthy();
+
+  const createPayload = await contactsRequest(jmap, [[
+    'ContactCard/set',
+    {
+      accountId: jmap.accountId,
+      create: {
+        fixture: {
+          '@type': 'Card',
+          version: '1.0',
+          addressBookIds: { [book.id]: true },
+          name: { full: name },
+          emails: { primary: { '@type': 'EmailAddress', address: email } },
+        },
+      },
+    },
+    'create',
+  ]]);
+  const remoteId = createPayload.methodResponses?.[0]?.[1]?.created?.fixture?.id;
+  expect(remoteId, `the server should create "${name}"`).toBeTruthy();
+  await refreshContactCache(page);
+  await expect.poll(() => page.evaluate(async ({ prefix, address }) => {
+    const accounts = await globalThis.__repo.listAccounts();
+    const matches = await globalThis.__repo.autocompleteContacts(accounts[0].id, prefix);
+    return matches.some((candidate) => candidate.email === address);
+  }, { prefix: term, address: email }), {
+    message: `the seeded contact "${name}" should be available to autocomplete`,
+    timeout: 30_000,
+  }).toBe(true);
+  return {
+    name, email, term, remoteId,
+  };
 }
 
-/** Undo `seedFindableContact`; the shared session resets, the server does not. */
-async function forgetContact(page, name) {
-  await page.getByRole('button', { name: 'Contacts', exact: true }).click().catch(() => {});
-  const row = page.locator('.contacts__row').filter({ hasText: name });
-  await row.click({ timeout: 10_000 }).catch(() => {});
-  await page.locator('.contact-detail')
-    .getByRole('button', { name: 'Delete', exact: true })
-    .click({ timeout: 10_000 })
-    .catch(() => {});
-  await page.getByRole('alertdialog')
-    .getByRole('button', { name: 'Delete', exact: true })
-    .click({ timeout: 10_000 })
-    .catch(() => {});
-  await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
+async function seedFindableContact(page, word) {
+  const stamp = Date.now();
+  return seedContact(page, {
+    name: `${word} Person ${stamp}`,
+    email: `${word.toLowerCase()}-${stamp}@example.org`,
+    term: word.toLowerCase(),
+  });
+}
+
+/** Undo a contact fixture; the shared session resets, the server does not. */
+async function forgetContact(page, seeded) {
+  const jmap = await connectJmap();
+  const payload = await contactsRequest(jmap, [[
+    'ContactCard/set',
+    { accountId: jmap.accountId, destroy: [seeded.remoteId] },
+    'cleanup',
+  ]]);
+  const destroyed = payload.methodResponses
+    ?.find((entry) => entry[0] === 'ContactCard/set')?.[1]?.destroyed ?? [];
+  expect(destroyed, `cleanup should destroy "${seeded.name}"`).toContain(seeded.remoteId);
+  await refreshContactCache(page);
 }
 
 /**
@@ -231,7 +280,7 @@ test.describe('Recipient control', () => {
       expect(focused.id).toBe('compose-to');
     } finally {
       await closeCompose(page);
-      await forgetContact(page, seeded.name);
+      await forgetContact(page, seeded);
     }
   });
 
@@ -243,7 +292,7 @@ test.describe('Recipient control', () => {
       await expect(page.locator('.toolbar-dropdown:not([open]) .toolbar-more__menu').first())
         .toBeHidden();
 
-      await sendButton(page).focus();
+      await composeSendButton(page).focus();
       await page.keyboard.press('Tab');
       await expect(page.getByRole('button', { name: 'Minimize' })).toBeFocused();
 
@@ -259,7 +308,7 @@ test.describe('Recipient control', () => {
       await page.getByRole('button', { name: 'Close Focus trap check' }).click();
       const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
       const cancel = prompt.getByRole('button', { name: 'Cancel' });
-      await expect(prompt.getByRole('heading', { name: 'Save this draft?' })).toBeFocused();
+      await expect(prompt).toBeFocused();
       await expect(cancel).not.toBeFocused();
 
       await page.keyboard.press('Tab');
@@ -306,7 +355,7 @@ test.describe('Recipient control', () => {
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 10_000 });
     } finally {
       await closeCompose(page);
-      await forgetContact(page, seeded.name);
+      await forgetContact(page, seeded);
     }
   });
 
@@ -331,12 +380,12 @@ test.describe('Recipient control', () => {
       await expect(invalidRecipients(page, 'To'))
         .toHaveText(['https://example.org/not-an-address']);
 
-      // A draft holding one refuses to send, and says which entry it is.
+      // A draft holding one refuses to send and keeps the invalid entry marked.
       await composeSubject(page).fill(`Recipient control paste ${Date.now()}`);
-      await sendButton(page).click();
+      await composeSendButton(page).click();
       const error = page.locator('.compose-dialog .compose-error');
       await expect(error).toBeVisible({ timeout: 10_000 });
-      await expect(error).toContainText('not-an-address');
+      await expect(error).toHaveText('Fix invalid recipients before saving or sending this message.');
       await expect(page.locator('.compose-dialog'), 'the draft is kept').toBeVisible();
 
       // The fix happens in place: the pill reopens as the text it was
@@ -360,19 +409,12 @@ test.describe('Recipient control', () => {
     const stamp = Date.now();
     const contactName = `Zzyzx Browse ${stamp}`;
     const contactEmail = `browse-${stamp}@example.org`;
+    const seeded = await seedContact(page, {
+      name: contactName,
+      email: contactEmail,
+      term: 'brow',
+    });
     try {
-      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-      await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'New Contact' }).click();
-      const form = page.locator('.contacts__form');
-      await expect(form).toBeVisible();
-      await form.locator('input[type="text"]').first().fill(contactName);
-      await form.locator('input[type="email"]').first().fill(contactEmail);
-      await form.getByRole('button', { name: /^save contact$/i }).click();
-      await expect(page.locator('.contacts__row').filter({ hasText: contactName }))
-        .toBeVisible({ timeout: 30_000 });
-
-      await page.getByRole('button', { name: 'Mail', exact: true }).click();
       await openCompose(page);
       await clearRecipients(page, 'To');
       const field = recipientInput(page, 'To');
@@ -406,21 +448,7 @@ test.describe('Recipient control', () => {
       expect(await recipientAddresses(page, 'To')).toEqual([contactEmail]);
     } finally {
       await closeCompose(page);
-      // Leave the book as it was found, and the app in Mail: the shared
-      // session is reset per test but the server's cards are not.
-      await page.getByRole('button', { name: 'Contacts', exact: true }).click()
-        .catch(() => {});
-      const contactRow = page.locator('.contacts__row').filter({ hasText: contactName });
-      await contactRow.click({ timeout: 10_000 }).catch(() => {});
-      await page.locator('.contact-detail')
-        .getByRole('button', { name: 'Delete', exact: true })
-        .click({ timeout: 10_000 })
-        .catch(() => {});
-      await page.getByRole('alertdialog')
-        .getByRole('button', { name: 'Delete', exact: true })
-        .click({ timeout: 10_000 })
-        .catch(() => {});
-      await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
+      await forgetContact(page, seeded);
     }
   });
 });

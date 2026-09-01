@@ -21,6 +21,7 @@ import {
 } from './helpers/stack-env.js';
 import { clickFolder } from './helpers/ui.js';
 import {
+  composeSendButton,
   composeSubject,
   discardCompose,
   fillRecipient,
@@ -212,7 +213,7 @@ test.describe('Compose send: method-level JMAP error', () => {
       await editor.click();
       await page.keyboard.type('This send is answered with a method-level error.');
 
-      await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+      await composeSendButton(page).click();
 
       // The composer reports the failure and keeps the draft. A silent
       // success here is the CS-1.3 defect: the row that holds the only

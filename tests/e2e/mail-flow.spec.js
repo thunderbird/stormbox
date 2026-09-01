@@ -17,6 +17,7 @@ import {
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import { attachConsoleTail, trackConsole, waitForInboxReady } from './helpers/ui.js';
+import { discardCompose } from './helpers/compose.js';
 
 /**
  * End-to-end against the local thunderbird-accounts stack (Keycloak +
@@ -424,7 +425,7 @@ test.describe('Local stack mail flow e2e', () => {
       throw new Error('Compose editor did not mount as contenteditable');
     }
     await page.screenshot({ path: `screenshots/${browserName}-04-compose-open.png`, fullPage: true });
-    await page.getByRole('button', { name: /^discard$/i }).click();
+    await discardCompose(page);
 
     await attachConsoleTail(testInfo, consoleLines, 80);
   });

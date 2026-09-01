@@ -24,6 +24,7 @@ import {
   waitForPendingMutations,
 } from './helpers/ui.js';
 import {
+  composeSendButton,
   composeSubject,
   fillRecipient,
   recipientAddresses,
@@ -47,7 +48,7 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 // 1x1 transparent PNG.
-const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
 async function findSentMessageBySubject(jmap, sentMailbox, subject) {
   const payload = await jmapRequest(jmap, [[
@@ -185,7 +186,7 @@ test.describe('Compose paste image e2e', () => {
       // The inlined image appears in the editor before send.
       await expect(editor.locator('img[src^="data:image/"]')).toHaveCount(1, { timeout: 10_000 });
 
-      await page.locator('.compose-dialog button.primary', { hasText: /^Send$/ }).click();
+      await composeSendButton(page).click();
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 30_000 });
       await waitForPendingMutations(page);
 
