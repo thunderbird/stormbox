@@ -68,12 +68,20 @@ interface CanonicalAddressBook {
   isSubscribed: boolean;
 }
 
+/**
+ * Baseline entry as read back from a create checkpoint: only `id` is
+ * validated, so only `id` may be relied on.
+ */
+interface BaselineAddressBook extends Partial<Omit<CanonicalAddressBook, 'id'>> {
+  id: string;
+}
+
 interface AddressBookCheckpoint {
   version: 1;
   operation: AddressBookSetOperation;
   remoteId?: string;
   attempts?: number;
-  baselineAddressBooks?: CanonicalAddressBook[];
+  baselineAddressBooks?: BaselineAddressBook[];
   baselineState?: string | null;
   requestAddressBook?: CanonicalAddressBook;
   confirmationInventory?: AddressBookInventory;
@@ -210,6 +218,14 @@ function canonicalBook(book: any): CanonicalAddressBook {
       ? Number(book.sortOrder)
       : 0,
     isSubscribed: book?.isSubscribed !== false,
+  };
+}
+
+/** A server book recorded in a create baseline; a blank id fails the read-back check. */
+function baselineBook(book: any): BaselineAddressBook {
+  return {
+    ...canonicalBook(book),
+    id: typeof book?.id === 'string' ? book.id : '',
   };
 }
 
@@ -465,14 +481,10 @@ function parseCheckpoint(
   });
 }
 
-function validCanonicalAddressBook(
-  value: unknown,
-  requireId: boolean,
-): value is CanonicalAddressBook {
+function validCanonicalAddressBook(value: unknown): value is CanonicalAddressBook {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const book = value as Record<string, unknown>;
-  return (!requireId || (typeof book.id === 'string' && book.id.length > 0))
-    && typeof book.name === 'string'
+  return typeof book.name === 'string'
     && book.name.length > 0
     && (book.description === null || typeof book.description === 'string')
     && Number.isSafeInteger(book.sortOrder)
@@ -501,7 +513,7 @@ function parseCreateCheckpoint(
     checkpoint.operation !== 'create'
     || !Array.isArray(checkpoint.baselineAddressBooks)
     || !checkpoint.baselineAddressBooks.every(validBaselineAddressBook)
-    || !validCanonicalAddressBook(checkpoint.requestAddressBook, false)
+    || !validCanonicalAddressBook(checkpoint.requestAddressBook)
   ) {
     return { status: 'invalid' };
   }
@@ -626,7 +638,7 @@ async function recoverCreate({
   const expected = JSON.stringify(checkpoint.requestAddressBook);
   return recoverUniqueWriteCreate({
     baselineIds: checkpoint.baselineAddressBooks.map(
-      (book: CanonicalAddressBook) => book.id as string,
+      (book: BaselineAddressBook) => book.id,
     ),
     refreshSnapshot: async () => {
       const reconciled = await syncAddressBooks({
@@ -707,7 +719,7 @@ export async function runCreateAddressBook(args: any) {
   const checkpoint: AddressBookCheckpoint = {
     version: 1,
     operation: 'create',
-    baselineAddressBooks: baseline.list.map(canonicalBook),
+    baselineAddressBooks: baseline.list.map(baselineBook),
     baselineState: baseline.state,
     requestAddressBook: prepared.payload,
   };
