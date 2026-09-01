@@ -288,6 +288,80 @@ describe('contacts trash FileNode sync', () => {
     }
   });
 
+  it('retries a transient failure of the shard relocation itself', async () => {
+    // Only the move rides out a transient server failure; a lost or
+    // unavailable folder write before it surfaces on the first attempt.
+    const engine = await bootTestEngine();
+    try {
+      const handlers = makeHandlers(engine);
+      const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+        displayName: 'Relocation User',
+        primaryEmail: 'relocation@example.com',
+        serverOrigin: 'https://mail.example.com',
+        remoteAccountId: 'relocation-account',
+        isPrimary: true,
+      })).row;
+      const shardNode = {
+        id: 'root-shard',
+        name: 'stormbox-contacts-trash-00000000-0000-4000-8000-000000000001.json',
+        parentId: null as string | null,
+        nodeType: 'file',
+        blobId: 'root-blob',
+        type: 'application/json',
+        myRights: { mayRead: true, mayModifyContent: true },
+      };
+      const nodes = [...fileNodeFolders(), shardNode];
+      const transport = new MockTransport(mockSession({
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
+        accounts: {
+          'relocation-account': {
+            accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
+          },
+        },
+      })) as any;
+      transport.download = vi.fn(async () =>
+        new TextEncoder().encode(JSON.stringify(emptyContactsTrashShardDocument())));
+      let fileState = 1;
+      transport.handle('FileNode/query', (args) => ({
+        ...fileNodeQuery(nodes, args),
+        queryState: `files-query-${fileState}`,
+      }));
+      transport.handle('FileNode/get', ({ ids }) => ({
+        list: nodes.filter((node) => ids.includes(node.id)),
+        notFound: [],
+        state: `files-${fileState}`,
+      }));
+      let moveCalls = 0;
+      transport.handleError('FileNode/set', ({ update }) =>
+        (update && (moveCalls += 1) === 1 ? { type: 'serverUnavailable' } : null));
+      transport.handle('FileNode/set', ({ update }) => {
+        const updated: Record<string, null> = {};
+        for (const [id, patch] of Object.entries<any>(update ?? {})) {
+          const node = nodes.find((candidate) => candidate.id === id);
+          if (!node) continue;
+          Object.assign(node, patch);
+          updated[id] = null;
+        }
+        fileState += 1;
+        return {
+          oldState: `files-${fileState - 1}`,
+          newState: `files-${fileState}`,
+          updated,
+        };
+      });
+
+      await expect(pushContactsTrash({
+        transport,
+        account,
+        handlers,
+      })).resolves.toMatchObject({ ok: true });
+      expect(moveCalls).toBe(2);
+      expect(shardNode.parentId).toBe(CONTACTS_TRASH_FOLDER_ID);
+    } finally {
+      await engine.close();
+    }
+  });
+
   it('merges duplicate shard locations before removing the root copy', async () => {
     const engine = await bootTestEngine();
     try {

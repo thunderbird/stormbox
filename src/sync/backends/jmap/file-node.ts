@@ -246,14 +246,22 @@ export function isFileNodeWriteConflictError(
   return FILE_NODE_WRITE_CONFLICT_TYPES.has(error.type);
 }
 
+/**
+ * Run a FileNode write up to three times while `shouldRetry` accepts the
+ * failure. The default retries only the bounded conflict set
+ * (`alreadyExists`, `notFound`, `stateMismatch`); a writer that must also
+ * ride out transient server failures passes
+ * `isRetryableFileNodeDocumentError`.
+ */
 export async function retryFileNodeWrite<
   T extends { ok: true } | { ok: false; error: FileNodeDocumentError },
 >(
   write: () => Promise<T>,
+  shouldRetry: (error: FileNodeDocumentError) => boolean = isFileNodeWriteConflictError,
 ): Promise<T> {
   let result = await write();
   for (let attempt = 1; attempt < 3 && result.ok === false; attempt += 1) {
-    if (!isFileNodeWriteConflictError(result.error)) return result;
+    if (!shouldRetry(result.error)) return result;
     result = await write();
   }
   return result;

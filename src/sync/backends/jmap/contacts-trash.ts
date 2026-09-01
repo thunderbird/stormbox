@@ -35,6 +35,7 @@ import {
   ensureContactsTrashFileNodeFolder,
   findContactsTrashFileNodeFolder,
   hasFileNodeCapability,
+  isFileNodeWriteConflictError,
   isRetryableFileNodeDocumentError,
   moveFileNodes,
   readJsonFileNode,
@@ -222,6 +223,10 @@ async function prepareContactsTrashFolder({
   | { ok: true; parentId: string }
   | { ok: false; error: FileNodeDocumentError }
 > {
+  // Only the relocation itself rides out transient server failures; the
+  // folder, discovery, and merge steps before it are re-run solely on the
+  // snapshot conflict set.
+  const relocationFailures = new WeakSet<FileNodeDocumentError>();
   return retryFileNodeWrite(async () => {
     const folder = await ensureContactsTrashFileNodeFolder({
       transport,
@@ -330,10 +335,12 @@ async function prepareContactsTrashFolder({
       parentId: folder.node.id,
       useWebSocket,
     });
-    return moved.ok === true
-      ? { ok: true, parentId: folder.node.id }
-      : moved;
-  });
+    if (moved.ok === true) return { ok: true, parentId: folder.node.id };
+    relocationFailures.add(moved.error);
+    return moved;
+  }, (error) => (relocationFailures.has(error)
+    ? isRetryableFileNodeDocumentError(error)
+    : isFileNodeWriteConflictError(error)));
 }
 
 export async function syncContactsTrashFromServer({
