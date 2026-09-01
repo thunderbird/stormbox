@@ -557,7 +557,7 @@ describe('JMAP draft replacement', () => {
     )).resolves.toBeNull();
   });
 
-  it('makes an HTTP authentication rejection terminal without retrying creation', async () => {
+  it('keeps an HTTP authentication rejection retryable without replaying creation', async () => {
     await enqueueSave(1);
     await drainOutbox({ transport, account, handlers });
     expect([...serverEmails.keys()]).toEqual(['draft-1']);
@@ -571,22 +571,23 @@ describe('JMAP draft replacement', () => {
     const { id } = await enqueueSave(2, ['draft-1']);
     const row = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [id]);
 
-    await expect(processMutationRow({
+    const result = await processMutationRow({
       transport,
       account,
       handlers,
       row,
-    })).resolves.toMatchObject({
+    });
+    expect(result).toMatchObject({
       ok: false,
       error: {
         type: 'authenticationFailed',
-        terminal: true,
         detail: {
           status: 401,
           operation: 'draftCreateAmbiguous',
         },
       },
     });
+    expect(result.error).not.toHaveProperty('terminal');
     expect(createAttempts).toBe(1);
     expect([...serverEmails.keys()]).toEqual(['draft-1']);
     const retained = await engine.get(
@@ -599,6 +600,40 @@ describe('JMAP draft replacement', () => {
       newEmailId: null,
     });
   });
+
+  it.each(['method', 'notCreated'])(
+    'classifies retryable draft failures from the %s error path',
+    async (errorPath) => {
+      if (errorPath === 'method') {
+        transport.handleError('Email/set', { type: 'serverPartialFail' });
+      } else {
+        transport.handle('Email/set', () => ({
+          notCreated: { draft: { type: 'serverPartialFail' } },
+        }));
+      }
+      const { id } = await enqueueSave(1);
+      const row = await engine.get(
+        'SELECT * FROM pending_mutations WHERE id = ?',
+        [id],
+      );
+
+      const result = await processMutationRow({
+        transport,
+        account,
+        handlers,
+        row,
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          type: 'draftCreateFailed',
+          detail: { type: 'serverPartialFail' },
+        },
+      });
+      expect(result.error).not.toHaveProperty('terminal');
+    },
+  );
 
   it('creates and confirms a successor before destroying its predecessor', async () => {
     await enqueueSave(1);

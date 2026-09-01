@@ -39,6 +39,7 @@
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
 import { MUTATION_TYPE } from '../../../constants/states';
+import { classifyAuthenticationOrAuthorizationError } from './transport';
 
 // SetError types that cannot succeed by retrying: no amount of waiting
 // will turn 'forbidden' into 'success'. Anything else (serverFail,
@@ -590,21 +591,18 @@ export class OutboxRunner {
         // Message-ID against the server) is what will let these resume
         // automatically.
         const status = (err as any)?.status;
-        const authenticationFailed = status === 401;
-        const authorizationFailed = status === 403;
+        const authentication = classifyAuthenticationOrAuthorizationError(err);
         result = {
           ok: false,
           error: {
-            type: authenticationFailed
-              ? 'authenticationFailed'
-              : authorizationFailed
-                ? 'authorizationFailed'
-                : 'transport',
+            type: authentication?.type ?? 'transport',
             message: err?.message ?? String(err),
             ...(status != null ? { status } : {}),
-            ...((authenticationFailed
-              || authorizationFailed
-              || this._unsafeToReplayTypes.has(activeRow.mutation_type))
+            ...((authentication?.terminal === true
+              || (
+                !authentication
+                && this._unsafeToReplayTypes.has(activeRow.mutation_type)
+              ))
               ? { terminal: true }
               : {}),
           },
@@ -621,9 +619,14 @@ export class OutboxRunner {
     }
     const errorType = result?.error?.type ?? 'unknown';
     const maxAttempts = this._maxAttemptsByType.get(activeRow.mutation_type) ?? this._maxAttempts;
-    const terminal = result?.error?.terminal === true
-      || TERMINAL_ERROR_TYPES.has(errorType)
-      || attemptNumber >= maxAttempts;
+    const authentication = classifyAuthenticationOrAuthorizationError(result?.error);
+    const terminal = authentication
+      ? authentication.terminal
+      : (
+        result?.error?.terminal === true
+        || TERMINAL_ERROR_TYPES.has(errorType)
+        || attemptNumber >= maxAttempts
+      );
     if (terminal) {
       await this._markConflicted(activeRow.id, result?.error);
       this._resolveAwaiters(activeRow.id, {

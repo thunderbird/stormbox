@@ -629,13 +629,14 @@ describe('OutboxRunner exponential backoff', () => {
     await runner.stop();
   });
 
-  it('does not retry an HTTP authentication failure', async () => {
+  it('retries an HTTP authentication failure', async () => {
     let attempts = 0;
     const runner = new OutboxRunner({
       accountId,
       handlers,
       processRow: async () => {
         attempts += 1;
+        if (attempts > 1) return { ok: true };
         const error: any = new Error('JMAP request failed: 401 Unauthorized');
         error.status = 401;
         throw error;
@@ -649,12 +650,11 @@ describe('OutboxRunner exponential backoff', () => {
     const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
 
     await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
-      succeeded: 0,
-      failed: 1,
-      errorType: 'authenticationFailed',
+      succeeded: 1,
+      failed: 0,
     });
-    expect(attempts).toBe(1);
-    expect(Number((await loadRow(mutationId)).attempts)).toBe(1);
+    expect(attempts).toBe(2);
+    expect(await loadRow(mutationId)).toBeNull();
     await runner.stop();
   });
 
@@ -686,6 +686,46 @@ describe('OutboxRunner exponential backoff', () => {
     expect(Number((await loadRow(mutationId)).attempts)).toBe(1);
     await runner.stop();
   });
+
+  it.each([
+    ['authenticationFailed', 2, 1, 0],
+    ['authorizationFailed', 1, 0, 1],
+  ])(
+    'classifies JMAP %s method errors',
+    async (type, expectedAttempts, succeeded, failed) => {
+      let attempts = 0;
+      const runner = new OutboxRunner({
+        accountId,
+        handlers,
+        processRow: async () => {
+          attempts += 1;
+          if (type === 'authenticationFailed' && attempts > 1) {
+            return { ok: true };
+          }
+          return {
+            ok: false,
+            error: {
+              type,
+              ...(type === 'authenticationFailed' ? { terminal: true } : {}),
+            },
+          };
+        },
+        options: {
+          notifyDelayMs: 0,
+          backoffBaseMs: 5,
+          maxAttempts: 8,
+        },
+      });
+      const mutationId = await insertComposeMutation('saveDraft', 'draft-session');
+
+      await expect(runner.runMutation(mutationId)).resolves.toMatchObject({
+        succeeded,
+        failed,
+      });
+      expect(attempts).toBe(expectedAttempts);
+      await runner.stop();
+    },
+  );
 
   it('records a not_before window in the future after a single transient failure', async () => {
     // Pins the per-attempt backoff math: after attempt N fails, the
