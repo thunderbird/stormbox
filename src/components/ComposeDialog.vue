@@ -117,6 +117,13 @@ const schedulePresets = ref<SchedulePresetResolution[]>(
 let capabilityRefreshGeneration = 0;
 let scheduleActionGeneration = 0;
 const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
+useModalFocus(dialogEl, {
+  containTab: true,
+  focusOnActivate: false,
+  resolveContainer: () => (
+    closePromptOpen.value ? closePromptEl.value : dialogEl.value
+  ),
+});
 useModalFocus(closePromptEl, {
   active: closePromptOpen,
   onDefault: saveClosePrompt,
@@ -170,14 +177,6 @@ const richTextEditorEl = ref<{
     options?: { preserveFocus?: boolean },
   ) => { html: string; text: string };
 } | null>(null);
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'summary',
-  '[contenteditable="true"]',
-  '[href]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 function saveClosePrompt(): void {
   const current = session.value;
@@ -380,42 +379,6 @@ function focusFreshDraft() {
     document.getElementById(fieldId('to'))?.focus();
   } else {
     richTextEditorEl.value?.focus();
-  }
-}
-
-function focusableElements(container: HTMLElement | null): HTMLElement[] {
-  if (!container) return [];
-  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
-    .filter((element) => {
-      if (element.closest('details:not([open])')) return false;
-      if (element.closest('[hidden], [aria-hidden="true"]')) return false;
-      if (element.getAttribute('aria-disabled') === 'true') return false;
-      const style = window.getComputedStyle(element);
-      return style.display !== 'none' && style.visibility !== 'hidden';
-    });
-}
-
-function trapDialogFocus(event: KeyboardEvent) {
-  if (event.key !== 'Tab') return;
-  const container = session.value?.closePromptOpen ? closePromptEl.value : dialogEl.value;
-  const focusable = focusableElements(container);
-  if (focusable.length === 0) {
-    event.preventDefault();
-    return;
-  }
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  const active = document.activeElement;
-  const activeIsFocusable = active instanceof HTMLElement && focusable.includes(active);
-  if (!activeIsFocusable) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus();
-  } else if (event.shiftKey && active === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && active === last) {
-    event.preventDefault();
-    first.focus();
   }
 }
 
@@ -655,7 +618,6 @@ function identityInitials(id: IdentityRow): string {
       :aria-labelledby="dialogTitleId"
       :aria-hidden="customScheduleOpen ? 'true' : undefined"
       tabindex="-1"
-      @keydown.capture="trapDialogFocus"
     >
     <div class="compose-dialog__card">
       <header>

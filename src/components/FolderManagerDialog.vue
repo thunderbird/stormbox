@@ -32,7 +32,7 @@ const emit = defineEmits<{ close: [] }>();
 const authStore = useAuthStore();
 const mailStore = useMailStore();
 const dialogEl = ref<HTMLElement | null>(null);
-useModalFocus(dialogEl, { onDefault: chooseDefaultAction });
+useModalFocus(dialogEl, { containTab: true, onDefault: chooseDefaultAction });
 const scrollEl = ref<HTMLElement | null>(null);
 const searchText = ref('');
 const showCreateDialog = ref(false);

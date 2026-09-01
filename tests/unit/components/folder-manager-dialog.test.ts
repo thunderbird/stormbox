@@ -330,6 +330,33 @@ describe('FolderManagerDialog create entry point', () => {
   });
 });
 
+describe('FolderManagerDialog modal focus', () => {
+  it('contains Tab from the neutral dialog surface', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+    const wrapper = mount(FolderManagerDialog, {
+      attachTo: document.body,
+      global: { stubs: { teleport: true } },
+    });
+    await nextTick();
+    await nextTick();
+
+    const dialog = wrapper.get('[role="dialog"]').element as HTMLElement;
+    expect(document.activeElement).toBe(dialog);
+    dialog.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(
+      wrapper.get('.folder-subs__close').element,
+    );
+
+    wrapper.unmount();
+    document.body.innerHTML = '';
+  });
+});
+
 describe('FolderManagerDialog multi-select + bulk delete', () => {
   it('selecting a parent cascades to its subtree and shows the action bar', async () => {
     const mailStore = useMailStore();

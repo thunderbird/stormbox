@@ -136,4 +136,31 @@ describe('FolderCreateDialog', () => {
     await nextTick();
     expect(wrapper.find('[data-folder-create-submit]').attributes('disabled')).toBeUndefined();
   });
+
+  it('contains Tab without changing its input-first activation focus', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+    const wrapper = mount(FolderCreateDialog, {
+      attachTo: document.body,
+      global: { stubs: { teleport: true } },
+    });
+    await nextTick();
+    await nextTick();
+
+    const name = wrapper.get('[data-folder-create-name]').element as HTMLInputElement;
+    expect(document.activeElement).toBe(name);
+    await wrapper.get('[data-folder-create-name]').setValue('Receipts');
+    const submit = wrapper.get('[data-folder-create-submit]').element as HTMLButtonElement;
+    const close = wrapper.get('.folder-create__close').element as HTMLButtonElement;
+    submit.focus();
+    submit.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(close);
+
+    wrapper.unmount();
+    document.body.innerHTML = '';
+  });
 });

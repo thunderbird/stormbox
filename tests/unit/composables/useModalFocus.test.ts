@@ -72,4 +72,99 @@ describe('useModalFocus', () => {
     wrapper.unmount();
     opener.remove();
   });
+
+  it('contains Tab in the resolved visible controls without taking initial focus', async () => {
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+    const useNestedContainer = ref(false);
+    const Harness = defineComponent({
+      setup() {
+        const surface = ref<HTMLElement | null>(null);
+        const nested = ref<HTMLElement | null>(null);
+        useModalFocus(surface, {
+          containTab: true,
+          focusOnActivate: false,
+          resolveContainer: () => (
+            useNestedContainer.value ? nested.value : surface.value
+          ),
+        });
+        return () => h('section', {
+          ref: surface,
+          role: 'dialog',
+          tabindex: -1,
+        }, [
+          h('details', [
+            h('button', { 'data-control': 'closed' }, 'Closed'),
+          ]),
+          h('button', { 'data-control': 'first' }, 'First'),
+          h('button', {
+            'aria-hidden': 'true',
+            'data-control': 'hidden',
+          }, 'Hidden'),
+          h('button', { 'data-control': 'last' }, 'Last'),
+          h('div', { ref: nested }, [
+            h('button', { 'data-control': 'nested-first' }, 'Nested first'),
+            h('button', { 'data-control': 'nested-last' }, 'Nested last'),
+          ]),
+        ]);
+      },
+    });
+
+    const wrapper = mount(Harness, { attachTo: document.body });
+    await nextTick();
+    expect(document.activeElement).toBe(opener);
+
+    const first = wrapper.get('[data-control="first"]').element as HTMLButtonElement;
+    const nestedLast = wrapper.get('[data-control="nested-last"]').element as HTMLButtonElement;
+    nestedLast.focus();
+    nestedLast.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(first);
+
+    useNestedContainer.value = true;
+    await nextTick();
+    nestedLast.focus();
+    nestedLast.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement)
+      .toBe(wrapper.get('[data-control="nested-first"]').element);
+
+    wrapper.unmount();
+    opener.remove();
+  });
+
+  it('supports a focusable selector override', async () => {
+    const Harness = defineComponent({
+      setup() {
+        const surface = ref<HTMLElement | null>(null);
+        useModalFocus(surface, {
+          containTab: true,
+          focusableSelector: '[data-modal-tab]',
+        });
+        return () => h('section', { ref: surface, tabindex: -1 }, [
+          h('button', 'Excluded'),
+          h('button', { 'data-modal-tab': '' }, 'Included'),
+        ]);
+      },
+    });
+
+    const wrapper = mount(Harness, { attachTo: document.body });
+    await nextTick();
+    const surface = wrapper.get('section').element as HTMLElement;
+    surface.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+
+    expect(document.activeElement).toBe(wrapper.findAll('button')[1].element);
+    wrapper.unmount();
+  });
 });

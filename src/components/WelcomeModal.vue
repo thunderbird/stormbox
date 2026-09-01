@@ -33,7 +33,7 @@ const emit = defineEmits<{
 type SpotlightId = 'quickFilter' | 'resizeLayout' | 'composeActions';
 
 const panelEl = ref<HTMLElement | null>(null);
-useModalFocus(panelEl, { onDefault: dismiss });
+useModalFocus(panelEl, { containTab: true, onDefault: dismiss });
 const featureElements: Record<SpotlightId, Ref<HTMLElement | null>> = {
   quickFilter: ref(null),
   resizeLayout: ref(null),
