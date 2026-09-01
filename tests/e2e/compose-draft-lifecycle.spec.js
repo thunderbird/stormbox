@@ -30,6 +30,10 @@ import {
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
 import {
+  createGeneratedImageFile,
+  pasteFilesIntoEditor,
+} from './helpers/editor-paste.js';
+import {
   DRAFT_FAULTS,
   FAULTS_PATH,
   INJECT_MARKER,
@@ -78,24 +82,11 @@ async function openCompose(page) {
 }
 
 async function pasteGeneratedImage(page) {
-  await page.evaluate(() => new Promise((resolve) => {
-    const editor = document.querySelector('.compose-dialog--expanded .editor[contenteditable]');
-    editor.focus();
-    const canvas = document.createElement('canvas');
-    canvas.width = 32;
-    canvas.height = 32;
-    const context = canvas.getContext('2d');
-    context.fillStyle = '#3366cc';
-    context.fillRect(0, 0, 32, 32);
-    canvas.toBlob((blob) => {
-      const data = new DataTransfer();
-      data.items.add(new File([blob], 'draft.png', { type: 'image/png' }));
-      const event = new Event('paste', { bubbles: true, cancelable: true });
-      Object.defineProperty(event, 'clipboardData', { value: data });
-      editor.dispatchEvent(event);
-      resolve();
-    }, 'image/png');
-  }));
+  const image = await createGeneratedImageFile(page, { width: 32, height: 32, name: 'draft.png' });
+  await pasteFilesIntoEditor(
+    page.locator('.compose-dialog--expanded .editor[contenteditable]'),
+    [image],
+  );
 }
 
 async function readDraftParts(jmap, id) {

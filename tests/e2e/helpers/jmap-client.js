@@ -14,6 +14,16 @@ const tlsAgent = new https.Agent({ rejectUnauthorized: false });
 // (see thunderbird-accounts/mail/etc/config.toml `[http.rate-limit]`),
 // so a 429 here means a real regression.
 const RETRYABLE_HTTP_STATUSES = new Set([502, 503, 504]);
+const CORE_CAPABILITY = 'urn:ietf:params:jmap:core';
+const DEFAULT_USING = [
+  CORE_CAPABILITY,
+  'urn:ietf:params:jmap:mail',
+  'urn:ietf:params:jmap:submission',
+];
+/** `using` for AddressBook/* and ContactCard/* calls. */
+export const CONTACTS_USING = [CORE_CAPABILITY, 'urn:ietf:params:jmap:contacts'];
+/** `using` for FileNode/* calls. */
+export const FILE_NODE_USING = [CORE_CAPABILITY, 'urn:ietf:params:jmap:filenode'];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -158,7 +168,13 @@ export async function downloadBlob(jmap, { blobId, type = 'application/octet-str
   return Buffer.from(await response.arrayBuffer());
 }
 
-export async function jmapRequest(jmap, methodCalls) {
+/**
+ * One JMAP API call. `using` defaults to core + mail + submission; pass
+ * `CONTACTS_USING` / `FILE_NODE_USING` (or use the wrappers below) for
+ * the other capabilities. Throws on non-2xx HTTP and on any method-level
+ * `error` response.
+ */
+export async function jmapRequest(jmap, methodCalls, using = DEFAULT_USING) {
   const response = await fetchWithTls(jmap.apiUrl, {
     method: 'POST',
     headers: {
@@ -166,11 +182,7 @@ export async function jmapRequest(jmap, methodCalls) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      using: [
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:mail',
-        'urn:ietf:params:jmap:submission',
-      ],
+      using,
       methodCalls,
     }),
   });
@@ -194,6 +206,14 @@ export async function jmapRequest(jmap, methodCalls) {
     throw new Error(`JMAP method error: ${JSON.stringify(errorResponse[1])}`);
   }
   return payload;
+}
+
+export function contactsRequest(jmap, methodCalls) {
+  return jmapRequest(jmap, methodCalls, CONTACTS_USING);
+}
+
+export function fileNodeRequest(jmap, methodCalls) {
+  return jmapRequest(jmap, methodCalls, FILE_NODE_USING);
 }
 
 export function pickResponse(payload, name) {

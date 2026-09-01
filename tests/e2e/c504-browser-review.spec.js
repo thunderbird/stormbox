@@ -1,8 +1,9 @@
+import { connectJmap } from './helpers/jmap-client.js';
 import {
-  connectJmap,
-  jmapRequest,
-  pickResponse,
-} from './helpers/jmap-client.js';
+  directIdentity,
+  identitySet,
+  patchPrincipalEmails,
+} from './helpers/identity-admin.js';
 import {
   attachConsoleTail,
   consoleLinesFor,
@@ -17,8 +18,6 @@ import {
 import {
   localStackEnabled,
   skipLocalStackMessage,
-  STACK_STALWART_API_AUTH,
-  STACK_STALWART_API_URL,
   STACK_STALWART_PRINCIPAL,
 } from './helpers/stack-env.js';
 
@@ -26,40 +25,6 @@ test.skip(!localStackEnabled, skipLocalStackMessage);
 
 const VIRTUAL_CONTACT_COUNT = 10_000;
 const VIRTUAL_CONTACT_PREFIX = 'c504-browser-virtual';
-
-async function patchPrincipalEmails(action, address) {
-  const response = await fetch(
-    `${STACK_STALWART_API_URL}/api/principal/${encodeURIComponent(STACK_STALWART_PRINCIPAL)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: STACK_STALWART_API_AUTH,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify([{ action, field: 'emails', value: address }]),
-    },
-  );
-  expect(response.ok, `principal ${action} for ${address} should succeed`).toBe(true);
-}
-
-async function identitySet(jmap, params) {
-  const result = await jmapRequest(jmap, [[
-    'Identity/set',
-    { accountId: jmap.accountId, ...params },
-    'identity-set',
-  ]]);
-  return pickResponse(result, 'Identity/set') ?? {};
-}
-
-async function directIdentity(jmap, email) {
-  const result = await jmapRequest(jmap, [[
-    'Identity/get',
-    { accountId: jmap.accountId },
-    'identity-get',
-  ]]);
-  return (pickResponse(result, 'Identity/get')?.list ?? [])
-    .find((identity) => identity.email === email) ?? null;
-}
 
 async function refreshIdentityCache(page) {
   await page.evaluate(async () => {

@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 import {
   cleanupEmail,
   connectJmap,
+  contactsRequest,
   jmapRequest,
   listMailboxes,
   mailboxByRole,
@@ -36,25 +37,6 @@ import {
   recipientPills,
   waitForIdentities,
 } from './helpers/compose.js';
-
-/**
- * A JMAP request carrying the contacts capability, which `jmapRequest`
- * does not: its `using` list covers core, mail and submission only.
- */
-async function contactsRequest(jmap, methodCalls) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
-      methodCalls,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`contacts JMAP failed: ${res.status} ${await res.text().catch(() => '')}`);
-  }
-  return res.json();
-}
 
 /**
  * Integrated regression coverage for the compose, send and
@@ -263,7 +245,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
     const books = await contactsRequest(jmap, [[
       'AddressBook/get', { accountId: jmap.accountId }, 'ab',
     ]]);
-    const list = books.methodResponses?.find((r) => r[0] === 'AddressBook/get')?.[1]?.list ?? [];
+    const list = pickResponse(books, 'AddressBook/get')?.list ?? [];
     const book = list.find((b) => b.isDefault) ?? list[0];
     if (!book) throw new Error('the account needs an address book to file a contact in');
     const res = await contactsRequest(jmap, [[
@@ -282,7 +264,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       },
       's',
     ]]);
-    const id = res.methodResponses?.find((r) => r[0] === 'ContactCard/set')?.[1]?.created?.c1?.id;
+    const id = pickResponse(res, 'ContactCard/set')?.created?.c1?.id;
     if (!id) throw new Error(`the server refused the walkthrough contact: ${JSON.stringify(res)}`);
     // The card was made behind the app's back, so ask for the sync rather
     // than waiting on a push that may not come.

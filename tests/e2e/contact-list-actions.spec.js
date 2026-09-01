@@ -4,7 +4,13 @@ import {
   expect,
   test,
 } from './helpers/shared-session.js';
-import { connectJmap, downloadBlob } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  contactsRequest,
+  downloadBlob,
+  fileNodeRequest,
+  pickResponse,
+} from './helpers/jmap-client.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
@@ -19,52 +25,6 @@ test.skip(!localStackEnabled, skipLocalStackMessage);
 const TEST_PREFIX = 'Contact actions e2e';
 const TEST_DOMAIN = 'contact-actions-e2e.example';
 
-async function contactsRequest(jmap, methodCalls) {
-  const response = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: jmap.authHeader,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      using: [
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:contacts',
-      ],
-      methodCalls,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`contacts JMAP failed: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
-
-function responseFor(payload, method) {
-  return payload.methodResponses?.find((response) => response[0] === method)?.[1] ?? null;
-}
-
-async function fileNodeRequest(jmap, methodCalls) {
-  const response = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: jmap.authHeader,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      using: [
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:filenode',
-      ],
-      methodCalls,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`FileNode JMAP failed: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
-
 async function fileNodeByName(jmap, name, parentId) {
   const queried = await fileNodeRequest(jmap, [[
     'FileNode/query',
@@ -74,7 +34,7 @@ async function fileNodeByName(jmap, name, parentId) {
     },
     'file-query',
   ]]);
-  const ids = responseFor(queried, 'FileNode/query')?.ids ?? [];
+  const ids = pickResponse(queried, 'FileNode/query')?.ids ?? [];
   const fetched = await fileNodeRequest(jmap, [[
     'FileNode/get',
     {
@@ -91,7 +51,7 @@ async function fileNodeByName(jmap, name, parentId) {
     },
     'file-get',
   ]]);
-  const get = responseFor(fetched, 'FileNode/get');
+  const get = pickResponse(fetched, 'FileNode/get');
   const nodes = (get?.list ?? []).filter((node) =>
     node.name === name && (node.parentId ?? null) === parentId);
   expect(nodes, `expected one FileNode named ${name} under ${parentId ?? 'root'}`)
@@ -140,7 +100,7 @@ async function contactsTrashFileNames(jmap) {
     },
     'trash-files-query',
   ]]);
-  const ids = responseFor(queried, 'FileNode/query')?.ids ?? [];
+  const ids = pickResponse(queried, 'FileNode/query')?.ids ?? [];
   if (ids.length === 0) return [];
   const fetched = await fileNodeRequest(jmap, [[
     'FileNode/get',
@@ -151,7 +111,7 @@ async function contactsTrashFileNames(jmap) {
     },
     'trash-files-get',
   ]]);
-  return (responseFor(fetched, 'FileNode/get')?.list ?? [])
+  return (pickResponse(fetched, 'FileNode/get')?.list ?? [])
     .filter((node) =>
       node.parentId === parentId
       && (
@@ -225,7 +185,7 @@ async function cleanupTrashEntry(page, jmap, uid, fileNamesBefore) {
         },
         'file-destroy',
       ]]);
-      expect(responseFor(destroyed, 'FileNode/set')?.destroyed).toContain(remote.node.id);
+      expect(pickResponse(destroyed, 'FileNode/set')?.destroyed).toContain(remote.node.id);
       localChanges.push({ name, destroy: true });
       continue;
     }
@@ -244,7 +204,7 @@ async function cleanupTrashEntry(page, jmap, uid, fileNamesBefore) {
       },
       'file-update',
     ]]);
-    expect(responseFor(updated, 'FileNode/set')?.updated).toHaveProperty(remote.node.id);
+    expect(pickResponse(updated, 'FileNode/set')?.updated).toHaveProperty(remote.node.id);
     localChanges.push({ name, destroy: false, document });
   }
   await page.evaluate(async ({ entryUid, changes }) => {
@@ -278,7 +238,7 @@ async function createBook(jmap, name) {
     },
     'book-set',
   ]]);
-  const set = responseFor(payload, 'AddressBook/set');
+  const set = pickResponse(payload, 'AddressBook/set');
   const id = set?.created?.book?.id;
   expect(id, `address book create should succeed: ${JSON.stringify(set)}`).toBeTruthy();
   return id;
@@ -323,7 +283,7 @@ async function createCard(jmap, {
     },
     'card-set',
   ]]);
-  const set = responseFor(payload, 'ContactCard/set');
+  const set = pickResponse(payload, 'ContactCard/set');
   const id = set?.created?.card?.id;
   expect(id, `contact create should succeed: ${JSON.stringify(set)}`).toBeTruthy();
   return id;
@@ -344,7 +304,7 @@ async function cardsById(jmap, ids) {
     { accountId: jmap.accountId, ids },
     'card-get',
   ]]);
-  const get = responseFor(payload, 'ContactCard/get');
+  const get = pickResponse(payload, 'ContactCard/get');
   return {
     list: get?.list ?? [],
     notFound: get?.notFound ?? [],
@@ -361,7 +321,7 @@ async function cardsByUid(jmap, uid) {
     },
     'card-query',
   ]]);
-  const ids = responseFor(queried, 'ContactCard/query')?.ids ?? [];
+  const ids = pickResponse(queried, 'ContactCard/query')?.ids ?? [];
   return cardsById(jmap, ids);
 }
 

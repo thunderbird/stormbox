@@ -2,7 +2,11 @@ import {
   expect,
   test,
 } from './helpers/shared-session.js';
-import { connectJmap } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  contactsRequest,
+  pickResponse,
+} from './helpers/jmap-client.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
@@ -19,38 +23,13 @@ const PNG_BASE64 =
 const GIF_BASE64 =
   'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
-async function contactsRequest(jmap, methodCalls) {
-  const response = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: jmap.authHeader,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      using: [
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:contacts',
-      ],
-      methodCalls,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`contacts JMAP failed: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
-
-function responseFor(payload, method) {
-  return payload.methodResponses?.find((response) => response[0] === method)?.[1] ?? null;
-}
-
 async function cardsById(jmap, ids) {
   const payload = await contactsRequest(jmap, [[
     'ContactCard/get',
     { accountId: jmap.accountId, ids },
     'card-get',
   ]]);
-  return responseFor(payload, 'ContactCard/get')?.list ?? [];
+  return pickResponse(payload, 'ContactCard/get')?.list ?? [];
 }
 
 async function cardIdsForEmail(jmap, email) {
@@ -63,7 +42,7 @@ async function cardIdsForEmail(jmap, email) {
     },
     'card-query',
   ]]);
-  const ids = responseFor(queried, 'ContactCard/query')?.ids ?? [];
+  const ids = pickResponse(queried, 'ContactCard/query')?.ids ?? [];
   const cards = await cardsById(jmap, ids);
   return cards
     .filter((card) => Object.values(card.emails ?? {})

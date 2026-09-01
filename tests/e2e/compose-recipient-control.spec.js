@@ -3,7 +3,11 @@ import {
   resetSharedSession,
   test,
 } from './helpers/shared-session.js';
-import { connectJmap } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  contactsRequest,
+  pickResponse,
+} from './helpers/jmap-client.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
@@ -47,21 +51,6 @@ async function closeCompose(page) {
   await dialog.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
 }
 
-async function contactsRequest(jmap, methodCalls) {
-  const response = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
-      methodCalls,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`contacts JMAP failed: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
-
 async function refreshContactCache(page) {
   await page.evaluate(async () => {
     const accounts = await globalThis.__repo.listAccounts();
@@ -86,7 +75,7 @@ async function seedContact(page, { name, email, term }) {
     { accountId: jmap.accountId },
     'books',
   ]]);
-  const books = booksPayload.methodResponses?.[0]?.[1]?.list ?? [];
+  const books = pickResponse(booksPayload, 'AddressBook/get')?.list ?? [];
   const book = books.find((candidate) => candidate.isDefault) ?? books[0];
   expect(book?.id, 'the account needs an address book for contact fixtures').toBeTruthy();
 
@@ -106,7 +95,7 @@ async function seedContact(page, { name, email, term }) {
     },
     'create',
   ]]);
-  const remoteId = createPayload.methodResponses?.[0]?.[1]?.created?.fixture?.id;
+  const remoteId = pickResponse(createPayload, 'ContactCard/set')?.created?.fixture?.id;
   expect(remoteId, `the server should create "${name}"`).toBeTruthy();
   await refreshContactCache(page);
   await expect.poll(() => page.evaluate(async ({ prefix, address }) => {
@@ -139,8 +128,7 @@ async function forgetContact(page, seeded) {
     { accountId: jmap.accountId, destroy: [seeded.remoteId] },
     'cleanup',
   ]]);
-  const destroyed = payload.methodResponses
-    ?.find((entry) => entry[0] === 'ContactCard/set')?.[1]?.destroyed ?? [];
+  const destroyed = pickResponse(payload, 'ContactCard/set')?.destroyed ?? [];
   expect(destroyed, `cleanup should destroy "${seeded.name}"`).toContain(seeded.remoteId);
   await refreshContactCache(page);
 }

@@ -1,4 +1,8 @@
-import { connectJmap } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  contactsRequest,
+  pickResponse,
+} from './helpers/jmap-client.js';
 import {
   attachConsoleTail,
   consoleLinesFor,
@@ -40,21 +44,6 @@ const CREATE_CHUNK = 100;
  */
 const OVERFLOW = 12;
 
-async function contactsRequest(jmap, methodCalls) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
-      methodCalls,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`contacts JMAP failed: ${res.status} ${await res.text().catch(() => '')}`);
-  }
-  return res.json();
-}
-
 /**
  * The page size the client will use: the smaller of its own request size and
  * the server's object limit, which is what the sync clamps to.
@@ -73,7 +62,7 @@ function pageLimit(jmap) {
 
 async function defaultBookId(jmap) {
   const res = await contactsRequest(jmap, [['AddressBook/get', { accountId: jmap.accountId }, 'a']]);
-  const books = res.methodResponses?.[0]?.[1]?.list ?? [];
+  const books = pickResponse(res, 'AddressBook/get')?.list ?? [];
   const chosen = books.find((b) => b.isDefault) ?? books[0];
   expect(chosen?.id, 'the account needs an address book to file cards in').toBeTruthy();
   return chosen.id;
@@ -98,8 +87,9 @@ async function createCards(jmap, bookId, cards) {
     const res = await contactsRequest(jmap, [[
       'ContactCard/set', { accountId: jmap.accountId, create }, 's',
     ]]);
-    const created = res.methodResponses?.[0]?.[1]?.created ?? {};
-    const notCreated = res.methodResponses?.[0]?.[1]?.notCreated ?? {};
+    const set = pickResponse(res, 'ContactCard/set');
+    const created = set?.created ?? {};
+    const notCreated = set?.notCreated ?? {};
     expect(
       Object.keys(notCreated),
       `the server refused cards: ${JSON.stringify(notCreated).slice(0, 400)}`,
@@ -146,12 +136,12 @@ async function lateCardOfThisRun(jmap, position, stamp) {
   const q = await contactsRequest(jmap, [[
     'ContactCard/query', { accountId: jmap.accountId, position, limit: 50 }, 'q',
   ]]);
-  const ids = q.methodResponses?.find((r) => r[0] === 'ContactCard/query')?.[1]?.ids ?? [];
+  const ids = pickResponse(q, 'ContactCard/query')?.ids ?? [];
   expect(ids.length, `the server should have cards past position ${position}`).toBeGreaterThan(0);
   const g = await contactsRequest(jmap, [[
     'ContactCard/get', { accountId: jmap.accountId, ids }, 'g',
   ]]);
-  const list = g.methodResponses?.find((r) => r[0] === 'ContactCard/get')?.[1]?.list ?? [];
+  const list = pickResponse(g, 'ContactCard/get')?.list ?? [];
   const mine = list.find((card) => (card?.name?.full ?? '').includes(`zulu${stamp}`));
   expect(
     mine,
@@ -183,9 +173,7 @@ test.describe('Autocomplete across contact pages', () => {
     const existing = await contactsRequest(jmap, [[
       'ContactCard/query', { accountId: jmap.accountId, limit: 1 }, 'q',
     ]]);
-    const already = Number(
-      existing.methodResponses?.find((r) => r[0] === 'ContactCard/query')?.[1]?.total ?? 0,
-    );
+    const already = Number(pickResponse(existing, 'ContactCard/query')?.total ?? 0);
     const toCreate = Math.max(0, limit + OVERFLOW - already);
     const stamp = Date.now();
     const cards = Array.from({ length: toCreate }, (_, i) => ({
