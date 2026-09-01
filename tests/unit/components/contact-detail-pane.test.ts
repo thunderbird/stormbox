@@ -489,6 +489,7 @@ describe('ContactDetailPane', () => {
       ];
       return {
         ok: true,
+        status: 'hydrated',
         uid: 'urn:uuid:00000000-0000-4000-8000-000000000009',
         contactId: 9,
         detail: createdDetail,
@@ -519,6 +520,49 @@ describe('ContactDetailPane', () => {
       key: 'contact:9',
       detail: expect.objectContaining({ id: 9, emails: [] }),
     });
+  });
+
+  it('reuses the durable contact UID when a create is retried', async () => {
+    const store = useContactsStore();
+    const uid = 'urn:uuid:00000000-0000-4000-8000-000000000009';
+    const createdDetail = {
+      ...contactDetail(),
+      id: 9,
+      remote_id: 'card-9',
+      full_name: 'Retried contact',
+      display_name: 'Retried contact',
+    };
+    const create = vi.spyOn(store, 'createContactResult')
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 'failed',
+        uid,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 'hydrated',
+        uid,
+        contactId: 9,
+        detail: createdDetail,
+      });
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: [],
+        createAddressbookIds: [2],
+        detail: null,
+        mode: 'create',
+      },
+    });
+    await wrapper.get('input[autocomplete="name"]').setValue('Retried contact');
+
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+
+    expect(create.mock.calls[0][0]).not.toHaveProperty('uid');
+    expect(create.mock.calls[1][0]).toMatchObject({ uid });
+    expect(wrapper.emitted('saved')).toHaveLength(1);
   });
 
   it('marks a blank existing resource row and keeps Remove actionable', async () => {

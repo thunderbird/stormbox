@@ -32,6 +32,7 @@ import type {
 import { resolveComposeIdentityIndex } from '../utils/compose-identity';
 import { contactMutationFieldsFromDetail } from '../utils/contact-fields';
 import { copyableContactPhoto } from '../utils/contact-photo';
+import { normalizeContactUid } from '../utils/contact-uid';
 import { nextCopyName } from '../utils/copy-name';
 import AppIconButton from './AppIconButton.vue';
 import AddressBookDeleteDialog from './contacts/AddressBookDeleteDialog.vue';
@@ -65,10 +66,6 @@ const props = withDefaults(defineProps<{
 }>(), {
   filterQuery: '',
 });
-
-const emit = defineEmits<{
-  restoreFilter: [value: string];
-}>();
 
 type DetailState =
   | 'create'
@@ -112,6 +109,7 @@ interface PendingConfirmation {
 interface ContactSavedPayload {
   detail: ContactDetail | null;
   key: string | null;
+  uid: string | null;
 }
 
 const contactsStore = useContactsStore();
@@ -911,13 +909,32 @@ async function closeDetail(): Promise<void> {
 async function onContactSaved(payload: ContactSavedPayload): Promise<void> {
   editorDirty.value = false;
   detailFailureState.value = null;
-  if (!payload.key) {
+  let key = payload.key;
+  let entry = key == null
+    ? null
+    : availableEntries.value.find((candidate) => candidate.key === key) ?? null;
+  if (!payload.detail && (!entry || entry.kind !== 'contact')) {
+    await contactsStore.refreshContacts();
+    entry = key == null
+      ? null
+      : availableEntries.value.find((candidate) => candidate.key === key) ?? null;
+    if ((!entry || entry.kind !== 'contact') && payload.uid) {
+      const uid = normalizeContactUid(payload.uid);
+      if (uid) {
+        entry = availableEntries.value.find((candidate) =>
+          candidate.kind === 'contact'
+          && normalizeContactUid(candidate.contact.uid) === uid) ?? null;
+      }
+      if (entry?.kind === 'contact') key = entry.key;
+    }
+  }
+  if (!key) {
     clearSelection();
     detailState.value = 'error';
     detailError.value = 'The contact was saved, but its cached detail is unavailable.';
     return;
   }
-  selectedKey.value = payload.key;
+  selectedKey.value = key;
   identityDetail.value = null;
   mobilePane.value = 'detail';
   if (payload.detail) {
@@ -928,8 +945,6 @@ async function onContactSaved(payload: ContactSavedPayload): Promise<void> {
     restoreDetailFocus();
     return;
   }
-  const entry = availableEntries.value.find((candidate) =>
-    candidate.key === payload.key);
   if (entry?.kind === 'contact') {
     await loadContact(entry);
     return;
@@ -1010,7 +1025,8 @@ async function duplicateSelectedContact(): Promise<void> {
   operationNotice.value = '';
   await onContactSaved({
     detail: result.detail,
-    key: `contact:${result.contactId}`,
+    key: result.contactId == null ? null : `contact:${result.contactId}`,
+    uid: result.uid,
   });
 }
 
@@ -1439,13 +1455,9 @@ async function requestLeave(): Promise<boolean> {
 }
 
 async function requestFilterChange(next: string): Promise<boolean> {
-  clearBulkSelection();
-  operationNotice.value = '';
   const entry = selectedEntry.value;
   if (!entry || entryMatchesFilter(entry, next)) return true;
-  if (!await prepareNavigation()) return false;
-  clearSelection();
-  return true;
+  return prepareNavigation();
 }
 
 async function resolveExternalChange(): Promise<void> {
@@ -1563,16 +1575,12 @@ async function resolveExternalAddressBookChange(
 
 watch(
   () => props.filterQuery,
-  async (next, previous) => {
+  (next) => {
     clearBulkSelection();
     operationNotice.value = '';
     resetSequence.value += 1;
     const entry = selectedEntry.value;
     if (!entry || entryMatchesFilter(entry, next)) return;
-    if (!await prepareNavigation()) {
-      emit('restoreFilter', previous);
-      return;
-    }
     clearSelection();
   },
 );

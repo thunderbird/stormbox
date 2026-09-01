@@ -43,6 +43,7 @@ type ContactDetailPaneMode = 'create' | 'edit' | 'loading' | 'view';
 interface ContactSavedPayload {
   detail: ContactDetail | null;
   key: string | null;
+  uid: string | null;
 }
 
 const props = withDefaults(defineProps<{
@@ -74,6 +75,7 @@ const detailViewEl = ref<{ focusHeading: () => Promise<void> } | null>(null);
 const model = ref<ContactEditorModel>(createContactEditorModel(props.detail));
 const initialSerialized = ref('');
 const initialFields = ref<ContactMutationFields | null>(null);
+const createRetryUid = ref<string | null>(null);
 const localError = ref<string | null>(null);
 const fieldErrors = ref<Record<string, string>>({});
 const saveAttempted = ref(false);
@@ -96,6 +98,7 @@ function resetEditor(): void {
   photoReading.value = false;
   const detail = props.mode === 'create' ? null : props.detail;
   model.value = createContactEditorModel(detail);
+  createRetryUid.value = null;
   initialFields.value = props.mode === 'edit' && detail
     ? contactMutationFieldsFromDetail(detail)
     : null;
@@ -207,16 +210,20 @@ async function save(): Promise<boolean> {
 
   let contactId: number | null = null;
   let detail: ContactDetail | null = null;
+  let uid: string | null = null;
   let ok: boolean;
   if (props.mode === 'create') {
     const created = await contactsStore.createContactResult({
       contact: result.fields,
       addressbookIds: props.createAddressbookIds,
+      ...(createRetryUid.value ? { uid: createRetryUid.value } : {}),
     });
+    createRetryUid.value = created.uid;
     ok = created.ok;
     if (created.ok) {
       contactId = created.contactId;
       detail = created.detail;
+      uid = created.uid;
     }
   } else if (props.detail) {
     if (!initialFields.value) {
@@ -251,6 +258,7 @@ async function save(): Promise<boolean> {
   emit('saved', {
     detail,
     key: contactId == null ? null : `contact:${contactId}`,
+    uid,
   });
   return true;
 }

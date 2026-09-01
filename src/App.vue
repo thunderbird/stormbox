@@ -221,7 +221,11 @@ watch(showMessageView, () => {
   clampColumnWidths();
 });
 
+let contactFilterGeneration = 0;
+let contactFilterTransition: Promise<boolean> | null = null;
+
 watch(space, () => {
+  contactFilterGeneration += 1;
   quickFilterQuery.value = '';
   applyResponsiveLayout();
   clampColumnWidths();
@@ -258,18 +262,34 @@ function focusQuickFilterInput() {
 }
 
 async function updateQuickFilterQuery(next: string) {
-  if (next === quickFilterQuery.value) return;
-  if (
-    space.value === 'contacts'
-    && contactsViewEl.value
-    && !await contactsViewEl.value.requestFilterChange(next)
-  ) {
-    await nextTick();
-    if (quickFilterInputEl.value) {
-      quickFilterInputEl.value.value = quickFilterQuery.value;
+  if (space.value === 'contacts' && contactsViewEl.value) {
+    if (next === quickFilterQuery.value && !contactFilterTransition) return;
+    const generation = ++contactFilterGeneration;
+    const transition = contactFilterTransition
+      ?? contactsViewEl.value.requestFilterChange(next);
+    contactFilterTransition = transition;
+    let allowed: boolean;
+    try {
+      allowed = await transition;
+    } finally {
+      if (contactFilterTransition === transition) {
+        contactFilterTransition = null;
+      }
     }
+    if (generation !== contactFilterGeneration || space.value !== 'contacts') {
+      return;
+    }
+    if (!allowed) {
+      await nextTick();
+      if (quickFilterInputEl.value) {
+        quickFilterInputEl.value.value = quickFilterQuery.value;
+      }
+      return;
+    }
+    quickFilterQuery.value = next;
     return;
   }
+  if (next === quickFilterQuery.value) return;
   if (space.value === 'mail' && mailStore.selectedMessageId != null) {
     mailStore.selectMessage(null);
   }
@@ -285,13 +305,6 @@ async function requestSpaceChange(next: string) {
     && !await contactsViewEl.value.requestLeave()
   ) return;
   space.value = next;
-}
-
-function restoreContactsFilter(value: string) {
-  quickFilterQuery.value = value;
-  void nextTick(() => {
-    if (quickFilterInputEl.value) quickFilterInputEl.value.value = value;
-  });
 }
 
 function toggleFolderList() {
@@ -867,7 +880,6 @@ function clamp(value: number, min: number, max: number) {
       v-else-if="space === 'contacts'"
       ref="contactsViewEl"
       :filter-query="quickFilterQuery"
-      @restore-filter="restoreContactsFilter"
     />
 
     <ComposeManager />
