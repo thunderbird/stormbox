@@ -18,7 +18,7 @@ const emit = defineEmits<{
 }>();
 
 const dialogEl = ref<HTMLElement | null>(null);
-useModalFocus(dialogEl);
+useModalFocus(dialogEl, { containTab: true });
 </script>
 
 <template>

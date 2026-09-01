@@ -25,6 +25,7 @@ const mailStore = useMailStore();
 const dialogEl = ref<HTMLElement | null>(null);
 const nameEl = ref<HTMLInputElement | null>(null);
 useModalFocus(dialogEl, {
+  containTab: true,
   initialFocus: nameEl,
   onDefault: submit,
 });

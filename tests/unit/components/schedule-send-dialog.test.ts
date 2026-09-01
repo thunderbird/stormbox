@@ -173,4 +173,28 @@ describe('ScheduleSendDialog picker validation', () => {
 
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
+
+  it('contains Tab while leaving picker Escape handling local', async () => {
+    const wrapper = mountScheduleDialog();
+    await nextTick();
+    const close = wrapper.get('.schedule-dialog__close').element as HTMLButtonElement;
+    const submit = wrapper.get('.schedule-dialog__submit').element as HTMLButtonElement;
+
+    submit.focus();
+    submit.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(close);
+
+    close.focus();
+    close.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+      shiftKey: true,
+    }));
+    expect(document.activeElement).toBe(submit);
+  });
 });

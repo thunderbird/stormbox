@@ -79,6 +79,17 @@ describe('AddressBookDeleteDialog', () => {
     expect(dialog.text()).toContain('1 contact includes photos or other media');
     expect(dialog.text()).toContain('server will choose a replacement default');
 
+    const buttons = wrapper.findAll('button');
+    const cancel = buttons[0].element as HTMLButtonElement;
+    const confirm = buttons[1].element as HTMLButtonElement;
+    confirm.focus();
+    confirm.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(cancel);
+
     await dialog.trigger('keydown', { key: 'Enter' });
     expect(wrapper.emitted('cancel')).toHaveLength(1);
     expect(wrapper.emitted('confirm')).toBeUndefined();
