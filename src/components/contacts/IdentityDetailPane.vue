@@ -2,6 +2,7 @@
 import {
   computed,
   nextTick,
+  onMounted,
   ref,
   watch,
 } from 'vue';
@@ -177,13 +178,24 @@ function resetEditor(): void {
   localError.value = null;
   emit('dirtyChange', false);
   emit('stateChange', null);
-  if (editing.value) void nextTick(() => nameEl.value?.focus());
 }
 
 watch(
-  () => [props.mode, props.identity?.id] as const,
+  [() => props.mode, () => props.identity?.id],
   resetEditor,
   { immediate: true },
+);
+
+onMounted(() => {
+  if (editing.value) nameEl.value?.focus();
+});
+
+watch(
+  [() => props.mode, () => props.identity?.id],
+  ([mode]) => {
+    if (mode === 'create' || mode === 'edit') nameEl.value?.focus();
+  },
+  { flush: 'post' },
 );
 
 watch(dirty, (value) => {
