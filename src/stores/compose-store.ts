@@ -831,10 +831,13 @@ export const useComposeStore = defineStore('compose', () => {
     }
   }
 
-  function identityForSession(session: ComposeSession | null): IdentityRow | null {
+  function identityForSession(
+    session: ComposeSession | null,
+    list: readonly IdentityRow[] = identities.value,
+  ): IdentityRow | null {
     if (!session) return null;
     if (session.unresolvedFrom) return null;
-    return identities.value[session.draft.fromIdx] ?? identities.value[0] ?? null;
+    return list[session.draft.fromIdx] ?? list[0] ?? null;
   }
 
   function replyToForSession(
@@ -1333,13 +1336,10 @@ export const useComposeStore = defineStore('compose', () => {
 
   async function refreshIdentities(): Promise<void> {
     if (!repo || authStore.accountId == null) return;
+    const previousIdentities = identities.value;
     const snapshots = new Map(sessions.value.map((session) => {
       const canonical = canonicalSessionJson(session);
-      return [session.id, {
-        identity: identityForSession(session),
-        canonical,
-        clean: canonical === session.seedJson,
-      }];
+      return [session.id, { canonical, clean: canonical === session.seedJson }];
     }));
     const refreshed = await repo.listIdentities(authStore.accountId);
     const stillClean = new Set(sessions.value
@@ -1350,7 +1350,9 @@ export const useComposeStore = defineStore('compose', () => {
       .map((session) => session.id));
     identities.value = refreshed;
     for (const session of sessions.value) {
-      const previousIdentity = snapshots.get(session.id)?.identity ?? null;
+      // fromIdx addressed previousIdentities until the swap above, so a From
+      // chosen while the read was in flight is carried across, not reverted.
+      const previousIdentity = identityForSession(session, previousIdentities);
       reconcileFromIdxAfterIdentityRefresh(
         session,
         previousIdentity,
