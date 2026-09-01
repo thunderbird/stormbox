@@ -26,8 +26,12 @@ import {
   processInsertedMutation,
 } from './helpers/live-jmap';
 
+/** Name prefix shared by every run of this suite; sweeps match on it. */
+const BOOK_FAMILY = 'Stormbox address book ';
+
 describe.sequential('live Stalwart address book management', () => {
-  const prefix = `Stormbox address book ${randomUUID()}`;
+  /** This run's names; assertions match on it so other runs' leftovers cannot satisfy them. */
+  const prefix = `${BOOK_FAMILY}${randomUUID()}`;
   let context: Awaited<ReturnType<typeof createLiveIntegrationContext>>;
   const contactIds = new Set<string>();
 
@@ -54,20 +58,43 @@ describe.sequential('live Stalwart address book management', () => {
     return result.list ?? [];
   }
 
-  async function cleanup(): Promise<void> {
-    if (contactIds.size > 0) {
-      await contacts('ContactCard/set', { destroy: [...contactIds] }, 'cleanup-cards');
-      contactIds.clear();
+  /**
+   * Cards and books left by any run of this suite, including one that
+   * died before its own teardown. A card shared into a retained book
+   * survives its test book's destruction, so cards go by name first.
+   */
+  async function sweepFamilyArtifacts(): Promise<void> {
+    const queried = await contacts('ContactCard/query', { limit: 500 }, 'sweep-card-query');
+    if (queried.ids?.length) {
+      const fetched = await contacts('ContactCard/get', {
+        ids: queried.ids,
+        properties: ['id', 'name'],
+      }, 'sweep-card-get');
+      const doomed = (fetched.list ?? [])
+        .filter((card: any) => String(card.name?.full ?? '').startsWith(BOOK_FAMILY))
+        .map((card: any) => card.id);
+      if (doomed.length > 0) {
+        await contacts('ContactCard/set', { destroy: doomed }, 'sweep-cards');
+      }
     }
     const bookIds = (await remoteBooks())
-      .filter((book) => String(book.name ?? '').startsWith(prefix))
+      .filter((book) => String(book.name ?? '').startsWith(BOOK_FAMILY))
       .map((book) => book.id);
     if (bookIds.length > 0) {
       await contacts('AddressBook/set', {
         destroy: bookIds,
         onDestroyRemoveContents: true,
-      }, 'cleanup-books');
+      }, 'sweep-books');
     }
+  }
+
+  /** This run's cards by id, then whatever the family sweep still finds. */
+  async function cleanup(): Promise<void> {
+    if (contactIds.size > 0) {
+      await contacts('ContactCard/set', { destroy: [...contactIds] }, 'cleanup-cards');
+      contactIds.clear();
+    }
+    await sweepFamilyArtifacts();
   }
 
   /**
@@ -131,8 +158,12 @@ describe.sequential('live Stalwart address book management', () => {
   });
 
   afterAll(async () => {
-    await cleanup();
-    await context.engine.close();
+    if (!context) return;
+    try {
+      await cleanup();
+    } finally {
+      await context.engine.close();
+    }
   });
 
   it('round-trips metadata and default changes', async () => {

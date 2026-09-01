@@ -252,10 +252,10 @@ test.describe('C504 browser review regressions', () => {
     }
   });
 
-  test('keeps virtual directory, signatures, and identity editor bounded', async ({
+  test('swaps a tracked rich signature when the From identity changes', async ({
     sharedPage: page,
   }, testInfo) => {
-    test.setTimeout(300_000);
+    test.setTimeout(120_000);
     const jmap = await connectJmap();
     const stamp = Date.now();
     const alias = `c504-unsigned-${stamp}@example.org`;
@@ -269,7 +269,6 @@ test.describe('C504 browser review regressions', () => {
     };
     let aliasIdentityId = null;
     let primaryChanged = false;
-    let virtualContactsAdded = false;
 
     try {
       await patchPrincipalEmails('addItem', alias);
@@ -344,23 +343,11 @@ test.describe('C504 browser review regressions', () => {
       await expect(editor).toContainText('Before tracked signature.');
       await expect(editor).toContainText('After tracked signature.');
       await discardCompose(page);
-
-      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-      await expect(page.locator('.contacts')).toBeVisible();
-      virtualContactsAdded = true;
-      await addVirtualContacts(page);
-      await verifyDirectoryViewport(page, 1440, 'desktop');
-      await verifyDirectoryViewport(page, 900, 'tablet');
-
-      await page.getByRole('button', { name: 'Manage identities' }).click();
-      await verifyIdentityEditorWidth(page, 737);
-      await verifyIdentityEditorWidth(page, 390);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       if (await page.locator('.compose-dialog--expanded').count()) {
         await discardCompose(page).catch(() => {});
       }
-      if (virtualContactsAdded) await removeVirtualContacts(page).catch(() => {});
       if (primaryChanged) {
         await identitySet(jmap, {
           update: { [primary.id]: originalSignature },
@@ -370,6 +357,40 @@ test.describe('C504 browser review regressions', () => {
         await identitySet(jmap, { destroy: [aliasIdentityId] }).catch(() => {});
       }
       await patchPrincipalEmails('removeItem', alias).catch(() => {});
+    }
+  });
+
+  test('virtualizes a 10k-contact directory at desktop and tablet widths', async ({
+    sharedPage: page,
+  }, testInfo) => {
+    test.setTimeout(300_000);
+    let virtualContactsAdded = false;
+
+    try {
+      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+      await expect(page.locator('.contacts')).toBeVisible();
+      virtualContactsAdded = true;
+      await addVirtualContacts(page);
+      await verifyDirectoryViewport(page, 1440, 'desktop');
+      await verifyDirectoryViewport(page, 900, 'tablet');
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      if (virtualContactsAdded) await removeVirtualContacts(page).catch(() => {});
+      await page.setViewportSize({ width: 1280, height: 900 }).catch(() => {});
+    }
+  });
+
+  test('keeps the identity editor inside tablet and phone widths', async ({
+    sharedPage: page,
+  }, testInfo) => {
+    try {
+      await page.getByRole('button', { name: 'Contacts', exact: true }).click();
+      await expect(page.locator('.contacts')).toBeVisible();
+      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await verifyIdentityEditorWidth(page, 737);
+      await verifyIdentityEditorWidth(page, 390);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
       await page.setViewportSize({ width: 1280, height: 900 }).catch(() => {});
     }
   });

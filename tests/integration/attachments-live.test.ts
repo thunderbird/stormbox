@@ -62,8 +62,12 @@ function bytesOf(blob: Blob): Promise<Uint8Array> {
   return blob.arrayBuffer().then((buffer) => new Uint8Array(buffer));
 }
 
+/** Subject and mailbox-name prefix shared by every run of this suite; sweeps match on it. */
+const SUBJECT_FAMILY = 'Stormbox attach ';
+
 describe.sequential('live Stalwart attachment transfer', () => {
-  const prefix = `Stormbox attach ${randomUUID()}`;
+  /** This run's names; assertions match on it so other runs' leftovers cannot satisfy them. */
+  const prefix = `${SUBJECT_FAMILY}${randomUUID()}`;
   let context: Awaited<ReturnType<typeof createLiveMailIntegrationContext>>;
   /** The integration account as seen through its own transport. */
   let mail: LiveMailAccount;
@@ -76,10 +80,12 @@ describe.sequential('live Stalwart attachment transfer', () => {
   const ownerEmailIds = new Set<string>();
   const ownerMailboxIds = new Set<string>();
 
+  /** Owner mailboxes this run tracked plus any left by an earlier run. */
   async function destroyOwnerMailboxes() {
-    const ids = (await remoteMailboxes(owner))
-      .filter((mailbox: any) => String(mailbox.name ?? '').startsWith(prefix))
+    const swept = (await remoteMailboxes(owner))
+      .filter((mailbox: any) => String(mailbox.name ?? '').startsWith(SUBJECT_FAMILY))
       .map((mailbox: any) => mailbox.id);
+    const ids = [...new Set([...ownerMailboxIds, ...swept])];
     if (ids.length === 0) return;
     await callMethod(owner.transport, MAIL_USING, 'Mailbox/set', {
       accountId: owner.accountId,
@@ -89,28 +95,34 @@ describe.sequential('live Stalwart attachment transfer', () => {
     ownerMailboxIds.clear();
   }
 
-  async function cleanupPrefixedMail() {
+  /**
+   * This run's tracked emails by id, then every message and mailbox
+   * carrying the family prefix, so an interrupted run's leftovers go on
+   * the next start rather than accumulating.
+   */
+  async function cleanupFamilyMail() {
     if (!context) return;
+    await destroyEmails(mail, [...createdEmailIds]);
+    createdEmailIds.clear();
     for (const role of ['inbox', 'drafts', 'sent'] as const) {
       try {
         const mailbox = await mailboxByRole(mail, role);
-        await destroyEmailsWithSubjectPrefix(mail, mailbox.id, prefix);
+        await destroyEmailsWithSubjectPrefix(mail, mailbox.id, SUBJECT_FAMILY);
       } catch {
         // Role mailbox may be missing during a failed beforeAll.
       }
     }
     if (owner) {
+      await destroyEmails(owner, [...ownerEmailIds]);
+      ownerEmailIds.clear();
       try {
         const inbox = await mailboxByRole(owner, 'inbox');
-        await destroyEmailsWithSubjectPrefix(owner, inbox.id, prefix);
+        await destroyEmailsWithSubjectPrefix(owner, inbox.id, SUBJECT_FAMILY);
       } catch {
         // Owner inbox cleanup is best-effort before mailbox destroy.
       }
-      await destroyEmails(owner, [...ownerEmailIds]);
-      ownerEmailIds.clear();
       await destroyOwnerMailboxes();
     }
-    createdEmailIds.clear();
   }
 
   /**
@@ -180,7 +192,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
       email: SHARED_TEST_OIDC_EMAIL,
       password: SHARED_TEST_OIDC_PASSWORD,
     });
-    await cleanupPrefixedMail();
+    await cleanupFamilyMail();
     await syncMailboxes({
       transport: context.transport,
       account: context.account,
@@ -210,7 +222,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
 
   afterAll(async () => {
     try {
-      await cleanupPrefixedMail();
+      await cleanupFamilyMail();
     } finally {
       await context?.engine.close();
     }
