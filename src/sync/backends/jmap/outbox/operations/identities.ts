@@ -5,7 +5,6 @@ import {
 } from '../../../../../constants/states';
 import { IDENTITY_ERROR } from '../../../../../constants/identity-errors';
 import { DB_RPC } from '../../../../../db/protocol';
-import { wlog } from '../../../../../db/worker-log';
 import {
   cleanIdentityAddresses,
   hasOwn,
@@ -16,13 +15,21 @@ import {
 import { syncIdentities, syncIdentityById } from '../../identities';
 import { callJmap, pickResponse } from '../../invoke';
 import {
-  CACHE_REPAIR_MAX_ATTEMPTS,
   readMutationCheckpoint,
   saveMutationCheckpoint,
   type MutationCheckpointRead,
 } from '../../mutation-checkpoint';
 import { errorProperties, hasErrorProperty } from '../../set-error';
 import { JMAP_CAPS } from '../../transport';
+import {
+  ambiguousWriteCreateFailure,
+  localWriteFailure,
+  readAcceptedWrite,
+  recoverUniqueWriteCreate,
+  runAcceptedWriteRepair,
+  setErrorTypeFromTable,
+  setWriteFailure,
+} from '../write-scaffold';
 
 const RETRYABLE_SET_ERRORS = new Set([
   'noResponse',
@@ -31,6 +38,24 @@ const RETRYABLE_SET_ERRORS = new Set([
   'serverUnavailable',
   'stateMismatch',
 ]);
+const IDENTITY_SET_ERROR_TYPES: Readonly<Record<string, string>> = {
+  accountNotFound: IDENTITY_ERROR.PERMISSION_DENIED,
+  accountNotSupportedByMethod: IDENTITY_ERROR.PERMISSION_DENIED,
+  accountReadOnly: IDENTITY_ERROR.PERMISSION_DENIED,
+  forbidden: IDENTITY_ERROR.PERMISSION_DENIED,
+  forbiddenFrom: IDENTITY_ERROR.ADDRESS_NOT_CONFIGURED,
+  overQuota: IDENTITY_ERROR.OVER_QUOTA,
+  tooLarge: IDENTITY_ERROR.OBJECT_TOO_LARGE,
+  invalidPatch: IDENTITY_ERROR.INVALID_PATCH,
+  willDestroy: IDENTITY_ERROR.WILL_DESTROY,
+  singleton: IDENTITY_ERROR.SINGLETON,
+  invalidArguments: IDENTITY_ERROR.INVALID_ARGUMENTS,
+  notFound: IDENTITY_ERROR.MISSING,
+  rateLimit: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+  serverFail: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+  serverUnavailable: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+  noResponse: IDENTITY_ERROR.SERVER_UNAVAILABLE,
+};
 
 type IdentitySetOperation = 'create' | 'delete' | 'update';
 
@@ -98,36 +123,12 @@ export function identityErrorType(
     }
     return IDENTITY_ERROR.UNKNOWN;
   }
-  switch (protocolType) {
-    case 'accountNotFound':
-    case 'accountNotSupportedByMethod':
-    case 'accountReadOnly':
-    case 'forbidden':
-      return IDENTITY_ERROR.PERMISSION_DENIED;
-    case 'forbiddenFrom':
-      return IDENTITY_ERROR.ADDRESS_NOT_CONFIGURED;
-    case 'overQuota':
-      return IDENTITY_ERROR.OVER_QUOTA;
-    case 'tooLarge':
-      return IDENTITY_ERROR.OBJECT_TOO_LARGE;
-    case 'invalidPatch':
-      return IDENTITY_ERROR.INVALID_PATCH;
-    case 'willDestroy':
-      return IDENTITY_ERROR.WILL_DESTROY;
-    case 'singleton':
-      return IDENTITY_ERROR.SINGLETON;
-    case 'invalidArguments':
-      return IDENTITY_ERROR.INVALID_ARGUMENTS;
-    case 'notFound':
-      return IDENTITY_ERROR.MISSING;
-    case 'rateLimit':
-    case 'serverFail':
-    case 'serverUnavailable':
-    case 'noResponse':
-      return IDENTITY_ERROR.SERVER_UNAVAILABLE;
-    default:
-      return IDENTITY_ERROR.UNKNOWN;
-  }
+  return setErrorTypeFromTable(
+    reason,
+    fallbackType,
+    IDENTITY_SET_ERROR_TYPES,
+    IDENTITY_ERROR.UNKNOWN,
+  );
 }
 
 function setFailure(
@@ -135,29 +136,17 @@ function setFailure(
   fallbackType: string,
   operation: IdentitySetOperation,
 ) {
-  const protocolType = reason?.type ?? fallbackType;
-  const type = identityErrorType(reason, fallbackType, operation);
-  return {
-    ok: false,
-    error: {
-      type,
-      protocolType,
-      ...(reason ? { detail: reason } : {}),
-      ...(!RETRYABLE_SET_ERRORS.has(protocolType) ? { terminal: true } : {}),
-    },
-  };
+  return setWriteFailure({
+    reason,
+    fallbackType,
+    operation,
+    classify: identityErrorType,
+    isRetryable: (protocolType) => RETRYABLE_SET_ERRORS.has(protocolType),
+  });
 }
 
 function localFailure(type: string, detail: Record<string, unknown>) {
-  return {
-    ok: false,
-    error: {
-      type,
-      protocolType: 'clientValidation',
-      detail,
-      terminal: true,
-    },
-  };
+  return localWriteFailure(type, detail);
 }
 
 function missingSetResponse(result: any, operation: IdentitySetOperation) {
@@ -387,15 +376,13 @@ async function deleteIdentity({
 }
 
 function appliedWrite(row: any): { remoteId: string; attempts: number } | null {
-  if (row?.phase !== SEND_PHASE.CACHE_PENDING) return null;
-  const result = readMutationCheckpoint(row, (checkpoint: any) => {
+  return readAcceptedWrite(row, SEND_PHASE.CACHE_PENDING, (checkpoint: any) => {
     if (typeof checkpoint?.identityRemoteId !== 'string') return null;
     return {
       remoteId: checkpoint.identityRemoteId,
       attempts: Number.isInteger(checkpoint.attempts) ? checkpoint.attempts : 0,
     };
   });
-  return result.status === 'valid' ? result.checkpoint : null;
 }
 
 function pendingCreateCheckpoint(
@@ -480,15 +467,7 @@ function identityMatchesCreateRequest(
 }
 
 function ambiguousCreateFailure(detail: Record<string, unknown>) {
-  return {
-    ok: false,
-    error: {
-      type: IDENTITY_ERROR.AMBIGUOUS_CREATE,
-      protocolType: 'createOutcomeUnknown',
-      detail,
-      terminal: true,
-    },
-  };
+  return ambiguousWriteCreateFailure(IDENTITY_ERROR.AMBIGUOUS_CREATE, detail);
 }
 
 async function recoverAmbiguousCreate({
@@ -499,39 +478,33 @@ async function recoverAmbiguousCreate({
   checkpoint,
   useWebSocket,
 }: any) {
-  try {
-    await syncIdentities({
+  return recoverUniqueWriteCreate({
+    baselineIds: checkpoint.baselineIdentityIds,
+    refreshSnapshot: async () => {
+      await syncIdentities({
+        transport,
+        account,
+        handlers,
+        useWebSocket,
+        requireSnapshot: true,
+      });
+    },
+    readCandidates: () =>
+      handlers[DB_RPC.IDENTITY_LIST]({ accountId: account.id }),
+    candidateRemoteId: (identity: any) =>
+      typeof identity?.remote_id === 'string' ? identity.remote_id : null,
+    matchesRequest: (identity: any) =>
+      identityMatchesCreateRequest(identity, checkpoint.requestIdentity),
+    ambiguousErrorType: IDENTITY_ERROR.AMBIGUOUS_CREATE,
+    reconcile: (remoteId) => reconcileWrite({
       transport,
       account,
       handlers,
+      row,
+      remoteId,
+      attempts: 0,
       useWebSocket,
-      requireSnapshot: true,
-    });
-  } catch (error: any) {
-    return ambiguousCreateFailure({
-      reason: 'snapshotIncomplete',
-      message: error?.message ?? String(error),
-    });
-  }
-  const baseline = new Set(checkpoint.baselineIdentityIds);
-  const identities = await handlers[DB_RPC.IDENTITY_LIST]({ accountId: account.id });
-  const matches = identities.filter((identity: any) =>
-    !baseline.has(identity.remote_id)
-    && identityMatchesCreateRequest(identity, checkpoint.requestIdentity));
-  if (matches.length !== 1) {
-    return ambiguousCreateFailure({
-      reason: matches.length === 0 ? 'noUniqueMatch' : 'multipleMatches',
-      candidateIds: matches.map((identity: any) => identity.remote_id),
-    });
-  }
-  return reconcileWrite({
-    transport,
-    account,
-    handlers,
-    row,
-    remoteId: matches[0].remote_id,
-    attempts: 0,
-    useWebSocket,
+    }),
   });
 }
 
@@ -544,56 +517,37 @@ async function reconcileWrite({
   attempts,
   useWebSocket,
 }: any) {
-  const attempting = attempts + 1;
-  await saveMutationCheckpoint({
+  return runAcceptedWriteRepair({
     handlers,
     rowId: row.id,
     phase: SEND_PHASE.CACHE_PENDING,
-    checkpoint: { identityRemoteId: remoteId, attempts: attempting },
-  });
-  try {
-    let identity = null;
-    if (row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY) {
-      await handlers[DB_RPC.IDENTITY_DELETE_LOCAL]({
-        accountId: account.id,
-        remoteId,
-      });
-    } else {
-      identity = await syncIdentityById({
+    remoteId,
+    attempts,
+    checkpoint: (attempting) => ({
+      identityRemoteId: remoteId,
+      attempts: attempting,
+    }),
+    cacheRepairErrorType: IDENTITY_ERROR.CACHE_REPAIR_FAILED,
+    failureLog: (message) =>
+      `identity write applied but the cache did not follow: ${message}`,
+    repair: async () => {
+      if (row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY) {
+        await handlers[DB_RPC.IDENTITY_DELETE_LOCAL]({
+          accountId: account.id,
+          remoteId,
+        });
+        return null;
+      }
+      return syncIdentityById({
         transport,
         account,
         handlers,
         remoteId,
         useWebSocket,
       });
-    }
-    return {
-      ok: true,
-      result: {
-        ids: [remoteId],
-        ...(identity ? { identity } : {}),
-      },
-    };
-  } catch (error: any) {
-    wlog.warn(
-      'jmap-outbox',
-      `identity write applied but the cache did not follow: ${error?.message ?? error}`,
-    );
-    return {
-      ok: false,
-      error: {
-        type: IDENTITY_ERROR.CACHE_REPAIR_FAILED,
-        protocolType: 'cacheReconcileFailed',
-        message: error?.message ?? String(error),
-        ...(attempting >= CACHE_REPAIR_MAX_ATTEMPTS ? { terminal: true } : {}),
-        result: {
-          applied: true,
-          cached: false,
-          ids: [remoteId],
-        },
-      },
-    };
-  }
+    },
+    success: (identity) => identity ? { identity } : {},
+  });
 }
 
 async function runIdentityWrite(args: any, write: (args: any) => Promise<any>) {

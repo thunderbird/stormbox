@@ -285,6 +285,57 @@ describe('AddressBook mutations', () => {
       .sort()).toEqual(['book-personal', 'book-recovered']);
   });
 
+  it('retries cache reconciliation without repeating an accepted create', async () => {
+    const server = addressBookServer();
+    let setCalls = 0;
+    let repairUnavailable = true;
+    server.transport.handle('AddressBook/set', (params) => {
+      setCalls += 1;
+      server.state.books.push(makeBook(
+        'book-created',
+        params.create.addressbook.name,
+        params.create.addressbook,
+      ));
+      server.state.addressBookState += 1;
+      return { created: { addressbook: { id: 'book-created' } } };
+    });
+    server.transport.handleError('AddressBook/get', () =>
+      setCalls > 0 && repairUnavailable ? { type: 'serverFail' } : null);
+    const row = await queueRow(MUTATION_TYPES.CREATE_ADDRESSBOOK, {
+      operationId: 'create-cache-repair',
+      name: 'Projects',
+    });
+
+    await expect(processMutationRow({
+      transport: server.transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: {
+        type: ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
+        result: { applied: true, cached: false, ids: ['book-created'] },
+      },
+    });
+    const checkpoint = await reload(row.id);
+    expect(checkpoint.phase).toBe(ADDRESSBOOK_PHASE.CACHE_PENDING);
+    expect(JSON.parse(checkpoint.server_response_json).addressBook)
+      .toMatchObject({ remoteId: 'book-created', attempts: 1 });
+
+    repairUnavailable = false;
+    await expect(processMutationRow({
+      transport: server.transport,
+      account,
+      handlers,
+      row: checkpoint,
+    })).resolves.toMatchObject({
+      ok: true,
+      result: { ids: ['book-created'] },
+    });
+    expect(setCalls).toBe(1);
+  });
+
   it('terminals a lost create when exact new-id matching is ambiguous', async () => {
     const server = addressBookServer();
     let setCalls = 0;
