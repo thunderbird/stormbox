@@ -20,7 +20,9 @@ import {
 } from '../../../src/db/protocol';
 import { deleteContactCardsWithTrash } from '../../../src/sync/backends/jmap/contacts-trash';
 import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
-import { MockTransport } from './_mock-transport';
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { MockTransport, mockSession } from './_mock-transport';
+import { queuePendingMutation } from './_pending-mutations';
 
 interface ServerBook {
   id: string;
@@ -58,25 +60,17 @@ function batchServer(
   initialCards: ServerCard[],
   limit = 500,
 ) {
-  const transport = new MockTransport({
-    capabilities: {
-      'urn:ietf:params:jmap:core': {
-        maxObjectsInGet: limit,
-        maxObjectsInSet: limit,
-        maxSizeUpload: 50_000_000,
-      },
-      'urn:ietf:params:jmap:filenode': {},
-    },
+  const transport = new MockTransport(mockSession({
+    core: { maxObjectsInGet: limit, maxObjectsInSet: limit },
+    capabilities: { [JMAP_CAPS.FILENODE]: {} },
     accounts: {
       'acct-1': {
         accountCapabilities: {
-          'urn:ietf:params:jmap:filenode': {
-            mayCreateTopLevelFileNode: true,
-          },
+          [JMAP_CAPS.FILENODE]: { mayCreateTopLevelFileNode: true },
         },
       },
     },
-  }) as any;
+  })) as any;
   const cards = new Map(initialCards.map((card) => [
     card.id,
     structuredClone(card),
@@ -319,18 +313,12 @@ async function seed(
   return { bookIds, contactIds };
 }
 
-async function queue(request: unknown) {
-  const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+function queue(request: Record<string, unknown>) {
+  return queuePendingMutation(handlers, {
     accountId: account.id,
     mutationType: MUTATION_TYPE.CONTACT_BATCH,
-    targetMessageId: null,
-    requestJson: JSON.stringify(request),
+    request,
   });
-  const rows = await handlers[DB_RPC.QUERY]({
-    sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-    params: [inserted.id],
-  });
-  return rows[0];
 }
 
 function setRequests(transport: MockTransport): any[] {

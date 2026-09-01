@@ -38,7 +38,7 @@ import {
   createContactUidFromSeed,
   isContactUid,
 } from '../../../src/utils/contact-uid';
-import { MockTransport } from './_mock-transport';
+import { MockTransport, mockSession } from './_mock-transport';
 
 const THUNDERMAIL_FOLDER_ID = 'thundermail-folder';
 const CONTACTS_TRASH_FOLDER_ID = 'contacts-trash-folder';
@@ -203,21 +203,15 @@ describe('contacts trash FileNode sync', () => {
         ['blob-0', active],
         ['blob-1', terminal],
       ]);
-      const transport = new MockTransport({
-        capabilities: {
-          [JMAP_CAPS.CORE]: {
-            maxObjectsInGet: 2,
-            maxObjectsInSet: 2,
-            maxSizeUpload: 50_000_000,
-          },
-          [JMAP_CAPS.FILENODE]: {},
-        },
+      const transport = new MockTransport(mockSession({
+        core: { maxObjectsInGet: 2, maxObjectsInSet: 2 },
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
         accounts: {
           'shard-account': {
             accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
           },
         },
-      }) as any;
+      })) as any;
       let fileState = 1;
       transport.download = vi.fn(async ({ blobId }: any) =>
         new TextEncoder().encode(JSON.stringify(documents.get(blobId))));
@@ -338,21 +332,14 @@ describe('contacts trash FileNode sync', () => {
         },
       ];
       let state = 1;
-      const transport = new MockTransport({
-        capabilities: {
-          [JMAP_CAPS.CORE]: {
-            maxObjectsInGet: 500,
-            maxObjectsInSet: 500,
-            maxSizeUpload: 50_000_000,
-          },
-          [JMAP_CAPS.FILENODE]: {},
-        },
+      const transport = new MockTransport(mockSession({
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
         accounts: {
           [account.remote_account_id]: {
             accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
           },
         },
-      }) as any;
+      })) as any;
       transport.download = async ({ blobId }: any) =>
         new TextEncoder().encode(blobs.get(blobId)!);
       transport.handleUpload(({ body }: any) => {
@@ -447,21 +434,14 @@ describe('contacts trash FileNode sync', () => {
         remoteAccountId: 'sync-account',
         isPrimary: true,
       })).row;
-      const transport = new MockTransport({
-        capabilities: {
-          [JMAP_CAPS.CORE]: {
-            maxObjectsInGet: 500,
-            maxObjectsInSet: 500,
-            maxSizeUpload: 50_000_000,
-          },
-          [JMAP_CAPS.FILENODE]: {},
-        },
+      const transport = new MockTransport(mockSession({
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
         accounts: {
           'sync-account': {
             accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
           },
         },
-      });
+      }));
       const nodes = fileNodeFolders();
       transport.handle('FileNode/query', (args) => fileNodeQuery(nodes, args));
       transport.handle('FileNode/get', ({ ids }) => ({
@@ -524,21 +504,14 @@ describe('contacts trash FileNode sync', () => {
       });
       const remote = emptyContactsTrashDocument() as any;
       remote.entries[malformed.uid] = malformed;
-      const transport = new MockTransport({
-        capabilities: {
-          [JMAP_CAPS.CORE]: {
-            maxObjectsInGet: 500,
-            maxObjectsInSet: 500,
-            maxSizeUpload: 50_000_000,
-          },
-          [JMAP_CAPS.FILENODE]: {},
-        },
+      const transport = new MockTransport(mockSession({
+        capabilities: { [JMAP_CAPS.FILENODE]: {} },
         accounts: {
           'sync-account': {
             accountCapabilities: { [JMAP_CAPS.FILENODE]: {} },
           },
         },
-      }) as any;
+      })) as any;
       transport.download = async () =>
         new TextEncoder().encode(JSON.stringify(remote));
       const nodes = [
@@ -644,16 +617,9 @@ describe('contacts trash restore', () => {
   });
 
   function transport() {
-    const mock = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 500,
-          maxObjectsInSet: 500,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-      },
-    });
+    const mock = new MockTransport(mockSession({
+      capabilities: { [JMAP_CAPS.CONTACTS]: {} },
+    }));
     let create: Record<string, any> | null = null;
     mock.handle('AddressBook/get', () => ({
       state: 'books-1',
@@ -750,17 +716,10 @@ describe('contacts trash restore', () => {
     });
     const rows = await handlers[DB_RPC.CONTACT_TRASH_LIST]({ accountId: account.id });
     const ids = new Map(rows.map((row: any) => [row.uid, Number(row.id)]));
-    const mock = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxCallsInRequest: 8,
-          maxObjectsInGet: 4,
-          maxObjectsInSet: 4,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-      },
-    });
+    const mock = new MockTransport(mockSession({
+      core: { maxCallsInRequest: 8, maxObjectsInGet: 4, maxObjectsInSet: 4 },
+      capabilities: { [JMAP_CAPS.CONTACTS]: {} },
+    }));
     mock.handle('ContactCard/query', ({ filter }) => {
       const uids = filter.operator === 'OR'
         ? filter.conditions.map((condition: any) => condition.uid)
@@ -831,16 +790,10 @@ describe('contacts trash restore', () => {
       'UPDATE contacts_trash SET snapshot_json = ? WHERE id = ?',
       ['{broken', row.id],
     );
-    const mock = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 8,
-          maxObjectsInSet: 8,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-      },
-    });
+    const mock = new MockTransport(mockSession({
+      core: { maxObjectsInGet: 8, maxObjectsInSet: 8 },
+      capabilities: { [JMAP_CAPS.CONTACTS]: {} },
+    }));
 
     const result = await restoreContactTrash({
       transport: mock,
@@ -888,16 +841,9 @@ describe('contacts trash restore', () => {
     const jsonBlobs = new Map<string, string>();
     const uploadedMedia = new Map<string, Uint8Array>();
     const mediaDownloadLimits: Array<number | undefined> = [];
-    const mock = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 8,
-          maxObjectsInSet: 8,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-        [JMAP_CAPS.FILENODE]: {},
-      },
+    const mock = new MockTransport(mockSession({
+      core: { maxObjectsInGet: 8, maxObjectsInSet: 8 },
+      capabilities: { [JMAP_CAPS.CONTACTS]: {}, [JMAP_CAPS.FILENODE]: {} },
       accounts: {
         [account.remote_account_id]: {
           accountCapabilities: {
@@ -905,7 +851,7 @@ describe('contacts trash restore', () => {
           },
         },
       },
-    }) as any;
+    })) as any;
     mock.download = async ({ blobId, maxBytes }: any) => {
       if (jsonBlobs.has(blobId)) {
         return new TextEncoder().encode(jsonBlobs.get(blobId)!);
@@ -1066,16 +1012,10 @@ describe('contacts trash restore', () => {
         },
       },
     };
-    const mock = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 8,
-          maxObjectsInSet: 8,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-      },
-    }) as any;
+    const mock = new MockTransport(mockSession({
+      core: { maxObjectsInGet: 8, maxObjectsInSet: 8 },
+      capabilities: { [JMAP_CAPS.CONTACTS]: {} },
+    })) as any;
     mock.download = async () => {
       throw new Error('media download failed');
     };
@@ -1160,16 +1100,9 @@ describe('contacts trash delete recovery', () => {
     const fileNodes = new Map<string, any>();
     let fileState = 1;
     let contactState = 1;
-    const transport = new MockTransport({
-      capabilities: {
-        [JMAP_CAPS.CORE]: {
-          maxObjectsInGet: 8,
-          maxObjectsInSet: 8,
-          maxSizeUpload: 50_000_000,
-        },
-        [JMAP_CAPS.CONTACTS]: {},
-        [JMAP_CAPS.FILENODE]: {},
-      },
+    const transport = new MockTransport(mockSession({
+      core: { maxObjectsInGet: 8, maxObjectsInSet: 8 },
+      capabilities: { [JMAP_CAPS.CONTACTS]: {}, [JMAP_CAPS.FILENODE]: {} },
       accounts: {
         [account.remote_account_id]: {
           accountCapabilities: {
@@ -1177,7 +1110,7 @@ describe('contacts trash delete recovery', () => {
           },
         },
       },
-    }) as any;
+    })) as any;
     transport.download = vi.fn(async ({ blobId }: any) =>
       new TextEncoder().encode(blobs.get(blobId)!));
     transport.handleUpload(({ body }: any) => {

@@ -22,10 +22,7 @@ import {
 import { DB_RPC } from '../../src/db/protocol';
 import { syncIdentities } from '../../src/sync/backends/jmap/identities';
 import { syncMailboxes } from '../../src/sync/backends/jmap/mailboxes';
-import {
-  MUTATION_TYPES,
-  processMutationRow,
-} from '../../src/sync/backends/jmap/outbox';
+import { MUTATION_TYPES } from '../../src/sync/backends/jmap/outbox';
 import {
   fetchSubmissionRecords,
   syncSubmissionsForAccount,
@@ -37,37 +34,43 @@ import {
   SHARED_TEST_OIDC_PASSWORD,
 } from '../e2e/helpers/stack-env';
 import {
+  callMethod,
   createLiveMailIntegrationContext,
   createLiveTransport,
+  MAIL_SEND_USING,
   MAIL_USING,
+  processInsertedMutation,
+  processPendingMutationRow,
   requireResponseById,
 } from './helpers/live-jmap';
+import {
+  destroyEmails,
+  destroyEmailsWithSubjectPrefix,
+  emailsByExactSubject,
+  emailsInMailbox,
+  type LiveMailAccount,
+  liveMailAccount,
+  mailboxByRole,
+  pollUntil,
+  remoteEmail,
+  remoteMailbox,
+  remoteMailboxes,
+} from './helpers/live-mail';
 
 const PDF_BYTES = new TextEncoder().encode('%PDF-1.1\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
+
+/** Subject prefix shared by every run of this suite; purges sweep by it. */
+const SUBJECT_FAMILY = 'Stormbox sched ';
 
 /** A whole-second future instant; Date headers carry second precision. */
 function futureTargetAt(secondsFromNow: number): string {
   return new Date((Math.floor(Date.now() / 1000) + secondsFromNow) * 1000).toISOString();
 }
 
-async function pollUntil<T>(
-  probe: () => Promise<T | null>,
-  { timeoutMs, intervalMs = 2_000, label }: {
-    timeoutMs: number; intervalMs?: number; label: string;
-  },
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await probe();
-    if (value != null) return value;
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${label}`);
-    await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
-  }
-}
-
 describe.sequential('live Stalwart Send Later', () => {
-  const prefix = `Stormbox sched ${randomUUID()}`;
+  const prefix = `${SUBJECT_FAMILY}${randomUUID()}`;
   let context: Awaited<ReturnType<typeof createLiveMailIntegrationContext>>;
+  let mail: LiveMailAccount;
   // Recipient on a separate account: Stalwart dedups ingest by
   // Message-ID per account, so a self-addressed send would never show a
   // distinct inbox copy and delivery could not be asserted.
@@ -81,99 +84,22 @@ describe.sequential('live Stalwart Send Later', () => {
     return context.transport.request([...using], methodCalls);
   }
 
-  async function remoteEmail(id: string) {
-    const result = requireResponseById(
-      await request([[
-        'Email/get',
-        {
-          accountId: context.account.remote_account_id,
-          ids: [id],
-          properties: [
-            'id', 'blobId', 'mailboxIds', 'keywords', 'sentAt', 'receivedAt',
-            'subject', 'hasAttachment',
-          ],
-        },
-        'email',
-      ]]),
-      'Email/get',
-      'email',
-    );
-    return result.list?.[0] ?? null;
+  function ownerInboxBySubject(subject: string) {
+    return emailsByExactSubject(owner, ownerInboxId, subject);
   }
 
-  async function remoteMailbox(id: string) {
-    const result = requireResponseById(
-      await request([[
-        'Mailbox/get',
-        {
-          accountId: context.account.remote_account_id,
-          ids: [id],
-          properties: ['id', 'name', 'role', 'parentId', 'isSubscribed'],
-        },
-        'mailbox',
-      ]]),
-      'Mailbox/get',
-      'mailbox',
-    );
-    return result.list?.[0] ?? null;
-  }
-
-  async function ownerInboxBySubject(subject: string) {
-    const queried = requireResponseById(
-      await owner.transport.request([...MAIL_USING], [[
-        'Email/query',
-        {
-          accountId: owner.accountId,
-          filter: { inMailbox: ownerInboxId },
-          limit: 500,
-        },
-        'owner-query',
-      ]]),
-      'Email/query',
-      'owner-query',
-    );
-    const ids = queried.ids ?? [];
-    if (ids.length === 0) return [];
-    const fetched = requireResponseById(
-      await owner.transport.request([...MAIL_USING], [[
-        'Email/get',
-        {
-          accountId: owner.accountId,
-          ids,
-          properties: ['id', 'subject', 'hasAttachment'],
-        },
-        'owner-get',
-      ]]),
-      'Email/get',
-      'owner-get',
-    );
-    return (fetched.list ?? []).filter((email: any) => email.subject === subject);
-  }
-
-  async function runMutation(mutationType: string, requestJson: Record<string, unknown>) {
-    const inserted = await context.handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: context.account.id,
+  /**
+   * Rows never outlive the run, whatever the outcome: drainScheduleMutations
+   * selects by status and must only see the follow-up work a mutation
+   * enqueued, not the mutation itself.
+   */
+  function runMutation(mutationType: string, request: Record<string, unknown>) {
+    return processInsertedMutation(context, {
       mutationType,
-      targetMessageId: null,
-      requestJson: JSON.stringify(requestJson),
+      request,
+      deleteOnSuccess: true,
+      deleteOnFailure: true,
     });
-    const rows = await context.handlers[DB_RPC.QUERY]({
-      sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-      params: [inserted.id],
-    });
-    const outcome = await processMutationRow({
-      transport: context.transport,
-      account: context.account,
-      handlers: context.handlers,
-      row: rows[0],
-    });
-    // The status bookkeeping drainOutbox would do; without it the row
-    // stays 'pending' and later drains would re-run the operation.
-    await context.handlers[DB_RPC.QUERY]({
-      sql: 'DELETE FROM pending_mutations WHERE id = ?',
-      params: [inserted.id],
-    });
-    return outcome;
   }
 
   /**
@@ -197,21 +123,12 @@ describe.sequential('live Stalwart Send Later', () => {
       });
       if (!rows || rows.length === 0) return;
       for (const row of rows) {
-        const outcome = await processMutationRow({
-          transport: context.transport,
-          account: context.account,
-          handlers: context.handlers,
-          row,
-        });
+        const outcome = await processPendingMutationRow(context, row, { deleteOnSuccess: true });
         if (!outcome.ok) {
           throw new Error(
             `${row.mutation_type} mutation failed: ${JSON.stringify(outcome.error)}`,
           );
         }
-        await context.handlers[DB_RPC.QUERY]({
-          sql: 'DELETE FROM pending_mutations WHERE id = ?',
-          params: [row.id],
-        });
       }
     }
     throw new Error('Schedule mutations did not drain in 10 passes');
@@ -292,147 +209,47 @@ describe.sequential('live Stalwart Send Later', () => {
     });
     const pending = records.filter((record) => record.undoStatus === 'pending');
     if (pending.length > 0) {
-      await request([[
-        'EmailSubmission/set',
-        {
-          accountId: context.account.remote_account_id,
-          update: Object.fromEntries(
-            pending.map((record) => [record.id, { undoStatus: 'canceled' }]),
-          ),
-        },
-        'purge-cancel',
-      ]], [...MAIL_USING, 'urn:ietf:params:jmap:submission']);
+      await callMethod(context.transport, MAIL_SEND_USING, 'EmailSubmission/set', {
+        accountId: context.account.remote_account_id,
+        update: Object.fromEntries(
+          pending.map((record) => [record.id, { undoStatus: 'canceled' }]),
+        ),
+      }, 'purge-cancel');
     }
-    const mailboxes = requireResponseById(
-      await request([[
-        'Mailbox/get',
-        {
-          accountId: context.account.remote_account_id,
-          properties: ['id', 'name', 'role', 'parentId'],
-        },
-        'purge-mailboxes',
-      ]]),
-      'Mailbox/get',
-      'purge-mailboxes',
-    ).list ?? [];
+    const mailboxes = await remoteMailboxes(mail);
     const scheduled = mailboxes.find(
       (mailbox: any) => mailbox.name === 'Scheduled' && mailbox.role == null
         && mailbox.parentId == null,
     );
-    const doomed = new Set<string>();
+    // Everything in the managed mailbox is a schedule; elsewhere only
+    // this suite's subjects go.
     for (const mailbox of mailboxes) {
-      const managed = scheduled && mailbox.id === scheduled.id;
-      const role = ['inbox', 'drafts', 'sent', 'trash'].includes(mailbox.role);
-      if (!managed && !role) continue;
-      const listed = requireResponseById(
-        await request([[
-          'Email/query',
-          {
-            accountId: context.account.remote_account_id,
-            filter: { inMailbox: mailbox.id },
-            limit: 500,
-          },
-          'purge-query',
-        ]]),
-        'Email/query',
-        'purge-query',
-      ).ids ?? [];
-      if (listed.length === 0) continue;
-      const fetched = requireResponseById(
-        await request([[
-          'Email/get',
-          {
-            accountId: context.account.remote_account_id,
-            ids: listed,
-            properties: ['id', 'subject'],
-          },
-          'purge-get',
-        ]]),
-        'Email/get',
-        'purge-get',
-      ).list ?? [];
-      for (const email of fetched) {
-        if (managed || String(email.subject ?? '').startsWith('Stormbox sched ')) {
-          doomed.add(email.id);
-        }
+      if (scheduled && mailbox.id === scheduled.id) {
+        const held = await emailsInMailbox(mail, mailbox.id, ['id']);
+        await destroyEmails(mail, held.map((email: any) => email.id));
+      } else if (['inbox', 'drafts', 'sent', 'trash'].includes(mailbox.role)) {
+        await destroyEmailsWithSubjectPrefix(mail, mailbox.id, SUBJECT_FAMILY);
       }
-    }
-    if (doomed.size > 0) {
-      requireResponseById(
-        await request([[
-          'Email/set',
-          { accountId: context.account.remote_account_id, destroy: [...doomed] },
-          'purge-destroy',
-        ]]),
-        'Email/set',
-        'purge-destroy',
-      );
     }
     if (scheduled) {
-      await request([[
-        'Mailbox/set',
-        {
-          accountId: context.account.remote_account_id,
-          update: { [scheduled.id]: { isSubscribed: true } },
-        },
-        'purge-subscribe',
-      ]]);
+      await callMethod(context.transport, MAIL_USING, 'Mailbox/set', {
+        accountId: context.account.remote_account_id,
+        update: { [scheduled.id]: { isSubscribed: true } },
+      }, 'purge-subscribe');
     }
     if (owner) {
-      const listed = requireResponseById(
-        await owner.transport.request([...MAIL_USING], [[
-          'Email/query',
-          {
-            accountId: owner.accountId,
-            filter: { inMailbox: ownerInboxId },
-            limit: 500,
-          },
-          'purge-owner-query',
-        ]]),
-        'Email/query',
-        'purge-owner-query',
-      ).ids ?? [];
-      if (listed.length > 0) {
-        const fetched = requireResponseById(
-          await owner.transport.request([...MAIL_USING], [[
-            'Email/get',
-            { accountId: owner.accountId, ids: listed, properties: ['id', 'subject'] },
-            'purge-owner-get',
-          ]]),
-          'Email/get',
-          'purge-owner-get',
-        ).list ?? [];
-        const doomedOwner = fetched
-          .filter((email: any) => String(email.subject ?? '').startsWith('Stormbox sched '))
-          .map((email: any) => email.id);
-        if (doomedOwner.length > 0) {
-          await owner.transport.request([...MAIL_USING], [[
-            'Email/set',
-            { accountId: owner.accountId, destroy: doomedOwner },
-            'purge-owner-destroy',
-          ]]);
-        }
-      }
+      await destroyEmailsWithSubjectPrefix(owner, ownerInboxId, SUBJECT_FAMILY);
     }
   }
 
   beforeAll(async () => {
     context = await createLiveMailIntegrationContext();
+    mail = liveMailAccount(context);
     owner = await createLiveTransport({
       email: SHARED_TEST_OIDC_EMAIL,
       password: SHARED_TEST_OIDC_PASSWORD,
     });
-    const ownerMailboxes = requireResponseById(
-      await owner.transport.request([...MAIL_USING], [[
-        'Mailbox/get',
-        { accountId: owner.accountId, properties: ['id', 'role'] },
-        'owner-mailboxes',
-      ]]),
-      'Mailbox/get',
-      'owner-mailboxes',
-    ).list ?? [];
-    ownerInboxId = ownerMailboxes.find((mailbox: any) => mailbox.role === 'inbox')?.id;
-    if (!ownerInboxId) throw new Error('Recipient account has no inbox');
+    ownerInboxId = (await mailboxByRole(owner, 'inbox')).id;
     await purgeScheduleState();
     await syncMailboxes({
       transport: context.transport,
@@ -487,7 +304,7 @@ describe.sequential('live Stalwart Send Later', () => {
     // send time, read, and not a draft.
     const scheduledRemoteId = await scheduledMailboxRemoteId();
     expect(scheduledRemoteId).toBeTruthy();
-    const email = await remoteEmail(row.remote_id);
+    const email = await remoteEmail(mail, row.remote_id);
     expect(email.mailboxIds).toEqual({ [scheduledRemoteId as string]: true });
     expect(Date.parse(email.sentAt)).toBe(Date.parse(holdTargetAt));
     expect(email.keywords?.$seen).toBe(true);
@@ -517,7 +334,7 @@ describe.sequential('live Stalwart Send Later', () => {
 
     // The managed mailbox remains subscribed and visible to every client.
     await drainScheduleMutations();
-    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
+    expect((await remoteMailbox(mail, scheduledRemoteId as string)).isSubscribed).toBe(true);
 
     // A live sync pass reads the same state back without inventing a
     // transition, and reports the schedule as the nearest wake-up.
@@ -546,7 +363,7 @@ describe.sequential('live Stalwart Send Later', () => {
     for (const record of submissions) {
       expect(record.undoStatus).toBe('canceled');
     }
-    const email = await remoteEmail(row.remote_id);
+    const email = await remoteEmail(mail, row.remote_id);
     expect(email.mailboxIds).toEqual({ [draftsFolder.remote_id]: true });
     expect(email.keywords?.$draft).toBe(true);
 
@@ -559,7 +376,7 @@ describe.sequential('live Stalwart Send Later', () => {
 
     // No schedules remain, but the managed mailbox stays subscribed.
     await drainScheduleMutations();
-    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
+    expect((await remoteMailbox(mail, scheduledRemoteId as string)).isSubscribed).toBe(true);
 
     // The canceled copy never leaves: nothing with this subject reaches
     // the recipient (target was hours away; delivery would be immediate
@@ -633,14 +450,14 @@ describe.sequential('live Stalwart Send Later', () => {
     expect(after.scheduled_submission_remote_id).toBeNull();
     const placements = await placementsOf(after.id);
     expect(placements.map((p: any) => p.role)).toEqual(['sent']);
-    const sentCopy = await remoteEmail(after.remote_id);
+    const sentCopy = await remoteEmail(mail, after.remote_id);
     expect(sentCopy.mailboxIds).toEqual({ [sentFolder.remote_id]: true });
     expect(sentCopy.hasAttachment).toBe(true);
 
     // With the last schedule resolved the mailbox remains visible.
     await drainScheduleMutations();
     const scheduledRemoteId = await scheduledMailboxRemoteId();
-    expect((await remoteMailbox(scheduledRemoteId as string)).isSubscribed).toBe(true);
+    expect((await remoteMailbox(mail, scheduledRemoteId as string)).isSubscribed).toBe(true);
   }, 180_000);
 
   it('a fresh client adopts a schedule created by another client', async () => {
@@ -692,7 +509,7 @@ describe.sequential('live Stalwart Send Later', () => {
           },
           'ext-sub',
         ],
-      ], [...MAIL_USING, 'urn:ietf:params:jmap:submission']),
+      ], MAIL_SEND_USING),
       'Email/set',
       'ext-email',
     );

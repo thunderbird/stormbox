@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import type { BodyAttachmentRow } from '../../../src/types';
 import {
   attachmentPreviewKind,
   decodePlainTextPreview,
@@ -10,20 +9,7 @@ import {
   sanitizeAttachmentFilename,
   shouldSuppressResolvedCidPart,
 } from '../../../src/utils/attachment-presentation';
-
-function part(overrides: Partial<BodyAttachmentRow> = {}): BodyAttachmentRow {
-  return {
-    part_id: 'part-1',
-    blob_id: 'blob-1',
-    name: 'file.bin',
-    mime_type: 'application/octet-stream',
-    size: 12,
-    disposition: 'attachment',
-    cid: null,
-    charset: null,
-    ...overrides,
-  };
-}
+import { attachmentPart as part } from '../_fixtures/rows';
 
 describe('attachment presentation classification', () => {
   it('auto-previews only bounded allowlisted rasters', () => {

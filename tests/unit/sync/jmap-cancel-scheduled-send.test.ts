@@ -11,12 +11,16 @@ import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { runCancelScheduledSend } from '../../../src/sync/backends/jmap/outbox/operations/cancel-scheduled-send';
-import { syncFolderWindow } from '../../../src/sync/backends/jmap/messages';
 import { MockTransport } from './_mock-transport';
-
-const NOW = Date.now();
-const FUTURE_AT = new Date(NOW + 60 * 60_000).toISOString();
-const PAST_AT = new Date(NOW - 60 * 60_000).toISOString();
+import {
+  bootScheduledAccount,
+  FUTURE_AT,
+  NOW,
+  PAST_AT,
+  scheduledEmailFixture as emailFixture,
+  seedScheduledMessage as seedScheduled,
+  type SeedScheduledMessageOptions,
+} from './_scheduled-fixtures';
 
 let engine;
 let handlers;
@@ -25,29 +29,6 @@ let scheduledFolder;
 let draftsFolder;
 let sentFolder;
 let message;
-
-function emailFixture(id: string, {
-  sentAt = FUTURE_AT,
-  mailboxIds = { 'mb-sched': true } as Record<string, boolean>,
-  keywords = { $seen: true } as Record<string, boolean>,
-} = {}) {
-  return {
-    id,
-    blobId: `b-${id}`,
-    threadId: `t-${id}`,
-    mailboxIds,
-    keywords,
-    size: 1,
-    receivedAt: new Date(NOW).toISOString(),
-    sentAt,
-    messageId: [`<${id}@example.com>`],
-    from: [{ email: 'me@example.com' }],
-    to: [{ email: 'rcpt@example.com' }],
-    subject: `s-${id}`,
-    preview: 'p',
-    hasAttachment: false,
-  };
-}
 
 /**
  * Transport for a full happy-path cancel: submission reads, the revoke,
@@ -98,29 +79,12 @@ function cancelTransport({
   return { transport: t, calls };
 }
 
-async function seedScheduledMessage({
-  sentAt = FUTURE_AT,
-  submissionId = 'sub-1',
-  undoStatus = 'pending',
-}: any = {}) {
-  const t = new MockTransport();
-  t.handle('Email/query', () => ({
-    ids: ['e-1'], total: 1, queryState: 'qs', canCalculateChanges: true, position: 0,
-  }));
-  t.handle('Email/get', (params) => ({
-    list: params.ids.map((id) => emailFixture(id, { sentAt })),
-    state: 'es',
-  }));
-  await syncFolderWindow({ transport: t, account, folder: scheduledFolder, handlers });
-  await handlers[DB_RPC.MESSAGE_SET_SCHEDULED]({
-    accountId: account.id,
-    emailRemoteId: 'e-1',
-    submissionRemoteId: submissionId,
-    undoStatus,
-  });
-  return engine.get(
-    'SELECT * FROM messages WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'e-1'],
+/** The suite's single scheduled message: e-1 tracked under sub-1. */
+function seedScheduledMessage(options: SeedScheduledMessageOptions = {}) {
+  return seedScheduled(
+    { engine, handlers, account, scheduledFolder, draftsFolder, sentFolder },
+    'e-1',
+    { submissionId: 'sub-1', ...options },
   );
 }
 
@@ -140,39 +104,9 @@ async function refreshedMessage() {
 }
 
 beforeEach(async () => {
-  engine = await bootTestEngine();
-  handlers = makeHandlers(engine);
-  account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
-    displayName: 'T',
-    primaryEmail: 't@example.com',
-    serverOrigin: 'https://mail.example.com',
-    remoteAccountId: 'acct-1',
-    isPrimary: true,
-  })).row;
-  await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
-    accountId: account.id,
-    folders: [
-      { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts', sortOrder: 1 },
-      { remoteId: 'mb-sent', name: 'Sent', role: 'sent', sortOrder: 2 },
-      { remoteId: 'mb-sched', name: 'Scheduled', role: null, sortOrder: 3, isSubscribed: true },
-    ],
-  });
-  await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-    accountId: account.id,
-    patch: { scheduledMailboxRemoteId: 'mb-sched' },
-  });
-  scheduledFolder = await engine.get(
-    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'mb-sched'],
-  );
-  draftsFolder = await engine.get(
-    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'mb-drafts'],
-  );
-  sentFolder = await engine.get(
-    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
-    [account.id, 'mb-sent'],
-  );
+  ({
+    engine, handlers, account, scheduledFolder, draftsFolder, sentFolder,
+  } = await bootScheduledAccount());
   message = await seedScheduledMessage();
 });
 

@@ -19,16 +19,21 @@ import {
   writeJsonFileNode,
 } from '../../../src/sync/backends/jmap/file-node';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
-import { MockTransport } from './_mock-transport';
+import { MockTransport, mockSession } from './_mock-transport';
 
 const account = { remote_account_id: 'account-1' };
 const marker = { owner: 'stormbox', documentType: 'test-document', version: 1 };
 const document = { ...marker, value: 'current' };
 const MAX_DOCUMENT_BYTES = 1024;
 
-function session(capability: Record<string, unknown> | null = {}) {
-  return {
-    capabilities: { [JMAP_CAPS.CORE]: {}, [JMAP_CAPS.FILENODE]: {} },
+/** Session with FileNode; `capability` null leaves the account without it. */
+function session(
+  capability: Record<string, unknown> | null = {},
+  core: Record<string, unknown> = {},
+) {
+  return mockSession({
+    core,
+    capabilities: { [JMAP_CAPS.FILENODE]: {} },
     accounts: {
       'account-1': {
         accountCapabilities: capability == null
@@ -36,7 +41,7 @@ function session(capability: Record<string, unknown> | null = {}) {
           : { [JMAP_CAPS.FILENODE]: capability },
       },
     },
-  };
+  });
 }
 
 function makeTransport({
@@ -80,13 +85,7 @@ describe('JMAP FileNode JSON transport', () => {
       id: `node-${index}`,
       name: `document-${index}.json`,
     }));
-    const transport = new MockTransport({
-      ...session(),
-      capabilities: {
-        [JMAP_CAPS.CORE]: { maxObjectsInGet: 2 },
-        [JMAP_CAPS.FILENODE]: {},
-      },
-    }) as any;
+    const transport = new MockTransport(session({}, { maxObjectsInGet: 2 })) as any;
     transport.handle('FileNode/query', ({ position, limit }) => ({
       accountId: 'account-1',
       queryState: 'query-1',
@@ -126,13 +125,7 @@ describe('JMAP FileNode JSON transport', () => {
       ownedNode({ id: 'node-1', name: 'document-1.json' }),
       ownedNode({ id: 'node-2', name: 'document-2.json' }),
     ];
-    const transport = new MockTransport({
-      ...session(),
-      capabilities: {
-        [JMAP_CAPS.CORE]: { maxObjectsInGet: 1 },
-        [JMAP_CAPS.FILENODE]: {},
-      },
-    }) as any;
+    const transport = new MockTransport(session({}, { maxObjectsInGet: 1 })) as any;
     transport.handle('FileNode/query', ({ position }) => ({
       queryState: `query-${position}`,
       ids: [nodes[position].id],
@@ -604,13 +597,7 @@ describe('JMAP FileNode JSON transport', () => {
   });
 
   it('moves FileNodes in bounded conditional batches', async () => {
-    const transport = new MockTransport({
-      ...session(),
-      capabilities: {
-        [JMAP_CAPS.CORE]: { maxObjectsInSet: 2 },
-        [JMAP_CAPS.FILENODE]: {},
-      },
-    }) as any;
+    const transport = new MockTransport(session({}, { maxObjectsInSet: 2 })) as any;
     let state = 1;
     transport.handle('FileNode/set', ({ ifInState, update }) => {
       expect(ifInState).toBe(`state-${state}`);

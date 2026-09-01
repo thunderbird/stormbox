@@ -2,6 +2,8 @@ import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
+import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
+import { deleteRow } from '../../../src/sync/backends/jmap/outbox/batch';
 import { ingestSession } from '../../../src/sync/backends/jmap/session';
 import {
   JMAP_CAPS,
@@ -13,6 +15,7 @@ import {
   INTEGRATION_TEST_OIDC_PASSWORD,
   JMAP_BASE_URL,
 } from '../../e2e/helpers/stack-env';
+import { queuePendingMutation } from '../../unit/sync/_pending-mutations';
 
 export const CONTACTS_USING = [
   JMAP_CAPS.CORE,
@@ -29,6 +32,15 @@ export const MAIL_SEND_USING = [
   JMAP_CAPS.MAIL,
   JMAP_CAPS.SUBMISSION,
 ] as const;
+
+export const FILE_NODE_USING = [
+  JMAP_CAPS.CORE,
+  JMAP_CAPS.FILENODE,
+] as const;
+
+export interface LiveRequestTransport {
+  request(using: string[], methodCalls: any[]): Promise<any>;
+}
 
 export function responseById(
   response: any,
@@ -51,6 +63,21 @@ export function requireResponseById(
   throw new Error(
     `${name} ${callId} failed: ${JSON.stringify(error ?? response)}`,
   );
+}
+
+/**
+ * One JMAP method call under `using`; returns its response object or
+ * throws with the server's error tuple.
+ */
+export async function callMethod(
+  transport: LiveRequestTransport,
+  using: readonly string[],
+  name: string,
+  args: Record<string, unknown>,
+  callId: string = name,
+): Promise<any> {
+  const response = await transport.request([...using], [[name, args, callId]]);
+  return requireResponseById(response, name, callId);
 }
 
 function rewriteEndpoint(endpoint: string, publicOrigin: string): string {
@@ -87,11 +114,24 @@ function bindBackendAccounts(
   );
 }
 
-export async function createLiveTransport(credentials: {
+export interface LiveTransportOptions {
   email: string;
   password: string;
-}) {
-  const token = await getAccessToken(credentials);
+  /** Capability whose primary account id is returned; defaults to mail. */
+  primaryCapability?: string;
+}
+
+/**
+ * Authenticated JmapTransport against the local stack. Session endpoints
+ * are rewritten to the public origin on every fetch, including forced
+ * refreshes.
+ */
+export async function createLiveTransport({
+  email,
+  password,
+  primaryCapability = JMAP_CAPS.MAIL,
+}: LiveTransportOptions) {
+  const token = await getAccessToken({ email, password });
   const authHeader = `Bearer ${token}`;
   const publicOrigin = new URL(JMAP_BASE_URL).origin;
   const transport = new JmapTransport({
@@ -104,9 +144,11 @@ export async function createLiveTransport(credentials: {
     publicOrigin,
   );
   const session = await transport.fetchSession();
-  const accountId = session.primaryAccounts?.[JMAP_CAPS.MAIL];
+  const accountId = session.primaryAccounts?.[primaryCapability];
   if (typeof accountId !== 'string' || !accountId) {
-    throw new Error(`JMAP session for ${credentials.email} has no primary mail account`);
+    throw new Error(
+      `JMAP session for ${email} has no primary account for ${primaryCapability}`,
+    );
   }
   return {
     accountId,
@@ -116,37 +158,29 @@ export async function createLiveTransport(credentials: {
   };
 }
 
+/** Engine + handlers + one primary account row for the contacts account. */
 export async function createLiveIntegrationContext() {
-  const token = await getAccessToken({
+  const live = await createLiveTransport({
     email: INTEGRATION_TEST_OIDC_EMAIL,
     password: INTEGRATION_TEST_OIDC_PASSWORD,
+    primaryCapability: JMAP_CAPS.CONTACTS,
   });
-  const authHeader = `Bearer ${token}`;
-  const publicOrigin = new URL(JMAP_BASE_URL).origin;
-  const transport = new JmapTransport({
-    sessionUrl: `${JMAP_BASE_URL.replace(/\/$/, '')}/.well-known/jmap`,
-    getAuthHeader: async () => authHeader,
-  });
-  const session = rewriteSessionEndpoints(await transport.fetchSession(), publicOrigin);
-  const remoteAccountId = session.primaryAccounts?.[JMAP_CAPS.CONTACTS];
-  if (typeof remoteAccountId !== 'string' || !remoteAccountId) {
-    throw new Error('JMAP session has no primary contacts account');
-  }
   const engine = await bootTestEngine();
   const handlers = makeHandlers(engine);
   const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
     displayName: 'Stormbox Integration',
     primaryEmail: INTEGRATION_TEST_OIDC_EMAIL,
-    serverOrigin: publicOrigin,
-    remoteAccountId,
+    serverOrigin: live.publicOrigin,
+    remoteAccountId: live.accountId,
     isPrimary: true,
   })).row;
   return {
     account,
     engine,
     handlers,
-    session,
-    transport,
+    publicOrigin: live.publicOrigin,
+    session: live.session,
+    transport: live.transport,
   };
 }
 
@@ -179,6 +213,75 @@ export async function createLiveMailIntegrationContext() {
     sharedAccounts: ingested.sharedAccounts,
     transport: live.transport,
   };
+}
+
+export interface LiveMutationContext {
+  transport: any;
+  account: any;
+  handlers: Record<string, (params: any) => Promise<any>>;
+}
+
+/**
+ * What happens to the pending_mutations row once the outbox has run it.
+ * `processMutationRow` alone leaves the row 'pending', so a suite that
+ * later drains by status would re-run it; drainOutbox itself deletes on
+ * success and marks 'conflicted' on failure.
+ */
+export interface PendingMutationCompletion {
+  /** Remove the row after a successful run, as drainOutbox would. */
+  deleteOnSuccess: boolean;
+  /**
+   * Remove the row after a failed run as well. Off by default so the
+   * failed row stays inspectable.
+   */
+  deleteOnFailure?: boolean;
+}
+
+/** Run one stored pending_mutations row through the outbox once. */
+export async function processPendingMutationRow(
+  context: LiveMutationContext,
+  row: any,
+  { deleteOnSuccess, deleteOnFailure = false }: PendingMutationCompletion,
+) {
+  const outcome = await processMutationRow({
+    transport: context.transport,
+    account: context.account,
+    handlers: context.handlers,
+    row,
+  });
+  if (outcome.ok ? deleteOnSuccess : deleteOnFailure) {
+    await deleteRow(context.handlers, row.id);
+  }
+  return outcome;
+}
+
+export interface ProcessInsertedMutationOptions extends PendingMutationCompletion {
+  mutationType: string;
+  request: Record<string, unknown>;
+  targetMessageId?: number | null;
+}
+
+/**
+ * Enqueue `request` the way the store does and run it once against the
+ * live server. Returns the outbox outcome; the completion policy decides
+ * whether the row survives.
+ */
+export async function processInsertedMutation(
+  context: LiveMutationContext,
+  {
+    mutationType,
+    request,
+    targetMessageId = null,
+    ...completion
+  }: ProcessInsertedMutationOptions,
+) {
+  const row = await queuePendingMutation(context.handlers, {
+    accountId: context.account.id,
+    mutationType,
+    request,
+    targetMessageId,
+  });
+  return processPendingMutationRow(context, row, completion);
 }
 
 export async function refreshLiveMailSession(

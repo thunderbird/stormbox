@@ -14,18 +14,16 @@ import {
   syncAddressBooks,
   syncContacts,
 } from '../../src/sync/backends/jmap/contacts';
-import {
-  MUTATION_TYPES,
-  processMutationRow,
-} from '../../src/sync/backends/jmap/outbox';
+import { MUTATION_TYPES } from '../../src/sync/backends/jmap/outbox';
 import type {
   AddressBookInventory,
   AddressbookRow,
 } from '../../src/types';
 import {
+  callMethod,
   CONTACTS_USING,
   createLiveIntegrationContext,
-  requireResponseById,
+  processInsertedMutation,
 } from './helpers/live-jmap';
 
 describe.sequential('live Stalwart address book management', () => {
@@ -33,92 +31,60 @@ describe.sequential('live Stalwart address book management', () => {
   let context: Awaited<ReturnType<typeof createLiveIntegrationContext>>;
   const contactIds = new Set<string>();
 
-  async function request(methodCalls: any[]) {
-    return context.transport.request([...CONTACTS_USING], methodCalls);
+  function contacts(name: string, args: Record<string, unknown>, callId: string) {
+    return callMethod(context.transport, CONTACTS_USING, name, {
+      accountId: context.account.remote_account_id,
+      ...args,
+    }, callId);
   }
 
   async function remoteBooks(ids?: string[]): Promise<any[]> {
-    return requireResponseById(
-      await request([[
-        'AddressBook/get',
-        {
-          accountId: context.account.remote_account_id,
-          ...(ids ? { ids } : {}),
-          properties: [
-            'id',
-            'name',
-            'description',
-            'sortOrder',
-            'isDefault',
-            'isSubscribed',
-            'myRights',
-          ],
-        },
-        'books',
-      ]]),
-      'AddressBook/get',
-      'books',
-    ).list ?? [];
+    const result = await contacts('AddressBook/get', {
+      ...(ids ? { ids } : {}),
+      properties: [
+        'id',
+        'name',
+        'description',
+        'sortOrder',
+        'isDefault',
+        'isSubscribed',
+        'myRights',
+      ],
+    }, 'books');
+    return result.list ?? [];
   }
 
   async function cleanup(): Promise<void> {
     if (contactIds.size > 0) {
-      requireResponseById(
-        await request([[
-          'ContactCard/set',
-          {
-            accountId: context.account.remote_account_id,
-            destroy: [...contactIds],
-          },
-          'cleanup-cards',
-        ]]),
-        'ContactCard/set',
-        'cleanup-cards',
-      );
+      await contacts('ContactCard/set', { destroy: [...contactIds] }, 'cleanup-cards');
       contactIds.clear();
     }
     const bookIds = (await remoteBooks())
       .filter((book) => String(book.name ?? '').startsWith(prefix))
       .map((book) => book.id);
     if (bookIds.length > 0) {
-      requireResponseById(
-        await request([[
-          'AddressBook/set',
-          {
-            accountId: context.account.remote_account_id,
-            destroy: bookIds,
-            onDestroyRemoveContents: true,
-          },
-          'cleanup-books',
-        ]]),
-        'AddressBook/set',
-        'cleanup-books',
-      );
+      await contacts('AddressBook/set', {
+        destroy: bookIds,
+        onDestroyRemoveContents: true,
+      }, 'cleanup-books');
     }
   }
 
+  /**
+   * Fails the test on a rejected write and returns its result. Rows stay
+   * in pending_mutations: this suite never drains by status.
+   */
   async function runMutation(
     mutationType: string,
-    requestJson: Record<string, unknown>,
+    request: Record<string, unknown>,
   ): Promise<any> {
-    const inserted = await context.handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: context.account.id,
+    const outcome = await processInsertedMutation(context, {
       mutationType,
-      targetMessageId: null,
-      requestJson: JSON.stringify(requestJson),
+      request,
+      deleteOnSuccess: false,
     });
-    const rows = await context.handlers[DB_RPC.QUERY]({
-      sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-      params: [inserted.id],
-    });
-    const result = await processMutationRow({
-      transport: context.transport,
-      account: context.account,
-      handlers: context.handlers,
-      row: rows[0],
-    });
-    if (!result.ok) throw new Error(JSON.stringify(result.error));
-    return result.result;
+    if (!outcome.ok) throw new Error(JSON.stringify(outcome.error));
+    return outcome.result;
   }
 
   async function createBook(name: string): Promise<AddressbookRow> {
@@ -136,29 +102,20 @@ describe.sequential('live Stalwart address book management', () => {
     name: string,
     addressBookIds: string[],
   ): Promise<string> {
-    const result = requireResponseById(
-      await request([[
-        'ContactCard/set',
-        {
-          accountId: context.account.remote_account_id,
-          create: {
-            card: {
-              '@type': 'Card',
-              version: '1.0',
-              kind: 'individual',
-              uid: randomUUID(),
-              name: { full: name },
-              addressBookIds: Object.fromEntries(
-                addressBookIds.map((id) => [id, true]),
-              ),
-            },
-          },
+    const result = await contacts('ContactCard/set', {
+      create: {
+        card: {
+          '@type': 'Card',
+          version: '1.0',
+          kind: 'individual',
+          uid: randomUUID(),
+          name: { full: name },
+          addressBookIds: Object.fromEntries(
+            addressBookIds.map((id) => [id, true]),
+          ),
         },
-        'create-card',
-      ]]),
-      'ContactCard/set',
-      'create-card',
-    );
+      },
+    }, 'create-card');
     const id = result.created?.card?.id;
     if (typeof id !== 'string' || !id) {
       throw new Error(`ContactCard/set returned no id: ${JSON.stringify(result)}`);
@@ -236,18 +193,9 @@ describe.sequential('live Stalwart address book management', () => {
     contactIds.delete(exclusiveId);
 
     expect(await remoteBooks([target.remote_id])).toEqual([]);
-    const cards = requireResponseById(
-      await request([[
-        'ContactCard/get',
-        {
-          accountId: context.account.remote_account_id,
-          ids: [exclusiveId, sharedId],
-        },
-        'verify-cards',
-      ]]),
-      'ContactCard/get',
-      'verify-cards',
-    );
+    const cards = await contacts('ContactCard/get', {
+      ids: [exclusiveId, sharedId],
+    }, 'verify-cards');
     expect(cards.notFound).toContain(exclusiveId);
     expect(cards.list).toHaveLength(1);
     expect(cards.list[0]).toMatchObject({

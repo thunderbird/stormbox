@@ -35,6 +35,7 @@ import type {
   ContactTrashListRow,
   IdentityRow,
 } from '../../../src/types';
+import { identityRow } from '../_fixtures/rows';
 
 const CONTACT_ROW_HEIGHT = 59;
 const CONTACT_LIST_HEIGHT = 472;
@@ -140,22 +141,15 @@ function makeDetail(
 }
 
 function makeIdentity(index: number, mayDelete: boolean): IdentityRow {
-  return {
+  return identityRow({
     id: 100 + index,
-    account_id: 1,
     remote_id: `identity-${index}`,
     name: index === 0 ? 'Primary Sender' : 'Alias Sender',
     email: index === 0 ? 'primary@example.com' : 'alias@example.com',
-    reply_to_json: null,
-    bcc_json: null,
-    text_signature: null,
-    html_signature: null,
     may_delete: mayDelete ? 1 : 0,
-    reply_to: null,
-    bcc: null,
     raw_json: JSON.stringify({ mayDelete }),
     updated_at: 1,
-  };
+  });
 }
 
 function makeTrash(index: number): ContactTrashListRow {

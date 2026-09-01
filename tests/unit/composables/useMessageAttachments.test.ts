@@ -15,19 +15,10 @@ import {
   MAX_TEXT_PREVIEW_BYTES,
 } from '../../../src/utils/attachment-presentation';
 import { useMessageAttachments } from '../../../src/composables/useMessageAttachments';
+import { attachmentPart } from '../_fixtures/rows';
 
 function part(overrides: Partial<BodyAttachmentRow> = {}): BodyAttachmentRow {
-  return {
-    part_id: 'part-1',
-    blob_id: 'blob-1',
-    name: 'attachment.bin',
-    mime_type: 'application/octet-stream',
-    size: 12,
-    disposition: 'attachment',
-    cid: null,
-    charset: null,
-    ...overrides,
-  };
+  return attachmentPart({ name: 'attachment.bin', ...overrides });
 }
 
 function setup(

@@ -4,7 +4,6 @@ import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { SERVICE_KIND } from '../../../src/constants/states';
-import type { ContactMutationFields } from '../../../src/types/db';
 import { withContactDetailKeys } from '../../../src/utils/contact-fields';
 import {
   syncAddressBooks,
@@ -15,6 +14,7 @@ import {
   updateContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
 import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
+import { contactMutationFields as contactFields } from '../_fixtures/rows';
 import { MockTransport } from './_mock-transport';
 
 const PNG_PHOTO_URI =
@@ -36,22 +36,6 @@ function countMethod(transport, name) {
   return transport.requests.filter(
     (r) => r.methodCalls.some(([m]) => m === name),
   ).length;
-}
-
-function contactFields(
-  overrides: Partial<ContactMutationFields> = {},
-): ContactMutationFields {
-  return {
-    fullName: null,
-    emails: [],
-    phones: [],
-    links: [],
-    anniversaries: [],
-    notes: [],
-    organizations: [],
-    titles: [],
-    ...overrides,
-  };
 }
 
 let engine;

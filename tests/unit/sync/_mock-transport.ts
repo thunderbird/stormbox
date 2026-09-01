@@ -8,6 +8,39 @@
  *   await syncMailboxes({ transport: t, ... });
  */
 
+import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+
+/** Core limits every mock session advertises unless a test narrows them. */
+export const MOCK_CORE_CAPABILITIES = Object.freeze({
+  maxObjectsInGet: 500,
+  maxObjectsInSet: 500,
+  maxSizeUpload: 50_000_000,
+});
+
+export interface MockSessionOptions {
+  /** Merged over MOCK_CORE_CAPABILITIES. */
+  core?: Record<string, unknown>;
+  /** Extra server capabilities keyed by URN; jmap:core is always present. */
+  capabilities?: Record<string, unknown>;
+  /** Per-account capabilities keyed by remote account id. */
+  accounts?: Record<string, { accountCapabilities: Record<string, unknown> }>;
+}
+
+/** JMAP Session object with the default core limits plus the given extras. */
+export function mockSession({
+  core = {},
+  capabilities = {},
+  accounts,
+}: MockSessionOptions = {}) {
+  return {
+    capabilities: {
+      [JMAP_CAPS.CORE]: { ...MOCK_CORE_CAPABILITIES, ...core },
+      ...capabilities,
+    },
+    ...(accounts ? { accounts } : {}),
+  };
+}
+
 export class MockTransport {
   _session: any;
   _handlers: Map<string, (params: any, callId?: string) => any>;
@@ -17,15 +50,7 @@ export class MockTransport {
   _uploadHandler: ((args: { accountId: string; type: string; body: any }) => any) | null;
 
   constructor(session: any = null) {
-    this._session = session ?? {
-      capabilities: {
-        'urn:ietf:params:jmap:core': {
-          maxObjectsInGet: 500,
-          maxObjectsInSet: 500,
-          maxSizeUpload: 50_000_000,
-        },
-      },
-    };
+    this._session = session ?? mockSession();
     this._handlers = new Map();
     this._errors = new Map();
     this._handlers.set('Mailbox/get', (params) => ({

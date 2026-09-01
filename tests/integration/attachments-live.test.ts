@@ -16,22 +16,30 @@ import {
   EMAIL_LIST_PROPERTIES,
   persistEmails,
 } from '../../src/sync/backends/jmap/messages';
-import {
-  MUTATION_TYPES,
-  processMutationRow,
-} from '../../src/sync/backends/jmap/outbox';
+import { MUTATION_TYPES } from '../../src/sync/backends/jmap/outbox';
 import { makeMessageId, makeOperationId } from '../../src/utils/message-id';
 import {
   SHARED_TEST_OIDC_EMAIL,
   SHARED_TEST_OIDC_PASSWORD,
 } from '../e2e/helpers/stack-env';
 import {
+  callMethod,
   createLiveMailIntegrationContext,
   createLiveTransport,
   MAIL_USING,
+  processInsertedMutation,
   refreshLiveMailSession,
-  requireResponseById,
 } from './helpers/live-jmap';
+import {
+  destroyEmails,
+  destroyEmailsWithSubjectPrefix,
+  type LiveMailAccount,
+  liveMailAccount,
+  mailboxByRole,
+  remoteEmail,
+  remoteMailboxes,
+  waitForEmailBySubject,
+} from './helpers/live-mail';
 
 const PNG_BYTES = Uint8Array.from(
   atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='),
@@ -57,6 +65,9 @@ function bytesOf(blob: Blob): Promise<Uint8Array> {
 describe.sequential('live Stalwart attachment transfer', () => {
   const prefix = `Stormbox attach ${randomUUID()}`;
   let context: Awaited<ReturnType<typeof createLiveMailIntegrationContext>>;
+  /** The integration account as seen through its own transport. */
+  let mail: LiveMailAccount;
+  /** Recipient and share owner on a second principal. */
   let owner: Awaited<ReturnType<typeof createLiveTransport>>;
   let draftsFolder: any;
   let sentFolder: any;
@@ -65,251 +76,52 @@ describe.sequential('live Stalwart attachment transfer', () => {
   const ownerEmailIds = new Set<string>();
   const ownerMailboxIds = new Set<string>();
 
-  async function request(
-    transport: typeof context.transport,
-    methodCalls: any[],
-    using: readonly string[] = MAIL_USING,
-  ) {
-    return transport.request([...using], methodCalls);
-  }
-
-  async function remoteMailboxes(accountId: string, transport = context.transport) {
-    return requireResponseById(
-      await request(transport, [[
-        'Mailbox/get',
-        {
-          accountId,
-          properties: ['id', 'name', 'role', 'parentId', 'isSubscribed'],
-        },
-        'mailboxes',
-      ]]),
-      'Mailbox/get',
-      'mailboxes',
-    ).list ?? [];
-  }
-
-  async function mailboxByRole(
-    accountId: string,
-    role: string,
-    transport = context.transport,
-  ) {
-    const mailbox = (await remoteMailboxes(accountId, transport))
-      .find((item: any) => item.role === role);
-    if (!mailbox) throw new Error(`No ${role} mailbox on ${accountId}`);
-    return mailbox;
-  }
-
-  async function remoteEmail(accountId: string, id: string, transport = context.transport) {
-    const result = requireResponseById(
-      await request(transport, [[
-        'Email/get',
-        {
-          accountId,
-          ids: [id],
-          properties: [
-            'id',
-            'mailboxIds',
-            'keywords',
-            'hasAttachment',
-            'bodyStructure',
-            'textBody',
-            'htmlBody',
-            'attachments',
-            'blobId',
-            'subject',
-          ],
-        },
-        'email',
-      ]]),
-      'Email/get',
-      'email',
-    );
-    return result.list?.[0] ?? null;
-  }
-
-  async function emailsByExactSubject(
-    accountId: string,
-    mailboxId: string,
-    subject: string,
-    transport = context.transport,
-  ) {
-    const queried = requireResponseById(
-      await request(transport, [[
-        'Email/query',
-        {
-          accountId,
-          filter: { inMailbox: mailboxId },
-          limit: 500,
-        },
-        'subject-query',
-      ]]),
-      'Email/query',
-      'subject-query',
-    );
-    const ids = queried.ids ?? [];
-    if (ids.length === 0) return [];
-    const fetched = requireResponseById(
-      await request(transport, [[
-        'Email/get',
-        {
-          accountId,
-          ids,
-          properties: ['id', 'subject', 'mailboxIds', 'hasAttachment'],
-        },
-        'subject-get',
-      ]]),
-      'Email/get',
-      'subject-get',
-    );
-    return (fetched.list ?? []).filter((email: any) => email.subject === subject);
-  }
-
-  async function destroyEmails(
-    accountId: string,
-    ids: string[],
-    transport = context.transport,
-  ) {
-    if (ids.length === 0) return;
-    requireResponseById(
-      await request(transport, [[
-        'Email/set',
-        { accountId, destroy: ids },
-        'destroy-emails',
-      ]]),
-      'Email/set',
-      'destroy-emails',
-    );
-  }
-
   async function destroyOwnerMailboxes() {
-    const mailboxes = await remoteMailboxes(owner.accountId, owner.transport);
-    const ids = mailboxes
+    const ids = (await remoteMailboxes(owner))
       .filter((mailbox: any) => String(mailbox.name ?? '').startsWith(prefix))
       .map((mailbox: any) => mailbox.id);
     if (ids.length === 0) return;
-    requireResponseById(
-      await request(owner.transport, [[
-        'Mailbox/set',
-        {
-          accountId: owner.accountId,
-          destroy: ids,
-          onDestroyRemoveEmails: true,
-        },
-        'destroy-mailboxes',
-      ]]),
-      'Mailbox/set',
-      'destroy-mailboxes',
-    );
+    await callMethod(owner.transport, MAIL_USING, 'Mailbox/set', {
+      accountId: owner.accountId,
+      destroy: ids,
+      onDestroyRemoveEmails: true,
+    }, 'destroy-mailboxes');
     ownerMailboxIds.clear();
   }
 
   async function cleanupPrefixedMail() {
     if (!context) return;
-    const roles = ['inbox', 'drafts', 'sent'] as const;
-    for (const role of roles) {
+    for (const role of ['inbox', 'drafts', 'sent'] as const) {
       try {
-        const mailbox = await mailboxByRole(context.account.remote_account_id, role);
-        const listed = requireResponseById(
-          await request(context.transport, [[
-            'Email/query',
-            {
-              accountId: context.account.remote_account_id,
-              filter: { inMailbox: mailbox.id },
-              limit: 500,
-            },
-            `cleanup-${role}-query`,
-          ]]),
-          'Email/query',
-          `cleanup-${role}-query`,
-        ).ids ?? [];
-        if (listed.length === 0) continue;
-        const fetched = requireResponseById(
-          await request(context.transport, [[
-            'Email/get',
-            {
-              accountId: context.account.remote_account_id,
-              ids: listed,
-              properties: ['id', 'subject'],
-            },
-            `cleanup-${role}-get`,
-          ]]),
-          'Email/get',
-          `cleanup-${role}-get`,
-        );
-        await destroyEmails(
-          context.account.remote_account_id,
-          (fetched.list ?? [])
-            .filter((email: any) => String(email.subject ?? '').startsWith(prefix))
-            .map((email: any) => email.id),
-        );
+        const mailbox = await mailboxByRole(mail, role);
+        await destroyEmailsWithSubjectPrefix(mail, mailbox.id, prefix);
       } catch {
         // Role mailbox may be missing during a failed beforeAll.
       }
     }
     if (owner) {
       try {
-        const inbox = await mailboxByRole(owner.accountId, 'inbox', owner.transport);
-        const listed = requireResponseById(
-          await request(owner.transport, [[
-            'Email/query',
-            {
-              accountId: owner.accountId,
-              filter: { inMailbox: inbox.id },
-              limit: 500,
-            },
-            'cleanup-owner-query',
-          ]]),
-          'Email/query',
-          'cleanup-owner-query',
-        ).ids ?? [];
-        if (listed.length > 0) {
-          const fetched = requireResponseById(
-            await request(owner.transport, [[
-              'Email/get',
-              {
-                accountId: owner.accountId,
-                ids: listed,
-                properties: ['id', 'subject'],
-              },
-              'cleanup-owner-get',
-            ]]),
-            'Email/get',
-            'cleanup-owner-get',
-          );
-          await destroyEmails(
-            owner.accountId,
-            (fetched.list ?? [])
-              .filter((email: any) => String(email.subject ?? '').startsWith(prefix))
-              .map((email: any) => email.id),
-            owner.transport,
-          );
-        }
+        const inbox = await mailboxByRole(owner, 'inbox');
+        await destroyEmailsWithSubjectPrefix(owner, inbox.id, prefix);
       } catch {
         // Owner inbox cleanup is best-effort before mailbox destroy.
       }
-      await destroyEmails(owner.accountId, [...ownerEmailIds], owner.transport);
+      await destroyEmails(owner, [...ownerEmailIds]);
       ownerEmailIds.clear();
       await destroyOwnerMailboxes();
     }
     createdEmailIds.clear();
   }
 
-  async function runMutation(mutationType: string, requestJson: Record<string, unknown>) {
-    const inserted = await context.handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: context.account.id,
+  /**
+   * Rows stay in pending_mutations after the run: this suite never
+   * drains by status, and the failing-blob case inspects the outcome.
+   */
+  function runMutation(mutationType: string, request: Record<string, unknown>) {
+    return processInsertedMutation(context, {
       mutationType,
-      targetMessageId: null,
-      requestJson: JSON.stringify(requestJson),
-    });
-    const rows = await context.handlers[DB_RPC.QUERY]({
-      sql: 'SELECT * FROM pending_mutations WHERE id = ?',
-      params: [inserted.id],
-    });
-    return processMutationRow({
-      transport: context.transport,
-      account: context.account,
-      handlers: context.handlers,
-      row: rows[0],
+      request,
+      deleteOnSuccess: false,
     });
   }
 
@@ -338,24 +150,17 @@ describe.sequential('live Stalwart attachment transfer', () => {
     };
   }
 
+  /** Cache `emailId` from `account` (possibly shared) via the sharee's transport. */
   async function persistRemoteEmail(account: any, emailId: string) {
-    const listed = requireResponseById(
-      await request(context.transport, [[
-        'Email/get',
-        {
-          accountId: account.remote_account_id,
-          ids: [emailId],
-          properties: EMAIL_LIST_PROPERTIES,
-        },
-        'list-email',
-      ]]),
-      'Email/get',
-      'list-email',
-    ).list ?? [];
-    if (listed.length !== 1) {
+    const listed = await remoteEmail(
+      liveMailAccount({ transport: context.transport, account }),
+      emailId,
+      EMAIL_LIST_PROPERTIES,
+    );
+    if (!listed) {
       throw new Error(`Email/get list properties missed ${emailId}`);
     }
-    await persistEmails({ account, emails: listed, handlers: context.handlers });
+    await persistEmails({ account, emails: [listed], handlers: context.handlers });
     await fetchEmailBodies({
       transport: context.transport,
       account,
@@ -370,6 +175,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
 
   beforeAll(async () => {
     context = await createLiveMailIntegrationContext();
+    mail = liveMailAccount(context);
     owner = await createLiveTransport({
       email: SHARED_TEST_OIDC_EMAIL,
       password: SHARED_TEST_OIDC_PASSWORD,
@@ -412,49 +218,33 @@ describe.sequential('live Stalwart attachment transfer', () => {
 
   it('reads received attachment metadata, bytes, MIME order, and shared-account routing', async () => {
     const mailboxName = `${prefix} shared`;
-    const created = requireResponseById(
-      await request(owner.transport, [[
-        'Mailbox/set',
-        {
-          accountId: owner.accountId,
-          create: { live: { name: mailboxName, isSubscribed: true } },
-        },
-        'create-shared',
-      ]]),
-      'Mailbox/set',
-      'create-shared',
-    ).created?.live;
+    const created = (await callMethod(owner.transport, MAIL_USING, 'Mailbox/set', {
+      accountId: owner.accountId,
+      create: { live: { name: mailboxName, isSubscribed: true } },
+    }, 'create-shared')).created?.live;
     if (!created?.id) throw new Error('Owner Mailbox/set returned no mailbox id');
     ownerMailboxIds.add(created.id);
 
-    const shared = requireResponseById(
-      await request(owner.transport, [[
-        'Mailbox/set',
-        {
-          accountId: owner.accountId,
-          update: {
-            [created.id]: {
-              shareWith: {
-                [context.account.remote_account_id]: {
-                  mayReadItems: true,
-                  mayAddItems: true,
-                  mayRemoveItems: true,
-                  maySetSeen: true,
-                  maySetKeywords: true,
-                  mayCreateChild: true,
-                  mayRename: true,
-                  mayDelete: true,
-                  maySubmit: false,
-                },
-              },
+    const shared = await callMethod(owner.transport, MAIL_USING, 'Mailbox/set', {
+      accountId: owner.accountId,
+      update: {
+        [created.id]: {
+          shareWith: {
+            [context.account.remote_account_id]: {
+              mayReadItems: true,
+              mayAddItems: true,
+              mayRemoveItems: true,
+              maySetSeen: true,
+              maySetKeywords: true,
+              mayCreateChild: true,
+              mayRename: true,
+              mayDelete: true,
+              maySubmit: false,
             },
           },
         },
-        'share',
-      ]]),
-      'Mailbox/set',
-      'share',
-    );
+      },
+    }, 'share');
     if (shared.notUpdated?.[created.id]) {
       throw new Error(`Mailbox share failed: ${JSON.stringify(shared.notUpdated[created.id])}`);
     }
@@ -466,18 +256,10 @@ describe.sequential('live Stalwart attachment transfer', () => {
     if (!sharedAccount) {
       throw new Error('Shared owner account did not appear in the sharee JMAP Session');
     }
-    requireResponseById(
-      await request(context.transport, [[
-        'Mailbox/set',
-        {
-          accountId: owner.accountId,
-          update: { [created.id]: { isSubscribed: true } },
-        },
-        'subscribe',
-      ]]),
-      'Mailbox/set',
-      'subscribe',
-    );
+    await callMethod(context.transport, MAIL_USING, 'Mailbox/set', {
+      accountId: owner.accountId,
+      update: { [created.id]: { isSubscribed: true } },
+    }, 'subscribe');
     await syncMailboxes({
       transport: context.transport,
       account: sharedAccount,
@@ -496,57 +278,49 @@ describe.sequential('live Stalwart attachment transfer', () => {
       body: PDF_BYTES,
     });
     const subject = `${prefix} received`;
-    const seeded = requireResponseById(
-      await request(owner.transport, [[
-        'Email/set',
-        {
-          accountId: owner.accountId,
-          create: {
-            received: {
-              mailboxIds: { [created.id]: true },
-              from: [{ email: SHARED_TEST_OIDC_EMAIL }],
-              to: [{ email: SHARED_TEST_OIDC_EMAIL }],
-              subject,
-              bodyStructure: {
-                type: 'multipart/mixed',
+    const seeded = (await callMethod(owner.transport, MAIL_USING, 'Email/set', {
+      accountId: owner.accountId,
+      create: {
+        received: {
+          mailboxIds: { [created.id]: true },
+          from: [{ email: SHARED_TEST_OIDC_EMAIL }],
+          to: [{ email: SHARED_TEST_OIDC_EMAIL }],
+          subject,
+          bodyStructure: {
+            type: 'multipart/mixed',
+            subParts: [
+              {
+                type: 'multipart/alternative',
                 subParts: [
-                  {
-                    type: 'multipart/alternative',
-                    subParts: [
-                      { type: 'text/plain', partId: 'p1' },
-                      { type: 'text/html', partId: 'h1' },
-                    ],
-                  },
-                  {
-                    blobId: pngUpload.blobId,
-                    type: 'image/png',
-                    name: 'photo.png',
-                    disposition: 'attachment',
-                  },
-                  {
-                    blobId: pdfUpload.blobId,
-                    type: 'application/pdf',
-                    name: 'doc.pdf',
-                    disposition: 'attachment',
-                  },
+                  { type: 'text/plain', partId: 'p1' },
+                  { type: 'text/html', partId: 'h1' },
                 ],
               },
-              bodyValues: {
-                p1: { value: 'See attachments' },
-                h1: { value: '<p>See attachments</p>' },
+              {
+                blobId: pngUpload.blobId,
+                type: 'image/png',
+                name: 'photo.png',
+                disposition: 'attachment',
               },
-            },
+              {
+                blobId: pdfUpload.blobId,
+                type: 'application/pdf',
+                name: 'doc.pdf',
+                disposition: 'attachment',
+              },
+            ],
+          },
+          bodyValues: {
+            p1: { value: 'See attachments' },
+            h1: { value: '<p>See attachments</p>' },
           },
         },
-        'seed-received',
-      ]]),
-      'Email/set',
-      'seed-received',
-    ).created?.received;
+      },
+    }, 'seed-received')).created?.received;
     if (!seeded?.id) throw new Error('Owner Email/set returned no id');
     ownerEmailIds.add(seeded.id);
 
-    const remote = await remoteEmail(owner.accountId, seeded.id, owner.transport);
+    const remote = await remoteEmail(owner, seeded.id);
     expect(remote).toMatchObject({ hasAttachment: true });
     expect(attachmentLeaves(remote.bodyStructure).map((part) => part.name))
       .toEqual(['photo.png', 'doc.pdf']);
@@ -636,10 +410,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
       }));
       if (!first.ok) throw new Error(JSON.stringify(first.error));
       createdEmailIds.add(first.result.emailId);
-      const firstRemote = await remoteEmail(
-        context.account.remote_account_id,
-        first.result.emailId,
-      );
+      const firstRemote = await remoteEmail(mail, first.result.emailId);
       expect(firstRemote).toMatchObject({
         keywords: expect.objectContaining({ $draft: true }),
         hasAttachment: true,
@@ -683,14 +454,8 @@ describe.sequential('live Stalwart attachment transfer', () => {
       if (!second.ok) throw new Error(JSON.stringify(second.error));
       createdEmailIds.add(second.result.emailId);
       expect(second.result.emailId).not.toBe(first.result.emailId);
-      expect(await remoteEmail(
-        context.account.remote_account_id,
-        first.result.emailId,
-      )).toBeNull();
-      const secondRemote = await remoteEmail(
-        context.account.remote_account_id,
-        second.result.emailId,
-      );
+      expect(await remoteEmail(mail, first.result.emailId)).toBeNull();
+      const secondRemote = await remoteEmail(mail, second.result.emailId);
       const secondPart = attachmentLeaves(secondRemote.bodyStructure)[0];
       expect(secondPart).toMatchObject({
         name: 'report.pdf',
@@ -729,30 +494,16 @@ describe.sequential('live Stalwart attachment transfer', () => {
       });
       if (!sent.ok) throw new Error(JSON.stringify(sent.error));
       createdEmailIds.add(sent.result.createdRemoteId);
-      expect(await remoteEmail(
-        context.account.remote_account_id,
-        second.result.emailId,
-      )).toBeNull();
+      expect(await remoteEmail(mail, second.result.emailId)).toBeNull();
 
-      const ownerInbox = await mailboxByRole(owner.accountId, 'inbox', owner.transport);
-      let delivered: any = null;
-      const deadline = Date.now() + 20_000;
-      while (Date.now() < deadline) {
-        const matches = await emailsByExactSubject(
-          owner.accountId,
-          ownerInbox.id,
-          subject,
-          owner.transport,
-        );
-        if (matches[0]) {
-          delivered = matches[0];
-          ownerEmailIds.add(delivered.id);
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-      if (!delivered) throw new Error('Attachment send did not arrive at shared-e2e');
-      const deliveredEmail = await remoteEmail(owner.accountId, delivered.id, owner.transport);
+      const ownerInbox = await mailboxByRole(owner, 'inbox');
+      const delivered = await waitForEmailBySubject(owner, ownerInbox.id, subject, {
+        timeoutMs: 20_000,
+        intervalMs: 250,
+        label: 'attachment send to arrive in the shared-e2e inbox',
+      });
+      ownerEmailIds.add(delivered.id);
+      const deliveredEmail = await remoteEmail(owner, delivered.id);
       const deliveredPart = attachmentLeaves(deliveredEmail.bodyStructure)[0];
       expect(deliveredPart).toMatchObject({
         name: 'report.pdf',
@@ -760,10 +511,9 @@ describe.sequential('live Stalwart attachment transfer', () => {
       });
       expect(await bytesOf(await context.backend.downloadAttachment({
         accountId: context.account.id,
-        blobId: attachmentLeaves((await remoteEmail(
-          context.account.remote_account_id,
-          sent.result.createdRemoteId,
-        )).bodyStructure)[0].blobId,
+        blobId: attachmentLeaves(
+          (await remoteEmail(mail, sent.result.createdRemoteId)).bodyStructure,
+        )[0].blobId,
         type: 'application/pdf',
         name: 'report.pdf',
       }))).toEqual(PDF_BYTES);
@@ -810,10 +560,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
       ok: false,
       error: { type: 'blobNotFound' },
     });
-    expect(await remoteEmail(
-      context.account.remote_account_id,
-      predecessor.result.emailId,
-    )).toMatchObject({
+    expect(await remoteEmail(mail, predecessor.result.emailId)).toMatchObject({
       id: predecessor.result.emailId,
       keywords: expect.objectContaining({ $draft: true }),
     });
@@ -847,10 +594,7 @@ describe.sequential('live Stalwart attachment transfer', () => {
     if (!recovered.ok) throw new Error(JSON.stringify(recovered.error));
     createdEmailIds.add(recovered.result.emailId);
     expect(recovered.result.emailId).not.toBe(predecessor.result.emailId);
-    expect(await remoteEmail(
-      context.account.remote_account_id,
-      predecessor.result.emailId,
-    )).toBeNull();
+    expect(await remoteEmail(mail, predecessor.result.emailId)).toBeNull();
     const recoveredLocal = await context.handlers[DB_RPC.MESSAGE_GET_BY_REMOTE]({
       accountId: context.account.id,
       remoteId: recovered.result.emailId,
