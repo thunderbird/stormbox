@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Plus, X } from '@lucide/vue';
 
+import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import AppIconButton from '../AppIconButton.vue';
 import {
   createContactEditorNote,
@@ -15,25 +16,21 @@ const emit = defineEmits<{
   'update:modelValue': [notes: ContactEditorNote[]];
 }>();
 
-function addNote(): void {
-  const note = createContactEditorNote();
-  note.position = props.modelValue.length;
-  emit('update:modelValue', [...props.modelValue, note]);
-}
+const {
+  appendRow: addNote,
+  removeRow: removeNote,
+  updateRow,
+} = useRepeaterRows<ContactEditorNote>({
+  rows: () => props.modelValue,
+  createRow: (position) => ({
+    ...createContactEditorNote(),
+    position,
+  }),
+  update: (notes) => emit('update:modelValue', notes),
+});
 
 function updateNote(formKey: string, value: string): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.map((note) =>
-      note.formKey === formKey ? { ...note, value } : note),
-  );
-}
-
-function removeNote(formKey: string): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.filter((note) => note.formKey !== formKey),
-  );
+  updateRow(formKey, { value });
 }
 </script>
 
@@ -102,41 +99,4 @@ function removeNote(formKey: string): void {
   resize: vertical;
 }
 
-.contact-editor__remove,
-.contact-editor__add {
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted, #6b7388);
-  font: inherit;
-  cursor: pointer;
-}
-
-.contact-editor__remove {
-  display: inline-flex;
-  width: 34px;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-.contact-editor__add {
-  display: inline-flex;
-  align-items: center;
-  justify-self: start;
-  gap: 5px;
-  padding: 4px 6px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.contact-editor__remove:hover,
-.contact-editor__remove:focus-visible,
-.contact-editor__add:hover,
-.contact-editor__add:focus-visible {
-  background: var(--rowHover, #f0f1f6);
-  outline: none;
-}
 </style>

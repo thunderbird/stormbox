@@ -141,6 +141,23 @@ onUnmounted(unlisten);
   font-size: 10px;
   opacity: 0.7;
 }
+.app-dropdown__summary--control {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 9px;
+  border: 1px solid var(--border, #d6d9e2);
+  border-radius: 6px;
+  background: var(--panel, #fff);
+  color: var(--text, #1a1d24);
+  font: inherit;
+  font-size: 13px;
+}
+.app-dropdown__summary--control:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
 .app-dropdown__menu {
   position: absolute;
   top: calc(100% + 6px);

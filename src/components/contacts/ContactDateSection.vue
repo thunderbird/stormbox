@@ -9,6 +9,7 @@ import {
 } from '@vuepic/vue-datepicker';
 import { nextTick, ref } from 'vue';
 
+import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import type { ContactAnniversaryKind } from '../../types';
 import { closeContainingDropdown } from '../../utils/dropdown';
 import AppDropdown from '../AppDropdown.vue';
@@ -29,6 +30,19 @@ const emit = defineEmits<{
   'update:modelValue': [dates: ContactEditorAnniversary[]];
 }>();
 
+const {
+  appendRow: addDate,
+  removeRow: removeDate,
+  updateRow: updateDate,
+} = useRepeaterRows<ContactEditorAnniversary>({
+  rows: () => props.modelValue,
+  createRow: (position) => ({
+    ...createContactEditorAnniversary(),
+    position,
+  }),
+  update: (dates) => emit('update:modelValue', dates),
+});
+
 const kinds: ContactAnniversaryKind[] = ['birth', 'wedding', 'death'];
 const datePickerTimeConfig = { enableTimePicker: false };
 const yearlessAriaLabels: Partial<AriaLabelsConfig> = {
@@ -41,30 +55,6 @@ const yearlessDateKeys = ref<Set<string>>(new Set());
 const datePickerHandles = new Map<string, {
   setMonthYear: (value: Partial<MonthModel>, instance?: number) => void;
 }>();
-
-function addDate(): void {
-  const date = createContactEditorAnniversary();
-  date.position = props.modelValue.length;
-  emit('update:modelValue', [...props.modelValue, date]);
-}
-
-function updateDate(
-  formKey: string,
-  patch: Partial<ContactEditorAnniversary>,
-): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.map((date) =>
-      date.formKey === formKey ? { ...date, ...patch } : date),
-  );
-}
-
-function removeDate(formKey: string): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.filter((date) => date.formKey !== formKey),
-  );
-}
 
 function chooseKind(
   formKey: string,
@@ -300,7 +290,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
     >
       <AppDropdown group="contact-date-kinds">
         <summary
-          class="contact-dates__summary app-dropdown__summary"
+          class="app-dropdown__summary app-dropdown__summary--control contact-dates__summary"
           :aria-label="`Choose date kind; current kind ${contactAnniversaryKindLabel(date.kind)}`"
         >
           {{ contactAnniversaryKindLabel(date.kind) }}
@@ -433,23 +423,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
 }
 
 .contact-dates__summary {
-  display: inline-flex;
   min-width: 104px;
-  min-height: 34px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 9px;
-  border: 1px solid var(--border, #d6d9e2);
-  border-radius: 6px;
-  background: var(--panel, #fff);
-  color: var(--text, #1a1d24);
-  font: inherit;
-  font-size: 13px;
-}
-
-.contact-dates__summary:focus-visible {
-  border-color: var(--accent);
-  outline: none;
 }
 
 .contact-dates__input {
@@ -527,44 +501,6 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
   margin: -2px 0 0;
   color: var(--muted, #6b7388);
   font-size: 11px;
-}
-
-.contact-editor__remove,
-.contact-editor__add {
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted, #6b7388);
-  font: inherit;
-  cursor: pointer;
-}
-
-.contact-editor__remove {
-  display: inline-flex;
-  width: 34px;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-
-.contact-editor__add {
-  display: inline-flex;
-  align-items: center;
-  justify-self: start;
-  gap: 5px;
-  padding: 4px 6px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.contact-editor__remove:hover,
-.contact-editor__remove:focus-visible,
-.contact-editor__add:hover,
-.contact-editor__add:focus-visible {
-  background: var(--rowHover, #f0f1f6);
-  outline: none;
 }
 
 @media (max-width: 760px) {

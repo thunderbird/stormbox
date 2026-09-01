@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
+import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import {
   createContactEditorResource,
   type ContactEditorEmail,
@@ -20,6 +21,26 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [resources: ContactEditorResource[]];
 }>();
+
+const {
+  appendRow: addResource,
+  mapRows,
+  removeRow: removeResource,
+  replaceRow: replaceResource,
+  updateRow: updateResource,
+} = useRepeaterRows<ContactEditorResource>({
+  rows: () => props.modelValue,
+  createRow: (position) => {
+    const resource = createContactEditorResource(props.kind);
+    resource.position = position;
+    if (props.kind === 'email' && position === 0) {
+      (resource as ContactEditorEmail).isPreferred = true;
+      resource.pref = 1;
+    }
+    return resource;
+  },
+  update: (resources) => emit('update:modelValue', resources),
+});
 
 const heading = computed(() => {
   switch (props.kind) {
@@ -81,52 +102,13 @@ const addLabel = computed(() => {
   }
 });
 
-function addResource(): void {
-  const resource = createContactEditorResource(props.kind);
-  resource.position = props.modelValue.length;
-  if (props.kind === 'email' && props.modelValue.length === 0) {
-    (resource as ContactEditorEmail).isPreferred = true;
-    resource.pref = 1;
-  }
-  emit('update:modelValue', [...props.modelValue, resource]);
-}
-
-function updateResource(
-  formKey: string,
-  patch: Partial<ContactEditorResource>,
-): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.map((resource) =>
-      resource.formKey === formKey ? { ...resource, ...patch } : resource),
-  );
-}
-
-function replaceResource(resource: ContactEditorResource): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.map((candidate) =>
-      candidate.formKey === resource.formKey ? resource : candidate),
-  );
-}
-
-function removeResource(formKey: string): void {
-  emit(
-    'update:modelValue',
-    props.modelValue.filter((resource) => resource.formKey !== formKey),
-  );
-}
-
 function makePrimary(formKey: string): void {
   if (props.kind !== 'email') return;
-  emit(
-    'update:modelValue',
-    props.modelValue.map((resource) => ({
-      ...resource,
-      isPreferred: resource.formKey === formKey,
-      pref: resource.formKey === formKey ? 1 : null,
-    })),
-  );
+  mapRows((resource) => ({
+    ...resource,
+    isPreferred: resource.formKey === formKey,
+    pref: resource.formKey === formKey ? 1 : null,
+  }));
 }
 
 function errorId(formKey: string): string {
@@ -239,20 +221,15 @@ function errorFor(formKey: string): string | null {
   font-size: 12px;
 }
 
-.contact-resource__primary,
-.contact-editor__remove,
-.contact-editor__add {
+.contact-resource__primary {
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted, #6b7388);
   font: inherit;
   cursor: pointer;
-}
-
-.contact-resource__primary {
   min-height: 34px;
   padding: 0 6px;
-  border-radius: 6px;
   font-size: 11px;
 }
 
@@ -261,34 +238,8 @@ function errorFor(formKey: string): string | null {
   font-weight: 700;
 }
 
-.contact-editor__remove {
-  display: inline-flex;
-  width: 34px;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 6px;
-}
-
-.contact-editor__add {
-  display: inline-flex;
-  align-items: center;
-  justify-self: start;
-  gap: 5px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .contact-resource__primary:hover,
-.contact-resource__primary:focus-visible,
-.contact-editor__remove:hover,
-.contact-editor__remove:focus-visible,
-.contact-editor__add:hover,
-.contact-editor__add:focus-visible {
+.contact-resource__primary:focus-visible {
   background: var(--rowHover, #f0f1f6);
   outline: none;
 }

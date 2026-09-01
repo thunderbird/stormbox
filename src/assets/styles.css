@@ -235,6 +235,32 @@ details:not([open]) > :not(summary) {
   display: none;
 }
 
+.contact-editor__add {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 5px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-icon-button.contact-editor__remove {
+  border-radius: 6px;
+}
+
+.contact-editor__add:hover,
+.contact-editor__add:focus-visible {
+  background: var(--rowHover, #f0f1f6);
+  outline: none;
+}
+
 :root {
   --app-viewport-height: 100vh;
 }
