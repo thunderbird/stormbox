@@ -952,157 +952,38 @@ export async function readJsonFileNode<T>({
   parentId?: string | null;
   useWebSocket?: boolean;
 }): Promise<FileNodeDocumentRead<T>> {
-  if (!hasFileNodeCapability(transport, account)) {
-    return { ok: false, error: { type: 'unsupported', terminal: true } };
+  const resolved = await discoverJsonFileNodes({
+    transport,
+    account,
+    nameMatch: fileName,
+    acceptName: (name) => name === fileName,
+    parentId,
+    useWebSocket,
+  });
+  if (resolved.ok === false) return resolved;
+  if (resolved.nodes.length === 0) {
+    return { ok: true, status: 'missing', state: resolved.state, node: null };
   }
-
-  let result;
-  const limit = fileNodeGetLimit(transport);
-  try {
-    result = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.FILENODE],
-      methodCalls: [
-        ['FileNode/query', {
-          accountId: account.remote_account_id,
-          filter: { name: fileName },
-          limit,
-          calculateTotal: true,
-        }, 'q1'],
-        ['FileNode/get', {
-          accountId: account.remote_account_id,
-          '#ids': { resultOf: 'q1', name: 'FileNode/query', path: '/ids' },
-          properties: FILE_NODE_PROPERTIES,
-        }, 'g1'],
-      ],
-      useWebSocket,
-    });
-  } catch (error) {
-    return { ok: false, error: transportError(error) };
-  }
-
-  const queryFailure = methodError(result, 'q1');
-  if (queryFailure) return { ok: false, error: typedError(queryFailure, 'serverFail') };
-  const getFailure = methodError(result, 'g1');
-  if (getFailure) return { ok: false, error: typedError(getFailure, 'serverFail') };
-
-  const query = pickResponseById(result, 'FileNode/query', 'q1');
-  const response = pickResponseById(result, 'FileNode/get', 'g1');
-  if (
-    !query
-    || !Array.isArray(query.ids)
-    || !response
-    || typeof response.state !== 'string'
-  ) {
-    return {
-      ok: false,
-      error: { type: 'serverFail', message: 'FileNode/get returned no object state' },
-    };
-  }
-  if (Number.isSafeInteger(query.total) && query.total > limit) {
-    return {
-      ok: false,
-      error: {
-        type: 'alreadyExists',
-        message: `Too many FileNodes are named ${fileName}`,
-        terminal: true,
-      },
-    };
-  }
-  const nodes = (Array.isArray(response.list) ? response.list : [])
-    .filter((node: any) =>
-      node?.name === fileName && (node?.parentId ?? null) === parentId);
-  if (nodes.length === 0) {
-    return { ok: true, status: 'missing', state: response.state, node: null };
-  }
-  if (nodes.length !== 1) {
+  if (resolved.nodes.length !== 1) {
     return {
       ok: false,
       error: {
         type: 'alreadyExists',
         message: `Multiple FileNodes are named ${fileName} under the same parent`,
-        detail: nodes.map((node: any) => node?.id),
+        detail: resolved.nodes.map((node) => node.id),
         terminal: true,
       },
     };
   }
-
-  const node = nodes[0] as JmapFileNode;
-  if (!mayReadNode(node)) {
-    return { ok: false, error: { type: 'forbidden', terminal: true } };
-  }
-  if (node.nodeType !== undefined && node.nodeType !== 'file') {
-    return {
-      ok: false,
-      error: { type: 'invalidDocument', message: 'FileNode is not a file', terminal: true },
-    };
-  }
-  if (!node.blobId || node.type !== 'application/json') {
-    return {
-      ok: false,
-      error: {
-        type: 'invalidDocument',
-        message: 'FileNode is not an application/json document',
-        terminal: true,
-      },
-    };
-  }
-  if (typeof node.size === 'number' && node.size > maxBytes) {
-    return {
-      ok: false,
-      error: {
-        type: 'tooLarge',
-        message: `FileNode document is ${node.size} bytes, exceeding the ${maxBytes} byte limit`,
-        terminal: true,
-      },
-    };
-  }
-
-  let bytes: Uint8Array;
-  try {
-    bytes = await transport.download({
-      accountId: account.remote_account_id,
-      blobId: node.blobId,
-      type: 'application/json',
-      name: fileName,
-      maxBytes,
-    });
-  } catch (error) {
-    return { ok: false, error: transportError(error) };
-  }
-  if (bytes.byteLength > maxBytes) {
-    return {
-      ok: false,
-      error: {
-        type: 'tooLarge',
-        message: `FileNode document is ${bytes.byteLength} bytes, exceeding the ${maxBytes} byte limit`,
-        terminal: true,
-      },
-    };
-  }
-  let document: unknown;
-  try {
-    document = JSON.parse(new TextDecoder().decode(bytes));
-  } catch (error) {
-    return {
-      ok: false,
-      error: {
-        type: 'invalidDocument',
-        message: error instanceof Error ? error.message : String(error),
-        terminal: true,
-      },
-    };
-  }
-  if (!markerMatches(document, marker)) {
-    return {
-      ok: false,
-      error: {
-        type: 'invalidDocument',
-        message: 'FileNode document ownership or version marker does not match',
-        terminal: true,
-      },
-    };
-  }
-  return { ok: true, status: 'found', state: response.state, node, document: document as T };
+  return readJsonFileNodeFromNode<T>({
+    transport,
+    account,
+    node: resolved.nodes[0],
+    state: resolved.state,
+    marker,
+    maxBytes,
+    parentId,
+  });
 }
 
 export async function writeJsonFileNode<T>({

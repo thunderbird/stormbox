@@ -13,7 +13,9 @@ describe('pageCompleteQuery', () => {
     const result = await pageCompleteQuery({
       pageSize: 5,
       readPage: async ({ page }) => ({ ...pages[page], value: null }),
-      visitPage: ({ ids }) => visited.push(...ids as string[]),
+      visitPage: ({ ids }) => {
+        visited.push(...ids as string[]);
+      },
     });
 
     expect(result).toMatchObject({
