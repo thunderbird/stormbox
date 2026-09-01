@@ -2,7 +2,11 @@ import {
   expect,
   test,
 } from './helpers/shared-session.js';
-import { connectJmap } from './helpers/jmap-client.js';
+import {
+  connectJmap,
+  contactsRequest,
+  pickResponse,
+} from './helpers/jmap-client.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
@@ -15,31 +19,6 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 const TEST_PREFIX = 'Address book management e2e';
-
-async function contactsRequest(jmap, methodCalls) {
-  const response = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: jmap.authHeader,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      using: [
-        'urn:ietf:params:jmap:core',
-        'urn:ietf:params:jmap:contacts',
-      ],
-      methodCalls,
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`contacts JMAP failed: ${response.status} ${await response.text()}`);
-  }
-  return response.json();
-}
-
-function responseFor(payload, method) {
-  return payload.methodResponses?.find((response) => response[0] === method)?.[1] ?? null;
-}
 
 async function listBooks(jmap) {
   const response = await contactsRequest(jmap, [[
@@ -56,7 +35,7 @@ async function listBooks(jmap) {
     },
     'book-get',
   ]]);
-  const result = responseFor(response, 'AddressBook/get');
+  const result = pickResponse(response, 'AddressBook/get');
   if (!result) throw new Error(JSON.stringify(response));
   return result.list ?? [];
 }

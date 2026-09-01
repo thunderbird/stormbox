@@ -1,12 +1,20 @@
 import {
   cleanupEmail,
   connectJmap,
+  contactsRequest,
   destroyEmails,
   jmapRequest,
   listMailboxes,
   mailboxByRole,
   pickResponse,
 } from './helpers/jmap-client.js';
+import {
+  directIdentity,
+  identityIds,
+  identitySet,
+  patchPrincipalEmails,
+} from './helpers/identity-admin.js';
+import { pasteFilesIntoEditor } from './helpers/editor-paste.js';
 import {
   attachConsoleTail,
   consoleLinesFor,
@@ -18,8 +26,6 @@ import {
   skipLocalStackMessage,
   SHARED_TEST_OIDC_EMAIL,
   SHARED_TEST_OIDC_PASSWORD,
-  STACK_STALWART_API_AUTH,
-  STACK_STALWART_API_URL,
   STACK_STALWART_PRINCIPAL,
 } from './helpers/stack-env.js';
 import {
@@ -61,27 +67,12 @@ const DETAIL_DRAFT_PREFIX = 'Identity defaults integrity';
 const PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
-async function contactsRequest(jmap, methodCalls) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
-      methodCalls,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`contacts JMAP failed: ${res.status} ${await res.text().catch(() => '')}`);
-  }
-  return res.json();
-}
-
 async function listCards(jmap) {
   const q = await contactsRequest(jmap, [['ContactCard/query', { accountId: jmap.accountId }, 'q']]);
-  const ids = q.methodResponses?.find((r) => r[0] === 'ContactCard/query')?.[1]?.ids ?? [];
+  const ids = pickResponse(q, 'ContactCard/query')?.ids ?? [];
   if (ids.length === 0) return [];
   const g = await contactsRequest(jmap, [['ContactCard/get', { accountId: jmap.accountId, ids }, 'g']]);
-  return g.methodResponses?.find((r) => r[0] === 'ContactCard/get')?.[1]?.list ?? [];
+  return pickResponse(g, 'ContactCard/get')?.list ?? [];
 }
 
 async function createCard(jmap, { name, email, bookId }) {
@@ -101,8 +92,9 @@ async function createCard(jmap, { name, email, bookId }) {
     },
     's',
   ]]);
-  const created = res.methodResponses?.[0]?.[1]?.created?.c1;
-  expect(created?.id, `the server should have created a card: ${JSON.stringify(res.methodResponses?.[0]?.[1])}`)
+  const set = pickResponse(res, 'ContactCard/set');
+  const created = set?.created?.c1;
+  expect(created?.id, `the server should have created a card: ${JSON.stringify(set)}`)
     .toBeTruthy();
   return created.id;
 }
@@ -117,48 +109,10 @@ async function destroyCard(jmap, cardId) {
 
 async function defaultBookId(jmap) {
   const res = await contactsRequest(jmap, [['AddressBook/get', { accountId: jmap.accountId }, 'a']]);
-  const books = res.methodResponses?.[0]?.[1]?.list ?? [];
+  const books = pickResponse(res, 'AddressBook/get')?.list ?? [];
   const chosen = books.find((b) => b.isDefault) ?? books[0];
   expect(chosen?.id, 'the account needs an address book to file a card in').toBeTruthy();
   return chosen.id;
-}
-
-/** Stalwart's management API: what the account is allowed to send as. */
-async function patchPrincipalEmails(action, address) {
-  const res = await fetch(
-    `${STACK_STALWART_API_URL}/api/principal/${encodeURIComponent(STACK_STALWART_PRINCIPAL)}`,
-    {
-      method: 'PATCH',
-      headers: { Authorization: STACK_STALWART_API_AUTH, 'Content-Type': 'application/json' },
-      body: JSON.stringify([{ action, field: 'emails', value: address }]),
-    },
-  );
-  expect(res.ok, `principal ${action} for ${address} should succeed`).toBe(true);
-}
-
-async function identityIds(jmap, email) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:submission'],
-      methodCalls: [['Identity/get', { accountId: jmap.accountId }, 'i']],
-    }),
-  });
-  const list = (await res.json()).methodResponses?.[0]?.[1]?.list ?? [];
-  return list.filter((identity) => !email || identity.email === email).map((i) => i.id);
-}
-
-async function identitySet(jmap, params) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:submission'],
-      methodCalls: [['Identity/set', { accountId: jmap.accountId, ...params }, 's']],
-    }),
-  });
-  return (await res.json()).methodResponses?.[0]?.[1] ?? {};
 }
 
 /** Force the full, authoritative contact sync the app runs at startup. */
@@ -175,8 +129,7 @@ async function getCard(jmap, id) {
     { accountId: jmap.accountId, ids: [id] },
     'g',
   ]]);
-  return result.methodResponses?.find((response) => response[0] === 'ContactCard/get')
-    ?.[1]?.list?.[0] ?? null;
+  return pickResponse(result, 'ContactCard/get')?.list?.[0] ?? null;
 }
 
 async function patchCard(jmap, id, patch) {
@@ -185,18 +138,8 @@ async function patchCard(jmap, id, patch) {
     { accountId: jmap.accountId, update: { [id]: patch } },
     's',
   ]]);
-  const set = result.methodResponses?.find((response) => response[0] === 'ContactCard/set')?.[1];
+  const set = pickResponse(result, 'ContactCard/set');
   expect(set?.updated?.[id], `card update should succeed: ${JSON.stringify(set)}`).toBeDefined();
-}
-
-async function directIdentity(jmap, email) {
-  const result = await jmapRequest(jmap, [[
-    'Identity/get',
-    { accountId: jmap.accountId },
-    'i',
-  ]]);
-  return (pickResponse(result, 'Identity/get')?.list ?? [])
-    .find((identity) => identity.email === email) ?? null;
 }
 
 async function cachedIdentity(page, email) {
@@ -228,24 +171,6 @@ async function contactResourceRow(section, value) {
   const index = values.indexOf(value);
   expect(index, `resource row for ${value} should exist`).toBeGreaterThanOrEqual(0);
   return section.locator('.contact-resource__row').nth(index);
-}
-
-async function pasteImageIntoEditor(page, selector) {
-  await page.evaluate(({ base64, editorSelector }) => {
-    const editor = document.querySelector(editorSelector);
-    if (!(editor instanceof HTMLElement)) throw new Error(`Missing editor: ${editorSelector}`);
-    editor.focus();
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([bytes], 'signature.png', { type: 'image/png' }));
-    const event = new Event('paste', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'clipboardData', { value: transfer });
-    editor.dispatchEvent(event);
-  }, { base64: PNG_BASE64, editorSelector: selector });
 }
 
 async function draftBySubject(jmap, mailboxId, subject) {
@@ -651,10 +576,9 @@ test.describe('Contact and identity integrity', () => {
       const signature = form.locator('.editor[contenteditable][aria-label="Identity signature"]');
       await signature.click();
       await page.keyboard.type(signatureText);
-      await pasteImageIntoEditor(
-        page,
-        '.identity-detail__editor .editor[contenteditable][aria-label="Identity signature"]',
-      );
+      await pasteFilesIntoEditor(signature, [
+        { base64: PNG_BASE64, name: 'signature.png', type: 'image/png' },
+      ]);
       await expect(signature.locator('img[src^="data:image/png;base64,"]')).toHaveCount(1);
       await form.getByRole('button', { name: 'Save identity' }).click();
       await expect(form).toHaveCount(0, { timeout: 30_000 });
@@ -1228,25 +1152,18 @@ async function waitForWebSocketLeg(mode) {
 
 /** The delivered copy of a subject, with its From header. */
 async function findDelivered(jmap, mailboxId, subject) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'],
-      methodCalls: [
-        ['Email/query', { accountId: jmap.accountId, filter: { inMailbox: mailboxId, subject } }, 'q'],
-        [
-          'Email/get',
-          {
-            accountId: jmap.accountId,
-            '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-            properties: ['id', 'from', 'subject'],
-          },
-          'g',
-        ],
-      ],
-    }),
-  });
-  const list = (await res.json()).methodResponses?.find((r) => r[0] === 'Email/get')?.[1]?.list ?? [];
+  const payload = await jmapRequest(jmap, [
+    ['Email/query', { accountId: jmap.accountId, filter: { inMailbox: mailboxId, subject } }, 'q'],
+    [
+      'Email/get',
+      {
+        accountId: jmap.accountId,
+        '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+        properties: ['id', 'from', 'subject'],
+      },
+      'g',
+    ],
+  ]);
+  const list = pickResponse(payload, 'Email/get')?.list ?? [];
   return list.find((email) => email.subject === subject) ?? null;
 }

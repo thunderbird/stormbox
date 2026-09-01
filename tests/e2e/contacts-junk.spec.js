@@ -1,6 +1,7 @@
 import {
   cleanupEmail,
   connectJmap,
+  contactsRequest,
   createEmailInMailbox,
   getEmailKeywords,
   getEmailMailboxIds,
@@ -53,27 +54,12 @@ const JUNK_SUBJECT_PREFIX = 'JunkWhitelist e2e';
 const AUTO_TRUST_SUBJECT_PREFIX = 'AutoTrustRecipient e2e';
 const CONTACT_DOMAIN = 'contacts-e2e.example';
 
-// --- JMAP contacts helpers (jmapRequest omits the contacts capability,
-// so talk to ContactCard/* directly with our own `using`). ------------
-async function contactsRequest(jmap, methodCalls) {
-  const res = await fetch(jmap.apiUrl, {
-    method: 'POST',
-    headers: { Authorization: jmap.authHeader, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      using: ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'],
-      methodCalls,
-    }),
-  });
-  if (!res.ok) throw new Error(`contacts JMAP failed: ${res.status} ${await res.text().catch(() => '')}`);
-  return res.json();
-}
-
 async function listCards(jmap) {
   const q = await contactsRequest(jmap, [['ContactCard/query', { accountId: jmap.accountId }, 'q']]);
-  const ids = q.methodResponses?.find((r) => r[0] === 'ContactCard/query')?.[1]?.ids ?? [];
+  const ids = pickResponse(q, 'ContactCard/query')?.ids ?? [];
   if (ids.length === 0) return [];
   const g = await contactsRequest(jmap, [['ContactCard/get', { accountId: jmap.accountId, ids }, 'g']]);
-  return g.methodResponses?.find((r) => r[0] === 'ContactCard/get')?.[1]?.list ?? [];
+  return pickResponse(g, 'ContactCard/get')?.list ?? [];
 }
 
 function cardEmails(card) {

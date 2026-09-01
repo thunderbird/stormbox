@@ -21,6 +21,7 @@ import {
   fillRecipient,
   waitForIdentities,
 } from './helpers/compose.js';
+import { pasteFilesIntoEditor } from './helpers/editor-paste.js';
 import {
   localStackEnabled,
   selfEmail,
@@ -290,31 +291,17 @@ async function emailsByExactSubject(jmap, mailboxId, subject) {
 }
 
 async function pasteMixedClipboardFiles(page) {
-  await page.evaluate(({ pngBase64, pasted }) => {
-    const editor = document.querySelector(
-      '.compose-dialog--expanded .editor[contenteditable]',
-    );
-    if (!(editor instanceof HTMLElement)) throw new Error('Compose editor is missing');
-    editor.focus();
-    const binary = atob(pngBase64);
-    const imageBytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      imageBytes[index] = binary.charCodeAt(index);
-    }
-    const transfer = new DataTransfer();
-    transfer.items.add(new File([imageBytes], 'clipboard.png', { type: 'image/png' }));
-    transfer.items.add(new File([pasted.text], pasted.name, { type: pasted.type }));
-    const event = new Event('paste', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'clipboardData', { value: transfer });
-    editor.dispatchEvent(event);
-  }, {
-    pngBase64: PNG_BYTES.toString('base64'),
-    pasted: {
-      name: PASTED_FILE.name,
-      type: PASTED_FILE.mimeType,
-      text: PASTED_FILE.buffer.toString('utf8'),
-    },
-  });
+  await pasteFilesIntoEditor(
+    page.locator('.compose-dialog--expanded .editor[contenteditable]'),
+    [
+      { base64: PNG_BYTES.toString('base64'), name: 'clipboard.png', type: 'image/png' },
+      {
+        text: PASTED_FILE.buffer.toString('utf8'),
+        name: PASTED_FILE.name,
+        type: PASTED_FILE.mimeType,
+      },
+    ],
+  );
 }
 
 function normalizeServerAttachments(attachments) {
