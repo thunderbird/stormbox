@@ -7,11 +7,12 @@ const props = defineProps({
   active: { type: String, default: 'mail' },
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
-  showFolderListToggle: { type: Boolean, default: true },
+  // Names the sidebar the toggle controls in the active space (R-8.5).
+  sidebarLabel: { type: String, default: 'folder list' },
 });
 const emit = defineEmits(['change', 'toggle-folder-list']);
 const folderListToggleLabel = computed(() =>
-  props.folderListHidden ? 'Show folder list' : 'Hide folder list',
+  `${props.folderListHidden ? 'Show' : 'Hide'} ${props.sidebarLabel}`,
 );
 
 function pick(name) { emit('change', name); }
@@ -40,7 +41,7 @@ function pick(name) { emit('change', name); }
     >
       <Users :size="20" :stroke-width="1.75" />
     </AppToggleButton>
-    <div v-if="props.showFolderListToggle" class="app-spaces__bottom-actions">
+    <div class="app-spaces__bottom-actions">
       <AppToggleButton
         class="app-spaces__item"
         :active="!props.folderListHidden"

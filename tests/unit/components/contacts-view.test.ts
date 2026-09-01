@@ -217,6 +217,7 @@ async function mountContacts(options: {
   details?: Map<number, ContactDetail>;
   filterQuery?: string;
   identities?: IdentityRow[];
+  railTarget?: string;
   trash?: ContactTrashListRow[];
   width?: number;
 } = {}) {
@@ -245,7 +246,10 @@ async function mountContacts(options: {
     details.get(id) ?? null);
   const wrapper = mount(ContactsView, {
     attachTo: document.body,
-    props: { filterQuery: options.filterQuery ?? '' },
+    props: {
+      filterQuery: options.filterQuery ?? '',
+      railTarget: options.railTarget ?? null,
+    },
   });
   mountedWrappers.push(wrapper);
   await settle();
@@ -400,30 +404,52 @@ describe('ContactsView directory shell', () => {
     expect(document.activeElement).toBe(wrapper.get('.contact-detail__display-name').element);
   });
 
-  it('resizes and persists both desktop directory columns', async () => {
+  it('renders the address-book rail in the shell sidebar and reports detail visibility', async () => {
+    const target = document.createElement('div');
+    target.id = 'contacts-sidebar';
+    document.body.append(target);
+    try {
+      const contact = makeContact(0);
+      const { wrapper } = await mountContacts({
+        contacts: [contact],
+        railTarget: '#contacts-sidebar',
+      });
+
+      expect(wrapper.find('.contacts-rail').exists()).toBe(false);
+      expect(target.querySelector('.contacts-rail')).not.toBeNull();
+      expect(wrapper.find('[aria-label="Resize address book list"]').exists()).toBe(false);
+      expect(wrapper.emitted('detailVisibleChange')).toEqual([[false]]);
+
+      await option(wrapper, 'contact:1').trigger('click');
+      await settle();
+      expect(wrapper.emitted('detailVisibleChange')?.at(-1)).toEqual([true]);
+
+      target.querySelector<HTMLButtonElement>('.contacts-rail__trash')?.click();
+      await settle();
+      expect(wrapper.get('[role="listbox"]').attributes('aria-label')).toBe('Trash');
+      expect(wrapper.emitted('detailVisibleChange')?.at(-1)).toEqual([false]);
+    } finally {
+      target.remove();
+    }
+  });
+
+  it('resizes and persists the desktop directory list column', async () => {
     const contact = makeContact(0);
     const { wrapper } = await mountContacts({ contacts: [contact] });
     await option(wrapper, 'contact:1').trigger('click');
     await settle();
 
-    expect(wrapper.attributes('style')).toContain('--directory-list-width: 388px');
-
-    const railHandle = wrapper.get('[aria-label="Resize address book list"]').element;
-    railHandle.dispatchEvent(makePointerEvent('pointerdown', 200));
-    window.dispatchEvent(makePointerEvent('pointermove', 260));
-    window.dispatchEvent(makePointerEvent('pointerup', 260));
-    await nextTick();
-    expect(wrapper.attributes('style')).toContain('--contacts-rail-width: 300px');
+    expect(wrapper.attributes('style')).toContain('--directory-list-width: 634px');
 
     const listHandle = wrapper.get('[aria-label="Resize contact list"]').element;
-    listHandle.dispatchEvent(makePointerEvent('pointerdown', 300));
-    window.dispatchEvent(makePointerEvent('pointermove', 100));
-    window.dispatchEvent(makePointerEvent('pointerup', 100));
+    listHandle.dispatchEvent(makePointerEvent('pointerdown', 400));
+    window.dispatchEvent(makePointerEvent('pointermove', 20));
+    window.dispatchEvent(makePointerEvent('pointerup', 20));
     await nextTick();
     expect(wrapper.attributes('style')).toContain('--directory-list-width: 280px');
     expect(JSON.parse(
       window.localStorage.getItem('stormbox.contactsColumnWidths.v1') ?? '',
-    )).toEqual({ list: 280, rail: 300 });
+    )).toEqual({ list: 280 });
   });
 
   it('offers the list resizer on tablet and no resizers on phone', async () => {
@@ -432,7 +458,6 @@ describe('ContactsView directory shell', () => {
     await option(wrapper, 'contact:1').trigger('click');
     await settle();
 
-    expect(wrapper.find('[aria-label="Resize address book list"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="Resize contact list"]').exists()).toBe(true);
 
     setWindowWidth(639);

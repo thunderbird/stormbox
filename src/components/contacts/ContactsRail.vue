@@ -254,7 +254,6 @@ function onInvalidDrop(event: DragEvent): void {
   min-height: 0;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  border-right: 1px solid var(--border, #e3e6ee);
   background: var(--folder-list-bg, var(--surface, #fff));
 }
 
@@ -271,6 +270,11 @@ function onInvalidDrop(event: DragEvent): void {
   min-width: 0;
   flex: 1 1 auto;
   max-width: 100%;
+}
+
+.base.contacts-rail__create {
+  padding-inline: 8px;
+  white-space: nowrap;
 }
 
 /* Icon-only square variant of the filled house button. Doubled with .base
@@ -437,58 +441,5 @@ function onInvalidDrop(event: DragEvent): void {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-
-@media (max-width: 1023px) {
-  .contacts-rail {
-    grid-template-rows: auto auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border, #e3e6ee);
-  }
-
-  .contacts-rail__header {
-    padding: 8px 12px;
-  }
-
-  .contacts-rail__books {
-    flex-direction: row;
-    gap: 6px;
-    padding: 8px 12px;
-    overflow-x: auto;
-    overflow-y: hidden;
-  }
-
-  .contacts-rail__book {
-    width: auto;
-    flex: 0 0 auto;
-    border-color: var(--border, #d6d9e2);
-    border-radius: 999px;
-  }
-
-  .contacts-rail__trash {
-    margin-top: 0;
-    margin-left: auto;
-  }
-
-  .contacts-rail__identity {
-    margin-top: 0;
-    margin-left: 0;
-    padding-top: 0;
-    padding-left: 6px;
-    border-top: 0;
-    border-left: 1px solid var(--border-soft, #eef0f5);
-  }
-}
-
-@media (max-width: 639px) {
-  .contacts-rail__header,
-  .contacts-rail__books {
-    padding: 6px 8px;
-  }
-
-  .contacts-rail__book {
-    padding: 6px 9px;
-    font-size: 13px;
-  }
 }
 </style>

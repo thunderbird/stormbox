@@ -177,7 +177,7 @@ test.describe('Sidebar layout', () => {
     ).toBeLessThanOrEqual(8);
   });
 
-  test('does not show the folder-list toggle or drawer in Contacts', async ({ page }) => {
+  test('opens the address-book rail as a vertical drawer in Contacts below 640px', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 700 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
@@ -187,8 +187,50 @@ test.describe('Sidebar layout', () => {
     await waitForFolderTreeReady(page);
     await page.getByRole('button', { name: /^contacts$/i }).click();
     await expect(page.locator('.contacts')).toBeVisible();
-    await expect(page.locator('.sidebar-slot')).toHaveCount(0);
+
+    // CT-1.3: the rail lives in the shell's sidebar slot, which is a closed
+    // drawer at phone widths, so no address book is reachable until the
+    // toggle opens it; the Mail-only controls stay out of Contacts (R-8.5).
+    const slot = page.locator('.sidebar-slot');
+    await expect(slot).toHaveClass(/sidebar-slot--hidden/);
+    await expect(page.locator('.contacts-rail')).toHaveCount(1);
+    await expect(page.locator('.contacts-rail')).not.toBeInViewport();
     await expect(page.getByRole('button', { name: /folder list/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'New Message' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Show address book list' }).click();
+    await expect(slot).not.toHaveClass(/sidebar-slot--hidden/);
+    const rail = page.locator('.contacts-rail');
+    await expect(rail).toBeInViewport();
+    await expect(rail.getByRole('button', { name: /All contacts/ })).toBeVisible();
+    await expect(rail.getByRole('button', { name: /Manage identities/ })).toBeVisible();
+
+    const geometry = await rail.evaluate((element) => {
+      const books = element.querySelector('.contacts-rail__books');
+      const rows = Array.from(element.querySelectorAll('.contacts-rail__book'))
+        .map((row) => row.getBoundingClientRect());
+      return {
+        booksOverflowX: books ? books.scrollWidth - books.clientWidth : -1,
+        railOverflowX: element.scrollWidth - element.clientWidth,
+        distinctLefts: new Set(rows.map((rect) => Math.round(rect.left))).size,
+        distinctTops: new Set(rows.map((rect) => Math.round(rect.top))).size,
+        rowCount: rows.length,
+        slotRight: element.closest('.sidebar-slot')?.getBoundingClientRect().right ?? -1,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(geometry.rowCount).toBeGreaterThanOrEqual(3);
+    expect(geometry.booksOverflowX).toBeLessThanOrEqual(0);
+    expect(geometry.railOverflowX).toBeLessThanOrEqual(0);
+    expect(geometry.distinctLefts).toBe(1);
+    expect(geometry.distinctTops).toBe(geometry.rowCount);
+    expect(geometry.slotRight).toBeLessThan(geometry.viewportWidth);
+
+    await rail.getByRole('button', { name: /Manage identities/ }).click();
+    await expect(page.getByRole('listbox', { name: 'Identities' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide address book list' }).click();
+    await expect(slot).toHaveClass(/sidebar-slot--hidden/);
   });
 
   test('keeps the 640px boundary in a two-pane mail layout without clipping', async ({ page }) => {

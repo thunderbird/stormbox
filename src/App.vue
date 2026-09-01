@@ -12,6 +12,7 @@ import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 import AppButton from './components/AppButton.vue';
 
 import { useColumnResize } from './composables/useColumnResize';
+import { DIRECTORY_COLUMN_MIN_WIDTHS } from './composables/useDirectoryColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
 import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
@@ -54,6 +55,12 @@ interface ContactsViewHandle {
 
 const space = ref<AppSpace>('mail');
 const contactsViewEl = ref<ContactsViewHandle | null>(null);
+// ContactsView teleports its address-book rail into this shell element so the
+// rail shares the folder list's slot, width, toggle, and drawer (CT-1.3).
+const CONTACTS_SIDEBAR_ID = 'contacts-sidebar';
+const contactsDetailVisible = ref(false);
+const sidebarLabel = computed(() =>
+  space.value === 'contacts' ? 'address book list' : 'folder list');
 const quickFilterQuery = ref('');
 const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
@@ -247,6 +254,12 @@ let contactFilterTransition: Promise<boolean> | null = null;
 watch(space, () => {
   contactFilterGeneration += 1;
   quickFilterQuery.value = '';
+  if (space.value !== 'contacts') contactsDetailVisible.value = false;
+  applyResponsiveLayout();
+  clampColumnWidths();
+});
+
+watch(contactsDetailVisible, () => {
   applyResponsiveLayout();
   clampColumnWidths();
 });
@@ -467,10 +480,17 @@ function onWindowResize() {
   clampColumnWidths();
 }
 
+// The active space's detail pane: the message view in Mail, the contact,
+// identity, or address-book pane in Contacts. Both collapse the sidebar in
+// the compact layout (R-10.2, CT-1.3).
+function detailPaneVisible() {
+  return space.value === 'contacts' ? contactsDetailVisible.value : showMessageView.value;
+}
+
 function applyResponsiveLayout() {
-  const compactMailLayout = space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH;
-  const singleColumnMailLayout = space.value === 'mail' && windowWidth.value < SINGLE_COLUMN_WIDTH;
-  const shouldHideFolderList = singleColumnMailLayout || (compactMailLayout && showMessageView.value);
+  const compactLayout = windowWidth.value < COMPACT_READING_WIDTH;
+  const singleColumnLayout = windowWidth.value < SINGLE_COLUMN_WIDTH;
+  const shouldHideFolderList = singleColumnLayout || (compactLayout && detailPaneVisible());
   const shouldShowSingleColumn = shouldUseSingleMailColumn.value;
   const willHideFolderList = shouldHideFolderList && !folderListHidden.value;
 
@@ -484,7 +504,9 @@ function applyResponsiveLayout() {
     responsiveFolderListHidden = false;
   }
 
-  syncDisplayedMessageView({ delayForFolderSlide: willHideFolderList && !shouldShowSingleColumn });
+  syncDisplayedMessageView({
+    delayForFolderSlide: space.value === 'mail' && willHideFolderList && !shouldShowSingleColumn,
+  });
 }
 
 function syncDisplayedMessageView({ delayForFolderSlide = false } = {}) {
@@ -516,15 +538,29 @@ function clearMessageViewTimer() {
 
 function availablePaneWidth() {
   const shellWidth = shellEl.value?.clientWidth || window.innerWidth || 0;
-  const resizerCount = (folderListHidden.value ? 0 : 1) + (displayedMessageView.value ? 1 : 0);
+  const messageViewResizer = space.value === 'mail' && displayedMessageView.value ? 1 : 0;
+  const resizerCount = (folderListHidden.value ? 0 : 1) + messageViewResizer;
   return Math.max(0, shellWidth - SPACE_RAIL_WIDTH - resizerCount * RESIZER_WIDTH);
 }
 
-function maxFolderListWidth(messageList: number) {
-  const reserve = displayedMessageView.value
+// Width the columns beside the sidebar need at their minimums, so the sidebar
+// can never push them into horizontal overflow (R-10.1).
+function sidebarNeighbourReserve(messageList: number) {
+  if (space.value === 'contacts') {
+    return contactsDetailVisible.value
+      ? DIRECTORY_COLUMN_MIN_WIDTHS.list + RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
+      : DIRECTORY_COLUMN_MIN_WIDTHS.list;
+  }
+  return displayedMessageView.value
     ? messageList + MIN_COLUMN_WIDTHS.messageView
     : MIN_COLUMN_WIDTHS.messageList;
-  return Math.min(MAX_COLUMN_WIDTHS.folderList, availablePaneWidth() - reserve);
+}
+
+function maxFolderListWidth(messageList: number) {
+  return Math.min(
+    MAX_COLUMN_WIDTHS.folderList,
+    availablePaneWidth() - sidebarNeighbourReserve(messageList),
+  );
 }
 
 function maxMessageListWidth(folderList: number) {
@@ -537,7 +573,9 @@ function clampColumnWidths() {
   if (!folderListHidden.value) {
     clampPane('folderList');
   }
-  clampPane('messageList');
+  if (space.value === 'mail') {
+    clampPane('messageList');
+  }
 }
 
 function resolveTheme(value: Theme): 'dark' | 'light' {
@@ -705,19 +743,18 @@ function clamp(value: number, min: number, max: number) {
       :active="space"
       :unread-count="inboxUnread"
       :folder-list-hidden="folderListHidden"
-      :show-folder-list-toggle="space === 'mail'"
+      :sidebar-label="sidebarLabel"
       @change="requestSpaceChange"
       @toggle-folder-list="toggleFolderList"
     />
 
     <div
-      v-if="space === 'mail'"
       class="sidebar-slot"
       :class="{ 'sidebar-slot--hidden': folderListHidden }"
       :aria-hidden="folderListHidden"
       :inert="folderListHidden"
     >
-      <aside class="sidebar">
+      <aside v-if="space === 'mail'" class="sidebar">
         <header class="sidebar__header">
           <AppButton
             class="sidebar__compose"
@@ -742,10 +779,14 @@ function clamp(value: number, min: number, max: number) {
           <StorageUsageBar />
         </footer>
       </aside>
+      <div
+        v-else
+        :id="CONTACTS_SIDEBAR_ID"
+        class="sidebar sidebar--contacts"
+      />
     </div>
 
     <div
-      v-if="space === 'mail'"
       class="column-resizer column-resizer--folder-list"
       :class="{
         'is-active': activeResizePane === 'folderList',
@@ -753,7 +794,7 @@ function clamp(value: number, min: number, max: number) {
         'column-resizer--spotlight': resizeLayoutSpotlight,
       }"
       role="separator"
-      aria-label="Resize folder list"
+      :aria-label="`Resize ${sidebarLabel}`"
       aria-orientation="vertical"
       :aria-valuemin="MIN_COLUMN_WIDTHS.folderList"
       :aria-valuemax="maxFolderListWidth(messageListWidth)"
@@ -792,6 +833,8 @@ function clamp(value: number, min: number, max: number) {
       v-else-if="space === 'contacts'"
       ref="contactsViewEl"
       :filter-query="quickFilterQuery"
+      :rail-target="`#${CONTACTS_SIDEBAR_ID}`"
+      @detail-visible-change="contactsDetailVisible = $event"
     />
 
     <ComposeManager />
@@ -873,7 +916,11 @@ html.light,
   --folder-resizer-width: 0px;
 }
 .shell--contacts {
-  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-columns:
+    56px
+    auto
+    var(--folder-resizer-width)
+    minmax(0, 1fr);
 }
 .shell--resize-spotlight {
   transition: grid-template-columns 0.55s ease;
@@ -899,8 +946,6 @@ html.light,
   grid-column: 4 / -1;
 }
 .shell > .contacts { grid-column: 4 / -1; }
-.shell--contacts > .contacts { grid-column: 2 / -1; }
-.shell--folder-list-hidden > .contacts { grid-column: 2 / -1; }
 
 .quick-filter {
   grid-column: 1 / -1;
@@ -1187,8 +1232,7 @@ html.light,
     display: none;
   }
   .shell--message-view-hidden > .msg-list,
-  .shell--message-list-hidden > .message-view,
-  .shell > .contacts {
+  .shell--message-list-hidden > .message-view {
     grid-column: 2 / -1;
   }
   .quick-filter {
@@ -1237,8 +1281,7 @@ html.light,
   .shell > .message-view,
   .shell > .contacts,
   .shell--message-view-hidden > .msg-list,
-  .shell--message-list-hidden > .message-view,
-  .shell--folder-list-hidden > .contacts {
+  .shell--message-list-hidden > .message-view {
     grid-column: 1;
     grid-row: 2;
   }
@@ -1273,6 +1316,9 @@ html.light,
 }
 .sidebar-slot--hidden .sidebar {
   transform: translateX(-100%);
+}
+.sidebar--contacts {
+  grid-template-rows: minmax(0, 1fr);
 }
 .sidebar > * {
   min-width: 0;
