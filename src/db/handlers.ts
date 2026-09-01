@@ -20,6 +20,7 @@ import {
   DRAFT_PHASE,
   MUTATION_TYPE,
   SEND_PHASE,
+  type MutationType,
 } from '../constants/states';
 import {
   CONTACTS_TRASH_MAX_DOCUMENT_BYTES,
@@ -172,7 +173,12 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     );
   }
 
-  async function ensureSettingsPushInTx(tx: any, accountId: number, ts: number) {
+  async function ensureSinglePushInTx(
+    tx: any,
+    accountId: number,
+    mutationType: MutationType,
+    ts: number,
+  ) {
     const rows = await tx.all(
       `SELECT id
          FROM pending_mutations
@@ -180,7 +186,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           AND mutation_type = ?
           AND local_status IN ('pending','retry')
         ORDER BY id`,
-      [accountId, MUTATION_TYPE.PUSH_SETTINGS],
+      [accountId, mutationType],
     );
     const existing = rows[0];
     if (existing) {
@@ -204,7 +210,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
               AND mutation_type = ?
               AND local_status IN ('pending','retry')
               AND id <> ?`,
-          [accountId, MUTATION_TYPE.PUSH_SETTINGS, existing.id],
+          [accountId, mutationType, existing.id],
         );
       }
       return { id: Number(existing.id), reused: true };
@@ -215,9 +221,13 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           request_json, optimistic_patch_json, server_response_json, error_json,
           created_at, updated_at
        ) VALUES (?, ?, 'pending', NULL, '{}', NULL, NULL, NULL, ?, ?)`,
-      [accountId, MUTATION_TYPE.PUSH_SETTINGS, ts, ts],
+      [accountId, mutationType, ts, ts],
     );
     return { id: Number(result.lastInsertRowid), reused: false };
+  }
+
+  async function ensureSettingsPushInTx(tx: any, accountId: number, ts: number) {
+    return ensureSinglePushInTx(tx, accountId, MUTATION_TYPE.PUSH_SETTINGS, ts);
   }
 
   function parseContactsTrashDocument(
@@ -655,44 +665,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
   }
 
   async function ensureContactsTrashPushInTx(tx: any, accountId: number, ts: number) {
-    const rows = await tx.all(
-      `SELECT id
-         FROM pending_mutations
-        WHERE account_id = ?
-          AND mutation_type = ?
-          AND local_status IN ('pending','retry')
-        ORDER BY id`,
-      [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH],
-    );
-    const existing = rows[0];
-    if (existing) {
-      await tx.run(
-        `UPDATE pending_mutations
-            SET local_status = 'pending', request_json = '{}', attempts = 0,
-                last_attempt_at = NULL, not_before = NULL,
-                server_response_json = NULL, error_json = NULL, updated_at = ?
-          WHERE id = ?`,
-        [ts, existing.id],
-      );
-      if (rows.length > 1) {
-        await tx.run(
-          `DELETE FROM pending_mutations
-            WHERE account_id = ? AND mutation_type = ?
-              AND local_status IN ('pending','retry') AND id <> ?`,
-          [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH, existing.id],
-        );
-      }
-      return { id: Number(existing.id), reused: true };
-    }
-    const result = await tx.run(
-      `INSERT INTO pending_mutations(
-         account_id, mutation_type, local_status, target_message_id,
-         request_json, optimistic_patch_json, server_response_json, error_json,
-         created_at, updated_at
-       ) VALUES (?, ?, 'pending', NULL, '{}', NULL, NULL, NULL, ?, ?)`,
-      [accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH, ts, ts],
-    );
-    return { id: Number(result.lastInsertRowid), reused: false };
+    return ensureSinglePushInTx(tx, accountId, MUTATION_TYPE.PUSH_CONTACTS_TRASH, ts);
   }
 
   function mutationReferencesRemovedData(
