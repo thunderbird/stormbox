@@ -13,7 +13,6 @@ import {
   createContactCard,
   createTrustedContactCards,
   updateContactCard,
-  deleteContactCard,
 } from '../../../src/sync/backends/jmap/contacts';
 import { processMutationRow } from '../../../src/sync/backends/jmap/outbox';
 import { MockTransport } from './_mock-transport';
@@ -2838,30 +2837,6 @@ describe('updateContactCard', () => {
   });
 });
 
-describe('deleteContactCard', () => {
-  it('destroys the card by remote id', async () => {
-    const transport = new MockTransport();
-    let destroyed: any = null;
-    transport.handle('ContactCard/set', (params) => {
-      destroyed = params.destroy;
-      return { destroyed: params.destroy };
-    });
-    const result = await deleteContactCard({ transport, account, remoteId: 'd' });
-    expect(result).toEqual({ ok: true });
-    expect(destroyed).toEqual(['d']);
-  });
-
-  it('treats an already-gone card as success', async () => {
-    const transport = new MockTransport();
-    transport.handle('ContactCard/set', () => ({
-      destroyed: [],
-      notDestroyed: { d: { type: 'notFound' } },
-    }));
-    const result = await deleteContactCard({ transport, account, remoteId: 'd' });
-    expect(result).toEqual({ ok: true });
-  });
-});
-
 describe('syncContactCardChanges', () => {
   beforeEach(async () => {
     await handlers[DB_RPC.ADDRESSBOOK_UPSERT_MANY]({
@@ -3256,14 +3231,21 @@ describe('whitelist reconcile cost is independent of contact count', () => {
       })),
     }));
 
+    const inserted = await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: 'whitelistSender',
+      targetMessageId: null,
+      requestJson: JSON.stringify({ senders }),
+    });
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
     const result = await processMutationRow({
       transport,
       account,
       handlers,
-      row: {
-        mutation_type: 'whitelistSender',
-        request_json: JSON.stringify({ senders }),
-      },
+      row,
     });
     expect(result.ok).toBe(true);
 

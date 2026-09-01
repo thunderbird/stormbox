@@ -25,6 +25,7 @@ import {
   mutateContactCardsBatch,
   reconcileContactCardBatch,
   reconcileContactCards,
+  type ContactBatchWireOperation,
   updateContactCard,
 } from '../../contacts';
 import {
@@ -614,7 +615,8 @@ async function runContactBatch({
     (contactId) => !settled.has(contactId),
   );
 
-  let wireOperation;
+  let moveOperation: ContactBatchWireOperation | null = null;
+  let deleteSourceAddressBookRemoteId: string | null = null;
   if (request.operation === 'move') {
     const [source, target] = await Promise.all([
       resolveContactBatchBook({
@@ -633,19 +635,14 @@ async function runContactBatch({
       await checkpointContactBatch({ handlers, row, checkpoint });
       unsettled = [];
     }
-    wireOperation = source && target
+    moveOperation = source && target
       ? {
           operation: 'move' as const,
           sourceAddressbookRemoteId: source.remoteId,
           targetAddressbookRemoteId: target.remoteId,
         }
       : null;
-  } else if (request.sourceAddressbookId == null) {
-    wireOperation = {
-      operation: 'scoped-delete' as const,
-      sourceAddressbookRemoteId: null,
-    };
-  } else {
+  } else if (request.sourceAddressbookId != null) {
     const source = await resolveContactBatchBook({
       handlers,
       accountId: account.id,
@@ -656,15 +653,10 @@ async function runContactBatch({
       await checkpointContactBatch({ handlers, row, checkpoint });
       unsettled = [];
     }
-    wireOperation = source
-      ? {
-          operation: 'scoped-delete' as const,
-          sourceAddressbookRemoteId: source.remoteId,
-        }
-      : null;
+    deleteSourceAddressBookRemoteId = source?.remoteId ?? null;
   }
 
-  if (unsettled.length > 0 && wireOperation) {
+  if (unsettled.length > 0) {
     const placeholders = unsettled.map(() => '?').join(',');
     const rows = await handlers[DB_RPC.QUERY]({
       sql: `SELECT id, remote_id
@@ -685,30 +677,38 @@ async function runContactBatch({
       unsettled = unsettled.filter((contactId) => !unknownIds.has(contactId));
     }
     if (unsettled.length > 0) {
-      const protocol = request.operation === 'move'
-        ? await mutateContactCardsBatch({
-          transport,
-          account,
-          targets: unsettled.map((contactId) => ({
-            contactId,
-            remoteId: String(byId.get(contactId)),
-          })),
-          operation: wireOperation,
-          useWebSocket,
-          onChunk: async (result) => {
-            mergeContactBatchCheckpoint(checkpoint, result);
-            await checkpointContactBatch({ handlers, row, checkpoint });
-          },
-        })
-        : await deleteContactCardsWithTrash({
+      const targets = unsettled.map((contactId) => ({
+        contactId,
+        remoteId: String(byId.get(contactId)),
+      }));
+      let protocol:
+        | Awaited<ReturnType<typeof mutateContactCardsBatch>>
+        | Awaited<ReturnType<typeof deleteContactCardsWithTrash>>
+        | null = null;
+      if (request.operation === 'move') {
+        if (!moveOperation) {
+          failUnsettledContacts(checkpoint, unsettled, 'unknownAddressBook');
+          await checkpointContactBatch({ handlers, row, checkpoint });
+        } else {
+          protocol = await mutateContactCardsBatch({
+            transport,
+            account,
+            targets,
+            operation: moveOperation,
+            useWebSocket,
+            onChunk: async (result) => {
+              mergeContactBatchCheckpoint(checkpoint, result);
+              await checkpointContactBatch({ handlers, row, checkpoint });
+            },
+          });
+        }
+      } else {
+        protocol = await deleteContactCardsWithTrash({
           transport,
           account,
           handlers,
-          targets: unsettled.map((contactId) => ({
-            contactId,
-            remoteId: String(byId.get(contactId)),
-          })),
-          sourceAddressBookRemoteId: wireOperation.sourceAddressbookRemoteId,
+          targets,
+          sourceAddressBookRemoteId: deleteSourceAddressBookRemoteId,
           useWebSocket,
           onPhase: async (phase, detail) => {
             const durablePhase = phase === 'snapshot-saved'
@@ -729,7 +729,8 @@ async function runContactBatch({
             await checkpointContactBatch({ handlers, row, checkpoint });
           },
         });
-      if (!protocol.complete) {
+      }
+      if (protocol && !protocol.complete) {
         const errorType = protocol.error?.type ?? 'serverFail';
         if (isRetryableContactBatchError(errorType, protocol.error)) {
           return {
