@@ -7,6 +7,7 @@ import {
   regularAttachmentSources,
   type ComposeRegularAttachmentSource,
 } from '../compose-email';
+import { reconcileMailboxWindow } from './mailbox-window-reconcile';
 import type { SendOutcome } from './send-outcome';
 
 async function fileSentCopy({
@@ -166,118 +167,17 @@ export async function applySendLocally({
   if (email.mailboxIds?.[sentRemoteId] !== true) {
     return { filed: false };
   }
-  const folderRows = await handlers[DB_RPC.QUERY]({
-    sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
-    params: [account.id, sentRemoteId],
+  const folderFound = await reconcileMailboxWindow({
+    transport,
+    account,
+    handlers,
+    mailboxRemoteId: sentRemoteId,
+    insertedId: createdRemoteId,
+    acceptEmptyFilter: false,
+    requestFailurePolicy: 'markViewsStale',
+    useWebSocket,
   });
-  const sentFolderId = folderRows[0]?.id;
-  if (sentFolderId == null) return { filed: false };
-
-  // CS-1.14: the position and total of every open Sent view come from the
-  // server, never assumed — one Email/query per view under the view's own
-  // filter and sort, anchored at the new message, with the Sent Mailbox
-  // counters riding the same request. A view the server could not answer
-  // for is marked stale so the next read rebuilds it, rather than being
-  // given an invented position or count.
-  const viewRows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id, filter_json, sort_json FROM query_views
-           WHERE account_id = ? AND folder_id = ?
-             AND view_type = 'mailbox-window'`,
-    params: [account.id, Number(sentFolderId)],
-  });
-
-  const parsed = (json: string) => {
-    try {
-      const value = JSON.parse(json);
-      return value && typeof value === 'object' ? value : null;
-    } catch {
-      return null;
-    }
-  };
-  const calls = viewRows.map((view, i) => {
-    const filter = parsed(view.filter_json);
-    const sort = parsed(view.sort_json);
-    return [
-      'Email/query',
-      {
-        accountId: account.remote_account_id,
-        ...(filter && Object.keys(filter).length > 0
-          ? { filter }
-          : { filter: { inMailbox: sentRemoteId } }),
-        ...(Array.isArray(sort) && sort.length > 0 ? { sort } : {}),
-        anchor: createdRemoteId,
-        anchorOffset: 0,
-        limit: 1,
-        calculateTotal: true,
-      },
-      `q${i}`,
-    ];
-  });
-  calls.push([
-    'Mailbox/get',
-    {
-      accountId: account.remote_account_id,
-      ids: [sentRemoteId],
-      properties: ['id', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'],
-    },
-    'm1',
-  ]);
-
-  let reconciled;
-  try {
-    reconciled = await callJmap(transport, {
-      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-      methodCalls: calls,
-      useWebSocket,
-    });
-  } catch {
-    reconciled = null;
-  }
-
-  for (let i = 0; i < viewRows.length; i += 1) {
-    const viewId = Number(viewRows[i].id);
-    const query = reconciled ? pickResponseById(reconciled, 'Email/query', `q${i}`) : null;
-    const position = Number(query?.position);
-    const total = Number(query?.total);
-    if (!query || !Number.isFinite(position) || !Number.isFinite(total)) {
-      await handlers[DB_RPC.QUERY]({
-        sql: 'UPDATE query_views SET stale = 1, updated_at = ? WHERE id = ?',
-        params: [Date.now(), viewId],
-      });
-      continue;
-    }
-    await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
-      viewId,
-      removed: [createdRemoteId],
-      added: [{ id: createdRemoteId, index: position }],
-    });
-    await handlers[DB_RPC.QUERY]({
-      sql: 'UPDATE query_views SET total = ?, updated_at = ? WHERE id = ?',
-      params: [total, Date.now(), viewId],
-    });
-  }
-
-  const mailbox = reconciled
-    ? pickResponseById(reconciled, 'Mailbox/get', 'm1')?.list?.[0]
-    : null;
-  if (mailbox && mailbox.id === sentRemoteId) {
-    await handlers[DB_RPC.QUERY]({
-      sql: `UPDATE folders
-               SET total_emails = ?, unread_emails = ?,
-                   total_threads = ?, unread_threads = ?, updated_at = ?
-             WHERE account_id = ? AND remote_id = ?`,
-      params: [
-        Number(mailbox.totalEmails ?? 0),
-        Number(mailbox.unreadEmails ?? 0),
-        Number(mailbox.totalThreads ?? 0),
-        Number(mailbox.unreadThreads ?? 0),
-        Date.now(),
-        account.id,
-        sentRemoteId,
-      ],
-    });
-  }
-  return { filed: true };
+  return { filed: folderFound };
 }
 
 export { fileSentCopy, markFolderViewsStale };

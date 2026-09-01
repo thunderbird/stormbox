@@ -968,6 +968,57 @@ describe('JMAP draft replacement', () => {
     expect(protocolEvents).not.toContain('destroy');
   });
 
+  it('keeps a draft reconciliation request failure retryable before cleanup', async () => {
+    await enqueueSave(1);
+    await drainOutbox({ transport, account, handlers });
+    const now = Date.now();
+    await engine.run(
+      `INSERT INTO query_views(
+         account_id, view_type, folder_id, filter_json, sort_json,
+         query_state, total, created_at, updated_at, last_accessed_at
+       ) VALUES (?, 'mailbox-window', ?, ?, '[]', 'draft-query', 1, ?, ?, ?)`,
+      [
+        account.id,
+        drafts.id,
+        JSON.stringify({ inMailbox: 'mb-drafts' }),
+        now,
+        now,
+        now,
+      ],
+    );
+
+    transport.handle('Email/query', (params) => {
+      if (params.anchor) throw new Error('draft view unavailable');
+      const ids = [...serverEmails.keys()];
+      const start = Number(params.position ?? 0);
+      return {
+        ids: ids.slice(start, start + Number(params.limit ?? ids.length)),
+        position: start,
+        total: ids.length,
+        queryState: `query-state-${serverEmails.size}`,
+      };
+    });
+    const inserted = await enqueueSave(2, ['draft-1']);
+    const row = await engine.get(
+      'SELECT * FROM pending_mutations WHERE id = ?',
+      [inserted.id],
+    );
+    protocolEvents = [];
+
+    await expect(processMutationRow({
+      transport,
+      account,
+      handlers,
+      row,
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { type: 'draftCacheReconcileFailed' },
+    });
+    expect(serverEmails.has('draft-1')).toBe(true);
+    expect(serverEmails.has('draft-2')).toBe(true);
+    expect(protocolEvents).not.toContain('destroy');
+  });
+
   it('preserves the predecessor when a reused part returns blobNotFound', async () => {
     const first = requestFor(1);
     first.attachments = [{

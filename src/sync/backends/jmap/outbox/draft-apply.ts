@@ -7,6 +7,7 @@ import { EMAIL_LIST_PROPERTIES, persistEmails } from '../messages';
 import { isAuthenticationError, JMAP_CAPS } from '../transport';
 import { extractMethodErrorById } from './errors';
 import { chunks } from './jmap';
+import { reconcileMailboxWindow } from './mailbox-window-reconcile';
 
 export type DestroyDraftEmailsResult =
   | {
@@ -187,15 +188,6 @@ export async function destroyDraftEmails({
   return { ok: true, confirmedIds, response: lastResponse };
 }
 
-function parseJson(value: string): any {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 async function reconcileDraftViews({
   transport,
   account,
@@ -205,87 +197,15 @@ async function reconcileDraftViews({
   useWebSocket,
 }) {
   if (!draftsRemoteId) return;
-  const folderRows = await handlers[DB_RPC.QUERY]({
-    sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',
-    params: [account.id, draftsRemoteId],
-  });
-  const folderId = Number(folderRows[0]?.id);
-  if (!Number.isFinite(folderId)) return;
-  const views = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id, filter_json, sort_json FROM query_views
-           WHERE account_id = ? AND folder_id = ?
-             AND view_type = 'mailbox-window'`,
-    params: [account.id, folderId],
-  });
-  const methodCalls: any[] = views.map((view, index) => {
-    const filter = parseJson(view.filter_json);
-    const sort = parseJson(view.sort_json);
-    return [
-      'Email/query',
-      {
-        accountId: account.remote_account_id,
-        ...(filter ? { filter } : { filter: { inMailbox: draftsRemoteId } }),
-        ...(Array.isArray(sort) && sort.length > 0 ? { sort } : {}),
-        ...(successorId ? { anchor: successorId, anchorOffset: 0 } : { position: 0 }),
-        limit: 1,
-        calculateTotal: true,
-      },
-      `dq${index}`,
-    ];
-  });
-  methodCalls.push([
-    'Mailbox/get',
-    {
-      accountId: account.remote_account_id,
-      ids: [draftsRemoteId],
-      properties: ['id', 'totalEmails', 'unreadEmails', 'totalThreads', 'unreadThreads'],
-    },
-    'dm1',
-  ]);
-  const result = await callJmap(transport, {
-    using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL],
-    methodCalls,
+  await reconcileMailboxWindow({
+    transport,
+    account,
+    handlers,
+    mailboxRemoteId: draftsRemoteId,
+    insertedId: successorId,
+    requestFailurePolicy: 'throw',
     useWebSocket,
   });
-
-  for (let index = 0; index < views.length; index += 1) {
-    const query = pickResponseById(result, 'Email/query', `dq${index}`);
-    const total = Number(query?.total);
-    const position = Number(query?.position);
-    if (!query || !Number.isFinite(total)
-        || (successorId && !Number.isFinite(position))) {
-      await handlers[DB_RPC.QUERY]({
-        sql: 'UPDATE query_views SET stale = 1, updated_at = ? WHERE id = ?',
-        params: [Date.now(), Number(views[index].id)],
-      });
-      continue;
-    }
-    if (successorId) {
-      await handlers[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
-        viewId: Number(views[index].id),
-        removed: [successorId],
-        added: [{ id: successorId, index: position }],
-      });
-    }
-    await handlers[DB_RPC.QUERY]({
-      sql: 'UPDATE query_views SET total = ?, updated_at = ? WHERE id = ?',
-      params: [total, Date.now(), Number(views[index].id)],
-    });
-  }
-
-  const mailbox = pickResponseById(result, 'Mailbox/get', 'dm1')?.list?.[0];
-  if (mailbox?.id === draftsRemoteId) {
-    await handlers[DB_RPC.FOLDER_UPDATE_COUNTS_MANY]({
-      accountId: account.id,
-      folders: [{
-        remoteId: draftsRemoteId,
-        totalEmails: Number(mailbox.totalEmails ?? 0),
-        unreadEmails: Number(mailbox.unreadEmails ?? 0),
-        totalThreads: Number(mailbox.totalThreads ?? 0),
-        unreadThreads: Number(mailbox.unreadThreads ?? 0),
-      }],
-    });
-  }
 }
 
 export async function persistDraftSuccessor({
