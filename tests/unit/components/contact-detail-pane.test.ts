@@ -698,6 +698,32 @@ describe('ContactLabelDropdown', () => {
 });
 
 describe('IdentityDetailPane', () => {
+  it('focuses Display name only when create or edit mode becomes active', async () => {
+    const identity = identityDetail({ name: 'Alias' });
+    const wrapper = mount(IdentityDetailPane, {
+      attachTo: document.body,
+      props: { identity, mode: 'view' },
+    });
+    const outside = document.createElement('button');
+    document.body.append(outside);
+
+    await wrapper.setProps({ mode: 'edit' });
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.get('input[autocomplete="name"]').element);
+
+    outside.focus();
+    await wrapper.setProps({ identity: { ...identity } });
+    await nextTick();
+    expect(document.activeElement).toBe(outside);
+
+    await wrapper.setProps({ identity: null, mode: 'create' });
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.get('input[autocomplete="name"]').element);
+
+    outside.remove();
+    wrapper.unmount();
+  });
+
   it('does not treat a missing edit target as a successful save', async () => {
     const wrapper = mount(IdentityDetailPane, {
       props: {
