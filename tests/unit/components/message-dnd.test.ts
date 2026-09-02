@@ -732,7 +732,45 @@ describe('message drag and folder drop components', () => {
 
     await archive.trigger('drop', { dataTransfer: transfer });
 
-    expect(moveSpy).toHaveBeenCalledWith([1, 2], 2);
+    expect(moveSpy).toHaveBeenCalledWith([1, 2], 2, { sourceFolderId: 1 });
+  });
+
+  it('validates and moves a tree drop against the folder the drag started in, not the open one', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox', role: 'inbox', may_remove_items: 1 }),
+      makeFolder(2, { name: 'Archive', role: 'archive', may_add_items: 1 }),
+      makeFolder(3, { name: 'Needs Reply', may_add_items: 1, may_remove_items: 1 }),
+    ];
+    mailStore.currentFolderId = 1;
+    const moveSpy = vi.spyOn(mailStore, 'moveMessages')
+      .mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+
+    const transfer = makeDataTransfer();
+    useMessageDragDrop().startMessageDrag(
+      { dataTransfer: transfer },
+      { messageId: 9, selectedIds: new Set([9]), sourceFolderId: 3 },
+    );
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+    const nodes = wrapper.findAll('.folder-node');
+    const source = nodes.find((node) => node.text().includes('Needs Reply'));
+    const archive = nodes.find((node) => node.text().includes('Archive'));
+
+    // Dropping back onto the origin folder is a no-op target even
+    // though it is not the open folder.
+    await source!.trigger('dragover', { dataTransfer: transfer });
+    await nextTick();
+    expect(source!.classes()).toContain('is-drop-invalid');
+    expect(transfer.dropEffect).toBe('none');
+
+    await archive!.trigger('dragover', { dataTransfer: transfer });
+    await nextTick();
+    expect(archive!.classes()).toContain('is-drop-valid');
+    await archive!.trigger('drop', { dataTransfer: transfer });
+
+    expect(moveSpy).toHaveBeenCalledWith([9], 2, { sourceFolderId: 3 });
   });
 
   it('shows copy feedback and copy dropEffect for a cross-account target', async () => {
@@ -771,6 +809,6 @@ describe('message drag and folder drop components', () => {
     expect(transfer.dropEffect).toBe('copy');
 
     await target!.trigger('drop', { dataTransfer: transfer });
-    expect(copySpy).toHaveBeenCalledWith([1], 30);
+    expect(copySpy).toHaveBeenCalledWith([1], 30, { sourceFolderId: 1 });
   });
 });

@@ -1566,6 +1566,221 @@ describe('moveMessages', () => {
     expect(mailStore.selectedMessageId).toBeNull();
   });
 
+  it('moves from a closed source folder without touching the open folder rows', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1, may_add_items: 1 });
+    const needsReply = makeFolder(3, {
+      name: 'Needs Reply', total_emails: 1, may_remove_items: 1, may_add_items: 1,
+    });
+    const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, needsReply, archive],
+      views: {
+        1: { rows: [makeRow(7)], total: 1 },
+        3: { rows: [makeRow(9)], total: 1 },
+      },
+    });
+    await flush();
+    expect(mailStore.currentFolderId).toBe(1);
+
+    // Validation runs against the named source: the open Inbox is a
+    // valid target for a drag from Needs Reply, and Needs Reply itself
+    // is not.
+    expect(mailStore.transferModeForFolder(1, 3)).toBe('move');
+    expect(mailStore.transferModeForFolder(3, 3)).toBeNull();
+    expect(mailStore.canMoveToFolder(2, 3)).toBe(true);
+
+    let inserted;
+    repo.insertPendingMutation = async (input) => {
+      inserted = input;
+      return { id: 77 };
+    };
+    repo.runMutation = async () => {
+      repo.setView(3, { rows: [], total: 0 });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+    mailStore.selectMessage(7);
+    await flush();
+
+    const result = await mailStore.moveMessages([9], 2, { sourceFolderId: 3 });
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(inserted.mutationType).toBe('moveToFolders');
+    expect(JSON.parse(inserted.requestJson)).toEqual({
+      messageIds: [9],
+      addFolderIds: [2],
+      removeFolderIds: [3],
+    });
+    // The open folder's painted rows and selection are untouched.
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([7]);
+    expect(mailStore.selectedMessageId).toBe(7);
+  });
+
+  it('repaints the open folder after a closed-source move lands in it', async () => {
+    const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1, may_add_items: 1 });
+    const needsReply = makeFolder(3, {
+      name: 'Needs Reply', total_emails: 1, may_remove_items: 1, may_add_items: 1,
+    });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, needsReply],
+      views: {
+        1: { rows: [makeRow(7)], total: 1 },
+        3: { rows: [makeRow(9)], total: 1 },
+      },
+    });
+    await flush();
+    repo.insertPendingMutation = async () => ({ id: 78 });
+    repo.runMutation = async () => {
+      repo.setView(3, { rows: [], total: 0 });
+      repo.setView(1, { rows: [makeRow(9), makeRow(7)], total: 2, stale: true });
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    await mailStore.moveMessages([9], 1, { sourceFolderId: 3 });
+    await flush();
+
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([9, 7]);
+    expect(mailStore.totalForFolder).toBe(2);
+  });
+
+  describe('bulk actions against a closed source folder', () => {
+    async function setupClosedSource() {
+      const inbox = makeFolder(1, { total_emails: 1, may_remove_items: 1, may_add_items: 1 });
+      const needsReply = makeFolder(3, {
+        name: 'Needs Reply', total_emails: 2, may_remove_items: 1, may_add_items: 1,
+      });
+      const archive = makeFolder(2, { role: 'archive', may_add_items: 1 });
+      const junk = makeFolder(4, { role: 'junk', may_add_items: 1 });
+      const trash = makeFolder(5, { role: 'trash', may_add_items: 1 });
+      const closedRows = [
+        makeRow(9, { is_seen: 1, keywords_json: '{"$seen":true}' }),
+        makeRow(10, { is_seen: 0 }),
+      ] as any[];
+      const { mailStore, repo } = await setupStore({
+        folders: [inbox, needsReply, archive, junk, trash],
+        views: {
+          1: { rows: [makeRow(7)], total: 1 },
+          3: { rows: closedRows, total: 2 },
+        },
+      });
+      await flush();
+      expect(mailStore.currentFolderId).toBe(1);
+      const inserted: any[] = [];
+      repo.insertPendingMutation = async (input) => {
+        inserted.push(input);
+        return { id: 100 + inserted.length };
+      };
+      const keywordWrites: any[] = [];
+      repo.replaceMessageKeywordsMany = async (items) => {
+        keywordWrites.push(items);
+        return { ok: true, applied: items.length };
+      };
+      return {
+        mailStore, repo, inserted, keywordWrites, closedRows,
+      };
+    }
+
+    it('archiveMessages moves out of the named source, leaving the open folder alone', async () => {
+      const { mailStore, inserted } = await setupClosedSource();
+      const result = await mailStore.archiveMessages([9, 10], { sourceFolderId: 3 });
+      expect(result).toEqual({ succeeded: 2, failed: 0, skipped: 0 });
+      expect(inserted).toHaveLength(1);
+      expect(JSON.parse(inserted[0].requestJson)).toEqual({
+        messageIds: [9, 10], addFolderIds: [2], removeFolderIds: [3],
+      });
+      expect(mailStore.messages.map((row) => row?.id)).toEqual([7]);
+    });
+
+    it('destroyMessages trashes from the named source rather than the open folder', async () => {
+      const { mailStore, inserted } = await setupClosedSource();
+      await mailStore.destroyMessages([9], { sourceFolderId: 3 });
+      expect(inserted).toHaveLength(1);
+      expect(inserted[0].mutationType).toBe('moveToFolders');
+      expect(JSON.parse(inserted[0].requestJson)).toEqual({
+        messageIds: [9], addFolderIds: [5], removeFolderIds: [3],
+      });
+      expect(mailStore.messages.map((row) => row?.id)).toEqual([7]);
+    });
+
+    it('junkMessages flags the caller\'s rows and moves them out of the named source', async () => {
+      const {
+        mailStore, inserted, keywordWrites, closedRows,
+      } = await setupClosedSource();
+      const result = await mailStore.junkMessages([9, 10], { sourceFolderId: 3, rows: closedRows });
+      expect(result).toEqual({ succeeded: 2, failed: 0, skipped: 0 });
+      expect(keywordWrites[0].map((item) => item.messageId)).toEqual([9, 10]);
+      expect(JSON.parse(keywordWrites[0][0].keywordsJson)).toEqual({ $seen: true, $junk: true });
+      expect(inserted.map((m) => m.mutationType)).toEqual(['setKeywords', 'moveToFolders']);
+      expect(JSON.parse(inserted[1].requestJson)).toEqual({
+        messageIds: [9, 10], addFolderIds: [4], removeFolderIds: [3],
+      });
+    });
+
+    it('junkMessages without the rows skips ids the open list does not hold', async () => {
+      const { mailStore, inserted } = await setupClosedSource();
+      const result = await mailStore.junkMessages([9], { sourceFolderId: 3 });
+      expect(result).toEqual({ succeeded: 0, failed: 0, skipped: 1 });
+      expect(inserted).toHaveLength(0);
+    });
+
+    it('markManySeen flips rows the open list does not hold when the caller passes them', async () => {
+      const {
+        mailStore, inserted, keywordWrites, closedRows,
+      } = await setupClosedSource();
+      // Without the rows the store cannot tell 9 is read: nothing to do.
+      expect(await mailStore.markManySeen([9], false)).toBe(0);
+
+      expect(await mailStore.markManySeen([9, 10], false, { rows: closedRows })).toBe(1);
+      expect(keywordWrites[0]).toEqual([
+        { messageId: 9, keywords: [], keywordsJson: '{}' },
+      ]);
+      expect(JSON.parse(inserted[0].requestJson)).toEqual({ messageIds: [9], add: [], remove: ['$seen'] });
+
+      expect(await mailStore.markManySeen([9, 10], true, { rows: closedRows })).toBe(1);
+      expect(JSON.parse(inserted[1].requestJson)).toEqual({ messageIds: [10], add: ['$seen'], remove: [] });
+    });
+  });
+
+  it('does not compact the folder the user switched to while the move was in flight', async () => {
+    // Move 7 out of the open Inbox, then open Blocked before the server
+    // answers. The completion must finalize against the source folder,
+    // not splice 7 out of Blocked, which is where it now lives.
+    const inbox = makeFolder(1, { total_emails: 2, may_remove_items: 1, may_add_items: 1 });
+    const blocked = makeFolder(3, {
+      name: 'Blocked', total_emails: 1, may_remove_items: 1, may_add_items: 1,
+    });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, blocked],
+      views: {
+        1: { rows: [makeRow(7), makeRow(8)], total: 2 },
+        3: { rows: [makeRow(9)], total: 1 },
+      },
+    });
+    await flush();
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([7, 8]);
+
+    let resolveMutation: (value: any) => void = () => {};
+    repo.insertPendingMutation = async () => ({ id: 90 });
+    repo.runMutation = () => new Promise((resolveRun) => { resolveMutation = resolveRun; });
+
+    const move = mailStore.moveMessages([7], 3);
+    await flush();
+    mailStore.selectFolder(3);
+    await flush();
+    expect(mailStore.currentFolderId).toBe(3);
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([9]);
+
+    // The outbox lands the move: 7 leaves the Inbox view and joins Blocked.
+    repo.setView(1, { rows: [makeRow(8)], total: 1 });
+    repo.setView(3, { rows: [makeRow(7), makeRow(9)], total: 2, stale: true });
+    resolveMutation({ attempted: 1, succeeded: 1, failed: 0 });
+    const result = await move;
+    await flush();
+
+    expect(result).toEqual({ succeeded: 1, failed: 0, skipped: 0 });
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([7, 9]);
+    expect(mailStore.totalForFolder).toBe(2);
+  });
+
   it('queues cross-account drops as copies and preserves source selection', async () => {
     const inbox = makeFolder(1, { total_emails: 1, may_read_items: 1 });
     const shared = makeFolder(30, {

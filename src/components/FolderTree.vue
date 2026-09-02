@@ -17,11 +17,19 @@ const dragOverFolderId = ref(null);
 const showSubscriptionsDialog = ref(false);
 const {
   isDragging,
+  sourceFolderId: dragSourceFolderId,
   hasMessageDrag,
   readMessageDrop,
   setDropEffect,
   endMessageDrag,
 } = useMessageDragDrop();
+
+// The drag payload names the folder it came from; a drag that started
+// in a list other than the open folder must be validated against that
+// folder, not the open one.
+function dragTransferMode(targetFolderId) {
+  return mailStore.transferModeForFolder(targetFolderId, dragSourceFolderId.value);
+}
 
 function buildTree(folderRows) {
   const byParent = new Map();
@@ -130,19 +138,19 @@ function pickFolder(id) { mailStore.selectFolder(id); }
 
 function dropStateFor(folder) {
   if (!isDragging.value || dragOverFolderId.value !== folder.id) return null;
-  return mailStore.transferModeForFolder(folder.id) ?? 'invalid';
+  return dragTransferMode(folder.id) ?? 'invalid';
 }
 
 function onFolderDragEnter(folder, event) {
   if (!hasMessageDrag(event)) return;
   dragOverFolderId.value = folder.id;
-  setDropEffect(event, mailStore.transferModeForFolder(folder.id));
+  setDropEffect(event, dragTransferMode(folder.id));
 }
 
 function onFolderDragOver(folder, event) {
   if (!hasMessageDrag(event)) return;
   dragOverFolderId.value = folder.id;
-  setDropEffect(event, mailStore.transferModeForFolder(folder.id));
+  setDropEffect(event, dragTransferMode(folder.id));
 }
 
 function onFolderDragLeave(folder, event) {
@@ -156,11 +164,13 @@ async function onFolderDrop(folder, event) {
   if (!hasMessageDrag(event)) return;
   event.preventDefault();
   const payload = readMessageDrop(event);
-  const mode = mailStore.transferModeForFolder(folder.id);
+  const mode = mailStore.transferModeForFolder(folder.id, payload?.sourceFolderId);
   dragOverFolderId.value = null;
   try {
     if (payload?.ids?.length && mode) {
-      await mailStore.moveMessages(payload.ids, folder.id);
+      await mailStore.moveMessages(payload.ids, folder.id, {
+        sourceFolderId: payload.sourceFolderId,
+      });
     }
   } catch (err) {
     console.warn('[folder-tree] moveMessages failed', err);

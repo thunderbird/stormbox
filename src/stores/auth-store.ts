@@ -14,6 +14,7 @@ import { initOidc, getOidc } from '../services/auth';
 import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL } from '../defines';
 import { AUTH_STATE } from '../constants/states';
 import type { AuthState } from '../constants/states';
+import { isStaffEmail } from '../constants/staff';
 import { getRepositoryAsync } from '../composables/useRepository';
 
 interface BasicAuth { kind: 'basic'; username: string; password: string }
@@ -65,7 +66,12 @@ export const useAuthStore = defineStore('auth', () => {
   const status = ref<AuthState>(AUTH_STATE.IDLE);
   const accountId = ref<number | null>(null);
   const username = ref<string | null>(null);
+  /** OIDC ID-token `email` claim; null for password sign-in. */
+  const email = ref<string | null>(null);
   const error = ref<string | null>(null);
+
+  /** Global staff flag: gates staff-only UI, carries no other behaviour. */
+  const isStaff = computed(() => isStaffEmail(email.value));
 
   const serverOrigin = computed(() => parseServerUrl().origin);
   const serverHostname = computed(() => parseServerUrl().hostname);
@@ -186,10 +192,8 @@ export const useAuthStore = defineStore('auth', () => {
       status.value = AUTH_STATE.FAILED;
       return false;
     }
-    const connected = await _connect(
-      initialAuth,
-      tokens?.decodedIdToken?.email ?? null,
-    );
+    const emailClaim = tokens?.decodedIdToken?.email ?? null;
+    const connected = await _connect(initialAuth, emailClaim, emailClaim);
     if (!connected || generation !== tokenSyncGeneration || accountId.value == null) {
       if (generation === tokenSyncGeneration) stopTokenSync();
       return false;
@@ -202,6 +206,7 @@ export const useAuthStore = defineStore('auth', () => {
         stopTokenSync();
         accountId.value = null;
         username.value = null;
+        email.value = null;
         clearStorageQuota();
         status.value = AUTH_STATE.FAILED;
         error.value = 'Could not initialize renewable JMAP authentication.';
@@ -362,7 +367,11 @@ export const useAuthStore = defineStore('auth', () => {
     return update;
   }
 
-  async function _connect(auth: ConnectAuth, displayName: string | null): Promise<boolean> {
+  async function _connect(
+    auth: ConnectAuth,
+    displayName: string | null,
+    emailClaim: string | null = null,
+  ): Promise<boolean> {
     status.value = AUTH_STATE.CONNECTING;
     error.value = null;
     try {
@@ -375,6 +384,7 @@ export const useAuthStore = defineStore('auth', () => {
       });
       accountId.value = result.accountId;
       username.value = displayName;
+      email.value = emailClaim;
       status.value = AUTH_STATE.CONNECTED;
       refreshStorageQuota().catch(() => {});
       return true;
@@ -395,6 +405,7 @@ export const useAuthStore = defineStore('auth', () => {
     stopTokenSync();
     accountId.value = null;
     username.value = null;
+    email.value = null;
     error.value = null;
     status.value = AUTH_STATE.IDLE;
     clearStorageQuota();
@@ -422,6 +433,8 @@ export const useAuthStore = defineStore('auth', () => {
     status,
     accountId,
     username,
+    email,
+    isStaff,
     error,
     serverOrigin,
     serverHostname,

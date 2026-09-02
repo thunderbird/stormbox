@@ -23,7 +23,7 @@ describe('single-column responsive CSS contracts', () => {
   });
 
   it('keeps message row checkboxes visible in single-column layout', () => {
-    const source = readSource('../../../src/components/MessageList.vue');
+    const source = readSource('../../../src/components/MessageListRow.vue');
 
     expect(source).toMatch(
       /@media\s*\(max-width:\s*639px\)\s*\{[\s\S]*?\.msg-list__check\s*\{[\s\S]*?opacity:\s*1;[\s\S]*?\.msg-list__unread-dot\s*\{[\s\S]*?opacity:\s*0;/,

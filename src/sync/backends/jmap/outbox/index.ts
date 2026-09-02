@@ -28,6 +28,9 @@
  *                      Identity/set writes with authoritative read-back
  *   'createAddressbook' / 'updateAddressbook' / 'destroyAddressbook'
  *                      AddressBook/set writes with authoritative inventory
+ *   'createEmails'     Email/set create of ready-made emails into one
+ *                      mailbox, checkpointed (at-most-once) and
+ *                      reconciled like a copy (kanban seed)
  *
  * Move and destroy delegate the cache effect to the protocol-neutral
  * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
@@ -65,6 +68,7 @@ import {
 } from './operations/addressbooks';
 import { runCancelScheduledSend } from './operations/cancel-scheduled-send';
 import { runCopyToFolders } from './operations/copy-to-folders';
+import { runCreateEmails } from './operations/create-emails';
 import { runCreateMailbox } from './operations/create-mailbox';
 import {
   runContactBatch,
@@ -157,7 +161,8 @@ export async function processMutationRow({
     || row.mutation_type === MUTATION_TYPES.CONTACT_TRASH
     || row.mutation_type === MUTATION_TYPES.CREATE_ADDRESSBOOK
     || row.mutation_type === MUTATION_TYPES.UPDATE_ADDRESSBOOK
-    || row.mutation_type === MUTATION_TYPES.DESTROY_ADDRESSBOOK;
+    || row.mutation_type === MUTATION_TYPES.DESTROY_ADDRESSBOOK
+    || row.mutation_type === MUTATION_TYPES.CREATE_EMAILS;
   const currentRows = checkpointedWrite
     ? await handlers[DB_RPC.QUERY]({
         sql: 'SELECT * FROM pending_mutations WHERE id = ? LIMIT 1',
@@ -242,6 +247,10 @@ export async function processMutationRow({
       return runUpdateMailbox({ transport, handlers, request, useWebSocket });
     case MUTATION_TYPES.DESTROY_MAILBOX:
       return runDestroyMailbox({ transport, handlers, request, useWebSocket });
+    case MUTATION_TYPES.CREATE_EMAILS:
+      return runCreateEmails({
+        transport, account, handlers, request, row: currentRow, useWebSocket,
+      });
     case MUTATION_TYPES.PUSH_SETTINGS:
       return runPushSettings({ transport, account, handlers, useWebSocket });
     case MUTATION_TYPES.PUSH_CONTACTS_TRASH:

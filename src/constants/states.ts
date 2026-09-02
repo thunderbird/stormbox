@@ -114,6 +114,20 @@ export const ADDRESSBOOK_PHASE = {
 export type AddressBookPhase =
   (typeof ADDRESSBOOK_PHASE)[keyof typeof ADDRESSBOOK_PHASE];
 
+/**
+ * Phases of a createEmails row. SUBMITTING is written before Email/set
+ * goes out and is in neither recovery list: a worker that dies inside the
+ * call may already have had the creates committed, and Email/set creates
+ * carry no idempotency key, so the row must park rather than replay.
+ * CACHE_PENDING means every create was acknowledged and only the local
+ * mirror is still owed.
+ */
+export const CREATE_EMAILS_PHASE = {
+  SUBMITTING: 'emails_create_submitting',
+  CACHE_PENDING: 'emails_cache_pending',
+} as const;
+export type CreateEmailsPhase = (typeof CREATE_EMAILS_PHASE)[keyof typeof CREATE_EMAILS_PHASE];
+
 export const CONTACT_TRASH_PHASE = {
   SNAPSHOT_SAVED: 'contact_trash_snapshot_saved',
   DOCUMENT_CONFIRMED: 'contact_trash_document_confirmed',
@@ -139,7 +153,8 @@ export type MutationPhase =
   | IdentityPhase
   | ContactPhase
   | AddressBookPhase
-  | ContactTrashPhase;
+  | ContactTrashPhase
+  | CreateEmailsPhase;
 
 export const SYNC_JOB_STATUS = {
   PENDING: 'pending',
@@ -193,6 +208,8 @@ export const MUTATION_TYPE = Object.freeze({
   CREATE_MAILBOX: 'createMailbox',
   UPDATE_MAILBOX: 'updateMailbox',
   DESTROY_MAILBOX: 'destroyMailbox',
+  /** Email/set create into one mailbox; used by the kanban seed only. */
+  CREATE_EMAILS: 'createEmails',
   PUSH_SETTINGS: 'pushSettings',
   PUSH_CONTACTS_TRASH: 'pushContactsTrash',
 } as const);
@@ -224,6 +241,11 @@ export const MUTATION_RECOVERY_POLICIES = [
     mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
     replayablePhases: [ADDRESSBOOK_PHASE.DESTROY_SUBMITTING],
     completedPhases: [ADDRESSBOOK_PHASE.CACHE_PENDING],
+  },
+  {
+    mutationType: MUTATION_TYPE.CREATE_EMAILS,
+    replayablePhases: [],
+    completedPhases: [CREATE_EMAILS_PHASE.CACHE_PENDING],
   },
 ] as const satisfies readonly MutationRecoveryPolicy[];
 
