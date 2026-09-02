@@ -64,7 +64,9 @@ import {
 const props = withDefaults(defineProps<{
   filterQuery?: string;
   /** Selector of the shell's sidebar element that hosts the address-book
-   * rail (CT-1.3). Without one the rail renders inside the view. */
+   * rail (CT-1.3). The shell always provides one; the null fallback renders
+   * the rail inside the view for unit tests that mount this component alone
+   * and has no layout styling of its own. */
   railTarget?: string | null;
 }>(), {
   filterQuery: '',

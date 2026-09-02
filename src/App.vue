@@ -12,7 +12,10 @@ import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 import AppButton from './components/AppButton.vue';
 
 import { useColumnResize } from './composables/useColumnResize';
-import { DIRECTORY_COLUMN_MIN_WIDTHS } from './composables/useDirectoryColumnResize';
+import {
+  DIRECTORY_COLUMN_MIN_WIDTHS,
+  DIRECTORY_RESIZER_WIDTH,
+} from './composables/useDirectoryColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
 import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
@@ -543,12 +546,13 @@ function availablePaneWidth() {
   return Math.max(0, shellWidth - SPACE_RAIL_WIDTH - resizerCount * RESIZER_WIDTH);
 }
 
-// Width the columns beside the sidebar need at their minimums, so the sidebar
-// can never push them into horizontal overflow (R-10.1).
+// Width the columns beside the sidebar need so it can never push them into
+// horizontal overflow (R-10.1): the Contacts columns at their minimums, and in
+// Mail the message list at its current width plus the message view minimum.
 function sidebarNeighbourReserve(messageList: number) {
   if (space.value === 'contacts') {
     return contactsDetailVisible.value
-      ? DIRECTORY_COLUMN_MIN_WIDTHS.list + RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
+      ? DIRECTORY_COLUMN_MIN_WIDTHS.list + DIRECTORY_RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
       : DIRECTORY_COLUMN_MIN_WIDTHS.list;
   }
   return displayedMessageView.value
@@ -772,8 +776,7 @@ function clamp(value: number, min: number, max: number) {
           <span class="sidebar__account-name">{{ accountLabel }}</span>
         </div>
 
-        <FolderTree v-if="space === 'mail'" />
-        <p v-else class="sidebar__hint">Switch to Mail to navigate folders.</p>
+        <FolderTree />
 
         <footer class="sidebar__footer">
           <StorageUsageBar />
@@ -1366,12 +1369,6 @@ html.light,
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
-}
-
-.sidebar__hint {
-  padding: 16px;
-  color: var(--muted);
-  font-size: 13px;
 }
 
 .sidebar__footer {
