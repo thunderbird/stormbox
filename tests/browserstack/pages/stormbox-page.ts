@@ -42,14 +42,16 @@ export class StormboxPage {
   readonly logOutMenuItem: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
+  readonly inboxEmptyText: Locator;
   readonly messageCount: Locator;
   readonly messageRefreshButton: Locator;
   readonly loadingInboxMessage: Locator;
   readonly loadingMessageList: Locator;
   readonly composeDialog: Locator;
-  readonly discardComposeButton: Locator;
+  readonly closeComposeButton: Locator;
   readonly allContactsHeading: Locator;
-  readonly addContactButton: Locator;
+  readonly newContactButton: Locator;
+  readonly showAddressBookListButton: Locator;
   readonly contactNameInput: Locator;
   readonly contactEmailInput: Locator;
   readonly cancelContactButton: Locator;
@@ -83,16 +85,20 @@ export class StormboxPage {
     this.logOutMenuItem = page.getByRole('menuitem', { name: /log out/i });
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
+    this.inboxEmptyText = page.getByText(/^Inbox is empty\.$/i);
     this.messageCount = page.locator('.msg-list__count');
     this.messageRefreshButton = page.locator('.msg-list__refresh');
     this.loadingInboxMessage = page.locator('.msg-list__loader, .msg-list__placeholder')
       .filter({ hasText: /loading inbox/i });
     this.loadingMessageList = page.locator('.msg-list__loader, .msg-list__placeholder')
       .filter({ hasText: /loading/i });
-    this.composeDialog = page.getByRole('dialog', { name: /^compose$/i });
-    this.discardComposeButton = page.getByRole('button', { name: /^discard$/i });
+    this.composeDialog = page.getByRole('dialog', { name: /^new message$/i });
+    this.closeComposeButton = this.composeDialog.getByRole('button', { name: /^close$/i });
     this.allContactsHeading = page.getByRole('heading', { name: /^all contacts$/i });
-    this.addContactButton = page.getByRole('button', { name: /^add contact$/i });
+    this.newContactButton = page.getByRole('button', { name: /^new contact$/i });
+    this.showAddressBookListButton = page.getByRole('button', {
+      name: /^show address book list$/i,
+    });
     this.contactNameInput = page.locator('.contacts__form input[type="text"]').first();
     this.contactEmailInput = page.locator('.contacts__form input[type="email"]').first();
     this.cancelContactButton = page.locator('.contacts__form').getByRole('button', { name: /^cancel$/i });
@@ -193,7 +199,11 @@ export class StormboxPage {
     await this.assertAccountMenuItemsVisible();
     await expect(this.selectAllMessagesCheckbox).toBeVisible();
     await expect(this.unreadFilterButton).toBeVisible();
-    await expect(this.messageCount).toHaveText(/\d+\s+messages?/i, { timeout: TIMEOUT_60_SECONDS });
+    await expect(
+      this.messageCount
+        .filter({ hasText: /\d+\s+messages?/i })
+        .or(this.inboxEmptyText),
+    ).toBeVisible({ timeout: TIMEOUT_60_SECONDS });
     await expect(this.messageRefreshButton).toBeVisible();
   }
 
@@ -254,7 +264,7 @@ export class StormboxPage {
     await expect(this.newMessageButton).toBeVisible();
     await this.newMessageButton.click();
     await expect(this.composeDialog).toBeVisible();
-    await this.discardComposeButton.click();
+    await this.closeComposeButton.click();
     await expect(this.composeDialog).not.toBeVisible();
   }
 
@@ -277,8 +287,11 @@ export class StormboxPage {
     await expect(this.contactsSpaceButton).toBeVisible();
     await this.contactsSpaceButton.click();
     await expect(this.allContactsHeading).toBeVisible();
-    await expect(this.addContactButton).toBeVisible();
-    await this.addContactButton.click();
+    if (await this.showAddressBookListButton.isVisible().catch(() => false)) {
+      await this.showAddressBookListButton.click();
+    }
+    await expect(this.newContactButton).toBeVisible();
+    await this.newContactButton.click();
     await expect(this.contactNameInput).toBeVisible();
     await expect(this.contactEmailInput).toBeVisible();
     await this.cancelContactButton.click();
@@ -306,9 +319,13 @@ export class StormboxPage {
   }
 
   private async clickFolder(folderName: string) {
-    const folderButton = this.mailboxesNav.getByRole('button', {
-      name: new RegExp(`^${this.escapeRegExp(folderName)}\\b`, 'i'),
-    });
+    const exactName = new RegExp(`^\\s*${this.escapeRegExp(folderName)}\\s*$`, 'i');
+    const folderButton = this.mailboxesNav
+      .locator('.folder-node__button')
+      .filter({
+        has: this.page.locator('.folder-node__name').filter({ hasText: exactName }),
+      })
+      .first();
     await expect(folderButton).toBeVisible({ timeout: TIMEOUT_30_SECONDS });
     await folderButton.click();
     await expect(this.loadingMessageList).not.toBeVisible({ timeout: TIMEOUT_60_SECONDS });
