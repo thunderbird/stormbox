@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
   onMounted,
@@ -42,12 +43,21 @@ import BulkOperationOverlay from './components/BulkOperationOverlay.vue';
 import ThundermailLogo from './components/ThundermailLogo.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 import WelcomeModal from './components/WelcomeModal.vue';
+// Staff-only Kanban feature (src/features/kanban): the gear button gates
+// the flag; the board replaces MessageList only while the flag is on.
+// Both are async so a non-staff session never downloads the feature
+// (the gear chunk carries the dialog, fireworks and audio clip).
+import { useKanbanStore } from './features/kanban/kanban-store';
+
+const StaffGearButton = defineAsyncComponent(() => import('./features/kanban/StaffGearButton.vue'));
+const KanbanBoard = defineAsyncComponent(() => import('./features/kanban/KanbanBoard.vue'));
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
 const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
 const settingsStore = useSettingsStore();
+const kanbanStore = useKanbanStore();
 
 type AppSpace = 'contacts' | 'mail';
 
@@ -142,9 +152,12 @@ const wantsMessageDetailView = computed(() =>
 );
 // Multi-select never opens the message view: the bulk actions live in
 // the message list header, so a checkbox selection hides the reading
-// pane entirely (and works the same in single-column layouts).
+// pane entirely (and works the same in single-column layouts). The
+// kanban board's column selection follows the same rule.
 const showMessageView = computed(() =>
-  wantsMessageDetailView.value && mailStore.selectedIds.size === 0,
+  wantsMessageDetailView.value
+  && mailStore.selectedIds.size === 0
+  && !(kanbanStore.enabled && kanbanStore.hasSelection),
 );
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),
@@ -157,6 +170,13 @@ const shouldUseSingleMailColumn = computed(() =>
 const displayedMessageList = computed(() =>
   !(space.value === 'mail' && shouldUseSingleMailColumn.value),
 );
+// The board beside an open message sizes its own track and carries its
+// own handle, so the shell's list width and list resizer step aside.
+const kanbanCompact = computed(() =>
+  space.value === 'mail'
+  && kanbanStore.enabled
+  && displayedMessageList.value
+  && displayedMessageView.value);
 let messageViewTimer: number | null = null;
 let quickFilterSpotlightTimer: number | null = null;
 let resizeLayoutSpotlightTimer: number | null = null;
@@ -541,7 +561,7 @@ function clearMessageViewTimer() {
 
 function availablePaneWidth() {
   const shellWidth = shellEl.value?.clientWidth || window.innerWidth || 0;
-  const messageViewResizer = space.value === 'mail' && displayedMessageView.value ? 1 : 0;
+  const messageViewResizer = space.value === 'mail' && displayedMessageView.value && !kanbanCompact.value ? 1 : 0;
   const resizerCount = (folderListHidden.value ? 0 : 1) + messageViewResizer;
   return Math.max(0, shellWidth - SPACE_RAIL_WIDTH - resizerCount * RESIZER_WIDTH);
 }
@@ -554,6 +574,9 @@ function sidebarNeighbourReserve(messageList: number) {
     return contactsDetailVisible.value
       ? DIRECTORY_COLUMN_MIN_WIDTHS.list + DIRECTORY_RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
       : DIRECTORY_COLUMN_MIN_WIDTHS.list;
+  }
+  if (kanbanCompact.value) {
+    return kanbanStore.compactBoardWidth + MIN_COLUMN_WIDTHS.messageView;
   }
   return displayedMessageView.value
     ? messageList + MIN_COLUMN_WIDTHS.messageView
@@ -634,6 +657,7 @@ function clamp(value: number, min: number, max: number) {
     :class="{
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
       'shell--message-list-hidden': space === 'mail' && !displayedMessageList,
+      'shell--kanban-compact': kanbanCompact,
       'shell--folder-list-hidden': folderListHidden,
       'shell--contacts': space === 'contacts',
       'shell--column-resizing': activeResizePane !== null,
@@ -739,6 +763,7 @@ function clamp(value: number, min: number, max: number) {
           <Sun v-if="appliedTheme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
           <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         </button>
+        <StaffGearButton v-if="authStore.isStaff" />
         <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
       </div>
     </div>
@@ -809,9 +834,14 @@ function clamp(value: number, min: number, max: number) {
     />
 
     <template v-if="space === 'mail'">
-      <MessageList v-if="displayedMessageList" :quick-filter-query="quickFilterQuery" />
+      <KanbanBoard
+        v-if="displayedMessageList && kanbanStore.enabled"
+        :compact="displayedMessageView"
+        :quick-filter-query="quickFilterQuery"
+      />
+      <MessageList v-else-if="displayedMessageList" :quick-filter-query="quickFilterQuery" />
       <div
-        v-if="displayedMessageView && displayedMessageList"
+        v-if="displayedMessageView && displayedMessageList && !kanbanCompact"
         class="column-resizer column-resizer--message-list"
         :class="{
           'is-active': activeResizePane === 'messageList',
@@ -918,6 +948,18 @@ html.light,
 .shell--folder-list-hidden {
   --folder-resizer-width: 0px;
 }
+/* Kanban board beside an open message: the board sets its own width
+ * (two columns plus their handles) and its last handle replaces the
+ * shell's list resizer. */
+.shell--kanban-compact {
+  grid-template-columns:
+    56px
+    auto
+    var(--folder-resizer-width)
+    auto
+    0px
+    minmax(var(--message-view-min-width, 320px), 1fr);
+}
 .shell--contacts {
   grid-template-columns:
     56px
@@ -941,6 +983,9 @@ html.light,
 .shell > .msg-list {
   grid-column: 4;
   border-right: 0;
+}
+.shell > .kanban-board {
+  grid-column: 4;
 }
 .shell > .message-view {
   grid-column: 6;

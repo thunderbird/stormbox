@@ -1434,13 +1434,36 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
+   * Bulk actions default to the open folder's painted rows. A surface
+   * that lists another folder (the kanban board) names that folder and
+   * hands over the rows it has, so keyword flips still start from the
+   * row's current state.
+   */
+  interface BulkSourceOptions {
+    sourceFolderId?: number | null;
+    rows?: ReadonlyArray<CachedRow | undefined>;
+  }
+
+  function loadedRowLookup(rows?: ReadonlyArray<CachedRow | undefined>) {
+    return (id: number): CachedRow | undefined => (
+      messages.value.find((m) => m?.id === id)
+      ?? rows?.find((m) => m?.id === id)
+    );
+  }
+
+  /**
    * Bulk mark-seen. The store queues one semantic operation; the JMAP
    * backend owns any wire-level chunking required by the live Session.
    */
-  async function markManySeen(ids: number[], seen: boolean): Promise<number> {
+  async function markManySeen(
+    ids: number[],
+    seen: boolean,
+    options: Pick<BulkSourceOptions, 'rows'> = {},
+  ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     if (!repo || authStore.accountId == null) return 0;
     const normalized = normalizeMessageIds(ids);
+    const rowFor = loadedRowLookup(options.rows);
     const optimisticItems: Array<{
       messageId: number;
       keywords: string[];
@@ -1448,7 +1471,7 @@ export const useMailStore = defineStore('mail', () => {
     }> = [];
     const changedIds: number[] = [];
     for (const id of normalized) {
-      const before = messages.value.find((m) => m?.id === id);
+      const before = rowFor(id);
       const wasSeen = Number(before?.is_seen ?? 0) === 1;
       if (wasSeen === seen) continue;
       const keywordsJson = JSON.parse(before?.keywords_json ?? '{}');
@@ -1505,9 +1528,9 @@ export const useMailStore = defineStore('mail', () => {
     return markManySeen(ids, !seen);
   }
 
-  async function archiveMessages(ids: number[]) {
+  async function archiveMessages(ids: number[], options: Pick<BulkSourceOptions, 'sourceFolderId'> = {}) {
     const messageIds = normalizeMessageIds(ids);
-    const source = currentFolder.value;
+    const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
       error.value = 'Cannot archive messages because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
@@ -1519,7 +1542,7 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'No archive folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
-    return moveMessages(ids, archive.id);
+    return moveMessages(ids, archive.id, { sourceFolderId: source.id });
   }
 
   /**
@@ -1530,11 +1553,11 @@ export const useMailStore = defineStore('mail', () => {
    * write is optimistic locally plus one queued setKeywords for the
    * batch; the visible effect is the move.
    */
-  async function junkMessages(ids: number[]): Promise<MoveResult> {
+  async function junkMessages(ids: number[], options: BulkSourceOptions = {}): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
-    const source = currentFolder.value;
+    const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
       error.value = 'Cannot mark messages as junk because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
@@ -1557,8 +1580,9 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
 
+    const rowFor = loadedRowLookup(options.rows);
     const rows = mutable.ids
-      .map((id) => messages.value.find((m) => m?.id === id))
+      .map((id) => rowFor(id))
       .filter((row): row is CachedRow => row != null);
     if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
     const junkIds = rows.map((r) => r.id);
@@ -1587,7 +1611,7 @@ export const useMailStore = defineStore('mail', () => {
       requestJson: JSON.stringify({ messageIds: junkIds, add: ['$junk'], remove: ['$notjunk'] }),
     });
 
-    const result = await moveMessages(junkIds, junk.id);
+    const result = await moveMessages(junkIds, junk.id, { sourceFolderId: source.id });
     if (result.succeeded > 0) {
       setNotice(result.succeeded === 1
         ? 'Marked as junk'
@@ -1633,11 +1657,11 @@ export const useMailStore = defineStore('mail', () => {
    * messages moved, or an error when the messages moved but the trust
    * write did not apply.
    */
-  async function whitelistSenders(ids: number[]): Promise<MoveResult> {
+  async function whitelistSenders(ids: number[], options: BulkSourceOptions = {}): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
-    const source = currentFolder.value;
+    const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
       error.value = 'Cannot move these messages because the current folder is no longer available.';
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
@@ -1664,8 +1688,9 @@ export const useMailStore = defineStore('mail', () => {
     // still rescued below; they just contribute no trusted sender.
     const rows: CachedRow[] = [];
     const sendersByEmail = new Map<string, { name: string | null; email: string }>();
+    const rowFor = loadedRowLookup(options.rows);
     for (const id of messageIds) {
-      const row = messages.value.find((m) => m?.id === id);
+      const row = rowFor(id);
       if (!row) continue;
       rows.push(row);
       const sender = parseSender(row.from_text);
@@ -1727,7 +1752,7 @@ export const useMailStore = defineStore('mail', () => {
     });
 
     // 2b) Move them all out of Junk into the Inbox (the visible effect).
-    const result = await moveMessages(rescueIds, target.id);
+    const result = await moveMessages(rescueIds, target.id, { sourceFolderId: source.id });
     if (result.succeeded > 0) {
       const movedPhrase = result.succeeded === 1
         ? 'moved to Inbox'
@@ -1789,10 +1814,13 @@ export const useMailStore = defineStore('mail', () => {
    * Returns once the round trip is complete; the caller can re-read
    * mailStore.messages right after for the post-delete state.
    */
-  async function destroyMessages(ids: number[], { permanent = false }: { permanent?: boolean } = {}) {
+  async function destroyMessages(
+    ids: number[],
+    { permanent = false, sourceFolderId }: { permanent?: boolean } & Pick<BulkSourceOptions, 'sourceFolderId'> = {},
+  ) {
     if (!repo || authStore.accountId == null) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
-    const source = currentFolder.value;
+    const source = resolveSourceFolder(sourceFolderId);
     if (!source) {
       error.value = 'Cannot delete messages because the current folder is no longer available.';
       return;
@@ -1844,6 +1872,11 @@ export const useMailStore = defineStore('mail', () => {
     const overlayLabel = permanent
       ? 'Deleting messages permanently'
       : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
+    // Decided when the mutation completes (see moveMessages).
+    const finalize = (succeeded: number[]) => (
+      Number(source.id) === Number(currentFolder.value?.id)
+        ? finalizeRemovedMessages(succeeded, trashTarget?.id ?? null)
+        : finalizeMovedFromClosedFolder(succeeded, source.id, trashTarget?.id ?? null));
     let succeededIds: number[];
     try {
       succeededIds = await runBulkMutation({
@@ -1851,19 +1884,19 @@ export const useMailStore = defineStore('mail', () => {
         kind: 'destroy',
         label: overlayLabel,
         buildMutation: (chunkIds) => (
-          permanent ? buildPermanentDeleteMutation(chunkIds) : buildDeleteMutation(chunkIds)
+          permanent ? buildPermanentDeleteMutation(chunkIds) : buildDeleteMutation(chunkIds, source)
         ),
         failureAction: 'delete',
       });
     } catch (err: any) {
       const partial = normalizeMessageIds(err?.succeededIds ?? []);
       if (partial.length > 0) {
-        await finalizeRemovedMessages(partial, trashTarget?.id ?? null);
+        await finalize(partial);
       }
       throw err;
     }
     if (succeededIds.length === 0) return;
-    await finalizeRemovedMessages(succeededIds, trashTarget?.id ?? null);
+    await finalize(succeededIds);
   }
 
   async function finalizeRemovedMessages(
@@ -2047,15 +2080,22 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Move one or more messages from the currently-open folder into a
-   * target folder. The outbox already knows how to apply moveToFolders
-   * locally after Email/set succeeds; the store's job is to validate
-   * the source/target pair, enqueue the mutation, and compact the
-   * current painted rows once the cache has changed.
+   * Move one or more messages from a source folder into a target
+   * folder. The source defaults to the currently-open folder; a drag
+   * that started in another folder's list passes `sourceFolderId`.
+   * The outbox already knows how to apply moveToFolders locally after
+   * Email/set succeeds; the store's job is to validate the
+   * source/target pair, enqueue the mutation, and compact the current
+   * painted rows once the cache has changed (or, for a source that is
+   * not open, invalidate both folders' cached windows).
    * The complete semantic operation is queued once; the backend owns
    * protocol-specific grouping and chunking.
    */
-  async function moveMessages(ids: number[], targetFolderId: number): Promise<MoveResult> {
+  async function moveMessages(
+    ids: number[],
+    targetFolderId: number,
+    options: { sourceFolderId?: number | null } = {},
+  ): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) {
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
@@ -2063,12 +2103,19 @@ export const useMailStore = defineStore('mail', () => {
     if (messageIds.length === 0) {
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
-    const source = currentFolder.value;
+    const source = resolveSourceFolder(options.sourceFolderId);
     const target = findFolder(targetFolderId);
     assertCanMoveToFolder(source, target);
     if (Number(source.id) === Number(target.id)) {
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
+    // Decided when the mutation completes, not when it starts: the user
+    // may switch folders while it is in flight, and finalizeRemovedMessages
+    // splices whatever list is open at that moment.
+    const finalizeMove = (succeeded: number[]) => (
+      Number(source.id) === Number(currentFolder.value?.id)
+        ? finalizeRemovedMessages(succeeded, target.id)
+        : finalizeMovedFromClosedFolder(succeeded, source.id, target.id));
 
     const mutable = await filterMutableMessageIds(messageIds, source.account_id);
     if (mutable.blockedScheduled) {
@@ -2095,7 +2142,7 @@ export const useMailStore = defineStore('mail', () => {
     } catch (err: any) {
       const partial = normalizeMessageIds(err?.succeededIds ?? []);
       if (mode === 'move') {
-        await finalizeRemovedMessages(partial, target.id);
+        await finalizeMove(partial);
         throw err;
       }
       if (partial.length > 0) {
@@ -2114,7 +2161,7 @@ export const useMailStore = defineStore('mail', () => {
     }
 
     if (mode === 'move') {
-      await finalizeRemovedMessages(succeededIds, target.id);
+      await finalizeMove(succeededIds);
     } else {
       await refreshFolders();
       invalidateFolderStateForFreshWindow(target.id);
@@ -2126,17 +2173,46 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
+  /**
+   * A move whose source folder is not the open one has no painted rows
+   * to splice; both folders' cached windows are stale (the source lost
+   * rows, the target gained them). If either is the open folder, pull
+   * its first page again so the view repaints without a manual refresh.
+   */
+  async function finalizeMovedFromClosedFolder(
+    succeededIds: number[],
+    sourceFolderId: number,
+    targetFolderId: number | null,
+  ) {
+    if (succeededIds.length === 0) return;
+    await refreshFolders();
+    invalidateFolderStateForFreshWindow(sourceFolderId);
+    if (targetFolderId != null) invalidateFolderStateForFreshWindow(targetFolderId);
+    clearSelectionFor(succeededIds);
+    const openId = Number(currentFolder.value?.id);
+    if ((targetFolderId != null && openId === Number(targetFolderId)) || openId === Number(sourceFolderId)) {
+      void ensureLoaded(0, PAGE_SIZE);
+    }
+  }
+
+  function resolveSourceFolder(sourceFolderId: number | null | undefined): FolderRow | null {
+    return sourceFolderId == null ? currentFolder.value : findFolder(sourceFolderId);
+  }
+
   async function moveMessage(messageId: number, targetFolderId: number): Promise<boolean> {
     const result = await moveMessages([messageId], targetFolderId);
     return result.succeeded === 1;
   }
 
-  function canMoveToFolder(targetFolderId: number): boolean {
-    return transferModeForFolder(targetFolderId) != null;
+  function canMoveToFolder(targetFolderId: number, sourceFolderId?: number | null): boolean {
+    return transferModeForFolder(targetFolderId, sourceFolderId) != null;
   }
 
-  function transferModeForFolder(targetFolderId: number): 'move' | 'copy' | null {
-    const source = currentFolder.value;
+  function transferModeForFolder(
+    targetFolderId: number,
+    sourceFolderId?: number | null,
+  ): 'move' | 'copy' | null {
+    const source = resolveSourceFolder(sourceFolderId);
     const target = findFolder(targetFolderId);
     try {
       assertCanMoveToFolder(source, target);
@@ -2340,16 +2416,18 @@ export const useMailStore = defineStore('mail', () => {
    * id. For bulk deletes (N>1) target_message_id stays null and
    * the row gets a row-id lock instead.
    */
-  function buildDeleteMutation(messageIds: number | number[]): PendingMutationInsert {
+  function buildDeleteMutation(
+    messageIds: number | number[],
+    source: FolderRow | null = currentFolder.value,
+  ): PendingMutationInsert {
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
-    const current = currentFolder.value;
-    const trash = current == null
+    const trash = source == null
       ? null
       : folders.value.find(
-        (folder) => folder.account_id === current.account_id && folder.role === 'trash',
+        (folder) => folder.account_id === source.account_id && folder.role === 'trash',
       );
     const target = ids.length === 1 ? ids[0] : null;
-    if (trash && current?.id != null && current.id !== trash.id) {
+    if (trash && source?.id != null && source.id !== trash.id) {
       return {
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
@@ -2357,7 +2435,7 @@ export const useMailStore = defineStore('mail', () => {
         requestJson: JSON.stringify({
           messageIds: ids,
           addFolderIds: [trash.id],
-          removeFolderIds: [current.id],
+          removeFolderIds: [source.id],
         }),
       };
     }
@@ -3151,6 +3229,8 @@ export const useMailStore = defineStore('mail', () => {
     currentFolderId,
     currentFolder,
     currentSort,
+    sortPropFor: _sortPropFor,
+    jmapSortFor: _jmapSortFor,
     inbox,
     messages,
     totalForFolder,

@@ -16,6 +16,8 @@ const props = withDefaults(defineProps<{
   selectionActionsClass?: string;
   singularItemLabel?: string;
   selectedCount: number;
+  /** False when the owner renders its own total; "N selected" still shows. */
+  showTotalCount?: boolean;
   totalCount: number;
 }>(), {
   clearClass: '',
@@ -24,6 +26,7 @@ const props = withDefaults(defineProps<{
   selectAllClass: '',
   selectable: true,
   selectionActionsClass: '',
+  showTotalCount: true,
   singularItemLabel: '',
 });
 
@@ -97,7 +100,7 @@ watchPostEffect(() => {
       <template v-if="selectedCount > 0">
         {{ selectedCount }} selected
       </template>
-      <template v-else-if="totalCount > 0">
+      <template v-else-if="showTotalCount && totalCount > 0">
         {{ totalCount }} {{ totalCount === 1 ? (singularItemLabel || itemLabel) : itemLabel }}
       </template>
     </span>

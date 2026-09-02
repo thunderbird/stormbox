@@ -302,4 +302,66 @@ describe('auth-store', () => {
     authStore.quotaHardLimitBytes = null;
     expect(authStore.hasStorageQuota).toBe(false);
   });
+
+  describe('isStaff', () => {
+    function loggedInOidc(email: string | undefined) {
+      return {
+        isUserLoggedIn: true,
+        getTokens: vi.fn().mockResolvedValue({
+          ...oidcTokens('token', 1_000),
+          decodedIdToken: email === undefined ? {} : { email },
+        }),
+        subscribeToTokensChange: vi.fn(() => ({
+          unsubscribeFromTokensChange: vi.fn(),
+        })),
+      };
+    }
+
+    it.each([
+      ['staffer@thunderbird.net', true],
+      ['Staffer@Thunderbird.NET', true],
+      ['admin@example.com', true],
+      ['admin@example.org', true],
+      ['someone@gmail.com', false],
+      ['someone@thunderbird.net.evil.com', false],
+      ['thunderbird.net', false],
+    ])('is derived from the OIDC email claim: %s -> %s', async (email, expected) => {
+      authService.getOidc.mockReturnValue(loggedInOidc(email));
+      __setRepositoryForTests(makeRepo());
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(authStore.email).toBe(email);
+      expect(authStore.isStaff).toBe(expected);
+    });
+
+    it('is false without an email claim and after reset', async () => {
+      authService.getOidc.mockReturnValue(loggedInOidc(undefined));
+      __setRepositoryForTests(makeRepo());
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(authStore.email).toBeNull();
+      expect(authStore.isStaff).toBe(false);
+
+      authStore.email = 'late@thunderbird.net';
+      expect(authStore.isStaff).toBe(true);
+      authStore.$reset();
+      expect(authStore.email).toBeNull();
+      expect(authStore.isStaff).toBe(false);
+    });
+
+    it('is false for password sign-in even with a staff-looking username', async () => {
+      __setRepositoryForTests(makeRepo());
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectWithPassword({
+        username: 'boss@thunderbird.net',
+        password: 'pw',
+      })).resolves.toBe(true);
+      expect(authStore.username).toBe('boss@thunderbird.net');
+      expect(authStore.email).toBeNull();
+      expect(authStore.isStaff).toBe(false);
+    });
+  });
 });

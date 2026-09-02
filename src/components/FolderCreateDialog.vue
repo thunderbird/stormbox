@@ -5,11 +5,10 @@ import { Check, X } from '@lucide/vue';
 import { useModalFocus } from '../composables/useModalFocus';
 import { useAuthStore } from '../stores/auth-store';
 import { useMailStore } from '../stores/mail-store';
-import type { FolderRow } from '../types';
 import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
-import { folderSortKey } from '../utils/folder-presentation';
+import { flattenFolderTree } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 
 const props = withDefaults(
@@ -53,7 +52,7 @@ const parentOptions = computed<ParentOption[]>(() => {
     const group = isOwn
       ? account.display_name ?? account.primary_email ?? 'My account'
       : `${account.display_name ?? account.primary_email ?? 'Shared account'} (shared)`;
-    const rows = flatten(
+    const rows = flattenFolderTree(
       mailStore.folders.filter((f) => f.account_id === account.id),
     ).filter((entry) =>
       folderCapabilities(entry.folder, authStore.accountId).mayCreateChild);
@@ -89,30 +88,6 @@ const selectedParentLabel = computed(() => {
 function pickParent(id: number | null, event: Event) {
   parentFolderId.value = id;
   closeContainingDropdown(event);
-}
-
-function flatten(accountFolders: FolderRow[]): Array<{ folder: FolderRow; depth: number }> {
-  const byParent = new Map<number | 'ROOT', FolderRow[]>();
-  for (const folder of accountFolders) {
-    if (Number(folder.is_deleted) === 1) continue;
-    const key = folder.parent_id ?? 'ROOT';
-    if (!byParent.has(key)) byParent.set(key, []);
-    byParent.get(key)!.push(folder);
-  }
-  for (const list of byParent.values()) {
-    // Structural order (role, then name): the parent picker mirrors
-    // the manager dialog's tree, not the sidebar's starred grouping.
-    list.sort((a, b) => folderSortKey(a) - folderSortKey(b) || a.name.localeCompare(b.name));
-  }
-  const out: Array<{ folder: FolderRow; depth: number }> = [];
-  function walk(parentKey: number | 'ROOT', depth: number) {
-    for (const folder of byParent.get(parentKey) ?? []) {
-      out.push({ folder, depth });
-      walk(folder.id, depth + 1);
-    }
-  }
-  walk('ROOT', 0);
-  return out;
 }
 
 const canSubmit = computed(() => name.value.trim().length > 0 && !mailStore.folderCreatePending);

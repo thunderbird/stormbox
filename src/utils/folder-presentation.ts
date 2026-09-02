@@ -140,3 +140,39 @@ export function folderCompare(
     || String(a.name ?? '').localeCompare(String(b.name ?? ''))
   );
 }
+
+export interface FolderTreeNodeInput extends FolderPresentationInput {
+  id: number;
+  parent_id?: number | null;
+  is_deleted?: 0 | 1 | null;
+}
+
+/**
+ * Depth-first flattening of one account's folders in structural order
+ * (role, then name — never the sidebar's starred grouping), for pickers
+ * that show the tree as an indented flat list.
+ */
+export function flattenFolderTree<T extends FolderTreeNodeInput>(
+  accountFolders: T[],
+): Array<{ folder: T; depth: number }> {
+  const byParent = new Map<number | 'ROOT', T[]>();
+  for (const folder of accountFolders) {
+    if (Number(folder.is_deleted) === 1) continue;
+    const key = folder.parent_id ?? 'ROOT';
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key)!.push(folder);
+  }
+  for (const list of byParent.values()) {
+    list.sort((a, b) => folderSortKey(a) - folderSortKey(b)
+      || String(a.name ?? '').localeCompare(String(b.name ?? '')));
+  }
+  const out: Array<{ folder: T; depth: number }> = [];
+  function walk(parentKey: number | 'ROOT', depth: number) {
+    for (const folder of byParent.get(parentKey) ?? []) {
+      out.push({ folder, depth });
+      walk(folder.id, depth + 1);
+    }
+  }
+  walk('ROOT', 0);
+  return out;
+}
