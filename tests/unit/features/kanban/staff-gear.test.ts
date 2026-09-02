@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import {
   afterEach, beforeEach, describe, expect, it, vi,
 } from 'vitest';
@@ -171,6 +174,16 @@ describe('staff gear in App', () => {
     expect(children[gearIndex - 1]?.classList.contains('theme-toggle')).toBe(true);
     expect(wrapper.find('.msg-list').exists()).toBe(true);
     expect(wrapper.find('[data-testid="kanban-board"]').exists()).toBe(false);
+  });
+
+  it('stays out of the top bar below 700px, where a fifth action overflows the shell', () => {
+    // The bar's end cluster fits five 36px actions only from ~670px up; the
+    // sidebar-layout e2e pins the 640px and 340px layouts against overflow.
+    const source = readFileSync(resolve(process.cwd(), 'src/features/kanban/StaffGearButton.vue'), 'utf8');
+    expect(source).toMatch(/class="quick-filter__action staff-gear"/);
+    expect(source).toMatch(
+      /@media\s*\(max-width:\s*699px\)\s*\{[\s\S]*?\.staff-gear\s*\{[\s\S]*?display:\s*none;/,
+    );
   });
 
   it('gear opens a code dialog; a wrong code is rejected and changes nothing', async () => {

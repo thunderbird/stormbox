@@ -12,11 +12,12 @@ import {
   resetSharedSession,
   test,
 } from './helpers/shared-session.js';
+import { loginViaOidc } from './helpers/oidc-login.js';
 import {
   localStackEnabled,
   skipLocalStackMessage,
 } from './helpers/stack-env.js';
-import { waitForFolderTreeReady, waitForPendingMutations } from './helpers/ui.js';
+import { waitForFolderTreeReady, waitForInboxReady, waitForPendingMutations } from './helpers/ui.js';
 
 /**
  * Staff kanban feature flag — Verified Consistency triple for the two
@@ -105,6 +106,41 @@ async function readFolderCacheByName(page, name) {
 function column(page, label) {
   return page.locator(`[data-kanban-column="${label}"]`);
 }
+
+async function shellOverflow(page) {
+  return page.locator('.shell').evaluate((shell) => shell.scrollWidth - shell.clientWidth);
+}
+
+test.describe('Staff gear in narrow layouts', () => {
+  // The e2e account is staff, so the gear is in every layout's top bar.
+  // Below 700px the bar has no room for it: it must disappear rather than
+  // widen the shell (sidebar-layout.spec.js measures the same shell at
+  // 640px and 340px without knowing about the gear).
+  test('the gear never widens the top bar: hidden below 700px, present above', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 852 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+    });
+    await loginViaOidc(page);
+    await waitForInboxReady(page);
+
+    const gear = page.locator('[data-staff-gear]');
+    await expect(gear).toBeVisible();
+    expect(await shellOverflow(page)).toBeLessThanOrEqual(0);
+
+    for (const width of [699, 640, 340]) {
+      await page.setViewportSize({ width, height: 852 });
+      await expect(gear).toBeHidden();
+      await expect.poll(() => shellOverflow(page), { message: `shell overflow at ${width}px` })
+        .toBeLessThanOrEqual(0);
+    }
+
+    await page.setViewportSize({ width: 700, height: 852 });
+    await expect(gear).toBeVisible();
+    await expect.poll(() => shellOverflow(page), { message: 'shell overflow at 700px' })
+      .toBeLessThanOrEqual(0);
+  });
+});
 
 test.describe('Kanban feature flag e2e', () => {
   test.beforeEach(async ({ sharedPage }) => {
