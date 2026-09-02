@@ -207,8 +207,21 @@ test.describe('Sidebar layout', () => {
 
     const geometry = await rail.evaluate((element) => {
       const books = element.querySelector('.contacts-rail__books');
+      const header = element.querySelector('.contacts-rail__header');
+      const create = element.querySelector('.contacts-rail__create');
+      const createBook = element.querySelector('.contacts-rail__create-book');
       const rows = Array.from(element.querySelectorAll('.contacts-rail__book'))
         .map((row) => row.getBoundingClientRect());
+      const headerRect = header.getBoundingClientRect();
+      const headerStyles = getComputedStyle(header);
+      const walker = document.createTreeWalker(create, NodeFilter.SHOW_TEXT);
+      let labelLines = 0;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        labelLines += range.getClientRects().length;
+      }
       return {
         booksOverflowX: books ? books.scrollWidth - books.clientWidth : -1,
         railOverflowX: element.scrollWidth - element.clientWidth,
@@ -217,6 +230,12 @@ test.describe('Sidebar layout', () => {
         rowCount: rows.length,
         slotRight: element.closest('.sidebar-slot')?.getBoundingClientRect().right ?? -1,
         viewportWidth: window.innerWidth,
+        labelLines,
+        createOverflowX: create.scrollWidth - create.clientWidth,
+        createRight: create.getBoundingClientRect().right,
+        createBookLeft: createBook.getBoundingClientRect().left,
+        headerContentLeft: headerRect.left + (Number.parseFloat(headerStyles.paddingLeft) || 0),
+        headerContentRight: headerRect.right - (Number.parseFloat(headerStyles.paddingRight) || 0),
       };
     });
     expect(geometry.rowCount).toBeGreaterThanOrEqual(3);
@@ -225,6 +244,13 @@ test.describe('Sidebar layout', () => {
     expect(geometry.distinctLefts).toBe(1);
     expect(geometry.distinctTops).toBe(geometry.rowCount);
     expect(geometry.slotRight).toBeLessThan(geometry.viewportWidth);
+    // The New Contact label stays on one line at the minimum sidebar width
+    // (the Contacts counterpart of R-10.7): one line box, nothing clipped
+    // inside the button, and both header buttons inside the content box.
+    expect(geometry.labelLines).toBe(1);
+    expect(geometry.createOverflowX).toBeLessThanOrEqual(0);
+    expect(geometry.createBookLeft).toBeGreaterThanOrEqual(geometry.headerContentLeft - 1);
+    expect(geometry.createRight).toBeLessThanOrEqual(geometry.headerContentRight + 1);
 
     await rail.getByRole('button', { name: /Manage identities/ }).click();
     await expect(page.getByRole('listbox', { name: 'Identities' })).toBeVisible();

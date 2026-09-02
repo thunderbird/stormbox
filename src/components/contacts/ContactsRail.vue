@@ -255,6 +255,7 @@ function onInvalidDrop(event: DragEvent): void {
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--folder-list-bg, var(--surface, #fff));
+  container-type: inline-size;
 }
 
 .contacts-rail__header {
@@ -270,11 +271,22 @@ function onInvalidDrop(event: DragEvent): void {
   min-width: 0;
   flex: 1 1 auto;
   max-width: 100%;
+  white-space: nowrap;
 }
 
-.base.contacts-rail__create {
-  padding-inline: 8px;
-  white-space: nowrap;
+/* Icon, label, and services-ui's default padding need a 150px button, which
+   the header only yields from a 216px rail. Below that, down to the sidebar's
+   180px minimum (R-10.1), the label keeps its one line by giving up the icon
+   and most of the horizontal padding rather than wrapping. .base doubles
+   services-ui's own class to outrank its padding and AppButton's icon rule. */
+@container (max-width: 219px) {
+  .base.contacts-rail__create {
+    padding-inline: 8px;
+  }
+
+  .base.contacts-rail__create :deep(.icon) {
+    display: none;
+  }
 }
 
 /* Icon-only square variant of the filled house button. Doubled with .base
