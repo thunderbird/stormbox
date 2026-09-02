@@ -857,11 +857,60 @@ describe('App mail layout', () => {
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
     expect(wrapper.find('.sidebar-slot').classes()).toContain('sidebar-slot--hidden');
     expect(wrapper.find('[aria-label="Show address book list"]').exists()).toBe(true);
+    // The teleported rail leaves keyboard and accessibility navigation with
+    // the slot it lives in.
+    expect(wrapper.get('.sidebar-slot .contacts-rail').element.closest('[inert]')).not.toBeNull();
+
+    await wrapper.get('.contact-detail [aria-label="Back"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.contact-detail').exists()).toBe(false);
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
+    expect(wrapper.get('.sidebar-slot .contacts-rail').element.closest('[inert]')).toBeNull();
+
+    await wrapper.get('.contacts__row').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
 
     setWindowWidth(1024, true);
     await nextTick();
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
     expect(wrapper.find('.sidebar-slot').classes()).not.toContain('sidebar-slot--hidden');
+  });
+
+  it('forgets the Contacts detail collapse when the space changes (CT-1.3)', async () => {
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [
+      {
+        id: 1,
+        remote_id: 'alice',
+        addressbook_ids: [],
+        display_name: 'Alice Example',
+        email: 'alice@example.com',
+      },
+    ];
+    setWindowWidth(1000);
+    const wrapper = mountApp();
+    await flushPromises();
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('.contacts__row').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+
+    // Mail has no open message, so its folder list must come back even
+    // though a contact detail was open when the space changed.
+    await wrapper.get('[aria-label="Mail"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot .sidebar__compose').exists()).toBe(true);
+
+    await wrapper.get('[aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.contact-detail').exists()).toBe(false);
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(wrapper.find('.sidebar-slot .contacts-rail').exists()).toBe(true);
   });
 
   it('hides the address-book rail by default below 640px and opens it from the toggle (R-10.10)', async () => {
