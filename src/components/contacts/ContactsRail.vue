@@ -274,17 +274,21 @@ function onInvalidDrop(event: DragEvent): void {
   white-space: nowrap;
 }
 
-/* Icon, label, and services-ui's default padding need a 150px button, which
-   the header only yields from a 216px rail. Below that, down to the sidebar's
-   180px minimum (R-10.1), the label keeps its one line by giving up the icon
-   and most of the horizontal padding rather than wrapping. .base doubles
-   services-ui's own class to outrank its padding and AppButton's icon rule. */
+/* The header gives this button the rail width minus 64px (its padding, the
+   gap, and the address-book button). Icon, label, and services-ui's default
+   padding need about 150px, so the standard button fits from a 214px rail.
+   Below 220px, down to the sidebar's 180px minimum (R-10.1), the compact form
+   drops the icon and most of the horizontal padding so the label stays inside
+   the button instead of spilling into its padding and past the neighbour.
+   .base is services-ui's own class, doubled to outrank its padding; the
+   repeated class on the icon rule outranks AppButton's equally specific
+   `.base.app-button .icon` regardless of stylesheet order. */
 @container (max-width: 219px) {
   .base.contacts-rail__create {
     padding-inline: 8px;
   }
 
-  .base.contacts-rail__create :deep(.icon) {
+  .base.contacts-rail__create.contacts-rail__create :deep(.icon) {
     display: none;
   }
 }
