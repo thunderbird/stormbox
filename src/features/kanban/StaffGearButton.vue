@@ -73,7 +73,7 @@ function onFirstUnlock() {
 
 <template>
   <button
-    class="quick-filter__action"
+    class="quick-filter__action staff-gear"
     type="button"
     aria-label="Staff settings"
     title="Staff settings"
@@ -91,3 +91,15 @@ function onFirstUnlock() {
   <FireworksOverlay v-if="celebrating" @done="celebrating = false" />
   <CelebrationVolume v-if="celebrating || soundPlaying" />
 </template>
+
+<style scoped>
+/* The top bar's end cluster only has room for a fifth 36px action from
+   about 670px up: with the gear present the two-pane bar (640–669px) and
+   the single-column bar below ~380px overflow the shell. The board needs
+   far more width than that, so the gear stays out of narrow layouts. */
+@media (max-width: 699px) {
+  .staff-gear {
+    display: none;
+  }
+}
+</style>
