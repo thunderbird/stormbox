@@ -283,9 +283,12 @@ defineExpose({ focusDetail, save });
       >
         <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
       </AppIconButton>
+      <!-- While the next contact loads, `detail` is still the previous one and
+           the owner ignores these actions, so they read as unavailable rather
+           than as controls for a contact that is no longer shown. -->
       <template v-if="(mode === 'view' || mode === 'loading') && detail">
         <AppIconButton
-          :disabled="deleting"
+          :disabled="deleting || mode === 'loading'"
           title="Edit"
           aria-label="Edit"
           @click="emit('edit')"
@@ -293,7 +296,7 @@ defineExpose({ focusDetail, save });
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
         <AppIconButton
-          :disabled="deleting || contactsStore.saving"
+          :disabled="deleting || contactsStore.saving || mode === 'loading'"
           title="Duplicate contact"
           aria-label="Duplicate contact"
           @click="emit('duplicate')"
@@ -303,7 +306,7 @@ defineExpose({ focusDetail, save });
         <AppIconButton
           class="contact-detail__delete"
           danger
-          :disabled="deleting"
+          :disabled="deleting || mode === 'loading'"
           title="Delete"
           aria-label="Delete"
           @click="emit('requestDelete')"
