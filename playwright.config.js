@@ -185,6 +185,10 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     ignoreHTTPSErrors: true,
+    // A click or fill whose target never becomes actionable fails here
+    // instead of consuming the whole test budget; waits that are genuinely
+    // long belong in an explicit expect or waitFor with its own timeout.
+    actionTimeout: 15_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',

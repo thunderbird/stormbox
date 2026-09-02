@@ -87,7 +87,6 @@ test.describe('Contact avatars', () => {
   test('uploads, reloads, replaces, and duplicates a contact photo', async ({
     sharedPage: page,
   }) => {
-    test.setTimeout(120_000);
     const jmap = await connectJmap();
     const stamp = Date.now();
     const name = `Contact avatar e2e ${stamp}`;
