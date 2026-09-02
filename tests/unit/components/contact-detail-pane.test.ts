@@ -220,6 +220,28 @@ describe('ContactDetailPane', () => {
     expect(wrapper.emitted('duplicate')).toHaveLength(1);
   });
 
+  it('disables the header actions while the next contact is loading', async () => {
+    const wrapper = mount(ContactDetailPane, {
+      props: {
+        addressbookNames: ['Personal'],
+        createAddressbookIds: [],
+        detail: contactDetail(),
+        mode: 'loading',
+      },
+    });
+    const actions = ['Edit', 'Duplicate contact', 'Delete'] as const;
+
+    expect(wrapper.get('[role="status"]').text()).toBe('Loading contact…');
+    for (const label of actions) {
+      expect(wrapper.get(`[aria-label="${label}"]`).attributes('disabled')).toBeDefined();
+    }
+
+    await wrapper.setProps({ mode: 'view' });
+    for (const label of actions) {
+      expect(wrapper.get(`[aria-label="${label}"]`).attributes('disabled')).toBeUndefined();
+    }
+  });
+
   it('keeps photo saving disabled and discards a read from a previous contact', async () => {
     const wrapper = mount(ContactDetailPane, {
       props: {
