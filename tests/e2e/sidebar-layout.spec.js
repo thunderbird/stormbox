@@ -22,6 +22,37 @@ import {
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
+/** Where the New Contact label and icon sit relative to the button's padding box. */
+function newContactGeometry(rail) {
+  return rail.evaluate((element) => {
+    const create = element.querySelector('.contacts-rail__create');
+    const icon = create.querySelector('.icon');
+    const rect = create.getBoundingClientRect();
+    const styles = getComputedStyle(create);
+    const walker = document.createTreeWalker(create, NodeFilter.SHOW_TEXT);
+    let labelLeft = Number.POSITIVE_INFINITY;
+    let labelRight = Number.NEGATIVE_INFINITY;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const line of range.getClientRects()) {
+        labelLeft = Math.min(labelLeft, line.left);
+        labelRight = Math.max(labelRight, line.right);
+      }
+    }
+    return {
+      railWidth: element.clientWidth,
+      iconVisible: !!icon && icon.getBoundingClientRect().width > 0,
+      overflowX: create.scrollWidth - create.clientWidth,
+      labelLeft,
+      labelRight,
+      contentLeft: rect.left + Number.parseFloat(styles.paddingLeft),
+      contentRight: rect.right - Number.parseFloat(styles.paddingRight),
+    };
+  });
+}
+
 test.describe('Sidebar layout', () => {
   test.beforeEach(async () => {
     const jmap = await connectJmap();
@@ -178,7 +209,7 @@ test.describe('Sidebar layout', () => {
   });
 
   test('opens the address-book rail as a vertical drawer in Contacts below 640px', async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 700 });
+    await page.setViewportSize({ width: 1280, height: 800 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
     });
@@ -188,10 +219,23 @@ test.describe('Sidebar layout', () => {
     await page.getByRole('button', { name: /^contacts$/i }).click();
     await expect(page.locator('.contacts')).toBeVisible();
 
+    // At desktop width the rail is wide enough for the standard New Contact
+    // button: icon and label inside the padding box (R-10.7).
+    const slot = page.locator('.sidebar-slot');
+    const rail = page.locator('.contacts-rail');
+    await expect(slot).not.toHaveClass(/sidebar-slot--hidden/);
+    await expect(rail.getByRole('button', { name: 'New Contact' })).toBeVisible();
+    const standard = await newContactGeometry(rail);
+    expect(standard.railWidth).toBeGreaterThanOrEqual(220);
+    expect(standard.iconVisible).toBe(true);
+    expect(standard.overflowX).toBeLessThanOrEqual(0);
+    expect(standard.labelLeft).toBeGreaterThanOrEqual(standard.contentLeft - 1);
+    expect(standard.labelRight).toBeLessThanOrEqual(standard.contentRight + 1);
+
     // CT-1.3: the rail lives in the shell's sidebar slot, which is a closed
     // drawer at phone widths, so no address book is reachable until the
     // toggle opens it; the Mail-only controls stay out of Contacts (R-8.5).
-    const slot = page.locator('.sidebar-slot');
+    await page.setViewportSize({ width: 390, height: 700 });
     await expect(slot).toHaveClass(/sidebar-slot--hidden/);
     await expect(page.locator('.contacts-rail')).toHaveCount(1);
     await expect(page.locator('.contacts-rail')).not.toBeInViewport();
@@ -200,29 +244,16 @@ test.describe('Sidebar layout', () => {
 
     await page.getByRole('button', { name: 'Show address book list' }).click();
     await expect(slot).not.toHaveClass(/sidebar-slot--hidden/);
-    const rail = page.locator('.contacts-rail');
     await expect(rail).toBeInViewport();
     await expect(rail.getByRole('button', { name: /All contacts/ })).toBeVisible();
     await expect(rail.getByRole('button', { name: /Manage identities/ })).toBeVisible();
 
     const geometry = await rail.evaluate((element) => {
       const books = element.querySelector('.contacts-rail__books');
-      const header = element.querySelector('.contacts-rail__header');
-      const create = element.querySelector('.contacts-rail__create');
-      const createBook = element.querySelector('.contacts-rail__create-book');
       const rows = Array.from(element.querySelectorAll('.contacts-rail__book'))
         .map((row) => row.getBoundingClientRect());
-      const headerRect = header.getBoundingClientRect();
-      const headerStyles = getComputedStyle(header);
-      const walker = document.createTreeWalker(create, NodeFilter.SHOW_TEXT);
-      let labelLines = 0;
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (!node.textContent.trim()) continue;
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        labelLines += range.getClientRects().length;
-      }
       return {
+        railWidth: element.clientWidth,
         booksOverflowX: books ? books.scrollWidth - books.clientWidth : -1,
         railOverflowX: element.scrollWidth - element.clientWidth,
         distinctLefts: new Set(rows.map((rect) => Math.round(rect.left))).size,
@@ -230,27 +261,26 @@ test.describe('Sidebar layout', () => {
         rowCount: rows.length,
         slotRight: element.closest('.sidebar-slot')?.getBoundingClientRect().right ?? -1,
         viewportWidth: window.innerWidth,
-        labelLines,
-        createOverflowX: create.scrollWidth - create.clientWidth,
-        createRight: create.getBoundingClientRect().right,
-        createBookLeft: createBook.getBoundingClientRect().left,
-        headerContentLeft: headerRect.left + (Number.parseFloat(headerStyles.paddingLeft) || 0),
-        headerContentRight: headerRect.right - (Number.parseFloat(headerStyles.paddingRight) || 0),
       };
     });
+    // The drawer opens at the 180px sidebar minimum (R-10.1), which is the
+    // width the compact New Contact form below is specified for.
+    expect(geometry.railWidth).toBe(180);
     expect(geometry.rowCount).toBeGreaterThanOrEqual(3);
     expect(geometry.booksOverflowX).toBeLessThanOrEqual(0);
     expect(geometry.railOverflowX).toBeLessThanOrEqual(0);
     expect(geometry.distinctLefts).toBe(1);
     expect(geometry.distinctTops).toBe(geometry.rowCount);
     expect(geometry.slotRight).toBeLessThan(geometry.viewportWidth);
-    // The New Contact label stays on one line at the minimum sidebar width
-    // (the Contacts counterpart of R-10.7): one line box, nothing clipped
-    // inside the button, and both header buttons inside the content box.
-    expect(geometry.labelLines).toBe(1);
-    expect(geometry.createOverflowX).toBeLessThanOrEqual(0);
-    expect(geometry.createBookLeft).toBeGreaterThanOrEqual(geometry.headerContentLeft - 1);
-    expect(geometry.createRight).toBeLessThanOrEqual(geometry.headerContentRight + 1);
+
+    // R-10.7 at the minimum width: the New Contact label sits inside the
+    // button's padding box (services-ui centres overflowing content, so a
+    // too-wide label spills past both edges) and the icon is given up.
+    const compact = await newContactGeometry(rail);
+    expect(compact.iconVisible).toBe(false);
+    expect(compact.overflowX).toBeLessThanOrEqual(0);
+    expect(compact.labelLeft).toBeGreaterThanOrEqual(compact.contentLeft - 1);
+    expect(compact.labelRight).toBeLessThanOrEqual(compact.contentRight + 1);
 
     await rail.getByRole('button', { name: /Manage identities/ }).click();
     await expect(page.getByRole('listbox', { name: 'Identities' })).toBeVisible();
