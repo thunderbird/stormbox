@@ -617,6 +617,7 @@ async function selectBook(id: number | null): Promise<void> {
 async function selectIdentities(): Promise<void> {
   if (kind.value === 'identities') return;
   if (!await prepareNavigation()) return;
+  const origin = document.activeElement;
   kind.value = 'identities';
   clearBulkSelection();
   operationNotice.value = '';
@@ -635,12 +636,13 @@ async function selectIdentities(): Promise<void> {
   } finally {
     loadingDirectory.value = false;
   }
-  await restoreListFocus();
+  await restoreListFocusFrom(origin);
 }
 
 async function selectTrash(): Promise<void> {
   if (kind.value === 'trash') return;
   if (!await prepareNavigation()) return;
+  const origin = document.activeElement;
   kind.value = 'trash';
   selectedBookId.value = null;
   clearBulkSelection();
@@ -660,7 +662,7 @@ async function selectTrash(): Promise<void> {
   } finally {
     loadingDirectory.value = false;
   }
-  await restoreListFocus();
+  await restoreListFocusFrom(origin);
 }
 
 async function openCreate(requestedKind: DirectoryKind = kind.value): Promise<void> {
@@ -741,6 +743,15 @@ async function openAddressBookEdit(book: AddressbookRow): Promise<void> {
 async function restoreListFocus(): Promise<void> {
   await nextTick();
   await directoryListEl.value?.focusSelected();
+}
+
+// Rail navigation that refreshes its directory from the server hands focus
+// to the list only if focus is still where the navigation started; a user
+// who has since opened an editor or the filter keeps it there.
+async function restoreListFocusFrom(origin: Element | null): Promise<void> {
+  const active = document.activeElement;
+  if (active && active !== document.body && active !== origin) return;
+  await restoreListFocus();
 }
 
 async function focusDetailPane(): Promise<void> {

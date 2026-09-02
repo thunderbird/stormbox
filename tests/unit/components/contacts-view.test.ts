@@ -1084,6 +1084,27 @@ describe('ContactsView directory shell', () => {
       .toBe('identity:102');
   });
 
+  it('leaves focus in an identity editor opened while the identity refresh is in flight', async () => {
+    const { store, wrapper } = await mountContacts({
+      contacts: [makeContact(0)],
+      identities: [makeIdentity(0, false)],
+    });
+    let resolveRefresh!: (rows: IdentityRow[]) => void;
+    vi.mocked(store.listIdentities).mockImplementationOnce(() =>
+      new Promise((resolve) => { resolveRefresh = resolve; }));
+
+    await buttonContainingText(wrapper, 'Manage identities').trigger('click');
+    await settle();
+    await buttonWithText(wrapper, 'Add identity').trigger('click');
+    await settle();
+    const nameInput = wrapper.get('.identity-detail__editor input[autocomplete="name"]').element;
+    expect(document.activeElement).toBe(nameInput);
+
+    resolveRefresh(store.identities);
+    await settle();
+    expect(document.activeElement).toBe(nameInput);
+  });
+
   it('supports contact-only range and keyboard selection while hiding detail', async () => {
     const contacts = [makeContact(0), makeContact(1), makeContact(2)];
     const { wrapper } = await mountContacts({ contacts });
