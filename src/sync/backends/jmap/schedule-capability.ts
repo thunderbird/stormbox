@@ -62,6 +62,22 @@ export function readScheduleCapability(
   return { supported: true, maxDelayedSend, serverClockReference };
 }
 
+/** The capability as the current JMAP session advertises it (SL-1.6). */
+export async function loadScheduleCapability(
+  transport: any,
+  account: any,
+): Promise<ScheduleCapability> {
+  if (typeof transport?.fetchSession === 'function') {
+    await transport.fetchSession();
+  }
+  return readScheduleCapability(transport, account);
+}
+
+/**
+ * The capability from a freshly fetched session. Submission uses this so
+ * the server limit and clock reference HOLDFOR is computed from are
+ * current at the moment of EmailSubmission/set (SL-2.8).
+ */
 export async function refreshScheduleCapability(
   transport: any,
   account: any,

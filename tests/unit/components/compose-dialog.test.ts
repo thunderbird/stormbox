@@ -831,6 +831,23 @@ describe('ComposeDialog scheduled send control', () => {
   });
 
   it('disables only scheduling when the capability is unavailable', async () => {
+    __setRepositoryForTests({
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'sender@example.com' })),
+      listIdentities: vi.fn(async () => [{
+        id: 1,
+        name: 'Sender',
+        email: 'sender@example.com',
+      }]),
+      ensureIdentities: vi.fn(async () => {}),
+      getScheduleCapability: vi.fn(async () => ({ supported: false, maxDelayedSend: 0 })),
+    });
+    useAuthStore().accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await vi.waitFor(() => {
+      expect(composeStore.scheduleCapabilityKnown).toBe(true);
+    });
     const { wrapper } = await mountOpenCompose();
     await flushPromises();
     await nextTick();
@@ -844,36 +861,68 @@ describe('ComposeDialog scheduled send control', () => {
     expect(wrapper.get('.compose-send').attributes('disabled')).toBeUndefined();
   });
 
-  it('refreshes capability on composer open and every menu open', async () => {
-    const { getScheduleCapability, wrapper } = await mountSchedulableCompose();
-    expect(getScheduleCapability.mock.calls.length).toBeGreaterThanOrEqual(2);
-    const beforeMenu = getScheduleCapability.mock.calls.length;
+  it('reads the capability once per account and keeps the segment enabled across sessions', async () => {
+    const { composeStore, getScheduleCapability, wrapper } = await mountSchedulableCompose();
+    expect(getScheduleCapability).toHaveBeenCalledTimes(1);
 
     await openScheduleMenu(wrapper);
+    expect(getScheduleCapability).toHaveBeenCalledTimes(1);
 
-    expect(getScheduleCapability.mock.calls.length).toBeGreaterThan(beforeMenu);
-  });
-
-  it('keeps an open schedule menu interactive during its live capability refresh', async () => {
-    const { getScheduleCapability, wrapper } = await mountSchedulableCompose();
-    let resolveRefresh!: (value: any) => void;
-    getScheduleCapability.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveRefresh = resolve;
-    }));
-    const dropdown = wrapper.get('.compose-schedule-menu');
-    (dropdown.element as HTMLDetailsElement).open = true;
-    await dropdown.trigger('toggle');
+    // A second composer must not pass through a disabled state while a
+    // re-check runs; the capability read at attach stands for the session.
+    composeStore.open({ to: [{ email: 'second@example.com' }] });
     await nextTick();
-
     expect(wrapper.get('.compose-schedule-menu__trigger').attributes('aria-disabled'))
       .toBeUndefined();
+    await flushPromises();
+    expect(getScheduleCapability).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the segment only until the first capability read settles', async () => {
+    let resolveCapability!: (value: any) => void;
+    const getScheduleCapability = vi.fn(() => new Promise<any>((resolve) => {
+      resolveCapability = resolve;
+    }));
+    __setRepositoryForTests({
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'sender@example.com' })),
+      listIdentities: vi.fn(async () => [{
+        id: 1,
+        name: 'Sender',
+        email: 'sender@example.com',
+      }]),
+      ensureIdentities: vi.fn(async () => {}),
+      getScheduleCapability,
+    });
+    useAuthStore().accountId = 1;
+    useSettingsStore().settings = { timeZone: 'America/New_York' };
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    composeStore.open({ to: [{ email: 'recipient@example.com' }], htmlBody: 'hello' });
+    const wrapper = mount(ComposeDialog, {
+      attachTo: document.body,
+      global: { stubs: { teleport: true } },
+    });
+    mountedWrappers.push(wrapper);
+    await flushPromises();
+    await nextTick();
+
+    const schedule = wrapper.get('.compose-schedule-menu__trigger');
+    expect(schedule.attributes('aria-disabled')).toBe('true');
+    expect(wrapper.get(`#${schedule.attributes('aria-describedby')}`).text())
+      .toBe('Checking whether scheduled sending is available.');
+    expect(wrapper.get('.compose-send').attributes('disabled')).toBeUndefined();
+
+    resolveCapability({ supported: true, maxDelayedSend: 30 * 24 * 60 * 60 });
+    await vi.waitFor(() => {
+      expect(wrapper.get('.compose-schedule-menu__trigger').attributes('aria-disabled'))
+        .toBeUndefined();
+    });
+    const dropdown = await openScheduleMenu(wrapper);
     const tomorrow = dropdown.findAll('[role="menuitem"]')
       .find((item: any) =>
         item.find('.compose-schedule-menu__label').text() === 'Tomorrow')!;
     expect(tomorrow.attributes('disabled')).toBeUndefined();
-
-    resolveRefresh({ supported: true, maxDelayedSend: 30 * 24 * 60 * 60 });
-    await flushPromises();
   });
 
   it('offers scheduled send choices in order with resolved times', async () => {

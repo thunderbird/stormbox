@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  loadScheduleCapability,
   readScheduleCapability,
   refreshScheduleCapability,
   requireScheduleCapability,
@@ -52,6 +53,24 @@ describe('scheduled-send capability', () => {
         serverClockReference: null,
       });
     }
+  });
+
+  it('reads the capability from the session already held, fetching only when there is none', async () => {
+    const transport = transportWith({
+      submissionExtensions: { FUTURERELEASE: [] },
+      maxDelayedSend: 600,
+    });
+    transport.fetchSession = vi.fn(async (options) => {
+      expect(options?.force).toBeUndefined();
+      return transport.session;
+    });
+
+    await expect(loadScheduleCapability(transport, account)).resolves.toEqual({
+      supported: true,
+      maxDelayedSend: 600,
+      serverClockReference: null,
+    });
+    expect(transport.fetchSession).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes the live session before returning capability state', async () => {

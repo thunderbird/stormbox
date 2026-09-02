@@ -49,7 +49,7 @@ import {
 } from './contacts';
 import { MUTATION_TYPES, processMutationRow } from './outbox';
 import { OutboxRunner } from './outbox-runner';
-import { refreshScheduleCapability } from './schedule-capability';
+import { loadScheduleCapability } from './schedule-capability';
 import {
   scheduleClockWindow,
   SUBMISSION_RELEASE_OBSERVATION_DELAY_MS,
@@ -1230,7 +1230,7 @@ export class JmapBackend {
    * reference) is current at the moment the user opens the dialog.
    */
   async getScheduleCapability() {
-    return refreshScheduleCapability(this.transport, this.account);
+    return loadScheduleCapability(this.transport, this.account);
   }
 
   async ensureSettings() {

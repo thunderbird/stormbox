@@ -27,9 +27,9 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   `submissionExtensions.FUTURERELEASE` and a positive safe-integer
   `maxDelayedSend`. A missing, malformed, zero, or account-stale capability
   shall disable scheduling.
-- **SL-1.2 — Immediate Send remains available.** An unsupported or
-  still-loading scheduling capability shall disable only the schedule segment.
-  The ordinary Send action shall remain available and shall keep its normal
+- **SL-1.2 — Immediate Send remains available.** An unsupported or not yet
+  read scheduling capability shall disable only the schedule segment. The
+  ordinary Send action shall remain available and shall keep its normal
   immediate-send behavior.
 - **SL-1.3 — Split-control order.** The expanded composer shall place the
   schedule dropdown segment immediately to the right of the primary Send
@@ -44,9 +44,16 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 - **SL-1.5 — Resolved presets.** Each preset shall show its resolved local
   date/time in the active scheduling time zone. A preset outside the server's
   remaining range shall stay visible but disabled with an explanation.
-- **SL-1.6 — Fresh acceptance check.** Opening the menu and committing a
-  schedule shall refresh the live capability. A capability lost while the
-  composer is open shall prevent scheduling without affecting immediate Send.
+- **SL-1.6 — Capability lifetime.** Stormbox shall read the capability from
+  the JMAP session once when the account attaches and shall hold that result
+  for the signed-in session. Compose controls shall not re-query it when a
+  composer opens, the menu opens, or a schedule is committed, so the schedule
+  segment never flickers between enabled and disabled. Preset times are
+  recomputed locally when the menu opens. The submission itself re-reads the
+  server limit and clock reference immediately before `EmailSubmission/set`
+  (SL-2.8), and a capability the server no longer advertises at that point
+  fails the send through the normal terminal-rejection path without
+  affecting immediate Send.
 - **SL-1.7 — Explicit confirmation.** Selecting a preset or choosing `Set send
   time` in the custom dialog shall only stage that target and show its title
   in the dropdown segment; it shall not enqueue or submit anything. The

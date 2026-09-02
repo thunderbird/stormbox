@@ -1617,7 +1617,7 @@ describe('compose-store send safety', () => {
       supported: false,
       maxDelayedSend: 0,
     });
-    await composeStore.refreshScheduleCapability();
+    await composeStore.loadScheduleCapability();
     const sessionId = composeStore.open({
       to: [{ email: 'rcpt@example.com' }],
       subject: 'Send normally',
@@ -1651,27 +1651,54 @@ describe('compose-store send safety', () => {
     expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
   });
 
-  it('revalidates the live capability immediately before enqueueing', async () => {
-    const composeStore = await composerWithOutcome({});
-    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
-    lastRepo.getScheduleCapability.mockResolvedValueOnce({
-      supported: false,
-      maxDelayedSend: 0,
+  it('schedules against the capability read at attach without re-querying it', async () => {
+    const composeStore = await composerWithOutcome({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: { filed: true },
     });
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+    expect(composeStore.scheduleCapabilityKnown).toBe(true);
+    expect(lastRepo.getScheduleCapability).toHaveBeenCalledTimes(1);
 
     await expect(composeStore.scheduleSend(
       sessionId,
       new Date(Date.now() + 60_000),
-    )).resolves.toBe(false);
+    )).resolves.toBe(true);
 
-    expect(lastRepo.getScheduleCapability).toHaveBeenCalledTimes(2);
-    expect(lastRepo.insertPendingMutation).not.toHaveBeenCalled();
-    expect(composeStore.error).toBe(
-      'Scheduled sending is not supported by this account.',
-    );
+    expect(lastRepo.getScheduleCapability).toHaveBeenCalledTimes(1);
+    expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps only the newest capability refresh result', async () => {
+  it('reports the capability as unknown until the first read settles', async () => {
+    let resolveCapability!: (value: any) => void;
+    const repo = {
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+      listIdentities: vi.fn(async () => [identity({ id: 1 })]),
+      getScheduleCapability: vi.fn(() => new Promise((resolve) => {
+        resolveCapability = resolve;
+      })),
+    };
+    __setRepositoryForTests(repo);
+    useAuthStore().accountId = 1;
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await vi.waitFor(() => {
+      expect(repo.getScheduleCapability).toHaveBeenCalledTimes(1);
+    });
+    expect(composeStore.scheduleCapabilityKnown).toBe(false);
+    expect(composeStore.canScheduleSend).toBe(false);
+
+    resolveCapability({ supported: false, maxDelayedSend: 0 });
+    await waitForAsyncWatchers();
+
+    expect(composeStore.scheduleCapabilityKnown).toBe(true);
+    expect(composeStore.canScheduleSend).toBe(false);
+  });
+
+  it('keeps only the newest capability read', async () => {
     const composeStore = await composerWithOutcome({});
     let resolveOlder!: (value: any) => void;
     const older = new Promise((resolve) => {
@@ -1681,8 +1708,8 @@ describe('compose-store send safety', () => {
       .mockImplementationOnce(() => older)
       .mockResolvedValueOnce({ supported: true, maxDelayedSend: 900 });
 
-    const first = composeStore.refreshScheduleCapability();
-    const second = composeStore.refreshScheduleCapability();
+    const first = composeStore.loadScheduleCapability();
+    const second = composeStore.loadScheduleCapability();
     await expect(second).resolves.toEqual({
       supported: true,
       maxDelayedSend: 900,

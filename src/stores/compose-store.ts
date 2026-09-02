@@ -503,6 +503,12 @@ export const useComposeStore = defineStore('compose', () => {
     serverClockReference: null,
   });
   const scheduleCapabilityAccountId = ref<number | null>(null);
+  // Account whose capability read has completed. The capability is read
+  // once per signed-in account and held for the session (SL-1.6).
+  const scheduleCapabilityReadAccountId = ref<number | null>(null);
+  const scheduleCapabilityKnown = computed(() =>
+    authStore.accountId != null
+    && scheduleCapabilityReadAccountId.value === authStore.accountId);
   const canScheduleSend = computed(() =>
     scheduleCapability.value.supported
     && scheduleCapabilityAccountId.value === authStore.accountId);
@@ -636,7 +642,7 @@ export const useComposeStore = defineStore('compose', () => {
           await Promise.all([
             refreshAccount(),
             refreshIdentities(),
-            refreshScheduleCapability(),
+            loadScheduleCapability(),
           ]);
         } else {
           $reset();
@@ -677,6 +683,7 @@ export const useComposeStore = defineStore('compose', () => {
       serverClockReference: null,
     };
     scheduleCapabilityAccountId.value = null;
+    scheduleCapabilityReadAccountId.value = null;
     schedulingSessions.clear();
     sessions.value = [];
     activeSessionId.value = null;
@@ -726,7 +733,13 @@ export const useComposeStore = defineStore('compose', () => {
     accountPrimaryEmail.value = account?.primary_email ?? null;
   }
 
-  async function refreshScheduleCapability(): Promise<ScheduleCapability> {
+  /**
+   * Read the account's scheduling capability from the JMAP session. Runs
+   * once when an account attaches; the result stands for the signed-in
+   * session, and the submission itself re-reads the server limit and clock
+   * immediately before EmailSubmission/set (SL-2.8).
+   */
+  async function loadScheduleCapability(): Promise<ScheduleCapability> {
     const generation = ++scheduleCapabilityGeneration;
     const accountId = authStore.accountId;
     const currentRepo = repo;
@@ -742,6 +755,7 @@ export const useComposeStore = defineStore('compose', () => {
     ) {
       scheduleCapability.value = unsupported;
       scheduleCapabilityAccountId.value = accountId;
+      scheduleCapabilityReadAccountId.value = accountId;
       return unsupported;
     }
     if (scheduleCapabilityAccountId.value !== accountId) {
@@ -780,6 +794,7 @@ export const useComposeStore = defineStore('compose', () => {
       }
       scheduleCapability.value = normalized;
       scheduleCapabilityAccountId.value = accountId;
+      scheduleCapabilityReadAccountId.value = accountId;
       return normalized;
     } catch {
       if (
@@ -789,6 +804,7 @@ export const useComposeStore = defineStore('compose', () => {
       ) {
         scheduleCapability.value = unsupported;
         scheduleCapabilityAccountId.value = accountId;
+        scheduleCapabilityReadAccountId.value = accountId;
       }
       return unsupported;
     }
@@ -2869,18 +2885,10 @@ export const useComposeStore = defineStore('compose', () => {
       if (!isUsableTimeZone(selectedTimeZone)) {
         return failSend('Choose a valid time zone.', session.id);
       }
-      const liveCapability = await refreshScheduleCapability();
-      if (!sessionById(session.id)) return false;
-      if (!liveCapability.supported || !canScheduleSend.value) {
-        return failSend(
-          'Scheduled sending is not supported by this account.',
-          session.id,
-        );
-      }
       const target = validateScheduleTarget({
         targetAt,
-        maxDelayedSend: liveCapability.maxDelayedSend,
-        serverClockReference: liveCapability.serverClockReference,
+        maxDelayedSend: scheduleCapability.value.maxDelayedSend,
+        serverClockReference: scheduleCapability.value.serverClockReference,
       });
       if ('reason' in target) {
         return failSend(target.message, session.id);
@@ -2903,6 +2911,7 @@ export const useComposeStore = defineStore('compose', () => {
     isExpanded,
     identities,
     scheduleCapability,
+    scheduleCapabilityKnown,
     canScheduleSend,
     scheduleMaxDelayedSend,
     draft,
@@ -2914,7 +2923,7 @@ export const useComposeStore = defineStore('compose', () => {
     attach,
     detach,
     refreshIdentities,
-    refreshScheduleCapability,
+    loadScheduleCapability,
     sessionById,
     identityForSession,
     open,

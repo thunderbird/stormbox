@@ -91,8 +91,6 @@ const closePromptEl = ref<HTMLElement | null>(null);
 const attachmentInputEl = ref<HTMLInputElement | null>(null);
 const scheduleMenuTriggerEl = ref<HTMLElement | null>(null);
 const customScheduleOpen = ref(false);
-const capabilityRefreshing = ref(false);
-const capabilityChecked = ref(false);
 const isScheduling = ref(false);
 const scheduleUiError = ref<string | null>(null);
 const customScheduleError = ref<string | null>(null);
@@ -113,7 +111,6 @@ const schedulePresets = ref<SchedulePresetResolution[]>(
     message: 'Checking whether scheduled sending is available.',
   })),
 );
-let capabilityRefreshGeneration = 0;
 let scheduleActionGeneration = 0;
 const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
 useModalFocus(dialogEl, {
@@ -132,7 +129,7 @@ const selectedTimeZone = computed(() => settingsStore.get('timeZone'));
 const scheduleBusy = computed(() => isSending.value || isScheduling.value);
 const scheduleChoiceDisabled = computed(() =>
   scheduleBusy.value
-  || !capabilityChecked.value
+  || !composeStore.scheduleCapabilityKnown
   || !composeStore.canScheduleSend);
 const scheduleSegmentDisabled = computed(() =>
   scheduleBusy.value
@@ -156,7 +153,7 @@ const scheduleAvailabilityMessage = computed(() => {
     return `Selected ${stagedSchedule.value.resolvedLabel}. `
       + 'Click Send to schedule this message.';
   }
-  if (capabilityRefreshing.value || !capabilityChecked.value) {
+  if (!composeStore.scheduleCapabilityKnown) {
     return 'Checking whether scheduled sending is available.';
   }
   if (!composeStore.canScheduleSend) {
@@ -231,6 +228,9 @@ function closeScheduleMenu(): void {
   closeContainingDropdown(scheduleMenuTriggerEl.value);
 }
 
+// Preset targets are relative to now, so they are recomputed whenever the
+// menu opens or the inputs they derive from change; the capability itself
+// is read once per signed-in account (SL-1.6).
 function refreshResolvedPresets(): void {
   schedulePresets.value = resolveSchedulePresets({
     now: Date.now(),
@@ -240,30 +240,16 @@ function refreshResolvedPresets(): void {
   });
 }
 
-async function refreshScheduleCapabilityForSession(
-  expectedSessionId = session.value?.id,
-): Promise<void> {
-  if (!expectedSessionId) return;
-  const generation = ++capabilityRefreshGeneration;
-  capabilityRefreshing.value = true;
-  const capability = await composeStore.refreshScheduleCapability();
-  if (
-    generation !== capabilityRefreshGeneration
-    || session.value?.id !== expectedSessionId
-  ) {
-    return;
-  }
-  capabilityRefreshing.value = false;
-  capabilityChecked.value = true;
-  refreshResolvedPresets();
-  if (!capability.supported && !stagedSchedule.value) closeScheduleMenu();
-}
+watch(
+  [() => composeStore.scheduleCapability, () => composeStore.canScheduleSend, selectedTimeZone],
+  refreshResolvedPresets,
+);
 
 function onScheduleMenuToggle(event: Event): void {
   const details = event.target;
   if (!(details instanceof HTMLDetailsElement) || !details.open) return;
   scheduleUiError.value = null;
-  void refreshScheduleCapabilityForSession();
+  refreshResolvedPresets();
 }
 
 function stageScheduleTarget(
@@ -371,8 +357,8 @@ function focusFreshDraft() {
 }
 
 onMounted(() => {
+  refreshResolvedPresets();
   if (session.value && isExpanded.value) {
-    void refreshScheduleCapabilityForSession(session.value.id);
     void nextTick().then(() => {
       if (isExpanded.value) focusFreshDraft();
     });
@@ -382,15 +368,12 @@ onMounted(() => {
 watch(() => session.value?.id, (nextId, previousId) => {
   if (nextId && nextId !== previousId) {
     scheduleActionGeneration += 1;
-    capabilityRefreshGeneration += 1;
     customScheduleOpen.value = false;
-    capabilityChecked.value = false;
-    capabilityRefreshing.value = false;
     isScheduling.value = false;
     scheduleUiError.value = null;
     customScheduleError.value = null;
     stagedSchedule.value = null;
-    void refreshScheduleCapabilityForSession(nextId);
+    refreshResolvedPresets();
     void nextTick().then(() => {
       if (isExpanded.value) focusFreshDraft();
     });
@@ -403,7 +386,7 @@ watch(() => session.value?.draftEpoch, (nextEpoch, previousEpoch) => {
 
 watch(isExpanded, (expanded) => {
   if (expanded) {
-    void refreshScheduleCapabilityForSession();
+    refreshResolvedPresets();
     void nextTick().then(focusFreshDraft);
   } else {
     customScheduleOpen.value = false;
