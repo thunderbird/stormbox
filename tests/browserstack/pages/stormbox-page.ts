@@ -42,6 +42,7 @@ export class StormboxPage {
   readonly logOutMenuItem: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
+  readonly inboxEmptyText: Locator;
   readonly messageCount: Locator;
   readonly messageRefreshButton: Locator;
   readonly loadingInboxMessage: Locator;
@@ -55,6 +56,28 @@ export class StormboxPage {
   readonly cancelContactButton: Locator;
   readonly welcomeDialog: Locator;
   readonly getStartedButton: Locator;
+  readonly manageFoldersButton: Locator;
+  readonly manageFoldersDialog: Locator;
+  readonly manageFoldersHdr: Locator;
+  readonly manageFoldersText: Locator;
+  readonly manageFoldersSearchInput: Locator;
+  readonly manageFoldersCloseBtn: Locator;
+  readonly manageFoldersExpandBtn: Locator;
+  readonly manageFoldersAddTopLevelBtn: Locator;
+  readonly manageFoldersNewFolderDialog: Locator;
+  readonly manageFoldersNewFolderNameInput: Locator;
+  readonly manageFoldersNewFolderParentSelect: Locator;
+  readonly manageFoldersNewFolderCreateBtn: Locator;
+  readonly manageFoldersNewFolderCancelBtn: Locator;
+  readonly manageFoldersNewFolderNameExistsText: Locator;
+  readonly manageFoldersExpandInboxBtn: Locator;
+  readonly manageFoldersRenameNameInput: Locator;
+  readonly manageFoldersMoveRenameSaveBtn: Locator;
+  readonly manageFoldersMoveParentSelect: Locator;
+  readonly foldersPanelExpandInboxBtn: Locator;
+  readonly manageFoldersDeleteSelectedFoldersBtn: Locator;
+  readonly manageFoldersDialogDeleteNFoldersText: Locator;
+  readonly manageFoldersDialogDeleteNFoldersConfirmBtn: Locator;
 
   constructor(page: Page) {
     this.page = page;
@@ -83,6 +106,7 @@ export class StormboxPage {
     this.logOutMenuItem = page.getByRole('menuitem', { name: /log out/i });
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
+    this.inboxEmptyText = page.getByText('Inbox is empty');
     this.messageCount = page.locator('.msg-list__count');
     this.messageRefreshButton = page.locator('.msg-list__refresh');
     this.loadingInboxMessage = page.locator('.msg-list__loader, .msg-list__placeholder')
@@ -98,6 +122,31 @@ export class StormboxPage {
     this.cancelContactButton = page.locator('.contacts__form').getByRole('button', { name: /^cancel$/i });
     this.welcomeDialog = page.getByRole('dialog', { name: /welcome to thundermail/i });
     this.getStartedButton = page.getByRole('button', { name: /^get started$/i });
+    this.manageFoldersButton = page.getByRole('button', { name: 'Manage Folders' });
+    this.manageFoldersDialog = page.getByRole('dialog', { name: 'Manage Folders' });
+    this.manageFoldersHdr = this.manageFoldersDialog.getByRole('heading', { name: 'Manage Folders', level: 2 });
+    this.manageFoldersText = this.manageFoldersDialog.getByText('Drag a folder to move it, or select several to delete them');
+    this.manageFoldersSearchInput = this.manageFoldersDialog.locator('.folder-subs__search-input');
+    this.manageFoldersCloseBtn = this.manageFoldersDialog.getByRole('button', { name: 'Close manage folders' });
+    this.manageFoldersExpandBtn = this.manageFoldersDialog.getByRole('button', { name: 'Expand default folders' });
+    this.manageFoldersAddTopLevelBtn = this.manageFoldersDialog.getByRole('button', { name: 'New folder', exact: true });
+    this.manageFoldersNewFolderDialog = page.getByRole('dialog', { name: 'New folder' });
+    this.manageFoldersNewFolderNameInput = this.manageFoldersNewFolderDialog.getByRole('textbox', { name: 'Name' });
+    this.manageFoldersNewFolderParentSelect = this.manageFoldersNewFolderDialog.locator('select[data-folder-create-parent]');
+    this.manageFoldersNewFolderCreateBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Create' });
+    this.manageFoldersNewFolderCancelBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Cancel' });
+    this.manageFoldersNewFolderNameExistsText = this.manageFoldersNewFolderDialog.getByText('A folder with that name already exists here.', { exact: true });
+    this.manageFoldersExpandInboxBtn = this.manageFoldersDialog.getByRole('button', { name: 'Expand inbox' });
+    this.manageFoldersRenameNameInput = this.manageFoldersDialog.getByRole('textbox', { name: 'Name' })
+    this.manageFoldersMoveParentSelect = this.manageFoldersDialog.locator('[data-folder-move-select]');
+    this.manageFoldersMoveRenameSaveBtn = this.manageFoldersDialog.getByRole('button', { name: 'Save' });
+    this.foldersPanelExpandInboxBtn = page.locator('.folder-node')
+      .filter({ has: page.getByText('Inbox', { exact: true }) })
+      .filter({ has: page.getByRole('button', { name: 'Expand folder' }) })
+      .getByRole('button', { name: 'Expand folder' });
+    this.manageFoldersDeleteSelectedFoldersBtn = this.manageFoldersDialog.getByRole('button', { name: 'Delete selected folders' });
+    this.manageFoldersDialogDeleteNFoldersText = this.manageFoldersDialog.locator('.folder-subs__bulk-confirm');
+    this.manageFoldersDialogDeleteNFoldersConfirmBtn = this.manageFoldersDialog.locator('[data-folder-bulk-confirm]');
   }
 
   async navigate() {
@@ -179,10 +228,73 @@ export class StormboxPage {
     await this.exerciseFolderListToggle(projectName);
     await this.exerciseComposeDialog();
     await this.exerciseFolderNavigation();
-    await this.exerciseContactsView();
+    await this.exerciseManageFoldersDialog(projectName);
+    await this.exerciseContactsView(projectName);
     await this.exerciseWelcomeModal();
     await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN);
     await this.assertExternalLinkOpensInNewTab(this.giveFeedbackButton, FEEDBACK_URL_PATTERN);
+  }
+
+  async openManageFoldersDialog(projectName:string = 'desktop') {
+    // first check if the manage folders dialog is already open, if so exit
+    if (await this.manageFoldersDialog.isVisible().catch(() => true)) {
+      return;
+    }
+
+    // first we need the folders list panel if it's not already open 
+    if (await this.showFolderListButton.isVisible().catch(() => false)) {
+      await this.showFolderList(projectName);
+    }
+    // then click on manage folders button to open the dialog, and click to expand default folders list
+    await this.manageFoldersButton.click();
+    await this.manageFoldersExpandBtn.click();
+    await expect(this.manageFoldersDialog).toBeVisible();
+    await expect(this.manageFoldersHdr).toBeVisible();
+  }
+
+  async closeManageFoldersDialog() {
+    await this.manageFoldersCloseBtn.click();
+    await expect(this.manageFoldersDialog).not.toBeVisible();
+  }
+
+  async addFolder(fName: string, parentFolder: string, duplicate:boolean, projectName:string = 'desktop') {
+    console.log(`creating folder: '${fName}' in '${parentFolder}'`);
+    await this.openManageFoldersDialog(projectName);
+    await this.manageFoldersAddTopLevelBtn.scrollIntoViewIfNeeded();
+    await this.manageFoldersAddTopLevelBtn.click();
+    await expect(this.manageFoldersNewFolderDialog).toBeVisible();
+
+    await this.manageFoldersNewFolderNameInput.fill(fName);
+
+    if (parentFolder == 'Top Level') {
+     // the parent selector options don't have a 'value' for 'Top Level' so if 'Top Level' just add by name
+     await this.manageFoldersNewFolderParentSelect.selectOption({ label: parentFolder });
+    } else {
+      // when adding sub-folders a space is added to the front of the folder name in the select parent element
+      // so locate by 'hasText' so will ignore any leading spaces, and then select via the option value not text
+      // because all the folders except 'Top Level' have value attributes in each folder name in the select list
+      const value = await this.manageFoldersNewFolderParentSelect
+        .locator('option')
+        .filter({ hasText: parentFolder })
+        .getAttribute('value');
+
+      if (value === null) {
+        throw new Error(`Could not find option for folder: ${parentFolder}`);
+      }
+      await this.manageFoldersNewFolderParentSelect.selectOption({ value });
+    }
+
+    // now we have the name and parent set, just click create
+    await this.manageFoldersNewFolderCreateBtn.click({ force: projectName.toLowerCase().includes('android')});
+
+    // if adding a folder with a duplicate name, expect the 'folder name exists' error and cancel out
+    // otherwise we expect the add new folder dialog to be closed after clicking create
+    if (duplicate) {
+      await expect(this.manageFoldersNewFolderNameExistsText).toBeVisible();
+      await this.manageFoldersNewFolderCancelBtn.click({ force: projectName.toLowerCase().includes('android')});
+    } else {
+      await expect(this.manageFoldersNewFolderDialog).not.toBeVisible();
+    }
   }
 
   private async assertCommonAuthenticatedUiVisible() {
@@ -193,8 +305,12 @@ export class StormboxPage {
     await this.assertAccountMenuItemsVisible();
     await expect(this.selectAllMessagesCheckbox).toBeVisible();
     await expect(this.unreadFilterButton).toBeVisible();
-    await expect(this.messageCount).toHaveText(/\d+\s+messages?/i, { timeout: TIMEOUT_60_SECONDS });
     await expect(this.messageRefreshButton).toBeVisible();
+
+    // the inbox might have messages and might not; if there are messages check for message count
+    if (! await this.isInboxEmptyTextVisible(TIMEOUT_10_SECONDS)) {
+      await expect(this.messageCount).toHaveText(/\d+\s+messages?/i, { timeout: TIMEOUT_60_SECONDS });
+    }
   }
 
   private async exerciseQuickFilter() {
@@ -273,7 +389,22 @@ export class StormboxPage {
     await this.page.waitForTimeout(TIMEOUT_2_SECONDS / 2);
   }
 
-  private async exerciseContactsView() {
+  private async exerciseManageFoldersDialog(projectName:string = 'desktop') {
+    // open the manage folders dialog (may need to open folders panel first)
+    await this.openManageFoldersDialog(projectName);
+    await expect(this.manageFoldersText).toBeVisible();
+    await expect(this.manageFoldersSearchInput).toBeVisible();
+
+    // verify default folders (we already expanded the folders list in openManageFoldersDialog)
+    for (const folderName of FOLDER_NAMES_TO_EXERCISE) {
+      await expect(this.page.locator('.folder-subs__name', { hasText: folderName })).toBeVisible();
+    }
+
+    // finished, close the manage folders dialog
+    await this.closeManageFoldersDialog();
+  }
+
+  private async exerciseContactsView(projectName:string = 'desktop') {
     await expect(this.contactsSpaceButton).toBeVisible();
     await this.contactsSpaceButton.click();
     await expect(this.allContactsHeading).toBeVisible();
@@ -281,15 +412,15 @@ export class StormboxPage {
     await this.addContactButton.click();
     await expect(this.contactNameInput).toBeVisible();
     await expect(this.contactEmailInput).toBeVisible();
-    await this.cancelContactButton.click();
+    await this.cancelContactButton.click({ force: projectName.toLowerCase().includes('android')});
     await expect(this.contactEmailInput).not.toBeVisible();
     await this.mailSpaceButton.click();
     await this.waitForAppUi();
   }
 
-  private async showFolderList() {
+  async showFolderList(projectName:string = 'desktop') {
     if (await this.showFolderListButton.isVisible().catch(() => false)) {
-      await this.showFolderListButton.click();
+      await this.showFolderListButton.click({ force: projectName.toLowerCase().includes('android')} );
     }
 
     await expect(this.mailboxesNav).toBeVisible();
@@ -431,6 +562,15 @@ export class StormboxPage {
     try {
       await expect(this.thundermailMenu).toBeVisible({ timeout });
       await expect(this.quickFilter).toBeVisible({ timeout });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isInboxEmptyTextVisible(timeout: number) {
+    try {
+      await expect(this.inboxEmptyText).toBeVisible({ timeout });
       return true;
     } catch {
       return false;
