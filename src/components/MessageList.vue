@@ -101,6 +101,13 @@ function handleKeyDown(event) {
     selectAllForCurrentFilter();
     return;
   }
+  // Widget-scoped so the page keeps Home/End when the list is not focused.
+  if ((event.key === 'Home' || event.key === 'End')
+      && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    navigateMessageList(event.key === 'Home' ? 'first' : 'last');
+    return;
+  }
   const result = rawHandleKeyDown(event);
   // Plain Arrow nav also drives the preview pane (caller decides;
   // composable only knows about focus/selection, not body loads).

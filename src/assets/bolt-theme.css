@@ -1,0 +1,136 @@
+/* Bolt palette — every visual change that moves webmail onto the Bolt
+   design system (https://bolt.thunderbird.net/8b179dbfd/p/61e4c7-color)
+   lives in this file, active only while <html> carries `palette-bolt`
+   (App.vue applyPalette, driven by the `palette` setting). Nothing here
+   applies under the classic palette; deleting this file and the setting
+   returns webmail to the classic look.
+
+   Loaded after styles.css. Every selector is prefixed with html.palette-bolt
+   so it outranks the base token blocks (html.dark / html.light) and the
+   scoped [data-v-*] rules of the components it retouches. */
+
+/* 1. Core tokens ---------------------------------------------------------- */
+
+html.palette-bolt.dark {
+  /* Surfaces: --panel2 = lower, --bg = base, --panel = raised. */
+  --bg: #1a202c;
+  /* Classic dark paints the wordmark in the logo blue; Bolt keeps it white. */
+  --top-nav-wordmark: #fff;
+  --panel: #262d3b;
+  --panel2: #18181b;
+  --accent: #58c9ff;
+  /* Hover lifts the panel slightly; selected adds an accent cast. */
+  --rowHover: #313a4a;
+  --rowActive: #314f66;
+
+  /* services-ui aliases. */
+  --colour-neutral-lower: var(--panel2);
+  --colour-neutral-border-intense: #4d5878;
+  /* Primary cyan ramp; the filled gradient runs default (#58c9ff, top)
+     to hover (#2b8dcd, bottom). */
+  --colour-primary-soft: #12283a;
+  --colour-primary-hover: #2b8dcd;
+  --colour-primary-pressed: #1f78b3;
+}
+
+html.palette-bolt.light {
+  /* Bolt light neutrals: lower #f7f7f7, raised #feffff. */
+  --bg: #f7f7f7;
+  --panel: #feffff;
+  --panel2: #f7f7f7;
+}
+
+/* 2. Surface assignment (tokens defined in App.vue) ------------------------ */
+
+/* Top nav and spaces rail on base; folder list, message list and the quick
+   filter field on lower; popovers on raised. Theme-qualified so these
+   outrank App.vue's html.light block whatever the stylesheet order. */
+html.palette-bolt.dark,
+html.palette-bolt.light {
+  --top-nav-bg: var(--bg);
+  --space-rail-bg: var(--bg);
+  --folder-list-bg: var(--panel2);
+  --top-nav-border: color-mix(in srgb, var(--border) 70%, transparent);
+  --top-nav-input-bg: var(--panel2);
+  --top-nav-popover-bg: var(--panel);
+}
+/* Figma nav frame height (classic stays at 56px). */
+html.palette-bolt {
+  --top-nav-height: 68px;
+}
+/* Figma filter field height (classic stays at 36px). */
+html.palette-bolt .quick-filter__input {
+  height: 44px;
+}
+/* Figma avatar: 40px outer including the ring (classic stays at 36px). */
+html.palette-bolt .account-menu__button,
+html.palette-bolt .account-menu__avatar {
+  width: 40px;
+  height: 40px;
+}
+html.palette-bolt.light {
+  --top-nav-border: color-mix(in srgb, var(--border) 40%, transparent);
+  --top-nav-shadow: color-mix(in srgb, #000 10%, transparent);
+}
+html.palette-bolt .msg-list,
+html.palette-bolt .message-view,
+html.palette-bolt .message-view__details,
+html.palette-bolt .message-view__html-frame {
+  background: var(--panel2);
+}
+
+/* 3. Filled primary buttons ------------------------------------------------- */
+
+/* Label colour on the filled gradient: lower surface on cyan (dark),
+   white on blue (light). */
+html.palette-bolt {
+  --bolt-filled-fg: #feffff;
+}
+html.palette-bolt.dark {
+  --bolt-filled-fg: #18181b;
+}
+
+/* services-ui PrimaryButton via AppButton: its stock resting gradient
+   (styles.css flattens it), Bolt radius and label weight instead of the
+   house 4px / 600, and the palette's label colour. */
+html.palette-bolt .base.primary.filled {
+  background: var(--primary-filled-gradient) border-box;
+}
+html.palette-bolt .base.app-button {
+  border-radius: 8px;
+}
+html.palette-bolt .base.app-button .text {
+  font-weight: 400;
+}
+html.palette-bolt.dark .base.primary.filled:not(:disabled) {
+  color: var(--bolt-filled-fg);
+}
+
+/* Hand-rolled filled buttons: flat --accent + white becomes the gradient
+   with the palette's label colour. */
+html.palette-bolt .app-toggle-button.is-active,
+html.palette-bolt .msg-list__filter.is-active,
+html.palette-bolt .msg-list__bulk-action--whitelist,
+html.palette-bolt .msg-list__bulk-action--whitelist:hover,
+html.palette-bolt .msg-list__bulk-action--whitelist:disabled,
+html.palette-bolt .msg-list__bulk-action--whitelist:disabled:hover,
+html.palette-bolt .message-view__action--whitelist,
+html.palette-bolt .message-view__action--whitelist:hover,
+html.palette-bolt .message-view__action--whitelist:disabled,
+html.palette-bolt .message-view__action--whitelist:disabled:hover,
+html.palette-bolt .folder-create__btn--primary,
+html.palette-bolt .folder-subs__btn--primary,
+html.palette-bolt .kanban-unlock__btn--primary {
+  background: var(--primary-filled-gradient);
+  color: var(--bolt-filled-fg);
+}
+html.palette-bolt .folder-create__btn--primary,
+html.palette-bolt .folder-subs__btn--primary,
+html.palette-bolt .kanban-unlock__btn--primary {
+  border-color: var(--colour-primary-hover);
+}
+html.palette-bolt .folder-create__btn--primary:hover:not(:disabled),
+html.palette-bolt .folder-subs__btn--primary:hover:not(:disabled),
+html.palette-bolt .kanban-unlock__btn--primary:hover:not(:disabled) {
+  background: var(--colour-primary-hover);
+}

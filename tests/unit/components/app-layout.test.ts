@@ -26,6 +26,7 @@ import {
 import { APP_TITLE } from '../../../src/app-config';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -246,6 +247,9 @@ describe('App mail layout', () => {
     expect(wrapper.text()).not.toContain('Your Thunderbird mail workspace is ready');
     expect(wrapper.findAll('.welcome__shortcut-group h3').map((heading) => heading.text()))
       .toEqual(['Navigate', 'Message actions', 'Find and compose']);
+    const picker = wrapper.get('.welcome [role="radiogroup"]');
+    expect(picker.findAll('[role="radio"]').map((radio) => radio.text())).toEqual(['Web', 'Thunderbird']);
+    expect(picker.get('[data-shortcut-scheme="web"]').attributes('aria-checked')).toBe('true');
 
     await wrapper.get('.welcome').trigger('click');
     await nextTick();
@@ -313,6 +317,37 @@ describe('App mail layout', () => {
     await nextTick();
 
     expect(focusSpy).toHaveBeenCalledOnce();
+  });
+
+  it('switching the welcome picker changes the kbd hints and persists the scheme', async () => {
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const kbds = () => wrapper.findAll('.welcome__shortcut-group kbd').map((kbd) => kbd.text());
+    expect(kbds()).toContain('J');
+    expect(kbds()).toContain('Shift+R');
+    expect(kbds()).toContain('* then A');
+    expect(kbds()).not.toContain('Ctrl+R');
+    expect(kbds()).not.toContain('Home');
+
+    await wrapper.get('[data-shortcut-scheme="thunderbird"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[data-shortcut-scheme="thunderbird"]').attributes('aria-checked')).toBe('true');
+    expect(kbds()).toContain('Ctrl+R');
+    expect(kbds()).toContain('Home');
+    expect(kbds()).toContain('Ctrl+N or Ctrl+M');
+    expect(kbds()).not.toContain('J');
+    expect(useSettingsStore().get('shortcutScheme')).toBe('thunderbird');
+    expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
+      .toMatchObject({ shortcutScheme: 'thunderbird' });
+
+    // Arrow keys move the radio too.
+    await wrapper.get('.welcome [role="radiogroup"]').trigger('keydown', { key: 'ArrowLeft' });
+    await flushPromises();
+    expect(useSettingsStore().get('shortcutScheme')).toBe('web');
   });
 
   it('anchors the resize spotlight card below the quick filter while highlighting resize handles', async () => {
@@ -559,10 +594,18 @@ describe('App mail layout', () => {
     await nextTick();
     const input = wrapper.get('.quick-filter__input');
 
-    expect(input.attributes('placeholder')).toBe('Filter messages..');
+    expect(input.attributes('placeholder')).toBe('Filter messages');
     expect(input.attributes('aria-label')).toBe('Quick Filter messages by from, to, or subject');
+    // Web scheme by default: `/` is the badge, both keys are announced.
+    expect(input.attributes('aria-keyshortcuts')).toBe('/ Control+K');
+    expect(wrapper.get('.quick-filter__shortcut').text()).toBe('/');
+
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    await nextTick();
     expect(input.attributes('aria-keyshortcuts')).toBe('Control+K');
     expect(wrapper.get('.quick-filter__shortcut').text()).toBe('Ctrl+K');
+    useSettingsStore().settings = {};
+    await nextTick();
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
@@ -592,25 +635,104 @@ describe('App mail layout', () => {
 
     expect(focusSpy).toHaveBeenCalledOnce();
     expect(selectSpy).toHaveBeenCalledOnce();
+
+    // The web scheme's primary key.
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: '/',
+      bubbles: true,
+      cancelable: true,
+    }));
+    await nextTick();
+
+    expect(focusSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('renders a Thundermail menu linking to Appointment and Send', async () => {
+  it('renders the Mail brand with the Thundermail bolt glyph', async () => {
     const wrapper = mountApp();
     await nextTick();
 
-    expect(wrapper.get('.app-menu__button').text()).toContain('Thundermail');
-    expect(wrapper.get('.app-menu__logo').attributes('src')).toBe('/logo.png');
+    const brand = wrapper.get('.quick-filter__brand');
+    expect(brand.get('.quick-filter__wordmark').text()).toBe('Mail');
+    expect(brand.get('.quick-filter__glyph').attributes('aria-hidden')).toBe('true');
+    expect(brand.find('.quick-filter__glyph svg').exists()).toBe(true);
+    expect(wrapper.get('.quick-filter__input').attributes('placeholder')).toBe('Filter messages');
+  });
 
-    const items = wrapper.findAll('.app-menu__popover .app-menu__item');
-    expect(items).toHaveLength(2);
-    expect(items[0].text()).toContain('Appointment');
-    expect(items[0].attributes('href')).toBe(APPOINTMENT_URL);
-    expect(items[0].attributes('target')).toBe('_blank');
-    expect(items[0].attributes('rel')).toBe('noopener noreferrer');
-    expect(items[1].text()).toContain('Send');
-    expect(items[1].attributes('href')).toBe(SEND_URL);
-    expect(items[1].attributes('target')).toBe('_blank');
-    expect(items[1].attributes('rel')).toBe('noopener noreferrer');
+  it('opens an app drawer from the app switcher with Mail current and the other apps linked', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    const drawer = wrapper.get('.quick-filter__actions .app-drawer');
+    expect(drawer.get('.app-drawer__button').attributes('aria-label')).toBe('Open app drawer');
+    expect(drawer.get('.app-drawer__button').classes()).toContain('quick-filter__action');
+
+    const tiles = drawer.findAll('.app-drawer__popover [role="menuitem"]');
+    expect(tiles).toHaveLength(3);
+    expect(tiles[0].text()).toContain('Mail');
+    expect(tiles[0].attributes('aria-current')).toBe('page');
+    expect(tiles[0].get('img').attributes('src')).toBe('/icons/icon-mail.svg');
+    expect(tiles[1].text()).toContain('Appointment');
+    expect(tiles[1].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(tiles[1].attributes('target')).toBe('_blank');
+    expect(tiles[1].attributes('rel')).toBe('noopener noreferrer');
+    expect(tiles[1].get('img').attributes('src')).toBe('/icons/icon-appointment.svg');
+    expect(tiles[2].text()).toContain('Send');
+    expect(tiles[2].attributes('href')).toBe(SEND_URL);
+    expect(tiles[2].attributes('target')).toBe('_blank');
+    expect(tiles[2].attributes('rel')).toBe('noopener noreferrer');
+    expect(tiles[2].get('img').attributes('src')).toBe('/icons/icon-send.svg');
+  });
+
+  it('collapses the actions into a menu with the same links, settings and theme toggle for compact layouts', async () => {
+    window.localStorage?.setItem('stormbox.theme.v1', 'dark');
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const menu = wrapper.get('.quick-filter > .quick-filter__menu');
+    expect(menu.get('.top-nav-menu__button').attributes('aria-label')).toBe('Open menu');
+
+    const toggleLabel = wrapper.get('.theme-toggle').attributes('aria-label');
+    const items = menu.findAll('.top-nav-menu__popover [role="menuitem"]');
+    expect(items.map((item) => item.text())).toEqual([
+      'Report a bug',
+      'Give feedback',
+      'Settings',
+      toggleLabel,
+      'Appointment',
+      'Send',
+    ]);
+    expect(items[0].attributes('href')).toBe(BUG_REPORT_URL);
+    expect(items[1].attributes('href')).toBe(FEEDBACK_URL);
+    expect(items[4].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(items[5].attributes('href')).toBe(SEND_URL);
+
+    await items[3].trigger('click');
+    await nextTick();
+    expect(wrapper.get('.theme-toggle').attributes('aria-label')).not.toBe(toggleLabel);
+    expect(menu.get('.top-nav-menu__item:nth-of-type(4)').text()).not.toBe(toggleLabel);
+
+    expect(document.body.querySelector('[data-settings-dialog]')).toBeNull();
+    await items[2].trigger('click');
+    await nextTick();
+    expect(document.body.querySelector('[data-settings-dialog]')).not.toBeNull();
+  });
+
+  it('drops the theme toggle from the bar and the compact menu while the theme follows the system', async () => {
+    const wrapper = mountApp();
+    await flushPromises();
+
+    expect(useSettingsStore().get('theme')).toBe('system');
+    expect(wrapper.find('.theme-toggle').exists()).toBe(false);
+    const items = wrapper.findAll('.top-nav-menu__popover [role="menuitem"]');
+    expect(items.map((item) => item.text())).toEqual([
+      'Report a bug',
+      'Give feedback',
+      'Settings',
+      'Appointment',
+      'Send',
+    ]);
+    // The gear itself stays: it is how the toggle comes back.
+    expect(wrapper.find('[data-settings-gear]').exists()).toBe(true);
   });
 
   it('updates the document title with the signed-in account email', async () => {
@@ -689,22 +811,23 @@ describe('App mail layout', () => {
     expect(wrapper.get('.app-spaces__badge').text()).toBe('3');
   });
 
-  it('closes the Thundermail menu when clicking outside it', async () => {
+  it('closes the app drawer when clicking outside it', async () => {
     const wrapper = mountApp();
     await nextTick();
 
-    const appMenu = wrapper.get('.app-menu').element as HTMLDetailsElement;
-    appMenu.open = true;
+    const drawer = wrapper.get('.app-drawer').element as HTMLDetailsElement;
+    drawer.open = true;
 
     dispatchClick(document.body);
     await nextTick();
 
-    expect(appMenu.open).toBe(false);
+    expect(drawer.open).toBe(false);
   });
 
   it('renders bug report and feedback links next to the theme toggle', async () => {
+    window.localStorage?.setItem('stormbox.theme.v1', 'dark');
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const bugLink = wrapper.get('.quick-filter__action[aria-label="Report a bug"]');
     expect(bugLink.attributes('href')).toBe(BUG_REPORT_URL);

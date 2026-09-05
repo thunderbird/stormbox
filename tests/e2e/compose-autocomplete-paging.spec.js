@@ -221,7 +221,7 @@ test.describe('Autocomplete across contact pages', () => {
 
       // Now from the composer, by that name word: it appears nowhere in the
       // address, so only the name index can answer it (CS-3.2).
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       const toField = page.locator('.compose-dialog #compose-to');
       await toField.click();

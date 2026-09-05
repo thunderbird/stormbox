@@ -39,7 +39,7 @@ import {
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
 async function openCompose(page) {
-  await page.keyboard.press('ControlOrMeta+n');
+  await page.keyboard.press('c');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
   await waitForIdentities(page);
 }

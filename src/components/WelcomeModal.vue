@@ -19,8 +19,10 @@ import {
 } from 'vue';
 
 import { useModalFocus } from '../composables/useModalFocus';
-import { isMacPlatform, shortcutModifierLabel } from '../utils/keyboard';
+import { shortcutHint, type ShortcutAction } from '../constants/shortcuts';
+import { useSettingsStore } from '../stores/settings-store';
 import AppButton from './AppButton.vue';
+import ShortcutSchemePicker from './settings/ShortcutSchemePicker.vue';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const emit = defineEmits<{
@@ -45,8 +47,8 @@ const activeSpotlight = ref<SpotlightId | null>(null);
 const spotlightBaseRect = ref<DOMRect | null>(null);
 const spotlightTransform = ref('translateY(-220px)');
 const composeToolbarTransform = ref('translate(0, -180px)');
-const modifierKey = computed(shortcutModifierLabel);
-const deleteKey = computed(() => (isMacPlatform() ? 'Backspace' : 'Delete'));
+const settingsStore = useSettingsStore();
+const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
 const SPOTLIGHT_DURATION_MS = 2600;
 const LONG_SPOTLIGHT_DURATION_MS = 4200;
 const QUICK_FILTER_CARD_OFFSET = 14;
@@ -70,7 +72,7 @@ const features = [
   {
     icon: MailPlus,
     title: 'Compose, reply, and forward',
-    description: 'Start a new message or respond from the reading pane with Thunderbird-style shortcuts.',
+    description: 'Start a new message or respond from the reading pane without leaving the keyboard.',
     spotlight: 'composeActions',
   },
   {
@@ -93,40 +95,55 @@ const features = [
   },
 ] as const;
 
-const shortcutGroups = computed(() => [
+// Actions per heading; rows the active scheme does not bind are dropped.
+const SHORTCUT_GROUPS: ReadonlyArray<{
+  title: string;
+  shortcuts: ReadonlyArray<{ action: ShortcutAction; label: string }>;
+}> = [
   {
     title: 'Navigate',
     shortcuts: [
-      { keys: 'F', action: 'Next message' },
-      { keys: 'B', action: 'Previous message' },
-      { keys: 'N', action: 'Next unread message' },
-      { keys: 'P', action: 'Previous unread message' },
-      { keys: 'Home', action: 'First loaded message' },
-      { keys: 'End', action: 'Last loaded message' },
+      { action: 'next', label: 'Next message' },
+      { action: 'previous', label: 'Previous message' },
+      { action: 'nextUnread', label: 'Next unread message' },
+      { action: 'previousUnread', label: 'Previous unread message' },
+      { action: 'first', label: 'First loaded message' },
+      { action: 'last', label: 'Last loaded message' },
     ],
   },
   {
     title: 'Message actions',
     shortcuts: [
-      { keys: 'A', action: 'Archive selected messages' },
-      { keys: 'M', action: 'Mark selected messages read or unread' },
-      { keys: deleteKey.value, action: 'Delete selected messages' },
-      { keys: `Shift+${deleteKey.value}`, action: 'Permanently delete selected messages' },
-      { keys: `${modifierKey.value}+A`, action: 'Select all loaded messages' },
-      { keys: 'Esc', action: 'Clear the current selection' },
+      { action: 'archive', label: 'Archive selected messages' },
+      { action: 'markRead', label: 'Mark selected messages read' },
+      { action: 'markUnread', label: 'Mark selected messages unread' },
+      { action: 'toggleRead', label: 'Mark selected messages read or unread' },
+      { action: 'delete', label: 'Delete selected messages' },
+      { action: 'deleteForever', label: 'Permanently delete selected messages' },
+      { action: 'selectAll', label: 'Select all loaded messages' },
+      { action: 'clearSelection', label: 'Clear the current selection' },
     ],
   },
   {
     title: 'Find and compose',
     shortcuts: [
-      { keys: `${modifierKey.value}+K`, action: 'Focus Quick Filter' },
-      { keys: `${modifierKey.value}+N or ${modifierKey.value}+M`, action: 'New message' },
-      { keys: `${modifierKey.value}+R`, action: 'Reply' },
-      { keys: `Shift+${modifierKey.value}+R`, action: 'Reply all' },
-      { keys: `${modifierKey.value}+L`, action: 'Forward' },
+      { action: 'quickFilter', label: 'Focus Quick Filter' },
+      { action: 'compose', label: 'New message' },
+      { action: 'reply', label: 'Reply' },
+      { action: 'replyAll', label: 'Reply all' },
+      { action: 'forward', label: 'Forward' },
     ],
   },
-]);
+];
+
+const shortcutGroups = computed(() => SHORTCUT_GROUPS.map((group) => ({
+  title: group.title,
+  shortcuts: group.shortcuts.flatMap(({ action, label }) => {
+    const keys = shortcutHint(action, shortcutScheme.value);
+    return keys ? [{ keys, action: label }] : [];
+  }),
+})));
+
 
 const featureSpotlightStyle = computed(() => ({
   '--spotlight-transform': spotlightTransform.value,
@@ -359,7 +376,7 @@ onBeforeUnmount(() => {
               <div class="welcome__hero-text">
                 <h1 id="welcome-title">Welcome to Thundermail</h1>
                 <p id="welcome-summary" class="welcome__summary">
-                  A fast, keyboard-friendly mail experience with the Thunderbird actions you expect
+                  A fast, keyboard-friendly mail experience with the actions you expect
                 </p>
               </div>
             </div>
@@ -401,6 +418,12 @@ onBeforeUnmount(() => {
           <div class="welcome__section-heading">
             <Keyboard :size="18" :stroke-width="2" aria-hidden="true" />
             <h2 id="welcome-shortcuts">Keyboard Shortcuts</h2>
+          </div>
+
+          <div class="welcome__scheme">
+            <span id="welcome-scheme-label" class="welcome__scheme-label">Shortcut style</span>
+            <ShortcutSchemePicker labelled-by="welcome-scheme-label" />
+            <span class="welcome__scheme-hint">Web keys stay clear of your browser's shortcuts. Change this later from Settings.</span>
           </div>
 
           <div class="welcome__shortcut-groups">
@@ -677,6 +700,29 @@ onBeforeUnmount(() => {
   letter-spacing: 0;
 }
 
+.welcome__scheme {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.welcome__scheme-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.welcome__scheme-hint {
+  flex-basis: 100%;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .welcome__shortcut-groups {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -751,6 +797,7 @@ kbd {
   .welcome__logo-wrap,
   .welcome__section-block > h2,
   .welcome__section-heading,
+  .welcome__scheme,
   .welcome__shortcut-groups,
   .welcome__footer
 ) {
@@ -768,6 +815,7 @@ kbd {
   .welcome__logo-wrap,
   .welcome__section-block > h2,
   .welcome__section-heading,
+  .welcome__scheme,
   .welcome__feature,
   .welcome__shortcut-groups,
   .welcome__footer

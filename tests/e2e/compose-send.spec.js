@@ -122,10 +122,7 @@ test.describe('Compose + send e2e', () => {
       await clickFolder(page, sent.name);
       await clickFolder(page, 'Inbox');
 
-      // Open compose. Ctrl+N is the documented compose shortcut and is
-      // already exercised in keyboard-shortcuts.spec.js; we use the UI
-      // path here so this spec stands alone.
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
 
       // Identities sync runs in the background after connect; under

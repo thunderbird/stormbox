@@ -143,7 +143,7 @@ test.describe('Contacts + Junk whitelist e2e', () => {
       await destroyCardsForEmail(jmap, recipient);
       for (const subject of subjects) {
         await page.getByRole('button', { name: 'Mail', exact: true }).click().catch(() => {});
-        await page.keyboard.press('ControlOrMeta+n');
+        await page.keyboard.press('c');
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
         await waitForIdentities(page);
         await fillRecipient(page, 'To', recipient);

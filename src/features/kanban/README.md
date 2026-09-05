@@ -19,18 +19,19 @@ checked row carries the whole selection; bulk actions and drops refresh
 every column showing the source or destination folder.
 
 The feature is off for everyone until the account enters the code `kanban`
-in the gear dialog (`StaffGearButton`, visible only when `authStore.isStaff`).
-With the flag off, nothing in Stormbox changes.
+under "Staff settings" in the Settings dialog
+(`src/components/settings/SettingsDialog.vue`; the section is rendered only
+when `authStore.isStaff`). With the flag off, nothing in Stormbox changes.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
 | `kanban-store.ts` | Pinia store; `unlocked` / `enabled` / column picks persisted in `localStorage` per account (`stormbox.kanban.<accountId>.v1`); column widths (`stormbox.kanban.columnWidths.v1`) and `compactBoardWidth`, which `App.vue` reads to size the shell grid; the in-memory board selection (`selectionFolderId` / `selectedIds`). |
-| `StaffGearButton.vue` | Gear in the top bar; opens the dialog, fires the first-unlock celebration (fireworks + clip + docked volume pill) and seeding. |
-| `KanbanUnlockDialog.vue` | Code textbox until unlocked, then an on/off switch. |
+| `StaffSettingsSection.vue` | Async "Staff settings" body of the Settings dialog: Bolt colors switch, code textbox until unlocked, then an on/off switch plus seed retry; requests the first-unlock celebration and seeding. |
+| `KanbanCelebration.vue` | Mounted by `App.vue` for staff; runs the fireworks + clip + docked volume pill for each `kanbanStore.requestCelebration()` so the effect outlives the dialog. |
 | `KanbanBoard.vue` | Three `KanbanColumn`s, the primary one bound to the sidebar's folder (board-driven `selectFolder` calls made to open a row are skipped), folder resolution by JMAP mailbox id, open-message flow, resize handles via `useColumnResize`; the hidden third column is paused in compact mode. |
-| `KanbanColumn.vue` | One folder's rows (virtualised), `SelectableListHeader` (title or picker, filter-aware count; bulk toolbar while rows are checked), selection via `useListSelection` mirrored into the store, keyboard cursor (Arrow/Home/End/Enter; owns the f/b/n/p shortcuts once focused), drop target; `shadowed` empties it when its pick is the primary folder. |
+| `KanbanColumn.vue` | One folder's rows (virtualised), `SelectableListHeader` (title or picker, filter-aware count; bulk toolbar while rows are checked), selection via `useListSelection` mirrored into the store, keyboard cursor (Arrow/Home/End/Enter; owns the next/previous(-unread) shortcuts of the active scheme — `j`/`k`/`n`/`p` in `web`, `f`/`b`/`n`/`p` in `thunderbird` — once focused), drop target; `shadowed` empties it when its pick is the primary folder. |
 | `KanbanColumnPicker.vue` | Folder dropdown; excludes the folders the other columns show; "Leave empty" clears the slot. |
 | `useFolderWindow.ts` | Cache-first pager for a folder that is not the store's current folder, refreshed on `MESSAGES` broadcasts; can be paused; Quick Filter scans are capped at `QUICK_FILTER_MAX_ROWS`. |
 | `kanban-seed.ts`, `kanban-seed-data.ts` | One-time creation of "Needs Reply" (15) and "Blocked" (23) with static sample mail via the `CREATE_EMAILS` outbox operation. A folder is seeded at most once (server counts are refreshed first); a failed seed can be retried from the dialog. |
@@ -38,7 +39,7 @@ With the flag off, nothing in Stormbox changes.
 
 ## Touch points outside this directory
 
-- `src/App.vue`: lazily renders `StaffGearButton` (staff only) and swaps
+- `src/App.vue`: lazily renders `KanbanCelebration` (staff only) and swaps
   `MessageList` for `KanbanBoard` while `kanbanStore.enabled`; in compact
   mode the shell's list track is `kanbanStore.compactBoardWidth` and the
   message-view resizer is dropped (the board's own handles size the pane).
@@ -70,11 +71,14 @@ With the flag off, nothing in Stormbox changes.
 ## Removal
 
 1. `rm -r src/features/kanban tests/unit/features/kanban tests/e2e/kanban.spec.js`
-2. In `src/App.vue` drop the `StaffGearButton` / `KanbanBoard` async
+2. In `src/App.vue` drop the `KanbanCelebration` / `KanbanBoard` async
    components, the `useKanbanStore()` call, `kanbanCompact` and its uses
    (the `shell--kanban-compact` class and CSS, the `availablePaneWidth` /
    `sidebarNeighbourReserve` branches, the `v-if` on the message-list
-   resizer), the `<StaffGearButton v-if="authStore.isStaff" />` element, the
+   resizer), the `<KanbanCelebration v-if="authStore.isStaff" />` element,
+   the `StaffSettingsSection` async import in
+   `src/components/settings/SettingsDialog.vue` (the palette switch moves
+   back into the dialog body), the
    `<KanbanBoard v-if=…>` branch (make `MessageList` a plain
    `v-if="displayedMessageList"` again) and the `.shell > .kanban-board` rule.
    `useColumnResize` can stay (the shell uses it) or be inlined again.

@@ -502,7 +502,7 @@ test.describe('Attachment browser coverage', () => {
     try {
       await clickFolder(page, sent.name);
       await clickFolder(page, 'Inbox');
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       const composer = page.locator('.compose-dialog--expanded');
       await expect(composer).toBeVisible();
       await waitForIdentities(page);

@@ -8,9 +8,10 @@ import {
   ref,
   watch,
 } from 'vue';
-import { onClickOutside, useTitle } from '@vueuse/core';
-import { Bug, ChevronDown, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
+import { useTitle } from '@vueuse/core';
+import { Bug, Lightbulb, Moon, Plus, Sun, X } from '@lucide/vue';
 import AppButton from './components/AppButton.vue';
+import mailGlyph from './assets/icons/tb-mail-glyph.svg?raw';
 
 import { useColumnResize } from './composables/useColumnResize';
 import {
@@ -19,7 +20,7 @@ import {
 } from './composables/useDirectoryColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
-import { APPOINTMENT_URL, BUG_REPORT_URL, FEEDBACK_URL, SEND_URL } from './defines';
+import { BUG_REPORT_URL, FEEDBACK_URL } from './defines';
 
 import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
@@ -27,8 +28,8 @@ import { useContactsStore } from './stores/contacts-store';
 import { useComposeStore } from './stores/compose-store';
 import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
-import type { Theme } from './constants/settings';
-import { shortcutModifierAria, shortcutModifierLabel } from './utils/keyboard';
+import type { Palette, Theme } from './constants/settings';
+import { shortcutAria, shortcutHint } from './constants/shortcuts';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -40,17 +41,21 @@ import ContactsView from './components/ContactsView.vue';
 import StorageUsageBar from './components/StorageUsageBar.vue';
 import StoreErrorToast from './components/StoreErrorToast.vue';
 import BulkOperationOverlay from './components/BulkOperationOverlay.vue';
-import ThundermailLogo from './components/ThundermailLogo.vue';
+import AppDrawer from './components/AppDrawer.vue';
+import TopNavMenu from './components/TopNavMenu.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 import WelcomeModal from './components/WelcomeModal.vue';
-// Staff-only Kanban feature (src/features/kanban): the gear button gates
-// the flag; the board replaces MessageList only while the flag is on.
-// Both are async so a non-staff session never downloads the feature
-// (the gear chunk carries the dialog, fireworks and audio clip).
+import SettingsDialog from './components/settings/SettingsDialog.vue';
+import SettingsGearButton from './components/settings/SettingsGearButton.vue';
+// Staff-only Kanban feature (src/features/kanban): the settings dialog's
+// staff section gates the flag; the board replaces MessageList only while
+// the flag is on. Both staff pieces are async so a non-staff session never
+// downloads the feature (the celebration chunk carries fireworks and the
+// audio clip).
 import { useKanbanStore } from './features/kanban/kanban-store';
 
-const StaffGearButton = defineAsyncComponent(() => import('./features/kanban/StaffGearButton.vue'));
 const KanbanBoard = defineAsyncComponent(() => import('./features/kanban/KanbanBoard.vue'));
+const KanbanCelebration = defineAsyncComponent(() => import('./features/kanban/KanbanCelebration.vue'));
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -79,15 +84,19 @@ const quickFilterSpotlight = ref(false);
 const resizeLayoutSpotlight = ref(false);
 const composeActionSpotlight = ref(false);
 const quickFilterPlaceholder = computed(() =>
-  space.value === 'contacts' ? 'Filter contacts or identities' : 'Filter messages..',
+  space.value === 'contacts' ? 'Filter contacts or identities' : 'Filter messages',
 );
 const quickFilterAriaLabel = computed(() =>
   space.value === 'contacts'
     ? 'Filter contacts or identities by name or email address'
     : 'Quick Filter messages by from, to, or subject',
 );
-const quickFilterShortcutLabel = `${shortcutModifierLabel()}+K`;
-const quickFilterAriaShortcut = `${shortcutModifierAria()}+K`;
+const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
+// The badge shows the scheme's first key; aria lists every binding.
+const quickFilterShortcutLabel = computed(() =>
+  shortcutHint('quickFilter', shortcutScheme.value)?.split(' or ')[0] ?? '');
+const quickFilterAriaShortcut = computed(() =>
+  shortcutAria('quickFilter', shortcutScheme.value) ?? undefined);
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
@@ -130,17 +139,22 @@ const MAX_COLUMN_WIDTHS = {
 };
 const shellEl = ref<HTMLElement | null>(null);
 const quickFilterInputEl = ref<HTMLInputElement | null>(null);
-const appMenuEl = ref<HTMLDetailsElement | null>(null);
 const theme = computed<Theme>(() => settingsStore.get('theme'));
 const appliedTheme = ref<'dark' | 'light'>(resolveTheme(theme.value));
 applyTheme(theme.value);
 watch(theme, (value) => applyTheme(value));
+const palette = computed<Palette>(() => settingsStore.get('palette'));
+applyPalette(palette.value);
+watch(palette, (value) => applyPalette(value));
 const themeToggleLabel = computed(() =>
   appliedTheme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
+const showSettingsDialog = ref(false);
+// With 'system' the OS decides, so a manual light/dark button would fight it.
+const showThemeToggle = computed(() => theme.value !== 'system');
 const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
 );
@@ -229,15 +243,12 @@ useThunderbirdShortcuts({
   focusQuickFilter: focusQuickFilterInput,
 });
 
-onClickOutside(appMenuEl, () => {
-  if (appMenuEl.value?.open) appMenuEl.value.open = false;
-});
-
 let appMounted = false;
 
 onMounted(async () => {
   appMounted = true;
   applyTheme(theme.value);
+  applyPalette(palette.value);
   watchSystemTheme();
   applyResponsiveLayout();
   clampColumnWidths();
@@ -626,6 +637,13 @@ function applyTheme(value: Theme) {
   root.style.colorScheme = resolved;
 }
 
+// The stylesheets default to the classic palette; `palette-bolt` on <html>
+// activates every Bolt override in assets/bolt-theme.css.
+function applyPalette(value: Palette) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.classList.toggle('palette-bolt', value === 'bolt');
+}
+
 let systemThemeMedia: MediaQueryList | null = null;
 
 function onSystemThemeChange() {
@@ -666,36 +684,20 @@ function clamp(value: number, min: number, max: number) {
     }"
     :style="shellStyle"
   >
-    <div class="quick-filter">
-      <details ref="appMenuEl" class="app-menu">
-        <summary class="app-menu__button" aria-label="Open Thundermail menu">
-          <ThundermailLogo :size="26" class="app-menu__logo" aria-hidden="true" />
-          <span>Thundermail</span>
-          <ChevronDown class="app-menu__chevron" :size="14" :stroke-width="2" aria-hidden="true" />
-        </summary>
-        <div class="app-menu__popover" role="menu">
-          <a
-            class="app-menu__item"
-            :href="APPOINTMENT_URL"
-            target="_blank"
-            rel="noopener noreferrer"
-            role="menuitem"
-          >
-            <img src="/icons/icon-appointment.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
-            <span>Appointment</span>
-          </a>
-          <a
-            class="app-menu__item"
-            :href="SEND_URL"
-            target="_blank"
-            rel="noopener noreferrer"
-            role="menuitem"
-          >
-            <img src="/icons/icon-send.svg" class="app-menu__item-icon" alt="" aria-hidden="true" />
-            <span>Send</span>
-          </a>
-        </div>
-      </details>
+    <header class="quick-filter">
+      <div class="quick-filter__brand">
+        <span class="quick-filter__glyph" aria-hidden="true" v-html="mailGlyph" />
+        <span class="quick-filter__wordmark">Mail</span>
+      </div>
+
+      <TopNavMenu
+        class="quick-filter__menu"
+        :theme="appliedTheme"
+        :theme-toggle-label="themeToggleLabel"
+        :show-theme-toggle="showThemeToggle"
+        @toggle-theme="toggleTheme"
+        @open-settings="showSettingsDialog = true"
+      />
 
       <div
         class="quick-filter__search"
@@ -753,7 +755,9 @@ function clamp(value: number, min: number, max: number) {
         >
           <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
         </a>
+        <SettingsGearButton @open="showSettingsDialog = true" />
         <button
+          v-if="showThemeToggle"
           class="quick-filter__action theme-toggle"
           type="button"
           :aria-label="themeToggleLabel"
@@ -763,10 +767,10 @@ function clamp(value: number, min: number, max: number) {
           <Sun v-if="appliedTheme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
           <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         </button>
-        <StaffGearButton v-if="authStore.isStaff" />
+        <AppDrawer />
         <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
       </div>
-    </div>
+    </header>
 
     <AppSpaces
       :active="space"
@@ -886,6 +890,12 @@ function clamp(value: number, min: number, max: number) {
       @spotlight-resize-layout="spotlightResizeLayout"
       @spotlight-compose-actions="spotlightComposeActions"
     />
+    <SettingsDialog
+      v-if="showSettingsDialog"
+      :applied-theme="appliedTheme"
+      @close="showSettingsDialog = false"
+    />
+    <KanbanCelebration v-if="authStore.isStaff" />
   </div>
 </template>
 
@@ -900,14 +910,23 @@ function clamp(value: number, min: number, max: number) {
   --space-rail-bg: color-mix(in srgb, var(--panel) 88%, #fff);
   --space-rail-fg: var(--muted);
   --folder-list-bg: color-mix(in srgb, var(--panel) 96%, #fff);
-  --app-menu-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
+  /* Top nav: same 56px band as before, sharing the rail's surface. The
+     Bolt palette (assets/bolt-theme.css) re-points these tokens. */
+  --top-nav-height: 56px;
+  --top-nav-bg: var(--space-rail-bg);
+  --top-nav-border: var(--border);
+  --top-nav-shadow: transparent;
+  --top-nav-wordmark: var(--accent);
+  --top-nav-input-bg: var(--surface);
+  --top-nav-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
 }
 
 html.light,
 .light {
   --space-rail-bg: color-mix(in srgb, var(--panel2) 96%, #000);
   --folder-list-bg: color-mix(in srgb, var(--panel) 97%, #000);
-  --app-menu-popover-bg: var(--panel2);
+  --top-nav-wordmark: var(--accent);
+  --top-nav-popover-bg: var(--panel2);
 }
 
 .shell {
@@ -998,29 +1017,68 @@ html.light,
 .quick-filter {
   grid-column: 1 / -1;
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
-  column-gap: 12px;
-  min-height: 56px;
-  padding: 10px 16px;
-  background: var(--space-rail-bg);
-  border-bottom: 1px solid var(--border);
+  column-gap: 16px;
+  height: var(--top-nav-height);
+  padding: 0 16px 0 14px;
+  background: var(--top-nav-bg);
+  /* Hairline as an inset shadow, not a border: keeps the content box the
+   * full 56px so even-height items centre on whole pixels. */
+  box-shadow: inset 0 -1px 0 var(--top-nav-border);
 }
-.quick-filter > .app-menu {
-  justify-self: start;
-  position: relative;
-  z-index: 30;
-  margin-left: -7px;
+/* Drop shadow onto the panes below. The bar itself carries no z-index so
+ * the welcome tour can still lift .quick-filter__search above its backdrop. */
+.quick-filter::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(to bottom, var(--top-nav-shadow), transparent);
+  pointer-events: none;
 }
-.quick-filter > .quick-filter__search {
-  justify-self: center;
-}
-.quick-filter__actions {
-  justify-self: end;
+.quick-filter__brand {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 36px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.quick-filter__glyph {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  color: var(--accent);
+}
+.quick-filter__glyph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.quick-filter__wordmark {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--top-nav-wordmark);
+}
+/* Compact layouts only; see the 639px media query. */
+.quick-filter__menu {
+  display: none;
+}
+.quick-filter__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.quick-filter__actions > .account-menu {
+  margin-left: 2px;
 }
 .quick-filter__action,
 .quick-filter__action.theme-toggle {
@@ -1045,89 +1103,11 @@ html.light,
   border-color: var(--border-soft);
   outline: none;
 }
-.app-menu__button {
-  min-height: 36px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px 4px 6px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 600;
-  list-style: none;
-  user-select: none;
-}
-.app-menu__button::-webkit-details-marker {
-  display: none;
-}
-.app-menu__button:hover,
-.app-menu__button:focus-visible,
-.app-menu[open] .app-menu__button {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
-  outline: none;
-}
-.app-menu[open] .app-menu__button {
-  position: relative;
-  z-index: 31;
-  background: var(--app-menu-popover-bg);
-  border-color: var(--border);
-}
-.app-menu__logo,
-.app-menu__item-icon {
-  display: block;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  flex-shrink: 0;
-}
-.app-menu__chevron {
-  color: var(--muted);
-  transition: transform 0.12s ease;
-}
-.app-menu[open] .app-menu__chevron {
-  transform: rotate(180deg);
-}
-.app-menu__popover {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% - 1px);
-  left: 0;
-  min-width: 240px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--app-menu-popover-bg);
-  box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
-}
-.app-menu[open] .app-menu__popover {
-  margin-top: 4px;
-}
-.app-menu__item-icon {
-  filter: drop-shadow(0 2px 3px color-mix(in srgb, #000 20%, transparent));
-}
-.app-menu__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 42px;
-  padding: 8px 10px 8px 0;
-  border-radius: 8px;
-  color: var(--text);
-  font-weight: 600;
-  text-decoration: none;
-}
-.app-menu__item:hover,
-.app-menu__item:focus-visible {
-  background: var(--rowHover);
-  outline: none;
-}
 .quick-filter__search {
   position: relative;
-  width: clamp(160px, 40vw, 520px);
+  flex: 0 1 360px;
+  min-width: 160px;
+  margin: 0 auto;
 }
 .quick-filter__search--spotlight {
   z-index: 130;
@@ -1137,7 +1117,7 @@ html.light,
   position: absolute;
   inset: -7px;
   border: 1px solid color-mix(in srgb, var(--accent) 78%, #fff);
-  border-radius: 999px;
+  border-radius: 15px;
   box-shadow:
     0 0 0 7px color-mix(in srgb, var(--accent) 18%, transparent),
     0 18px 46px color-mix(in srgb, #000 32%, transparent);
@@ -1146,16 +1126,15 @@ html.light,
 }
 .quick-filter__input {
   width: 100%;
-  min-height: 36px;
+  height: 36px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
+  border-radius: 8px;
+  background: var(--top-nav-input-bg);
   color: var(--text);
   font: inherit;
   font-size: 14px;
-  padding: 0 40px 0 16px;
+  padding: 0 40px 0 14px;
   outline: none;
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
 }
 .quick-filter__input--empty {
   padding-right: 70px;
@@ -1255,7 +1234,7 @@ html.light,
        (CS-2.9). Nothing else occupies the band between the mail columns and
        the dialog, so this only reorders those two. */
     z-index: 40;
-    top: 56px;
+    top: var(--top-nav-height);
     bottom: 0;
     left: 56px;
     width: min(var(--folder-list-width, 240px), calc(100vw - 56px));
@@ -1283,20 +1262,28 @@ html.light,
   .shell--message-list-hidden > .message-view {
     grid-column: 2 / -1;
   }
+  /* Same 56px band: glyph, full-width filter, menu and avatar in one row.
+     The wordmark and the desktop-only actions give the filter their room. */
   .quick-filter {
-    grid-template-columns: auto 1fr auto;
     column-gap: 8px;
-    padding-left: 8px;
-    padding-right: 8px;
+    padding: 0 8px;
   }
-  .app-menu__button span {
+  .quick-filter__wordmark {
     display: none;
   }
-  .quick-filter > .quick-filter__search {
-    justify-self: stretch;
-  }
   .quick-filter__search {
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+  }
+  .quick-filter__menu {
+    display: block;
+  }
+  .quick-filter__actions > :not(.account-menu) {
+    display: none;
+  }
+  .quick-filter__actions > .account-menu {
+    margin-left: 0;
   }
 }
 
@@ -1316,7 +1303,7 @@ html.light,
     grid-row: 3;
   }
   .shell .sidebar-slot {
-    top: 56px;
+    top: var(--top-nav-height);
     bottom: var(--spaces-bar-height);
     left: 0;
     width: min(var(--folder-list-width, 240px), 100vw);

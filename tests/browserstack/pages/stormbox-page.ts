@@ -60,10 +60,10 @@ export class StormboxPage {
     this.page = page;
     this.shell = page.locator('.shell');
     this.signInButton = page.locator('.login-card__signin');
-    this.thundermailMenu = page.locator('.app-menu');
-    this.thundermailMenuButton = page.locator('.app-menu__button[aria-label="Open Thundermail menu"]');
-    this.appointmentMenuItem = page.locator('.app-menu__popover').getByRole('menuitem', { name: /^appointment$/i });
-    this.sendMenuItem = page.locator('.app-menu__popover').getByRole('menuitem', { name: /^send$/i });
+    this.thundermailMenu = page.locator('.app-drawer');
+    this.thundermailMenuButton = page.locator('.app-drawer__button[aria-label="Open app drawer"]');
+    this.appointmentMenuItem = page.locator('.app-drawer__popover').getByRole('menuitem', { name: /^appointment$/i });
+    this.sendMenuItem = page.locator('.app-drawer__popover').getByRole('menuitem', { name: /^send$/i });
     this.quickFilter = page.locator('.quick-filter__input');
     this.newMessageButton = page.getByRole('button', { name: /new message/i });
     this.mailboxesNav = page.getByRole('navigation', { name: /mailboxes/i });

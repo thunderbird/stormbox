@@ -20,11 +20,11 @@ permissions:
   actions: read
   contents: read
 
-# Allow only one CI/deploy workflow per ref. PR runs queue independently
-# from main so a long-running PR check never blocks a main deploy.
+# Keep one CI/deploy workflow per ref. Superseded PR runs cancel, while main
+# and manually dispatched deploy runs finish.
 concurrency:
   group: "cloudflare-pages-${{ github.ref }}"
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   unit-test:
@@ -74,9 +74,13 @@ jobs:
         run: npm run typecheck
 
   e2e-test:
-    name: E2E tests
+    name: E2E tests (${{ matrix.browser }})
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -93,7 +97,7 @@ jobs:
         run: npm ci
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox
+        run: npx playwright install --with-deps ${{ matrix.browser }}
 
       - name: Prepare local e2e stack config
         run: |
@@ -172,8 +176,9 @@ jobs:
       - name: Run Playwright local-stack tests
         env:
           PLAYWRIGHT_NO_REUSE: "1"
+          INCLUDE_CHROMIUM: "1"
           CI: "1"
-        run: npm run test:e2e:local:full
+        run: npm run test:e2e:local -- --project=${{ matrix.browser }}
 
       - name: Dump local e2e stack logs
         if: failure()
@@ -185,7 +190,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.browser }}
           path: |
             playwright-report/
             test-results/

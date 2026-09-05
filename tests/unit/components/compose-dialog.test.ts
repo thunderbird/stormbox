@@ -733,6 +733,38 @@ describe('ComposeDialog send control', () => {
     expect(send.attributes('disabled')).toBeUndefined();
   });
 
+  it('Ctrl+Enter sends from anywhere in the dialog, under the Send button\'s own guard', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const sendSpy = vi.spyOn(composeStore, 'send').mockResolvedValue(undefined as any);
+    const editor = wrapper.get('.editor').element as HTMLElement;
+
+    // A plain Enter is a newline, not a send.
+    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    const chord = new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    editor.dispatchEvent(chord);
+    await flushPromises();
+    expect(chord.defaultPrevented).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(sendSpy).toHaveBeenCalledWith(composeStore.activeSessionId);
+
+    // Same guard as the button: while an attachment is in preflight, the
+    // chord is swallowed but does not send.
+    composeStore.activeSession!.attachmentPreflights.push({ id: 'p', accountId: 1 });
+    await nextTick();
+    expect(wrapper.get('footer .compose-send').attributes('disabled')).toBeDefined();
+    const blocked = new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    editor.dispatchEvent(blocked);
+    await flushPromises();
+    expect(blocked.defaultPrevented).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps Send offered while an unconfirmed send holds the draft open', async () => {
     // When the outcome is unknown and no server copy is known, the store
     // keeps the dialog open with a warning to check Sent first. Send is

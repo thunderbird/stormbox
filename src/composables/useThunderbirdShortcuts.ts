@@ -1,10 +1,11 @@
 /**
- * Thunderbird-standard keyboard shortcuts for the mail UI.
+ * Global keyboard shortcuts for the mail UI.
  *
- * Bound at the App shell so shortcuts work regardless of which pane
- * has focus. Compose editor formatting keys are handled by Squire.
- *
- * Reference: https://support.mozilla.org/kb/keyboard-shortcuts-thunderbird
+ * Bound at the App shell so shortcuts work regardless of which pane has
+ * focus. Key bindings come from the scheme table selected by the
+ * `shortcutScheme` setting (`constants/shortcuts.ts`); this file only
+ * maps the resolved action onto store calls. Compose editor formatting
+ * keys are handled by Squire.
  */
 
 import {
@@ -13,15 +14,21 @@ import {
   type Ref,
 } from 'vue';
 
+import {
+  prefixForEvent,
+  resolveShortcut,
+  type ShortcutAction,
+} from '../constants/shortcuts';
 import { useMailStore } from '../stores/mail-store';
 import { useComposeStore } from '../stores/compose-store';
+import { useSettingsStore } from '../stores/settings-store';
 import {
   isComposingKeyEvent,
-  isDeleteKey,
   isEditableTarget,
-  isModKey,
-  matchesShortcut,
 } from '../utils/keyboard';
+
+/** How long a sequence prefix such as `*` waits for its second key. */
+export const SHORTCUT_PREFIX_TIMEOUT_MS = 1500;
 
 export interface UseThunderbirdShortcutsOptions {
   /** Current app space ('mail' | 'contacts'). */
@@ -98,6 +105,37 @@ export function useThunderbirdShortcuts({
 }: UseThunderbirdShortcutsOptions) {
   const mailStore = useMailStore();
   const composeStore = useComposeStore();
+  const settingsStore = useSettingsStore();
+
+  let pendingPrefix: string | null = null;
+  let pendingPrefixTimer: number | null = null;
+
+  function clearPendingPrefix() {
+    pendingPrefix = null;
+    if (pendingPrefixTimer != null) {
+      window.clearTimeout(pendingPrefixTimer);
+      pendingPrefixTimer = null;
+    }
+  }
+
+  function startPendingPrefix(prefix: string) {
+    clearPendingPrefix();
+    pendingPrefix = prefix;
+    pendingPrefixTimer = window.setTimeout(() => {
+      pendingPrefixTimer = null;
+      pendingPrefix = null;
+    }, SHORTCUT_PREFIX_TIMEOUT_MS);
+  }
+
+  function targetsForMessageAction(action: ShortcutAction): number[] | null {
+    const targetIds = getTargetIds(mailStore);
+    if (targetIds.length === 0) return null;
+    // Scheduled (Send Later) mail is read-only outgoing mail: archive and
+    // delete stand down for it exactly as the hidden toolbar buttons do.
+    const mutatesScheduled = action === 'archive' || action === 'delete' || action === 'deleteForever';
+    if (mutatesScheduled && hasScheduledTarget(mailStore, targetIds)) return [];
+    return targetIds;
+  }
 
   async function onKeyDown(event: KeyboardEvent) {
     if (event.defaultPrevented) return;
@@ -145,126 +183,117 @@ export function useThunderbirdShortcuts({
       return;
     }
 
-    if (matchesShortcut(event, { key: 'k', mod: true })) {
+    const scheme = settingsStore.get('shortcutScheme');
+    const editable = isEditableTarget(event.target);
+    const resolved = resolveShortcut(event, scheme, pendingPrefix);
+
+    // Quick Filter is shared by every space and its chord form works
+    // from inside a text field; `/` does not, so typing it still works.
+    if (resolved?.action === 'quickFilter') {
+      if (editable && !resolved.binding.inEditable) return;
       event.preventDefault();
       focusQuickFilter?.();
       return;
     }
 
     if (space.value !== 'mail') return;
+    if (editable) return;
 
-    if (isEditableTarget(event.target)) return;
-
-    const mod = isModKey(event);
-
-    // --- Compose / reply / forward ---
-    if (matchesShortcut(event, { key: 'n', mod: true }) || matchesShortcut(event, { key: 'm', mod: true })) {
+    const prefix = prefixForEvent(event, scheme);
+    if (prefix) {
       event.preventDefault();
-      composeStore.open();
+      startPendingPrefix(prefix);
       return;
     }
+    clearPendingPrefix();
 
-    // Scheduled (Send Later) messages are read-only outgoing mail, so
-    // the reply/forward shortcuts stand down for them just like the
-    // hidden toolbar buttons.
-    const singleTarget = getSingleMessage(mailStore);
-    const single = singleTarget?.scheduled_undo_status == null ? singleTarget : null;
-    // The reply prefills read the parent's addresses from the cache, so
-    // they settle a tick later. The handler stays synchronous — it has a
-    // keystroke to preventDefault — and the composer opens when the read
-    // returns, which is the same latency the toolbar buttons have.
-    if (single && matchesShortcut(event, { key: 'r', mod: true }) && !event.shiftKey) {
-      event.preventDefault();
-      void composeStore.prepareReplyFromMessage(single, mailStore.messageBody ?? {});
-      return;
-    }
-    if (single && matchesShortcut(event, { key: 'r', mod: true, shift: true })) {
-      event.preventDefault();
-      void composeStore.prepareReplyAll(single, mailStore.messageBody ?? {});
-      return;
-    }
-    if (single && matchesShortcut(event, { key: 'l', mod: true })) {
-      event.preventDefault();
-      composeStore.prepareForward(single, mailStore.messageBody ?? {});
-      return;
-    }
+    if (!resolved) return;
+    const { action } = resolved;
 
-    // --- Selection ---
-    if (matchesShortcut(event, { key: 'a', mod: true })) {
-      if (!activeMessageListCommands) return;
-      event.preventDefault();
-      activeMessageListCommands.selectAll();
-      return;
-    }
-    if (event.key === 'Escape' && mailStore.selectedIds.size > 0) {
-      event.preventDefault();
-      mailStore.clearSelection();
-      return;
-    }
-
-    // --- Message actions (need at least one target) ---
-    const targetIds = getTargetIds(mailStore);
-    if (targetIds.length > 0) {
-      if (
-        hasScheduledTarget(mailStore, targetIds)
-        && (
-          isDeleteKey(event)
-          || event.key === 'a'
-          || event.key === 'A'
-        )
-      ) {
+    switch (action) {
+      case 'compose':
         event.preventDefault();
+        composeStore.open();
+        return;
+
+      // The reply prefills read the parent's addresses from the cache, so
+      // they settle a tick later. The handler stays synchronous — it has a
+      // keystroke to preventDefault — and the composer opens when the read
+      // returns, which is the same latency the toolbar buttons have.
+      // Scheduled (Send Later) mail is read-only outgoing mail, so these
+      // stand down for it just like the hidden toolbar buttons.
+      case 'reply':
+      case 'replyAll':
+      case 'forward': {
+        const singleTarget = getSingleMessage(mailStore);
+        const single = singleTarget?.scheduled_undo_status == null ? singleTarget : null;
+        if (!single) return;
+        event.preventDefault();
+        const body = mailStore.messageBody ?? {};
+        if (action === 'reply') void composeStore.prepareReplyFromMessage(single, body);
+        else if (action === 'replyAll') void composeStore.prepareReplyAll(single, body);
+        else composeStore.prepareForward(single, body);
         return;
       }
-      if (isDeleteKey(event) && event.shiftKey) {
+
+      case 'selectAll':
+        if (!activeMessageListCommands) return;
         event.preventDefault();
-        try {
-          await mailStore.permanentlyDestroyMessages(targetIds);
-        } catch (err) {
-          console.warn('[shortcuts] permanent delete failed', err);
+        activeMessageListCommands.selectAll();
+        return;
+
+      case 'clearSelection':
+        if (mailStore.selectedIds.size === 0) return;
+        event.preventDefault();
+        mailStore.clearSelection();
+        return;
+
+      case 'archive':
+      case 'delete':
+      case 'deleteForever':
+      case 'markRead':
+      case 'markUnread':
+      case 'toggleRead': {
+        const targetIds = targetsForMessageAction(action);
+        if (targetIds == null) return;
+        event.preventDefault();
+        if (targetIds.length === 0) return;
+        if (action === 'archive') {
+          void mailStore.archiveMessages(targetIds);
+        } else if (action === 'markRead') {
+          void mailStore.markManySeen(targetIds, true);
+        } else if (action === 'markUnread') {
+          void mailStore.markManySeen(targetIds, false);
+        } else if (action === 'toggleRead') {
+          void mailStore.toggleManySeen(targetIds);
+        } else {
+          try {
+            if (action === 'deleteForever') {
+              await mailStore.permanentlyDestroyMessages(targetIds);
+            } else {
+              await mailStore.destroyMessages(targetIds);
+            }
+          } catch (err) {
+            console.warn(`[shortcuts] ${action} failed`, err);
+          }
         }
         return;
       }
-      if (isDeleteKey(event)) {
-        event.preventDefault();
-        try {
-          await mailStore.destroyMessages(targetIds);
-        } catch (err) {
-          console.warn('[shortcuts] delete failed', err);
-        }
-        return;
-      }
-      if (event.key === 'a' || event.key === 'A') {
-        event.preventDefault();
-        void mailStore.archiveMessages(targetIds);
-        return;
-      }
-      if (event.key === 'm' || event.key === 'M') {
-        event.preventDefault();
-        void mailStore.toggleManySeen(targetIds);
-        return;
-      }
-    }
 
-    // --- Navigation (single-key, no modifiers) ---
-    if (!mod && !event.altKey && !event.shiftKey) {
-      let command: MessageListNavigationCommand | null = null;
-      if (event.key === 'f' || event.key === 'F') {
-        command = 'next';
-      } else if (event.key === 'b' || event.key === 'B') {
-        command = 'previous';
-      } else if (event.key === 'n' || event.key === 'N') {
-        command = 'nextUnread';
-      } else if (event.key === 'p' || event.key === 'P') {
-        command = 'previousUnread';
-      } else if (event.key === 'Home') {
-        command = 'first';
-      } else if (event.key === 'End') {
-        command = 'last';
-      }
-      if (command && activeMessageListCommands) {
+      case 'next':
+      case 'previous':
+      case 'nextUnread':
+      case 'previousUnread':
+      case 'first':
+      case 'last':
+        if (!activeMessageListCommands) return;
         event.preventDefault();
-        activeMessageListCommands.navigate(command);
+        activeMessageListCommands.navigate(action);
+        return;
+
+      default: {
+        const unhandled: never = action;
+        return unhandled;
       }
     }
   }
@@ -276,6 +305,7 @@ export function useThunderbirdShortcuts({
   });
 
   onUnmounted(() => {
+    clearPendingPrefix();
     if (activeShortcutHandler === onKeyDown) {
       activeShortcutHandler = null;
     }

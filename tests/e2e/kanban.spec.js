@@ -111,12 +111,12 @@ async function shellOverflow(page) {
   return page.locator('.shell').evaluate((shell) => shell.scrollWidth - shell.clientWidth);
 }
 
-test.describe('Staff gear in narrow layouts', () => {
-  // The e2e account is staff, so the gear is in every layout's top bar.
-  // Below 700px the bar has no room for it: it must disappear rather than
-  // widen the shell (sidebar-layout.spec.js measures the same shell at
-  // 640px and 340px without knowing about the gear).
-  test('the gear never widens the top bar: hidden below 700px, present above', async ({ page }) => {
+test.describe('Settings gear in narrow layouts', () => {
+  // The gear sits with the other top-bar actions, which collapse into the
+  // compact menu below 640px. It must never widen the shell
+  // (sidebar-layout.spec.js measures the same shell at 640px and 340px
+  // without knowing about the gear).
+  test('the gear never widens the top bar: in the bar from 640px, in the compact menu below', async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
@@ -124,21 +124,29 @@ test.describe('Staff gear in narrow layouts', () => {
     await loginViaOidc(page);
     await waitForInboxReady(page);
 
-    const gear = page.locator('[data-staff-gear]');
+    const gear = page.locator('[data-settings-gear]');
     await expect(gear).toBeVisible();
     expect(await shellOverflow(page)).toBeLessThanOrEqual(0);
 
-    for (const width of [699, 640, 340]) {
+    for (const width of [699, 640]) {
+      await page.setViewportSize({ width, height: 852 });
+      await expect(gear).toBeVisible();
+      await expect.poll(() => shellOverflow(page), { message: `shell overflow at ${width}px` })
+        .toBeLessThanOrEqual(0);
+    }
+
+    for (const width of [639, 340]) {
       await page.setViewportSize({ width, height: 852 });
       await expect(gear).toBeHidden();
       await expect.poll(() => shellOverflow(page), { message: `shell overflow at ${width}px` })
         .toBeLessThanOrEqual(0);
     }
 
-    await page.setViewportSize({ width: 700, height: 852 });
-    await expect(gear).toBeVisible();
-    await expect.poll(() => shellOverflow(page), { message: 'shell overflow at 700px' })
-      .toBeLessThanOrEqual(0);
+    await page.locator('.top-nav-menu__button').click();
+    await page.locator('[data-settings-menuitem]').click();
+    await expect(page.locator('[data-settings-dialog]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-settings-dialog]')).toHaveCount(0);
   });
 });
 
@@ -163,13 +171,14 @@ test.describe('Kanban feature flag e2e', () => {
       // Flag off: the ordinary list, no board, no dialog.
       await expect(page.locator('.msg-list')).toBeVisible({ timeout: WAIT_MS });
       await expect(page.locator('[data-testid="kanban-board"]')).toHaveCount(0);
-      const gear = page.locator('[data-staff-gear]');
+      const gear = page.locator('[data-settings-gear]');
       await expect(gear).toBeVisible();
 
       await gear.click();
-      const dialog = page.locator('[data-kanban-unlock-dialog]');
+      const dialog = page.locator('[data-settings-dialog]');
       await expect(dialog).toBeVisible();
-      await expect(dialog.locator('[role="switch"]')).toHaveCount(0);
+      await expect(dialog.locator('[data-staff-settings]')).toBeVisible();
+      await expect(dialog.locator('[data-kanban-toggle]')).toHaveCount(0);
 
       // A wrong code changes nothing.
       await dialog.locator('[data-kanban-unlock-code]').fill('nope');
@@ -359,11 +368,11 @@ test.describe('Kanban feature flag e2e', () => {
       await expect.poll(async () => Math.round((await column(page, 'Column 1').boundingBox()).width) - Math.round(widthBefore))
         .toBeGreaterThanOrEqual(70);
 
-      // After unlocking, the gear is a plain switch. Off puts the list back.
-      await page.locator('[data-staff-gear]').click();
-      const toggle = page.locator('[data-kanban-unlock-dialog] [role="switch"]');
+      // After unlocking, the code box is a plain switch. Off puts the list back.
+      await page.locator('[data-settings-gear]').click();
+      const toggle = page.locator('[data-settings-dialog] [data-kanban-toggle]');
       await expect(toggle).toHaveAttribute('aria-checked', 'true');
-      await expect(page.locator('[data-kanban-unlock-dialog] [data-kanban-unlock-code]')).toHaveCount(0);
+      await expect(page.locator('[data-settings-dialog] [data-kanban-unlock-code]')).toHaveCount(0);
       await toggle.click();
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
       await expect(page.locator('.msg-list')).toBeVisible({ timeout: WAIT_MS });
@@ -372,7 +381,7 @@ test.describe('Kanban feature flag e2e', () => {
       await expect(page.locator('[data-testid="kanban-board"]')).toBeVisible({ timeout: WAIT_MS });
       await expect(page.locator('[data-kanban-fireworks]')).toHaveCount(0);
       await page.keyboard.press('Escape');
-      await expect(page.locator('[data-kanban-unlock-dialog]')).toHaveCount(0);
+      await expect(page.locator('[data-settings-dialog]')).toHaveCount(0);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       // Leave the shared session as the next spec expects it.

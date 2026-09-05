@@ -633,7 +633,7 @@ test.describe('Contact and identity integrity', () => {
       await expect(identityRow).toContainText(editedIdentityName, { timeout: 30_000 });
 
       await page.getByRole('button', { name: 'Mail', exact: true }).click();
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       const composer = page.locator('.compose-dialog--expanded');
       await expect(composer).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
@@ -834,7 +834,7 @@ test.describe('Contact and identity integrity', () => {
       await expect(aliasRow).toContainText('Alias E2E Updated');
 
       await page.getByRole('button', { name: 'Mail', exact: true }).click();
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       const picker = page.locator('.compose-dialog [data-compose-from]');
       const aliasOption = picker.locator('.app-dropdown__item', { hasText: alias });

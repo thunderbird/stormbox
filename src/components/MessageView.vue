@@ -20,9 +20,11 @@ import { useMessageAttachments } from '../composables/useMessageAttachments';
 import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
 import { useComposeStore } from '../stores/compose-store';
 import { useMailStore } from '../stores/mail-store';
+import { useSettingsStore } from '../stores/settings-store';
 import {
   ALLOWED_URI_REGEXP,
   BODY_THEME_COLORS,
+  BOLT_BODY_BACKGROUND,
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
   isInlineImageType,
@@ -33,7 +35,7 @@ import {
 } from '../utils/message-html';
 import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { formatAddressList } from '../utils/address-parse';
-import { shortcutModifierLabel } from '../utils/keyboard';
+import { titleWithShortcut, type ShortcutAction } from '../constants/shortcuts';
 import { plaintextToHtml } from '../utils/plaintext-html';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -58,7 +60,12 @@ defineProps<{
 
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
-const shortcutModifier = shortcutModifierLabel();
+const settingsStore = useSettingsStore();
+const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
+/** Toolbar title with the key the active scheme binds, e.g. `Reply (R)`. */
+function actionTitle(label: string, action: ShortcutAction): string {
+  return titleWithShortcut(label, action, shortcutScheme.value);
+}
 
 const htmlShellRef = ref(null);
 const iframeRef = ref(null);
@@ -77,8 +84,12 @@ const bodyColorScheme = computed(() =>
   (effectiveColorScheme.value === 'dark' && forceLightBody.value)
     ? 'light'
     : effectiveColorScheme.value);
-const iframeBackground = computed(() =>
-  BODY_THEME_COLORS[bodyColorScheme.value === 'dark' ? 'dark' : 'light'].background);
+const iframeBackground = computed(() => {
+  const scheme = bodyColorScheme.value === 'dark' ? 'dark' : 'light';
+  return settingsStore.get('palette') === 'bolt'
+    ? BOLT_BODY_BACKGROUND[scheme]
+    : BODY_THEME_COLORS[scheme].background;
+});
 
 const body = computed(() => mailStore.messageBody);
 // null while the body is still loading; a (possibly empty) object once the
@@ -644,19 +655,19 @@ function closeMessageView() {
         <AppIconButton class="message-view__action message-view__action--back" tabindex="-1" title="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </AppIconButton>
-        <AppIconButton class="message-view__action" tabindex="-1" title="Archive (A)">
+        <AppIconButton class="message-view__action" tabindex="-1" :title="actionTitle('Archive', 'archive')">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
         </AppIconButton>
-        <AppIconButton class="message-view__action" danger tabindex="-1" title="Delete (Del)">
+        <AppIconButton class="message-view__action" danger tabindex="-1" :title="actionTitle('Delete', 'delete')">
           <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Reply (${shortcutModifier}+R)`">
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Reply', 'reply')">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
         </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Reply All (${shortcutModifier}+Shift+R)`">
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Reply All', 'replyAll')">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
         </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="`Forward (${shortcutModifier}+L)`">
+        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Forward', 'forward')">
           <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
         </AppIconButton>
       </header>
@@ -690,22 +701,22 @@ function closeMessageView() {
              Back and the view-mode toggle, and the banner below owns
              Cancel Send. -->
         <template v-if="!isScheduledMessage">
-          <AppIconButton class="message-view__action" @click="archive" title="Archive (A)" aria-label="Archive">
+          <AppIconButton class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </AppIconButton>
           <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" danger @click="destroy" title="Delete (Del)" aria-label="Delete">
+          <AppIconButton class="message-view__action" danger @click="destroy" :title="actionTitle('Delete', 'delete')" aria-label="Delete">
             <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="`Reply (${shortcutModifier}+R)`" aria-label="Reply">
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="actionTitle('Reply', 'reply')" aria-label="Reply">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="`Reply All (${shortcutModifier}+Shift+R)`" aria-label="Reply All">
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="actionTitle('Reply All', 'replyAll')" aria-label="Reply All">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="`Forward (${shortcutModifier}+L)`" aria-label="Forward">
+          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="actionTitle('Forward', 'forward')" aria-label="Forward">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
           </AppIconButton>
         </template>

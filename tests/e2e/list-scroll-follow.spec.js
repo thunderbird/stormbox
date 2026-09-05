@@ -111,7 +111,7 @@ test.describe('Keyboard navigation keeps the focused row in view', () => {
     });
   });
 
-  test('F shortcut drags the viewport to follow the selection', async ({ page }, testInfo) => {
+  test('J shortcut drags the viewport to follow the selection', async ({ page }, testInfo) => {
     const consoleLines = [];
     trackConsole(page, consoleLines);
 
@@ -138,7 +138,8 @@ test.describe('Keyboard navigation keeps the focused row in view', () => {
       await scroller.waitFor({ state: 'visible' });
       await page.locator('.msg-list__item').first().waitFor({ state: 'visible' });
 
-      // Open the first row, then walk the selection down with F.
+      // Open the first row, then walk the selection down with J (the web
+      // scheme's next-message key).
       await page.locator('.msg-list__item').first().click();
       await expect.poll(async () => (await focusedRowReport(page)).hasFocused)
         .toBe(true);
@@ -146,7 +147,7 @@ test.describe('Keyboard navigation keeps the focused row in view', () => {
       const startScrollTop = (await focusedRowReport(page)).scrollTop;
 
       for (let i = 0; i < STEPS; i += 1) {
-        await page.keyboard.press('f');
+        await page.keyboard.press('j');
         await page.waitForTimeout(20);
       }
 

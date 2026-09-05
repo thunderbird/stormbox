@@ -77,7 +77,7 @@ function onShowWelcomeModal() {
   width: 36px;
   height: 36px;
   padding: 0;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: 999px;
   background: transparent;
   cursor: pointer;
@@ -87,11 +87,13 @@ function onShowWelcomeModal() {
 .account-menu__button::-webkit-details-marker {
   display: none;
 }
-.account-menu__button:hover,
-.account-menu__button:focus-visible,
-.account-menu[open] .account-menu__button {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
+/* The disc fills the button, so hover/open feedback is a halo outside it. */
+.account-menu__button:hover .account-menu__avatar,
+.account-menu__button:focus-visible .account-menu__avatar,
+.account-menu[open] .account-menu__avatar {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.account-menu__button:focus-visible {
   outline: none;
 }
 
@@ -99,13 +101,16 @@ function onShowWelcomeModal() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  /* 36px outer including the 1px ring; the Bolt palette enlarges it to
+   * Figma's 40px (assets/bolt-theme.css). */
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--accent);
   border-radius: 999px;
   background: var(--accent);
   color: #fff;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }

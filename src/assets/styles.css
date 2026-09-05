@@ -226,6 +226,12 @@ html.dark {
 html.dark .base.primary.filled:not(:disabled) {
   color: #fff;
 }
+/* Filled primary buttons are flat --accent at rest; services-ui's own flat
+   hover/pressed states still apply. Its resting gradient is a Bolt-only
+   treatment (assets/bolt-theme.css). */
+.base.primary.filled {
+  background: var(--accent);
+}
 
 * {
   box-sizing: border-box;

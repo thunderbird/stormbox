@@ -81,7 +81,7 @@ async function settledSuggestions(page) {
 }
 
 async function openCompose(page) {
-  await page.keyboard.press('ControlOrMeta+n');
+  await page.keyboard.press('c');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
   await waitForIdentities(page);
 }
@@ -605,7 +605,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('Reply All via keyboard carries the original Cc (issue #71)', async () => {
-        await page.keyboard.press('ControlOrMeta+Shift+r');
+        await page.keyboard.press('Shift+r');
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
         await expect(composeRow(page, 'Cc'), 'reply-all opens with its Cc shown')
           .toHaveCount(1);
@@ -621,7 +621,7 @@ test.describe('Compose, send and autocomplete walkthrough', () => {
       });
 
       await test.step('Forward via keyboard starts with no recipients', async () => {
-        await page.keyboard.press('ControlOrMeta+l');
+        await page.keyboard.press('f');
         await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
         const to = await recipientAddresses(page, 'To');
         const subject = await composeSubject(page).inputValue();

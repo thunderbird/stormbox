@@ -32,6 +32,7 @@ import MessageView from '../../../src/components/MessageView.vue';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -156,18 +157,27 @@ describe('MessageView with a sparse messages array', () => {
     // aria-label. We pin the action *identity* and ordering through
     // those a11y attributes — not through SVG width / stroke-width
     // which are presentational knobs.
+    // Titles carry the key the active scheme binds (web by default).
     expect(actions.map((button) => button.attributes('title'))).toEqual([
       'Back',
       'Archive (A)',
       'Junk',
       'Delete (Del)',
-      'Reply (Ctrl+R)',
-      'Reply All (Ctrl+Shift+R)',
-      'Forward (Ctrl+L)',
+      'Reply (R)',
+      'Reply All (Shift+R)',
+      'Forward (F)',
     ]);
     expect(
       actions.map((button) => button.attributes('aria-label')),
     ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward']);
+
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    await nextTick();
+    expect(actions.slice(4).map((button) => button.attributes('title'))).toEqual([
+      'Reply (Ctrl+R)',
+      'Reply All (Ctrl+Shift+R)',
+      'Forward (Ctrl+L)',
+    ]);
     expect(actions.every((button) => button.text() === '')).toBe(true);
     // Every action must render exactly one inline icon (Lucide svg or
     // tb-themed svg). We do not pin its dimensions.

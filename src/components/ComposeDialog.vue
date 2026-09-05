@@ -26,6 +26,7 @@ import { COMPOSE_STATE } from '../constants/states';
 import type { IdentityRow } from '../types/db';
 import { sanitizeAttachmentFilename } from '../utils/attachment-presentation';
 import { closeContainingDropdown } from '../utils/dropdown';
+import { isComposingKeyEvent, matchesShortcut } from '../utils/keyboard';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import { formatBytes } from '../utils/format-bytes';
 import {
@@ -134,6 +135,12 @@ const scheduleChoiceDisabled = computed(() =>
 const scheduleSegmentDisabled = computed(() =>
   scheduleBusy.value
   || (!stagedSchedule.value && scheduleChoiceDisabled.value));
+// One condition for the Send button and the Ctrl/⌘+Enter shortcut.
+const sendDisabled = computed(() =>
+  scheduleBusy.value
+  || Boolean(session.value?.isDiscarding)
+  || attachmentBusy.value
+  || Boolean(stagedSchedule.value && scheduleChoiceDisabled.value));
 const sendButtonText = computed(() => {
   if (isScheduling.value) return 'Scheduling…';
   if (isSending.value) return 'Sending…';
@@ -515,6 +522,15 @@ async function browseAllContacts() {
   return contactsStore.browseAutocompleteCandidates();
 }
 
+/** Ctrl/⌘+Enter sends from anywhere in the dialog, under the Send button's own guard. */
+function onDialogKeydown(event: KeyboardEvent) {
+  if (event.defaultPrevented || isComposingKeyEvent(event)) return;
+  if (!matchesShortcut(event, { key: 'Enter', mod: true })) return;
+  event.preventDefault();
+  if (sendDisabled.value) return;
+  void send();
+}
+
 async function send() {
   if (isScheduling.value) return;
   const current = session.value;
@@ -579,6 +595,7 @@ function identityInitials(id: IdentityRow): string {
       :aria-labelledby="dialogTitleId"
       :aria-hidden="customScheduleOpen ? 'true' : undefined"
       tabindex="-1"
+      @keydown="onDialogKeydown"
     >
     <div class="compose-dialog__card">
       <header>
@@ -853,10 +870,7 @@ function identityInitials(id: IdentityRow): string {
         <div class="compose-send-split">
           <AppButton
             class="compose-send"
-            :disabled="scheduleBusy
-              || session.isDiscarding
-              || attachmentBusy
-              || Boolean(stagedSchedule && scheduleChoiceDisabled)"
+            :disabled="sendDisabled"
             @click="send"
           >
             <template #iconLeft>

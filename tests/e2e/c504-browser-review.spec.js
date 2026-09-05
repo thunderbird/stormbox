@@ -296,14 +296,14 @@ test.describe('C504 browser review regressions', () => {
       primaryChanged = true;
       await refreshIdentityCache(page);
 
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       let composer = page.locator('.compose-dialog--expanded');
       await expect(composer).toBeVisible();
       await waitForIdentities(page);
       await chooseFrom(composer, STACK_STALWART_PRINCIPAL);
       await discardCompose(page);
 
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       composer = page.locator('.compose-dialog--expanded');
       await expect(composer).toBeVisible();
       const picker = composer.locator('[data-compose-from] summary');

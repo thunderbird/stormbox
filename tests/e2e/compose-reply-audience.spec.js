@@ -372,7 +372,7 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
     try {
       await clickFolder(page, sent.name);
       await clickFolder(page, 'Inbox');
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 
@@ -439,7 +439,7 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
     // audience than the user addressed and saying nothing about it. The
     // fragment stays where it was entered, marked, and fixable.
     try {
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 
