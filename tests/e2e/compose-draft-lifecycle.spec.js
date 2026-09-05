@@ -76,7 +76,7 @@ async function waitForNewFault(mode, after) {
 }
 
 async function openCompose(page) {
-  await page.keyboard.press('ControlOrMeta+n');
+  await page.keyboard.press('c');
   await expect(page.locator('.compose-dialog--expanded')).toBeVisible();
   await waitForIdentities(page);
 }

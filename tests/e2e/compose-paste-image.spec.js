@@ -139,7 +139,7 @@ test.describe('Compose paste image e2e', () => {
       await clickFolder(page, sent.name);
       await clickFolder(page, 'Inbox');
 
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
 
       await waitForIdentities(page);
@@ -237,7 +237,7 @@ test.describe('Compose paste image e2e', () => {
 
   test('Pasted image shows Squire resize handles positioned over it', async ({ sharedPage: page }, testInfo) => {
     try {
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 
@@ -287,7 +287,7 @@ test.describe('Compose paste image e2e', () => {
 
   test('Dragging the resize handle shrinks the pasted image', async ({ sharedPage: page }, testInfo) => {
     try {
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 

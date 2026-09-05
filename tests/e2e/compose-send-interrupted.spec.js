@@ -206,7 +206,7 @@ async function composeAndSend(page, { to, subject }) {
   // The shortcut is a document-level handler, so it needs focus outside
   // whatever the previous case left it in.
   await page.locator('.folder-node').first().click();
-  await page.keyboard.press('ControlOrMeta+n');
+  await page.keyboard.press('c');
   await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
   await waitForIdentities(page);
   await fillRecipient(page, 'To', to);

@@ -203,7 +203,7 @@ test.describe('Compose send: method-level JMAP error', () => {
       expect(sentBefore, 'Sent view should be readable before the send').not.toBeNull();
       await clickFolder(page, 'Inbox');
 
-      await page.keyboard.press('ControlOrMeta+n');
+      await page.keyboard.press('c');
       await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
       await waitForIdentities(page);
 

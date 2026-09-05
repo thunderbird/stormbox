@@ -163,7 +163,7 @@ async function localScheduledRows(page) {
 }
 
 async function openComposer(page) {
-  await page.keyboard.press('ControlOrMeta+n');
+  await page.keyboard.press('c');
   const composer = page.locator('.compose-dialog--expanded');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await waitForIdentities(page);
@@ -335,7 +335,7 @@ test.describe('Send Later', () => {
 
       // Keyboard semantics match the read-only toolbar: reply and
       // delete shortcuts are inert on a scheduled message.
-      await page.keyboard.press('ControlOrMeta+r');
+      await page.keyboard.press('r');
       await page.waitForTimeout(500);
       await expect(page.locator('.compose-dialog')).toHaveCount(0);
       await page.keyboard.press('Delete');
