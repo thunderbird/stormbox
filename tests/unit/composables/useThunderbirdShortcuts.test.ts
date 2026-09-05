@@ -20,6 +20,8 @@ import {
 } from '../../../src/composables/useThunderbirdShortcuts';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
+import type { ShortcutScheme } from '../../../src/constants/settings';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -75,6 +77,20 @@ function populatedDraft() {
 }
 
 let unregisterMessageListCommands: (() => void) | null = null;
+
+function useScheme(scheme: ShortcutScheme) {
+  useSettingsStore().settings = { shortcutScheme: scheme };
+}
+
+/** Pretend to be macOS for the duration of one test. */
+function onMac() {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'platform');
+  Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+  return () => {
+    if (original) Object.defineProperty(navigator, 'platform', original);
+    else Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
+  };
+}
 
 function mountHarness(options: {
   focusQuickFilter?: () => void;
@@ -147,7 +163,11 @@ afterEach(() => {
   __resetRepositoryForTests();
 });
 
-describe('useThunderbirdShortcuts', () => {
+describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
+  beforeEach(() => {
+    useScheme('thunderbird');
+  });
+
   it('Ctrl+N opens compose', () => {
     mountHarness();
     const composeStore = useComposeStore();
@@ -631,5 +651,210 @@ describe('useThunderbirdShortcuts', () => {
     await Promise.resolve();
 
     expect(destroySpy).toHaveBeenCalledWith([1]);
+  });
+});
+
+describe('useThunderbirdShortcuts (web scheme, the default)', () => {
+  function viewing(id = 7) {
+    const mailStore = useMailStore() as any;
+    mailStore.folders = [{ id: 99, role: 'archive', name: 'Archive', is_deleted: 0 }];
+    mailStore.messages = [makeRow(id, { from_text: 'Alice <alice@example.com>' }), makeRow(id + 1)];
+    mailStore.selectedMessageId = id;
+    return mailStore;
+  }
+
+  it('is the scheme when nothing is stored', () => {
+    expect(useSettingsStore().get('shortcutScheme')).toBe('web');
+  });
+
+  it('C opens compose; Ctrl+N is left to the browser', () => {
+    mountHarness();
+    const composeStore = useComposeStore();
+
+    const ctrlN = fireKey('n', { ctrlKey: true });
+    expect(ctrlN.defaultPrevented).toBe(false);
+    expect(composeStore.isOpen).toBe(false);
+
+    const c = fireKey('c');
+    expect(c.defaultPrevented).toBe(true);
+    expect(composeStore.isOpen).toBe(true);
+  });
+
+  it('R, Shift+R and F reply, reply-all and forward the viewed message', () => {
+    mountHarness();
+    viewing();
+    const composeStore = useComposeStore();
+    const reply = vi.spyOn(composeStore, 'prepareReplyFromMessage');
+    const replyAll = vi.spyOn(composeStore, 'prepareReplyAll');
+    const forward = vi.spyOn(composeStore, 'prepareForward');
+
+    fireKey('r');
+    fireKey('R', { shiftKey: true });
+    fireKey('f');
+
+    expect(reply).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }), expect.anything());
+    expect(replyAll).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }), expect.anything());
+    expect(forward).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }), expect.anything());
+  });
+
+  it('leaves browser chords including Ctrl+Shift+Delete alone', () => {
+    const { messageListCommands } = mountHarness();
+    const mailStore = viewing();
+    const composeStore = useComposeStore();
+    const reply = vi.spyOn(composeStore, 'prepareReplyFromMessage');
+    const forward = vi.spyOn(composeStore, 'prepareForward');
+    const purge = vi.spyOn(mailStore, 'permanentlyDestroyMessages').mockResolvedValue(undefined);
+
+    const events = [
+      fireKey('n', { ctrlKey: true }),
+      fireKey('r', { ctrlKey: true }),
+      fireKey('l', { ctrlKey: true }),
+      fireKey('a', { ctrlKey: true }),
+      fireKey('Delete', { ctrlKey: true, shiftKey: true }),
+      fireKey('Home'),
+      fireKey('End'),
+    ];
+
+    expect(events.every((event) => !event.defaultPrevented)).toBe(true);
+    expect(reply).not.toHaveBeenCalled();
+    expect(forward).not.toHaveBeenCalled();
+    expect(purge).not.toHaveBeenCalled();
+    expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
+    expect(messageListCommands?.navigate).not.toHaveBeenCalled();
+  });
+
+  it('/ focuses Quick Filter outside text fields; Ctrl+K works everywhere', () => {
+    const focusQuickFilter = vi.fn();
+    mountHarness({ focusQuickFilter });
+
+    const slash = fireKey('/');
+    expect(slash.defaultPrevented).toBe(true);
+    expect(focusQuickFilter).toHaveBeenCalledTimes(1);
+
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      const typed = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+      input.dispatchEvent(typed);
+      expect(typed.defaultPrevented).toBe(false);
+      expect(focusQuickFilter).toHaveBeenCalledTimes(1);
+
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'k', ctrlKey: true, bubbles: true, cancelable: true,
+      }));
+      expect(focusQuickFilter).toHaveBeenCalledTimes(2);
+    } finally {
+      input.remove();
+    }
+  });
+
+  it('A archives, Shift+I marks read, U marks unread; M does nothing', async () => {
+    mountHarness();
+    const mailStore = viewing();
+    const archive = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+    const markSeen = vi.spyOn(mailStore, 'markManySeen').mockResolvedValue(1);
+    const toggle = vi.spyOn(mailStore, 'toggleManySeen').mockResolvedValue(1);
+
+    fireKey('a');
+    fireKey('I', { shiftKey: true });
+    fireKey('u');
+    const m = fireKey('m');
+    await Promise.resolve();
+
+    expect(archive).toHaveBeenCalledWith([7]);
+    expect(markSeen).toHaveBeenNthCalledWith(1, [7], true);
+    expect(markSeen).toHaveBeenNthCalledWith(2, [7], false);
+    expect(toggle).not.toHaveBeenCalled();
+    expect(m.defaultPrevented).toBe(false);
+  });
+
+  it('Delete and Shift+Delete destroy; Backspace only counts on macOS', async () => {
+    mountHarness();
+    const mailStore = viewing();
+    const destroy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+    const purge = vi.spyOn(mailStore, 'permanentlyDestroyMessages').mockResolvedValue(undefined);
+
+    const backspace = fireKey('Backspace');
+    await Promise.resolve();
+    expect(backspace.defaultPrevented).toBe(false);
+    expect(destroy).not.toHaveBeenCalled();
+
+    fireKey('Delete');
+    fireKey('Delete', { shiftKey: true });
+    await Promise.resolve();
+    expect(destroy).toHaveBeenCalledWith([7]);
+    expect(purge).toHaveBeenCalledWith([7]);
+
+    const restore = onMac();
+    try {
+      fireKey('Backspace');
+      await Promise.resolve();
+      expect(destroy).toHaveBeenCalledTimes(2);
+    } finally {
+      restore();
+    }
+  });
+
+  it('* then A selects all loaded messages; A alone still archives', async () => {
+    const { messageListCommands } = mountHarness();
+    const mailStore = viewing();
+    const archive = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+
+    const star = fireKey('*', { shiftKey: true });
+    expect(star.defaultPrevented).toBe(true);
+    fireKey('a');
+    await Promise.resolve();
+
+    expect(messageListCommands?.selectAll).toHaveBeenCalledOnce();
+    expect(archive).not.toHaveBeenCalled();
+
+    fireKey('a');
+    await Promise.resolve();
+    expect(archive).toHaveBeenCalledWith([7]);
+    expect(messageListCommands?.selectAll).toHaveBeenCalledOnce();
+  });
+
+  it('a pending * expires', () => {
+    vi.useFakeTimers();
+    try {
+      const { messageListCommands } = mountHarness();
+      const mailStore = viewing();
+      vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+
+      fireKey('*', { shiftKey: true });
+      vi.advanceTimersByTime(2000);
+      fireKey('a');
+
+      expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
+      expect(mailStore.archiveMessages).toHaveBeenCalledWith([7]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('J/K step through messages and N/P through unread ones; B is unbound', () => {
+    const { messageListCommands } = mountHarness();
+
+    fireKey('j');
+    fireKey('k');
+    fireKey('n');
+    fireKey('p');
+    const b = fireKey('b');
+
+    expect(vi.mocked(messageListCommands!.navigate).mock.calls.map(([command]) => command))
+      .toEqual(['next', 'previous', 'nextUnread', 'previousUnread']);
+    expect(b.defaultPrevented).toBe(false);
+  });
+
+  it('Escape clears a checkbox selection', () => {
+    mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1), makeRow(2)];
+    mailStore.selectedIds = new Set([1, 2]);
+
+    const event = fireKey('Escape');
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(mailStore.selectedIds.size).toBe(0);
   });
 });

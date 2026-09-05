@@ -136,7 +136,9 @@ describe('MessageList bulk actions header', () => {
     const shortcuts = mountShortcutBroker();
     mailStore.selectedIds = new Set([2]);
 
-    const event = fireKey('a', { ctrlKey: true });
+    // Web scheme: `*` then `a` is the global select-all.
+    fireKey('*', { shiftKey: true });
+    const event = fireKey('a');
     await nextTick();
 
     expect(event.defaultPrevented).toBe(true);
@@ -156,7 +158,8 @@ describe('MessageList bulk actions header', () => {
     const shortcuts = mountShortcutBroker();
     await wrapper.get('.msg-list__filter').trigger('click');
 
-    fireKey('a', { ctrlKey: true });
+    fireKey('*', { shiftKey: true });
+    fireKey('a');
     await nextTick();
 
     expect([...mailStore.selectedIds]).toEqual([2]);

@@ -94,6 +94,7 @@ The current registry contains:
 | Key | Default | Purpose |
 |---|---|---|
 | `theme` | `system` | Color scheme; `system` follows the OS preference. |
+| `shortcutScheme` | `web` | Keyboard shortcut table bound by `useThunderbirdShortcuts` and shown in the welcome dialog and shortcut labels. `web` uses single keys that stay clear of browser shortcuts (`c`, `r`, `j`/`k`, `/`, `* then a`); `thunderbird` mirrors the desktop client (`Ctrl+N`, `Ctrl+R`, `f`/`b`, `Ctrl+A`, `Home`/`End`). Tables live in `src/constants/shortcuts.ts`. |
 | `primaryIdentityRemoteId` | `null` | Client-selected JMAP Identity used as the default From address. |
 | `scheduledMailboxRemoteId` | `null` | Cached JMAP id for the hidden Send Later backing Mailbox; exact-name discovery remains authoritative. |
 | `timeZone` | detected IANA zone, else `UTC` | Wall-time zone shared by Send Later presets and the custom picker. |

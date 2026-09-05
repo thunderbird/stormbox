@@ -41,6 +41,7 @@ import { useKanbanStore } from '../../../../src/features/kanban/kanban-store';
 import { QUICK_FILTER_MAX_ROWS } from '../../../../src/features/kanban/useFolderWindow';
 import { useAuthStore } from '../../../../src/stores/auth-store';
 import { useMailStore } from '../../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -569,6 +570,9 @@ describe('KanbanColumn keyboard', () => {
   });
 
   it('owns the app\'s f/b/n/p/Home/End shortcuts once focused', async () => {
+    // Those are the Thunderbird scheme's keys; the web scheme routes j/k/n/p
+    // through the same registered commands.
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
     const wrapper = await mountColumn();
     // The App shell binds the shortcuts; a bare host stands in for it.
     const host = mount(defineComponent({
@@ -726,8 +730,12 @@ describe('KanbanColumn selection', () => {
       },
     }));
     await wrapper.find('.kanban-column__scroller').trigger('focus');
+    // Web scheme: `*` then `a`.
     invokeThunderbirdShortcut(new KeyboardEvent('keydown', {
-      key: 'a', ctrlKey: true, bubbles: true, cancelable: true,
+      key: '*', shiftKey: true, bubbles: true, cancelable: true,
+    }));
+    invokeThunderbirdShortcut(new KeyboardEvent('keydown', {
+      key: 'a', bubbles: true, cancelable: true,
     }));
     await flushPromises();
     expect(selectedIds(wrapper)).toEqual([21, 22, 23]);

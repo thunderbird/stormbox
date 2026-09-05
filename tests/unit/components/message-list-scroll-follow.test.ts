@@ -54,6 +54,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 import MessageList from '../../../src/components/MessageList.vue';
 import { useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 
 function makeFolder(id, overrides = {}) {
   return {
@@ -152,15 +153,47 @@ describe('MessageList scroll follows the selected message (issue #31)', () => {
     const shortcuts = mountShortcutBroker();
     mailStore.selectMessage(1);
 
+    // Web scheme (the default): N/P step through unread, J/K through all.
     expect(fireKey('n').defaultPrevented).toBe(true);
     expect(mailStore.selectedMessageId).toBe(3);
-    fireKey('f');
+    fireKey('j');
     expect(mailStore.selectedMessageId).toBe(4);
-    fireKey('b');
+    fireKey('k');
     expect(mailStore.selectedMessageId).toBe(3);
     fireKey('p');
     expect(mailStore.selectedMessageId).toBe(1);
-    fireKey('End');
+    // Home/End are the list's own keys, so the page keeps them elsewhere.
+    expect(fireKey('End').defaultPrevented).toBe(false);
+    expect(mailStore.selectedMessageId).toBe(1);
+    const scroller = wrapper.get('.msg-list__scroller');
+    await scroller.trigger('keydown', { key: 'End' });
+    expect(mailStore.selectedMessageId).toBe(4);
+    await scroller.trigger('keydown', { key: 'Home' });
+    expect(mailStore.selectedMessageId).toBe(1);
+
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
+  it('keeps the Thunderbird F/B/Home/End keys when that scheme is chosen', async () => {
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    const { mailStore, wrapper } = mountList({
+      quickFilterQuery: 'match',
+      rows: [
+        makeRow(1, { is_seen: 0, subject: 'Match one' }),
+        makeRow(2, { is_seen: 0, subject: 'Hidden' }),
+        makeRow(3, { is_seen: 0, subject: 'Match three' }),
+        makeRow(4, { is_seen: 1, subject: 'Match four' }),
+      ],
+    });
+    const shortcuts = mountShortcutBroker();
+    mailStore.selectMessage(1);
+
+    fireKey('f');
+    expect(mailStore.selectedMessageId).toBe(3);
+    fireKey('b');
+    expect(mailStore.selectedMessageId).toBe(1);
+    expect(fireKey('End').defaultPrevented).toBe(true);
     expect(mailStore.selectedMessageId).toBe(4);
     fireKey('Home');
     expect(mailStore.selectedMessageId).toBe(1);

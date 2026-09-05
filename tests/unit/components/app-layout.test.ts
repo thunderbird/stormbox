@@ -26,6 +26,7 @@ import {
 import { APP_TITLE } from '../../../src/app-config';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -246,6 +247,9 @@ describe('App mail layout', () => {
     expect(wrapper.text()).not.toContain('Your Thunderbird mail workspace is ready');
     expect(wrapper.findAll('.welcome__shortcut-group h3').map((heading) => heading.text()))
       .toEqual(['Navigate', 'Message actions', 'Find and compose']);
+    const picker = wrapper.get('.welcome [role="radiogroup"]');
+    expect(picker.findAll('[role="radio"]').map((radio) => radio.text())).toEqual(['Web', 'Thunderbird']);
+    expect(picker.get('[data-shortcut-scheme="web"]').attributes('aria-checked')).toBe('true');
 
     await wrapper.get('.welcome').trigger('click');
     await nextTick();
@@ -313,6 +317,37 @@ describe('App mail layout', () => {
     await nextTick();
 
     expect(focusSpy).toHaveBeenCalledOnce();
+  });
+
+  it('switching the welcome picker changes the kbd hints and persists the scheme', async () => {
+    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const kbds = () => wrapper.findAll('.welcome__shortcut-group kbd').map((kbd) => kbd.text());
+    expect(kbds()).toContain('J');
+    expect(kbds()).toContain('Shift+R');
+    expect(kbds()).toContain('* then A');
+    expect(kbds()).not.toContain('Ctrl+R');
+    expect(kbds()).not.toContain('Home');
+
+    await wrapper.get('[data-shortcut-scheme="thunderbird"]').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.get('[data-shortcut-scheme="thunderbird"]').attributes('aria-checked')).toBe('true');
+    expect(kbds()).toContain('Ctrl+R');
+    expect(kbds()).toContain('Home');
+    expect(kbds()).toContain('Ctrl+N or Ctrl+M');
+    expect(kbds()).not.toContain('J');
+    expect(useSettingsStore().get('shortcutScheme')).toBe('thunderbird');
+    expect(JSON.parse(window.localStorage.getItem('stormbox.settings.v1')!))
+      .toMatchObject({ shortcutScheme: 'thunderbird' });
+
+    // Arrow keys move the radio too.
+    await wrapper.get('.welcome [role="radiogroup"]').trigger('keydown', { key: 'ArrowLeft' });
+    await flushPromises();
+    expect(useSettingsStore().get('shortcutScheme')).toBe('web');
   });
 
   it('anchors the resize spotlight card below the quick filter while highlighting resize handles', async () => {
@@ -561,8 +596,16 @@ describe('App mail layout', () => {
 
     expect(input.attributes('placeholder')).toBe('Filter messages');
     expect(input.attributes('aria-label')).toBe('Quick Filter messages by from, to, or subject');
+    // Web scheme by default: `/` is the badge, both keys are announced.
+    expect(input.attributes('aria-keyshortcuts')).toBe('/ Control+K');
+    expect(wrapper.get('.quick-filter__shortcut').text()).toBe('/');
+
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    await nextTick();
     expect(input.attributes('aria-keyshortcuts')).toBe('Control+K');
     expect(wrapper.get('.quick-filter__shortcut').text()).toBe('Ctrl+K');
+    useSettingsStore().settings = {};
+    await nextTick();
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
@@ -592,6 +635,16 @@ describe('App mail layout', () => {
 
     expect(focusSpy).toHaveBeenCalledOnce();
     expect(selectSpy).toHaveBeenCalledOnce();
+
+    // The web scheme's primary key.
+    document.dispatchEvent(new KeyboardEvent('keydown', {
+      key: '/',
+      bubbles: true,
+      cancelable: true,
+    }));
+    await nextTick();
+
+    expect(focusSpy).toHaveBeenCalledTimes(2);
   });
 
   it('renders the Mail brand with the Thundermail bolt glyph', async () => {

@@ -29,7 +29,7 @@ import { useComposeStore } from './stores/compose-store';
 import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
 import type { Palette, Theme } from './constants/settings';
-import { shortcutModifierAria, shortcutModifierLabel } from './utils/keyboard';
+import { shortcutAria, shortcutHint } from './constants/shortcuts';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -88,8 +88,12 @@ const quickFilterAriaLabel = computed(() =>
     ? 'Filter contacts or identities by name or email address'
     : 'Quick Filter messages by from, to, or subject',
 );
-const quickFilterShortcutLabel = `${shortcutModifierLabel()}+K`;
-const quickFilterAriaShortcut = `${shortcutModifierAria()}+K`;
+const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
+// The badge shows the scheme's first key; aria lists every binding.
+const quickFilterShortcutLabel = computed(() =>
+  shortcutHint('quickFilter', shortcutScheme.value)?.split(' or ')[0] ?? '');
+const quickFilterAriaShortcut = computed(() =>
+  shortcutAria('quickFilter', shortcutScheme.value) ?? undefined);
 
 const showLogin = computed(() => authStore.status !== AUTH_STATE.CONNECTED);
 
