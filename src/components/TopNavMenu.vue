@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { Bug, Lightbulb, Menu, Moon, Sun } from '@lucide/vue';
+import {
+  Bug, Lightbulb, Menu, Moon, Settings, Sun,
+} from '@lucide/vue';
 
 import { BUG_REPORT_URL, FEEDBACK_URL } from '../defines';
 import { OTHER_PRO_APPS } from '../constants/apps';
@@ -11,9 +13,12 @@ import { OTHER_PRO_APPS } from '../constants/apps';
 defineProps<{
   theme: 'dark' | 'light';
   themeToggleLabel: string;
+  /** False while the theme follows the OS; the toggle item is dropped. */
+  showThemeToggle: boolean;
 }>();
 const emit = defineEmits<{
   (event: 'toggle-theme'): void;
+  (event: 'open-settings'): void;
 }>();
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
@@ -27,6 +32,11 @@ function close() {
 function onToggleTheme() {
   close();
   emit('toggle-theme');
+}
+
+function onOpenSettings() {
+  close();
+  emit('open-settings');
 }
 </script>
 
@@ -58,7 +68,23 @@ function onToggleTheme() {
         <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
         <span>Give feedback</span>
       </a>
-      <button class="top-nav-menu__item" type="button" role="menuitem" @click="onToggleTheme">
+      <button
+        class="top-nav-menu__item"
+        type="button"
+        role="menuitem"
+        data-settings-menuitem
+        @click="onOpenSettings"
+      >
+        <Settings :size="18" :stroke-width="1.75" aria-hidden="true" />
+        <span>Settings</span>
+      </button>
+      <button
+        v-if="showThemeToggle"
+        class="top-nav-menu__item"
+        type="button"
+        role="menuitem"
+        @click="onToggleTheme"
+      >
         <Sun v-if="theme === 'dark'" :size="18" :stroke-width="1.75" aria-hidden="true" />
         <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         <span>{{ themeToggleLabel }}</span>

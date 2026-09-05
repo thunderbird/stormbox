@@ -45,14 +45,17 @@ import AppDrawer from './components/AppDrawer.vue';
 import TopNavMenu from './components/TopNavMenu.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 import WelcomeModal from './components/WelcomeModal.vue';
-// Staff-only Kanban feature (src/features/kanban): the gear button gates
-// the flag; the board replaces MessageList only while the flag is on.
-// Both are async so a non-staff session never downloads the feature
-// (the gear chunk carries the dialog, fireworks and audio clip).
+import SettingsDialog from './components/settings/SettingsDialog.vue';
+import SettingsGearButton from './components/settings/SettingsGearButton.vue';
+// Staff-only Kanban feature (src/features/kanban): the settings dialog's
+// staff section gates the flag; the board replaces MessageList only while
+// the flag is on. Both staff pieces are async so a non-staff session never
+// downloads the feature (the celebration chunk carries fireworks and the
+// audio clip).
 import { useKanbanStore } from './features/kanban/kanban-store';
 
-const StaffGearButton = defineAsyncComponent(() => import('./features/kanban/StaffGearButton.vue'));
 const KanbanBoard = defineAsyncComponent(() => import('./features/kanban/KanbanBoard.vue'));
+const KanbanCelebration = defineAsyncComponent(() => import('./features/kanban/KanbanCelebration.vue'));
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -149,6 +152,9 @@ const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
+const showSettingsDialog = ref(false);
+// With 'system' the OS decides, so a manual light/dark button would fight it.
+const showThemeToggle = computed(() => theme.value !== 'system');
 const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
 );
@@ -688,7 +694,9 @@ function clamp(value: number, min: number, max: number) {
         class="quick-filter__menu"
         :theme="appliedTheme"
         :theme-toggle-label="themeToggleLabel"
+        :show-theme-toggle="showThemeToggle"
         @toggle-theme="toggleTheme"
+        @open-settings="showSettingsDialog = true"
       />
 
       <div
@@ -747,8 +755,9 @@ function clamp(value: number, min: number, max: number) {
         >
           <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
         </a>
-        <StaffGearButton v-if="authStore.isStaff" />
+        <SettingsGearButton @open="showSettingsDialog = true" />
         <button
+          v-if="showThemeToggle"
           class="quick-filter__action theme-toggle"
           type="button"
           :aria-label="themeToggleLabel"
@@ -881,6 +890,12 @@ function clamp(value: number, min: number, max: number) {
       @spotlight-resize-layout="spotlightResizeLayout"
       @spotlight-compose-actions="spotlightComposeActions"
     />
+    <SettingsDialog
+      v-if="showSettingsDialog"
+      :applied-theme="appliedTheme"
+      @close="showSettingsDialog = false"
+    />
+    <KanbanCelebration v-if="authStore.isStaff" />
   </div>
 </template>
 
@@ -901,7 +916,7 @@ function clamp(value: number, min: number, max: number) {
   --top-nav-bg: var(--space-rail-bg);
   --top-nav-border: var(--border);
   --top-nav-shadow: transparent;
-  --top-nav-wordmark: #fff;
+  --top-nav-wordmark: var(--accent);
   --top-nav-input-bg: var(--surface);
   --top-nav-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
 }

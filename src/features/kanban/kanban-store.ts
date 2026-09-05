@@ -198,10 +198,19 @@ export const useKanbanStore = defineStore('kanban', () => {
     seedError.value = error;
   }
 
+  // The unlock happens inside the settings dialog, which closes on
+  // success; the fireworks and clip outlive it in `KanbanCelebration`,
+  // which watches this counter. Never persisted.
+  const celebrationRequests = ref(0);
+  function requestCelebration(): void {
+    celebrationRequests.value += 1;
+  }
+
   function $reset(): void {
     persisted.value = readPersisted(authStore.accountId);
     seedState.value = 'idle';
     seedError.value = null;
+    celebrationRequests.value = 0;
     columnWidths.value = [KANBAN_DEFAULT_COLUMN_WIDTH, KANBAN_DEFAULT_COLUMN_WIDTH];
     clearSelection();
   }
@@ -219,6 +228,8 @@ export const useKanbanStore = defineStore('kanban', () => {
     clearSelection,
     seedState,
     seedError,
+    celebrationRequests,
+    requestCelebration,
     isUnlockCode,
     unlock,
     setEnabled,

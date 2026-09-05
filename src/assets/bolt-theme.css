@@ -14,6 +14,8 @@
 html.palette-bolt.dark {
   /* Surfaces: --panel2 = lower, --bg = base, --panel = raised. */
   --bg: #1a202c;
+  /* Classic dark paints the wordmark in the logo blue; Bolt keeps it white. */
+  --top-nav-wordmark: #fff;
   --panel: #262d3b;
   --panel2: #18181b;
   --accent: #58c9ff;

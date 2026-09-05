@@ -11,14 +11,22 @@ vi.mock('../../../../src/services/auth', () => ({
   getOidc: () => null,
 }));
 
-// Records whether the gear's module (and with it the dialog, fireworks
-// and audio clip it imports) was ever evaluated.
-const gearModule = vi.hoisted(() => ({ loaded: false }));
-vi.mock('../../../../src/features/kanban/StaffGearButton.vue', () => {
-  gearModule.loaded = true;
+// Records whether the staff chunks (the dialog section with the kanban
+// seed, and the celebration host with fireworks and the audio clip) were
+// ever evaluated.
+const staffModules = vi.hoisted(() => ({ section: false, celebration: false }));
+vi.mock('../../../../src/features/kanban/StaffSettingsSection.vue', () => {
+  staffModules.section = true;
   return {
     __esModule: true,
-    default: { name: 'StaffGearButton', template: '<button data-staff-gear />' },
+    default: { name: 'StaffSettingsSection', template: '<div data-staff-settings />' },
+  };
+});
+vi.mock('../../../../src/features/kanban/KanbanCelebration.vue', () => {
+  staffModules.celebration = true;
+  return {
+    __esModule: true,
+    default: { name: 'KanbanCelebration', template: '<div data-kanban-celebration />' },
   };
 });
 
@@ -91,19 +99,31 @@ afterEach(() => {
   __resetRepositoryForTests();
 });
 
-describe('staff gear loading', () => {
-  it('never evaluates the gear module for a non-staff session, and loads it once for staff', async () => {
+describe('staff chunk loading', () => {
+  it('renders the gear and dialog for a non-staff session without evaluating any staff module', async () => {
     const authStore = useAuthStore();
     authStore.email = 'someone@gmail.com';
     const wrapper = mountApp();
     await flushPromises();
-    expect(gearModule.loaded).toBe(false);
-    expect(wrapper.find('[data-staff-gear]').exists()).toBe(false);
+    expect(wrapper.find('[data-settings-gear]').exists()).toBe(true);
 
+    await wrapper.get('[data-settings-gear]').trigger('click');
+    await flushPromises();
+    const dialog = document.body.querySelector('[data-settings-dialog]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(dialog!.querySelector('[data-system-theme-toggle]')).not.toBeNull();
+    expect(dialog!.querySelector('[data-staff-settings]')).toBeNull();
+    expect(staffModules.section).toBe(false);
+    expect(staffModules.celebration).toBe(false);
+
+    // Becoming staff loads both: the celebration host right away, the
+    // section once the dialog shows it.
     authStore.email = 'boss@thunderbird.net';
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-staff-gear]').exists()).toBe(true);
+      expect(dialog!.querySelector('[data-staff-settings]')).not.toBeNull();
     });
-    expect(gearModule.loaded).toBe(true);
+    expect(staffModules.section).toBe(true);
+    expect(staffModules.celebration).toBe(true);
   });
 });

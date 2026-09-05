@@ -683,9 +683,10 @@ describe('App mail layout', () => {
     expect(tiles[2].get('img').attributes('src')).toBe('/icons/icon-send.svg');
   });
 
-  it('collapses the actions into a menu with the same links and theme toggle for compact layouts', async () => {
+  it('collapses the actions into a menu with the same links, settings and theme toggle for compact layouts', async () => {
+    window.localStorage?.setItem('stormbox.theme.v1', 'dark');
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const menu = wrapper.get('.quick-filter > .quick-filter__menu');
     expect(menu.get('.top-nav-menu__button').attributes('aria-label')).toBe('Open menu');
@@ -695,19 +696,43 @@ describe('App mail layout', () => {
     expect(items.map((item) => item.text())).toEqual([
       'Report a bug',
       'Give feedback',
+      'Settings',
       toggleLabel,
       'Appointment',
       'Send',
     ]);
     expect(items[0].attributes('href')).toBe(BUG_REPORT_URL);
     expect(items[1].attributes('href')).toBe(FEEDBACK_URL);
-    expect(items[3].attributes('href')).toBe(APPOINTMENT_URL);
-    expect(items[4].attributes('href')).toBe(SEND_URL);
+    expect(items[4].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(items[5].attributes('href')).toBe(SEND_URL);
 
-    await items[2].trigger('click');
+    await items[3].trigger('click');
     await nextTick();
     expect(wrapper.get('.theme-toggle').attributes('aria-label')).not.toBe(toggleLabel);
-    expect(menu.get('.top-nav-menu__item:nth-of-type(3)').text()).not.toBe(toggleLabel);
+    expect(menu.get('.top-nav-menu__item:nth-of-type(4)').text()).not.toBe(toggleLabel);
+
+    expect(document.body.querySelector('[data-settings-dialog]')).toBeNull();
+    await items[2].trigger('click');
+    await nextTick();
+    expect(document.body.querySelector('[data-settings-dialog]')).not.toBeNull();
+  });
+
+  it('drops the theme toggle from the bar and the compact menu while the theme follows the system', async () => {
+    const wrapper = mountApp();
+    await flushPromises();
+
+    expect(useSettingsStore().get('theme')).toBe('system');
+    expect(wrapper.find('.theme-toggle').exists()).toBe(false);
+    const items = wrapper.findAll('.top-nav-menu__popover [role="menuitem"]');
+    expect(items.map((item) => item.text())).toEqual([
+      'Report a bug',
+      'Give feedback',
+      'Settings',
+      'Appointment',
+      'Send',
+    ]);
+    // The gear itself stays: it is how the toggle comes back.
+    expect(wrapper.find('[data-settings-gear]').exists()).toBe(true);
   });
 
   it('updates the document title with the signed-in account email', async () => {
@@ -800,8 +825,9 @@ describe('App mail layout', () => {
   });
 
   it('renders bug report and feedback links next to the theme toggle', async () => {
+    window.localStorage?.setItem('stormbox.theme.v1', 'dark');
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const bugLink = wrapper.get('.quick-filter__action[aria-label="Report a bug"]');
     expect(bugLink.attributes('href')).toBe(BUG_REPORT_URL);

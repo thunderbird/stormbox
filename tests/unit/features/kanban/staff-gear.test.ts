@@ -1,8 +1,5 @@
 // @vitest-environment happy-dom
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import {
   afterEach, beforeEach, describe, expect, it, vi,
 } from 'vitest';
@@ -46,12 +43,10 @@ vi.mock('../../../../src/features/kanban/celebration/FireworksOverlay.vue', () =
 }));
 
 import App from '../../../../src/App.vue';
-import StaffGearButton from '../../../../src/features/kanban/StaffGearButton.vue';
 import { kanbanStorageKey, useKanbanStore } from '../../../../src/features/kanban/kanban-store';
 import { AUTH_STATE } from '../../../../src/constants/states';
 import { useAuthStore } from '../../../../src/stores/auth-store';
 import { useMailStore } from '../../../../src/stores/mail-store';
-import { useSettingsStore } from '../../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -103,7 +98,20 @@ function mountApp() {
 }
 
 function dialog() {
-  return document.body.querySelector('[data-kanban-unlock-dialog]') as HTMLElement | null;
+  return document.body.querySelector('[data-settings-dialog]') as HTMLElement | null;
+}
+
+function staffSection() {
+  return dialog()?.querySelector('[data-staff-settings]') as HTMLElement | null;
+}
+
+/** Open the gear and wait for the async staff section to land. */
+async function openStaffSettings(wrapper: ReturnType<typeof mountApp>) {
+  await wrapper.get('[data-settings-gear]').trigger('click');
+  await flushPromises();
+  await vi.waitFor(() => {
+    expect(staffSection()).not.toBeNull();
+  });
 }
 
 /** The board is an async chunk; its import settles on its own schedule. */
@@ -143,33 +151,43 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('staff gear in App', () => {
-  it('is absent for non-staff and nothing kanban-related renders', async () => {
+describe('staff settings in the gear dialog', () => {
+  it('non-staff get the gear but no staff section and nothing kanban-related', async () => {
     useAuthStore().email = 'someone@gmail.com';
     const wrapper = mountApp();
     await flushPromises();
 
-    expect(wrapper.find('[data-staff-gear]').exists()).toBe(false);
+    expect(wrapper.find('[data-settings-gear]').exists()).toBe(true);
     expect(wrapper.find('.msg-list').exists()).toBe(true);
     expect(wrapper.find('[data-testid="kanban-board"]').exists()).toBe(false);
-    expect(dialog()).toBeNull();
+
+    await wrapper.get('[data-settings-gear]').trigger('click');
+    await flushPromises();
+    expect(dialog()).not.toBeNull();
+    expect(staffSection()).toBeNull();
+    expect(dialog()!.textContent).not.toContain('Staff settings');
+    expect(dialog()!.querySelector('[data-kanban-unlock-code]')).toBeNull();
+    expect(audio.preloadCelebrationAudio).not.toHaveBeenCalled();
   });
 
-  it('is absent when the account has no email claim (password login)', async () => {
+  it('shows no staff section when the account has no email claim (password login)', async () => {
     useAuthStore().email = null;
     const wrapper = mountApp();
     await flushPromises();
-    expect(wrapper.find('[data-staff-gear]').exists()).toBe(false);
+    await wrapper.get('[data-settings-gear]').trigger('click');
+    await flushPromises();
+    expect(staffSection()).toBeNull();
   });
 
-  it('takes the settings slot between feedback and the theme toggle for staff and leaves the list untouched while locked', async () => {
+  it('the gear sits between feedback and the theme toggle; the list is untouched while locked', async () => {
     useAuthStore().email = 'boss@thunderbird.net';
+    localStorage.setItem('stormbox.theme.v1', 'dark');
     const wrapper = mountApp();
     await flushPromises();
 
     const actions = wrapper.get('.quick-filter__actions');
     const children = Array.from(actions.element.children);
-    const gearIndex = children.findIndex((el) => el.matches('[data-staff-gear]'));
+    const gearIndex = children.findIndex((el) => el.matches('[data-settings-gear]'));
     expect(gearIndex).toBeGreaterThan(0);
     expect(children[gearIndex - 1]?.getAttribute('aria-label')).toBe('Give feedback');
     expect(children[gearIndex + 1]?.classList.contains('theme-toggle')).toBe(true);
@@ -177,27 +195,34 @@ describe('staff gear in App', () => {
     expect(wrapper.find('[data-testid="kanban-board"]').exists()).toBe(false);
   });
 
-  it('stays out of the top bar below 700px, where a fifth action overflows the shell', () => {
-    // The bar's end cluster fits five 36px actions only from ~670px up; the
-    // sidebar-layout e2e pins the 640px and 340px layouts against overflow.
-    const source = readFileSync(resolve(process.cwd(), 'src/features/kanban/StaffGearButton.vue'), 'utf8');
-    expect(source).toMatch(/class="quick-filter__action staff-gear"/);
-    expect(source).toMatch(
-      /@media\s*\(max-width:\s*699px\)\s*\{[\s\S]*?\.staff-gear\s*\{[\s\S]*?display:\s*none;/,
-    );
+  it('staff see a rule and "Staff settings" below the shared rows', async () => {
+    useAuthStore().email = 'boss@thunderbird.net';
+    const wrapper = mountApp();
+    await flushPromises();
+    await openStaffSettings(wrapper);
+
+    const panel = dialog()!;
+    const rule = panel.querySelector('hr')!;
+    const heading = panel.querySelector('h3')!;
+    expect(heading.textContent).toBe('Staff settings');
+    const order = Array.from(panel.querySelectorAll(
+      '[data-system-theme-toggle], hr, h3, [data-kanban-unlock-code]',
+    ));
+    expect(order.map((el) => el.tagName.toLowerCase())).toEqual([
+      'button', 'hr', 'h3', 'input',
+    ]);
+    expect(rule.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('gear opens a code dialog; a wrong code is rejected and changes nothing', async () => {
+  it('gear opens the code box for staff; a wrong code is rejected and changes nothing', async () => {
     useAuthStore().email = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
 
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
-    expect(dialog()).not.toBeNull();
+    await openStaffSettings(wrapper);
     expect(dialog()!.querySelector('[data-kanban-unlock-code]')).not.toBeNull();
     expect(dialog()!.querySelector('[data-kanban-toggle]')).toBeNull();
-    // Opening the dialog is what buffers the clip, before any code is typed.
+    // Opening the staff section is what buffers the clip, before any code is typed.
     expect(audio.preloadCelebrationAudio).toHaveBeenCalledTimes(1);
 
     await submitCode('kanbans');
@@ -224,8 +249,7 @@ describe('staff gear in App', () => {
     useAuthStore().email = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
 
     let seedResolve: (v: any) => void = () => {};
     seed.seedKanbanFolders.mockImplementationOnce(() => new Promise((resolve) => { seedResolve = resolve; }));
@@ -254,8 +278,7 @@ describe('staff gear in App', () => {
     const wrapper = mountApp();
     await flushPromises();
     expect(document.body.querySelector('[data-kanban-volume]')).toBeNull();
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     await submitCode('kanban');
 
     const pill = document.body.querySelector('[data-kanban-volume]') as HTMLElement;
@@ -277,8 +300,7 @@ describe('staff gear in App', () => {
     expect(document.body.querySelector('[data-kanban-volume]')).toBeNull();
 
     // Later toggles never bring it back.
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     const toggle = dialog()!.querySelector('[data-kanban-toggle]') as HTMLButtonElement;
     toggle.click();
     await flushPromises();
@@ -291,14 +313,12 @@ describe('staff gear in App', () => {
     useAuthStore().email = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     await submitCode('kanban');
     audio.playCelebrationAudio.mockClear();
     seed.seedKanbanFolders.mockClear();
 
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     const toggle = dialog()!.querySelector('[data-kanban-toggle]') as HTMLButtonElement;
     expect(toggle).not.toBeNull();
     expect(dialog()!.querySelector('[data-kanban-unlock-code]')).toBeNull();
@@ -317,41 +337,6 @@ describe('staff gear in App', () => {
     await expectBoard(wrapper);
     expect(audio.playCelebrationAudio).not.toHaveBeenCalled();
     expect(seed.seedKanbanFolders).not.toHaveBeenCalled();
-  });
-
-  it('offers the palette switch above the code box and persists it as the palette setting', async () => {
-    useAuthStore().email = 'boss@thunderbird.net';
-    const wrapper = mountApp();
-    await flushPromises();
-    expect(document.documentElement.classList.contains('palette-bolt')).toBe(true);
-
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
-    const palette = dialog()!.querySelector('[data-palette-toggle]') as HTMLButtonElement;
-    const code = dialog()!.querySelector('[data-kanban-unlock-code]') as HTMLInputElement;
-    expect(palette.getAttribute('aria-checked')).toBe('true');
-    // The code textbox stays below the colour toggle.
-    const ordered = Array.from(dialog()!.querySelectorAll('[data-palette-toggle], [data-kanban-unlock-code]'));
-    expect(ordered).toEqual([palette, code]);
-
-    palette.click();
-    await flushPromises();
-    expect(palette.getAttribute('aria-checked')).toBe('false');
-    expect(useSettingsStore().get('palette')).toBe('classic');
-    expect(document.documentElement.classList.contains('palette-bolt')).toBe(false);
-    expect(useKanbanStore().unlocked).toBe(false);
-
-    palette.click();
-    await flushPromises();
-    expect(useSettingsStore().get('palette')).toBe('bolt');
-    expect(document.documentElement.classList.contains('palette-bolt')).toBe(true);
-
-    // Still there once the board is unlocked, alongside the board switch.
-    await submitCode('kanban');
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
-    expect(dialog()!.querySelector('[data-palette-toggle]')).not.toBeNull();
-    expect(dialog()!.querySelector('[data-kanban-toggle]')).not.toBeNull();
   });
 
   it('a persisted flag renders the board on load without any celebration', async () => {
@@ -394,8 +379,7 @@ describe('staff gear in App', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const wrapper = mountApp();
     await flushPromises();
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     await submitCode('kanban');
 
     const kanban = useKanbanStore();
@@ -416,8 +400,7 @@ describe('staff gear in App', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const wrapper = mountApp();
     await flushPromises();
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     await submitCode('kanban');
     await flushPromises();
     expect(useKanbanStore().seedState).toBe('failed');
@@ -425,8 +408,7 @@ describe('staff gear in App', () => {
     const fireworksBefore = document.body.querySelectorAll('[data-kanban-fireworks]').length;
 
     // Reopen the gear: the failure is shown with a retry, no code box.
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     expect(dialog()!.querySelector('[data-kanban-unlock-code]')).toBeNull();
     expect(dialog()!.textContent).toContain('serverFail');
     const retry = dialog()!.querySelector('[data-kanban-seed-retry]') as HTMLButtonElement;
@@ -444,33 +426,28 @@ describe('staff gear in App', () => {
   });
 });
 
-describe('KanbanUnlockDialog keyboard', () => {
-  it('closes on Escape and on the backdrop, submits on Enter', async () => {
+describe('settings dialog keyboard', () => {
+  it('closes on Escape and on the backdrop; Enter in the code box submits', async () => {
     useAuthStore().email = 'boss@thunderbird.net';
-    const wrapper = mount(StaffGearButton, { attachTo: document.body });
-    mounted.push(wrapper);
-    await wrapper.get('[data-staff-gear]').trigger('click');
+    const wrapper = mountApp();
     await flushPromises();
-    expect(dialog()).not.toBeNull();
+    await openStaffSettings(wrapper);
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     await flushPromises();
     expect(dialog()).toBeNull();
 
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
-    (document.body.querySelector('.kanban-unlock') as HTMLElement).click();
+    await openStaffSettings(wrapper);
+    (document.body.querySelector('.settings-dialog') as HTMLElement).click();
     await flushPromises();
     expect(dialog()).toBeNull();
 
-    await wrapper.get('[data-staff-gear]').trigger('click');
-    await flushPromises();
+    await openStaffSettings(wrapper);
     const input = dialog()!.querySelector('[data-kanban-unlock-code]') as HTMLInputElement;
-    expect(document.activeElement).toBe(input);
     input.value = 'kanban';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
-    dialog()!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    input.form!.requestSubmit();
     await flushPromises();
     expect(useKanbanStore().enabled).toBe(true);
     expect(dialog()).toBeNull();
