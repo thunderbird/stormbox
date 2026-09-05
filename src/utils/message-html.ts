@@ -350,6 +350,13 @@ export const BODY_THEME_COLORS = {
   },
 };
 
+/** Canvas under the Bolt palette (assets/bolt-theme.css): its --panel2, the
+ *  lower surface the message list and reading pane share. */
+export const BOLT_BODY_BACKGROUND = {
+  light: '#f7f7f7',
+  dark: '#18181b',
+};
+
 export function buildBodyCss(colorScheme = 'light') {
   const colors = Object.prototype.hasOwnProperty.call(BODY_THEME_COLORS, colorScheme)
     ? BODY_THEME_COLORS[colorScheme]

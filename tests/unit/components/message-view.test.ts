@@ -32,6 +32,7 @@ import MessageView from '../../../src/components/MessageView.vue';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,

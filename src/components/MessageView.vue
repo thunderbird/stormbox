@@ -20,9 +20,11 @@ import { useMessageAttachments } from '../composables/useMessageAttachments';
 import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
 import { useComposeStore } from '../stores/compose-store';
 import { useMailStore } from '../stores/mail-store';
+import { useSettingsStore } from '../stores/settings-store';
 import {
   ALLOWED_URI_REGEXP,
   BODY_THEME_COLORS,
+  BOLT_BODY_BACKGROUND,
   IFRAME_SANDBOX,
   buildMessageSrcDoc,
   isInlineImageType,
@@ -58,6 +60,7 @@ defineProps<{
 
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
+const settingsStore = useSettingsStore();
 const shortcutModifier = shortcutModifierLabel();
 
 const htmlShellRef = ref(null);
@@ -77,8 +80,12 @@ const bodyColorScheme = computed(() =>
   (effectiveColorScheme.value === 'dark' && forceLightBody.value)
     ? 'light'
     : effectiveColorScheme.value);
-const iframeBackground = computed(() =>
-  BODY_THEME_COLORS[bodyColorScheme.value === 'dark' ? 'dark' : 'light'].background);
+const iframeBackground = computed(() => {
+  const scheme = bodyColorScheme.value === 'dark' ? 'dark' : 'light';
+  return settingsStore.get('palette') === 'bolt'
+    ? BOLT_BODY_BACKGROUND[scheme]
+    : BODY_THEME_COLORS[scheme].background;
+});
 
 const body = computed(() => mailStore.messageBody);
 // null while the body is still loading; a (possibly empty) object once the

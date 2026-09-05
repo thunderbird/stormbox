@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// House icon-toggle button: transparent at rest, filled with the services-ui
-// primary-button gradient when active (see --primary-filled-gradient in
-// assets/styles.css), so active toggles match AppButton/PrimaryButton
-// surfaces exactly. Used for the spaces rail; reach for this whenever a
+// House icon-toggle button: transparent at rest, filled with --accent when
+// active so it matches AppButton/PrimaryButton's resting surface (the Bolt
+// palette swaps both for its gradient in assets/bolt-theme.css). Used for
+// the spaces rail; reach for this whenever a
 // square icon button needs a selected state. aria-label/title/click fall
 // through via attrs; aria-pressed tracks `active` automatically.
 withDefaults(
@@ -43,7 +43,7 @@ withDefaults(
   color: var(--text);
 }
 .app-toggle-button.is-active {
-  background: var(--primary-filled-gradient);
+  background: var(--accent);
   color: #fff;
 }
 </style>

@@ -51,6 +51,7 @@ import { kanbanStorageKey, useKanbanStore } from '../../../../src/features/kanba
 import { AUTH_STATE } from '../../../../src/constants/states';
 import { useAuthStore } from '../../../../src/stores/auth-store';
 import { useMailStore } from '../../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -161,7 +162,7 @@ describe('staff gear in App', () => {
     expect(wrapper.find('[data-staff-gear]').exists()).toBe(false);
   });
 
-  it('sits directly left of the avatar for staff and leaves the list untouched while locked', async () => {
+  it('takes the settings slot between feedback and the theme toggle for staff and leaves the list untouched while locked', async () => {
     useAuthStore().email = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
@@ -170,8 +171,8 @@ describe('staff gear in App', () => {
     const children = Array.from(actions.element.children);
     const gearIndex = children.findIndex((el) => el.matches('[data-staff-gear]'));
     expect(gearIndex).toBeGreaterThan(0);
-    expect(children[gearIndex + 1]?.classList.contains('account-menu')).toBe(true);
-    expect(children[gearIndex - 1]?.classList.contains('theme-toggle')).toBe(true);
+    expect(children[gearIndex - 1]?.getAttribute('aria-label')).toBe('Give feedback');
+    expect(children[gearIndex + 1]?.classList.contains('theme-toggle')).toBe(true);
     expect(wrapper.find('.msg-list').exists()).toBe(true);
     expect(wrapper.find('[data-testid="kanban-board"]').exists()).toBe(false);
   });
@@ -195,7 +196,7 @@ describe('staff gear in App', () => {
     await flushPromises();
     expect(dialog()).not.toBeNull();
     expect(dialog()!.querySelector('[data-kanban-unlock-code]')).not.toBeNull();
-    expect(dialog()!.querySelector('[role="switch"]')).toBeNull();
+    expect(dialog()!.querySelector('[data-kanban-toggle]')).toBeNull();
     // Opening the dialog is what buffers the clip, before any code is typed.
     expect(audio.preloadCelebrationAudio).toHaveBeenCalledTimes(1);
 
@@ -278,7 +279,7 @@ describe('staff gear in App', () => {
     // Later toggles never bring it back.
     await wrapper.get('[data-staff-gear]').trigger('click');
     await flushPromises();
-    const toggle = dialog()!.querySelector('[role="switch"]') as HTMLButtonElement;
+    const toggle = dialog()!.querySelector('[data-kanban-toggle]') as HTMLButtonElement;
     toggle.click();
     await flushPromises();
     toggle.click();
@@ -298,7 +299,7 @@ describe('staff gear in App', () => {
 
     await wrapper.get('[data-staff-gear]').trigger('click');
     await flushPromises();
-    const toggle = dialog()!.querySelector('[role="switch"]') as HTMLButtonElement;
+    const toggle = dialog()!.querySelector('[data-kanban-toggle]') as HTMLButtonElement;
     expect(toggle).not.toBeNull();
     expect(dialog()!.querySelector('[data-kanban-unlock-code]')).toBeNull();
     expect(toggle.getAttribute('aria-checked')).toBe('true');
@@ -316,6 +317,41 @@ describe('staff gear in App', () => {
     await expectBoard(wrapper);
     expect(audio.playCelebrationAudio).not.toHaveBeenCalled();
     expect(seed.seedKanbanFolders).not.toHaveBeenCalled();
+  });
+
+  it('offers the palette switch above the code box and persists it as the palette setting', async () => {
+    useAuthStore().email = 'boss@thunderbird.net';
+    const wrapper = mountApp();
+    await flushPromises();
+    expect(document.documentElement.classList.contains('palette-bolt')).toBe(true);
+
+    await wrapper.get('[data-staff-gear]').trigger('click');
+    await flushPromises();
+    const palette = dialog()!.querySelector('[data-palette-toggle]') as HTMLButtonElement;
+    const code = dialog()!.querySelector('[data-kanban-unlock-code]') as HTMLInputElement;
+    expect(palette.getAttribute('aria-checked')).toBe('true');
+    // The code textbox stays below the colour toggle.
+    const ordered = Array.from(dialog()!.querySelectorAll('[data-palette-toggle], [data-kanban-unlock-code]'));
+    expect(ordered).toEqual([palette, code]);
+
+    palette.click();
+    await flushPromises();
+    expect(palette.getAttribute('aria-checked')).toBe('false');
+    expect(useSettingsStore().get('palette')).toBe('classic');
+    expect(document.documentElement.classList.contains('palette-bolt')).toBe(false);
+    expect(useKanbanStore().unlocked).toBe(false);
+
+    palette.click();
+    await flushPromises();
+    expect(useSettingsStore().get('palette')).toBe('bolt');
+    expect(document.documentElement.classList.contains('palette-bolt')).toBe(true);
+
+    // Still there once the board is unlocked, alongside the board switch.
+    await submitCode('kanban');
+    await wrapper.get('[data-staff-gear]').trigger('click');
+    await flushPromises();
+    expect(dialog()!.querySelector('[data-palette-toggle]')).not.toBeNull();
+    expect(dialog()!.querySelector('[data-kanban-toggle]')).not.toBeNull();
   });
 
   it('a persisted flag renders the board on load without any celebration', async () => {

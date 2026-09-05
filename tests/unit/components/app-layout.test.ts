@@ -559,7 +559,7 @@ describe('App mail layout', () => {
     await nextTick();
     const input = wrapper.get('.quick-filter__input');
 
-    expect(input.attributes('placeholder')).toBe('Filter messages..');
+    expect(input.attributes('placeholder')).toBe('Filter messages');
     expect(input.attributes('aria-label')).toBe('Quick Filter messages by from, to, or subject');
     expect(input.attributes('aria-keyshortcuts')).toBe('Control+K');
     expect(wrapper.get('.quick-filter__shortcut').text()).toBe('Ctrl+K');
@@ -594,23 +594,67 @@ describe('App mail layout', () => {
     expect(selectSpy).toHaveBeenCalledOnce();
   });
 
-  it('renders a Thundermail menu linking to Appointment and Send', async () => {
+  it('renders the Mail brand with the Thundermail bolt glyph', async () => {
     const wrapper = mountApp();
     await nextTick();
 
-    expect(wrapper.get('.app-menu__button').text()).toContain('Thundermail');
-    expect(wrapper.get('.app-menu__logo').attributes('src')).toBe('/logo.png');
+    const brand = wrapper.get('.quick-filter__brand');
+    expect(brand.get('.quick-filter__wordmark').text()).toBe('Mail');
+    expect(brand.get('.quick-filter__glyph').attributes('aria-hidden')).toBe('true');
+    expect(brand.find('.quick-filter__glyph svg').exists()).toBe(true);
+    expect(wrapper.get('.quick-filter__input').attributes('placeholder')).toBe('Filter messages');
+  });
 
-    const items = wrapper.findAll('.app-menu__popover .app-menu__item');
-    expect(items).toHaveLength(2);
-    expect(items[0].text()).toContain('Appointment');
-    expect(items[0].attributes('href')).toBe(APPOINTMENT_URL);
-    expect(items[0].attributes('target')).toBe('_blank');
-    expect(items[0].attributes('rel')).toBe('noopener noreferrer');
-    expect(items[1].text()).toContain('Send');
-    expect(items[1].attributes('href')).toBe(SEND_URL);
-    expect(items[1].attributes('target')).toBe('_blank');
-    expect(items[1].attributes('rel')).toBe('noopener noreferrer');
+  it('opens an app drawer from the app switcher with Mail current and the other apps linked', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    const drawer = wrapper.get('.quick-filter__actions .app-drawer');
+    expect(drawer.get('.app-drawer__button').attributes('aria-label')).toBe('Open app drawer');
+    expect(drawer.get('.app-drawer__button').classes()).toContain('quick-filter__action');
+
+    const tiles = drawer.findAll('.app-drawer__popover [role="menuitem"]');
+    expect(tiles).toHaveLength(3);
+    expect(tiles[0].text()).toContain('Mail');
+    expect(tiles[0].attributes('aria-current')).toBe('page');
+    expect(tiles[0].get('img').attributes('src')).toBe('/icons/icon-mail.svg');
+    expect(tiles[1].text()).toContain('Appointment');
+    expect(tiles[1].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(tiles[1].attributes('target')).toBe('_blank');
+    expect(tiles[1].attributes('rel')).toBe('noopener noreferrer');
+    expect(tiles[1].get('img').attributes('src')).toBe('/icons/icon-appointment.svg');
+    expect(tiles[2].text()).toContain('Send');
+    expect(tiles[2].attributes('href')).toBe(SEND_URL);
+    expect(tiles[2].attributes('target')).toBe('_blank');
+    expect(tiles[2].attributes('rel')).toBe('noopener noreferrer');
+    expect(tiles[2].get('img').attributes('src')).toBe('/icons/icon-send.svg');
+  });
+
+  it('collapses the actions into a menu with the same links and theme toggle for compact layouts', async () => {
+    const wrapper = mountApp();
+    await nextTick();
+
+    const menu = wrapper.get('.quick-filter > .quick-filter__menu');
+    expect(menu.get('.top-nav-menu__button').attributes('aria-label')).toBe('Open menu');
+
+    const toggleLabel = wrapper.get('.theme-toggle').attributes('aria-label');
+    const items = menu.findAll('.top-nav-menu__popover [role="menuitem"]');
+    expect(items.map((item) => item.text())).toEqual([
+      'Report a bug',
+      'Give feedback',
+      toggleLabel,
+      'Appointment',
+      'Send',
+    ]);
+    expect(items[0].attributes('href')).toBe(BUG_REPORT_URL);
+    expect(items[1].attributes('href')).toBe(FEEDBACK_URL);
+    expect(items[3].attributes('href')).toBe(APPOINTMENT_URL);
+    expect(items[4].attributes('href')).toBe(SEND_URL);
+
+    await items[2].trigger('click');
+    await nextTick();
+    expect(wrapper.get('.theme-toggle').attributes('aria-label')).not.toBe(toggleLabel);
+    expect(menu.get('.top-nav-menu__item:nth-of-type(3)').text()).not.toBe(toggleLabel);
   });
 
   it('updates the document title with the signed-in account email', async () => {
@@ -689,17 +733,17 @@ describe('App mail layout', () => {
     expect(wrapper.get('.app-spaces__badge').text()).toBe('3');
   });
 
-  it('closes the Thundermail menu when clicking outside it', async () => {
+  it('closes the app drawer when clicking outside it', async () => {
     const wrapper = mountApp();
     await nextTick();
 
-    const appMenu = wrapper.get('.app-menu').element as HTMLDetailsElement;
-    appMenu.open = true;
+    const drawer = wrapper.get('.app-drawer').element as HTMLDetailsElement;
+    drawer.open = true;
 
     dispatchClick(document.body);
     await nextTick();
 
-    expect(appMenu.open).toBe(false);
+    expect(drawer.open).toBe(false);
   });
 
   it('renders bug report and feedback links next to the theme toggle', async () => {

@@ -7,6 +7,7 @@ import App from './App.vue';
 import '@thunderbirdops/services-ui/style.css';
 import '@vuepic/vue-datepicker/dist/main.css';
 import './assets/styles.css';
+import './assets/bolt-theme.css';
 
 const app = createApp(App);
 app.use(createPinia());

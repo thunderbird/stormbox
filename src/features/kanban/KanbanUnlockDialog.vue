@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * The gear dialog. Until the account has unlocked the feature it is a
- * single code textbox; afterwards it is an on/off switch for the board,
- * with a retry when the sample-folder seed failed. Emits `unlock` (first
- * time only), `retry-seed` and `close`; the caller owns the celebration,
- * seeding and flag persistence.
+ * The gear dialog. A "Bolt colors" palette switch sits on top; below it,
+ * until the account has unlocked the feature, a single code textbox, and
+ * afterwards an on/off switch for the board with a retry when the
+ * sample-folder seed failed. Emits `unlock` (first time only),
+ * `retry-seed` and `close`; the caller owns the celebration, seeding and
+ * flag persistence.
  */
 import {
   computed, onBeforeUnmount, onMounted, ref, watch,
@@ -12,6 +13,7 @@ import {
 import { X } from '@lucide/vue';
 
 import { useModalFocus } from '../../composables/useModalFocus';
+import { useSettingsStore } from '../../stores/settings-store';
 import { isComposingKeyEvent } from '../../utils/keyboard';
 import { isUnlockCode, useKanbanStore } from './kanban-store';
 
@@ -24,6 +26,8 @@ const emit = defineEmits<{
 }>();
 
 const kanban = useKanbanStore();
+const settingsStore = useSettingsStore();
+const boltPalette = computed(() => settingsStore.get('palette') === 'bolt');
 const dialogEl = ref<HTMLElement | null>(null);
 const codeEl = ref<HTMLInputElement | null>(null);
 const code = ref('');
@@ -55,6 +59,10 @@ function submit() {
 
 function toggleEnabled() {
   kanban.setEnabled(!kanban.enabled);
+}
+
+function togglePalette() {
+  void settingsStore.update({ palette: boltPalette.value ? 'classic' : 'bolt' });
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
@@ -94,6 +102,26 @@ onBeforeUnmount(() => {
             <X :size="18" :stroke-width="2" aria-hidden="true" />
           </button>
         </header>
+
+        <div class="kanban-unlock__form kanban-unlock__form--palette">
+          <div class="kanban-unlock__row">
+            <div class="kanban-unlock__row-text">
+              <span id="palette-toggle-label" class="kanban-unlock__row-title">Bolt colors</span>
+              <span class="kanban-unlock__row-hint">Cyan accent, Bolt surfaces and a taller nav bar. Off restores the previous blue palette and nav bar height.</span>
+            </div>
+            <button
+              type="button"
+              class="kanban-unlock__switch"
+              role="switch"
+              :aria-checked="boltPalette"
+              aria-labelledby="palette-toggle-label"
+              data-palette-toggle
+              @click="togglePalette"
+            >
+              <span class="kanban-unlock__switch-knob" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
 
         <form v-if="!kanban.unlocked" class="kanban-unlock__form" @submit.prevent="submit">
           <label class="kanban-unlock__field">
@@ -220,6 +248,11 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   padding: 6px 18px 16px;
+}
+.kanban-unlock__form--palette {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
 }
 .kanban-unlock__field {
   display: flex;

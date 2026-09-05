@@ -8,9 +8,15 @@ import { detectTimeZone, isUsableTimeZone } from '../utils/schedule-time';
 export const THEME_VALUES = ['light', 'dark', 'system'] as const;
 export type Theme = (typeof THEME_VALUES)[number];
 
+/** 'bolt' = Bolt design-system accent and surfaces; 'classic' = the earlier blue palette. */
+export const PALETTE_VALUES = ['bolt', 'classic'] as const;
+export type Palette = (typeof PALETTE_VALUES)[number];
+
 export interface Settings {
   /** Color scheme. 'system' follows the OS preference. */
   theme: Theme;
+  /** Accent and surface palette applied on top of the color scheme. */
+  palette: Palette;
   /** Client-selected JMAP Identity id used as the default From address. */
   primaryIdentityRemoteId: string | null;
   /** Cached JMAP id for the managed top-level `Scheduled` mailbox. */
@@ -21,6 +27,7 @@ export interface Settings {
 
 export const SETTING_DEFAULTS: Readonly<Settings> = {
   theme: 'system',
+  palette: 'classic',
   primaryIdentityRemoteId: null,
   scheduledMailboxRemoteId: null,
   timeZone: detectTimeZone(),
@@ -30,6 +37,7 @@ const SETTING_VALIDATORS: {
   [K in keyof Settings]: (value: unknown) => value is Settings[K];
 } = {
   theme: (value): value is Theme => (THEME_VALUES as readonly unknown[]).includes(value),
+  palette: (value): value is Palette => (PALETTE_VALUES as readonly unknown[]).includes(value),
   primaryIdentityRemoteId: (value): value is string | null =>
     value === null || (typeof value === 'string' && value.length > 0),
   scheduledMailboxRemoteId: (value): value is string | null =>
