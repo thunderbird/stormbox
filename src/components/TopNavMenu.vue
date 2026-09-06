@@ -124,11 +124,12 @@ function onOpenSettings() {
 }
 
 /* The button sits beside the avatar at the right edge of the bar, so the
-   popover opens leftward from it and stays inside the viewport. */
+   popover opens leftward from it and stays inside the viewport. It hangs
+   directly off the button so the two read as one control. */
 .top-nav-menu__popover {
   position: absolute;
   z-index: 30;
-  top: calc(100% + 8px);
+  top: calc(100% + 2px);
   right: 0;
   min-width: 240px;
   padding: 6px;
