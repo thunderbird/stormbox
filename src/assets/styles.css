@@ -127,7 +127,7 @@ html.light,
   --bg: #f6f8fc;
   --panel: #ffffff;
   --panel2: #f4f7fb;
-  --border: #dbe1ea;
+  --border: #e8ecf2; /* 1.19:1 on --panel, matching the dark hairline weight */
   --text: #111827;
   --muted: #6b7280;
   /* Light mode adopts services-ui's primary blue (--colour-primary-default,
@@ -152,7 +152,7 @@ html.light,
     --bg: #f6f8fc;
     --panel: #ffffff;
     --panel2: #f4f7fb;
-    --border: #dbe1ea;
+    --border: #e8ecf2; /* 1.19:1 on --panel, matching the dark hairline weight */
     --text: #111827;
     --muted: #6b7280;
     --accent: #1373d9;
