@@ -1363,7 +1363,6 @@ html.light,
 .sidebar__header {
   min-width: 0;
   padding: 12px 12px 10px;
-  border-bottom: 1px solid var(--border-soft);
 }
 /* New Message is our AppButton (services-ui PrimaryButton wrapper, which
    owns the 34px height and bold label). Here we only stretch it to the
