@@ -155,8 +155,12 @@ const showWelcomeModal = ref(false);
 const showSettingsDialog = ref(false);
 // With 'system' the OS decides, so a manual light/dark button would fight it.
 const showThemeToggle = computed(() => theme.value !== 'system');
+// Modal dialogs own the keyboard: a single-letter mail shortcut must not
+// archive or delete the selection behind them, or move focus out of them.
 const shortcutsEnabled = computed(() =>
-  authStore.status === AUTH_STATE.CONNECTED && !showWelcomeModal.value,
+  authStore.status === AUTH_STATE.CONNECTED
+  && !showWelcomeModal.value
+  && !showSettingsDialog.value,
 );
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const wantsMessageDetailView = computed(() =>
@@ -690,15 +694,6 @@ function clamp(value: number, min: number, max: number) {
         <span class="quick-filter__wordmark">Mail</span>
       </div>
 
-      <TopNavMenu
-        class="quick-filter__menu"
-        :theme="appliedTheme"
-        :theme-toggle-label="themeToggleLabel"
-        :show-theme-toggle="showThemeToggle"
-        @toggle-theme="toggleTheme"
-        @open-settings="showSettingsDialog = true"
-      />
-
       <div
         class="quick-filter__search"
         :class="{ 'quick-filter__search--spotlight': quickFilterSpotlight }"
@@ -768,6 +763,14 @@ function clamp(value: number, min: number, max: number) {
           <Moon v-else :size="18" :stroke-width="1.75" aria-hidden="true" />
         </button>
         <AppDrawer />
+        <TopNavMenu
+          class="quick-filter__menu"
+          :theme="appliedTheme"
+          :theme-toggle-label="themeToggleLabel"
+          :show-theme-toggle="showThemeToggle"
+          @toggle-theme="toggleTheme"
+          @open-settings="showSettingsDialog = true"
+        />
         <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
       </div>
     </header>
@@ -914,7 +917,6 @@ function clamp(value: number, min: number, max: number) {
      Bolt palette (assets/bolt-theme.css) re-points these tokens. */
   --top-nav-height: 56px;
   --top-nav-bg: var(--space-rail-bg);
-  --top-nav-border: var(--border);
   --top-nav-shadow: transparent;
   --top-nav-wordmark: var(--accent);
   --top-nav-input-bg: var(--surface);
@@ -1022,10 +1024,8 @@ html.light,
   column-gap: 16px;
   height: var(--top-nav-height);
   padding: 0 16px 0 14px;
+  /* No bottom hairline: the bar reads as one surface with the sidebar. */
   background: var(--top-nav-bg);
-  /* Hairline as an inset shadow, not a border: keeps the content box the
-   * full 56px so even-height items centre on whole pixels. */
-  box-shadow: inset 0 -1px 0 var(--top-nav-border);
 }
 /* Drop shadow onto the panes below. The bar itself carries no z-index so
  * the welcome tour can still lift .quick-filter__search above its backdrop. */
@@ -1263,7 +1263,8 @@ html.light,
     grid-column: 2 / -1;
   }
   /* Same 56px band: glyph, full-width filter, menu and avatar in one row.
-     The wordmark and the desktop-only actions give the filter their room. */
+     The wordmark and the desktop-only actions give the filter their room;
+     the menu takes their place beside the avatar. */
   .quick-filter {
     column-gap: 8px;
     padding: 0 8px;
@@ -1279,7 +1280,7 @@ html.light,
   .quick-filter__menu {
     display: block;
   }
-  .quick-filter__actions > :not(.account-menu) {
+  .quick-filter__actions > :not(.account-menu, .quick-filter__menu) {
     display: none;
   }
   .quick-filter__actions > .account-menu {

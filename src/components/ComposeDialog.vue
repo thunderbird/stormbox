@@ -135,9 +135,12 @@ const scheduleChoiceDisabled = computed(() =>
 const scheduleSegmentDisabled = computed(() =>
   scheduleBusy.value
   || (!stagedSchedule.value && scheduleChoiceDisabled.value));
-// One condition for the Send button and the Ctrl/⌘+Enter shortcut.
+// One condition for the Send button and the Ctrl/⌘+Enter shortcut. The
+// close prompt sits inside this dialog, so its keystrokes reach the
+// shortcut; nothing sends while the user is deciding whether to keep it.
 const sendDisabled = computed(() =>
   scheduleBusy.value
+  || closePromptOpen.value
   || Boolean(session.value?.isDiscarding)
   || attachmentBusy.value
   || Boolean(stagedSchedule.value && scheduleChoiceDisabled.value));

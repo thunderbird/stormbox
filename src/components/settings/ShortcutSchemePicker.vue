@@ -98,6 +98,8 @@ function onKeydown(event: KeyboardEvent) {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+/* White on the light-theme blue (#1373d9, 4.7:1); the dark theme swaps the
+   label for the lower surface with the other accent fills (styles.css). */
 .scheme-picker__option[aria-checked="true"] {
   background: var(--accent);
   color: #fff;

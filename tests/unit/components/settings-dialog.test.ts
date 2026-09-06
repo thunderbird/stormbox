@@ -15,6 +15,7 @@ vi.mock('../../../src/services/auth', () => ({
 import App from '../../../src/App.vue';
 import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
+import { useComposeStore } from '../../../src/stores/compose-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
@@ -44,6 +45,7 @@ function makeRepo() {
     async listAddressbooks() { return []; },
     async listContacts() { return []; },
     async listIdentities() { return []; },
+    async ensureIdentities() {},
   };
 }
 
@@ -216,6 +218,27 @@ describe('settings gear and dialog', () => {
     expect(useSettingsStore().get('theme')).toBe('system');
     expect(document.documentElement.classList.contains('light')).toBe(true);
     expect(wrapper.find('.theme-toggle').exists()).toBe(false);
+  });
+
+  it('holds the mail shortcuts while open and hands them back on close', async () => {
+    const wrapper = mountApp();
+    await flushPromises();
+    const composeStore = useComposeStore();
+    const pressC = () => {
+      const event = new KeyboardEvent('keydown', { key: 'c', bubbles: true, cancelable: true });
+      document.dispatchEvent(event);
+      return event;
+    };
+
+    await openSettings(wrapper);
+    expect(pressC().defaultPrevented).toBe(false);
+    expect(composeStore.isOpen).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await nextTick();
+    expect(dialog()).toBeNull();
+    expect(pressC().defaultPrevented).toBe(true);
+    expect(composeStore.isOpen).toBe(true);
   });
 
   it('closes on Escape, on the backdrop and from its close button', async () => {

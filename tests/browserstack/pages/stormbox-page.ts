@@ -21,6 +21,8 @@ export class StormboxPage {
   readonly signInButton: Locator;
   readonly thundermailMenu: Locator;
   readonly thundermailMenuButton: Locator;
+  readonly compactMenu: Locator;
+  readonly compactMenuButton: Locator;
   readonly appointmentMenuItem: Locator;
   readonly sendMenuItem: Locator;
   readonly quickFilter: Locator;
@@ -60,10 +62,16 @@ export class StormboxPage {
     this.page = page;
     this.shell = page.locator('.shell');
     this.signInButton = page.locator('.login-card__signin');
+    // Desktop keeps the app drawer and the action buttons in the bar; below
+    // 640px they collapse into the compact menu's menuitems. Role locators
+    // skip hidden elements, so each resolves to the one copy the current
+    // layout shows once the right menu is open.
     this.thundermailMenu = page.locator('.app-drawer');
     this.thundermailMenuButton = page.locator('.app-drawer__button[aria-label="Open app drawer"]');
-    this.appointmentMenuItem = page.locator('.app-drawer__popover').getByRole('menuitem', { name: /^appointment$/i });
-    this.sendMenuItem = page.locator('.app-drawer__popover').getByRole('menuitem', { name: /^send$/i });
+    this.compactMenu = page.locator('.top-nav-menu');
+    this.compactMenuButton = page.locator('.top-nav-menu__button[aria-label="Open menu"]');
+    this.appointmentMenuItem = page.getByRole('menuitem', { name: /^appointment$/i });
+    this.sendMenuItem = page.getByRole('menuitem', { name: /^send$/i });
     this.quickFilter = page.locator('.quick-filter__input');
     this.newMessageButton = page.getByRole('button', { name: /new message/i });
     this.mailboxesNav = page.getByRole('navigation', { name: /mailboxes/i });
@@ -72,10 +80,10 @@ export class StormboxPage {
     this.messagesArea = page.getByRole('region', { name: /^messages$/i });
     this.hideFolderListButton = page.getByRole('button', { name: /^hide folder list$/i });
     this.showFolderListButton = page.getByRole('button', { name: /^show folder list$/i });
-    this.reportBugButton = page.getByRole('link', { name: /report a bug/i });
-    this.giveFeedbackButton = page.getByRole('link', { name: /give feedback/i });
-    this.switchToDarkModeButton = page.getByRole('button', { name: /switch to dark mode/i });
-    this.switchToLightModeButton = page.getByRole('button', { name: /switch to light mode/i });
+    this.reportBugButton = this.headerAction('link', /report a bug/i);
+    this.giveFeedbackButton = this.headerAction('link', /give feedback/i);
+    this.switchToDarkModeButton = this.headerAction('button', /switch to dark mode/i);
+    this.switchToLightModeButton = this.headerAction('button', /switch to light mode/i);
     this.accountMenuButton = page.locator('.account-menu__button[aria-label="Open account menu"]');
     this.accountMenuIdentity = page.locator('.account-menu__identity .account-menu__email');
     this.accountSettingsMenuItem = page.getByRole('menuitem', { name: /account settings/i });
@@ -98,6 +106,12 @@ export class StormboxPage {
     this.cancelContactButton = page.locator('.contacts__form').getByRole('button', { name: /^cancel$/i });
     this.welcomeDialog = page.getByRole('dialog', { name: /welcome to thundermail/i });
     this.getStartedButton = page.getByRole('button', { name: /^get started$/i });
+  }
+
+  /** A bar action on desktop, or the same action as a compact-menu item. */
+  private headerAction(barRole: 'link' | 'button', name: RegExp) {
+    return this.page.getByRole(barRole, { name })
+      .or(this.page.getByRole('menuitem', { name }));
   }
 
   async navigate() {
@@ -149,47 +163,51 @@ export class StormboxPage {
   async assertDesktopUiVisible() {
     await this.waitForAppUi();
     await expect(this.thundermailMenu).toBeVisible();
+    await expect(this.compactMenuButton).not.toBeVisible();
     await expect(this.quickFilter).toBeVisible();
     await expect(this.newMessageButton).toBeVisible();
     await expect(this.mailboxesNav).toBeVisible();
     await expect(this.mailSpaceButton).toBeVisible();
     await expect(this.contactsSpaceButton).toBeVisible();
     await expect(this.messagesArea).toBeVisible();
-    await this.assertCommonAuthenticatedUiVisible();
+    await this.assertCommonAuthenticatedUiVisible('desktop');
 
     // on desktop the mail folders are visible by default (and the hide folders button visible)
     await expect(this.hideFolderListButton).toBeVisible();
     await expect(this.showFolderListButton).not.toBeVisible();
   }
 
-  async assertMobileUiVisible() {
+  async assertMobileUiVisible(projectName = 'mobile') {
     await this.waitForAppUi();
-    await expect(this.thundermailMenu).toBeVisible();
+    await expect(this.compactMenuButton).toBeVisible();
+    await expect(this.thundermailMenu).not.toBeVisible();
     await expect(this.quickFilter).toBeVisible();
     await expect(this.mailSpaceButton).toBeVisible();
     await expect(this.contactsSpaceButton).toBeVisible();
     await expect(this.messagesArea).toBeVisible();
-    await this.assertCommonAuthenticatedUiVisible();
+    await this.assertCommonAuthenticatedUiVisible(projectName);
   }
 
   async exerciseCommonUiControls(projectName = 'desktop') {
     await this.exerciseQuickFilter();
-    await this.exerciseThemeToggle();
+    await this.exerciseThemeToggle(projectName);
     await this.exerciseMessageListControls();
     await this.exerciseFolderListToggle(projectName);
     await this.exerciseComposeDialog();
     await this.exerciseFolderNavigation();
     await this.exerciseContactsView();
     await this.exerciseWelcomeModal();
-    await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN);
-    await this.assertExternalLinkOpensInNewTab(this.giveFeedbackButton, FEEDBACK_URL_PATTERN);
+    await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN, projectName);
+    await this.assertExternalLinkOpensInNewTab(this.giveFeedbackButton, FEEDBACK_URL_PATTERN, projectName);
   }
 
-  private async assertCommonAuthenticatedUiVisible() {
-    await this.assertThundermailMenuItemsVisible();
-    await expect(this.reportBugButton).toBeVisible();
-    await expect(this.giveFeedbackButton).toBeVisible();
-    await this.assertThemeToggleForCurrentModeVisible();
+  private async assertCommonAuthenticatedUiVisible(projectName: string) {
+    await this.assertThundermailMenuItemsVisible(projectName);
+    await this.withHeaderActions(projectName, async () => {
+      await expect(this.reportBugButton).toBeVisible();
+      await expect(this.giveFeedbackButton).toBeVisible();
+      await this.assertThemeToggleForCurrentModeVisible();
+    });
     await this.assertAccountMenuItemsVisible();
     await expect(this.selectAllMessagesCheckbox).toBeVisible();
     await expect(this.unreadFilterButton).toBeVisible();
@@ -322,10 +340,12 @@ export class StormboxPage {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  private async assertExternalLinkOpensInNewTab(link: Locator, expectedUrl: RegExp) {
+  private async assertExternalLinkOpensInNewTab(link: Locator, expectedUrl: RegExp, projectName: string) {
+    await this.openHeaderActions(projectName);
     await expect(link).toBeVisible();
 
     const popupPromise = this.waitForExternalLinkPage();
+    // A compact-menu item closes the menu on click.
     await link.click();
     const popup = await popupPromise;
 
@@ -342,22 +362,60 @@ export class StormboxPage {
     ]);
   }
 
-  private async exerciseThemeToggle() {
+  private async exerciseThemeToggle(projectName: string) {
     const theme = await this.currentTheme();
-    if (theme === 'light') {
-      await this.switchToDarkModeButton.click();
-      await expect(this.switchToLightModeButton).toBeVisible();
-      await this.page.waitForTimeout(TIMEOUT_2_SECONDS / 2);
-      await this.switchToLightModeButton.click();
-      await expect(this.switchToDarkModeButton).toBeVisible();
-      return;
-    }
+    const [toOther, back] = theme === 'light'
+      ? [this.switchToDarkModeButton, this.switchToLightModeButton]
+      : [this.switchToLightModeButton, this.switchToDarkModeButton];
 
-    await this.switchToLightModeButton.click();
-    await expect(this.switchToDarkModeButton).toBeVisible();
+    await this.clickHeaderAction(projectName, toOther);
+    await this.withHeaderActions(projectName, () => expect(back).toBeVisible());
     await this.page.waitForTimeout(TIMEOUT_2_SECONDS / 2);
-    await this.switchToDarkModeButton.click();
-    await expect(this.switchToLightModeButton).toBeVisible();
+    await this.clickHeaderAction(projectName, back);
+    await this.withHeaderActions(projectName, () => expect(toOther).toBeVisible());
+  }
+
+  /**
+   * The bug/feedback links and the theme toggle live in the bar on desktop
+   * and inside the compact menu below 640px; the menu has to be open for
+   * them to be visible there. Restores the closed menu afterwards.
+   */
+  private async withHeaderActions(projectName: string, run: () => Promise<unknown>) {
+    await this.openHeaderActions(projectName);
+    await run();
+    await this.closeHeaderActions(projectName);
+  }
+
+  /** Clicks a header action; a compact-menu item closes the menu itself. */
+  private async clickHeaderAction(projectName: string, action: Locator) {
+    await this.openHeaderActions(projectName);
+    await action.click();
+  }
+
+  private async openHeaderActions(projectName: string) {
+    if (this.isDesktopProject(projectName)) return;
+    await expect(this.compactMenuButton).toBeVisible();
+    if (await this.isDetailsOpen(this.compactMenu)) return;
+    await this.compactMenuButton.click();
+    await expect(this.compactMenu.locator('.top-nav-menu__popover')).toBeVisible();
+  }
+
+  private async closeHeaderActions(projectName: string) {
+    if (this.isDesktopProject(projectName)) return;
+    await this.closeDetails(this.compactMenu);
+  }
+
+  private isDetailsOpen(menu: Locator) {
+    return menu.evaluate((element) => element instanceof HTMLDetailsElement && element.open);
+  }
+
+  // BrowserStack can hang on a second native details-summary click, so menus are closed directly.
+  private closeDetails(menu: Locator) {
+    return menu.evaluate((element) => {
+      if (element instanceof HTMLDetailsElement) {
+        element.open = false;
+      }
+    });
   }
 
   private async exerciseWelcomeModal() {
@@ -370,16 +428,19 @@ export class StormboxPage {
     await expect(this.welcomeDialog).not.toBeVisible();
   }
 
-  private async assertThundermailMenuItemsVisible() {
-    await expect(this.thundermailMenuButton).toBeVisible();
-    await this.thundermailMenuButton.click();
-    await expect(this.appointmentMenuItem).toBeVisible();
-    await expect(this.sendMenuItem).toBeVisible();
-    // BrowserStack can hang on a second native details-summary click, so close the menu directly.
-    await this.thundermailMenu.evaluate((menu) => {
-      if (menu instanceof HTMLDetailsElement) {
-        menu.open = false;
-      }
+  private async assertThundermailMenuItemsVisible(projectName: string) {
+    if (this.isDesktopProject(projectName)) {
+      await expect(this.thundermailMenuButton).toBeVisible();
+      await this.thundermailMenuButton.click();
+      await expect(this.appointmentMenuItem).toBeVisible();
+      await expect(this.sendMenuItem).toBeVisible();
+      await this.closeDetails(this.thundermailMenu);
+      return;
+    }
+
+    await this.withHeaderActions(projectName, async () => {
+      await expect(this.appointmentMenuItem).toBeVisible();
+      await expect(this.sendMenuItem).toBeVisible();
     });
   }
 
@@ -418,8 +479,9 @@ export class StormboxPage {
     await this.accountMenuButton.click();
   }
 
+  // Readiness keys on controls present in both layouts.
   private async waitForAppUi() {
-    await expect(this.thundermailMenu).toBeVisible({ timeout: TIMEOUT_60_SECONDS });
+    await expect(this.accountMenuButton).toBeVisible({ timeout: TIMEOUT_60_SECONDS });
     await expect(this.quickFilter).toBeVisible({ timeout: TIMEOUT_60_SECONDS });
   }
 
@@ -429,7 +491,7 @@ export class StormboxPage {
 
   private async isAppUiVisible(timeout: number) {
     try {
-      await expect(this.thundermailMenu).toBeVisible({ timeout });
+      await expect(this.accountMenuButton).toBeVisible({ timeout });
       await expect(this.quickFilter).toBeVisible({ timeout });
       return true;
     } catch {
@@ -451,7 +513,7 @@ export class StormboxPage {
     try {
       await Promise.race([
         this.signInButton.waitFor({ state: 'visible', timeout }),
-        this.thundermailMenu.waitFor({ state: 'visible', timeout }),
+        this.accountMenuButton.waitFor({ state: 'visible', timeout }),
       ]);
       return true;
     } catch {

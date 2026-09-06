@@ -765,6 +765,53 @@ describe('ComposeDialog send control', () => {
     expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('Ctrl+Enter sends from a recipient field; plain Enter still commits the address', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const sendSpy = vi.spyOn(composeStore, 'send').mockResolvedValue(undefined as any);
+    const to = wrapper.get('#compose-to').element as HTMLInputElement;
+
+    to.value = 'alice@example.com';
+    to.setSelectionRange(to.value.length, to.value.length);
+    to.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    const chord = new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    to.dispatchEvent(chord);
+    await flushPromises();
+    expect(chord.defaultPrevented).toBe(true);
+    expect(sendSpy).toHaveBeenCalledWith(composeStore.activeSessionId);
+
+    const plain = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    to.dispatchEvent(plain);
+    await nextTick();
+    expect(plain.defaultPrevented).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect(composeStore.draft.to).toEqual([{ email: 'alice@example.com' }]);
+  });
+
+  it('Ctrl+Enter does not send while "Save this draft?" is open', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const sendSpy = vi.spyOn(composeStore, 'send').mockResolvedValue(undefined as any);
+    composeStore.activeSession!.draft.subject = 'Unsaved';
+    expect(composeStore.requestClose()).toBe(false);
+    await nextTick();
+
+    const prompt = wrapper.get('[role="alertdialog"]').element as HTMLElement;
+    expect(wrapper.get('footer .compose-send').attributes('disabled')).toBeDefined();
+    const chord = new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    prompt.dispatchEvent(chord);
+    await flushPromises();
+    expect(chord.defaultPrevented).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    composeStore.cancelClose();
+    await nextTick();
+    expect(wrapper.get('footer .compose-send').attributes('disabled')).toBeUndefined();
+  });
+
   it('keeps Send offered while an unconfirmed send holds the draft open', async () => {
     // When the outcome is unknown and no server copy is known, the store
     // keeps the dialog open with a warning to check Sent first. Send is

@@ -123,6 +123,8 @@ function onOpenSettings() {
   border-color: var(--border-soft);
 }
 
+/* The button sits beside the avatar at the right edge of the bar, so the
+   popover opens leftward from it and stays inside the viewport. */
 .top-nav-menu__popover {
   position: absolute;
   z-index: 30;

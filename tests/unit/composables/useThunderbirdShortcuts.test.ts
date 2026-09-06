@@ -22,6 +22,7 @@ import { useMailStore } from '../../../src/stores/mail-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import type { ShortcutScheme } from '../../../src/constants/settings';
+import { shortcutHint } from '../../../src/constants/shortcuts';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -720,6 +721,17 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     expect(forward).not.toHaveBeenCalled();
     expect(purge).not.toHaveBeenCalled();
     expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
+    expect(messageListCommands?.navigate).not.toHaveBeenCalled();
+  });
+
+  it('shows Home/End in hints while leaving them to the focused list', () => {
+    const { messageListCommands } = mountHarness();
+
+    expect(shortcutHint('first', 'web')).toBe('Home');
+    expect(shortcutHint('last', 'web')).toBe('End');
+
+    expect(fireKey('Home').defaultPrevented).toBe(false);
+    expect(fireKey('End').defaultPrevented).toBe(false);
     expect(messageListCommands?.navigate).not.toHaveBeenCalled();
   });
 

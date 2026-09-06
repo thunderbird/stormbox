@@ -6,8 +6,10 @@
  * table through `shortcutHint` / `shortcutAria`, so what is shown always
  * matches what is bound.
  *
- * Web bindings never take a key the browser already uses (Ctrl+N/R/L/A,
- * Home/End). Thunderbird bindings reproduce the desktop client:
+ * Web bindings are single keys, so the browser keeps its chords (Ctrl+N/R/L/A,
+ * Ctrl+Shift+Del); Ctrl/⌘+K is the one chord taken, as an alternate Quick
+ * Filter key. Home/End stay with the focused list (`listScoped`). Thunderbird
+ * bindings reproduce the desktop client:
  * https://support.mozilla.org/kb/keyboard-shortcuts-thunderbird
  */
 
@@ -52,6 +54,8 @@ export interface ShortcutBinding extends ShortcutSpec {
   inEditable?: boolean;
   /** Show in hints only on this platform (the binding itself works on both). */
   hintPlatform?: 'mac' | 'other';
+  /** Handled by the focused message list (`MessageList.handleKeyDown`), never globally. */
+  listScoped?: boolean;
 }
 
 export type ShortcutTable = Partial<Record<ShortcutAction, readonly ShortcutBinding[]>>;
@@ -79,6 +83,8 @@ const WEB_SHORTCUTS: ShortcutTable = {
   previous: [{ key: 'k' }],
   nextUnread: [{ key: 'n' }],
   previousUnread: [{ key: 'p' }],
+  first: [{ key: 'Home', listScoped: true }],
+  last: [{ key: 'End', listScoped: true }],
 };
 
 const THUNDERBIRD_SHORTCUTS: ShortcutTable = {
@@ -163,6 +169,7 @@ export function resolveShortcut(
   let plain: ResolvedShortcut | null = null;
   for (const [action, bindings] of Object.entries(table) as Array<[ShortcutAction, readonly ShortcutBinding[]]>) {
     for (const binding of bindings) {
+      if (binding.listScoped) continue;
       if (!matchesBinding(event, binding)) continue;
       if (binding.prefix) {
         if (binding.prefix === pendingPrefix) return { action, binding };

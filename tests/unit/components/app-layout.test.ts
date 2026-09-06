@@ -330,7 +330,8 @@ describe('App mail layout', () => {
     expect(kbds()).toContain('Shift+R');
     expect(kbds()).toContain('* then A');
     expect(kbds()).not.toContain('Ctrl+R');
-    expect(kbds()).not.toContain('Home');
+    // List-scoped in the web scheme, but bound and therefore shown.
+    expect(kbds()).toContain('Home');
 
     await wrapper.get('[data-shortcut-scheme="thunderbird"]').trigger('click');
     await flushPromises();
@@ -688,7 +689,9 @@ describe('App mail layout', () => {
     const wrapper = mountApp();
     await flushPromises();
 
-    const menu = wrapper.get('.quick-filter > .quick-filter__menu');
+    // Beside the avatar, in the actions cluster at the right end of the bar.
+    const menu = wrapper.get('.quick-filter__actions > .quick-filter__menu');
+    expect(menu.element.nextElementSibling?.classList.contains('account-menu')).toBe(true);
     expect(menu.get('.top-nav-menu__button').attributes('aria-label')).toBe('Open menu');
 
     const toggleLabel = wrapper.get('.theme-toggle').attributes('aria-label');

@@ -50,7 +50,6 @@ html.palette-bolt.light {
   --top-nav-bg: var(--bg);
   --space-rail-bg: var(--bg);
   --folder-list-bg: var(--panel2);
-  --top-nav-border: color-mix(in srgb, var(--border) 70%, transparent);
   --top-nav-input-bg: var(--panel2);
   --top-nav-popover-bg: var(--panel);
 }
@@ -69,7 +68,6 @@ html.palette-bolt .account-menu__avatar {
   height: 40px;
 }
 html.palette-bolt.light {
-  --top-nav-border: color-mix(in srgb, var(--border) 40%, transparent);
   --top-nav-shadow: color-mix(in srgb, #000 10%, transparent);
 }
 html.palette-bolt .msg-list,

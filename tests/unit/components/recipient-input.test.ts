@@ -419,6 +419,27 @@ describe('RecipientInput suggestions', () => {
     expect(pills(wrapper)).toEqual([]);
   });
 
+  it('leaves Ctrl/⌘+Enter to the dialog, even with a suggestion highlighted', async () => {
+    const wrapper = mountControl({ query: async () => CONTACTS });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+    expect(input(wrapper).attributes('aria-activedescendant')).toBe('compose-to-option-0');
+
+    for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+      const event = new window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true, ...modifier,
+      });
+      input(wrapper).element.dispatchEvent(event);
+      await nextTick();
+      expect(event.defaultPrevented).toBe(false);
+    }
+
+    expect(wrapper.emitted('update:entries')).toBeUndefined();
+    expect(pills(wrapper)).toEqual([]);
+    expect(input(wrapper).element.value).toBe('bo');
+  });
+
   it('automatically highlights and takes the first suggestion on Enter', async () => {
     const query = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ query });

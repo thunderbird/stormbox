@@ -423,7 +423,7 @@ onBeforeUnmount(() => {
           <div class="welcome__scheme">
             <span id="welcome-scheme-label" class="welcome__scheme-label">Shortcut style</span>
             <ShortcutSchemePicker labelled-by="welcome-scheme-label" />
-            <span class="welcome__scheme-hint">Web keys stay clear of your browser's shortcuts. Change this later from Settings.</span>
+            <span class="welcome__scheme-hint">Web keys are single letters, so browser chords like reload keep working. Change this later from Settings.</span>
           </div>
 
           <div class="welcome__shortcut-groups">

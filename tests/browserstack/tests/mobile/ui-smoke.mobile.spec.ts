@@ -27,7 +27,7 @@ test.describe('stormbox mobile ui smoke', {
 
   test('verify and exercise basic webmail elements after signing in', async ({ page }, testInfo) => {
     await test.step('verify signed-in mobile ui is visible', async () => {
-      await stormbox.assertMobileUiVisible();
+      await stormbox.assertMobileUiVisible(testInfo.project.name);
     });
 
     await test.step('exercise common mobile ui controls', async () => {

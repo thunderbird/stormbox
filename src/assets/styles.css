@@ -81,7 +81,7 @@
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
-  --border: #3e4764; /* 2.0:1 on --panel; the old #1e2230 sat at 1.17:1, invisible on dark */
+  --border: #1e2230;
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
@@ -109,7 +109,7 @@ html.dark,
   --bg: #0b0c0f;
   --panel: #11131a;
   --panel2: #0f1117;
-  --border: #3e4764; /* 2.0:1 on --panel; the old #1e2230 sat at 1.17:1, invisible on dark */
+  --border: #1e2230;
   --text: #e6e8ef;
   --muted: #9aa3b2;
   --accent: #4f8cff;
@@ -127,7 +127,7 @@ html.light,
   --bg: #f6f8fc;
   --panel: #ffffff;
   --panel2: #f4f7fb;
-  --border: #ced3dc; /* 1.5:1 on --panel; the old #dbe1ea sat at 1.31:1 */
+  --border: #dbe1ea;
   --text: #111827;
   --muted: #6b7280;
   /* Light mode adopts services-ui's primary blue (--colour-primary-default,
@@ -152,7 +152,7 @@ html.light,
     --bg: #f6f8fc;
     --panel: #ffffff;
     --panel2: #f4f7fb;
-    --border: #ced3dc; /* 1.5:1 on --panel; the old #dbe1ea sat at 1.31:1 */
+    --border: #dbe1ea;
     --text: #111827;
     --muted: #6b7280;
     --accent: #1373d9;
@@ -219,18 +219,39 @@ html.dark {
   --colour-success-hover: #6ed79b;
   --colour-success-pressed: #2e9e63;
 }
-/* Token gotcha: the filled primary button takes its TEXT from
-   --colour-neutral-base (dark in dark mode), which assumes a light button.
-   Our blue needs white text, and that token can't be globally repurposed,
-   so this is the one component-level override required. */
-html.dark .base.primary.filled:not(:disabled) {
-  color: #fff;
+/* Label and icon colour on flat --accent fills in the dark theme: the
+   accent is a light blue (#4f8cff), so the lower surface (#0f1117, 5.8:1)
+   reads where white sits at 3.2:1. The light theme keeps white on its
+   darker blue. Listed with the same state variants as the components so
+   the override outranks their scoped rules; the Bolt palette applies the
+   same treatment via --bolt-filled-fg (assets/bolt-theme.css). */
+html.dark .base.primary.filled:not(:disabled),
+html.dark .app-toggle-button.is-active,
+html.dark .msg-list__filter.is-active,
+html.dark .msg-list__bulk-action--whitelist,
+html.dark .msg-list__bulk-action--whitelist:hover,
+html.dark .msg-list__bulk-action--whitelist:disabled,
+html.dark .msg-list__bulk-action--whitelist:disabled:hover,
+html.dark .message-view__action--whitelist,
+html.dark .message-view__action--whitelist:hover,
+html.dark .message-view__action--whitelist:disabled,
+html.dark .message-view__action--whitelist:disabled:hover,
+html.dark .folder-create__btn--primary,
+html.dark .folder-subs__btn--primary,
+html.dark .kanban-unlock__btn--primary,
+html.dark .settings-dialog__btn--primary,
+html.dark .scheme-picker__option[aria-checked="true"] {
+  color: var(--panel2);
 }
 /* Filled primary buttons are flat --accent at rest; services-ui's own flat
    hover/pressed states still apply. Its resting gradient is a Bolt-only
    treatment (assets/bolt-theme.css). */
 .base.primary.filled {
-  background: var(--accent);
+  /* As a gradient, not a colour: services-ui transitions `background` and
+     its hover state is a gradient. A colour rest state would interpolate
+     background-color through transparent on mouse-out, leaving the button
+     see-through for ~150ms. */
+  background: linear-gradient(var(--accent), var(--accent)) border-box;
 }
 
 * {

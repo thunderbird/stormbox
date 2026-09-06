@@ -365,6 +365,9 @@ function onKeydown(event: KeyboardEvent): void {
       return;
     }
     case 'Enter': {
+      // Ctrl/⌘+Enter is the dialog's send chord; the send commits what is
+      // typed here itself.
+      if (event.ctrlKey || event.metaKey) return;
       // Enter takes the highlighted suggestion. The fallback covers a
       // transient list update before its initial highlight is installed.
       event.preventDefault();
