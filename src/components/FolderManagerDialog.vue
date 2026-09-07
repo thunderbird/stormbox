@@ -24,7 +24,11 @@ import type { AccountRow, FolderRow } from '../types';
 import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
-import { folderSortKey } from '../utils/folder-presentation';
+import {
+  folderPresentation,
+  folderSortKey,
+  type NamedFolderPresentation,
+} from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 import FolderCreateDialog from './FolderCreateDialog.vue';
 
@@ -67,6 +71,8 @@ interface DialogFolderRow {
   hasChildren: boolean;
   /** Ancestor names, root first — locates a row shown out of tree context. */
   path: string[];
+  /** Same icon and tone the sidebar draws for this folder. */
+  presentation: NamedFolderPresentation;
 }
 
 interface DialogAccountSection {
@@ -115,8 +121,10 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
   const out: DialogFolderRow[] = [];
   function walk(parentKey: number | 'ROOT', depth: number, path: string[]) {
     for (const folder of byParent.get(parentKey) ?? []) {
-      const isSystem = isOwn && folder.role != null;
       const capabilities = folderCapabilities(folder, authStore.accountId);
+      // Own-account default folders (role folders and the managed Scheduled
+      // mailbox) are the informational "always shown" block.
+      const isSystem = capabilities.isSystemProtected;
       // The open eye mirrors the effective subscription, which is also
       // what the sidebar renders: system folders always show; own user
       // folders count as subscribed unless explicitly unsubscribed
@@ -147,6 +155,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
         starred: Number(folder.is_starred) === 1,
         hasChildren: byParent.has(folder.id),
         path,
+        presentation: folderPresentation(folder),
       });
       walk(folder.id, depth + 1, [...path, folder.name || '(unnamed)']);
     }
@@ -1093,6 +1102,13 @@ onBeforeUnmount(() => {
                     @click="onSelectClick(item.section, item.row, $event)"
                   />
                   <span
+                    class="folder-subs__icon"
+                    :class="{ 'is-hidden': !item.row.subscribed }"
+                    :style="{ color: item.row.presentation.color }"
+                    aria-hidden="true"
+                    v-html="item.row.presentation.icon"
+                  />
+                  <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
                   >{{ item.row.folder.name || '(unnamed)' }}</span>
@@ -1104,6 +1120,13 @@ onBeforeUnmount(() => {
                 </label>
                 <span v-else class="folder-subs__label is-disabled">
                   <span class="folder-subs__checkbox-spacer" aria-hidden="true" />
+                  <span
+                    class="folder-subs__icon"
+                    :class="{ 'is-hidden': !item.row.subscribed }"
+                    :style="{ color: item.row.presentation.color }"
+                    aria-hidden="true"
+                    v-html="item.row.presentation.icon"
+                  />
                   <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
@@ -1699,6 +1722,24 @@ onBeforeUnmount(() => {
   width: 15px;
   height: 15px;
 }
+/* Sidebar folder icon in the folder's tone; same context-fill rules as FolderNode. */
+.folder-subs__icon {
+  display: block;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+.folder-subs__icon :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.folder-subs__icon :deep([fill="context-fill"]) {
+  fill: color-mix(in srgb, currentColor 20%, transparent);
+}
+.folder-subs__icon :deep([fill="context-stroke"]) {
+  fill: currentColor;
+}
 .folder-subs__name {
   flex: 1;
   min-width: 0;
@@ -1709,6 +1750,9 @@ onBeforeUnmount(() => {
 /* Hidden (unsubscribed) folders read as inactive, not just eye-off. */
 .folder-subs__name.is-hidden {
   color: var(--muted);
+}
+.folder-subs__icon.is-hidden {
+  opacity: 0.45;
 }
 /* Ancestor breadcrumb shown next to search matches, so a hit deep in
    the tree isn't a context-free floating name. */

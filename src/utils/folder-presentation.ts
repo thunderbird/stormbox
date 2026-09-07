@@ -45,7 +45,7 @@ export const ROLE_COLOR: Partial<Record<MailboxRole, string>> = {
   all: '#5f6368',
 };
 
-interface NamedFolderPresentation {
+export interface NamedFolderPresentation {
   icon: string;
   color: string;
 }

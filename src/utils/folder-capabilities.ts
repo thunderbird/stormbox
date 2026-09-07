@@ -99,13 +99,14 @@ export function folderCapabilities(
     mayRename: right(parsed, 'mayRename', fallback),
     mayDelete: right(parsed, 'mayDelete', fallback),
   };
-  const isSystemProtected = isPrimary && folder.role != null;
-  // The managed Send Later mailbox: structurally protected like a role
-  // folder (no rename/delete/reparent), and closed to ordinary message
-  // transfers — its contents are owned by the scheduling flow, where a
-  // stray move would strand or duplicate a held submission. Stormbox also
-  // owns its permanent subscription.
+  // The managed Send Later mailbox is a default folder like the role
+  // folders (SL-5.2): structurally protected and permanently subscribed.
+  // It is additionally closed to ordinary message transfers — its contents
+  // are owned by the scheduling flow, where a stray move would strand or
+  // duplicate a held submission. Child folders are allowed, as under any
+  // other default folder.
   const isScheduledManaged = isPrimary && Number(folder.is_scheduled ?? 0) === 1;
+  const isSystemProtected = isPrimary && (folder.role != null || isScheduledManaged);
   const subscribed = isSystemProtected
     || (isPrimary
       ? Number(folder.is_subscribed ?? 1) !== 0
@@ -114,7 +115,6 @@ export function folderCapabilities(
   return {
     ...rights,
     mayAddItems: rights.mayAddItems && !isScheduledManaged,
-    mayCreateChild: rights.mayCreateChild && !isScheduledManaged,
     mayRename: rights.mayRename && !isScheduledManaged,
     mayDelete: rights.mayDelete && !isScheduledManaged,
     isPrimary,

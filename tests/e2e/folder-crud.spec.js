@@ -266,15 +266,27 @@ test.describe('Folder create/rename/delete e2e', () => {
     }
   });
 
-  test('system folders expose no subscription, selection, or edit controls', async ({ sharedPage: page }, testInfo) => {
+  test('default folders, Scheduled included, sit under the account heading with no controls', async ({ sharedPage: page }, testInfo) => {
     try {
-      const dialog = await openManageDialog(page, 'Inbox');
-      await expect(
-        dialog.locator('.folder-subs__row').filter({ hasText: 'Inbox' }).first(),
-      ).toContainText('always shown', { timeout: 10_000 });
-      await expect(dialog.locator('[data-folder-name="Inbox"]')).toHaveCount(0);
-      await expect(dialog.locator('input[data-folder-select="Inbox"]')).toHaveCount(0);
-      await expect(dialog.locator('[data-folder-edit="Inbox"]')).toHaveCount(0);
+      const dialog = await openManageDialog(page);
+      // The default block opens collapsed; Top Level is the first row.
+      await expect(dialog.locator('.folder-subs__name').first()).not.toHaveText('Inbox');
+      await dialog.locator('button[data-account-toggle]').click();
+
+      const itemIndex = (locator) => locator
+        .locator('xpath=ancestor::*[contains(@class, "folder-subs__item")]')
+        .evaluate((el) => Number(el.dataset.index));
+      const rootIdx = await itemIndex(dialog.locator('[data-folder-root]'));
+      for (const name of ['Inbox', 'Drafts', 'Scheduled', 'Sent', 'Junk', 'Deleted']) {
+        const row = dialog.locator('.folder-subs__row').filter({ hasText: name }).first();
+        await expect(row, `${name} is a default folder row`).toContainText('always shown', { timeout: 10_000 });
+        expect(await itemIndex(row), `${name} sits above Top Level`).toBeLessThan(rootIdx);
+        await expect(row.locator('[data-folder-name]')).toHaveCount(0);
+        await expect(row.locator('input[data-folder-select]')).toHaveCount(0);
+        await expect(row.locator('[data-folder-edit]')).toHaveCount(0);
+        await expect(row.locator('[data-folder-star]')).toHaveCount(0);
+        await expect(row.locator('[data-folder-add]'), `${name} hosts child folders`).toHaveCount(1);
+      }
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: 5_000 });
     } finally {
