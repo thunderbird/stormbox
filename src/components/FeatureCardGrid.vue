@@ -5,10 +5,10 @@ import { FEATURE_CARDS, type FeatureCard, type SpotlightId } from '../constants/
 import type { SpotlightProgress } from '../composables/useFeatureSpotlight';
 
 /**
- * Feature cards with a "Show me" button each, shared by the Welcome and
- * What's New modals. While a spotlight runs the grid's parent hides its
- * panel; this component keeps only a fixed caption visible that narrates the
- * current step (falling back to the card description) and lets the user end it.
+ * Feature cards with a "Show me" button each, rendered by the Welcome modal.
+ * While a spotlight runs the grid's parent hides its panel; this component
+ * keeps only a fixed caption visible that narrates the current step (falling
+ * back to the card description) and lets the user end it.
  */
 const props = withDefaults(defineProps<{
   cards?: readonly FeatureCard[];

@@ -34,7 +34,10 @@ import {
 } from '../../../src/composables/useRepository';
 import { TOUR_SUBJECT, TOUR_TYPING_MS_PER_CHAR } from '../../../src/composables/featureSpotlightScripts';
 import { SPOTLIGHT_TIMING } from '../../../src/composables/useFeatureSpotlight';
+import { FEATURE_BEACONS_STORAGE_KEY } from '../../../src/constants/feature-beacons';
+import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
 import type { ContactListRow } from '../../../src/types';
+import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-layout';
 
 // Pointer travel and press precede a step's `prepare`; settle follows it.
 const TRAVEL_MS = SPOTLIGHT_TIMING.pointerTravelMs;
@@ -43,6 +46,33 @@ const SETTLE_MS = SPOTLIGHT_TIMING.settleMs;
 
 let repoContacts: ContactListRow[] = [];
 let restoreContactListLayout: (() => void) | null = null;
+let beaconLayout: BeaconLayoutStub | null = null;
+
+// Viewport rects for the controls beacons anchor to; the composer's schedule
+// trigger only exists once a compose session is open.
+const BEACON_RECTS = {
+  '.sidebar__compose': {
+    left: 70, top: 60, width: 160, height: 36,
+  },
+  '.app-spaces [aria-label="Contacts"]': {
+    left: 8, top: 120, width: 40, height: 40,
+  },
+  '.compose-dialog .compose-schedule-menu__trigger': {
+    left: 600, top: 500, width: 30, height: 30,
+  },
+};
+
+// A user who dismissed Welcome before this round and has not seen it.
+function seedExistingUser() {
+  window.localStorage?.removeItem(WHATS_NEW_KEY);
+  beaconLayout = stubBeaconLayout(BEACON_RECTS);
+}
+
+async function settleBeacons() {
+  await flushPromises();
+  await nextTick();
+  await flushPromises();
+}
 
 function stubContactListLayout() {
   const offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
@@ -161,9 +191,10 @@ function mountApp() {
           template: '<section class="msg-list" :data-filter="quickFilterQuery">list</section>',
         },
         MessageView: { template: '<section class="message-view">view</section>' },
-        // Carries the card the compose spotlights stage and the header controls they press.
+        // Carries the card the compose spotlights stage, the header controls
+        // they press, and the schedule trigger the composeSchedule beacon anchors to.
         ComposeDialog: {
-          template: '<div class="compose-dialog"><div class="compose-dialog__card"><button class="icon icon--minimize" /><div class="compose-close-menu" /><input id="compose-subject" /></div></div>',
+          template: '<div class="compose-dialog"><div class="compose-dialog__card"><button class="icon icon--minimize" /><div class="compose-close-menu" /><input id="compose-subject" /><details class="compose-schedule-menu"><summary class="compose-schedule-menu__trigger">Schedule</summary></details></div></div>',
         },
       },
     },
@@ -275,6 +306,8 @@ afterEach(() => {
   }
   restoreContactListLayout?.();
   restoreContactListLayout = null;
+  beaconLayout?.restore();
+  beaconLayout = null;
   vi.useRealTimers();
   __resetRepositoryForTests();
 });
@@ -302,7 +335,7 @@ describe('App mail layout', () => {
     const picker = wrapper.get('.welcome [role="radiogroup"]');
     expect(picker.findAll('[role="radio"]').map((radio) => radio.text())).toEqual(['Web', 'Thunderbird']);
     expect(picker.get('[data-shortcut-scheme="web"]').attributes('aria-checked')).toBe('true');
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
 
     await wrapper.get('.welcome').trigger('click');
     await nextTick();
@@ -318,9 +351,10 @@ describe('App mail layout', () => {
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
-    // Welcome covers the announced features, so What's New never follows it.
+    // Welcome covers the announced features, so beacons never follow it.
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
+    expect(wrapper.find('.feature-beacons').exists()).toBe(false);
   });
 
   it('closes the welcome modal with Escape when no spotlight is running', async () => {
@@ -596,62 +630,75 @@ describe('App mail layout', () => {
     }
   });
 
-  it("shows What's New once to a user who dismissed Welcome before this announcement", async () => {
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+  it('gives a user who dismissed Welcome before this announcement beacons instead of a dialog', async () => {
+    seedExistingUser();
 
     const wrapper = mountApp();
-    await nextTick();
+    await settleBeacons();
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
-    const dialog = wrapper.get('.whats-new [role="dialog"]');
-    expect(dialog.text()).toContain("What's new in Thundermail");
-    expect(wrapper.findAll('.feature-card h3').map((heading) => heading.text())).toEqual(FEATURE_TITLES);
-    expect(wrapper.findAll('.feature-card__show')).toHaveLength(6);
-    expect(wrapper.text()).not.toContain('Keyboard Shortcuts');
-
-    await wrapper.get('.whats-new__primary').trigger('click');
-    await nextTick();
-
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
+    expect(wrapper.findAll('.feature-beacons__dot').map((dot) => dot.attributes('data-beacon')))
+      .toEqual(['newMessage', 'contacts']);
+    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
+      .toEqual({ seen: [], sessions: 1 });
+
+    await wrapper.get('[data-beacon="newMessage"]').trigger('click');
+    await settleBeacons();
+    const card = wrapper.get('[role="dialog"]');
+    expect(card.text()).toContain('A new composer');
+    expect(card.text()).toContain('Open a message to see the new controls');
+
+    await card.get('.feature-beacons__got-it').trigger('click');
+    await settleBeacons();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('5 new');
+    expect(wrapper.find('[data-beacon="newMessage"]').exists()).toBe(false);
+    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
 
-  it("closes What's New with Escape and the close button", async () => {
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+  it('Dismiss all finishes the round: flag written, pill and dots gone', async () => {
+    seedExistingUser();
 
     const wrapper = mountApp();
+    await settleBeacons();
+    const menu = wrapper.get('.beacon-menu').element as HTMLDetailsElement;
+    menu.open = true;
     await nextTick();
-    expect(wrapper.find('.whats-new').exists()).toBe(true);
+    expect(wrapper.findAll('.beacon-menu [role="menuitem"]')).toHaveLength(6);
 
-    pressEscape();
-    await nextTick();
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
+    await wrapper.get('.beacon-menu__dismiss').trigger('click');
+    await settleBeacons();
+
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
+    expect(wrapper.find('.feature-beacons').exists()).toBe(false);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
+    expect(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)).toBeNull();
 
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+    // A reload with the flag set shows nothing.
     const second = mountApp();
-    await nextTick();
-    await second.get('.whats-new__close').trigger('click');
-    await nextTick();
-    expect(second.find('.whats-new').exists()).toBe(false);
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
+    await settleBeacons();
+    expect(second.find('.beacon-menu').exists()).toBe(false);
+    expect(second.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it('shows no onboarding popup once both keys are set', async () => {
+  it('shows no onboarding UI once both keys are set', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await settleBeacons();
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
+    expect(wrapper.find('.feature-beacons').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it("keeps global shortcuts inactive while What's New is open", async () => {
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+  it('keeps global shortcuts inactive while a beacon card is open', async () => {
+    seedExistingUser();
 
     const wrapper = mountApp();
-    await nextTick();
+    await settleBeacons();
 
     const input = wrapper.get('.quick-filter__input').element as HTMLInputElement;
     const focusSpy = vi.spyOn(input, 'focus');
@@ -662,41 +709,82 @@ describe('App mail layout', () => {
       ctrlKey: true,
     }));
 
-    pressQuickFilter();
-    await nextTick();
-    expect(focusSpy).not.toHaveBeenCalled();
-
-    await wrapper.get('.whats-new__primary').trigger('click');
-    await nextTick();
-
+    // Dots alone leave shortcuts live.
     pressQuickFilter();
     await nextTick();
     expect(focusSpy).toHaveBeenCalledOnce();
+
+    await wrapper.get('[data-beacon="contacts"]').trigger('click');
+    await settleBeacons();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
+    pressQuickFilter();
+    await nextTick();
+    expect(focusSpy).toHaveBeenCalledOnce();
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await settleBeacons();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    pressQuickFilter();
+    await nextTick();
+    expect(focusSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("runs a spotlight from What's New", async () => {
-    vi.useFakeTimers();
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+  it('reveals a composer beacon from the pill by opening a compose session', async () => {
+    seedExistingUser();
     const composeStore = useComposeStore();
+    const beaconStore = useFeatureBeaconsStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await settleBeacons();
+    expect(wrapper.find('[data-beacon="composeSchedule"]').exists()).toBe(false);
 
-    await showMeButton(wrapper, 'Send on your schedule').trigger('click');
-    await flushPromises();
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="composeSchedule"]').trigger('click');
+    await settleBeacons();
 
     expect(composeStore.sessions).toHaveLength(1);
-    expect(wrapper.find('.whats-new--spotlighting').exists()).toBe(true);
-    await advanceSpotlight(SETTLE_MS);
-    expect(wrapper.get('[data-testid="spotlight-overlay"]').attributes('data-targets'))
-      .toBe('.compose-dialog .compose-schedule-menu');
+    expect(beaconStore.openId).toBe('composeSchedule');
+    expect(wrapper.find('.compose-dialog .compose-schedule-menu__trigger').exists()).toBe(true);
+    expect(wrapper.get('[data-beacon="composeSchedule"]').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('[role="dialog"]').attributes('data-beacon-card')).toBe('composeSchedule');
+    expect(wrapper.get('[role="dialog"]').text()).toContain('Send on your schedule');
 
-    await wrapper.get('.whats-new__primary').trigger('click');
-    await flushPromises();
+    // Revealing again reuses the open session.
+    beaconStore.close();
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="composeMinimize"]').trigger('click');
+    await settleBeacons();
+    expect(composeStore.sessions).toHaveLength(1);
+    expect(beaconStore.openId).toBe('composeMinimize');
+  });
 
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
-    expect(composeStore.sessions).toHaveLength(0);
-    expect(wrapper.find('[data-testid="spotlight-overlay"]').exists()).toBe(false);
+  it('hides beacons behind Welcome and keeps them when Welcome is reopened', async () => {
+    seedExistingUser();
+
+    const wrapper = mountApp();
+    await settleBeacons();
+    expect(wrapper.find('.feature-beacons').exists()).toBe(true);
+
+    (wrapper.get('.account-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    const item = wrapper.findAll('[role="menuitem"]')
+      .find((candidate) => candidate.text().includes('Welcome & shortcuts'));
+    expect(item).toBeDefined();
+    await item!.trigger('click');
+    await settleBeacons();
+
+    expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
+    expect(wrapper.find('.feature-beacons').exists()).toBe(false);
+
+    pressEscape();
+    await settleBeacons();
+    expect(wrapper.find('.welcome').exists()).toBe(false);
+    expect(wrapper.find('.feature-beacons').exists()).toBe(true);
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
+    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
+    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
 
   it('reopens Welcome from the account menu without touching either key', async () => {
@@ -713,7 +801,7 @@ describe('App mail layout', () => {
     await nextTick();
 
     expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
-    expect(wrapper.find('.whats-new').exists()).toBe(false);
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
   });

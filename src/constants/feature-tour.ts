@@ -9,8 +9,8 @@ import {
 } from '@lucide/vue';
 
 /**
- * Feature cards shared by the Welcome and What's New modals. Each card names
- * the spotlight script that demonstrates it in the live UI.
+ * Feature cards shown in the Welcome modal. Each card names the spotlight
+ * script that demonstrates it in the live UI.
  */
 export type SpotlightId =
   | 'composeDrafts'
@@ -19,8 +19,6 @@ export type SpotlightId =
   | 'sendLater'
   | 'contacts'
   | 'folders';
-
-export type TourMode = 'welcome' | 'whatsNew';
 
 export interface FeatureCard {
   icon: Component;

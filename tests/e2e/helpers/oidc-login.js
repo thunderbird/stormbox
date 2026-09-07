@@ -22,12 +22,15 @@ const APP_ORIGIN = new URL(
  * Slow path: full Keycloak form fill + submit. Only used by the
  * setup spec on its first run (no cached state) and as a fallback
  * when the cached SSO cookie has expired.
+ *
+ * Welcome is always marked dismissed. `whatsNewSeen: false` leaves the
+ * What's New flag alone so a spec can clear it and get the feature beacons.
  */
-export async function loginViaOidc(page) {
-  await page.addInitScript(() => {
+export async function loginViaOidc(page, { whatsNewSeen = true } = {}) {
+  await page.addInitScript((seen) => {
     window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-    window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-  });
+    if (seen) window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
+  }, whatsNewSeen);
   await page.goto('/');
   if (await isAppShellAlreadyVisible(page)) {
     return;

@@ -198,24 +198,14 @@ async function returnToMailSpace(page) {
   await page.locator('.folder-node').first().waitFor({ state: 'visible', timeout: 10_000 });
 }
 
-/**
- * Close whichever onboarding popup is open: Welcome (new session) or the
- * one-time What's New announcement (session that dismissed Welcome earlier).
- */
+/** Close the Welcome popup if a new session is showing it. */
 async function dismissWelcomeModal(page) {
   const welcome = page.locator('[role="dialog"]').filter({ hasText: 'Welcome to Thundermail' });
-  if (await welcome.count() > 0) {
-    await page.getByRole('button', { name: /^get started$/i }).click().catch(async () => {
-      await page.getByRole('button', { name: /^close welcome$/i }).click().catch(() => {});
-    });
-    await welcome.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
-  }
-  const whatsNew = page.locator('[role="dialog"]').filter({ hasText: "What's new in Thundermail" });
-  if (await whatsNew.count() === 0) return;
-  await page.getByRole('button', { name: /^got it$/i }).click().catch(async () => {
-    await page.getByRole('button', { name: /^close what's new$/i }).click().catch(() => {});
+  if (await welcome.count() === 0) return;
+  await page.getByRole('button', { name: /^get started$/i }).click().catch(async () => {
+    await page.getByRole('button', { name: /^close welcome$/i }).click().catch(() => {});
   });
-  await whatsNew.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  await welcome.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
 }
 
 /** Convenience: get the per-test console buffer attached to the page. */

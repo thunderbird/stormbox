@@ -25,11 +25,17 @@ import { BUG_REPORT_URL, FEEDBACK_URL } from './defines';
 import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
 import { useContactsStore } from './stores/contacts-store';
-import { useComposeStore } from './stores/compose-store';
+import { COMPOSE_PRESENTATION, useComposeStore } from './stores/compose-store';
 import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
 import type { Palette, Theme } from './constants/settings';
 import { shortcutAria, shortcutHint } from './constants/shortcuts';
+import {
+  readOnboardingFlag,
+  WELCOME_MODAL_STORAGE_KEY,
+  WHATS_NEW_STORAGE_KEY,
+  writeOnboardingFlag,
+} from './utils/onboarding-storage';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -45,11 +51,14 @@ import AppDrawer from './components/AppDrawer.vue';
 import TopNavMenu from './components/TopNavMenu.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 import WelcomeModal from './components/WelcomeModal.vue';
-import WhatsNewModal from './components/WhatsNewModal.vue';
 import SpotlightOverlay from './components/SpotlightOverlay.vue';
+import FeatureBeaconLayer from './components/FeatureBeaconLayer.vue';
+import FeatureBeaconMenu from './components/FeatureBeaconMenu.vue';
 import { useFeatureSpotlight } from './composables/useFeatureSpotlight';
 import { createSpotlightScripts } from './composables/featureSpotlightScripts';
 import type { SpotlightId } from './constants/feature-tour';
+import { beaconById, type BeaconId } from './constants/feature-beacons';
+import { useFeatureBeaconsStore } from './stores/feature-beacons-store';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
 import SettingsGearButton from './components/settings/SettingsGearButton.vue';
 // Staff-only Kanban feature (src/features/kanban): the settings dialog's
@@ -68,6 +77,7 @@ const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
 const settingsStore = useSettingsStore();
 const kanbanStore = useKanbanStore();
+const beaconStore = useFeatureBeaconsStore();
 
 type AppSpace = 'contacts' | 'mail';
 
@@ -119,10 +129,6 @@ useTitle(documentTitle, { restoreOnUnmount: false });
 type ResizePane = 'folderList' | 'messageList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
-const WELCOME_MODAL_STORAGE_KEY = 'stormbox.welcomeModalDismissed.v1';
-// Dated per announcement: a new What's New round gets a new key, so existing
-// users see it once while new users (who see Welcome) never do.
-const WHATS_NEW_STORAGE_KEY = 'stormbox.whatsNewSeen.2026-09-compose';
 const SPACE_RAIL_WIDTH = 56;
 const RESIZER_WIDTH = 6;
 const COMPACT_READING_WIDTH = 1024;
@@ -157,7 +163,6 @@ const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
-const showWhatsNewModal = ref(false);
 const showSettingsDialog = ref(false);
 const spotlight = useFeatureSpotlight(() => createSpotlightScripts({
   composeStore,
@@ -183,12 +188,16 @@ watch(activeSpotlight, (id) => {
 const showThemeToggle = computed(() => theme.value !== 'system');
 // Modal dialogs own the keyboard: a single-letter mail shortcut must not
 // archive or delete the selection behind them, or move focus out of them.
+// An open beacon card counts as one.
 const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED
   && !showWelcomeModal.value
-  && !showWhatsNewModal.value
-  && !showSettingsDialog.value,
+  && !showSettingsDialog.value
+  && beaconStore.openId == null,
 );
+// Beacon dots would sit on top of these dialogs' scrims.
+const showFeatureBeacons = computed(() =>
+  !showWelcomeModal.value && !showSettingsDialog.value);
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const wantsMessageDetailView = computed(() => mailStore.selectedMessageId != null);
 // Multi-select never opens the message view: the bulk actions live in
@@ -327,7 +336,7 @@ watch(() => authStore.status, (status) => {
     return;
   }
   showWelcomeModal.value = false;
-  showWhatsNewModal.value = false;
+  beaconStore.reset();
   void spotlight.cancel();
 }, { immediate: true });
 
@@ -407,54 +416,65 @@ function toggleTheme() {
   });
 }
 
-function readOnboardingFlag(key: string): boolean {
-  try {
-    return window.localStorage?.getItem(key) === '1';
-  } catch {
-    // Blocked storage: treat as unset so the popup is a session-only affordance.
-    return false;
-  }
-}
-
-function writeOnboardingFlag(key: string) {
-  try {
-    window.localStorage?.setItem(key, '1');
-  } catch {
-    // Dismissal still applies for this session when storage is unavailable.
-  }
-}
-
-// At most one onboarding popup per session: Welcome for a new user, What's
-// New once for a user who already dismissed Welcome before this announcement.
+// Welcome for a new user; feature beacons for a user who dismissed Welcome
+// before this announcement and has not finished the round.
 function maybeShowOnboardingModal() {
   if (!readOnboardingFlag(WELCOME_MODAL_STORAGE_KEY)) {
     showWelcomeModal.value = true;
-    showWhatsNewModal.value = false;
     return;
   }
   showWelcomeModal.value = false;
-  showWhatsNewModal.value = !readOnboardingFlag(WHATS_NEW_STORAGE_KEY);
+  if (!readOnboardingFlag(WHATS_NEW_STORAGE_KEY)) beaconStore.arm();
 }
 
 function dismissWelcomeModal() {
   showWelcomeModal.value = false;
   void spotlight.cancel();
-  // Welcome already covers every announced feature.
   writeOnboardingFlag(WELCOME_MODAL_STORAGE_KEY);
-  writeOnboardingFlag(WHATS_NEW_STORAGE_KEY);
-}
-
-function dismissWhatsNewModal() {
-  showWhatsNewModal.value = false;
-  void spotlight.cancel();
-  writeOnboardingFlag(WHATS_NEW_STORAGE_KEY);
+  // Welcome covers every announced feature, so a new user never gets
+  // beacons; a user re-opening Welcome from the account menu keeps theirs.
+  if (!beaconStore.enabled) writeOnboardingFlag(WHATS_NEW_STORAGE_KEY);
 }
 
 function showWelcomeModalAgain() {
   if (authStore.status === AUTH_STATE.CONNECTED) {
-    showWhatsNewModal.value = false;
+    beaconStore.close();
     showWelcomeModal.value = true;
   }
+}
+
+// Brings a beacon's control on screen (opens the composer or switches to
+// Contacts) before opening its card; the layer waits for the anchor to mount.
+function revealBeacon(id: BeaconId) {
+  const beacon = beaconById(id);
+  switch (beacon.stage) {
+    case 'composer': {
+      const expanded = composeStore.sessions.find(
+        (session) => session.presentation === COMPOSE_PRESENTATION.EXPANDED,
+      );
+      if (!expanded) {
+        const minimized = composeStore.sessions.find(
+          (session) => session.presentation === COMPOSE_PRESENTATION.MINIMIZED,
+        );
+        if (minimized) composeStore.restore(minimized.id);
+        else composeStore.open();
+      }
+      break;
+    }
+    case 'contacts':
+      void requestSpaceChange('contacts');
+      break;
+    case undefined:
+      // The spaces bar is always on screen; the other unstaged controls are
+      // in the Mail sidebar.
+      if (id !== 'contacts') void requestSpaceChange('mail');
+      break;
+    default: {
+      const exhaustive: never = beacon.stage;
+      throw new Error(`Unhandled beacon stage ${String(exhaustive)}`);
+    }
+  }
+  beaconStore.open(id);
 }
 
 function runSpotlight(id: SpotlightId) {
@@ -715,6 +735,7 @@ function unwatchSystemTheme() {
           @toggle-theme="toggleTheme"
           @open-settings="showSettingsDialog = true"
         />
+        <FeatureBeaconMenu @reveal="revealBeacon" />
         <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
       </div>
     </header>
@@ -830,15 +851,6 @@ function unwatchSystemTheme() {
       @spotlight="runSpotlight"
       @cancel-spotlight="cancelSpotlight"
     />
-    <WhatsNewModal
-      v-else-if="showWhatsNewModal"
-      :active-spotlight="activeSpotlight"
-      :progress="spotlightProgress"
-      :reduced-motion="spotlightReducedMotion"
-      @dismiss="dismissWhatsNewModal"
-      @spotlight="runSpotlight"
-      @cancel-spotlight="cancelSpotlight"
-    />
     <SpotlightOverlay
       :active="activeSpotlight != null"
       :targets="spotlightTargets"
@@ -847,6 +859,7 @@ function unwatchSystemTheme() {
       :dim="spotlightDim"
       :reduced-motion="spotlightReducedMotion"
     />
+    <FeatureBeaconLayer v-if="showFeatureBeacons && beaconStore.enabled" />
     <SettingsDialog
       v-if="showSettingsDialog"
       :applied-theme="appliedTheme"
@@ -1064,6 +1077,9 @@ body.spotlighting .folder-subs {
 .quick-filter__actions > .account-menu {
   margin-left: 2px;
 }
+.quick-filter__actions > .beacon-menu {
+  margin: 0 4px;
+}
 .quick-filter__action,
 .quick-filter__action.theme-toggle {
   display: inline-flex;
@@ -1225,7 +1241,7 @@ body.spotlighting .folder-subs {
   .quick-filter__menu {
     display: block;
   }
-  .quick-filter__actions > :not(.account-menu, .quick-filter__menu) {
+  .quick-filter__actions > :not(.account-menu, .beacon-menu, .quick-filter__menu) {
     display: none;
   }
   .quick-filter__actions > .account-menu {

@@ -26,6 +26,7 @@
     "stack:ws-proxy": "node tests/fixtures/ws-proxy/server.mjs"
   },
   "dependencies": {
+    "@floating-ui/dom": "1.8.0",
     "@journeyapps/wa-sqlite": "1.7.0",
     "@lucide/vue": "1.16.0",
     "@tanstack/vue-virtual": "3.13.26",
