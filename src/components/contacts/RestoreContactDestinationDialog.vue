@@ -66,15 +66,17 @@ useModalFocus(dialogEl, { containTab: true });
   display: grid;
   place-items: center;
   padding: 20px;
-  background: color-mix(in srgb, #0d162a 48%, transparent);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 
 .restore-destination__panel {
   width: min(440px, 100%);
   padding: 20px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--modal-border);
   border-radius: 12px;
-  background: var(--surface, #fff);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
 }
 
 .restore-destination__panel h2 {
@@ -95,7 +97,7 @@ useModalFocus(dialogEl, { containTab: true });
 
 .restore-destination__books button {
   padding: 9px 10px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 7px;
   background: transparent;
   color: var(--text, #1a1d24);

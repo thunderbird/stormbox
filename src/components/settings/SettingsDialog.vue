@@ -146,17 +146,18 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: color-mix(in srgb, #000 55%, transparent);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 .settings-dialog__panel {
   width: min(460px, 100%);
   max-height: calc(100vh - 32px);
   overflow: auto;
-  border: 1px solid var(--border);
+  border: 1px solid var(--modal-border);
   border-radius: 16px;
-  background: var(--panel);
+  background: var(--modal-surface);
   color: var(--text);
-  box-shadow: 0 24px 60px color-mix(in srgb, #000 40%, transparent);
+  box-shadow: var(--modal-shadow);
 }
 .settings-dialog__header {
   display: flex;
@@ -224,7 +225,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   box-sizing: border-box;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: transparent;
   color: var(--text);
@@ -253,7 +254,7 @@ onBeforeUnmount(() => {
 }
 .settings-dialog__btn {
   padding: 6px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: transparent;
   color: var(--text);
@@ -299,7 +300,7 @@ onBeforeUnmount(() => {
   width: 42px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 12%, transparent);
   cursor: pointer;

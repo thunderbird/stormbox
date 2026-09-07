@@ -116,16 +116,17 @@ function onKeydown(event: KeyboardEvent): void {
   display: grid;
   place-items: center;
   padding: 20px;
-  background: color-mix(in srgb, #0d162a 48%, transparent);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 
 .address-book-delete__panel {
   width: min(500px, 100%);
   padding: 20px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--modal-border);
   border-radius: 12px;
-  background: var(--surface, #fff);
-  box-shadow: 0 20px 54px color-mix(in srgb, #000 35%, transparent);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
 }
 
 .address-book-delete__panel h2 {

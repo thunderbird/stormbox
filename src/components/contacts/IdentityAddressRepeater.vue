@@ -177,7 +177,7 @@ function updateRow(
   min-width: 0;
   min-height: 34px;
   padding: 6px 9px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 6px;
   background: var(--panel, #fff);
   color: var(--text, #1a1d24);
@@ -191,7 +191,7 @@ function updateRow(
 }
 
 .identity-addresses__remove {
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   color: #c93838;
 }
 
@@ -199,7 +199,7 @@ function updateRow(
   width: max-content;
   min-height: 32px;
   padding: 5px 9px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   color: inherit;
 }
 

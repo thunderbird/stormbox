@@ -449,7 +449,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-left: 0;
   border-radius: 0 6px 6px 0;
   background: var(--panel, #fff);

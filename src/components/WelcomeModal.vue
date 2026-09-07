@@ -217,10 +217,10 @@ onBeforeUnmount(() => {
   padding: 16px;
   background:
     radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 34rem),
-    color-mix(in srgb, #000 64%, transparent);
+    var(--modal-scrim);
   color: var(--text);
   font-family: var(--font-sans);
-  backdrop-filter: blur(12px);
+  backdrop-filter: var(--modal-scrim-blur);
   transition: background 0.38s ease, backdrop-filter 0.38s ease;
 }
 
@@ -247,14 +247,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, #fff);
+  border: 1px solid var(--modal-border);
   border-radius: 24px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--panel) 95%, #fff), var(--panel) 220px),
-    var(--panel);
-  box-shadow:
-    0 28px 80px color-mix(in srgb, #000 46%, transparent),
-    inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
 }
 
 .welcome__close {
@@ -424,7 +420,7 @@ onBeforeUnmount(() => {
 .welcome__shortcut-group {
   min-width: 0;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border);
   border-radius: 16px;
   background: color-mix(in srgb, var(--panel2) 70%, transparent);
 }

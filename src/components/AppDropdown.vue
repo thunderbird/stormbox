@@ -147,7 +147,7 @@ onUnmounted(unlisten);
   align-items: center;
   justify-content: space-between;
   padding: 6px 9px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 6px;
   background: var(--panel, #fff);
   color: var(--text, #1a1d24);

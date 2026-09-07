@@ -416,7 +416,8 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgba(13, 22, 42, 0.5);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 
 .schedule-dialog {
@@ -424,10 +425,10 @@ onBeforeUnmount(() => {
   width: min(520px, 100%);
   gap: 12px;
   padding: 20px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--modal-border);
   border-radius: 12px;
-  background: var(--surface, #fff);
-  box-shadow: 0 20px 54px rgba(0, 0, 0, 0.3);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
 }
 
 .schedule-dialog:focus {
@@ -504,7 +505,7 @@ onBeforeUnmount(() => {
   min-height: 34px;
   align-items: center;
   padding: 0 10px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 6px;
   background: var(--panel, #fff);
 }
@@ -531,7 +532,7 @@ onBeforeUnmount(() => {
   width: 100%;
   min-height: 34px;
   padding: 6px 8px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 6px;
   background: var(--surface, #fff);
   color: inherit;

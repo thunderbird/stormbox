@@ -143,7 +143,7 @@ watch(() => props.activeSpotlight, async (next, previous) => {
   gap: 6px 8px;
   min-width: 0;
   padding: 9px;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border: 1px solid var(--card-border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--panel) 72%, transparent);
   transition: border-color 0.36s ease, background 0.36s ease, box-shadow 0.36s ease;

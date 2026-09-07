@@ -871,6 +871,18 @@ function unwatchSystemTheme() {
      Bolt palette (assets/bolt-theme.css) re-points these tokens. */
   --top-nav-height: 56px;
   --top-nav-bg: var(--space-rail-bg);
+  /* Modal look shared by every dialog (the Welcome modal defines it): a
+     panel with a light hairline and a top sheen over a dark blurred scrim. */
+  --modal-bg: var(--panel);
+  --modal-surface:
+    linear-gradient(180deg, color-mix(in srgb, var(--modal-bg) 95%, #fff), var(--modal-bg) 220px),
+    var(--modal-bg);
+  --modal-border: color-mix(in srgb, var(--border) 78%, #fff);
+  --modal-shadow:
+    0 28px 80px color-mix(in srgb, #000 46%, transparent),
+    inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  --modal-scrim: color-mix(in srgb, #000 64%, transparent);
+  --modal-scrim-blur: blur(12px);
   --top-nav-shadow: transparent;
   --top-nav-wordmark: var(--accent);
   --top-nav-input-bg: var(--surface);
@@ -1084,7 +1096,7 @@ body.spotlighting .folder-subs {
 .quick-filter__input {
   width: 100%;
   height: 36px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: var(--top-nav-input-bg);
   color: var(--text);

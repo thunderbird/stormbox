@@ -269,7 +269,7 @@ function togglePassword() {
 .login-card__password input {
   padding: 9px 11px;
   background: var(--panel2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   color: var(--text);
   font-size: 14px;

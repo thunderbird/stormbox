@@ -74,7 +74,7 @@ function onKeydown(event: KeyboardEvent) {
   display: inline-flex;
   flex-shrink: 0;
   padding: 2px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }

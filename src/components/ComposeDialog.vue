@@ -1061,7 +1061,9 @@ function identityInitials(id: IdentityRow): string {
   position: relative;
   width: min(960px, 96vw);
   height: min(640px, 90vh);
-  background: var(--surface, #fff);
+  border: 1px solid var(--modal-border);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
   border-radius: 12px;
   display: flex;
   flex-direction: column;
@@ -1126,7 +1128,7 @@ function identityInitials(id: IdentityRow): string {
 .row input {
   min-width: 0;
   padding: 7px 10px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 8px;
   font: inherit;
 }
@@ -1141,7 +1143,7 @@ function identityInitials(id: IdentityRow): string {
   min-width: 0;
   gap: 8px;
   padding: 5px 10px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 8px;
   background: var(--panel, transparent);
 }
@@ -1219,7 +1221,7 @@ function identityInitials(id: IdentityRow): string {
 }
 .recipient-toggle {
   padding: 4px 8px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 6px;
   background: none;
   color: var(--colour-ti-secondary, var(--text, #111827));
@@ -1234,7 +1236,7 @@ function identityInitials(id: IdentityRow): string {
   display: grid;
   max-height: 150px;
   overflow-y: auto;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 8px;
 }
 .compose-attachment {
@@ -1289,7 +1291,7 @@ function identityInitials(id: IdentityRow): string {
   width: 32px;
   height: 32px;
   flex-basis: 32px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--control-border, #d6d9e2);
   border-radius: 7px;
   color: inherit;
 }
@@ -1435,10 +1437,10 @@ footer {
 .compose-confirm {
   width: min(420px, 100%);
   padding: 20px;
-  border: 1px solid var(--border, #d6d9e2);
+  border: 1px solid var(--modal-border);
   border-radius: 12px;
-  background: var(--surface, #fff);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  background: var(--modal-surface);
+  box-shadow: var(--modal-shadow);
 }
 .compose-confirm h3 {
   margin: 0 0 8px;

@@ -100,6 +100,12 @@
      readable over --panel and --panel2. */
   --error-bg: rgba(255, 107, 107, 0.14);
   --error-fg: #ff6b6b;
+  /* Form controls (inputs, pickers, toggle buttons) need a visibly
+     stronger edge than the --border hairline used for dividers; mixing
+     from --text keeps it ~2.3:1 on --panel in both themes. */
+  --control-border: color-mix(in srgb, var(--text) 20%, var(--panel));
+  /* Cards inset on a panel (feature cards, shortcut groups) use the same weight. */
+  --card-border: var(--control-border);
   color-scheme: dark light;
 }
 
@@ -426,7 +432,7 @@ select {
 .row select {
   width: 100%;
   padding: 0.5rem 0.65rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 0.5rem;
   background: var(--panel2);
   color: var(--text);

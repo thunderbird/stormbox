@@ -597,7 +597,7 @@ function onPaste(event: ClipboardEvent): void {
   align-items: center;
   gap: 4px;
   padding: 2px 4px;
-  border: 1px solid var(--border, #cfcfcf);
+  border: 1px solid var(--control-border, #cfcfcf);
   border-radius: 4px;
   background: var(--panel2, #fff);
   cursor: text;

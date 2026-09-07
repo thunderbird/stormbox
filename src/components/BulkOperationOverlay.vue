@@ -75,8 +75,8 @@ const subText = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, #000 45%, transparent);
-  backdrop-filter: blur(2px);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 
 .bulk-overlay__card {
@@ -84,10 +84,10 @@ const subText = computed(() => {
   max-width: min(480px, calc(100vw - 32px));
   padding: 20px 24px;
   border-radius: 12px;
-  background: var(--panel);
+  background: var(--modal-surface);
   color: var(--text);
-  border: 1px solid var(--border);
-  box-shadow: 0 24px 48px color-mix(in srgb, #000 45%, transparent);
+  border: 1px solid var(--modal-border);
+  box-shadow: var(--modal-shadow);
   display: flex;
   flex-direction: column;
   gap: 12px;

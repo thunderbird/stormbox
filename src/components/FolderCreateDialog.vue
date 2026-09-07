@@ -229,15 +229,16 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: color-mix(in srgb, #000 55%, transparent);
+  background: var(--modal-scrim);
+  backdrop-filter: var(--modal-scrim-blur);
 }
 .folder-create__panel {
   width: min(400px, 100%);
-  border: 1px solid var(--border);
+  border: 1px solid var(--modal-border);
   border-radius: 16px;
-  background: var(--panel);
+  background: var(--modal-surface);
   color: var(--text);
-  box-shadow: 0 24px 60px color-mix(in srgb, #000 40%, transparent);
+  box-shadow: var(--modal-shadow);
 }
 @media (max-width: 639px) {
   .folder-create {
@@ -303,7 +304,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   box-sizing: border-box;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: transparent;
   color: var(--text);
@@ -324,7 +325,7 @@ onBeforeUnmount(() => {
   align-items: center;
   box-sizing: border-box;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: transparent;
   color: var(--text);
@@ -350,7 +351,7 @@ onBeforeUnmount(() => {
 }
 .folder-create__btn {
   padding: 6px 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   background: transparent;
   color: var(--text);
