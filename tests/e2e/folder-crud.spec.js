@@ -267,11 +267,17 @@ test.describe('Folder create/rename/delete e2e', () => {
   });
 
   test('default folders, Scheduled included, sit under the account heading with no controls', async ({ sharedPage: page }, testInfo) => {
+    const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
     try {
-      const dialog = await openManageDialog(page);
-      // The default block opens collapsed; Top Level is the first row.
-      await expect(dialog.locator('.folder-subs__name').first()).not.toHaveText('Inbox');
-      await dialog.locator('button[data-account-toggle]').click();
+      await openManageDialog(page);
+      // The default block opens collapsed: its rows are not mounted until
+      // the account heading's chevron expands it. The account may have no
+      // folders of its own here, so only the default rows are checked.
+      const toggle = dialog.locator('button[data-account-toggle]');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(dialog.locator('.folder-subs__row').filter({ hasText: 'Inbox' })).toHaveCount(0);
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
       const itemIndex = (locator) => locator
         .locator('xpath=ancestor::*[contains(@class, "folder-subs__item")]')
@@ -290,6 +296,11 @@ test.describe('Folder create/rename/delete e2e', () => {
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden({ timeout: 5_000 });
     } finally {
+      // A failure above must not leave the dialog open for the next spec
+      // on the shared page.
+      if (await dialog.isVisible().catch(() => false)) {
+        await page.keyboard.press('Escape').catch(() => {});
+      }
       await attachConsoleTail(testInfo, consoleLinesFor(page));
     }
   });
