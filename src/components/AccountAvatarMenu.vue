@@ -56,7 +56,7 @@ function onShowWelcomeModal() {
       </a>
       <button class="account-menu__item" type="button" role="menuitem" @click="onShowWelcomeModal">
         <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span>Show Welcome Modal</span>
+        <span>Welcome &amp; shortcuts</span>
       </button>
       <button class="account-menu__item" type="button" role="menuitem" @click="onLogout">
         <LogOut :size="16" :stroke-width="1.75" aria-hidden="true" />

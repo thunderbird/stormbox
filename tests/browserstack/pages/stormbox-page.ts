@@ -87,7 +87,7 @@ export class StormboxPage {
     this.accountMenuButton = page.locator('.account-menu__button[aria-label="Open account menu"]');
     this.accountMenuIdentity = page.locator('.account-menu__identity .account-menu__email');
     this.accountSettingsMenuItem = page.getByRole('menuitem', { name: /account settings/i });
-    this.showWelcomeModalMenuItem = page.getByRole('menuitem', { name: /show welcome modal/i });
+    this.showWelcomeModalMenuItem = page.getByRole('menuitem', { name: /welcome & shortcuts/i });
     this.logOutMenuItem = page.getByRole('menuitem', { name: /log out/i });
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
@@ -119,6 +119,7 @@ export class StormboxPage {
 
     await this.page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
     });
     try {
       await this.page.goto(STORMBOX_BASE_URL, {

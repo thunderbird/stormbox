@@ -13,6 +13,10 @@ const props = defineProps({
   onFolderDragOver: { type: Function, default: null },
   onFolderDragLeave: { type: Function, default: null },
   onFolderDrop: { type: Function, default: null },
+  // `data-tour` value for the row and its subtree so the feature spotlight
+  // can ring a whole section; the component has two roots, so attrs would
+  // not fall through.
+  tourHook: { type: String, default: undefined },
 });
 
 const current = computed(() => props.currentFolderId === props.folder.id);
@@ -56,6 +60,7 @@ function toggle() {
       'is-drop-invalid': dropStateValue === 'invalid',
     }"
     :style="style"
+    :data-tour="tourHook"
     @dragenter="onFolderDragEnter?.(folder, $event)"
     @dragover="onFolderDragOver?.(folder, $event)"
     @dragleave="onFolderDragLeave?.(folder, $event)"
@@ -109,6 +114,7 @@ function toggle() {
       :on-folder-drag-over="onFolderDragOver"
       :on-folder-drag-leave="onFolderDragLeave"
       :on-folder-drop="onFolderDrop"
+      :tour-hook="tourHook"
     />
   </template>
 </template>

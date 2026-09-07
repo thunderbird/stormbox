@@ -54,10 +54,6 @@ import MessageAttachmentPreviews from './MessageAttachmentPreviews.vue';
 // even when scrollWidth would technically not overflow.
 const MIN_EMAIL_LAYOUT_WIDTH = 400;
 
-defineProps<{
-  spotlightActions?: boolean;
-}>();
-
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
 const settingsStore = useSettingsStore();
@@ -640,42 +636,8 @@ function closeMessageView() {
 </script>
 
 <template>
-  <section
-    class="message-view"
-    :class="{ 'message-view--spotlight-actions': spotlightActions }"
-    aria-label="Message detail"
-  >
-    <article v-if="spotlightActions" class="message-view__article">
-      <!-- Decorative stand-in so the onboarding spotlight has a toolbar
-           to highlight while no message is open. These buttons carry no
-           handlers, so they are hidden from assistive technology and
-           removed from the tab order rather than announced as six
-           working actions that do nothing. -->
-      <header class="message-view__header" aria-hidden="true">
-        <AppIconButton class="message-view__action message-view__action--back" tabindex="-1" title="Back">
-          <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action" tabindex="-1" :title="actionTitle('Archive', 'archive')">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action" danger tabindex="-1" :title="actionTitle('Delete', 'delete')">
-          <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Reply', 'reply')">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Reply All', 'replyAll')">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
-        </AppIconButton>
-        <AppIconButton class="message-view__action message-view__action--compose-spotlight" tabindex="-1" :title="actionTitle('Forward', 'forward')">
-          <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
-        </AppIconButton>
-      </header>
-      <div class="message-view__empty">
-        <p>Select a message to read it.</p>
-      </div>
-    </article>
-    <div v-else-if="!message" class="message-view__empty">
+  <section class="message-view" aria-label="Message detail">
+    <div v-if="!message" class="message-view__empty">
       <p>Select a message to read it.</p>
     </div>
     <article v-else class="message-view__article">
@@ -710,13 +672,13 @@ function closeMessageView() {
           <AppIconButton class="message-view__action" danger @click="destroy" :title="actionTitle('Delete', 'delete')" aria-label="Delete">
             <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="reply" :title="actionTitle('Reply', 'reply')" aria-label="Reply">
+          <AppIconButton class="message-view__action" @click="reply" :title="actionTitle('Reply', 'reply')" aria-label="Reply">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="replyAll" :title="actionTitle('Reply All', 'replyAll')" aria-label="Reply All">
+          <AppIconButton class="message-view__action" @click="replyAll" :title="actionTitle('Reply All', 'replyAll')" aria-label="Reply All">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action message-view__action--compose-spotlight" @click="forward" :title="actionTitle('Forward', 'forward')" aria-label="Forward">
+          <AppIconButton class="message-view__action" @click="forward" :title="actionTitle('Forward', 'forward')" aria-label="Forward">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
           </AppIconButton>
         </template>
@@ -971,13 +933,6 @@ function closeMessageView() {
   background: var(--rowHover);
   color: var(--text);
 }
-.message-view--spotlight-actions .message-view__action--compose-spotlight {
-  position: relative;
-  z-index: 130;
-  color: var(--text);
-  background: color-mix(in srgb, var(--accent) 18%, var(--panel2));
-  animation: message-action-spotlight-pulse 3.2s ease-in-out infinite;
-}
 .message-view__toolbar-icon {
   width: 18px;
   height: 18px;
@@ -1097,19 +1052,6 @@ function closeMessageView() {
     --message-content-trailing-inset: 5px;
     --message-html-edge-inset: 5px;
     --message-toolbar-edge-inset: 5px;
-  }
-}
-
-@keyframes message-action-spotlight-pulse {
-  0%, 100% {
-    box-shadow:
-      0 0 0 5px color-mix(in srgb, var(--accent) 24%, transparent),
-      0 0 0 1px color-mix(in srgb, var(--accent) 86%, #fff),
-      0 10px 24px color-mix(in srgb, #000 24%, transparent);
-    filter: brightness(1.12);
-  }
-  50% {
-    filter: brightness(1.22);
   }
 }
 </style>

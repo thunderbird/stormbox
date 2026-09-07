@@ -220,6 +220,7 @@ async function onFolderDrop(folder, event) {
       <FolderNode
         v-for="folder in starredUserFolders"
         :key="folder.id"
+        tour-hook="folder-favorites"
         :folder="folder"
         :current-folder-id="mailStore.currentFolderId"
         :on-pick="pickFolder"
@@ -235,6 +236,7 @@ async function onFolderDrop(folder, event) {
     <FolderNode
       v-for="folder in unstarredUserFolders"
       :key="folder.id"
+      tour-hook="user-folders"
       :folder="folder"
       :current-folder-id="mailStore.currentFolderId"
       :on-pick="pickFolder"
@@ -248,12 +250,17 @@ async function onFolderDrop(folder, event) {
     />
 
     <template v-for="section in sharedSections" :key="section.account.id">
-      <h3 class="folder-tree__heading folder-tree__heading--shared" :title="section.label">
+      <h3
+        class="folder-tree__heading folder-tree__heading--shared"
+        :title="section.label"
+        data-tour="shared-folders"
+      >
         {{ section.label }}
       </h3>
       <FolderNode
         v-for="folder in section.tree"
         :key="folder.id"
+        tour-hook="shared-folders"
         :folder="folder"
         :current-folder-id="mailStore.currentFolderId"
         :on-pick="pickFolder"

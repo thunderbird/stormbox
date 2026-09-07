@@ -26,6 +26,7 @@ const APP_ORIGIN = new URL(
 export async function loginViaOidc(page) {
   await page.addInitScript(() => {
     window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+    window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
   });
   await page.goto('/');
   if (await isAppShellAlreadyVisible(page)) {

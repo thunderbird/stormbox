@@ -88,6 +88,7 @@ beforeEach(() => {
   __setRepositoryForTests(makeRepo());
   localStorage.clear();
   localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+  localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
   const authStore = useAuthStore();
   authStore.status = AUTH_STATE.CONNECTED;

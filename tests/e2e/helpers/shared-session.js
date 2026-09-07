@@ -105,6 +105,7 @@ export const test = base.extend({
     const page = await ctx.newPage();
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
     });
     // The console buffer lives on the page object so per-test
     // beforeEach can reset it without rewiring listeners.
@@ -197,13 +198,24 @@ async function returnToMailSpace(page) {
   await page.locator('.folder-node').first().waitFor({ state: 'visible', timeout: 10_000 });
 }
 
+/**
+ * Close whichever onboarding popup is open: Welcome (new session) or the
+ * one-time What's New announcement (session that dismissed Welcome earlier).
+ */
 async function dismissWelcomeModal(page) {
   const welcome = page.locator('[role="dialog"]').filter({ hasText: 'Welcome to Thundermail' });
-  if (await welcome.count() === 0) return;
-  await page.getByRole('button', { name: /^get started$/i }).click().catch(async () => {
-    await page.getByRole('button', { name: /^close welcome$/i }).click().catch(() => {});
+  if (await welcome.count() > 0) {
+    await page.getByRole('button', { name: /^get started$/i }).click().catch(async () => {
+      await page.getByRole('button', { name: /^close welcome$/i }).click().catch(() => {});
+    });
+    await welcome.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  }
+  const whatsNew = page.locator('[role="dialog"]').filter({ hasText: "What's new in Thundermail" });
+  if (await whatsNew.count() === 0) return;
+  await page.getByRole('button', { name: /^got it$/i }).click().catch(async () => {
+    await page.getByRole('button', { name: /^close what's new$/i }).click().catch(() => {});
   });
-  await welcome.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
+  await whatsNew.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {});
 }
 
 /** Convenience: get the per-test console buffer attached to the page. */

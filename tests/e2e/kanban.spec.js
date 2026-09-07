@@ -120,6 +120,7 @@ test.describe('Settings gear in narrow layouts', () => {
     await page.setViewportSize({ width: 1000, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
     });
     await loginViaOidc(page);
     await waitForInboxReady(page);

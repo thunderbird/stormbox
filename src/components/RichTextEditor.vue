@@ -41,6 +41,7 @@ import {
   isInlineRasterType,
   MAX_INLINE_RASTER_BYTES,
 } from '../utils/raster-images';
+import { scriptedPasteDetail } from '../utils/scripted-paste';
 import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 
@@ -848,6 +849,30 @@ function handleNativePaste(event: ClipboardEvent): void {
   void classifyAndInsertPastedFiles(files);
 }
 
+const LONE_URL_PATTERN = /^https?:\/\/\S+$/i;
+
+// Files take the native paste-files path; text takes Squire's plain-text
+// paste behaviour, where a lone URL over a selection links that selection.
+function handleScriptedPaste(event: Event): void {
+  const detail = scriptedPasteDetail(event);
+  if (!detail || !squire) return;
+  rememberSelection();
+  if (detail.files && detail.files.length > 0) {
+    void classifyAndInsertPastedFiles(detail.files);
+    return;
+  }
+  const text = detail.text;
+  if (!text) return;
+  runEditorCommand((editor) => {
+    const range = editor.getSelection();
+    if (!range.collapsed && range.toString().trim() !== '' && LONE_URL_PATTERN.test(text)) {
+      editor.makeLink(text);
+    } else {
+      editor.insertPlainText(text, true);
+    }
+  });
+}
+
 function syncAfterKeyboardCommand(editor: Squire, range: Range | null = null) {
   ensureEditorBlocks();
   syncContentFromEditor();
@@ -1262,7 +1287,12 @@ defineExpose({
         </label>
       </div>
 
-      <div v-if="isToolbarGroupVisible('insert')" class="toolbar-group" data-toolbar-group="insert">
+      <div
+        v-if="isToolbarGroupVisible('insert')"
+        class="toolbar-group"
+        data-toolbar-group="insert"
+        data-tour="image-tools"
+      >
         <button
           type="button"
           class="toolbar-button"
@@ -1691,6 +1721,7 @@ defineExpose({
         :aria-invalid="ariaInvalid ? 'true' : undefined"
         aria-multiline="true"
         @paste.capture="handleNativePaste"
+        @scripted-paste="handleScriptedPaste"
       />
     </div>
   </div>

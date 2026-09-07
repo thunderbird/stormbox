@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 
 import RichTextEditor from '../../../src/components/RichTextEditor.vue';
+import { dispatchScriptedPaste } from '../../../src/utils/scripted-paste';
 
 interface EditorContent {
   html: string;
@@ -515,6 +516,36 @@ describe('RichTextEditor toolbar', () => {
     expect(latestUpdate(wrapper)?.html)
       .toMatch(/<img[^>]+src="data:image\/png;base64,/i);
     expect(latestUpdate(wrapper)?.html).toMatch(/text-align:\s*center/i);
+  });
+
+  it('links the selection when a scripted paste carries a lone URL, inserts other text', async () => {
+    const wrapper = await mountEditor('<p>hello world</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    selectEditorText(editor);
+
+    dispatchScriptedPaste(editor, { text: 'https://example.com/' });
+    expect(latestUpdate(wrapper)?.html)
+      .toMatch(/<a[^>]+href="https:\/\/example\.com\/"[^>]*>hello<\/a> world/i);
+
+    selectEditorText(editor, 0, 0);
+    dispatchScriptedPaste(editor, { text: 'https://example.com/ and more' });
+    expect(latestUpdate(wrapper)?.text).toContain('https://example.com/ and more');
+  });
+
+  it('routes scripted paste files through the pasted-file path', async () => {
+    const wrapper = await mountEditor('<p>hello</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ close: vi.fn() })));
+    const file = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'p.png', { type: 'image/png' });
+
+    dispatchScriptedPaste(editor, { files: [file] });
+    for (let index = 0; index < 50 && !(wrapper.emitted('paste-files')?.length); index += 1) {
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+      await nextTick();
+    }
+
+    expect(latestUpdate(wrapper)?.html).toMatch(/<img[^>]+src="data:image\/png;base64,/i);
+    expect(wrapper.emitted('paste-files')?.[0]?.[0]).toEqual([{ file, kind: 'inline' }]);
   });
 
   it('opens an image picker and inserts the selected raster image', async () => {

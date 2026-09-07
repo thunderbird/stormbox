@@ -63,6 +63,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 390, height: 700 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -143,6 +144,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 390, height: 700 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
     });
 
     await loginViaOidc(page);
@@ -212,6 +214,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
     });
 
     await loginViaOidc(page);
@@ -293,6 +296,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -349,6 +353,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -406,6 +411,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 340, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -505,6 +511,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -571,6 +578,7 @@ test.describe('Sidebar layout', () => {
     await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
       window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
+      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
