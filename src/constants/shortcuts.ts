@@ -6,10 +6,11 @@
  * table through `shortcutHint` / `shortcutAria`, so what is shown always
  * matches what is bound.
  *
- * Web bindings are single keys, so the browser keeps its chords (Ctrl+N/R/L/A,
+ * Web bindings are single keys, so the browser keeps its chords (Ctrl+N/R/L,
  * Ctrl+Shift+Del); Ctrl/⌘+K is the one chord taken, as an alternate Quick
- * Filter key. Home/End stay with the focused list (`listScoped`). Thunderbird
- * bindings reproduce the desktop client:
+ * Filter key. Ctrl/⌘+A and Home/End stay with the focused list (`listScoped`)
+ * so the page keeps them everywhere else. Thunderbird bindings reproduce the
+ * desktop client:
  * https://support.mozilla.org/kb/keyboard-shortcuts-thunderbird
  */
 
@@ -29,8 +30,6 @@ export type ShortcutAction =
   | 'forward'
   | 'quickFilter'
   | 'archive'
-  | 'markRead'
-  | 'markUnread'
   | 'toggleRead'
   | 'delete'
   | 'deleteForever'
@@ -46,10 +45,8 @@ export type ShortcutAction =
 export interface ShortcutBinding extends ShortcutSpec {
   /** Bound only on macOS. */
   macOnly?: boolean;
-  /** Match regardless of Shift, for keys that need it on some layouts (`*`, `/`). */
+  /** Match regardless of Shift, for keys that need it on some layouts (`/`). */
   ignoreShift?: boolean;
-  /** Second key of a two-key sequence; `prefix` must have been pressed just before. */
-  prefix?: string;
   /** Still fires while a text field has focus. */
   inEditable?: boolean;
   /** Show in hints only on this platform (the binding itself works on both). */
@@ -67,8 +64,7 @@ const WEB_SHORTCUTS: ShortcutTable = {
   forward: [{ key: 'f' }],
   quickFilter: [{ key: '/', ignoreShift: true }, { key: 'k', mod: true, inEditable: true }],
   archive: [{ key: 'a' }],
-  markRead: [{ key: 'i', shift: true }],
-  markUnread: [{ key: 'u' }],
+  toggleRead: [{ key: 'm' }],
   delete: [
     { key: 'Delete', hintPlatform: 'other' },
     { key: 'Backspace', macOnly: true },
@@ -77,7 +73,7 @@ const WEB_SHORTCUTS: ShortcutTable = {
     { key: 'Delete', shift: true, hintPlatform: 'other' },
     { key: 'Backspace', shift: true, macOnly: true },
   ],
-  selectAll: [{ key: 'a', prefix: '*' }],
+  selectAll: [{ key: 'a', mod: true, listScoped: true }],
   clearSelection: [{ key: 'Escape' }],
   next: [{ key: 'j' }],
   previous: [{ key: 'k' }],
@@ -123,23 +119,6 @@ export const SHORTCUT_SCHEME_LABELS: Record<ShortcutScheme, string> = {
   thunderbird: 'Thunderbird',
 };
 
-/** Keys that start a two-key sequence in the scheme (e.g. `*`). */
-export function prefixKeys(scheme: ShortcutScheme): string[] {
-  const keys = new Set<string>();
-  for (const bindings of Object.values(SHORTCUT_SCHEMES[scheme])) {
-    for (const binding of bindings ?? []) {
-      if (binding.prefix) keys.add(binding.prefix);
-    }
-  }
-  return [...keys];
-}
-
-/** The prefix this event starts, or null. Prefix keys ignore Shift (`*` is Shift+8). */
-export function prefixForEvent(event: KeyboardEvent, scheme: ShortcutScheme): string | null {
-  if (event.ctrlKey || event.metaKey || event.altKey) return null;
-  return prefixKeys(scheme).find((key) => event.key === key) ?? null;
-}
-
 function matchesBinding(event: KeyboardEvent, binding: ShortcutBinding): boolean {
   if (binding.macOnly && !isMacPlatform()) return false;
   // Single-key bindings must not fire with a chord modifier held.
@@ -155,30 +134,19 @@ export interface ResolvedShortcut {
   binding: ShortcutBinding;
 }
 
-/**
- * The action this event triggers in the scheme. A binding with a `prefix`
- * only matches while that prefix is pending, and wins over the plain
- * binding for the same key (`* a` selects all; `a` alone archives).
- */
+/** The action this event triggers globally in the scheme; `listScoped` bindings never match here. */
 export function resolveShortcut(
   event: KeyboardEvent,
   scheme: ShortcutScheme,
-  pendingPrefix: string | null = null,
 ): ResolvedShortcut | null {
   const table = SHORTCUT_SCHEMES[scheme];
-  let plain: ResolvedShortcut | null = null;
   for (const [action, bindings] of Object.entries(table) as Array<[ShortcutAction, readonly ShortcutBinding[]]>) {
     for (const binding of bindings) {
       if (binding.listScoped) continue;
-      if (!matchesBinding(event, binding)) continue;
-      if (binding.prefix) {
-        if (binding.prefix === pendingPrefix) return { action, binding };
-        continue;
-      }
-      plain ??= { action, binding };
+      if (matchesBinding(event, binding)) return { action, binding };
     }
   }
-  return plain;
+  return null;
 }
 
 const KEY_HINTS: Record<string, string> = {
@@ -198,8 +166,7 @@ function bindingHint(binding: ShortcutBinding): string {
   if (binding.shift && !binding.ignoreShift) parts.push('Shift');
   if (binding.alt) parts.push('Alt');
   parts.push(keyHint(binding.key));
-  const chord = parts.join('+');
-  return binding.prefix ? `${keyHint(binding.prefix)} then ${chord}` : chord;
+  return parts.join('+');
 }
 
 function bindingAria(binding: ShortcutBinding): string {
@@ -208,8 +175,7 @@ function bindingAria(binding: ShortcutBinding): string {
   if (binding.shift && !binding.ignoreShift) parts.push('Shift');
   if (binding.alt) parts.push('Alt');
   parts.push(binding.key.length === 1 ? binding.key.toUpperCase() : binding.key);
-  const chord = parts.join('+');
-  return binding.prefix ? `${binding.prefix} ${chord}` : chord;
+  return parts.join('+');
 }
 
 function visibleBindings(action: ShortcutAction, scheme: ShortcutScheme): ShortcutBinding[] {
@@ -224,7 +190,7 @@ function visibleBindings(action: ShortcutAction, scheme: ShortcutScheme): Shortc
 
 /**
  * Human-readable keys for the action on this platform, e.g. `Ctrl+K`,
- * `⌘+Shift+R`, `/ or ⌘+K`, `* then A`; null when the scheme has none.
+ * `⌘+Shift+R`, `/ or ⌘+K`; null when the scheme has none.
  */
 export function shortcutHint(action: ShortcutAction, scheme: ShortcutScheme): string | null {
   const bindings = visibleBindings(action, scheme);

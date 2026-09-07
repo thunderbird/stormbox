@@ -721,7 +721,7 @@ describe('KanbanColumn selection', () => {
     expect(selectedIds(wrapper)).toEqual([]);
   });
 
-  it('the app-wide select-all shortcut selects the focused column', async () => {
+  it('Ctrl+A selects the focused column in both shortcut schemes', async () => {
     const { wrapper } = await mountColumn();
     const host = mount(defineComponent({
       setup() {
@@ -730,12 +730,28 @@ describe('KanbanColumn selection', () => {
       },
     }));
     await wrapper.find('.kanban-column__scroller').trigger('focus');
-    // Web scheme: `*` then `a`.
+    // Web scheme: Ctrl+A is list-scoped, so the global broker leaves it alone
+    // and the column handles it on its own scroller.
+    const global = new KeyboardEvent('keydown', {
+      key: 'a', ctrlKey: true, bubbles: true, cancelable: true,
+    });
+    invokeThunderbirdShortcut(global);
+    await flushPromises();
+    expect(global.defaultPrevented).toBe(false);
+    expect(selectedIds(wrapper)).toEqual([]);
+    await wrapper.find('.kanban-column__scroller').trigger('keydown', { key: 'a', ctrlKey: true });
+    await flushPromises();
+    expect(selectedIds(wrapper)).toEqual([21, 22, 23]);
+
+    // Thunderbird scheme: Ctrl+A is global and reaches the focused column
+    // through the broker.
+    await wrapper.find('.kanban-column__scroller').trigger('keydown', { key: 'Escape' });
+    await flushPromises();
+    expect(selectedIds(wrapper)).toEqual([]);
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    await flushPromises();
     invokeThunderbirdShortcut(new KeyboardEvent('keydown', {
-      key: '*', shiftKey: true, bubbles: true, cancelable: true,
-    }));
-    invokeThunderbirdShortcut(new KeyboardEvent('keydown', {
-      key: 'a', bubbles: true, cancelable: true,
+      key: 'a', ctrlKey: true, bubbles: true, cancelable: true,
     }));
     await flushPromises();
     expect(selectedIds(wrapper)).toEqual([21, 22, 23]);

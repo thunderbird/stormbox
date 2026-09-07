@@ -39,6 +39,7 @@ import MessageList from '../../../src/components/MessageList.vue';
 import { useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 
 function makeFolder(id, overrides = {}) {
   return {
@@ -133,15 +134,40 @@ describe('MessageList bulk actions header', () => {
         makeRow(3, { subject: 'Match two' }),
       ],
     });
+    // Thunderbird scheme: Ctrl+A is global and reaches the list through the broker.
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
     const shortcuts = mountShortcutBroker();
     mailStore.selectedIds = new Set([2]);
 
-    // Web scheme: `*` then `a` is the global select-all.
-    fireKey('*', { shiftKey: true });
-    const event = fireKey('a');
+    const event = fireKey('a', { ctrlKey: true });
     await nextTick();
 
     expect(event.defaultPrevented).toBe(true);
+    expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([1, 3]);
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
+  it('selects only quick-filtered rows from Ctrl+A on the focused list', async () => {
+    const { mailStore, wrapper } = mountList({
+      quickFilterQuery: 'match',
+      rows: [
+        makeRow(1, { subject: 'Match one' }),
+        makeRow(2, { subject: 'Hidden' }),
+        makeRow(3, { subject: 'Match two' }),
+      ],
+    });
+    // Web scheme: Ctrl+A is list-scoped, so the global broker leaves it alone.
+    const shortcuts = mountShortcutBroker();
+
+    const global = fireKey('a', { ctrlKey: true });
+    await nextTick();
+    expect(global.defaultPrevented).toBe(false);
+    expect(mailStore.selectedIds.size).toBe(0);
+
+    await wrapper.get('.msg-list__scroller').trigger('keydown', { key: 'a', ctrlKey: true });
+    await nextTick();
+
     expect([...mailStore.selectedIds].sort((a, b) => a - b)).toEqual([1, 3]);
     shortcuts.unmount();
     wrapper.unmount();
@@ -155,11 +181,11 @@ describe('MessageList bulk actions header', () => {
         makeRow(3, { is_seen: 1 }),
       ],
     });
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
     const shortcuts = mountShortcutBroker();
     await wrapper.get('.msg-list__filter').trigger('click');
 
-    fireKey('*', { shiftKey: true });
-    fireKey('a');
+    fireKey('a', { ctrlKey: true });
     await nextTick();
 
     expect([...mailStore.selectedIds]).toEqual([2]);

@@ -15,7 +15,6 @@ import {
 } from 'vue';
 
 import {
-  prefixForEvent,
   resolveShortcut,
   type ShortcutAction,
 } from '../constants/shortcuts';
@@ -26,9 +25,6 @@ import {
   isComposingKeyEvent,
   isEditableTarget,
 } from '../utils/keyboard';
-
-/** How long a sequence prefix such as `*` waits for its second key. */
-export const SHORTCUT_PREFIX_TIMEOUT_MS = 1500;
 
 export interface UseThunderbirdShortcutsOptions {
   /** Current app space ('mail' | 'contacts'). */
@@ -107,26 +103,6 @@ export function useThunderbirdShortcuts({
   const composeStore = useComposeStore();
   const settingsStore = useSettingsStore();
 
-  let pendingPrefix: string | null = null;
-  let pendingPrefixTimer: number | null = null;
-
-  function clearPendingPrefix() {
-    pendingPrefix = null;
-    if (pendingPrefixTimer != null) {
-      window.clearTimeout(pendingPrefixTimer);
-      pendingPrefixTimer = null;
-    }
-  }
-
-  function startPendingPrefix(prefix: string) {
-    clearPendingPrefix();
-    pendingPrefix = prefix;
-    pendingPrefixTimer = window.setTimeout(() => {
-      pendingPrefixTimer = null;
-      pendingPrefix = null;
-    }, SHORTCUT_PREFIX_TIMEOUT_MS);
-  }
-
   function targetsForMessageAction(action: ShortcutAction): number[] | null {
     const targetIds = getTargetIds(mailStore);
     if (targetIds.length === 0) return null;
@@ -185,7 +161,7 @@ export function useThunderbirdShortcuts({
 
     const scheme = settingsStore.get('shortcutScheme');
     const editable = isEditableTarget(event.target);
-    const resolved = resolveShortcut(event, scheme, pendingPrefix);
+    const resolved = resolveShortcut(event, scheme);
 
     // Quick Filter is shared by every space and its chord form works
     // from inside a text field; `/` does not, so typing it still works.
@@ -198,15 +174,6 @@ export function useThunderbirdShortcuts({
 
     if (space.value !== 'mail') return;
     if (editable) return;
-
-    const prefix = prefixForEvent(event, scheme);
-    if (prefix) {
-      event.preventDefault();
-      startPendingPrefix(prefix);
-      return;
-    }
-    clearPendingPrefix();
-
     if (!resolved) return;
     const { action } = resolved;
 
@@ -251,8 +218,6 @@ export function useThunderbirdShortcuts({
       case 'archive':
       case 'delete':
       case 'deleteForever':
-      case 'markRead':
-      case 'markUnread':
       case 'toggleRead': {
         const targetIds = targetsForMessageAction(action);
         if (targetIds == null) return;
@@ -260,10 +225,6 @@ export function useThunderbirdShortcuts({
         if (targetIds.length === 0) return;
         if (action === 'archive') {
           void mailStore.archiveMessages(targetIds);
-        } else if (action === 'markRead') {
-          void mailStore.markManySeen(targetIds, true);
-        } else if (action === 'markUnread') {
-          void mailStore.markManySeen(targetIds, false);
         } else if (action === 'toggleRead') {
           void mailStore.toggleManySeen(targetIds);
         } else {
@@ -305,7 +266,6 @@ export function useThunderbirdShortcuts({
   });
 
   onUnmounted(() => {
-    clearPendingPrefix();
     if (activeShortcutHandler === onKeyDown) {
       activeShortcutHandler = null;
     }

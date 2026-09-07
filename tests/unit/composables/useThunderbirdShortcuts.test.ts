@@ -760,7 +760,7 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     }
   });
 
-  it('A archives, Shift+I marks read, U marks unread; M does nothing', async () => {
+  it('A archives and M toggles read; Shift+I and U do nothing', async () => {
     mountHarness();
     const mailStore = viewing();
     const archive = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
@@ -768,16 +768,16 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     const toggle = vi.spyOn(mailStore, 'toggleManySeen').mockResolvedValue(1);
 
     fireKey('a');
-    fireKey('I', { shiftKey: true });
-    fireKey('u');
-    const m = fireKey('m');
+    const shiftI = fireKey('I', { shiftKey: true });
+    const u = fireKey('u');
+    fireKey('m');
     await Promise.resolve();
 
     expect(archive).toHaveBeenCalledWith([7]);
-    expect(markSeen).toHaveBeenNthCalledWith(1, [7], true);
-    expect(markSeen).toHaveBeenNthCalledWith(2, [7], false);
-    expect(toggle).not.toHaveBeenCalled();
-    expect(m.defaultPrevented).toBe(false);
+    expect(toggle).toHaveBeenCalledWith([7]);
+    expect(markSeen).not.toHaveBeenCalled();
+    expect(shiftI.defaultPrevented).toBe(false);
+    expect(u.defaultPrevented).toBe(false);
   });
 
   it('Delete and Shift+Delete destroy; Backspace only counts on macOS', async () => {
@@ -807,41 +807,23 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     }
   });
 
-  it('* then A selects all loaded messages; A alone still archives', async () => {
+  // Ctrl+A is list-scoped on Web (`MessageList.handleKeyDown`), so the
+  // page keeps select-all-text wherever the list is not focused; `*` is
+  // not a prefix key.
+  it('leaves Ctrl+A to the focused list and treats * as a plain key', async () => {
     const { messageListCommands } = mountHarness();
     const mailStore = viewing();
     const archive = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
 
+    const selectAll = fireKey('a', { ctrlKey: true });
     const star = fireKey('*', { shiftKey: true });
-    expect(star.defaultPrevented).toBe(true);
     fireKey('a');
     await Promise.resolve();
 
-    expect(messageListCommands?.selectAll).toHaveBeenCalledOnce();
-    expect(archive).not.toHaveBeenCalled();
-
-    fireKey('a');
-    await Promise.resolve();
+    expect(selectAll.defaultPrevented).toBe(false);
+    expect(star.defaultPrevented).toBe(false);
+    expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
     expect(archive).toHaveBeenCalledWith([7]);
-    expect(messageListCommands?.selectAll).toHaveBeenCalledOnce();
-  });
-
-  it('a pending * expires', () => {
-    vi.useFakeTimers();
-    try {
-      const { messageListCommands } = mountHarness();
-      const mailStore = viewing();
-      vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
-
-      fireKey('*', { shiftKey: true });
-      vi.advanceTimersByTime(2000);
-      fireKey('a');
-
-      expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
-      expect(mailStore.archiveMessages).toHaveBeenCalledWith([7]);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it('J/K step through messages and N/P through unread ones; B is unbound', () => {
