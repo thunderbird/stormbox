@@ -23,8 +23,8 @@ No other component imports from the library directly.
 
 `AppButton` is the house button. All labeled buttons render through it:
 New Message, Sign In (OIDC and app-password submit), compose
-Send/Discard, contacts Add/Save/Cancel, and the welcome and What's New
-modal confirmations. It forwards the `variant` (`filled`/`outline`),
+Send/Discard, contacts Add/Save/Cancel, and the onboarding modal's
+primary action (`specs/010-onboarding/spec.md`). It forwards the `variant` (`filled`/`outline`),
 `form-action`, and `disabled` props and the `iconLeft`/`iconRight`
 slots.
 
