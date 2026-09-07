@@ -3,7 +3,6 @@ import {
   createEmailInMailbox,
   ensureMailbox,
   jmapRequest,
-  listMailboxes,
   pickResponse,
   sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
@@ -42,10 +41,54 @@ const RENAMED_NAME = 'CrudRenamed';
 const BULK_A = 'BulkCrudA';
 const BULK_B = 'BulkCrudB';
 const SWEEP_SUBJECT = 'CrudSeed e2e';
+const SCHEDULED_NAME = 'Scheduled';
 
 async function getServerMailboxByName(jmap, name) {
-  const mailboxes = await listMailboxes(jmap);
-  return mailboxes.find((m) => (m.name ?? '') === name) ?? null;
+  const payload = await jmapRequest(jmap, [[
+    'Mailbox/get',
+    {
+      accountId: jmap.accountId,
+      properties: ['id', 'name', 'role', 'parentId'],
+    },
+    'mailboxByName',
+  ]]);
+  return pickResponse(payload, 'Mailbox/get')?.list
+    ?.find((mailbox) => mailbox.name === name && mailbox.parentId == null) ?? null;
+}
+
+async function destroyEmptyServerMailbox(jmap, mailboxId) {
+  const payload = await jmapRequest(jmap, [[
+    'Mailbox/set',
+    {
+      accountId: jmap.accountId,
+      destroy: [mailboxId],
+      onDestroyRemoveEmails: false,
+    },
+    'scheduledCleanup',
+  ]]);
+  const set = pickResponse(payload, 'Mailbox/set');
+  if (set?.destroyed?.includes(mailboxId)) return true;
+  if (set?.notDestroyed?.[mailboxId]) return false;
+  throw new Error(`Mailbox/set did not clean up Scheduled: ${JSON.stringify(set)}`);
+}
+
+async function readScheduledMailboxRemoteId(page) {
+  return page.evaluate(async () => {
+    if (!globalThis.__repo) throw new Error('Repository is unavailable');
+    const [account] = await globalThis.__repo.listAccounts();
+    if (!account) throw new Error('Primary account is unavailable');
+    const settings = await globalThis.__repo.getSettings(account.id);
+    return settings?.doc?.settings?.scheduledMailboxRemoteId ?? null;
+  });
+}
+
+async function setScheduledMailboxRemoteId(page, remoteId) {
+  await page.evaluate(async (scheduledMailboxRemoteId) => {
+    if (!globalThis.__repo) throw new Error('Repository is unavailable');
+    const [account] = await globalThis.__repo.listAccounts();
+    if (!account) throw new Error('Primary account is unavailable');
+    await globalThis.__repo.applySettingsPatch(account.id, { scheduledMailboxRemoteId });
+  }, remoteId);
 }
 
 async function destroyServerMailboxByName(jmap, name) {
@@ -267,8 +310,29 @@ test.describe('Folder create/rename/delete e2e', () => {
   });
 
   test('default folders, Scheduled included, sit under the account heading with no controls', async ({ sharedPage: page }, testInfo) => {
+    const jmap = await connectJmap();
+    const previousScheduledRemoteId = await readScheduledMailboxRemoteId(page);
+    let scheduledMailbox = null;
+    let createdScheduled = false;
     const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
     try {
+      const existingScheduled = await getServerMailboxByName(jmap, SCHEDULED_NAME);
+      scheduledMailbox = await ensureMailbox(jmap, { name: SCHEDULED_NAME });
+      createdScheduled = scheduledMailbox.id !== existingScheduled?.id;
+      expect(scheduledMailbox).toMatchObject({
+        name: SCHEDULED_NAME,
+        role: null,
+        parentId: null,
+      });
+      // The roleless mailbox's synced remote id is its canonical managed identity.
+      if (scheduledMailbox.id !== previousScheduledRemoteId) {
+        await setScheduledMailboxRemoteId(page, scheduledMailbox.id);
+        await waitForPendingMutations(page);
+      }
+      await expect(
+        page.locator('.folder-node__name').filter({ hasText: /^Scheduled$/ }),
+      ).toBeVisible({ timeout: 30_000 });
+
       await openManageDialog(page);
       // The default block opens collapsed: its rows are not mounted until
       // the account heading's chevron expands it. The account may have no
@@ -300,6 +364,13 @@ test.describe('Folder create/rename/delete e2e', () => {
       // on the shared page.
       if (await dialog.isVisible().catch(() => false)) {
         await page.keyboard.press('Escape').catch(() => {});
+      }
+      if (createdScheduled && scheduledMailbox) {
+        const destroyed = await destroyEmptyServerMailbox(jmap, scheduledMailbox.id);
+        if (destroyed) {
+          await setScheduledMailboxRemoteId(page, previousScheduledRemoteId);
+          await waitForPendingMutations(page);
+        }
       }
       await attachConsoleTail(testInfo, consoleLinesFor(page));
     }
