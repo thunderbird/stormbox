@@ -1,14 +1,15 @@
 /**
  * Drives the compose editor for the Attachments and Clipboard spotlight
  * through the same DOM the user acts on: text is written into the document
- * (Squire tracks mutations and the composer autosaves as usual), then a URL
+ * (Squire tracks mutations; the tour holds the session's autosave), then a URL
  * is pasted over a selection and an image file at the caret via the editor's
  * scripted paste. Every helper is a no-op when the tour composer is not on
  * screen.
  */
 import { dispatchScriptedPaste } from '../utils/scripted-paste';
 
-const EDITOR_SELECTOR = '.compose-dialog .rich-text-editor .editor';
+// Scoped to the expanded dialog: minimized sessions keep theirs mounted, hidden.
+const EDITOR_SELECTOR = '.compose-dialog--expanded .rich-text-editor .editor';
 
 export const TOUR_EDITOR_TARGETS = {
   editor: EDITOR_SELECTOR,

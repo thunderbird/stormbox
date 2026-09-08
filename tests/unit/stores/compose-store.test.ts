@@ -767,6 +767,31 @@ describe('compose-store identity defaults and provenance', () => {
     }
   });
 
+  // OB-2.7: a held session never autosaves, even past the 30 s ceiling, and
+  // content written while held is saved once the hold lifts.
+  it('parks autosave while a hold is on the session and resumes on release', async () => {
+    vi.useFakeTimers();
+    try {
+      const { composeStore, repo } = await storeWithIdentityDefaults([defaultIdentity()]);
+      const sessionId = composeStore.open();
+      composeStore.holdAutosave(sessionId);
+
+      composeStore.setBodyContent({ html: '<p>Demo body</p>', text: 'Demo body' }, sessionId);
+      expect(composeStore.isSessionMeaningfullyNonEmpty(sessionId)).toBe(true);
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+
+      composeStore.releaseAutosaveHold(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+      expect(repo.insertPendingMutation).toHaveBeenCalledWith(
+        expect.objectContaining({ mutationType: MUTATION_TYPE.SAVE_DRAFT }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not add automatic Bcc addresses already present in any field', async () => {
     const configured = identity({
       id: 1,

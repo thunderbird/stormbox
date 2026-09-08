@@ -391,11 +391,11 @@ describe('FeatureBeaconLayer', () => {
     await settle();
     vi.advanceTimersByTime(500);
 
-    layout.setRect('.compose-dialog .compose-schedule-menu__trigger', {
+    layout.setRect('.compose-dialog--expanded .compose-schedule-menu__trigger', {
       left: 400, top: 500, width: 30, height: 30,
     });
     const dialog = document.createElement('div');
-    dialog.className = 'compose-dialog';
+    dialog.className = 'compose-dialog compose-dialog--expanded';
     dialog.innerHTML = '<details class="compose-schedule-menu"><summary class="compose-schedule-menu__trigger">Schedule</summary></details>';
     host.appendChild(dialog);
     // The mutation record arrives on a microtask; fake timers own the

@@ -567,6 +567,8 @@ export const useComposeStore = defineStore('compose', () => {
     inFlight: Promise<boolean> | null;
     queued: boolean;
     blocked: boolean;
+    /** Autosave is parked while a scripted demo writes into the session (OB-2.7). */
+    held: boolean;
   }>();
   const attachmentController = createComposeAttachmentController({
     sessionById,
@@ -599,10 +601,26 @@ export const useComposeStore = defineStore('compose', () => {
         inFlight: null,
         queued: false,
         blocked: false,
+        held: false,
       };
       autosaveRuntime.set(sessionId, runtime);
     }
     return runtime;
+  }
+
+  /** Stops autosave scheduling for the session until `releaseAutosaveHold`. */
+  function holdAutosave(sessionId: string): void {
+    if (!sessionById(sessionId)) return;
+    runtimeFor(sessionId).held = true;
+    clearAutosaveTimer(sessionId);
+  }
+
+  /** Lifts the hold; content changed meanwhile is scheduled for saving again. */
+  function releaseAutosaveHold(sessionId: string): void {
+    const runtime = autosaveRuntime.get(sessionId);
+    if (!runtime?.held) return;
+    runtime.held = false;
+    scheduleAutosave(sessionId);
   }
 
   function clearAutosaveTimer(sessionId: string): void {
@@ -1657,7 +1675,7 @@ export const useComposeStore = defineStore('compose', () => {
     const session = sessionById(sessionId);
     if (!session) return;
     const runtime = runtimeFor(sessionId);
-    if (runtime.blocked || session.status === COMPOSE_STATE.SENDING || session.isDiscarding) return;
+    if (runtime.blocked || runtime.held || session.status === COMPOSE_STATE.SENDING || session.isDiscarding) return;
     if (hasPendingRecipientText(session)) {
       clearAutosaveTimer(sessionId);
       runtime.firstDirtyAt = null;
@@ -2937,6 +2955,8 @@ export const useComposeStore = defineStore('compose', () => {
     setBodyContent,
     updateTrackedOrigins,
     touchSession,
+    holdAutosave,
+    releaseAutosaveHold,
     addAttachments,
     retryAttachment,
     cancelAttachment,

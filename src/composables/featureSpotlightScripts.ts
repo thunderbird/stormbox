@@ -29,20 +29,24 @@ export interface SpotlightScriptContext {
   reducedMotion: () => boolean;
 }
 
+// Every session keeps its dialog mounted (minimized ones hidden), so composer
+// selectors are scoped to the expanded dialog to reach the one on screen.
+const COMPOSER = '.compose-dialog--expanded';
+
 export const SPOTLIGHT_TARGETS = {
-  composeCard: '.compose-dialog__card',
-  composeSubject: '.compose-dialog #compose-subject',
-  composeMinimize: '.compose-dialog .icon--minimize',
+  composeCard: `${COMPOSER} .compose-dialog__card`,
+  composeSubject: `${COMPOSER} #compose-subject`,
+  composeMinimize: `${COMPOSER} .icon--minimize`,
   composeDockBar: '.compose-dock',
   composeDock: '.compose-dock__item',
-  composeHeader: '.compose-dialog__card > header',
-  recipientsTo: '.compose-dialog .row--to .recipient-input__field',
-  recipientsCcBcc: '.compose-dialog .recipient-cc-toggles',
-  attachButton: '.compose-dialog [aria-label="Attach files"]',
-  imageTools: '.compose-dialog [data-tour="image-tools"]',
-  scheduleMenu: '.compose-dialog .compose-schedule-menu',
-  scheduleTrigger: '.compose-dialog .compose-schedule-menu__trigger',
-  scheduleMenuList: '.compose-dialog .compose-schedule-menu__menu',
+  composeHeader: `${COMPOSER} .compose-dialog__card > header`,
+  recipientsTo: `${COMPOSER} .row--to .recipient-input__field`,
+  recipientsCcBcc: `${COMPOSER} .recipient-cc-toggles`,
+  attachButton: `${COMPOSER} [aria-label="Attach files"]`,
+  imageTools: `${COMPOSER} [data-tour="image-tools"]`,
+  scheduleMenu: `${COMPOSER} .compose-schedule-menu`,
+  scheduleTrigger: `${COMPOSER} .compose-schedule-menu__trigger`,
+  scheduleMenuList: `${COMPOSER} .compose-schedule-menu__menu`,
   contactsSpace: '.app-spaces [aria-label="Contacts"]',
   contactsRail: '.contacts-rail',
   contactsAllBook: '.contacts-rail__books > .contacts-rail__book',
@@ -67,7 +71,10 @@ export const TOUR_TYPING_MS_PER_CHAR = 55;
 
 interface TourComposer {
   sessionId: string;
+  /** False only when the store handed back a session it would not replace (one mid-send). */
   openedByTour: boolean;
+  /** The user's expanded session the tour pushed aside, restored on release. */
+  displacedSessionId: string | null;
 }
 
 /** Upper bounds for work the tour waits on: a dialog mounting, a directory loading, a draft save finishing. */
@@ -106,8 +113,11 @@ function waitForSelector(selector: string, timeoutMs: number): Promise<boolean> 
 
 /**
  * Builds the six spotlight scripts. The composer scripts share one empty
- * session that the tour opens on demand and closes again afterwards when it
- * is still empty (an empty session never creates a server draft, CD-2.6).
+ * session the tour opens for itself (OB-2.7): a draft the user has open is
+ * minimized, never written into, and expanded again on release. Autosave is
+ * held on the tour session while it runs, so what the demo writes never
+ * becomes a server draft; the session is closed again afterwards unless the
+ * user typed into it.
  */
 export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightScripts {
   let tourComposer: TourComposer | null = null;
@@ -119,23 +129,26 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     if (tourComposer && composeStore.sessions.some((session) => session.id === tourComposer?.sessionId)) {
       return tourComposer;
     }
-    const expanded = composeStore.isExpanded ? composeStore.activeSession : null;
-    if (expanded) {
-      tourComposer = { sessionId: expanded.id, openedByTour: false };
-      return tourComposer;
-    }
-    tourComposer = { sessionId: composeStore.open(), openedByTour: true };
+    const displaced = composeStore.isExpanded ? composeStore.activeSession : null;
+    const sessionId = composeStore.open();
+    // `open` returns the expanded session unchanged while it is mid-send.
+    const openedByTour = sessionId !== displaced?.id;
+    if (openedByTour) composeStore.holdAutosave(sessionId);
+    tourComposer = {
+      sessionId,
+      openedByTour,
+      displacedSessionId: openedByTour ? displaced?.id ?? null : null,
+    };
     return tourComposer;
   }
 
   // The subject is written straight onto the draft, not through
-  // `touchSession`, so no autosave is scheduled and no server draft is
-  // created for it (CD-2.6). Cleanup clears it again before release.
+  // `touchSession`; cleanup clears it again before release.
   let typingGeneration = 0;
 
   async function typeTourSubject(): Promise<void> {
     const composer = tourComposer;
-    if (!composer) return;
+    if (!composer?.openedByTour) return;
     typingGeneration += 1;
     const myGeneration = typingGeneration;
     const perChar = ctx.reducedMotion() ? 0 : TOUR_TYPING_MS_PER_CHAR;
@@ -163,14 +176,17 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     if (!composer) return;
     const { composeStore } = ctx;
     if (!composeStore.sessionById(composer.sessionId)) return;
-    // A tour-opened session the user never typed into is discarded, which
-    // also deletes any draft an autosave of the tour subject created.
-    if (composer.openedByTour && !composeStore.isSessionMeaningfullyNonEmpty(composer.sessionId)) {
+    if (!composer.openedByTour) return;
+    // A tour-opened session the user never typed into is closed and the draft
+    // it displaced comes back; one the user typed into stays, saving again.
+    if (!composeStore.isSessionMeaningfullyNonEmpty(composer.sessionId)) {
       void composeStore.discardDraft(composer.sessionId);
+      if (composer.displacedSessionId && composeStore.sessionById(composer.displacedSessionId)) {
+        composeStore.restore(composer.displacedSessionId);
+      }
       return;
     }
-    // A session the tour only borrowed (or that the user typed into) is left
-    // open, expanded again if a step had minimized it.
+    composeStore.releaseAutosaveHold(composer.sessionId);
     if (!composeStore.isExpanded || composeStore.activeSession?.id !== composer.sessionId) {
       composeStore.restore(composer.sessionId);
     }

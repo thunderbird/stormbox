@@ -5,7 +5,7 @@ import {
 } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { nextTick } from 'vue';
+import { computed, nextTick } from 'vue';
 
 vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
@@ -27,7 +27,7 @@ import { APP_TITLE } from '../../../src/app-config';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
-import { useComposeStore } from '../../../src/stores/compose-store';
+import { COMPOSE_PRESENTATION, useComposeStore } from '../../../src/stores/compose-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -57,7 +57,7 @@ const BEACON_RECTS = {
   '.app-spaces [aria-label="Contacts"]': {
     left: 8, top: 120, width: 40, height: 40,
   },
-  '.compose-dialog .compose-schedule-menu__trigger': {
+  '.compose-dialog--expanded .compose-schedule-menu__trigger': {
     left: 600, top: 500, width: 30, height: 30,
   },
 };
@@ -192,9 +192,16 @@ function mountApp() {
         },
         MessageView: { template: '<section class="message-view">view</section>' },
         // Carries the card the compose spotlights stage, the header controls
-        // they press, and the schedule trigger the composeSchedule beacon anchors to.
+        // they press, and the schedule trigger the composeSchedule beacon anchors
+        // to. Like the real dialog, one mounts per session and only the
+        // expanded one carries the modifier the spotlights scope to.
         ComposeDialog: {
-          template: '<div class="compose-dialog"><div class="compose-dialog__card"><button class="icon icon--minimize" /><div class="compose-close-menu" /><input id="compose-subject" /><details class="compose-schedule-menu"><summary class="compose-schedule-menu__trigger">Schedule</summary></details></div></div>',
+          props: ['sessionId'],
+          setup(props: { sessionId: string }) {
+            const composeStore = useComposeStore();
+            return { expanded: computed(() => composeStore.activeSessionId === props.sessionId) };
+          },
+          template: '<div v-show="expanded" class="compose-dialog" :class="{ \'compose-dialog--expanded\': expanded }"><div class="compose-dialog__card"><button class="icon icon--minimize" /><div class="compose-close-menu" /><input id="compose-subject" /><details class="compose-schedule-menu"><summary class="compose-schedule-menu__trigger">Schedule</summary></details></div></div>',
         },
       },
     },
@@ -469,7 +476,7 @@ describe('App mail layout', () => {
     await advanceSpotlight(TOUR_TYPING_MS_PER_CHAR, SETTLE_MS);
     expect(wrapper.get('[data-testid="spotlight-overlay"]').attributes('data-targets')).toBe('');
     expect(wrapper.get('[data-testid="spotlight-overlay"]').attributes('data-stage'))
-      .toBe('.compose-dialog__card');
+      .toBe('.compose-dialog--expanded .compose-dialog__card');
 
     // Step 2: the pointer travels to and presses Minimize, then the session
     // minimizes and the ring glides to the dock.
@@ -477,7 +484,7 @@ describe('App mail layout', () => {
     expect(caption().text()).toContain('Minimize a draft');
     expect(caption().get('.feature-caption__steps').attributes('aria-label')).toBe('Step 2 of 3');
     expect(wrapper.get('[data-testid="spotlight-overlay"]').attributes('data-pointer'))
-      .toBe('.compose-dialog .icon--minimize');
+      .toBe('.compose-dialog--expanded .icon--minimize');
     expect(composeStore.isExpanded).toBe(true);
     await advanceSpotlight(TRAVEL_MS, PRESS_MS);
     expect(composeStore.isExpanded).toBe(false);
@@ -547,6 +554,40 @@ describe('App mail layout', () => {
 
     expect(composeStore.sessions).toHaveLength(1);
     expect(wrapper.find('.welcome--spotlighting').exists()).toBe(false);
+  });
+
+  // OB-2.7: the tour never writes into a draft the user has open; it works
+  // in its own session and hands the user's draft back afterwards.
+  it('leaves an open draft untouched during the compose spotlight and re-expands it afterwards', async () => {
+    vi.useFakeTimers();
+    window.localStorage?.removeItem(WELCOME_KEY);
+    const composeStore = useComposeStore();
+
+    const wrapper = mountApp();
+    await nextTick();
+    const userSessionId = composeStore.open({ subject: 'Quarterly numbers' });
+    expect(composeStore.activeSession?.id).toBe(userSessionId);
+
+    await showMeButton(wrapper, 'Compose with confidence').trigger('click');
+    await flushPromises();
+
+    expect(composeStore.sessions).toHaveLength(2);
+    const tourSession = composeStore.activeSession!;
+    expect(tourSession.id).not.toBe(userSessionId);
+    expect(composeStore.sessionById(userSessionId)!.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+
+    await advanceSpotlight(SETTLE_MS);
+    await advanceSpotlight(...TOUR_SUBJECT.slice(1).split('').map(() => TOUR_TYPING_MS_PER_CHAR));
+    expect(tourSession.draft.subject).toBe(TOUR_SUBJECT);
+    expect(composeStore.sessionById(userSessionId)!.draft.subject).toBe('Quarterly numbers');
+
+    await wrapper.get('.feature-caption__done').trigger('click');
+    await flushPromises();
+
+    expect(composeStore.sessions.map((session) => session.id)).toEqual([userSessionId]);
+    expect(composeStore.activeSession?.id).toBe(userSessionId);
+    expect(composeStore.isExpanded).toBe(true);
+    expect(composeStore.sessionById(userSessionId)!.draft.subject).toBe('Quarterly numbers');
   });
 
   it('switches to Contacts for the contacts spotlight and restores the previous space', async () => {
@@ -745,7 +786,7 @@ describe('App mail layout', () => {
 
     expect(composeStore.sessions).toHaveLength(1);
     expect(beaconStore.openId).toBe('composeSchedule');
-    expect(wrapper.find('.compose-dialog .compose-schedule-menu__trigger').exists()).toBe(true);
+    expect(wrapper.find('.compose-dialog--expanded .compose-schedule-menu__trigger').exists()).toBe(true);
     expect(wrapper.get('[data-beacon="composeSchedule"]').attributes('aria-expanded')).toBe('true');
     expect(wrapper.get('[role="dialog"]').attributes('data-beacon-card')).toBe('composeSchedule');
     expect(wrapper.get('[role="dialog"]').text()).toContain('Send on your schedule');
