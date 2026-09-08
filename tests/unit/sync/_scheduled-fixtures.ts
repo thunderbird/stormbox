@@ -1,8 +1,8 @@
 /**
  * Fixtures for the Send Later suites: an account with Drafts, Sent, and
- * Scheduled folders plus the scheduled-mailbox setting, Email objects
- * shaped like the ones the server returns for held messages, and a
- * cached message row already marked as scheduled.
+ * Scheduled role folders, Email objects shaped like the ones the server
+ * returns for held messages, and a cached message row already marked as
+ * scheduled.
  */
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
@@ -71,10 +71,7 @@ export interface BootScheduledAccountOptions {
   scheduledSubscribed?: boolean;
 }
 
-/**
- * Fresh in-memory engine with one primary account, the three mail
- * folders, and `scheduledMailboxRemoteId` pointing at Scheduled.
- */
+/** Fresh in-memory engine with one primary account and the three mail folders. */
 export async function bootScheduledAccount({
   scheduledSubscribed = true,
 }: BootScheduledAccountOptions = {}): Promise<ScheduledAccountContext> {
@@ -95,15 +92,11 @@ export async function bootScheduledAccount({
       {
         remoteId: SCHEDULED_MAILBOX_ID,
         name: 'Scheduled',
-        role: null,
+        role: 'scheduled',
         sortOrder: 3,
         isSubscribed: scheduledSubscribed,
       },
     ],
-  });
-  await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-    accountId: account.id,
-    patch: { scheduledMailboxRemoteId: SCHEDULED_MAILBOX_ID },
   });
   const folder = (remoteId: string) => engine.get(
     'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',

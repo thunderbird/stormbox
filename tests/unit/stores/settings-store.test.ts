@@ -183,7 +183,6 @@ describe('settings store account safety', () => {
       theme: 'invalid',
       shortcutScheme: 'gmail',
       primaryIdentityRemoteId: '',
-      scheduledMailboxRemoteId: '',
       timeZone: 'Mars/Olympus_Mons',
     };
     expect(store.get('theme')).toBe('system');
@@ -191,7 +190,6 @@ describe('settings store account safety', () => {
     store.settings = { shortcutScheme: 'thunderbird' };
     expect(store.get('shortcutScheme')).toBe('thunderbird');
     expect(store.get('primaryIdentityRemoteId')).toBeNull();
-    expect(store.get('scheduledMailboxRemoteId')).toBeNull();
     expect(store.get('timeZone')).toBe(detectTimeZone());
   });
 

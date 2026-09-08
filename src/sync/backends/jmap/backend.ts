@@ -54,7 +54,6 @@ import {
   scheduleClockWindow,
   SUBMISSION_RELEASE_OBSERVATION_DELAY_MS,
 } from './schedule-time';
-import { readScheduledMailboxRemoteId } from './scheduled-mailbox';
 import { syncSubmissionsForAccount } from './submissions';
 import { hasFileNodeCapability, syncSettingsFromServer } from './settings';
 import { syncContactsTrashFromServer } from './contacts-trash';
@@ -739,14 +738,8 @@ export class JmapBackend {
    */
   _maybeSyncSubmissionsForFolder(folder: any) {
     if (!folder || Number(folder.account_id) !== Number(this.account?.id)) return;
-    void (async () => {
-      const scheduledRemoteId = await readScheduledMailboxRemoteId(
-        this.handlers,
-        this.account.id,
-      );
-      if (!scheduledRemoteId || folder.remote_id !== scheduledRemoteId) return;
-      await this._syncSubmissionsWithRetry('scheduled-folder submission sync failed');
-    })().catch((err) => {
+    if (folder.role !== 'scheduled') return;
+    this._syncSubmissionsWithRetry('scheduled-folder submission sync failed').catch((err) => {
       this._handleSubmissionSyncFailure('scheduled-folder submission sync failed', err);
     });
   }
@@ -2263,11 +2256,7 @@ export class JmapBackend {
   }
 
   async _defaultSortFor(folder) {
-    const scheduledRemoteId = await readScheduledMailboxRemoteId(
-      this.handlers,
-      Number(folder?.account_id),
-    );
-    if (scheduledRemoteId && folder?.remote_id === scheduledRemoteId) {
+    if (folder?.role === 'scheduled') {
       return { sortProp: 'sentAt', sortAscending: true };
     }
     if (folder?.role === 'sent' || folder?.role === 'drafts') {

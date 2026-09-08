@@ -108,26 +108,37 @@ describe('folderCapabilities', () => {
     }), 1).mayStar).toBe(false);
   });
 
-  it('treats the managed Scheduled mailbox as a protected default folder (SL-5.2)', () => {
+  it('treats the Scheduled role folder as a protected default folder (SL-5.2)', () => {
     const capabilities = folderCapabilities(folder({
       name: 'Scheduled',
-      is_scheduled: 1,
+      role: 'scheduled',
     }), 1);
 
     expect(capabilities.isSystemProtected).toBe(true);
     expect(capabilities.maySubscribe).toBe(false);
     expect(capabilities.mayStar).toBe(false);
-    expect(capabilities.mayRename).toBe(false);
-    expect(capabilities.mayDelete).toBe(false);
     expect(capabilities.mayReparent).toBe(false);
+    expect(capabilities.mayDeleteWithMail).toBe(false);
     expect(capabilities.mayCreateChild).toBe(true);
+  });
+
+  it('closes the Scheduled role folder to ordinary message transfers', () => {
+    const capabilities = folderCapabilities(folder({
+      name: 'Scheduled',
+      role: 'scheduled',
+    }), 1);
+
+    expect(capabilities.mayAddItems).toBe(false);
+    expect(capabilities.mayMoveMessages).toBe(false);
+    expect(capabilities.mayCopyMessagesTo).toBe(false);
+    expect(capabilities.mayCopyMessagesFrom).toBe(true);
   });
 
   it('leaves a Scheduled mailbox on a shared account unprotected', () => {
     const capabilities = folderCapabilities(folder({
       account_id: 2,
       name: 'Scheduled',
-      is_scheduled: 1,
+      role: 'scheduled',
       rights_json: JSON.stringify({
         mayReadItems: true,
         mayAddItems: true,

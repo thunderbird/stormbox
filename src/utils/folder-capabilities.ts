@@ -99,14 +99,11 @@ export function folderCapabilities(
     mayRename: right(parsed, 'mayRename', fallback),
     mayDelete: right(parsed, 'mayDelete', fallback),
   };
-  // The managed Send Later mailbox is a default folder like the role
-  // folders (SL-5.2): structurally protected and permanently subscribed.
-  // It is additionally closed to ordinary message transfers — its contents
-  // are owned by the scheduling flow, where a stray move would strand or
-  // duplicate a held submission. Child folders are allowed, as under any
-  // other default folder.
-  const isScheduledManaged = isPrimary && Number(folder.is_scheduled ?? 0) === 1;
-  const isSystemProtected = isPrimary && (folder.role != null || isScheduledManaged);
+  const isSystemProtected = isPrimary && folder.role != null;
+  // The Scheduled role folder (SL-5.2) is closed to ordinary message
+  // transfers: its contents are owned by the scheduling flow, where a
+  // stray move would strand or duplicate a held submission.
+  const isScheduled = isPrimary && folder.role === 'scheduled';
   const subscribed = isSystemProtected
     || (isPrimary
       ? Number(folder.is_subscribed ?? 1) !== 0
@@ -114,23 +111,17 @@ export function folderCapabilities(
 
   return {
     ...rights,
-    mayAddItems: rights.mayAddItems && !isScheduledManaged,
-    mayRename: rights.mayRename && !isScheduledManaged,
-    mayDelete: rights.mayDelete && !isScheduledManaged,
+    mayAddItems: rights.mayAddItems && !isScheduled,
     isPrimary,
     isSystemProtected,
     // Stalwart currently gates shared isSubscribed updates on Modify,
     // represented by mayRename. Keep this server-specific policy explicit.
-    maySubscribe:
-      !isSystemProtected
-      && !isScheduledManaged
-      && (isPrimary || rights.mayRename),
+    maySubscribe: !isSystemProtected && (isPrimary || rights.mayRename),
     mayStar: !isSystemProtected && subscribed,
-    mayReparent: !isSystemProtected && !isScheduledManaged && rights.mayRename,
-    mayDeleteWithMail: !isSystemProtected && !isScheduledManaged
-      && rights.mayDelete && rights.mayRemoveItems,
-    mayMoveMessages: rights.mayRemoveItems && !isScheduledManaged,
+    mayReparent: !isSystemProtected && rights.mayRename,
+    mayDeleteWithMail: !isSystemProtected && rights.mayDelete && rights.mayRemoveItems,
+    mayMoveMessages: rights.mayRemoveItems && !isScheduled,
     mayCopyMessagesFrom: rights.mayReadItems,
-    mayCopyMessagesTo: rights.mayAddItems && !isScheduledManaged,
+    mayCopyMessagesTo: rights.mayAddItems && !isScheduled,
   };
 }

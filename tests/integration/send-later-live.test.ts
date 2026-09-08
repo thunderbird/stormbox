@@ -181,12 +181,18 @@ describe.sequential('live Stalwart Send Later', () => {
     });
   }
 
+  /** The server's `scheduled` role mailbox (RFC 9979), or a legacy roleless top-level `Scheduled`. */
+  function findScheduledMailbox(mailboxes: any[]): any | null {
+    return mailboxes.find((mailbox: any) => mailbox.role === 'scheduled')
+      ?? mailboxes.find((mailbox: any) => (
+        mailbox.name === 'Scheduled' && mailbox.role == null && mailbox.parentId == null
+      ))
+      ?? null;
+  }
+
   async function scheduledMailboxRemoteId(): Promise<string | null> {
-    const current = await context.handlers[DB_RPC.SETTINGS_GET]({
-      accountId: context.account.id,
-    });
-    const cached = current?.doc?.settings?.scheduledMailboxRemoteId;
-    return typeof cached === 'string' && cached.length > 0 ? cached : null;
+    const mailbox = findScheduledMailbox(await remoteMailboxes(mail));
+    return mailbox?.role === 'scheduled' ? mailbox.id : null;
   }
 
   async function submissionForEmail(emailRemoteId: string) {
@@ -217,11 +223,8 @@ describe.sequential('live Stalwart Send Later', () => {
       }, 'purge-cancel');
     }
     const mailboxes = await remoteMailboxes(mail);
-    const scheduled = mailboxes.find(
-      (mailbox: any) => mailbox.name === 'Scheduled' && mailbox.role == null
-        && mailbox.parentId == null,
-    );
-    // Everything in the managed mailbox is a schedule; elsewhere only
+    const scheduled = findScheduledMailbox(mailboxes);
+    // Everything in the Scheduled mailbox is a schedule; elsewhere only
     // this suite's subjects go.
     for (const mailbox of mailboxes) {
       if (scheduled && mailbox.id === scheduled.id) {
@@ -538,12 +541,12 @@ describe.sequential('live Stalwart Send Later', () => {
       expect(adopted[0].scheduled_submission_remote_id).toBeTruthy();
       expect(Number(adopted[0].sent_at)).toBe(Date.parse(targetAt));
 
-      // The fresh client also adopted the mailbox id into its settings
-      // and kept the managed mailbox subscribed.
-      const cached = await fresh.handlers[DB_RPC.SETTINGS_GET]({
+      // The fresh client knows the mailbox purely by its synced role.
+      const roleFolder = await fresh.handlers[DB_RPC.FOLDER_BY_ROLE]({
         accountId: fresh.account.id,
+        role: 'scheduled',
       });
-      expect(cached?.doc?.settings?.scheduledMailboxRemoteId).toBe(scheduledRemoteId);
+      expect(roleFolder?.remote_id).toBe(scheduledRemoteId);
     } finally {
       await fresh.engine.close();
     }

@@ -58,12 +58,6 @@ export interface FolderRow {
   index_total?: number;
   index_covered?: number;
   index_percent?: number;
-  /**
-   * Mail-store decoration: 1 when this row is the managed Send Later
-   * `Scheduled` mailbox (matched against the settings-cached remote id).
-   * Never stored in SQLite.
-   */
-  is_scheduled?: 0 | 1;
 }
 
 export interface IdentityAddress {

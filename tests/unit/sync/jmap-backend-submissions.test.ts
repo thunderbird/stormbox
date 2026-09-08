@@ -95,12 +95,8 @@ beforeEach(async () => {
     accountId: account.id,
     folders: [
       { remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' },
-      { remoteId: 'mb-sched', name: 'Scheduled', role: null, isSubscribed: true },
+      { remoteId: 'mb-sched', name: 'Scheduled', role: 'scheduled', isSubscribed: true },
     ],
-  });
-  await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-    accountId: account.id,
-    patch: { scheduledMailboxRemoteId: 'mb-sched' },
   });
 
   queryGate = null;
@@ -349,7 +345,7 @@ describe('submission sync triggers', () => {
         {
           id: 'mb-sched',
           name: 'Scheduled',
-          role: null,
+          role: 'scheduled',
           parentId: null,
           isSubscribed: true,
         },

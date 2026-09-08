@@ -28,6 +28,7 @@ export const ROLE_ICON: Partial<Record<MailboxRole, string>> = {
   inbox: inboxIcon,
   sent: sentIcon,
   drafts: draftIcon,
+  scheduled: scheduledIcon,
   archive: archiveIcon,
   trash: trashIcon,
   junk: spamIcon,
@@ -37,6 +38,7 @@ export const ROLE_COLOR: Partial<Record<MailboxRole, string>> = {
   inbox: '#1a73e8',
   sent: '#188038',
   drafts: '#7e22ce',
+  scheduled: '#0e7490',
   archive: '#8b5a2b',
   trash: '#5f6368',
   junk: '#d93025',
@@ -64,12 +66,6 @@ export interface FolderPresentationInput {
   name?: string | null;
   role?: MailboxRole | null;
   is_starred?: 0 | 1 | null;
-  /** Mail-store decoration marking the managed Send Later mailbox. */
-  is_scheduled?: 0 | 1 | null;
-}
-
-function isScheduledFolder(folder: FolderPresentationInput): boolean {
-  return Number(folder.is_scheduled ?? 0) === 1;
 }
 
 export function defaultFolderKey(name: string | null | undefined): string {
@@ -83,9 +79,6 @@ export function defaultFolderKey(name: string | null | undefined): string {
  * the generic folder icon and the goldenrod tone.
  */
 export function folderPresentation(folder: FolderPresentationInput): NamedFolderPresentation {
-  if (isScheduledFolder(folder)) {
-    return { icon: scheduledIcon, color: '#0e7490' };
-  }
   const role = folder.role ?? null;
   const namedDefault = DEFAULT_FOLDER_BY_NAME[defaultFolderKey(folder.name)];
   return {
@@ -99,12 +92,10 @@ export function folderPresentation(folder: FolderPresentationInput): NamedFolder
  * sorts after them and falls back to alphabetical.
  */
 export function folderSortKey(folder: FolderPresentationInput): number {
-  // The managed Scheduled mailbox is roleless but anchored right
-  // below Drafts, matching where the messages it holds came from.
-  if (isScheduledFolder(folder)) return 2;
   switch (folder.role) {
     case 'inbox': return 0;
     case 'drafts': return 1;
+    case 'scheduled': return 2;
     case 'sent': return 3;
     case 'archive': return 4;
     case 'junk': return 5;
@@ -119,7 +110,6 @@ export function folderSortKey(folder: FolderPresentationInput): number {
  * folder tree.
  */
 export function isMainFolder(folder: FolderPresentationInput): boolean {
-  if (isScheduledFolder(folder)) return true;
   return folder.role != null && ROLE_ICON[folder.role] != null;
 }
 

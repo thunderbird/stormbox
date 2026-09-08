@@ -228,7 +228,7 @@ describe('FolderManagerDialog cascading subscription toggles', () => {
     mailStore.folders = [
       ...mailStore.folders,
       makeFolder(2, { name: 'Drafts', role: 'drafts' }),
-      makeFolder(3, { name: 'Scheduled', is_scheduled: 1 }),
+      makeFolder(3, { name: 'Scheduled', role: 'scheduled' }),
       makeFolder(4, { name: 'Sent Items', role: 'sent' }),
       makeFolder(5, { name: 'Archives', role: 'archive' }),
       makeFolder(6, { name: 'Junk Mail', role: 'junk' }),

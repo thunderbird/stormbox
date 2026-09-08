@@ -23,7 +23,6 @@ import { computed, ref, watch } from 'vue';
 
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
-import { useSettingsStore } from './settings-store';
 import { useBodyPrefetch } from '../composables/useBodyPrefetch';
 import {
   canDecodeRasterBlob,
@@ -34,7 +33,6 @@ import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-htm
 import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
-import { isScheduledMailbox } from '../constants/scheduled-mailbox';
 import { createContactUid } from '../utils/contact-uid';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
@@ -99,32 +97,8 @@ const BULK_OPERATION_PROGRESS_THRESHOLD = 500;
 
 export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
-  const settingsStore = useSettingsStore();
 
-  const folderRows = ref<FolderRow[]>([]);
-  /**
-   * The managed Send Later mailbox is an ordinary roleless server folder
-   * whose identity is the settings-cached remote id. Decorating its row
-   * with `is_scheduled` here gives every consumer — sorting, sidebar
-   * presentation, capabilities — one flag to key on instead of each
-   * re-deriving the predicate.
-   */
-  const scheduledMailboxRemoteId = computed(() => {
-    const value = settingsStore.settings.scheduledMailboxRemoteId;
-    return typeof value === 'string' && value.length > 0 ? value : null;
-  });
-  // Writable so callers (and tests) can keep assigning `folders`
-  // directly; the setter feeds the raw rows and the decoration is
-  // reapplied on read.
-  const folders = computed<FolderRow[]>({
-    get: () => folderRows.value.map((folder) => (
-      Number(folder.account_id) === Number(authStore.accountId)
-        && isScheduledMailbox(folder, scheduledMailboxRemoteId.value)
-        ? { ...folder, is_scheduled: 1 as const }
-        : folder
-    )),
-    set: (rows) => { folderRows.value = rows; },
-  });
+  const folders = ref<FolderRow[]>([]);
   const currentFolderId = ref<number | null>(null);
   // Bound to the current folder's positional `rows` array. Indices
   // we haven't fetched are `undefined`, so the virtualiser renders
@@ -327,7 +301,7 @@ export const useMailStore = defineStore('mail', () => {
    * that want an explicit knob.
    */
   function $reset() {
-    folderRows.value = [];
+    folders.value = [];
     accounts.value = [];
     messages.value = [];
     currentFolderId.value = null;
@@ -432,7 +406,7 @@ export const useMailStore = defineStore('mail', () => {
 
   async function refreshFolders() {
     if (!repo || authStore.accountId == null) {
-      folderRows.value = [];
+      folders.value = [];
       accounts.value = [];
       return;
     }
@@ -460,7 +434,7 @@ export const useMailStore = defineStore('mail', () => {
           if (pending != null) row.is_subscribed = pending;
         }
       }
-      folderRows.value = rows;
+      folders.value = rows;
       await refreshFolderProgress();
     } catch (err) {
       error.value = err?.message ?? String(err);
@@ -527,7 +501,7 @@ export const useMailStore = defineStore('mail', () => {
     }));
     folderProgress.value = next;
     let changed = false;
-    const remapped = folderRows.value.map((folder) => {
+    const remapped = folders.value.map((folder) => {
       const progress = next.get(folder.id);
       if (!progress) return folder;
       const total = progress.total ?? folder.index_total ?? null;
@@ -552,13 +526,13 @@ export const useMailStore = defineStore('mail', () => {
     // numbers actually changed. Reassigning unconditionally rebuilds
     // every FolderNode in the tree on every broadcast, which is the
     // DOM-churn pattern Playwright cannot lock onto.
-    if (changed) folderRows.value = remapped;
+    if (changed) folders.value = remapped;
   }
 
   function _sortPropFor(
-    folder: { role?: MailboxRole | null; is_scheduled?: 0 | 1 } | null | undefined,
+    folder: { role?: MailboxRole | null } | null | undefined,
   ): JmapViewSort {
-    if (Number(folder?.is_scheduled ?? 0) === 1) return 'scheduled';
+    if (folder?.role === 'scheduled') return 'scheduled';
     return folder?.role === 'sent' || folder?.role === 'drafts' ? 'sent' : 'received';
   }
 
@@ -1832,7 +1806,7 @@ export const useMailStore = defineStore('mail', () => {
     }
     // Deleting a scheduled message would leave its held submission
     // pending server-side; the send has to be canceled instead.
-    if (Number(source.is_scheduled ?? 0) === 1) {
+    if (source.role === 'scheduled') {
       error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
       return;
     }

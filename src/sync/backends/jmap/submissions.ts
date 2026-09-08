@@ -29,11 +29,7 @@ import {
   scheduleClockWindow,
   SUBMISSION_RELEASE_OBSERVATION_DELAY_MS,
 } from './schedule-time';
-import {
-  ensureScheduledMailbox,
-  readScheduledMailboxRemoteId,
-  reconcileScheduledSubscription,
-} from './scheduled-mailbox';
+import { ensureScheduledMailbox } from './scheduled-mailbox';
 import { JMAP_CAPS } from './transport';
 
 export interface SubmissionRecord {
@@ -240,20 +236,17 @@ async function resolveHandoffFolders(
   handlers: SubmissionSyncArgs['handlers'],
   accountId: number,
 ): Promise<{ sentFolderId: number | null; scheduledFolderId: number | null }> {
-  const scheduledRemoteId = await readScheduledMailboxRemoteId(handlers, accountId);
   const rows = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id, role, remote_id FROM folders
+    sql: `SELECT id, role FROM folders
            WHERE account_id = ? AND is_deleted = 0
-             AND (role = 'sent' OR remote_id = ?)`,
-    params: [accountId, scheduledRemoteId ?? ''],
+             AND role IN ('sent', 'scheduled')`,
+    params: [accountId],
   });
   let sentFolderId: number | null = null;
   let scheduledFolderId: number | null = null;
   for (const row of rows ?? []) {
     if (row.role === 'sent') sentFolderId = Number(row.id);
-    if (scheduledRemoteId && row.remote_id === scheduledRemoteId) {
-      scheduledFolderId = Number(row.id);
-    }
+    if (row.role === 'scheduled') scheduledFolderId = Number(row.id);
   }
   return { sentFolderId, scheduledFolderId };
 }
@@ -454,8 +447,6 @@ export async function syncSubmissionsForAccount({
       }
     }
   }
-
-  await reconcileScheduledSubscription(handlers, account.id);
 
   const nearest: any[] = await handlers[DB_RPC.QUERY]({
     sql: `SELECT MIN(sent_at) AS at FROM messages

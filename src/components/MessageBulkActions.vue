@@ -33,7 +33,7 @@ const emit = defineEmits<{
 }>();
 
 const isInJunkFolder = computed(() => props.folder?.role === 'junk');
-const isInScheduledFolder = computed(() => Number(props.folder?.is_scheduled ?? 0) === 1);
+const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
 </script>
 
 <template>

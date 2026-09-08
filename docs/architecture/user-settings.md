@@ -97,7 +97,6 @@ The current registry contains:
 | `palette` | `classic` | Accent and surface palette layered on the color scheme (staff-only toggle). |
 | `shortcutScheme` | `web` | Keyboard shortcut table bound by `useThunderbirdShortcuts` and shown in the welcome and settings dialogs. `web` uses single keys that stay clear of browser shortcuts (`c`, `r`, `j`/`k`, `/`, `* then a`); `thunderbird` mirrors the desktop client (`Ctrl+N`, `Ctrl+R`, `f`/`b`, `Ctrl+A`, `Home`/`End`). Tables live in `src/constants/shortcuts.ts`. |
 | `primaryIdentityRemoteId` | `null` | Client-selected JMAP Identity used as the default From address. |
-| `scheduledMailboxRemoteId` | `null` | Cached JMAP id for the hidden Send Later backing Mailbox; exact-name discovery remains authoritative. |
 | `timeZone` | detected IANA zone, else `UTC` | Wall-time zone shared by Send Later presets and the custom picker. |
 
 `timeZone` accepts only values supported by the runtime's
@@ -106,9 +105,4 @@ detected default. Changing it through the custom schedule dialog uses the
 normal settings patch/outbox path, so a FileNode-capable account converges
 across devices and a non-FileNode account remains device-local. Scheduled
 mutations store an absolute target instant, so a later setting change does not
-reinterpret already accepted mail.
-
-`scheduledMailboxRemoteId` is a cache rather than user-facing state. Send
-Later startup still discovers the exact
-`__stormbox_internal_scheduled__` name and repairs its hidden shape before
-using it. See [Send Later](send-later.md).
+reinterpret already accepted mail. See [Send Later](send-later.md).

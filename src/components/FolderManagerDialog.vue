@@ -122,8 +122,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
   function walk(parentKey: number | 'ROOT', depth: number, path: string[]) {
     for (const folder of byParent.get(parentKey) ?? []) {
       const capabilities = folderCapabilities(folder, authStore.accountId);
-      // Own-account default folders (role folders and the managed Scheduled
-      // mailbox) are the informational "always shown" block.
+      // Own-account role folders are the informational "always shown" block.
       const isSystem = capabilities.isSystemProtected;
       // The open eye mirrors the effective subscription, which is also
       // what the sidebar renders: system folders always show; own user

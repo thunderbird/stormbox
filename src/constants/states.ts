@@ -266,6 +266,7 @@ export type ViewType = (typeof VIEW_TYPE)[keyof typeof VIEW_TYPE];
 /**
  * Folder roles per JMAP RFC 8621 §2 ("role" property on Mailbox) and
  * IMAP SPECIAL-USE (RFC 6154). Stored lowercase per RFC 8621.
+ * `scheduled` is the Send Later mailbox attribute from RFC 9979 §8.2.
  *
  * `null` is a valid value at the protocol level (folder has no role)
  * but stores generally check `f.role === 'inbox'` etc., so we expose
@@ -278,6 +279,7 @@ export type MailboxRole =
   | 'trash'
   | 'junk'
   | 'archive'
+  | 'scheduled'
   | 'important'
   | 'flagged'
   | 'all';

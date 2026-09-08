@@ -303,12 +303,8 @@ describe('runCancelScheduledSend', () => {
       accountId: account.id,
       folders: [
         { remoteId: 'mb-drafts', name: 'Drafts', role: 'drafts' },
-        { remoteId: 'mb-sched', name: 'Scheduled', role: null, isSubscribed: true },
+        { remoteId: 'mb-sched', name: 'Scheduled', role: 'scheduled', isSubscribed: true },
       ],
-    });
-    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-      accountId: account.id,
-      patch: { scheduledMailboxRemoteId: 'mb-sched' },
     });
     scheduledFolder = await engine.get(
       'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',

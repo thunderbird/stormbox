@@ -632,7 +632,11 @@ export async function destroyEmails(jmap, ids, {
 // folder from an aborted run may have been unsubscribed by a test),
 // while Stormbox's sidebar hides unsubscribed user folders — so a
 // bare create would produce a mailbox the UI never renders.
-export async function ensureMailbox(jmap, { name }) {
+//
+// With `role`, a mailbox already carrying that role is returned as-is,
+// a roleless same-named mailbox is given the role, and a fresh one is
+// created with it.
+export async function ensureMailbox(jmap, { name, role = null }) {
   const fullPayload = await jmapRequest(jmap, [[
     'Mailbox/get',
     {
@@ -641,31 +645,35 @@ export async function ensureMailbox(jmap, { name }) {
     },
     'mbFull',
   ]]);
-  const existing = pickResponse(fullPayload, 'Mailbox/get')?.list
-    ?.find((m) => (m.name ?? '').toLowerCase() === name.toLowerCase() && !m.parentId);
+  const mailboxes = pickResponse(fullPayload, 'Mailbox/get')?.list ?? [];
+  const existing = (role ? mailboxes.find((m) => m.role === role) : null)
+    ?? mailboxes.find((m) => (m.name ?? '').toLowerCase() === name.toLowerCase() && !m.parentId);
   if (existing) {
-    if (existing.isSubscribed !== true) {
-      const subPayload = await jmapRequest(jmap, [[
+    const patch = {};
+    if (existing.isSubscribed !== true) patch.isSubscribed = true;
+    if (role && existing.role !== role) patch.role = role;
+    if (Object.keys(patch).length > 0) {
+      const patchPayload = await jmapRequest(jmap, [[
         'Mailbox/set',
         {
           accountId: jmap.accountId,
-          update: { [existing.id]: { isSubscribed: true } },
+          update: { [existing.id]: patch },
         },
-        'mbSub',
+        'mbPatch',
       ]]);
-      const subSet = pickResponse(subPayload, 'Mailbox/set');
-      if (subSet?.notUpdated?.[existing.id]) {
-        throw new Error(`Could not subscribe mailbox "${name}": ${JSON.stringify(subSet.notUpdated[existing.id])}`);
+      const patchSet = pickResponse(patchPayload, 'Mailbox/set');
+      if (patchSet?.notUpdated?.[existing.id]) {
+        throw new Error(`Could not update mailbox "${name}": ${JSON.stringify(patchSet.notUpdated[existing.id])}`);
       }
     }
-    return existing;
+    return { ...existing, ...patch };
   }
 
   const createPayload = await jmapRequest(jmap, [[
     'Mailbox/set',
     {
       accountId: jmap.accountId,
-      create: { mb1: { name, isSubscribed: true } },
+      create: { mb1: { name, isSubscribed: true, ...(role ? { role } : {}) } },
     },
     'mbSet',
   ]]);
@@ -675,7 +683,7 @@ export async function ensureMailbox(jmap, { name }) {
   }
   const created = set?.created?.mb1;
   if (!created?.id) throw new Error(`Mailbox/set returned no id for "${name}": ${JSON.stringify(set)}`);
-  return { id: created.id, name, role: null, parentId: null };
+  return { id: created.id, name, role, parentId: null, isSubscribed: true };
 }
 
 export async function countMessagesInMailboxBySubjectPrefix(jmap, { mailboxId, subjectPrefix }) {

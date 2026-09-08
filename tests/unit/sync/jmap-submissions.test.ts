@@ -1,8 +1,8 @@
 /**
  * EmailSubmission synchronizer tests: the Stalwart 0.15.4 read path,
  * tracked-row transitions, external-schedule discovery, settled-row
- * handoffs to durable operations, account isolation, and the
- * permanent Scheduled-mailbox subscription reconciler.
+ * handoffs to durable operations, account isolation, and discovery,
+ * adoption, and creation of the Scheduled role folder.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -14,10 +14,7 @@ import {
   fetchSubmissionRecords,
   syncSubmissionsForAccount,
 } from '../../../src/sync/backends/jmap/submissions';
-import {
-  ensureScheduledMailbox,
-  reconcileScheduledSubscription,
-} from '../../../src/sync/backends/jmap/scheduled-mailbox';
+import { ensureScheduledMailbox } from '../../../src/sync/backends/jmap/scheduled-mailbox';
 import { MockTransport } from './_mock-transport';
 import {
   bootScheduledAccount,
@@ -72,13 +69,31 @@ function submissionTransport(records: any[], emailsById: Record<string, any> = {
       id,
       name: id === 'mb-sched' ? 'Scheduled' : id,
       parentId: null,
-      role: null,
+      role: id === 'mb-sched' ? 'scheduled' : null,
       isSubscribed: true,
     })),
     notFound: [],
     state: 'mg-state',
   }));
   return t;
+}
+
+/** Mailbox/query response listing `ids` as one complete page. */
+function mailboxPage(ids: string[]) {
+  return {
+    ids,
+    position: 0,
+    total: ids.length,
+    canCalculateChanges: false,
+    queryState: `mq-${ids.join(',') || 'empty'}`,
+  };
+}
+
+async function folderRow(remoteId: string) {
+  return engine.get(
+    'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
+    [account.id, remoteId],
+  );
 }
 
 function seedScheduledMessage(remoteId: string, options: SeedScheduledMessageOptions = {}) {
@@ -401,10 +416,13 @@ describe('syncSubmissionsForAccount', () => {
   });
 
   it('retries external adoption after transient mailbox discovery failure', async () => {
+    // No local role folder yet, so adoption has to discover it on the server.
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
     const t = submissionTransport(
       [{ id: 'sub-ext', emailId: 'e-ext', undoStatus: 'pending', sendAt: FUTURE_AT }],
       { 'e-ext': emailFixture('e-ext') },
     );
+    t.handle('Mailbox/query', () => mailboxPage(['mb-sched']));
     t.handle('Mailbox/get', () => {
       throw new Error('offline');
     });
@@ -421,7 +439,7 @@ describe('syncSubmissionsForAccount', () => {
         id,
         name: 'Scheduled',
         parentId: null,
-        role: null,
+        role: 'scheduled',
         isSubscribed: true,
       })),
       notFound: [],
@@ -432,6 +450,7 @@ describe('syncSubmissionsForAccount', () => {
       scheduled_submission_remote_id: 'sub-ext',
       scheduled_undo_status: 'pending',
     });
+    expect(await folderRow('mb-sched')).toMatchObject({ role: 'scheduled' });
   });
 
   it('chunks external Email reads to the advertised get limit', async () => {
@@ -475,7 +494,7 @@ describe('syncSubmissionsForAccount', () => {
     })).row;
     await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
       accountId: other.id,
-      folders: [{ remoteId: 'mb-sched-2', name: 'Scheduled', role: null }],
+      folders: [{ remoteId: 'mb-sched-2', name: 'Scheduled', role: 'scheduled' }],
     });
     const otherFolder = await engine.get(
       'SELECT * FROM folders WHERE account_id = ? AND remote_id = ?',
@@ -513,147 +532,33 @@ describe('syncSubmissionsForAccount', () => {
   });
 });
 
-describe('reconcileScheduledSubscription', () => {
-  async function subscriptionMutations() {
-    return (await pendingMutations(MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION))
-      .map((row) => JSON.parse(row.request_json));
+describe('ensureScheduledMailbox', () => {
+  /** Mailboxes the mock server holds, keyed by id; the query handlers filter them. */
+  function serverMailboxes(mailboxes: any[]) {
+    const t = new MockTransport();
+    t.handle('Mailbox/query', ({ filter }) => mailboxPage(
+      mailboxes
+        .filter((mailbox) => (
+          filter?.role != null ? mailbox.role === filter.role : mailbox.name === filter?.name
+        ))
+        .map((mailbox) => mailbox.id),
+    ));
+    t.handle('Mailbox/get', ({ ids }) => ({
+      list: mailboxes.filter((mailbox) => ids.includes(mailbox.id)),
+      notFound: [],
+      state: 'mg',
+    }));
+    return t;
   }
 
-  it('subscribes when a schedule is active and the folder is hidden', async () => {
-    await engine.run(
-      'UPDATE folders SET is_subscribed = 0 WHERE id = ?',
-      [scheduledFolder.id],
-    );
-    await seedScheduledMessage('e-1');
+  function mailboxSets(t: MockTransport) {
+    return t.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([method]) => method === 'Mailbox/set')
+      .map(([, params]) => params);
+  }
 
-    await reconcileScheduledSubscription(handlers, account.id);
-
-    expect(await subscriptionMutations()).toEqual([
-      {
-        folderId: scheduledFolder.id,
-        isSubscribed: true,
-        managedBy: 'scheduledMailbox',
-      },
-    ]);
-  });
-
-  it('keeps the folder subscribed when no schedules remain', async () => {
-    await reconcileScheduledSubscription(handlers, account.id);
-    expect(await subscriptionMutations()).toEqual([]);
-  });
-
-  it('enqueues nothing when the permanent subscription already matches', async () => {
-    await reconcileScheduledSubscription(handlers, account.id);
-    expect(await subscriptionMutations()).toEqual([]);
-  });
-
-  it('rewrites a queued unsubscribe instead of letting it hide the folder', async () => {
-    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: account.id,
-      mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
-      targetMessageId: null,
-      requestJson: JSON.stringify({
-        folderId: scheduledFolder.id,
-        isSubscribed: false,
-        managedBy: 'scheduledMailbox',
-      }),
-      optimisticPatchJson: null,
-    });
-
-    await reconcileScheduledSubscription(handlers, account.id);
-    await reconcileScheduledSubscription(handlers, account.id);
-
-    expect(await subscriptionMutations()).toEqual([
-      {
-        folderId: scheduledFolder.id,
-        isSubscribed: true,
-        managedBy: 'scheduledMailbox',
-      },
-    ]);
-  });
-
-  it('queues a compensating subscribe behind an in-flight unsubscribe', async () => {
-    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-      accountId: account.id,
-      mutationType: MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION,
-      targetMessageId: null,
-      requestJson: JSON.stringify({
-        folderId: scheduledFolder.id,
-        isSubscribed: false,
-        managedBy: 'scheduledMailbox',
-      }),
-      optimisticPatchJson: null,
-    });
-    const [unsubscribe] = await pendingMutations(MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION);
-    await engine.run(
-      "UPDATE pending_mutations SET local_status = 'in_flight' WHERE id = ?",
-      [unsubscribe.id],
-    );
-
-    await reconcileScheduledSubscription(handlers, account.id);
-
-    expect(await subscriptionMutations()).toEqual([
-      {
-        folderId: scheduledFolder.id,
-        isSubscribed: false,
-        managedBy: 'scheduledMailbox',
-      },
-      {
-        folderId: scheduledFolder.id,
-        isSubscribed: true,
-        managedBy: 'scheduledMailbox',
-      },
-    ]);
-  });
-});
-
-describe('ensureScheduledMailbox', () => {
-  it('creates the managed mailbox subscribed', async () => {
-    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
-    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-      accountId: account.id,
-      patch: { scheduledMailboxRemoteId: null },
-    });
-    let create: any = null;
-    const t = new MockTransport();
-    t.handle('Mailbox/query', () => ({
-      ids: [],
-      position: 0,
-      total: 0,
-      canCalculateChanges: false,
-      queryState: 'mq-empty',
-    }));
-    t.handle('Mailbox/get', () => ({
-      list: [],
-      notFound: [],
-      state: 'mg-empty',
-    }));
-    t.handle('Mailbox/set', (params) => {
-      create = params.create;
-      return {
-        created: { 'stormbox-scheduled': { id: 'mb-created' } },
-        newState: 'ms-created',
-      };
-    });
-
-    await expect(ensureScheduledMailbox({
-      transport: t,
-      account,
-      handlers,
-    })).resolves.toBe('mb-created');
-
-    expect(create['stormbox-scheduled']).toMatchObject({
-      name: 'Scheduled',
-      parentId: null,
-      isSubscribed: true,
-    });
-    expect(await engine.get(
-      'SELECT is_subscribed FROM folders WHERE account_id = ? AND remote_id = ?',
-      [account.id, 'mb-created'],
-    )).toMatchObject({ is_subscribed: 1 });
-  });
-
-  it('preserves synced folder counts and rights when refreshing the cached mailbox', async () => {
+  it('returns the local role folder without contacting the server', async () => {
     await engine.run(
       `UPDATE folders
           SET total_emails = 7, unread_emails = 3, sort_order = 9,
@@ -661,10 +566,12 @@ describe('ensureScheduledMailbox', () => {
         WHERE id = ?`,
       [scheduledFolder.id],
     );
-    const t = submissionTransport([]);
+    const t = new MockTransport();
 
-    await ensureScheduledMailbox({ transport: t, account, handlers });
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .resolves.toBe('mb-sched');
 
+    expect(t.requests).toEqual([]);
     expect(await engine.get('SELECT * FROM folders WHERE id = ?', [scheduledFolder.id]))
       .toMatchObject({
         total_emails: 7,
@@ -675,66 +582,106 @@ describe('ensureScheduledMailbox', () => {
       });
   });
 
-  it('rejects a cached id whose mailbox does not have the Scheduled shape', async () => {
-    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
-      accountId: account.id,
-      folders: [{
-        remoteId: 'mb-wrong',
-        name: 'Archive',
-        role: 'archive',
-        isSubscribed: true,
-      }],
-    });
-    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-      accountId: account.id,
-      patch: { scheduledMailboxRemoteId: 'mb-wrong' },
-    });
-    const t = new MockTransport();
-    t.handle('Mailbox/query', () => ({
-      ids: ['mb-sched'],
-      position: 0,
-      total: 1,
-      canCalculateChanges: false,
-      queryState: 'mq',
-    }));
-    t.handle('Mailbox/get', (params) => ({
-      list: (params.ids ?? []).map((id) => (
-        id === 'mb-sched'
-          ? {
-              id,
-              name: 'Scheduled',
-              parentId: null,
-              role: null,
-              isSubscribed: true,
-            }
-          : {
-              id,
-              name: 'Archive',
-              parentId: null,
-              role: 'archive',
-              isSubscribed: true,
-            }
-      )),
-      notFound: [],
-      state: 'mg',
-    }));
+  it('adopts the server role folder and mirrors it locally', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    const t = serverMailboxes([
+      { id: 'mb-role', name: 'Later', parentId: null, role: 'scheduled', isSubscribed: false },
+    ]);
 
-    await expect(ensureScheduledMailbox({
-      transport: t,
-      account,
-      handlers,
-    })).resolves.toBe('mb-sched');
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .resolves.toBe('mb-role');
 
-    const settings = await handlers[DB_RPC.SETTINGS_GET]({ accountId: account.id });
-    expect(settings.doc.settings.scheduledMailboxRemoteId).toBe('mb-sched');
+    expect(mailboxSets(t)).toEqual([]);
+    expect(await folderRow('mb-role')).toMatchObject({
+      role: 'scheduled',
+      parent_id: null,
+      is_subscribed: 0,
+      is_deleted: 0,
+    });
   });
 
-  it('pages past nested name matches before adopting the managed mailbox', async () => {
+  it('creates the mailbox with the scheduled role when the account has none', async () => {
     await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
-    await handlers[DB_RPC.SETTINGS_APPLY_PATCH]({
-      accountId: account.id,
-      patch: { scheduledMailboxRemoteId: null },
+    const t = serverMailboxes([]);
+    t.handle('Mailbox/set', () => ({
+      created: { 'stormbox-scheduled': { id: 'mb-created' } },
+      newState: 'ms-created',
+    }));
+
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .resolves.toBe('mb-created');
+
+    expect(mailboxSets(t)).toEqual([{
+      accountId: account.remote_account_id,
+      create: {
+        'stormbox-scheduled': {
+          name: 'Scheduled',
+          role: 'scheduled',
+          parentId: null,
+          isSubscribed: true,
+        },
+      },
+    }]);
+    expect(await folderRow('mb-created')).toMatchObject({
+      name: 'Scheduled',
+      role: 'scheduled',
+      is_subscribed: 1,
     });
+  });
+
+  it('adopts a roleless top-level Scheduled mailbox by setting its role', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    const t = serverMailboxes([
+      { id: 'mb-legacy', name: 'Scheduled', parentId: null, role: null, isSubscribed: true },
+    ]);
+    t.handle('Mailbox/set', ({ update }) => ({
+      updated: Object.fromEntries(Object.keys(update ?? {}).map((id) => [id, null])),
+      newState: 'ms-adopted',
+    }));
+
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .resolves.toBe('mb-legacy');
+
+    expect(mailboxSets(t)).toEqual([{
+      accountId: account.remote_account_id,
+      update: { 'mb-legacy': { role: 'scheduled' } },
+    }]);
+    expect(await folderRow('mb-legacy')).toMatchObject({ role: 'scheduled', is_subscribed: 1 });
+  });
+
+  it('adopts the winner of a lost creation race', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    const mailboxes: any[] = [];
+    const t = serverMailboxes(mailboxes);
+    t.handle('Mailbox/set', () => {
+      mailboxes.push({
+        id: 'mb-raced', name: 'Scheduled', parentId: null, role: 'scheduled', isSubscribed: true,
+      });
+      return {
+        notCreated: { 'stormbox-scheduled': { type: 'invalidProperties' } },
+        newState: 'ms-raced',
+      };
+    });
+
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .resolves.toBe('mb-raced');
+    expect(await folderRow('mb-raced')).toMatchObject({ role: 'scheduled' });
+  });
+
+  it('reports a top-level Scheduled mailbox with another role as a terminal conflict', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
+    const t = serverMailboxes([
+      { id: 'mb-other', name: 'Scheduled', parentId: null, role: 'archive', isSubscribed: true },
+    ]);
+
+    await expect(ensureScheduledMailbox({ transport: t, account, handlers }))
+      .rejects.toMatchObject({ type: 'scheduledMailboxConflict', terminal: true });
+    expect(mailboxSets(t)).toEqual([]);
+    expect(await folderRow('mb-other')).toBeFalsy();
+  });
+
+  it('pages past nested name matches before adopting the roleless mailbox', async () => {
+    await engine.run('DELETE FROM folders WHERE id = ?', [scheduledFolder.id]);
     const mailboxes = [
       {
         id: 'mb-nested',
@@ -759,17 +706,25 @@ describe('ensureScheduledMailbox', () => {
         },
       },
     });
-    t.handle('Mailbox/query', ({ position }) => ({
-      ids: mailboxes.slice(position, position + 1).map((mailbox) => mailbox.id),
-      position,
-      limit: 1,
-      total: mailboxes.length,
-      queryState: 'mailboxes-1',
-    }));
+    t.handle('Mailbox/query', ({ filter, position }) => (
+      filter?.role != null
+        ? mailboxPage([])
+        : {
+            ids: mailboxes.slice(position, position + 1).map((mailbox) => mailbox.id),
+            position,
+            limit: 1,
+            total: mailboxes.length,
+            queryState: 'mailboxes-1',
+          }
+    ));
     t.handle('Mailbox/get', ({ ids }) => ({
       list: mailboxes.filter((mailbox) => ids.includes(mailbox.id)),
       notFound: [],
       state: 'mailboxes-state-1',
+    }));
+    t.handle('Mailbox/set', () => ({
+      updated: { 'mb-managed': null },
+      newState: 'ms-adopted',
     }));
 
     await expect(ensureScheduledMailbox({
@@ -780,7 +735,7 @@ describe('ensureScheduledMailbox', () => {
 
     const positions = t.requests
       .flatMap((request) => request.methodCalls)
-      .filter(([method]) => method === 'Mailbox/query')
+      .filter(([method, params]) => method === 'Mailbox/query' && params.filter?.name)
       .map(([, params]) => params.position);
     expect(positions).toEqual([0, 1]);
   });

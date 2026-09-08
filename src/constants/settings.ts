@@ -28,8 +28,6 @@ export interface Settings {
   shortcutScheme: ShortcutScheme;
   /** Client-selected JMAP Identity id used as the default From address. */
   primaryIdentityRemoteId: string | null;
-  /** Cached JMAP id for the managed top-level `Scheduled` mailbox. */
-  scheduledMailboxRemoteId: string | null;
   /** IANA time zone used to interpret scheduled-send wall times. */
   timeZone: string;
 }
@@ -39,7 +37,6 @@ export const SETTING_DEFAULTS: Readonly<Settings> = {
   palette: 'classic',
   shortcutScheme: 'web',
   primaryIdentityRemoteId: null,
-  scheduledMailboxRemoteId: null,
   timeZone: detectTimeZone(),
 };
 
@@ -51,8 +48,6 @@ const SETTING_VALIDATORS: {
   shortcutScheme: (value): value is ShortcutScheme =>
     (SHORTCUT_SCHEME_VALUES as readonly unknown[]).includes(value),
   primaryIdentityRemoteId: (value): value is string | null =>
-    value === null || (typeof value === 'string' && value.length > 0),
-  scheduledMailboxRemoteId: (value): value is string | null =>
     value === null || (typeof value === 'string' && value.length > 0),
   timeZone: isUsableTimeZone,
 };

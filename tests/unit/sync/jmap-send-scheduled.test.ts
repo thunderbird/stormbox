@@ -85,7 +85,7 @@ function scheduledSendTransport(session = sessionWithSubmission()) {
       id,
       name: id === 'mb-sched' ? 'Scheduled' : id,
       parentId: null,
-      role: null,
+      role: id === 'mb-sched' ? 'scheduled' : null,
       isSubscribed: false,
     })),
     notFound: [],
@@ -186,9 +186,9 @@ describe('scheduled send (shared SEND operation)', () => {
     // acceptance.
     expect(submit.onSuccessUpdateEmail).toBeUndefined();
 
-    // Local outcome: pending scheduling columns on a normal cached row,
-    // filed in the Scheduled folder, and a subscribe enqueued because
-    // the mailbox was hidden.
+    // Local outcome: pending scheduling columns on a normal cached row
+    // filed in the Scheduled folder. The role folder is always shown, so
+    // no subscription mutation is enqueued for it.
     const row = await engine.get(
       "SELECT * FROM messages WHERE account_id = ? AND remote_id = 'em-new'",
       [account.id],
@@ -203,13 +203,7 @@ describe('scheduled send (shared SEND operation)', () => {
       'SELECT request_json FROM pending_mutations WHERE account_id = ? AND mutation_type = ?',
       [account.id, MUTATION_TYPE.SET_MAILBOX_SUBSCRIPTION],
     );
-    expect(subs.map((s) => JSON.parse(s.request_json))).toEqual([
-      {
-        folderId: scheduled.id,
-        isSubscribed: true,
-        managedBy: 'scheduledMailbox',
-      },
-    ]);
+    expect(subs).toEqual([]);
   });
 
   it.each([

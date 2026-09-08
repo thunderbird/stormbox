@@ -17,6 +17,12 @@ describe('folderPresentation', () => {
     expect(trash.color).toBe('#5f6368');
   });
 
+  it('gives the scheduled role its own icon and accent', () => {
+    const scheduled = folderPresentation({ role: 'scheduled', name: 'Scheduled' });
+    expect(scheduled.icon).toMatch(/<svg/);
+    expect(scheduled.color).toBe('#0e7490');
+  });
+
   it('falls back to the named-folder map for non-role folders', () => {
     const newsletters = folderPresentation({ role: null, name: 'Newsletters' });
     const feeds = folderPresentation({ role: null, name: 'Feeds' });
@@ -33,7 +39,8 @@ describe('folderPresentation', () => {
 describe('folderSortKey', () => {
   it('orders inbox first, drafts/sent/archive next, junk and trash last among role folders', () => {
     expect(folderSortKey({ role: 'inbox' })).toBeLessThan(folderSortKey({ role: 'drafts' }));
-    expect(folderSortKey({ role: 'drafts' })).toBeLessThan(folderSortKey({ role: 'sent' }));
+    expect(folderSortKey({ role: 'drafts' })).toBeLessThan(folderSortKey({ role: 'scheduled' }));
+    expect(folderSortKey({ role: 'scheduled' })).toBeLessThan(folderSortKey({ role: 'sent' }));
     expect(folderSortKey({ role: 'sent' })).toBeLessThan(folderSortKey({ role: 'archive' }));
     expect(folderSortKey({ role: 'archive' })).toBeLessThan(folderSortKey({ role: 'junk' }));
     expect(folderSortKey({ role: 'junk' })).toBeLessThan(folderSortKey({ role: 'trash' }));
@@ -89,6 +96,7 @@ describe('isMainFolder', () => {
     expect(isMainFolder({ role: 'inbox' })).toBe(true);
     expect(isMainFolder({ role: 'sent' })).toBe(true);
     expect(isMainFolder({ role: 'drafts' })).toBe(true);
+    expect(isMainFolder({ role: 'scheduled' })).toBe(true);
     expect(isMainFolder({ role: 'archive' })).toBe(true);
     expect(isMainFolder({ role: 'trash' })).toBe(true);
     expect(isMainFolder({ role: 'junk' })).toBe(true);

@@ -15,8 +15,9 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 - A **scheduled Email** is the ordinary JMAP `Email` held before release.
 - A **scheduled submission** is the corresponding JMAP `EmailSubmission`
   created with an RFC 4865 `HOLDFOR` envelope parameter.
-- The **Scheduled mailbox** is a real, top-level, roleless JMAP Mailbox named
-  `Scheduled`, exactly as conventional IMAP clients see it.
+- The **Scheduled mailbox** is the JMAP Mailbox carrying the `scheduled` role
+  (RFC 9979 §8.2), a real top-level mailbox that conventional IMAP clients see
+  by its name, `Scheduled`.
 - The **target instant** is the absolute UTC instant derived from a wall time
   and IANA time zone.
 
@@ -134,21 +135,23 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 
 ## 4. Scheduled mailbox and submission synchronization
 
-- **SL-4.1 — Real mailbox shape.** Stormbox shall discover or create exactly
-  one top-level, roleless Mailbox named `Scheduled`. A top-level mailbox
-  carrying that name with a conflicting shape shall fail scheduling tersely
-  rather than be adopted or duplicated.
-- **SL-4.2 — Canonical id.** The mailbox's remote id shall be cached in the
-  account's synced `scheduledMailboxRemoteId` setting; after discovery the
-  cached id is canonical and every consumer shall compare against it through
-  one shared predicate. Name matching is bootstrap and recovery only, and a
-  stale cached id shall be re-verified against the server before reuse.
-- **SL-4.3 — Permanent subscription.** Stormbox shall create the mailbox
-  subscribed and keep its `isSubscribed` flag true after discovery. The
-  idempotent reconciler shall repair an unsubscribed cached mailbox and rewrite
-  any queued opposite subscription mutation so an old retry cannot hide it.
-  Reconciliation failure shall never fail the send or cancel that triggered
-  it.
+- **SL-4.1 — Role mailbox.** The Scheduled mailbox is the account's `scheduled`
+  role Mailbox (RFC 9979 §8.2). Stormbox shall use a server-provided one as-is
+  and otherwise create it on the first scheduled send as a top-level,
+  subscribed Mailbox named `Scheduled` with `role: "scheduled"`. A top-level
+  roleless Mailbox already named `Scheduled` shall be adopted by setting the
+  role on it; a top-level `Scheduled` carrying any other role shall fail
+  scheduling tersely rather than be adopted or duplicated.
+- **SL-4.2 — Role is the identity.** Every consumer — filing, cancellation,
+  synchronization, sorting, presentation, and capabilities — shall identify the
+  mailbox by `role === "scheduled"` on the synced folder row, exactly as for
+  Drafts or Sent. No cached id, name match, or client-side decoration shall
+  stand in for the role; name matching exists only to adopt a roleless
+  mailbox under SL-4.1.
+- **SL-4.3 — Visibility through the role.** As a role folder the mailbox is
+  always shown in the folder pane and in Manage Folders regardless of its
+  `isSubscribed` flag (SL-5.1), so Stormbox shall not enqueue subscription
+  mutations to keep it visible.
 - **SL-4.4 — Stalwart-compatible reads.** All submission reads shall use one
   unfiltered `EmailSubmission/query` plus explicit `EmailSubmission/get(ids)`
   with client-side filtering, never Stalwart's unreliable `undoStatus` query
@@ -172,13 +175,14 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 
 ## 5. Scheduled folder presentation
 
-- **SL-5.1 — Permanent visibility.** Once discovered or created, the Scheduled
-  folder shall remain in the folder pane while empty as well as while
-  schedules are active. Stormbox shall not hide it after cancellation or
+- **SL-5.1 — Permanent visibility.** Once the role folder exists, the
+  Scheduled folder shall remain in the folder pane while empty as well as
+  while schedules are active. Stormbox shall not hide it after cancellation or
   release of the last schedule.
-- **SL-5.2 — Placement.** The folder shall render as a special folder between
-  Drafts and Sent, with its own icon, and shall not be renameable, deletable,
-  reparentable, or usable as an ordinary move/copy target.
+- **SL-5.2 — Placement.** The folder shall render as a default folder between
+  Drafts and Sent, with its own icon, protected like the other role folders
+  (not renameable, deletable, reparentable, or subscribable) and additionally
+  not usable as an ordinary move/copy target.
 - **SL-5.3 — Normal list machinery.** Opening Scheduled shall use the same
   mailbox-window query, `messages` rows, and message-list component as every
   other real folder. There shall be no synthetic folder ids, synthetic message
@@ -288,15 +292,16 @@ later.
 ## Verification map
 
 - Unit: `tests/unit/sync/jmap-send-scheduled.test.ts` (scheduled branch of the
-  shared send), `jmap-submissions.test.ts` (synchronizer + subscription
-  reconciler), `jmap-cancel-scheduled-send.test.ts` (durable cancel),
+  shared send), `jmap-submissions.test.ts` (synchronizer + role-folder
+  discovery, adoption, and creation), `jmap-cancel-scheduled-send.test.ts`
+  (durable cancel),
   `jmap-backend-submissions.test.ts` (sync triggers and wake-up),
   `jmap-schedule-capability.test.ts`, `jmap-schedule-time.test.ts`, and
   `tests/unit/utils/schedule-time.test.ts` (DST/timezone), plus compose-store,
   settings-store, ScheduleSendDialog, and ComposeDialog tests.
 - Live Stalwart: `tests/integration/send-later-live.test.ts` covers the target
   instant on `Email.sentAt`, the raw MIME `Date` header, and
-  `EmailSubmission.sendAt`; permanent subscription; pre-release cancellation
+  `EmailSubmission.sendAt`; role-folder placement; pre-release cancellation
   to Drafts with no delivery; short-delay release through delivery, Sent
   filing, and cleared tracking (with an attachment); and fresh-client adoption
   of an externally created schedule.

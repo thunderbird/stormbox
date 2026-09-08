@@ -19,10 +19,7 @@
 import { DB_RPC } from '../../../../../db/protocol';
 import { callJmap, pickResponse } from '../../invoke';
 import { scheduleClockWindow } from '../../schedule-time';
-import {
-  readScheduledMailboxRemoteId,
-  reconcileScheduledSubscription,
-} from '../../scheduled-mailbox';
+import { scheduledMailboxRemoteId } from '../../scheduled-mailbox';
 import { fetchSubmissionRecords, pickRecordForRow } from '../../submissions';
 import { JMAP_CAPS } from '../../transport';
 import { extractMethodError } from '../errors';
@@ -42,7 +39,7 @@ async function resolveClearedCancel(
   accountId: number,
   messageId: number,
 ): Promise<{ ok: boolean; error?: any; result?: any }> {
-  const scheduledRemoteId = await readScheduledMailboxRemoteId(handlers, accountId);
+  const scheduledRemoteId = await scheduledMailboxRemoteId(handlers, accountId);
   const placements = await handlers[DB_RPC.QUERY]({
     sql: `SELECT f.role, f.remote_id
             FROM folder_messages fm
@@ -215,7 +212,7 @@ async function runCancelScheduledSend({
   if (!drafts?.remote_id) {
     return { ok: false, error: { type: 'unknownFolder', terminal: true } };
   }
-  const scheduledRemoteId = await readScheduledMailboxRemoteId(handlers, account.id);
+  const scheduledRemoteId = await scheduledMailboxRemoteId(handlers, account.id);
   const patch: Record<string, boolean | null> = {
     [`mailboxIds/${drafts.remote_id}`]: true,
     'keywords/$draft': true,
@@ -284,7 +281,6 @@ async function runCancelScheduledSend({
   if (!reconciled.gone) {
     await setScheduledColumns(handlers, account.id, message.remote_id, null);
   }
-  await reconcileScheduledSubscription(handlers, account.id);
   return { ok: true, result: { canceled: true } };
 }
 

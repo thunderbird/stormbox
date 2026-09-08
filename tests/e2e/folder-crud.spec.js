@@ -42,18 +42,37 @@ const BULK_A = 'BulkCrudA';
 const BULK_B = 'BulkCrudB';
 const SWEEP_SUBJECT = 'CrudSeed e2e';
 const SCHEDULED_NAME = 'Scheduled';
+const SCHEDULED_ROLE = 'scheduled';
 
-async function getServerMailboxByName(jmap, name) {
+async function listServerMailboxes(jmap) {
   const payload = await jmapRequest(jmap, [[
     'Mailbox/get',
     {
       accountId: jmap.accountId,
       properties: ['id', 'name', 'role', 'parentId'],
     },
-    'mailboxByName',
+    'mailboxList',
   ]]);
-  return pickResponse(payload, 'Mailbox/get')?.list
-    ?.find((mailbox) => mailbox.name === name && mailbox.parentId == null) ?? null;
+  return pickResponse(payload, 'Mailbox/get')?.list ?? [];
+}
+
+async function getServerMailboxByName(jmap, name) {
+  return (await listServerMailboxes(jmap))
+    .find((mailbox) => mailbox.name === name && mailbox.parentId == null) ?? null;
+}
+
+async function getServerMailboxByRole(jmap, role) {
+  return (await listServerMailboxes(jmap)).find((mailbox) => mailbox.role === role) ?? null;
+}
+
+async function localFolderRole(page, remoteId) {
+  return page.evaluate(async (id) => {
+    if (!globalThis.__repo) throw new Error('Repository is unavailable');
+    const [account] = await globalThis.__repo.listAccounts();
+    if (!account) throw new Error('Primary account is unavailable');
+    const folders = await globalThis.__repo.listFolders(account.id);
+    return folders.find((folder) => folder.remote_id === id)?.role ?? null;
+  }, remoteId);
 }
 
 async function destroyEmptyServerMailbox(jmap, mailboxId) {
@@ -70,25 +89,6 @@ async function destroyEmptyServerMailbox(jmap, mailboxId) {
   if (set?.destroyed?.includes(mailboxId)) return true;
   if (set?.notDestroyed?.[mailboxId]) return false;
   throw new Error(`Mailbox/set did not clean up Scheduled: ${JSON.stringify(set)}`);
-}
-
-async function readScheduledMailboxRemoteId(page) {
-  return page.evaluate(async () => {
-    if (!globalThis.__repo) throw new Error('Repository is unavailable');
-    const [account] = await globalThis.__repo.listAccounts();
-    if (!account) throw new Error('Primary account is unavailable');
-    const settings = await globalThis.__repo.getSettings(account.id);
-    return settings?.doc?.settings?.scheduledMailboxRemoteId ?? null;
-  });
-}
-
-async function setScheduledMailboxRemoteId(page, remoteId) {
-  await page.evaluate(async (scheduledMailboxRemoteId) => {
-    if (!globalThis.__repo) throw new Error('Repository is unavailable');
-    const [account] = await globalThis.__repo.listAccounts();
-    if (!account) throw new Error('Primary account is unavailable');
-    await globalThis.__repo.applySettingsPatch(account.id, { scheduledMailboxRemoteId });
-  }, remoteId);
 }
 
 async function destroyServerMailboxByName(jmap, name) {
@@ -311,24 +311,24 @@ test.describe('Folder create/rename/delete e2e', () => {
 
   test('default folders, Scheduled included, sit under the account heading with no controls', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
-    const previousScheduledRemoteId = await readScheduledMailboxRemoteId(page);
     let scheduledMailbox = null;
     let createdScheduled = false;
     const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
     try {
-      const existingScheduled = await getServerMailboxByName(jmap, SCHEDULED_NAME);
-      scheduledMailbox = await ensureMailbox(jmap, { name: SCHEDULED_NAME });
+      // Stormbox only creates the Scheduled role folder on the first
+      // scheduled send, so seed it here when the account lacks one.
+      const existingScheduled = await getServerMailboxByRole(jmap, SCHEDULED_ROLE)
+        ?? await getServerMailboxByName(jmap, SCHEDULED_NAME);
+      scheduledMailbox = await ensureMailbox(jmap, { name: SCHEDULED_NAME, role: SCHEDULED_ROLE });
       createdScheduled = scheduledMailbox.id !== existingScheduled?.id;
-      expect(scheduledMailbox).toMatchObject({
-        name: SCHEDULED_NAME,
-        role: null,
-        parentId: null,
-      });
-      // The roleless mailbox's synced remote id is its canonical managed identity.
-      if (scheduledMailbox.id !== previousScheduledRemoteId) {
-        await setScheduledMailboxRemoteId(page, scheduledMailbox.id);
-        await waitForPendingMutations(page);
-      }
+      expect(scheduledMailbox).toMatchObject({ role: SCHEDULED_ROLE, parentId: null });
+      // A legacy roleless Scheduled is already in the sidebar as a user
+      // folder, so wait for the role itself to sync before opening the
+      // dialog, or the default block reflows mid-assertion.
+      await expect.poll(
+        () => localFolderRole(page, scheduledMailbox.id),
+        { timeout: 30_000 },
+      ).toBe(SCHEDULED_ROLE);
       await expect(
         page.locator('.folder-node__name').filter({ hasText: /^Scheduled$/ }),
       ).toBeVisible({ timeout: 30_000 });
@@ -366,11 +366,7 @@ test.describe('Folder create/rename/delete e2e', () => {
         await page.keyboard.press('Escape').catch(() => {});
       }
       if (createdScheduled && scheduledMailbox) {
-        const destroyed = await destroyEmptyServerMailbox(jmap, scheduledMailbox.id);
-        if (destroyed) {
-          await setScheduledMailboxRemoteId(page, previousScheduledRemoteId);
-          await waitForPendingMutations(page);
-        }
+        await destroyEmptyServerMailbox(jmap, scheduledMailbox.id);
       }
       await attachConsoleTail(testInfo, consoleLinesFor(page));
     }

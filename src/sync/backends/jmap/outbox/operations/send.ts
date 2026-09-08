@@ -23,11 +23,7 @@ import {
 import { findEmailByMessageId, findSubmissionEvidence } from '../../send-reconcile';
 import { requireScheduleCapability } from '../../schedule-capability';
 import { computeHoldFor, scheduledSendAtOf } from '../../schedule-time';
-import {
-  ensureScheduledMailbox,
-  readScheduledMailboxRemoteId,
-  reconcileScheduledSubscription,
-} from '../../scheduled-mailbox';
+import { ensureScheduledMailbox, scheduledMailboxRemoteId } from '../../scheduled-mailbox';
 import { JMAP_CAPS } from '../../transport';
 import {
   extractMethodError,
@@ -364,7 +360,7 @@ async function runSend({
   // A scheduled message is created in the real Scheduled mailbox, not
   // Outbox/Drafts. The mailbox is resolved (or created) before anything
   // irreversible happens, so a failure here simply retries; rows already
-  // past the create use the settings-cached id instead and never fail on
+  // past the create read the local role folder instead and never fail on
   // this step.
   if (scheduledAt && !checkpoint.emailRemoteId) {
     try {
@@ -947,7 +943,7 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
     : checkpoint;
   try {
     if (scheduledAt) {
-      filingRemoteId = await readScheduledMailboxRemoteId(handlers, account.id);
+      filingRemoteId = await scheduledMailboxRemoteId(handlers, account.id);
     }
     currentCheckpoint = rowId != null && currentCheckpoint
       ? await saveCheckpoint(
@@ -973,7 +969,6 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
                 submissionRemoteId === 'reconciled' ? null : submissionRemoteId,
               undoStatus: 'pending',
             });
-            await reconcileScheduledSubscription(handlers, account.id);
           }
         : undefined,
     });

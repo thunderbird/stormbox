@@ -80,11 +80,10 @@ async function submissionsForEmails(jmap, emailIds) {
     .filter((submission) => wanted.has(submission.emailId));
 }
 
+/** The account's `scheduled` role mailbox (RFC 9979), or null before the first scheduled send. */
 async function scheduledMailboxOf(jmap) {
   const mailboxes = await listMailboxes(jmap);
-  return mailboxes.find(
-    (mailbox) => mailbox.name === 'Scheduled' && !mailbox.role && !mailbox.parentId,
-  ) ?? null;
+  return mailboxes.find((mailbox) => mailbox.role === 'scheduled') ?? null;
 }
 
 async function cleanupSendLaterArtifacts(jmap) {

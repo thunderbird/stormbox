@@ -53,24 +53,28 @@ serves the active-schedule queries.
 
 ## The Scheduled mailbox
 
-`src/sync/backends/jmap/scheduled-mailbox.ts` manages a normal, visible,
-top-level, roleless mailbox named `Scheduled` — the same folder Fastmail
-exposes. Discovery order: the remote id cached in the synced settings document
-(`scheduledMailboxRemoteId`), verified against the server before reuse; then a
-name match on the exact top-level shape; then creation. The cached id is
-canonical once discovered, and `isScheduledMailbox` in
-`src/constants/scheduled-mailbox.ts` is the one predicate every consumer
-(folder presentation, capabilities, sort selection, view gating) compares
-through. A top-level `Scheduled` with a conflicting shape fails scheduling
-tersely rather than commandeering a user folder.
+The Scheduled mailbox is the account's `scheduled` role Mailbox (RFC 9979
+§8.2): a normal, visible, top-level mailbox that the regular Mailbox sync
+mirrors into `folders` with `role = 'scheduled'`. Every consumer — filing,
+cancellation, the synchronizer, sort selection, folder presentation, and
+`src/utils/folder-capabilities.ts` — identifies it by that role, exactly like
+Drafts or Sent; there is no cached id, name predicate, or client-side
+decoration.
 
-The mailbox is created subscribed and stays visible when empty.
-`reconcileScheduledSubscription` idempotently repairs an unsubscribed cached
-mailbox and rewrites queued opposite subscription writes before they can hide
-it. It reuses the durable `SET_MAILBOX_SUBSCRIPTION` mutation when a server
-write is needed. The reconciler is best-effort by design — it only controls
-visibility, and every caller sits past a point of no return where a cosmetic
-failure must not fail the row.
+Stalwart does not create the role folder by default, so
+`src/sync/backends/jmap/scheduled-mailbox.ts` resolves it on the first
+scheduled send. `ensureScheduledMailbox` checks the local role folder, then
+`Mailbox/query { role: "scheduled" }` on the server, then adopts a top-level
+roleless mailbox named `Scheduled` by patching the role onto it (a same-named
+sibling cannot be created), and finally creates `Scheduled` with
+`role: "scheduled"`, subscribed. A lost creation race re-runs discovery. A
+top-level `Scheduled` carrying a different role fails scheduling tersely
+rather than commandeering a user folder. The mailbox is mirrored locally right
+away so filing works before the next Mailbox sync; the sync refreshes counts
+and subscription afterwards.
+
+As a role folder it is always shown in the sidebar and Manage Folders
+regardless of `isSubscribed`, so nothing manages its subscription.
 
 ## Submission synchronization
 
@@ -98,7 +102,7 @@ Each pass:
   enqueues `CANCEL_SCHEDULED_SEND` for Drafts restoration. Scheduling columns
   clear only after placement confirms, so a crash repeats an idempotent move
   instead of stranding a released message;
-- keeps the mailbox subscribed and reports the nearest pending target.
+- reports the nearest pending target.
 
 Triggers (in `src/sync/backends/jmap/backend.ts`): `EmailSubmission`
 StateChange, connect/reconnect, Scheduled-folder open, and one non-durable
@@ -129,10 +133,11 @@ Nothing in synchronization, filing, or cancel ever calls
 
 ## UI reuse
 
-The Scheduled folder is rendered by the normal folder tree, decorated through
-the shared predicate: its own icon, placement between Drafts and Sent, and
-`src/utils/folder-capabilities.ts` restrictions (no rename, delete, reparent,
-child creation, or use as a move/copy target). Opening it runs the same
+The Scheduled folder is rendered by the normal folder tree through the role
+maps in `src/utils/folder-presentation.ts`: its own icon, placement between
+Drafts and Sent, and the `src/utils/folder-capabilities.ts` protections shared
+by every role folder (no rename, delete, reparent, or subscription changes)
+plus its own bar on use as a move/copy target. Opening it runs the same
 mailbox-window query and `MessageList` as every real folder, with one generic
 extension: mailbox-window sorts carry a direction, Scheduled sorts by
 ascending `sentAt` (soonest first), and list rows display the active sort's
@@ -162,5 +167,5 @@ See the verification map in the spec: unit coverage for the scheduled send
 branch, synchronizer, cancel operation, triggers, capability, and DST math;
 live Stalwart verticals in `tests/integration/send-later-live.test.ts`
 (time surfaces, cancellation, release-to-Sent with delivery, external-client
-adoption, permanent subscription); and the browser flow in
+adoption, role-folder placement); and the browser flow in
 `tests/e2e/send-later.spec.js` (Firefox and Chromium).
