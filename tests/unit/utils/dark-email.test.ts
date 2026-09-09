@@ -14,7 +14,7 @@ import {
 } from '../../../src/utils/dark-email';
 import { parseCssColor, contrast } from '../../../src/utils/color';
 
-const DARK_CANVAS = '#11131a';
+const DARK_CANVAS = '#111113';
 
 function withPrefersDarkMatch<T>(matches: boolean, fn: () => T): T {
   const original = window.matchMedia;

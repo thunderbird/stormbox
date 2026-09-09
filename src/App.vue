@@ -877,20 +877,21 @@ function unwatchSystemTheme() {
   --border-soft: color-mix(in srgb, var(--border) 55%, transparent);
   --accent-bg: color-mix(in srgb, var(--accent) 22%, var(--panel2));
   --accent-fg: var(--accent);
-  --space-rail-bg: color-mix(in srgb, var(--panel) 88%, #fff);
+  /* Chrome on the Bolt ramp (assets/styles.css): content on lower, the
+     folder list, popovers and dialogs one step up on base, the rail and top
+     nav on raised. */
+  --space-rail-bg: var(--colour-neutral-raised);
   --space-rail-fg: var(--muted);
-  --folder-list-bg: color-mix(in srgb, var(--panel) 96%, #fff);
+  --folder-list-bg: var(--colour-neutral-base);
   /* Top nav: same 56px band as before, sharing the rail's surface. The
      Bolt palette (assets/bolt-theme.css) re-points these tokens. */
   --top-nav-height: 56px;
   --top-nav-bg: var(--space-rail-bg);
   /* Modal look shared by every dialog (the Welcome modal defines it): a
-     panel with a light hairline and a top sheen over a dark blurred scrim. */
-  --modal-bg: var(--panel);
-  --modal-surface:
-    linear-gradient(180deg, color-mix(in srgb, var(--modal-bg) 95%, #fff), var(--modal-bg) 220px),
-    var(--modal-bg);
-  --modal-border: color-mix(in srgb, var(--border) 78%, #fff);
+     base-surface card with a border edge over a dark blurred scrim. */
+  --modal-bg: var(--colour-neutral-base);
+  --modal-surface: var(--modal-bg);
+  --modal-border: var(--control-border);
   --modal-shadow:
     0 28px 80px color-mix(in srgb, #000 46%, transparent),
     inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
@@ -899,15 +900,14 @@ function unwatchSystemTheme() {
   --top-nav-shadow: transparent;
   --top-nav-wordmark: var(--accent);
   --top-nav-input-bg: var(--surface);
-  --top-nav-popover-bg: color-mix(in srgb, var(--panel) 92%, #fff);
+  --top-nav-popover-bg: var(--colour-neutral-base);
 }
 
 html.light,
 .light {
-  --space-rail-bg: color-mix(in srgb, var(--panel2) 96%, #000);
-  --folder-list-bg: color-mix(in srgb, var(--panel) 97%, #000);
+  /* Light chrome stays darker than the content it frames. */
+  --space-rail-bg: var(--colour-neutral-subtle);
   --top-nav-wordmark: var(--accent);
-  --top-nav-popover-bg: var(--panel2);
 }
 
 .shell {
@@ -923,7 +923,7 @@ html.light,
     minmax(var(--message-view-min-width, 320px), 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   height: var(--app-viewport-height);
-  background: var(--bg);
+  background: var(--panel);
   color: var(--text);
   overflow: hidden;
 }

@@ -147,7 +147,7 @@ function togglePassword() {
   display: grid;
   place-items: center;
   min-height: var(--app-viewport-height);
-  background: var(--bg);
+  background: var(--panel);
   color: var(--text);
   padding: clamp(16px, 6vw, 24px);
 }

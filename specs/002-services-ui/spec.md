@@ -71,11 +71,40 @@ declared on `:root`.
 
 ## Colors
 
+### Surfaces (both themes)
+
+Neutral surfaces are the Bolt surface ramp
+(bolt.thunderbird.net, Foundations → Color → Surface), declared per theme
+in `assets/styles.css` under services-ui's `--colour-neutral-*` names so
+services-ui components share it:
+
+| Token | Dark | Light |
+|---|---|---|
+| `--colour-neutral-lower` | `#111113` | `#f7f7f8` |
+| `--colour-neutral-base` | `#18181b` | `#fcfcfd` |
+| `--colour-neutral-subtle` | `#232326` | `#efeff1` |
+| `--colour-neutral-raised` | `#2b2b2f` | `#ffffff` |
+| `--colour-neutral-deep` | `#3f3f46` | `#e4e4e7` |
+| `--colour-neutral-border` | `#52525b` | `#d9d9de` |
+| `--colour-neutral-border-intense` | `#71717a` | `#a1a1aa` |
+
+`lower`, `base` and `raised` are elevation; `subtle` and `deep` are tints
+(lighter than `base` in dark, darker in light). Stormbox's chrome tokens
+alias the ramp: content (`--panel`) on lower; the folder list, popovers and
+dialogs (`--folder-list-bg`, `--top-nav-popover-bg`, `--modal-bg`) on
+base; the spaces rail and top nav on raised in dark and subtle in light;
+inputs (`--panel2`) on subtle, so a field lifts from a dark surface and
+recesses from a light one; dividers (`--border`) on the nearest tint to the
+surface (subtle in dark, deep in light, ~1.2:1); control and dialog edges
+(`--control-border`, `--modal-border`) on `border`. There is no separate
+page-background token: `body` and the shell paint `--panel`.
+
 ### Light mode
 
-Light mode uses the services-ui palette as shipped. Our own `--accent`
-token is set to `#1373d9` (`--colour-primary-default`) so
-accent-colored Stormbox elements match services-ui buttons.
+Beyond the surfaces above, light mode uses the services-ui palette as
+shipped. Our own `--accent` token is set to `#1373d9`
+(`--colour-primary-default`) so accent-colored Stormbox elements match
+services-ui buttons.
 
 Light-mode warning tokens: `--warn-bg: #fdf4d0`, `--warn-fg: #664700`,
 `--warn-border: #e7c34d`.
@@ -83,12 +112,9 @@ Light-mode warning tokens: `--warn-bg: #fdf4d0`, `--warn-fg: #664700`,
 ### Dark mode
 
 Dark mode keeps the Stormbox palette. `html.dark` re-declares the
-services-ui `--colour-*` tokens (in `assets/styles.css`) so every
-services-ui component renders with our colors:
+remaining services-ui `--colour-*` tokens (in `assets/styles.css`) so
+every services-ui component renders with our colors:
 
-- **Neutrals** alias to our chrome tokens: `--bg #0b0c0f`,
-  `--panel #11131a`, `--border #1e2230`, plus `#08090c` (lower) and
-  `#2a3142` (intense border).
 - **Primary** aliases to our accent `#4f8cff`, with `#16203a` (soft),
   `#5e97ff` (hover), `#3c79e6` (pressed). `--colour-accent-blue` also
   aliases to the accent.

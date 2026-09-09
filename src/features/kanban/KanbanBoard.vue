@@ -316,7 +316,7 @@ defineExpose({ openMessage, columnFolderIds, primaryFolderId });
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--bg);
+  background: var(--panel);
 }
 /* Column one | handle | column two | handle | column three (fills). */
 .kanban-board__scroller {

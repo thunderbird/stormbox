@@ -549,7 +549,7 @@ describe('MessageView HTML body rendering', () => {
     expect(srcdoc).toContain('background: transparent;');
     expect(srcdoc).toContain('color: #e6e8ef;');
     expect(srcdoc).toContain('<p>test</p>');
-    expect(iframe.attributes('style')).toContain('background-color: #11131a');
+    expect(iframe.attributes('style')).toContain('background-color: #111113');
 
     // This is intentionally not a full color-inversion engine.
     expect(srcdoc).not.toMatch(/\bfilter:\s*invert/);

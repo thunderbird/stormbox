@@ -12,8 +12,8 @@
 /* 1. Core tokens ---------------------------------------------------------- */
 
 html.palette-bolt.dark {
-  /* Surfaces: --panel2 = lower, --bg = base, --panel = raised. */
-  --bg: #1a202c;
+  /* Surfaces: --panel2 = lower, --colour-neutral-base = base, --panel = raised. */
+  --colour-neutral-base: #1a202c;
   /* Classic dark paints the wordmark in the logo blue; Bolt keeps it white. */
   --top-nav-wordmark: #fff;
   --panel: #262d3b;
@@ -35,7 +35,7 @@ html.palette-bolt.dark {
 
 html.palette-bolt.light {
   /* Bolt light neutrals: lower #f7f7f7, raised #feffff. */
-  --bg: #f7f7f7;
+  --colour-neutral-base: #f7f7f7;
   --panel: #feffff;
   --panel2: #f7f7f7;
 }
@@ -43,15 +43,16 @@ html.palette-bolt.light {
 /* 2. Surface assignment (tokens defined in App.vue) ------------------------ */
 
 /* Top nav and spaces rail on base; folder list, message list and the quick
-   filter field on lower; popovers on raised. Theme-qualified so these
+   filter field on lower; popovers and dialogs on raised. Theme-qualified so these
    outrank App.vue's html.light block whatever the stylesheet order. */
 html.palette-bolt.dark,
 html.palette-bolt.light {
-  --top-nav-bg: var(--bg);
-  --space-rail-bg: var(--bg);
+  --top-nav-bg: var(--colour-neutral-base);
+  --space-rail-bg: var(--colour-neutral-base);
   --folder-list-bg: var(--panel2);
   --top-nav-input-bg: var(--panel2);
   --top-nav-popover-bg: var(--panel);
+  --modal-bg: var(--panel);
 }
 /* Figma nav frame height (classic stays at 56px). */
 html.palette-bolt {
