@@ -90,14 +90,17 @@ services-ui components share it:
 
 `lower`, `base` and `raised` are elevation; `subtle` and `deep` are tints
 (lighter than `base` in dark, darker in light). Stormbox's chrome tokens
-alias the ramp: content (`--panel`) on lower; the folder list, popovers and
-dialogs (`--folder-list-bg`, `--top-nav-popover-bg`, `--modal-bg`) on
-base; the spaces rail and top nav on raised in dark and subtle in light;
-inputs (`--panel2`) on subtle, so a field lifts from a dark surface and
-recesses from a light one; dividers (`--border`) on the nearest tint to the
-surface (subtle in dark, deep in light, ~1.2:1); control and dialog edges
-(`--control-border`, `--modal-border`) on `border`. There is no separate
-page-background token: `body` and the shell paint `--panel`.
+alias the ramp, and the ladder runs the opposite way in each theme: in dark,
+content (`--panel`) is on lower and the spaces rail and top nav on raised;
+in light, content is on raised (white) and the rail and top nav on lower.
+The folder list, popovers and dialogs (`--folder-list-bg`,
+`--top-nav-popover-bg`, `--modal-bg`) sit on base in both, between content
+and chrome. Inputs (`--panel2`) take subtle, so a field lifts from a dark
+surface and recesses from a light one; dividers (`--border`) are the
+nearest tint to the surface (subtle in dark, deep in light, ~1.2:1);
+control and dialog edges (`--control-border`, `--modal-border`) use
+`border`. There is no separate page-background token: `body` and the shell
+paint `--panel`.
 
 ### Light mode
 
