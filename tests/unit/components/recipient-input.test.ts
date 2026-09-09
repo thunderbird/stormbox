@@ -394,6 +394,28 @@ describe('RecipientInput suggestions', () => {
     expect(pills(wrapper)).toEqual([{ text: 'Bobbie', invalid: false }]);
   });
 
+  it('takes the highlighted suggestion on Tab before leaving the field', async () => {
+    const query = vi.fn(async () => CONTACTS);
+    const wrapper = mountControl({ query });
+
+    await type(wrapper, 'bo');
+    await settle(wrapper);
+    const field = input(wrapper);
+    await field.trigger('keydown', { key: 'ArrowDown' });
+    const event = new window.KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+
+    field.element.dispatchEvent(event);
+    await nextTick();
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(pills(wrapper)).toEqual([{ text: 'Bobbie', invalid: false }]);
+    expect(field.element.value).toBe('');
+  });
+
   it('leaves a composing Enter to the input method', async () => {
     const query = vi.fn(async () => CONTACTS);
     const wrapper = mountControl({ query });

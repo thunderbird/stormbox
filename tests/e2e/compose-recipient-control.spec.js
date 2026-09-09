@@ -312,12 +312,14 @@ test.describe('Recipient control', () => {
     }
   });
 
-  test('leaves Escape able to close the message', async ({ sharedPage: page }) => {
+  test('accepts a Tab suggestion and leaves Escape able to close the message', async ({
+    sharedPage: page,
+  }) => {
     // A list left open on a field the user has moved away from used to make
     // the whole dialog unclosable: the shortcut handler stands down for an
     // expanded combobox, and the control only receives the key when it has
     // focus, so Escape reached nothing at all.
-    const seeded = await seedFindableContact(page, 'Quilla');
+    const seeded = await seedFindableContact(page, `Quilla${Date.now()}`);
     try {
       await openCompose(page);
       const field = recipientInput(page, 'To');
@@ -331,6 +333,8 @@ test.describe('Recipient control', () => {
       // list up.
       await page.keyboard.press('Tab');
       await expect(field).not.toBeFocused();
+      expect(await recipientAddresses(page, 'To')).toEqual([seeded.email]);
+      await expect(invalidRecipients(page, 'To')).toHaveCount(0);
       await expect(
         page.locator('.compose-dialog [role="combobox"][aria-expanded="true"]'),
         'leaving a field takes its list with it',
