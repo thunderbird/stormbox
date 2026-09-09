@@ -364,6 +364,26 @@ describe('App mail layout', () => {
     expect(wrapper.find('.feature-beacons').exists()).toBe(false);
   });
 
+  it('drops the Keyboard Shortcuts section from Welcome in the single-column layout', async () => {
+    window.localStorage?.removeItem(WELCOME_KEY);
+    setWindowWidth(600);
+
+    const wrapper = mountApp();
+    await nextTick();
+
+    expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
+    expect(wrapper.findAll('.feature-card h3')).toHaveLength(6);
+    expect(wrapper.text()).not.toContain('Keyboard Shortcuts');
+    expect(wrapper.find('#welcome-shortcuts').exists()).toBe(false);
+    expect(wrapper.find('.welcome [role="radiogroup"]').exists()).toBe(false);
+    expect(wrapper.find('.welcome__primary').exists()).toBe(true);
+
+    // Widening past the breakpoint brings the section back.
+    setWindowWidth(1280, true);
+    await nextTick();
+    expect(wrapper.find('#welcome-shortcuts').exists()).toBe(true);
+  });
+
   it('closes the welcome modal with Escape when no spotlight is running', async () => {
     window.localStorage?.removeItem(WELCOME_KEY);
 

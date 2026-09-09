@@ -212,10 +212,11 @@ const showMessageView = computed(() =>
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),
 );
+const singleColumnLayout = computed(() => windowWidth.value < SINGLE_COLUMN_WIDTH);
 const shouldUseSingleMailColumn = computed(() =>
   space.value === 'mail'
   && showMessageView.value
-  && windowWidth.value < SINGLE_COLUMN_WIDTH,
+  && singleColumnLayout.value,
 );
 const displayedMessageList = computed(() =>
   !(space.value === 'mail' && shouldUseSingleMailColumn.value),
@@ -500,8 +501,7 @@ function detailPaneVisible() {
 
 function applyResponsiveLayout() {
   const compactLayout = windowWidth.value < COMPACT_READING_WIDTH;
-  const singleColumnLayout = windowWidth.value < SINGLE_COLUMN_WIDTH;
-  const shouldHideFolderList = singleColumnLayout || (compactLayout && detailPaneVisible());
+  const shouldHideFolderList = singleColumnLayout.value || (compactLayout && detailPaneVisible());
   const shouldShowSingleColumn = shouldUseSingleMailColumn.value;
   const willHideFolderList = shouldHideFolderList && !folderListHidden.value;
 
@@ -847,6 +847,7 @@ function unwatchSystemTheme() {
       :active-spotlight="activeSpotlight"
       :progress="spotlightProgress"
       :reduced-motion="spotlightReducedMotion"
+      :single-column="singleColumnLayout"
       @dismiss="dismissWelcomeModal"
       @spotlight="runSpotlight"
       @cancel-spotlight="cancelSpotlight"

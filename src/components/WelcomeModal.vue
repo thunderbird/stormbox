@@ -22,10 +22,13 @@ const props = withDefaults(defineProps<{
   activeSpotlight?: SpotlightId | null;
   progress?: SpotlightProgress | null;
   reducedMotion?: boolean;
+  /** The phone layout has no keyboard, so the shortcuts section is dropped (OB-1.4). */
+  singleColumn?: boolean;
 }>(), {
   activeSpotlight: null,
   progress: null,
   reducedMotion: false,
+  singleColumn: false,
 });
 
 const emit = defineEmits<{
@@ -169,7 +172,11 @@ onBeforeUnmount(() => {
           />
         </section>
 
-        <section class="welcome__section-block" aria-labelledby="welcome-shortcuts">
+        <section
+          v-if="!singleColumn"
+          class="welcome__section-block"
+          aria-labelledby="welcome-shortcuts"
+        >
           <div class="welcome__section-heading welcome__section-heading--shortcuts">
             <Keyboard :size="18" :stroke-width="2" aria-hidden="true" />
             <h2 id="welcome-shortcuts">Keyboard Shortcuts</h2>
@@ -409,12 +416,6 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px 12px;
-}
-
-.welcome__shortcuts-more {
-  display: flex;
-  justify-content: center;
-  margin-top: 10px;
 }
 
 .welcome__shortcut-group {
