@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue';
 import {
   Bold,
   Check,
@@ -974,6 +974,20 @@ function scheduleToolbarOverflowUpdate() {
   void nextTick().then(updateToolbarOverflow);
 }
 
+/**
+ * The toolbar is not a Tab stop: Tab moves from Subject straight into the
+ * body. Every control in it, including the ones inside its menus, leaves
+ * the sequential order; formatting stays reachable by pointer and by the
+ * aria-keyshortcuts each button advertises.
+ */
+function removeToolbarFromTabOrder() {
+  toolbarEl.value
+    ?.querySelectorAll<HTMLElement>('button, summary, input, select, [href]')
+    .forEach((control) => {
+      if (control.tabIndex !== -1) control.tabIndex = -1;
+    });
+}
+
 function observeToolbarSize() {
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
@@ -1125,7 +1139,11 @@ onMounted(() => {
   const initialHtml = pendingHtml ?? props.initialHtml;
   pendingHtml = null;
   initEditor(initialHtml);
+  removeToolbarFromTabOrder();
 });
+
+// Overflow re-renders toolbar groups; new controls need the same treatment.
+onUpdated(removeToolbarFromTabOrder);
 
 onUnmounted(() => {
   window.removeEventListener('resize', scheduleToolbarOverflowUpdate);
@@ -1710,7 +1728,9 @@ defineExpose({
       </div>
     </form>
 
-    <div class="editor-wrap">
+    <!-- Firefox puts scrollable boxes in the Tab sequence; the body inside
+         is the stop, not its scroller. -->
+    <div class="editor-wrap" tabindex="-1">
       <div
         ref="editorEl"
         class="editor"

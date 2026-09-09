@@ -280,7 +280,21 @@ test.describe('Recipient control', () => {
       await expect(page.locator('.toolbar-dropdown:not([open]) .toolbar-more__menu').first())
         .toBeHidden();
 
+      // The From picker and the close control are <summary> elements of
+      // closed dropdowns; Tab leaves them in DOM order rather than wrapping.
+      await page.locator('.compose-dialog .from-picker__summary').focus();
+      await page.keyboard.press('Tab');
+      await expect(recipientInput(page, 'To')).toBeFocused();
+
+      // The formatting toolbar is not a Tab stop: Subject goes straight to the body.
+      await composeSubject(page).focus();
+      await page.keyboard.press('Tab');
+      await expect(page.getByRole('textbox', { name: 'Message body' })).toBeFocused();
+
+      // The schedule trigger is the last stop; Tab from it wraps to the first.
       await composeSendButton(page).focus();
+      await page.keyboard.press('Tab');
+      await expect(page.locator('.compose-dialog .compose-schedule-menu__trigger')).toBeFocused();
       await page.keyboard.press('Tab');
       await expect(page.getByRole('button', { name: 'Minimize' })).toBeFocused();
 

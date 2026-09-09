@@ -140,6 +140,58 @@ describe('useModalFocus', () => {
     opener.remove();
   });
 
+  it('treats a closed <details> summary as a Tab stop and skips tabindex="-1"', async () => {
+    const Harness = defineComponent({
+      setup() {
+        const surface = ref<HTMLElement | null>(null);
+        useModalFocus(surface, { containTab: true, focusOnActivate: false });
+        return () => h('section', { ref: surface, role: 'dialog', tabindex: -1 }, [
+          h('button', { 'data-control': 'first' }, 'First'),
+          h('details', [
+            h('summary', { 'data-control': 'summary' }, 'Menu'),
+            h('button', { 'data-control': 'item' }, 'Item'),
+          ]),
+          h('button', { 'data-control': 'skipped', tabindex: -1 }, 'Skipped'),
+        ]);
+      },
+    });
+
+    const wrapper = mount(Harness, { attachTo: document.body });
+    await nextTick();
+    const first = wrapper.get('[data-control="first"]').element as HTMLButtonElement;
+    const summary = wrapper.get('[data-control="summary"]').element as HTMLElement;
+
+    // Shift+Tab from the summary is not a wrap: it is not the first stop.
+    summary.focus();
+    const back = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+      shiftKey: true,
+    });
+    summary.dispatchEvent(back);
+    expect(back.defaultPrevented).toBe(false);
+
+    // Tab from the summary wraps: it is the last stop, since the item behind
+    // it is hidden and the tabindex="-1" button is out of the sequence.
+    summary.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+    }));
+    expect(document.activeElement).toBe(first);
+
+    // Shift+Tab from the first stop lands on the summary, not the skipped button.
+    first.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      key: 'Tab',
+      shiftKey: true,
+    }));
+    expect(document.activeElement).toBe(summary);
+    wrapper.unmount();
+  });
+
   it('supports a focusable selector override', async () => {
     const Harness = defineComponent({
       setup() {

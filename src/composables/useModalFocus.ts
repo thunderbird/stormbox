@@ -49,11 +49,21 @@ export function useModalFocus(
   let stopWatchingSurface: WatchStopHandle | null = null;
   let stopWatching: WatchStopHandle | null = null;
 
+  // A closed <details> hides its content, not its own <summary>.
+  function inClosedDetails(element: HTMLElement): boolean {
+    const from = element.parentElement instanceof HTMLDetailsElement
+      && element.tagName === 'SUMMARY'
+      ? element.parentElement.parentElement
+      : element;
+    return Boolean(from?.closest('details:not([open])'));
+  }
+
   function focusableElements(container: HTMLElement): HTMLElement[] {
     return [...container.querySelectorAll<HTMLElement>(
       options.focusableSelector ?? DEFAULT_FOCUSABLE_SELECTOR,
     )].filter((element) => {
-      if (element.closest('details:not([open])')) return false;
+      if (element.getAttribute('tabindex') === '-1') return false;
+      if (inClosedDetails(element)) return false;
       if (element.closest('[hidden], [aria-hidden="true"]')) return false;
       if (element.getAttribute('aria-disabled') === 'true') return false;
       const style = window.getComputedStyle(element);

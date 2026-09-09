@@ -711,4 +711,33 @@ describe('RichTextEditor toolbar', () => {
     expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Align left');
     expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Bulleted list');
   });
+
+  it('keeps every toolbar control out of the Tab sequence, including after a re-render', async () => {
+    const wrapper = await mountEditor();
+    const toolbar = wrapper.get('.compose-toolbar').element;
+    const controls = () => [...toolbar.querySelectorAll<HTMLElement>('button, summary, input')];
+
+    expect(controls().length).toBeGreaterThan(10);
+    expect(controls().every((control) => control.tabIndex === -1)).toBe(true);
+
+    // Widening the toolbar re-mounts groups that had overflowed into More.
+    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
+      group.getBoundingClientRect = () => ({ width: 130 } as DOMRect);
+    });
+    (wrapper.get('.toolbar-more').element as any).getBoundingClientRect = () =>
+      ({ width: 70 } as DOMRect);
+    Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 300 });
+    window.dispatchEvent(new Event('resize'));
+    await nextTick();
+    await nextTick();
+    expect(wrapper.find('[data-toolbar-group="alignment"]').exists()).toBe(false);
+
+    Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 2000 });
+    window.dispatchEvent(new Event('resize'));
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.find('[data-toolbar-group="alignment"]').exists()).toBe(true);
+    expect(controls().every((control) => control.tabIndex === -1)).toBe(true);
+  });
 });
