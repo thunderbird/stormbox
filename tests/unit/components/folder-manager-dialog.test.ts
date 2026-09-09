@@ -262,6 +262,43 @@ describe('FolderManagerDialog cascading subscription toggles', () => {
     }
   });
 
+  it('keeps every default folder above Top Level while a default folder subtree is expanded', async () => {
+    const mailStore = useMailStore();
+    seed(mailStore);
+    mailStore.folders = [
+      ...mailStore.folders,
+      makeFolder(2, { name: 'Drafts', role: 'drafts' }),
+      makeFolder(4, { name: 'Sent Items', role: 'sent' }),
+      makeFolder(7, { name: 'Deleted Items', role: 'trash' }),
+      makeFolder(30, { name: 'Receipts', parent_id: 1 }),
+      makeFolder(31, { name: 'Old', parent_id: 30 }),
+    ];
+
+    const wrapper = mountDialog();
+    await nextTick();
+    await expandDefaults(wrapper);
+    await expand(wrapper, 'Inbox');
+    await expand(wrapper, 'Receipts');
+
+    // The Inbox subtree stays inside the default block; the user
+    // folders that follow it are still the ones under Top Level.
+    expect(renderedNames(wrapper)).toEqual([
+      'Inbox', 'Receipts', 'Old', 'Drafts', 'Sent Items', 'Deleted Items', 'Projects', 'Reports',
+    ]);
+    const itemTexts = wrapper
+      .findAll('.folder-subs__item')
+      .map((el) => el.text().replace(/\s+/g, ' ').trim());
+    const rootIdx = itemTexts.findIndex((t) => t.includes('Top Level'));
+    for (const name of ['Inbox', 'Receipts', 'Old', 'Drafts', 'Sent Items', 'Deleted Items']) {
+      expect(itemTexts.findIndex((t) => t.includes(name)), `${name} above Top Level`)
+        .toBeLessThan(rootIdx);
+    }
+    for (const name of ['Projects', 'Reports']) {
+      expect(itemTexts.findIndex((t) => t.includes(name)), `${name} below Top Level`)
+        .toBeGreaterThan(rootIdx);
+    }
+  });
+
   it('allows primary system folders to host child folders', async () => {
     const mailStore = useMailStore();
     seed(mailStore);

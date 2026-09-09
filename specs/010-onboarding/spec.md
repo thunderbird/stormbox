@@ -25,10 +25,10 @@ onboarding state is planned to live in. The architectural invariants in
 
 | # | Area | 🟩 Done | 🟨 Partial | 🟧 Planned |
 |---|---|--:|--:|--:|
-| 1 | Welcome modal | 9 | — | — |
-| 2 | Feature cards and spotlights | 9 | — | — |
+| 1 | Welcome modal | 8 | 1 | — |
+| 2 | Feature cards and spotlights | 8 | 1 | — |
 | 3 | Announcement rounds | 6 | — | — |
-| 4 | Beacons | 12 | — | — |
+| 4 | Beacons | 10 | 2 | — |
 | 5 | Header pill | 5 | — | — |
 | 6 | State and persistence | 4 | — | 7 |
 
@@ -72,7 +72,7 @@ open for review and may change before acceptance.
 | OB-1.6 🟩 Done | Shortcuts shall be listed in three groups — `Find and compose`, `Navigate`, `Message actions` — showing every action bound in the active scheme and omitting actions the scheme leaves unbound. Bindings shall display the current OS's primary modifier per R-3.7. |
 | OB-1.7 🟩 Done | The account avatar menu's `Welcome & shortcuts` action shall reopen the modal for a connected session without changing any onboarding state (R-8.3). Reopening while a beacon round is active shall close any open beacon card and keep the round's progress. |
 | OB-1.8 🟩 Done | While the modal is open, global mail shortcuts shall be inert and beacon dots shall not render. |
-| OB-1.9 🟩 Done | The modal's surface tokens (`--modal-surface`, `--modal-border`, `--modal-shadow`, `--modal-scrim`, `--modal-scrim-blur`) are the reference every other dialog in the product uses, so dialogs read as one family in both themes. The panel shall fit within the viewport at 94vh, reflow the shortcut grid to one column below 820px, and stack the hero lockup below 460px. |
+| OB-1.9 🟨 Partial | The modal's surface tokens (`--modal-surface`, `--modal-border`, `--modal-shadow`, `--modal-scrim`, `--modal-scrim-blur`) are the reference every other dialog in the product uses, so dialogs read as one family in both themes. The panel shall fit within the viewport at 94vh, reflow the shortcut grid to one column below 820px, and stack the hero lockup below 460px. Gap: the composer's backdrop keeps its own rgba scrim instead of `--modal-scrim` / `--modal-scrim-blur`; left as is, the composer is not a member of the dialog family this row describes. |
 
 ## 2. Feature cards and spotlights
 
@@ -85,7 +85,7 @@ open for review and may change before acceptance.
 | OB-2.5 🟩 Done | When a step presses a control, a simulated pointer shall travel to it, show a pressed state, and only then apply the change the press stands for, so the user sees which control caused what happened. Rings shall clear the moment a press or prepared change moves or removes the pressed element; nothing stays highlighted in empty space. |
 | OB-2.6 🟩 Done | Dimming is per script: scripts dim everything outside their rings and stage by default; the Contacts script uses rings alone. The compose script positions the composer directly beneath the caption and never dims it, including its first frame. |
 | OB-2.7 🟩 Done | Spotlights shall act only on tour-owned state: the compose script opens its own empty session, sets the subject without triggering a draft save, and discards that session on completion or cancel; it shall never discard a session the user typed into. The folders script opens and closes Manage Folders; the Contacts script switches to the Contacts space, opens Manage identities, and restores the previous space. No spotlight shall enqueue a server mutation. |
-| OB-2.8 🟩 Done | Escape shall end a running spotlight before it can close the modal; `Done` and Escape both run the script's cleanup exactly once. Focus moves to `Done` while a spotlight runs and returns to the `Show me` that started it when it ends. |
+| OB-2.8 🟨 Partial | Escape shall end a running spotlight before it can close the modal; `Done` and Escape both run the script's cleanup exactly once. Focus moves to `Done` while a spotlight runs and returns to the `Show me` that started it when it ends. Gaps, accepted: during the compose script the composer's own autofocus and the editor demo move focus into the To field or the editor rather than `Done`; a `prepare` step already under way when the script is cancelled runs to its end before cleanup. |
 | OB-2.9 🟩 Done | Under `prefers-reduced-motion: reduce` pointer travel, press, and settle phases collapse to zero, caption transitions are disabled, and the modal's backdrop blur is off; each step's hold time is preserved so the captions can still be read. |
 
 ## 3. Announcement rounds
@@ -106,9 +106,9 @@ open for review and may change before acceptance.
 | OB-4.1 🟩 Done | A beacon declares an id, a CSS selector for the control it sits on, a title, a one- or two-sentence body, an icon, and an optional stage (`composer` or `contacts`). The current round's beacons are: `newMessage` (New Message button), `composeMinimize` and `composeSchedule` (staged in the composer), `contacts` (the Contacts space button), `manageIdentities` (staged in Contacts), and `manageFolders` (the folder list's Manage Folders button). |
 | OB-4.2 🟩 Done | The dot shall be a 10px accent disc with a slow pulsing halo, centred on the anchor's top-right corner, inside a 32px hit target, and clamped to the viewport. Under reduced motion the halo is static. |
 | OB-4.3 🟩 Done | A dot renders only while its beacon is unseen and its anchor is mounted, has a non-zero box on screen, and is not covered by another element at its centre (the composer backdrop over the sidebar, a row scrolled out of its container). Anchors are re-measured on resize, scroll, and DOM mutation, coalesced to one animation frame; the layer's own dots and card never count as cover. |
-| OB-4.4 🟩 Done | Hovering a dot or its anchored control, or moving keyboard focus to a dot, shall preview the card after 150 ms. Leaving shall close a preview after a 250 ms grace unless the pointer moved onto the card. A preview takes no focus and does not gate shortcuts. Touch pointers skip hover handling. |
+| OB-4.4 🟨 Partial | Hovering a dot or its anchored control, or moving keyboard focus to a dot, shall preview the card after 150 ms. Leaving shall close a preview after a 250 ms grace unless the pointer moved onto the card. A preview takes no focus and does not gate shortcuts. Touch pointers skip hover handling. Gap, accepted: the pointer leaving the window altogether does not start the close grace, so a preview can stay up until the pointer returns. |
 | OB-4.5 🟩 Done | Clicking a dot, or choosing a beacon from the pill, shall pin the card: it takes focus, contains Tab, closes on Escape, on click outside, or on clicking the same dot again, and returns focus to the dot. Global mail shortcuts are inert while a card is pinned. |
-| OB-4.6 🟩 Done | Activating the anchored control itself shall mark the beacon seen and show its card once alongside the control without taking focus, while the control performs its normal action. The alongside card closes on the next click anywhere, on Escape, after 6 s, or as soon as the anchor leaves the screen. |
+| OB-4.6 🟨 Partial | Activating the anchored control itself shall mark the beacon seen and show its card once alongside the control without taking focus, while the control performs its normal action. The alongside card closes on the next click anywhere, on Escape, after 6 s, or as soon as the anchor leaves the screen. Gap, accepted: when the control clicked is the last unseen beacon, marking it seen retires the round (OB-4.11 keeps it alive only for a card already showing), so that one alongside card never appears. |
 | OB-4.7 🟩 Done | A card that has been visible for 1.5 s shall mark its beacon seen; the dot retires but the card stays readable until closed. `Got it` marks seen and closes at once. There is no `Later` action: closing without the dwell leaves the beacon unseen. |
 | OB-4.8 🟩 Done | The card shall be a labelled `dialog` with a `New` kicker, the beacon's icon and title, its body, and `Got it`, positioned beside the anchor by floating-ui (`right-start`, flipping and shifting to stay within 12px of the viewport). Until positioned it is transparent rather than hidden so it can still receive focus. |
 | OB-4.9 🟩 Done | A pinned card whose anchor is not yet on screen (a staged beacon revealed from the pill while its host mounts) shall wait up to 2 s for the anchor and then close if it never appears. |
