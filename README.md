@@ -94,13 +94,17 @@ To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 
 `.github/workflows/deploy.yml` publishes three Cloudflare Pages projects:
 
-| Target  | Origin                            | Backends   | Deploys                                    |
-|---------|-----------------------------------|------------|--------------------------------------------|
-| stage   | `webmail.stage-thundermail.com`   | stage      | every push to `main`, or manual dispatch   |
-| alpha   | `alpha-app.thundermail.com`       | production | every push to `main`, or manual dispatch   |
-| prod    | `webmail.thundermail.com`         | production | manual dispatch from `main` only           |
+| Target  | Origin                            | Backends   | Keycloak client              | Deploys                                    |
+|---------|-----------------------------------|------------|------------------------------|--------------------------------------------|
+| stage   | `webmail.stage-thundermail.com`   | stage      | `thunderbird-stormbox`       | every push to `main`, or manual dispatch   |
+| alpha   | `alpha-app.thundermail.com`       | production | `thunderbird-stormbox-alpha` | every push to `main`, or manual dispatch   |
+| prod    | `webmail.thundermail.com`         | production | `thunderbird-stormbox`       | manual dispatch from `main` only           |
 
-Alpha is the production configuration on the latest `main`. Staff sign-ins
+Alpha is the production configuration on the latest `main`, with its own
+Keycloak client in the production `tbpro` realm so its root, redirect and web
+origin URLs are set per origin. The Keycloak SSO session is realm-wide, so a
+user signed in through one client signs in to the other without a prompt.
+Staff sign-ins
 (OIDC `recovery_email` on a staff domain, see `src/constants/staff.ts`) on
 `webmail.thundermail.com` are redirected to alpha before a local account is
 created; the prod build sets `VITE_STAFF_APP_URL` to the alpha origin and an
@@ -110,8 +114,12 @@ alpha origin signs in through the shared Keycloak session without a click.
 Adding a hosted origin needs, besides the workflow job: the Cloudflare Pages
 project and custom domain, the origin in the bridge allowlist
 (`infra/jmap-bridge/src/routes.ts`, redeployed with `npm run deploy:production`),
-and the origin in the Keycloak `thunderbird-stormbox` client's redirect URIs,
-post-logout redirect URIs and web origins.
+and a Keycloak client for the origin. The client mirrors
+`thunderbird-stormbox` (and what `tests/fixtures/configure-keycloak.mjs`
+builds locally): public client, standard flow, PKCE `S256`, root/home URL and
+`/*` redirect URIs and post-logout redirect URIs on the origin, the origin as
+web origin, and the `recovery_email` protocol mapper (or the client scope that
+carries it), which `isStaff` reads.
 
 Contacts Trash limits live in `stormbox.config.json`. Before deployment, set
 `contactsTrash.serverFileStorage` to the Stalwart FileStorage `maxSize`,

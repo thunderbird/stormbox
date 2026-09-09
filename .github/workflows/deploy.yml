@@ -280,8 +280,9 @@ jobs:
           --project-name "$CLOUDFLARE_PAGES_PROJECT"
           --branch main
 
-  # Alpha is a production-configured build (same JMAP bridge, Keycloak and
-  # product links as prod) that ships on every push to main. Staff sign-ins
+  # Alpha is a production-configured build (same JMAP bridge, Keycloak realm
+  # and product links as prod) that ships on every push to main. It has its
+  # own Keycloak client so root/redirect URLs stay per origin; staff sign-ins
   # on prod are redirected here via VITE_STAFF_APP_URL.
   deploy-alpha:
     name: Deploy alpha
@@ -302,7 +303,7 @@ jobs:
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-alpha' }}
       VITE_JMAP_SERVER_URL: https://jmap.thundermail.com
       VITE_OIDC_ISSUER: https://auth.tb.pro/realms/tbpro
-      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
+      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox-alpha' }}
       VITE_ACCOUNTS_URL: https://accounts.tb.pro
       VITE_APPOINTMENT_URL: https://appointment.tb.pro
       VITE_SEND_URL: https://send.tb.pro
