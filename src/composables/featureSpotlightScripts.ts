@@ -24,7 +24,8 @@ export type SpotlightSpace = 'contacts' | 'mail';
 export interface SpotlightScriptContext {
   composeStore: ReturnType<typeof useComposeStore>;
   currentSpace: () => SpotlightSpace;
-  changeSpace: (next: SpotlightSpace) => Promise<void>;
+  /** Resolves once `next` is active, or false if the user refused to leave. */
+  changeSpace: (next: SpotlightSpace) => Promise<boolean>;
   /** The user prefers reduced motion; scripted typing and pauses collapse to zero. */
   reducedMotion: () => boolean;
 }

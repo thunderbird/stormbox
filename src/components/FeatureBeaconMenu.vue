@@ -7,9 +7,11 @@ import type { BeaconId } from '../constants/feature-beacons';
 import { useFeatureBeaconsStore } from '../stores/feature-beacons-store';
 
 /**
- * Header pill counting the unseen feature beacons. Its menu lists them so a
- * user can jump to one whose control is not on screen (the composer's or the
- * Contacts space's) and can dismiss the whole round at once.
+ * Header pill counting the unseen feature beacons. It discloses a labelled
+ * list of them so a user can jump to one whose control is not on screen
+ * (the composer's or the Contacts space's) and can dismiss the whole round
+ * at once. The list is a plain disclosure, not an ARIA menu: it carries an
+ * intro and a footer action, and Tab is its only keyboard navigation.
  */
 const store = useFeatureBeaconsStore();
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
 }>();
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
+const pillEl = ref<HTMLElement | null>(null);
 
 const visible = computed(() => store.enabled && store.count > 0);
 const label = computed(() => `${store.count} new`);
@@ -31,8 +34,11 @@ function closeMenu(): void {
   if (detailsEl.value) detailsEl.value.open = false;
 }
 
+// The pill takes focus before the card opens so the card can hand focus
+// back to it, rather than to an item inside the closed list.
 function onReveal(id: BeaconId): void {
   closeMenu();
+  pillEl.value?.focus({ preventScroll: true });
   emit('reveal', id);
 }
 
@@ -40,35 +46,50 @@ function onDismissAll(): void {
   closeMenu();
   store.dismissAll();
 }
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !detailsEl.value?.open) return;
+  event.preventDefault();
+  event.stopPropagation();
+  closeMenu();
+  pillEl.value?.focus({ preventScroll: true });
+}
 </script>
 
 <template>
-  <details v-if="visible" ref="detailsEl" class="beacon-menu" data-testid="feature-beacon-menu">
-    <summary class="beacon-menu__pill" :aria-label="ariaLabel" :title="ariaLabel">
+  <details
+    v-if="visible"
+    ref="detailsEl"
+    class="beacon-menu"
+    data-testid="feature-beacon-menu"
+    @keydown="onKeydown"
+  >
+    <summary ref="pillEl" class="beacon-menu__pill" :aria-label="ariaLabel" :title="ariaLabel">
       <Sparkles :size="14" :stroke-width="2" aria-hidden="true" />
       <span class="beacon-menu__count">{{ label }}</span>
     </summary>
-    <div class="beacon-menu__popover" role="menu" aria-label="New features">
+    <div class="beacon-menu__popover" role="group" aria-label="New features">
       <p class="beacon-menu__intro">
         New since your last visit. Pick one to see where it lives.
       </p>
-      <button
-        v-for="beacon in store.unseen"
-        :key="beacon.id"
-        class="beacon-menu__item"
-        type="button"
-        role="menuitem"
-        :data-beacon-item="beacon.id"
-        @click="onReveal(beacon.id)"
-      >
-        <span class="beacon-menu__icon" aria-hidden="true">
-          <component :is="beacon.icon" :size="16" :stroke-width="1.75" />
-        </span>
-        <span class="beacon-menu__text">
-          <span class="beacon-menu__title">{{ beacon.title }}</span>
-          <span class="beacon-menu__body">{{ beacon.body }}</span>
-        </span>
-      </button>
+      <ul class="beacon-menu__list">
+        <li v-for="beacon in store.unseen" :key="beacon.id">
+          <button
+            class="beacon-menu__item"
+            type="button"
+            :data-beacon-item="beacon.id"
+            @click="onReveal(beacon.id)"
+          >
+            <span class="beacon-menu__icon" aria-hidden="true">
+              <component :is="beacon.icon" :size="16" :stroke-width="1.75" />
+            </span>
+            <span class="beacon-menu__text">
+              <span class="beacon-menu__title">{{ beacon.title }}</span>
+              <span class="beacon-menu__body">{{ beacon.body }}</span>
+            </span>
+          </button>
+        </li>
+      </ul>
       <div class="beacon-menu__footer">
         <button class="beacon-menu__dismiss" type="button" @click="onDismissAll">
           Dismiss all
@@ -134,6 +155,11 @@ function onDismissAll(): void {
   color: var(--muted);
 }
 
+.beacon-menu__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .beacon-menu__item {
   display: flex;
   align-items: flex-start;

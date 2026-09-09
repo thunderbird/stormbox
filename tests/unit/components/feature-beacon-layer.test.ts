@@ -185,6 +185,62 @@ describe('FeatureBeaconLayer', () => {
       .toBe(JSON.stringify({ seen: [], sessions: 1 }));
   });
 
+  it('returns focus to the control when the dot retired before the card closed', async () => {
+    vi.useFakeTimers();
+    mountAnchors(ALL_ANCHORS);
+    const wrapper = mountLayer();
+    await settle();
+    vi.advanceTimersByTime(20);
+    await settle();
+
+    await wrapper.get('[data-beacon="manageFolders"]').trigger('click');
+    await settle();
+    vi.advanceTimersByTime(BEACON_TIMING.seenDwellMs);
+    await settle();
+    vi.advanceTimersByTime(20);
+    await settle();
+    expect(dots(wrapper)).not.toContain('manageFolders');
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    wrapper.get('[role="dialog"]').element.dispatchEvent(escape);
+    await settle();
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(document.querySelector(MANAGE_FOLDERS));
+  });
+
+  it('a card pinned from an origin that is no longer on screen returns focus to its dot', async () => {
+    vi.useFakeTimers();
+    mountAnchors(`${ALL_ANCHORS}<button class="pill">2 new</button>`);
+    const wrapper = mountLayer();
+    const store = useFeatureBeaconsStore();
+    await settle();
+    vi.advanceTimersByTime(20);
+    await settle();
+
+    const pill = document.querySelector('.pill') as HTMLElement;
+    pill.focus();
+    store.open('composeSchedule');
+    // The host mounts after the reveal and takes focus itself.
+    layout.setRect('.compose-dialog--expanded .compose-schedule-menu__trigger', {
+      left: 400, top: 500, width: 30, height: 30,
+    });
+    const dialog = document.createElement('div');
+    dialog.className = 'compose-dialog compose-dialog--expanded';
+    dialog.innerHTML = '<input id="compose-to"><details class="compose-schedule-menu"><summary class="compose-schedule-menu__trigger">Schedule</summary></details>';
+    host.appendChild(dialog);
+    (dialog.querySelector('#compose-to') as HTMLElement).focus();
+    await settle();
+    vi.advanceTimersByTime(20);
+    await settle();
+    expect(document.activeElement).toBe(wrapper.get('[role="dialog"]').element);
+
+    // The pill has no box on screen (the composer covers it), so focus goes
+    // to the beacon's own dot rather than to the host's input.
+    store.close();
+    await settle();
+    expect(document.activeElement).toBe(wrapper.get('[data-beacon="composeSchedule"]').element);
+  });
+
   it('hovering a dot or its control previews the card and leaving closes it', async () => {
     vi.useFakeTimers();
     mountAnchors(ALL_ANCHORS);

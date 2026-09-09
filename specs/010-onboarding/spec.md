@@ -107,10 +107,10 @@ open for review and may change before acceptance.
 | OB-4.2 🟩 Done | The dot shall be a 10px accent disc with a slow pulsing halo, centred on the anchor's top-right corner, inside a 32px hit target, and clamped to the viewport. Under reduced motion the halo is static. |
 | OB-4.3 🟩 Done | A dot renders only while its beacon is unseen and its anchor is mounted, has a non-zero box on screen, and is not covered by another element at its centre (the composer backdrop over the sidebar, a row scrolled out of its container). Anchors are re-measured on resize, scroll, and DOM mutation, coalesced to one animation frame; the layer's own dots and card never count as cover. |
 | OB-4.4 🟨 Partial | Hovering a dot or its anchored control, or moving keyboard focus to a dot, shall preview the card after 150 ms. Leaving shall close a preview after a 250 ms grace unless the pointer moved onto the card. A preview takes no focus and does not gate shortcuts. Touch pointers skip hover handling. Gap, accepted: the pointer leaving the window altogether does not start the close grace, so a preview can stay up until the pointer returns. |
-| OB-4.5 🟩 Done | Clicking a dot, or choosing a beacon from the pill, shall pin the card: it takes focus, contains Tab, closes on Escape, on click outside, or on clicking the same dot again, and returns focus to the dot. Global mail shortcuts are inert while a card is pinned. |
+| OB-4.5 🟩 Done | Clicking a dot, or choosing a beacon from the pill, shall pin the card: it takes focus, contains Tab, closes on Escape, on click outside, or on clicking the same dot again, and returns focus to where it was pinned from (the dot, or the pill). When that origin is gone or covered — the dot retired while the card was read (OB-4.7), the pill left with the last unseen beacon, a revealed host such as the composer now covers the pill — focus goes to the beacon's dot if it is still showing, otherwise to the anchored control itself. Global mail shortcuts are inert while a card is pinned. |
 | OB-4.6 🟨 Partial | Activating the anchored control itself shall mark the beacon seen and show its card once alongside the control without taking focus, while the control performs its normal action. The alongside card closes on the next click anywhere, on Escape, after 6 s, or as soon as the anchor leaves the screen. Gap, accepted: when the control clicked is the last unseen beacon, marking it seen retires the round (OB-4.11 keeps it alive only for a card already showing), so that one alongside card never appears. |
 | OB-4.7 🟩 Done | A card that has been visible for 1.5 s shall mark its beacon seen; the dot retires but the card stays readable until closed. `Got it` marks seen and closes at once. There is no `Later` action: closing without the dwell leaves the beacon unseen. |
-| OB-4.8 🟩 Done | The card shall be a labelled `dialog` with a `New` kicker, the beacon's icon and title, its body, and `Got it`, positioned beside the anchor by floating-ui (`right-start`, flipping and shifting to stay within 12px of the viewport). Until positioned it is transparent rather than hidden so it can still receive focus. |
+| OB-4.8 🟩 Done | The card shall be a labelled `dialog` with a `New` kicker, the beacon's icon and title, its body, and `Got it`, positioned by floating-ui to the anchor's right (`right-start`), falling back to below or above it aligned to its right edge (`bottom-end`, `top-end`) and only then to its left (`left-start`), shifting to stay within 12px of the viewport; the order keeps the card off the neighbouring controls in the anchor's row (Send beside the schedule segment). Until positioned it is transparent rather than hidden so it can still receive focus. |
 | OB-4.9 🟩 Done | A pinned card whose anchor is not yet on screen (a staged beacon revealed from the pill while its host mounts) shall wait up to 2 s for the anchor and then close if it never appears. |
 | OB-4.10 🟩 Done | The beacon layer sits above the composer and its dock and below every modal; it does not render while the Welcome modal or Settings dialog is open, and is removed when the session disconnects. |
 | OB-4.11 🟩 Done | Once every beacon is seen the round stays enabled only while a card is still showing, so the last card can be read, and disables when that card closes. |
@@ -121,8 +121,8 @@ open for review and may change before acceptance.
 | ID / Status | Requirement |
 |:--|:--|
 | OB-5.1 🟩 Done | While a round is active and at least one beacon is unseen, the top bar's right cell shall show a `N new` pill beside the account avatar, counting every unseen beacon, staged ones included. It disappears at zero. |
-| OB-5.2 🟩 Done | The pill shall open a `New features` menu listing each unseen beacon with its icon, title, and body, plus a `Dismiss all` action. It closes on click outside. |
-| OB-5.3 🟩 Done | Choosing a listed beacon shall bring its control on screen — restoring or opening a compose session for composer-staged beacons, switching to Contacts for Contacts-staged ones, returning to Mail for sidebar controls — and then pin its card (OB-4.5, OB-4.9). |
+| OB-5.2 🟩 Done | The pill shall disclose a `New features` list (a labelled group, not an ARIA menu: it carries an intro line and a footer action, and Tab is its only keyboard navigation) naming each unseen beacon with its icon, title, and body, plus a `Dismiss all` action. It closes on click outside and on Escape, which returns focus to the pill. |
+| OB-5.3 🟩 Done | Choosing a listed beacon shall bring its control on screen — restoring or opening a compose session for composer-staged beacons, switching to Contacts for Contacts-staged ones, returning to Mail and showing a hidden folder list for sidebar controls — and then pin its card (OB-4.5, OB-4.9). A space change the user refuses (leaving Contacts with unsaved edits) leaves the card closed. |
 | OB-5.4 🟩 Done | `Dismiss all` shall retire the round (OB-3.5) and remove the pill and every dot immediately. |
 | OB-5.5 🟩 Done | The pill remains visible at narrow widths where other top-bar actions collapse into the overflow menu. |
 
@@ -134,7 +134,7 @@ open for review and may change before acceptance.
 |:--|:--|
 | OB-6.1 🟩 Done | Onboarding state is held in browser `localStorage` under three keys: `stormbox.welcomeModalDismissed.v1` (`'1'` once Welcome was dismissed), `stormbox.whatsNewSeen.<round>` (`'1'` once the round is retired), and `stormbox.featureBeacons.<round>` (`{ "seen": BeaconId[], "sessions": number }` while a round is in progress). |
 | OB-6.2 🟩 Done | All storage access goes through `src/utils/onboarding-storage.ts`. Every read tolerates missing, malformed, or unavailable storage: an unreadable progress record reads as no progress, unknown beacon ids are dropped, and a blocked store makes onboarding a session-only affordance rather than an error. |
-| OB-6.3 🟩 Done | Arming a round increments and persists the session count before any beacon is shown, so a session that never interacts still counts toward expiry. |
+| OB-6.3 🟩 Done | Arming a round increments and persists the session count before any beacon is shown, so a session that never interacts still counts toward expiry. A page load is one session however many times its connection drops and returns: re-arming after a disconnect re-reads progress without incrementing the count. |
 | OB-6.4 🟩 Done | State is per browser profile: a user who finished a round on one device sees it again on another, and clearing site data shows Welcome again. |
 
 ### 6.2 Account-level state (draft, not implemented)
@@ -210,20 +210,25 @@ code or spec change in this repository; none is a server change.
 ## Verification map
 
 - Unit: `tests/unit/components/app-layout.test.ts` (Welcome on first
-  connect and persistence, Escape order with a running spotlight, shortcut
+  connect and persistence, the shortcuts section dropped in the
+  single-column layout, Escape order with a running spotlight, shortcut
   gating, style picker persistence, compose/contacts spotlight ownership and
-  cleanup, beacon arming for existing users, pill reveal, layer hidden
-  behind Welcome and Settings, reopening Welcome without touching state),
-  `tests/unit/components/feature-beacon-layer.test.ts` (dot placement and
-  occlusion, preview on hover and focus, pin with focus, dwell, control
-  click, staged anchors, last-card read), and
-  `tests/unit/stores/feature-beacons-store.test.ts` (session limit, seen
-  persistence, retire on all seen and on Dismiss all, corrupt storage).
+  cleanup, beacon arming for existing users, pill reveal including a hidden
+  folder list and a refused space change, the pill's list roles, layer
+  hidden behind Welcome and Settings, reopening Welcome without touching
+  state), `tests/unit/components/feature-beacon-layer.test.ts` (dot
+  placement and occlusion, preview on hover and focus, pin with focus,
+  focus return to a retired dot's control and from an off-screen origin,
+  dwell, control click, staged anchors, last-card read), and
+  `tests/unit/stores/feature-beacons-store.test.ts` (session limit, one
+  session per page load across reconnects, seen persistence, retire on all
+  seen and on Dismiss all, corrupt storage).
 - Browser: `tests/e2e/feature-beacons.spec.js` covers the pill count, dot
-  geometry on the New Message button, hover preview, pinned card focus,
-  `Got it` persistence, control-click retirement with the alongside card,
-  staged reveal through the composer, sidebar dots hidden under the
-  composer backdrop, and `Dismiss all` surviving reload, on Chromium and
-  Firefox. The Welcome modal has no dedicated e2e; every other spec
+  geometry on the New Message button, hover preview, pinned card focus and
+  its return to the control after `Got it`, `Got it` persistence,
+  control-click retirement with the alongside card, staged reveal through
+  the composer with the card clear of Send and focus landing on the
+  schedule control, sidebar dots hidden under the composer backdrop, and
+  `Dismiss all` surviving reload, on Chromium and Firefox. The Welcome modal has no dedicated e2e; every other spec
   dismisses it through `tests/e2e/helpers/shared-session.js`, which
   exercises OB-1.2 on each run.

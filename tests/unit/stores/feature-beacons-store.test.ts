@@ -192,7 +192,7 @@ describe('feature beacons store', () => {
     expect(store.enabled).toBe(false);
   });
 
-  it('reset drops in-memory state but keeps stored progress', () => {
+  it('reset drops in-memory state but keeps stored progress; re-arming does not spend a session', () => {
     const store = useFeatureBeaconsStore();
     store.arm();
     store.markSeen('newMessage');
@@ -206,9 +206,27 @@ describe('feature beacons store', () => {
     expect(store.openId).toBeNull();
     expect(progress()).toEqual({ seen: ['newMessage'], sessions: 1 });
 
+    // A reconnect within the same page load is the same session.
     store.arm();
-    expect(store.sessions).toBe(2);
+    expect(store.sessions).toBe(1);
     expect(store.seen).toEqual(['newMessage']);
+    expect(progress()).toEqual({ seen: ['newMessage'], sessions: 1 });
+  });
+
+  it('a flaky connection cannot burn through the session limit', () => {
+    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
+      seen: [],
+      sessions: BEACON_SESSION_LIMIT - 1,
+    }));
+    const store = useFeatureBeaconsStore();
+    for (let i = 0; i < BEACON_SESSION_LIMIT + 2; i += 1) {
+      store.arm();
+      store.reset();
+    }
+    store.arm();
+    expect(store.enabled).toBe(true);
+    expect(store.sessions).toBe(BEACON_SESSION_LIMIT);
+    expect(progress()).toEqual({ seen: [], sessions: BEACON_SESSION_LIMIT });
   });
 
   it('degrades to session-only state when storage is blocked', () => {

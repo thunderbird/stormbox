@@ -16,6 +16,11 @@ interface UseModalFocusOptions {
   onDefault?: () => void | Promise<void>;
   resolveContainer?: () => HTMLElement | null;
   restoreFocus?: boolean;
+  /**
+   * Resolves where focus returns on deactivation, replacing the element
+   * that was focused at activation. Called at restore time; null skips.
+   */
+  restoreTo?: () => HTMLElement | null;
 }
 
 const DEFAULT_FOCUSABLE_SELECTOR = [
@@ -124,17 +129,12 @@ export function useModalFocus(
   }
 
   function restore(): void {
-    const target = returnFocus;
+    const saved = returnFocus;
     returnFocus = null;
-    if (
-      options.focusOnActivate === false
-      || options.restoreFocus === false
-      || !target
-    ) {
-      return;
-    }
+    if (options.focusOnActivate === false || options.restoreFocus === false) return;
     void nextTick(() => {
-      if (target.isConnected) focusModalSurface(target);
+      const target = options.restoreTo ? options.restoreTo() : saved;
+      if (target?.isConnected) focusModalSurface(target);
     });
   }
 

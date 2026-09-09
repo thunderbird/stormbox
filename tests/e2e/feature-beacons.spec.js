@@ -67,6 +67,8 @@ test.describe('Feature beacons', () => {
       await card.getByRole('button', { name: 'Got it' }).click();
       await expect(card).toHaveCount(0);
       await expect(composeDot).toHaveCount(0);
+      // The dot retired with the card, so focus lands on the control itself.
+      await expect(page.locator('.sidebar__compose')).toBeFocused();
       await expect(pill).toHaveText('5 new');
       expect(await page.evaluate((key) => JSON.parse(window.localStorage.getItem(key)), PROGRESS_KEY))
         .toEqual({ seen: ['newMessage'], sessions: 1 });
@@ -90,16 +92,34 @@ test.describe('Feature beacons', () => {
 
       // The pill lists the rest and reveals a staged one by opening the composer.
       await pill.click();
-      const menu = page.getByRole('menu', { name: 'New features' });
-      await expect(menu.getByRole('menuitem')).toHaveCount(4);
-      await menu.getByRole('menuitem', { name: /Send on your schedule/ }).click();
+      const menu = page.getByRole('group', { name: 'New features' });
+      await expect(menu.locator('.beacon-menu__item')).toHaveCount(4);
+      await menu.getByRole('button', { name: /Send on your schedule/ }).click();
       const scheduleCard = page.getByRole('dialog', { name: 'Send on your schedule' });
       await expect(page.locator('.compose-dialog')).toBeVisible();
-      await expect(page.locator('.feature-beacons__dot[data-beacon="composeSchedule"]')).toBeVisible();
+      const scheduleDot = page.locator('.feature-beacons__dot[data-beacon="composeSchedule"]');
+      await expect(scheduleDot).toBeVisible();
       await expect(scheduleCard).toBeVisible();
+      await expect(scheduleCard).toBeFocused();
+      // The card never sits over the Send button beside its anchor.
+      const [cardBox, sendBox] = await Promise.all([
+        scheduleCard.boundingBox(),
+        page.locator('.compose-dialog--expanded .compose-send').boundingBox(),
+      ]);
+      expect(cardBox).not.toBeNull();
+      expect(sendBox).not.toBeNull();
+      const overlaps = cardBox.x < sendBox.x + sendBox.width
+        && cardBox.x + cardBox.width > sendBox.x
+        && cardBox.y < sendBox.y + sendBox.height
+        && cardBox.y + cardBox.height > sendBox.y;
+      expect(overlaps, 'schedule card clear of Send').toBe(false);
+      // Reading the card retires its dot; the pill sits under the composer's
+      // scrim, so on close focus lands on the schedule control itself.
+      await expect(scheduleDot).toHaveCount(0, { timeout: 5000 });
       await page.keyboard.press('Escape');
       await expect(scheduleCard).toHaveCount(0);
       await expect(page.locator('.compose-dialog')).toBeVisible();
+      await expect(page.locator('.compose-dialog--expanded .compose-schedule-menu__trigger')).toBeFocused();
       // Sidebar dots hide behind the composer's backdrop.
       await expect(page.locator('.feature-beacons__dot[data-beacon="manageFolders"]')).toHaveCount(0);
 

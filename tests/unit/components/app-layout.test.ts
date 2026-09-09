@@ -728,7 +728,11 @@ describe('App mail layout', () => {
     const menu = wrapper.get('.beacon-menu').element as HTMLDetailsElement;
     menu.open = true;
     await nextTick();
-    expect(wrapper.findAll('.beacon-menu [role="menuitem"]')).toHaveLength(6);
+    // A disclosed list, not an ARIA menu: it carries an intro and a footer
+    // action that a menu could not.
+    expect(wrapper.find('.beacon-menu [role="menu"]').exists()).toBe(false);
+    expect(wrapper.get('.beacon-menu__popover').attributes('aria-label')).toBe('New features');
+    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(6);
 
     await wrapper.get('.beacon-menu__dismiss').trigger('click');
     await settleBeacons();
@@ -819,6 +823,79 @@ describe('App mail layout', () => {
     await settleBeacons();
     expect(composeStore.sessions).toHaveLength(1);
     expect(beaconStore.openId).toBe('composeMinimize');
+  });
+
+  it('reveals a sidebar beacon from the pill by showing a hidden folder list', async () => {
+    seedExistingUser();
+    const beaconStore = useFeatureBeaconsStore();
+
+    const wrapper = mountApp();
+    await settleBeacons();
+    await wrapper.get('[aria-label="Hide folder list"]').trigger('click');
+    await settleBeacons();
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="newMessage"]').trigger('click');
+    await settleBeacons();
+
+    expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
+    expect(beaconStore.openId).toBe('newMessage');
+    expect(wrapper.get('[role="dialog"]').attributes('data-beacon-card')).toBe('newMessage');
+  });
+
+  it('leaves the card closed when the space change a reveal needs is refused', async () => {
+    seedExistingUser();
+    restoreContactListLayout = stubContactListLayout();
+    repoContacts = [{
+      id: 1,
+      remote_id: 'alice',
+      addressbook_ids: [],
+      display_name: 'Alice Example',
+      email: 'alice@example.com',
+    }];
+    const beaconStore = useFeatureBeaconsStore();
+
+    const wrapper = mountApp();
+    await settleBeacons();
+    await wrapper.get('.app-spaces [aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('[data-entry-key="contact:1"]').trigger('click');
+    await flushPromises();
+    await wrapper.findAll('button')
+      .find((button) => button.attributes('aria-label') === 'Edit')!
+      .trigger('click');
+    await wrapper.get('input[autocomplete="name"]').setValue('Dirty Alice');
+
+    // Leaving dirty Contacts asks first; cancelling keeps the space and
+    // must not pin a card to a control that is not on screen.
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="manageFolders"]').trigger('click');
+    await settleBeacons();
+    expect(wrapper.get('[role="alertdialog"]').text()).toContain('Save your changes');
+    expect(beaconStore.openId).toBeNull();
+    await wrapper.findAll('button')
+      .filter((button) => button.text().trim() === 'Cancel')
+      .at(-1)!
+      .trigger('click');
+    await settleBeacons();
+
+    expect(wrapper.find('.shell--contacts').exists()).toBe(true);
+    expect(beaconStore.openId).toBeNull();
+
+    // Discarding lets the reveal through: Mail comes back and the card pins.
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="manageFolders"]').trigger('click');
+    await settleBeacons();
+    await wrapper.findAll('button')
+      .find((button) => button.text().trim() === 'Discard')!
+      .trigger('click');
+    await settleBeacons();
+    expect(wrapper.find('.shell--contacts').exists()).toBe(false);
+    expect(beaconStore.openId).toBe('manageFolders');
   });
 
   it('hides beacons behind Welcome and keeps them when Welcome is reopened', async () => {

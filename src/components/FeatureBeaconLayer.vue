@@ -14,6 +14,7 @@ import { useModalFocus } from '../composables/useModalFocus';
 import {
   BEACON_TIMING,
   FEATURE_BEACONS,
+  beaconById,
   type BeaconId,
   type FeatureBeacon,
 } from '../constants/feature-beacons';
@@ -93,8 +94,42 @@ let previewOpenTimer: ReturnType<typeof setTimeout> | null = null;
 let previewCloseTimer: ReturnType<typeof setTimeout> | null = null;
 let alongsideTimer: ReturnType<typeof setTimeout> | null = null;
 let dwellTimer: ReturnType<typeof setTimeout> | null = null;
+// Where focus was when the card was pinned (its dot, or the pill's
+// trigger), captured at open() because a staged card only activates once
+// its host has mounted and possibly taken focus itself.
+let pinOrigin: HTMLElement | null = null;
+let lastPinnedId: BeaconId | null = null;
 
-useModalFocus(cardEl, { active: pinnedOpen, containTab: true });
+watch(pinnedId, (pinned) => {
+  if (pinned == null) return;
+  lastPinnedId = pinned;
+  const active = document.activeElement;
+  pinOrigin = active instanceof HTMLElement && active !== document.body ? active : null;
+}, { flush: 'sync' });
+
+// Whether focus can go back to where the card was pinned from: the dot
+// retires once the card has been read, the pill goes with the last unseen
+// beacon, and a host the reveal opened (the composer) can cover the pill.
+// Failing that, focus lands on the control itself.
+function canRestoreTo(origin: HTMLElement): boolean {
+  if (!origin.isConnected) return false;
+  const closedDetails = origin.closest('details:not([open])');
+  if (closedDetails && origin.closest('summary')?.parentElement !== closedDetails) return false;
+  return anchorVisible(origin, origin.getBoundingClientRect());
+}
+
+function restoreFocusTarget(): HTMLElement | null {
+  const origin = pinOrigin;
+  pinOrigin = null;
+  if (origin && canRestoreTo(origin)) return origin;
+  if (lastPinnedId == null) return null;
+  const dot = dotEls.get(lastPinnedId);
+  if (dot?.isConnected) return dot;
+  const anchor = document.querySelector(beaconById(lastPinnedId).anchor);
+  return anchor instanceof HTMLElement ? anchor : null;
+}
+
+useModalFocus(cardEl, { active: pinnedOpen, containTab: true, restoreTo: restoreFocusTarget });
 
 onClickOutside(cardEl, () => {
   if (pinnedId.value != null) store.close();
@@ -192,12 +227,16 @@ async function positionCard(): Promise<void> {
     cardPosition.value = null;
     return;
   }
+  // Beside the control when it fits, otherwise above or below it, aligned
+  // to its right edge; to the left only as a last resort, because there it
+  // covers the neighbouring controls in the anchor's row (Send beside the
+  // schedule segment).
   const position = await computePosition(anchor.element, card, {
     placement: 'right-start',
     strategy: 'fixed',
     middleware: [
       offset(CARD_OFFSET),
-      flip({ fallbackPlacements: ['left-start', 'bottom-start', 'top-start'] }),
+      flip({ fallbackPlacements: ['bottom-end', 'top-end', 'left-start'] }),
       shift({ padding: CARD_VIEWPORT_PADDING }),
     ],
   });

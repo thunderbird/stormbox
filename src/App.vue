@@ -394,15 +394,17 @@ async function updateQuickFilterQuery(next: string) {
   quickFilterQuery.value = next;
 }
 
-async function requestSpaceChange(next: string): Promise<void> {
-  if (next !== 'mail' && next !== 'contacts') return;
-  if (next === space.value) return;
+/** Resolves true once `next` is the active space; false if leaving was refused. */
+async function requestSpaceChange(next: string): Promise<boolean> {
+  if (next !== 'mail' && next !== 'contacts') return false;
+  if (next === space.value) return true;
   if (
     space.value === 'contacts'
     && contactsViewEl.value
     && !await contactsViewEl.value.requestLeave()
-  ) return;
+  ) return false;
   space.value = next;
+  return true;
 }
 
 function toggleFolderList() {
@@ -444,9 +446,11 @@ function showWelcomeModalAgain() {
   }
 }
 
-// Brings a beacon's control on screen (opens the composer or switches to
-// Contacts) before opening its card; the layer waits for the anchor to mount.
-function revealBeacon(id: BeaconId) {
+// Brings a beacon's control on screen (opens the composer, switches space,
+// shows the sidebar) before opening its card; the layer then waits for the
+// anchor to mount (OB-5.3). A space change the user refuses (leaving dirty
+// Contacts) leaves the card closed rather than pinning it to nothing.
+async function revealBeacon(id: BeaconId): Promise<void> {
   const beacon = beaconById(id);
   switch (beacon.stage) {
     case 'composer': {
@@ -463,12 +467,15 @@ function revealBeacon(id: BeaconId) {
       break;
     }
     case 'contacts':
-      void requestSpaceChange('contacts');
+      if (!await requestSpaceChange('contacts')) return;
       break;
     case undefined:
       // The spaces bar is always on screen; the other unstaged controls are
-      // in the Mail sidebar.
-      if (id !== 'contacts') void requestSpaceChange('mail');
+      // in the Mail sidebar, which the compact layouts may have hidden.
+      if (id !== 'contacts') {
+        if (!await requestSpaceChange('mail')) return;
+        if (folderListHidden.value) toggleFolderList();
+      }
       break;
     default: {
       const exhaustive: never = beacon.stage;

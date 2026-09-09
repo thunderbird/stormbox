@@ -1,10 +1,11 @@
 /**
  * Feature beacons for users who dismissed Welcome before this What's New
- * round. `arm()` runs once per connected page load; progress ({ seen,
- * sessions }) persists so a beacon stays dismissed across reloads and the
- * whole round expires after BEACON_SESSION_LIMIT sessions. Finishing writes
- * the What's New flag, which is the same gate the Welcome dismissal sets, so
- * the round never comes back.
+ * round. `arm()` runs on every connect, but a page load counts as one
+ * session however often the connection drops and returns; progress
+ * ({ seen, sessions }) persists so a beacon stays dismissed across reloads
+ * and the whole round expires after BEACON_SESSION_LIMIT sessions.
+ * Finishing writes the What's New flag, which is the same gate the Welcome
+ * dismissal sets, so the round never comes back.
  */
 
 import { defineStore } from 'pinia';
@@ -49,6 +50,8 @@ export const useFeatureBeaconsStore = defineStore('feature-beacons', () => {
   const sessions = ref(0);
   const openId = ref<BeaconId | null>(null);
   const cardShowing = ref(false);
+  // Survives reset() so a reconnect re-arms without spending another session.
+  const sessionCounted = ref(false);
 
   const unseen = computed<FeatureBeacon[]>(() =>
     enabled.value
@@ -93,7 +96,10 @@ export const useFeatureBeaconsStore = defineStore('feature-beacons', () => {
     if (enabled.value) return;
     const progress = readProgress();
     seen.value = progress.seen;
-    sessions.value = progress.sessions + 1;
+    sessions.value = sessionCounted.value
+      ? Math.max(progress.sessions, 1)
+      : progress.sessions + 1;
+    sessionCounted.value = true;
     openId.value = null;
     if (sessions.value > BEACON_SESSION_LIMIT || allSeen.value) {
       finish();
