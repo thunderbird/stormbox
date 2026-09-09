@@ -286,10 +286,18 @@ test.describe('Recipient control', () => {
       await page.keyboard.press('Tab');
       await expect(recipientInput(page, 'To')).toBeFocused();
 
-      // The formatting toolbar is not a Tab stop: Subject goes straight to the body.
+      // The formatting toolbar is one Tab stop (CS-3.17): Subject → toolbar →
+      // body, with the arrow keys moving between the toolbar's controls.
+      const toolbar = page.getByRole('toolbar', { name: 'Rich text formatting' });
       await composeSubject(page).focus();
       await page.keyboard.press('Tab');
+      await expect(toolbar.getByRole('button', { name: 'Bold' })).toBeFocused();
+      await page.keyboard.press('ArrowRight');
+      await expect(toolbar.getByRole('button', { name: 'Italic' })).toBeFocused();
+      await page.keyboard.press('Tab');
       await expect(page.getByRole('textbox', { name: 'Message body' })).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(toolbar.getByRole('button', { name: 'Italic' })).toBeFocused();
 
       // The schedule trigger is the last stop; Tab from it wraps to the first.
       await composeSendButton(page).focus();

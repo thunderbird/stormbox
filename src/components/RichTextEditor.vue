@@ -974,18 +974,60 @@ function scheduleToolbarOverflowUpdate() {
   void nextTick().then(updateToolbarOverflow);
 }
 
-/**
- * The toolbar is not a Tab stop: Tab moves from Subject straight into the
- * body. Every control in it, including the ones inside its menus, leaves
- * the sequential order; formatting stays reachable by pointer and by the
- * aria-keyshortcuts each button advertises.
+/*
+ * WAI-ARIA toolbar pattern (APG "Toolbar"): the toolbar is one Tab stop.
+ * Exactly one top-level control carries tabindex="0" — the one focused most
+ * recently — and Arrow Left/Right, Home and End move between them. Menu
+ * items inside the dropdowns are not toolbar stops; a <details> hides them
+ * until its summary is activated.
  */
-function removeToolbarFromTabOrder() {
-  toolbarEl.value
-    ?.querySelectorAll<HTMLElement>('button, summary, input, select, [href]')
-    .forEach((control) => {
-      if (control.tabIndex !== -1) control.tabIndex = -1;
-    });
+const TOOLBAR_CONTROL_SELECTOR = 'button, summary, input, select';
+let toolbarTabStop: HTMLElement | null = null;
+
+function toolbarControls(): HTMLElement[] {
+  const toolbar = toolbarEl.value;
+  if (!toolbar) return [];
+  return [...toolbar.querySelectorAll<HTMLElement>(TOOLBAR_CONTROL_SELECTOR)]
+    .filter((control) => !control.closest('.app-dropdown__menu'));
+}
+
+function syncToolbarTabStops() {
+  const controls = toolbarControls();
+  if (!toolbarTabStop || !controls.includes(toolbarTabStop)) {
+    toolbarTabStop = controls[0] ?? null;
+  }
+  controls.forEach((control) => {
+    const tabIndex = control === toolbarTabStop ? 0 : -1;
+    if (control.tabIndex !== tabIndex) control.tabIndex = tabIndex;
+  });
+}
+
+function onToolbarFocusIn(event: FocusEvent) {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !toolbarControls().includes(target)) return;
+  toolbarTabStop = target;
+  syncToolbarTabStops();
+}
+
+function onToolbarKeydown(event: KeyboardEvent) {
+  const controls = toolbarControls();
+  const from = controls.indexOf(event.target as HTMLElement);
+  if (from === -1) return;
+  const rtl = toolbarEl.value
+    ? window.getComputedStyle(toolbarEl.value).direction === 'rtl'
+    : false;
+  const forward = rtl ? 'ArrowLeft' : 'ArrowRight';
+  const backward = rtl ? 'ArrowRight' : 'ArrowLeft';
+  let to: number;
+  switch (event.key) {
+    case forward: to = (from + 1) % controls.length; break;
+    case backward: to = (from - 1 + controls.length) % controls.length; break;
+    case 'Home': to = 0; break;
+    case 'End': to = controls.length - 1; break;
+    default: return;
+  }
+  event.preventDefault();
+  controls[to].focus();
 }
 
 function observeToolbarSize() {
@@ -1139,11 +1181,11 @@ onMounted(() => {
   const initialHtml = pendingHtml ?? props.initialHtml;
   pendingHtml = null;
   initEditor(initialHtml);
-  removeToolbarFromTabOrder();
+  syncToolbarTabStops();
 });
 
-// Overflow re-renders toolbar groups; new controls need the same treatment.
-onUpdated(removeToolbarFromTabOrder);
+// Overflow re-renders toolbar groups; the single Tab stop has to survive it.
+onUpdated(syncToolbarTabStops);
 
 onUnmounted(() => {
   window.removeEventListener('resize', scheduleToolbarOverflowUpdate);
@@ -1175,6 +1217,8 @@ defineExpose({
       role="toolbar"
       aria-label="Rich text formatting"
       @pointerdown.capture="rememberSelection"
+      @focusin="onToolbarFocusIn"
+      @keydown="onToolbarKeydown"
     >
       <div v-if="isToolbarGroupVisible('style')" class="toolbar-group" data-toolbar-group="style">
         <button

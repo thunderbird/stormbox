@@ -712,13 +712,40 @@ describe('RichTextEditor toolbar', () => {
     expect(wrapper.get('.toolbar-more .toolbar-more__menu').text()).toContain('Bulleted list');
   });
 
-  it('keeps every toolbar control out of the Tab sequence, including after a re-render', async () => {
+  it('is a single Tab stop whose controls are reached with the arrow keys', async () => {
     const wrapper = await mountEditor();
-    const toolbar = wrapper.get('.compose-toolbar').element;
-    const controls = () => [...toolbar.querySelectorAll<HTMLElement>('button, summary, input')];
+    const toolbar = wrapper.get('.compose-toolbar').element as HTMLElement;
+    const controls = () => [...toolbar.querySelectorAll<HTMLElement>('button, summary, input')]
+      .filter((control) => !control.closest('.app-dropdown__menu'));
+    const tabStops = () => controls().filter((control) => control.tabIndex === 0);
+    const menuItems = [...toolbar.querySelectorAll<HTMLElement>('.app-dropdown__menu button')];
 
     expect(controls().length).toBeGreaterThan(10);
-    expect(controls().every((control) => control.tabIndex === -1)).toBe(true);
+    expect(tabStops()).toEqual([wrapper.get('[aria-label="Bold"]').element]);
+    expect(menuItems.length).toBeGreaterThan(0);
+    expect(menuItems.every((item) => item.tabIndex !== -1)).toBe(true);
+
+    const press = (key: string) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      document.activeElement?.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const bold = wrapper.get('[aria-label="Bold"]').element as HTMLElement;
+    const italic = wrapper.get('[aria-label="Italic"]').element as HTMLElement;
+    bold.focus();
+    expect(press('ArrowRight')).toBe(true);
+    expect(document.activeElement).toBe(italic);
+    // The stop follows focus, so Tab back into the toolbar returns here.
+    expect(tabStops()).toEqual([italic]);
+    expect(press('ArrowLeft')).toBe(true);
+    expect(document.activeElement).toBe(bold);
+    expect(press('End')).toBe(true);
+    expect(document.activeElement).toBe(controls().at(-1));
+    expect(press('ArrowRight')).toBe(true);
+    expect(document.activeElement).toBe(bold);
+    expect(press('Home')).toBe(true);
+    expect(document.activeElement).toBe(bold);
+    expect(press('Tab')).toBe(false);
 
     // Widening the toolbar re-mounts groups that had overflowed into More.
     toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
@@ -738,6 +765,6 @@ describe('RichTextEditor toolbar', () => {
     await nextTick();
 
     expect(wrapper.find('[data-toolbar-group="alignment"]').exists()).toBe(true);
-    expect(controls().every((control) => control.tabIndex === -1)).toBe(true);
+    expect(tabStops()).toEqual([bold]);
   });
 });
