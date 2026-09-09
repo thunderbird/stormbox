@@ -60,7 +60,6 @@ import type { SpotlightId } from './constants/feature-tour';
 import { beaconById, type BeaconId } from './constants/feature-beacons';
 import { useFeatureBeaconsStore } from './stores/feature-beacons-store';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
-import SettingsGearButton from './components/settings/SettingsGearButton.vue';
 // Staff-only Kanban feature (src/features/kanban): the settings dialog's
 // staff section gates the flag; the board replaces MessageList only while
 // the flag is on. Both staff pieces are async so a non-staff session never
@@ -435,11 +434,12 @@ function dismissWelcomeModal() {
   void spotlight.cancel();
   writeOnboardingFlag(WELCOME_MODAL_STORAGE_KEY);
   // Welcome covers every announced feature, so a new user never gets
-  // beacons; a user re-opening Welcome from the account menu keeps theirs.
+  // beacons; a user re-opening Welcome from Settings keeps theirs.
   if (!beaconStore.enabled) writeOnboardingFlag(WHATS_NEW_STORAGE_KEY);
 }
 
 function showWelcomeModalAgain() {
+  showSettingsDialog.value = false;
   if (authStore.status === AUTH_STATE.CONNECTED) {
     beaconStore.close();
     showWelcomeModal.value = true;
@@ -727,7 +727,6 @@ function unwatchSystemTheme() {
         >
           <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
         </a>
-        <SettingsGearButton @open="showSettingsDialog = true" />
         <button
           v-if="showThemeToggle"
           class="quick-filter__action theme-toggle"
@@ -749,7 +748,7 @@ function unwatchSystemTheme() {
           @open-settings="showSettingsDialog = true"
         />
         <FeatureBeaconMenu @reveal="revealBeacon" />
-        <AccountAvatarMenu @show-welcome-modal="showWelcomeModalAgain" />
+        <AccountAvatarMenu />
       </div>
     </header>
 
@@ -760,6 +759,7 @@ function unwatchSystemTheme() {
       :sidebar-label="sidebarLabel"
       @change="requestSpaceChange"
       @toggle-folder-list="toggleFolderList"
+      @open-settings="showSettingsDialog = true"
     />
 
     <div
@@ -878,6 +878,7 @@ function unwatchSystemTheme() {
       v-if="showSettingsDialog"
       :applied-theme="appliedTheme"
       @close="showSettingsDialog = false"
+      @show-welcome="showWelcomeModalAgain"
     />
     <KanbanCelebration v-if="authStore.isStaff" />
   </div>

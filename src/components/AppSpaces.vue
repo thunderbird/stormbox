@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Mail, Users } from '@lucide/vue';
+import { Mail, Settings, Users } from '@lucide/vue';
 import AppToggleButton from './AppToggleButton.vue';
 
 const props = defineProps({
@@ -10,7 +10,7 @@ const props = defineProps({
   // Names the sidebar the toggle controls in the active space (R-8.5).
   sidebarLabel: { type: String, default: 'folder list' },
 });
-const emit = defineEmits(['change', 'toggle-folder-list']);
+const emit = defineEmits(['change', 'toggle-folder-list', 'open-settings']);
 const folderListToggleLabel = computed(() =>
   `${props.folderListHidden ? 'Show' : 'Hide'} ${props.sidebarLabel}`,
 );
@@ -42,6 +42,17 @@ function pick(name) { emit('change', name); }
       <Users :size="20" :stroke-width="1.75" />
     </AppToggleButton>
     <div class="app-spaces__bottom-actions">
+      <!-- The shell owns the dialog; below 640px the compact top-nav menu
+           opens the same one and this button is hidden. -->
+      <AppToggleButton
+        class="app-spaces__item app-spaces__settings"
+        aria-label="Settings"
+        title="Settings"
+        data-settings-gear
+        @click="emit('open-settings')"
+      >
+        <Settings :size="20" :stroke-width="1.75" aria-hidden="true" />
+      </AppToggleButton>
       <AppToggleButton
         class="app-spaces__item"
         :active="!props.folderListHidden"
@@ -155,6 +166,9 @@ function pick(name) { emit('change', name); }
     left: max(8px, env(safe-area-inset-left));
     margin-top: 0;
     flex-direction: row;
+  }
+  .app-spaces__settings {
+    display: none;
   }
 }
 </style>

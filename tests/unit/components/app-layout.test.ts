@@ -264,6 +264,18 @@ function showMeButton(wrapper: ReturnType<typeof mountApp>, title: string) {
   return wrapper.get(`button[aria-label="Show me: ${title}"]`);
 }
 
+/** Gear → Settings → "Show welcome"; the dialog is teleported to body. */
+async function reopenWelcomeFromSettings(wrapper: ReturnType<typeof mountApp>) {
+  await wrapper.get('[data-settings-gear]').trigger('click');
+  await nextTick();
+  const button = document.body.querySelector<HTMLButtonElement>(
+    '[data-settings-dialog] [data-show-welcome]',
+  );
+  if (!button) throw new Error('Settings has no "Show welcome" button');
+  button.click();
+  await nextTick();
+}
+
 function pressEscape() {
   window.dispatchEvent(new KeyboardEvent('keydown', {
     bubbles: true,
@@ -905,12 +917,7 @@ describe('App mail layout', () => {
     await settleBeacons();
     expect(wrapper.find('.feature-beacons').exists()).toBe(true);
 
-    (wrapper.get('.account-menu').element as HTMLDetailsElement).open = true;
-    await nextTick();
-    const item = wrapper.findAll('[role="menuitem"]')
-      .find((candidate) => candidate.text().includes('Welcome & shortcuts'));
-    expect(item).toBeDefined();
-    await item!.trigger('click');
+    await reopenWelcomeFromSettings(wrapper);
     await settleBeacons();
 
     expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
@@ -925,19 +932,22 @@ describe('App mail layout', () => {
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
 
-  it('reopens Welcome from the account menu without touching either key', async () => {
+  it('reopens Welcome from Settings without touching either key, and not from the account menu', async () => {
     const wrapper = mountApp();
     await nextTick();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
 
     (wrapper.get('.account-menu').element as HTMLDetailsElement).open = true;
     await nextTick();
-    const item = wrapper.findAll('[role="menuitem"]')
-      .find((candidate) => candidate.text().includes('Welcome & shortcuts'));
-    expect(item).toBeDefined();
-    await item!.trigger('click');
+    expect(wrapper.findAll('[role="menuitem"]').map((item) => item.text()))
+      .not.toContainEqual(expect.stringContaining('Welcome'));
+    (wrapper.get('.account-menu').element as HTMLDetailsElement).open = false;
+
+    await reopenWelcomeFromSettings(wrapper);
     await nextTick();
 
+    // Settings closes as Welcome opens; only one dialog is up.
+    expect(document.body.querySelector('[data-settings-dialog]')).toBeNull();
     expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
     expect(wrapper.find('.beacon-menu').exists()).toBe(false);
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');

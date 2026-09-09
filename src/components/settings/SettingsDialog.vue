@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
- * The gear dialog. Every user gets the shortcut scheme picker and the
- * "follow system theme" switch. Staff additionally get a "Staff settings"
+ * The gear dialog. Every user gets the shortcut scheme picker, the
+ * "follow system theme" switch and a button that reopens Welcome (OB-1.7).
+ * Staff additionally get a "Staff settings"
  * section below a rule; that section is an async chunk so non-staff never
  * download the kanban feature, fireworks or audio it carries.
  */
@@ -28,6 +29,8 @@ defineProps<{
 
 const emit = defineEmits<{
   close: [];
+  /** Reopen the Welcome modal; the shell closes this dialog first. */
+  'show-welcome': [];
 }>();
 
 const authStore = useAuthStore();
@@ -122,6 +125,21 @@ onBeforeUnmount(() => {
               @click="toggleFollowSystemTheme(appliedTheme)"
             >
               <span class="settings-dialog__switch-knob" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div class="settings-dialog__row">
+            <div class="settings-dialog__row-text">
+              <span class="settings-dialog__row-title">Welcome &amp; shortcuts</span>
+              <span class="settings-dialog__row-hint">See the feature tour and the full shortcut list again.</span>
+            </div>
+            <button
+              type="button"
+              class="settings-dialog__btn"
+              data-show-welcome
+              @click="emit('show-welcome')"
+            >
+              Show welcome
             </button>
           </div>
         </div>
@@ -261,6 +279,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font: inherit;
   font-size: 13px;
+  white-space: nowrap;
 }
 .settings-dialog__btn:hover:not(:disabled) { background: var(--rowHover); }
 .settings-dialog__btn:disabled { opacity: 0.55; cursor: default; }

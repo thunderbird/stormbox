@@ -115,7 +115,7 @@ describe('settings gear and dialog', () => {
 
     const gear = wrapper.get('[data-settings-gear]');
     expect(gear.attributes('aria-label')).toBe('Settings');
-    expect(gear.classes()).toContain('quick-filter__action');
+    expect(gear.classes()).toContain('app-spaces__item');
     expect(dialog()).toBeNull();
 
     const panel = await openSettings(wrapper);
@@ -125,16 +125,17 @@ describe('settings gear and dialog', () => {
     expect(document.activeElement).toBe(panel);
   });
 
-  it('non-staff see exactly the shortcut picker and the follow-system switch', async () => {
+  it('non-staff see exactly the shortcut picker, the follow-system switch and the Welcome button', async () => {
     const wrapper = mountApp();
     await flushPromises();
     const panel = await openSettings(wrapper);
 
     const titles = Array.from(panel.querySelectorAll('.settings-dialog__row-title'))
       .map((el) => el.textContent);
-    expect(titles).toEqual(['Keyboard shortcuts', 'Follow system theme']);
+    expect(titles).toEqual(['Keyboard shortcuts', 'Follow system theme', 'Welcome & shortcuts']);
     expect(panel.querySelector('[role="radiogroup"]')).not.toBeNull();
     expect(panel.querySelector('[data-system-theme-toggle]')).not.toBeNull();
+    expect(panel.querySelector('[data-show-welcome]')!.textContent!.trim()).toBe('Show welcome');
     expect(panel.querySelector('hr')).toBeNull();
     expect(panel.textContent).not.toContain('Staff settings');
     expect(panel.querySelector('[data-kanban-unlock-code]')).toBeNull();

@@ -40,8 +40,11 @@ export class StormboxPage {
   readonly accountMenuButton: Locator;
   readonly accountMenuIdentity: Locator;
   readonly accountSettingsMenuItem: Locator;
-  readonly showWelcomeModalMenuItem: Locator;
   readonly logOutMenuItem: Locator;
+  readonly settingsGearButton: Locator;
+  readonly settingsMenuItem: Locator;
+  readonly settingsDialog: Locator;
+  readonly showWelcomeButton: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
   readonly messageCount: Locator;
@@ -87,8 +90,11 @@ export class StormboxPage {
     this.accountMenuButton = page.locator('.account-menu__button[aria-label="Open account menu"]');
     this.accountMenuIdentity = page.locator('.account-menu__identity .account-menu__email');
     this.accountSettingsMenuItem = page.getByRole('menuitem', { name: /account settings/i });
-    this.showWelcomeModalMenuItem = page.getByRole('menuitem', { name: /welcome & shortcuts/i });
     this.logOutMenuItem = page.getByRole('menuitem', { name: /log out/i });
+    this.settingsGearButton = page.locator('[data-settings-gear]');
+    this.settingsMenuItem = page.getByRole('menuitem', { name: /^settings$/i });
+    this.settingsDialog = page.getByRole('dialog', { name: /^settings$/i });
+    this.showWelcomeButton = this.settingsDialog.getByRole('button', { name: /^show welcome$/i });
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
     this.messageCount = page.locator('.msg-list__count');
@@ -197,7 +203,7 @@ export class StormboxPage {
     await this.exerciseComposeDialog();
     await this.exerciseFolderNavigation();
     await this.exerciseContactsView();
-    await this.exerciseWelcomeModal();
+    await this.exerciseWelcomeModal(projectName);
     await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN, projectName);
     await this.assertExternalLinkOpensInNewTab(this.giveFeedbackButton, FEEDBACK_URL_PATTERN, projectName);
   }
@@ -419,11 +425,17 @@ export class StormboxPage {
     });
   }
 
-  private async exerciseWelcomeModal() {
-    await expect(this.accountMenuButton).toBeVisible();
-    await this.accountMenuButton.click();
-    await expect(this.showWelcomeModalMenuItem).toBeVisible();
-    await this.showWelcomeModalMenuItem.click();
+  /** Settings is the gear in the spaces rail on desktop and a compact-menu item below 640px. */
+  private async exerciseWelcomeModal(projectName: string) {
+    if (this.isDesktopProject(projectName)) {
+      await expect(this.settingsGearButton).toBeVisible();
+      await this.settingsGearButton.click();
+    } else {
+      await this.clickHeaderAction(projectName, this.settingsMenuItem);
+    }
+    await expect(this.settingsDialog).toBeVisible();
+    await this.showWelcomeButton.click();
+    await expect(this.settingsDialog).not.toBeVisible();
     await expect(this.welcomeDialog).toBeVisible();
     await this.getStartedButton.click();
     await expect(this.welcomeDialog).not.toBeVisible();
@@ -475,7 +487,6 @@ export class StormboxPage {
     await this.accountMenuButton.click();
     await expect(this.accountMenuIdentity).toHaveText(ACCTS_OIDC_EMAIL);
     await expect(this.accountSettingsMenuItem).toBeVisible();
-    await expect(this.showWelcomeModalMenuItem).toBeVisible();
     await expect(this.logOutMenuItem).toBeVisible();
     await this.accountMenuButton.click();
   }
