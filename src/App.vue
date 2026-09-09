@@ -887,7 +887,7 @@ function unwatchSystemTheme() {
   --accent-fg: var(--accent);
   /* Chrome on the Bolt ramp (assets/styles.css). Dark: content on lower,
      folder list, popovers and dialogs on base, rail and top nav on raised.
-     Light runs the ladder the other way (html.light below). */
+     Light steps the other way (html.light below). */
   --space-rail-bg: var(--colour-neutral-raised);
   --space-rail-fg: var(--muted);
   --folder-list-bg: var(--colour-neutral-base);
@@ -912,9 +912,10 @@ function unwatchSystemTheme() {
 
 html.light,
 .light {
-  /* Content on raised, folder list and dialogs on base, rail and top nav
-     on lower: the inverse of dark. */
-  --space-rail-bg: var(--colour-neutral-lower);
+  /* Content, dialogs and popovers on base, folder list on lower, rail and
+     top nav on subtle. */
+  --space-rail-bg: var(--colour-neutral-subtle);
+  --folder-list-bg: var(--colour-neutral-lower);
   --top-nav-wordmark: var(--accent);
 }
 

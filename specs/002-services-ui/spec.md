@@ -91,11 +91,11 @@ services-ui components share it:
 `lower`, `base` and `raised` are elevation; `subtle` and `deep` are tints
 (lighter than `base` in dark, darker in light). Stormbox's chrome tokens
 alias the ramp, and the ladder runs the opposite way in each theme: in dark,
-content (`--panel`) is on lower and the spaces rail and top nav on raised;
-in light, content is on raised (white) and the rail and top nav on lower.
-The folder list, popovers and dialogs (`--folder-list-bg`,
-`--top-nav-popover-bg`, `--modal-bg`) sit on base in both, between content
-and chrome. Inputs (`--panel2`) take subtle, so a field lifts from a dark
+content (`--panel`) is on lower, the folder list (`--folder-list-bg`) on
+base, and the spaces rail and top nav on raised; in light, content is on
+base, the folder list on lower, and the rail and top nav on subtle.
+Popovers and dialogs (`--top-nav-popover-bg`, `--modal-bg`) sit on base in
+both. Inputs (`--panel2`) take subtle, so a field lifts from a dark
 surface and recesses from a light one; dividers (`--border`) are the
 nearest tint to the surface (subtle in dark, deep in light, ~1.2:1);
 control and dialog edges (`--control-border`, `--modal-border`) use
