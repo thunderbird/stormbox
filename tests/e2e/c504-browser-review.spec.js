@@ -204,7 +204,7 @@ test.describe('C504 browser review regressions', () => {
     try {
       await patchPrincipalEmails('addItem', alias);
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await page.getByRole('button', { name: 'Add identity' }).click();
       const form = page.locator('.identity-detail__editor');
       await form.getByLabel('Display name', { exact: true }).fill('C504 ZWSP probe');
@@ -386,7 +386,7 @@ test.describe('C504 browser review regressions', () => {
     try {
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
       await expect(page.locator('.contacts')).toBeVisible();
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await verifyIdentityEditorWidth(page, 737);
       await verifyIdentityEditorWidth(page, 390);
     } finally {

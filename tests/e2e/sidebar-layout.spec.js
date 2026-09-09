@@ -249,7 +249,7 @@ test.describe('Sidebar layout', () => {
     await expect(slot).not.toHaveClass(/sidebar-slot--hidden/);
     await expect(rail).toBeInViewport();
     await expect(rail.getByRole('button', { name: /All contacts/ })).toBeVisible();
-    await expect(rail.getByRole('button', { name: /Manage identities/ })).toBeVisible();
+    await expect(rail.getByRole('button', { name: /^Identities/ })).toBeVisible();
 
     const geometry = await rail.evaluate((element) => {
       const books = element.querySelector('.contacts-rail__books');
@@ -285,7 +285,7 @@ test.describe('Sidebar layout', () => {
     expect(compact.labelLeft).toBeGreaterThanOrEqual(compact.contentLeft - 1);
     expect(compact.labelRight).toBeLessThanOrEqual(compact.contentRight + 1);
 
-    await rail.getByRole('button', { name: /Manage identities/ }).click();
+    await rail.getByRole('button', { name: /^Identities/ }).click();
     await expect(page.getByRole('listbox', { name: 'Identities' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Hide address book list' }).click();

@@ -54,7 +54,8 @@ interface CardPosition {
   top: number;
 }
 
-/* Hit target size; the 10px dot is centred on the anchor's top-right corner. */
+/* Hit target size; the 10px dot is centred on the anchor's top-right corner,
+   or on its left edge at mid-height for `dot: 'inline-start'` beacons. */
 const DOT_SIZE = 32;
 const DOT_VIEWPORT_MARGIN = 0;
 const CARD_OFFSET = 12;
@@ -152,12 +153,15 @@ function setDotEl(id: BeaconId, element: unknown): void {
 
 function dotStyle(anchor: Anchor): Record<string, string> {
   const half = DOT_SIZE / 2;
+  const inline = beaconById(anchor.id).dot === 'inline-start';
+  const centreX = inline ? anchor.rect.left : anchor.rect.right;
+  const centreY = inline ? anchor.rect.top + anchor.rect.height / 2 : anchor.rect.top;
   const left = Math.min(
-    Math.max(anchor.rect.right - half, DOT_VIEWPORT_MARGIN),
+    Math.max(centreX - half, DOT_VIEWPORT_MARGIN),
     window.innerWidth - DOT_SIZE - DOT_VIEWPORT_MARGIN,
   );
   const top = Math.min(
-    Math.max(anchor.rect.top - half, DOT_VIEWPORT_MARGIN),
+    Math.max(centreY - half, DOT_VIEWPORT_MARGIN),
     window.innerHeight - DOT_SIZE - DOT_VIEWPORT_MARGIN,
   );
   return { left: `${left}px`, top: `${top}px` };

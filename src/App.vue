@@ -470,10 +470,11 @@ async function revealBeacon(id: BeaconId): Promise<void> {
       if (!await requestSpaceChange('contacts')) return;
       break;
     case undefined:
-      // The spaces bar is always on screen. The Starred filter is in the
-      // message list header; the other unstaged controls are in the Mail
-      // sidebar, which the compact layouts may have hidden.
-      if (id !== 'contacts') {
+      // The spaces bar (Contacts, Settings gear) is always on screen. The
+      // Starred filter is in the message list header; the other unstaged
+      // controls are in the Mail sidebar, which the compact layouts may
+      // have hidden.
+      if (id !== 'contacts' && id !== 'keyboardShortcuts') {
         if (!await requestSpaceChange('mail')) return;
         if (id === 'starMessages') {
           // The single-column layout shows the list or the open message.

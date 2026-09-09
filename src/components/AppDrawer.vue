@@ -3,7 +3,7 @@ import { ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { Grip } from '@lucide/vue';
 
-import { MAIL_APP_ICON, OTHER_PRO_APPS } from '../constants/apps';
+import { MAIL_APP_GLYPH, OTHER_PRO_APPS } from '../constants/apps';
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
 
@@ -27,8 +27,8 @@ function close() {
         aria-current="page"
         @click="close"
       >
-        <img :src="MAIL_APP_ICON" class="app-drawer__icon" alt="" aria-hidden="true" />
-        <span>Mail</span>
+        <span class="app-drawer__icon" aria-hidden="true" v-html="MAIL_APP_GLYPH" />
+        <span class="app-drawer__label">Mail</span>
       </button>
       <a
         v-for="app in OTHER_PRO_APPS"
@@ -40,8 +40,8 @@ function close() {
         role="menuitem"
         @click="close"
       >
-        <img :src="app.icon" class="app-drawer__icon" alt="" aria-hidden="true" />
-        <span>{{ app.name }}</span>
+        <span class="app-drawer__icon" aria-hidden="true" v-html="app.glyph" />
+        <span class="app-drawer__label">{{ app.name }}</span>
       </a>
     </div>
   </details>
@@ -78,41 +78,74 @@ function close() {
   box-shadow: 0 16px 32px color-mix(in srgb, #000 32%, transparent);
 }
 
+/* Tile states (Figma tMail_web nav-IA, app-drawer/*): the squircle is a
+   44px gradient with a 1px border; a resting app has a grey glyph and
+   label; hover and focus turn the glyph accent and, in light mode, tint the
+   gradient's foot, focus adding a 2px ring 2px out; the current app keeps
+   that with an accent border and a bold accent label. The gradient runs
+   light-to-dark in both themes, so its stops are picked per scheme rather
+   than from the surface ladder, which flips. */
 .app-drawer__tile {
+  --tile-top: light-dark(var(--colour-neutral-raised), var(--colour-neutral-deep));
+  --tile-foot: light-dark(var(--colour-neutral-subtle), var(--colour-neutral-lower));
+  --tile-foot-lit: light-dark(
+    color-mix(in srgb, var(--accent) 14%, var(--colour-neutral-raised)),
+    var(--colour-neutral-lower)
+  );
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 12px 6px 10px;
-  border: 1px solid transparent;
+  gap: 4px;
+  padding: 8px 6px;
+  border: 0;
   border-radius: 10px;
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
 }
-.app-drawer__tile:hover,
 .app-drawer__tile:focus-visible {
-  background: var(--rowHover);
   outline: none;
-}
-.app-drawer__tile--current {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-.app-drawer__tile--current:hover,
-.app-drawer__tile--current:focus-visible {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .app-drawer__icon {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  padding: 7.5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: linear-gradient(to bottom, var(--tile-top), var(--tile-foot));
+  box-shadow: 0 3px 6px -2px color-mix(in srgb, #000 15%, transparent);
+  color: var(--muted);
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.app-drawer__icon :deep(svg) {
   display: block;
-  width: 40px;
-  height: 40px;
-  border-radius: 9px;
-  filter: drop-shadow(0 2px 3px color-mix(in srgb, #000 20%, transparent));
+  width: 100%;
+  height: 100%;
+}
+
+.app-drawer__tile:hover .app-drawer__icon,
+.app-drawer__tile:focus-visible .app-drawer__icon,
+.app-drawer__tile--current .app-drawer__icon {
+  background: linear-gradient(to bottom, var(--tile-top), var(--tile-foot-lit));
+  color: var(--accent);
+}
+.app-drawer__tile:focus-visible .app-drawer__icon {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.app-drawer__tile--current .app-drawer__icon {
+  border-color: var(--accent);
+}
+.app-drawer__tile--current {
+  color: var(--accent);
+  font-weight: 700;
 }
 </style>

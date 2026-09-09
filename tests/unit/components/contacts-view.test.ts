@@ -362,6 +362,29 @@ describe('ContactsView directory shell', () => {
     expect(wrapper.find('.contact-detail__photo-editor img').exists()).toBe(false);
   });
 
+  it('groups Identities, the Trusted senders book and Trash under a Manage title below the user\'s own books', async () => {
+    const trusted: AddressbookRow = {
+      ...addressbooks[0], id: 3, remote_id: 'book-3', name: 'Trusted senders', is_default: 0, sort_order: -1,
+    };
+    const { store, wrapper } = await mountContacts();
+    store.addressbooks = [trusted, ...addressbooks];
+    await nextTick();
+
+    // Rows and the title in document order.
+    const sequence = () => wrapper.findAll('.contacts-rail__books .contacts-rail__book, .contacts-rail__section-title')
+      .map((el) => (el.element.tagName === 'H3' ? `# ${el.text()}` : el.get('.contacts-rail__name').text()));
+    expect(sequence()).toEqual([
+      'All contacts', 'Contacts', 'Team', '# Manage', 'Identities', 'Trusted senders', 'Trash',
+    ]);
+
+    // Without a Trusted senders book the group is Identities and Trash.
+    store.addressbooks = addressbooks;
+    await nextTick();
+    expect(sequence()).toEqual([
+      'All contacts', 'Contacts', 'Team', '# Manage', 'Identities', 'Trash',
+    ]);
+  });
+
   it('hides an unselected detail pane and preserves the phone list cursor', async () => {
     const first = makeContact(0);
     const second = makeContact(1);
@@ -721,7 +744,7 @@ describe('ContactsView directory shell', () => {
     const guardedNavigations = [
       () => option(wrapper, 'contact:2').trigger('click'),
       () => buttonContainingText(wrapper, 'Contacts').trigger('click'),
-      () => buttonContainingText(wrapper, 'Manage identities').trigger('click'),
+      () => buttonContainingText(wrapper, 'Identities').trigger('click'),
     ];
     for (const [index, navigate] of guardedNavigations.entries()) {
       await navigate();
@@ -977,7 +1000,7 @@ describe('ContactsView directory shell', () => {
       return { ok: true, identity: created };
     });
 
-    await buttonContainingText(wrapper, 'Manage identities').trigger('click');
+    await buttonContainingText(wrapper, 'Identities').trigger('click');
     await settle();
     await option(wrapper, 'identity:101').trigger('click');
     await settle();
@@ -1028,7 +1051,7 @@ describe('ContactsView directory shell', () => {
       return { ok: true };
     });
 
-    await buttonContainingText(wrapper, 'Manage identities').trigger('click');
+    await buttonContainingText(wrapper, 'Identities').trigger('click');
     await settle();
     expect(option(wrapper, 'identity:100').get('.directory-list__primary-badge').text())
       .toBe('Primary');
@@ -1093,7 +1116,7 @@ describe('ContactsView directory shell', () => {
     vi.mocked(store.listIdentities).mockImplementationOnce(() =>
       new Promise((resolve) => { resolveRefresh = resolve; }));
 
-    await buttonContainingText(wrapper, 'Manage identities').trigger('click');
+    await buttonContainingText(wrapper, 'Identities').trigger('click');
     await settle();
     await buttonWithText(wrapper, 'Add identity').trigger('click');
     await settle();
@@ -1135,7 +1158,7 @@ describe('ContactsView directory shell', () => {
     expect(wrapper.text()).not.toContain('selected');
     expect(wrapper.find('[data-directory-pane="detail"]').exists()).toBe(true);
 
-    await buttonContainingText(wrapper, 'Manage identities').trigger('click');
+    await buttonContainingText(wrapper, 'Identities').trigger('click');
     await settle();
     expect(wrapper.find('.directory-list__checkbox').exists()).toBe(false);
     expect(wrapper.find('.selectable-list-header__select-all').exists()).toBe(false);

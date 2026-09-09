@@ -81,7 +81,7 @@ test('Firefox smoke exposes ordered address-book controls', async ({
   const concrete = page.locator('.contacts-rail__book')
     .filter({ hasNotText: 'All contacts' })
     .filter({ hasNotText: 'Trash' })
-    .filter({ hasNotText: 'Manage identities' })
+    .filter({ hasNotText: 'Identities' })
     .first();
   await concrete.click();
   await expect(page.locator('.directory-list__addressbook-actions')

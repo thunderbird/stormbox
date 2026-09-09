@@ -3,6 +3,7 @@ import {
   BookUser,
   CalendarClock,
   FolderTree,
+  Keyboard,
   Minus,
   PenLine,
   Star,
@@ -24,7 +25,8 @@ export type BeaconId =
   | 'contacts'
   | 'manageIdentities'
   | 'manageFolders'
-  | 'starMessages';
+  | 'starMessages'
+  | 'keyboardShortcuts';
 
 export type BeaconStage = 'composer' | 'contacts';
 
@@ -37,6 +39,11 @@ export interface FeatureBeacon {
   icon: Component;
   /** Host that must be on screen before the dot can show. */
   stage?: BeaconStage;
+  /**
+   * Where the dot sits on the anchor: its top-right corner (default), or
+   * on its left edge at mid-height, in line with a row's label.
+   */
+  dot?: 'corner' | 'inline-start';
 }
 
 export const BEACON_SESSION_LIMIT = 5;
@@ -95,6 +102,7 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     body: 'Set up each address you send from: display name, signature, Reply-To, and automatic Bcc.',
     icon: BookUser,
     stage: 'contacts',
+    dot: 'inline-start',
   },
   {
     id: 'manageFolders',
@@ -111,6 +119,15 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     title: 'Star a message',
     body: 'Hover a message and click the star, or press S. Starred here shows only the messages you starred, and stars sync with your other mail apps.',
     icon: Star,
+  },
+  {
+    // Shortcuts have no control of their own; the gear leads to the scheme
+    // picker and, through Show welcome, the full list (OB-4.12).
+    id: 'keyboardShortcuts',
+    anchor: SPOTLIGHT_TARGETS.settingsGear,
+    title: 'Keyboard shortcuts',
+    body: 'Move through mail, archive, star, and reply without leaving the keyboard. Choose Web or Thunderbird-style keys in Settings, and see the full list under Show welcome.',
+    icon: Keyboard,
   },
 ];
 

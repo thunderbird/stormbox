@@ -13,9 +13,11 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import App from '../../../src/App.vue';
+import { BEACON_IDS } from '../../../src/constants/feature-beacons';
 import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
@@ -139,6 +141,34 @@ describe('settings gear and dialog', () => {
     expect(panel.querySelector('hr')).toBeNull();
     expect(panel.textContent).not.toContain('Staff settings');
     expect(panel.querySelector('[data-kanban-unlock-code]')).toBeNull();
+    expect(panel.querySelector('[data-refresh-beacons]')).toBeNull();
+  });
+
+  it('staff can restart a finished beacon round from Settings, which closes to show it', async () => {
+    useAuthStore().recoveryEmail = 'boss@thunderbird.net';
+    const wrapper = mountApp();
+    await flushPromises();
+    const beaconStore = useFeatureBeaconsStore();
+    expect(beaconStore.enabled).toBe(false);
+    expect(wrapper.find('.beacon-menu').exists()).toBe(false);
+
+    const panel = await openSettings(wrapper);
+    const refresh = await vi.waitFor(() => {
+      const button = panel.querySelector<HTMLButtonElement>('[data-refresh-beacons]');
+      if (!button) throw new Error('refresh button not rendered');
+      return button;
+    });
+    expect(refresh.textContent!.trim()).toBe('Refresh beacons');
+
+    refresh.click();
+    await flushPromises();
+
+    expect(dialog()).toBeNull();
+    expect(beaconStore.enabled).toBe(true);
+    expect(beaconStore.sessions).toBe(1);
+    expect(beaconStore.count).toBe(BEACON_IDS.length);
+    expect(localStorage.getItem('stormbox.whatsNewSeen.2026-09-compose')).toBeNull();
+    expect(wrapper.get('.beacon-menu').text()).toContain(`${BEACON_IDS.length} new`);
   });
 
   it('staff get a rule and Staff settings with the feature code below', async () => {

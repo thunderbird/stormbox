@@ -80,6 +80,7 @@ const SHORTCUT_GROUPS: ReadonlyArray<{
       { action: 'delete', label: 'Delete' },
       { action: 'deleteForever', label: 'Delete permanently' },
       { action: 'toggleRead', label: 'Mark read or unread' },
+      { action: 'toggleStar', label: 'Star or unstar' },
       { action: 'selectAll', label: 'Select all' },
       { action: 'clearSelection', label: 'Clear selection' },
     ],

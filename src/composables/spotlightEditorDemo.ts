@@ -1,5 +1,5 @@
 /**
- * Drives the compose editor for the Attachments and Clipboard spotlight
+ * Drives the compose editor for the Attachments and clipboard spotlight
  * through the same DOM the user acts on: text is written into the document
  * (Squire tracks mutations; the tour holds the session's autosave), then a URL
  * is pasted over a selection and an image file at the caret via the editor's

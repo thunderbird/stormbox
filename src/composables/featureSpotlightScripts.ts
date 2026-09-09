@@ -49,6 +49,7 @@ export const SPOTLIGHT_TARGETS = {
   scheduleTrigger: `${COMPOSER} .compose-schedule-menu__trigger`,
   scheduleMenuList: `${COMPOSER} .compose-schedule-menu__menu`,
   contactsSpace: '.app-spaces [aria-label="Contacts"]',
+  settingsGear: '.app-spaces [data-settings-gear]',
   contactsRail: '.contacts-rail',
   contactsAllBook: '.contacts-rail__books > .contacts-rail__book',
   contactsIdentities: '.contacts__identity-section',

@@ -150,6 +150,18 @@ export const useFeatureBeaconsStore = defineStore('feature-beacons', () => {
     cardShowing.value = false;
   }
 
+  /**
+   * Staff testing (OB-3.7): forgets the round's seen flag and progress and
+   * arms it again as session 1 with every beacon unseen.
+   */
+  function restart(): void {
+    removeOnboardingKey(WHATS_NEW_STORAGE_KEY);
+    removeOnboardingKey(FEATURE_BEACONS_STORAGE_KEY);
+    reset();
+    sessionCounted.value = false;
+    arm();
+  }
+
   return {
     enabled,
     seen,
@@ -167,5 +179,6 @@ export const useFeatureBeaconsStore = defineStore('feature-beacons', () => {
     close,
     setCardShowing,
     reset,
+    restart,
   };
 });

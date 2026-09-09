@@ -78,7 +78,7 @@ open for review and may change before acceptance.
 
 | ID / Status | Requirement |
 |:--|:--|
-| OB-2.1 🟩 Done | The Features grid shall show these six cards in this order, three per row: `Compose with confidence`, `Send on your schedule`, `Attachments and Clipboard`; `Organize your mail`, `Contacts and identities`, `Smarter recipients`. Each card's description is one sentence naming what the user can do, not how it is built. The current copy is the source of truth in `src/constants/feature-tour.ts`. |
+| OB-2.1 🟩 Done | The Features grid shall show these six cards in this order, three per row: `Compose with confidence`, `Send on your schedule`, `Attachments and clipboard`; `Organize your mail`, `Contacts and identities`, `Smarter recipients`. Each card's description is one sentence naming what the user can do, not how it is built. The current copy is the source of truth in `src/constants/feature-tour.ts`. |
 | OB-2.2 🟩 Done | `Send on your schedule` shall always be listed; when the account lacks the FUTURERELEASE capability the composer shows the schedule segment disabled (SL-1.2) and the spotlight rings it as-is. |
 | OB-2.3 🟩 Done | Each card's `Show me` shall run one spotlight script. While a spotlight runs, every `Show me` shall be disabled, the modal panel shall be hidden so the live UI shows through, and a fixed caption shall remain: the card's icon and title, a step indicator when the script has more than one step, the current step's text in a live region, and a `Done` button that ends the spotlight. |
 | OB-2.4 🟩 Done | A spotlight step shall ring the union of its target selectors' matches, falling back to the first matching fallback selector when no primary target exists (an empty favorites list rings the folder list instead). A step's stage selectors stay undimmed without a ring so the surface a control sits on remains readable. |
@@ -98,13 +98,14 @@ open for review and may change before acceptance.
 | OB-3.4 🟩 Done | A user whose device has the Welcome flag but not the current round's seen flag shall get that round's beacons on the next connected session. |
 | OB-3.5 🟩 Done | A round shall retire itself after `BEACON_SESSION_LIMIT` (5) connected sessions, when every beacon is seen, or on `Dismiss all`. Retiring writes the round's seen flag and removes its progress record. |
 | OB-3.6 🟩 Done | Rounds are keyed by id, so a new round supersedes an unfinished earlier one: the earlier round's progress is simply never read again and its beacons do not carry over. Beacons for a control that has moved or been renamed since must be re-declared in the new round or dropped. |
+| OB-3.7 🟩 Done | For testing, the `Staff settings` section of the Settings dialog shall carry a `Feature beacons` row whose `Refresh beacons` button removes the current round's seen flag and progress record, re-arms the round as session 1 with every beacon unseen, and closes Settings so the dots and pill show at once. Non-staff never see the row. |
 
 ## 4. Beacons
 
 | ID / Status | Requirement |
 |:--|:--|
-| OB-4.1 🟩 Done | A beacon declares an id, a CSS selector for the control it sits on, a title, a one- or two-sentence body, an icon, and an optional stage (`composer` or `contacts`). The current round's beacons are: `newMessage` (New Message button), `composeMinimize` and `composeSchedule` (staged in the composer), `contacts` (the Contacts space button), `manageIdentities` (staged in Contacts), `manageFolders` (the folder list's Manage Folders button), and `starMessages` (the message list's Starred filter, standing in for the row star that only shows on hover; `specs/011-message-keywords/spec.md`). |
-| OB-4.2 🟩 Done | The dot shall be a 10px accent disc with a slow pulsing halo, centred on the anchor's top-right corner, inside a 32px hit target, and clamped to the viewport. Under reduced motion the halo is static. |
+| OB-4.1 🟩 Done | A beacon declares an id, a CSS selector for the control it sits on, a title, a one- or two-sentence body, an icon, and an optional stage (`composer` or `contacts`). The current round's beacons are: `newMessage` (New Message button), `composeMinimize` and `composeSchedule` (staged in the composer), `contacts` (the Contacts space button), `manageIdentities` (staged in Contacts), `manageFolders` (the folder list's Manage Folders button), `starMessages` (the message list's Starred filter, standing in for the row star that only shows on hover; `specs/011-message-keywords/spec.md`), and `keyboardShortcuts` (the spaces rail's Settings gear, which leads to the shortcut style picker and, through Show welcome, the full list; opening Settings for any reason retires it per OB-4.6, and its alongside card is hidden behind the dialog per OB-4.10). |
+| OB-4.2 🟩 Done | The dot shall be a 10px accent disc with a slow pulsing halo, centred on the anchor's top-right corner (or, for a beacon on a full-width row such as Identities, on the anchor's left edge at mid-height, in line with its label), inside a 32px hit target, and clamped to the viewport. Under reduced motion the halo is static. |
 | OB-4.3 🟩 Done | A dot renders only while its beacon is unseen and its anchor is mounted, has a non-zero box on screen, and is not covered by another element at its centre (the composer backdrop over the sidebar, a row scrolled out of its container). Anchors are re-measured on resize, scroll, and DOM mutation, coalesced to one animation frame; the layer's own dots and card never count as cover. |
 | OB-4.4 🟨 Partial | Hovering a dot or its anchored control, or moving keyboard focus to a dot, shall preview the card after 150 ms. Leaving shall close a preview after a 250 ms grace unless the pointer moved onto the card. A preview takes no focus and does not gate shortcuts. Touch pointers skip hover handling. Gap, accepted: the pointer leaving the window altogether does not start the close grace, so a preview can stay up until the pointer returns. |
 | OB-4.5 🟩 Done | Clicking a dot, or choosing a beacon from the pill, shall pin the card: it takes focus, contains Tab, closes on Escape, on click outside, or on clicking the same dot again, and returns focus to where it was pinned from (the dot, or the pill). When that origin is gone or covered — the dot retired while the card was read (OB-4.7), the pill left with the last unseen beacon, a revealed host such as the composer now covers the pill — focus goes to the beacon's dot if it is still showing, otherwise to the anchored control itself. Global mail shortcuts are inert while a card is pinned. |
@@ -222,7 +223,9 @@ code or spec change in this repository; none is a server change.
   dwell, control click, staged anchors, last-card read), and
   `tests/unit/stores/feature-beacons-store.test.ts` (session limit, one
   session per page load across reconnects, seen persistence, retire on all
-  seen and on Dismiss all, corrupt storage).
+  seen and on Dismiss all, restart of a retired round, corrupt storage);
+  `tests/unit/components/settings-dialog.test.ts` (the staff-only
+  `Refresh beacons` row).
 - Browser: `tests/e2e/feature-beacons.spec.js` covers the pill count, dot
   geometry on the New Message button, hover preview, pinned card focus and
   its return to the control after `Got it`, `Got it` persistence,

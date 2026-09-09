@@ -57,6 +57,9 @@ const BEACON_RECTS = {
   '.app-spaces [aria-label="Contacts"]': {
     left: 8, top: 120, width: 40, height: 40,
   },
+  '.app-spaces [data-settings-gear]': {
+    left: 8, top: 600, width: 40, height: 40,
+  },
   '.compose-dialog--expanded .compose-schedule-menu__trigger': {
     left: 600, top: 500, width: 30, height: 30,
   },
@@ -254,7 +257,7 @@ const WHATS_NEW_KEY = 'stormbox.whatsNewSeen.2026-09-compose';
 const FEATURE_TITLES = [
   'Compose with confidence',
   'Send on your schedule',
-  'Attachments and Clipboard',
+  'Attachments and clipboard',
   'Organize your mail',
   'Contacts and identities',
   'Smarter recipients',
@@ -349,7 +352,7 @@ describe('App mail layout', () => {
       .toEqual(['Find and compose', 'Navigate', 'Message actions']);
     expect(wrapper.text()).toContain('Ctrl+K');
     expect(wrapper.findAll('.welcome__shortcut-group').at(2)!.findAll('dd').map((row) => row.text()))
-      .toEqual(['Archive', 'Delete', 'Delete permanently', 'Mark read or unread', 'Select all', 'Clear selection']);
+      .toEqual(['Archive', 'Delete', 'Delete permanently', 'Mark read or unread', 'Star or unstar', 'Select all', 'Clear selection']);
     expect(wrapper.get('#welcome-scheme-label').text()).toBe('Style');
     const picker = wrapper.get('.welcome [role="radiogroup"]');
     expect(picker.findAll('[role="radio"]').map((radio) => radio.text())).toEqual(['Web', 'Thunderbird']);
@@ -574,7 +577,7 @@ describe('App mail layout', () => {
     const wrapper = mountApp();
     await nextTick();
 
-    await showMeButton(wrapper, 'Attachments and Clipboard').trigger('click');
+    await showMeButton(wrapper, 'Attachments and clipboard').trigger('click');
     await flushPromises();
     const session = composeStore.activeSession;
     expect(session).not.toBeNull();
@@ -711,9 +714,9 @@ describe('App mail layout', () => {
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
     expect(wrapper.findAll('.feature-beacons__dot').map((dot) => dot.attributes('data-beacon')))
-      .toEqual(['newMessage', 'contacts']);
+      .toEqual(['newMessage', 'contacts', 'keyboardShortcuts']);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
     expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
       .toEqual({ seen: [], sessions: 1 });
@@ -727,7 +730,7 @@ describe('App mail layout', () => {
     await card.get('.feature-beacons__got-it').trigger('click');
     await settleBeacons();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
     expect(wrapper.find('[data-beacon="newMessage"]').exists()).toBe(false);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
@@ -744,7 +747,7 @@ describe('App mail layout', () => {
     // action that a menu could not.
     expect(wrapper.find('.beacon-menu [role="menu"]').exists()).toBe(false);
     expect(wrapper.get('.beacon-menu__popover').attributes('aria-label')).toBe('New features');
-    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(7);
+    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(8);
 
     await wrapper.get('.beacon-menu__dismiss').trigger('click');
     await settleBeacons();
@@ -857,6 +860,34 @@ describe('App mail layout', () => {
     expect(wrapper.get('[role="dialog"]').attributes('data-beacon-card')).toBe('newMessage');
   });
 
+  it('reveals the shortcuts beacon on the Settings gear without leaving the current space or showing the folder list', async () => {
+    seedExistingUser();
+    const beaconStore = useFeatureBeaconsStore();
+
+    const wrapper = mountApp();
+    await settleBeacons();
+    await wrapper.get('[aria-label="Hide folder list"]').trigger('click');
+    await settleBeacons();
+    await wrapper.get('.app-spaces [aria-label="Contacts"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.shell--contacts').exists()).toBe(true);
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+
+    (wrapper.get('.beacon-menu').element as HTMLDetailsElement).open = true;
+    await nextTick();
+    await wrapper.get('[data-beacon-item="keyboardShortcuts"]').trigger('click');
+    await settleBeacons();
+
+    // The gear is in the always-visible spaces rail, so nothing else moves.
+    expect(wrapper.find('.shell--contacts').exists()).toBe(true);
+    expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
+    expect(beaconStore.openId).toBe('keyboardShortcuts');
+    const card = wrapper.get('[role="dialog"]');
+    expect(card.attributes('data-beacon-card')).toBe('keyboardShortcuts');
+    expect(card.text()).toContain('Keyboard shortcuts');
+    expect(card.text()).toContain('Show welcome');
+  });
+
   it('leaves the card closed when the space change a reveal needs is refused', async () => {
     seedExistingUser();
     restoreContactListLayout = stubContactListLayout();
@@ -927,7 +958,9 @@ describe('App mail layout', () => {
     await settleBeacons();
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(true);
+    // Opening Settings used the gear, so only the shortcuts beacon retired.
     expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
+    expect(useFeatureBeaconsStore().seen).toEqual(['keyboardShortcuts']);
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
@@ -1216,17 +1249,22 @@ describe('App mail layout', () => {
     expect(tiles).toHaveLength(3);
     expect(tiles[0].text()).toContain('Mail');
     expect(tiles[0].attributes('aria-current')).toBe('page');
-    expect(tiles[0].get('img').attributes('src')).toBe('/icons/icon-mail.svg');
+    // Glyphs are inline SVG filled with currentColor so the tile states can
+    // recolour them; the current tile alone is styled as such.
+    expect(tiles[0].find('.app-drawer__icon svg [fill="currentColor"]').exists()).toBe(true);
+    expect(tiles[0].classes()).toContain('app-drawer__tile--current');
     expect(tiles[1].text()).toContain('Appointment');
     expect(tiles[1].attributes('href')).toBe(APPOINTMENT_URL);
     expect(tiles[1].attributes('target')).toBe('_blank');
     expect(tiles[1].attributes('rel')).toBe('noopener noreferrer');
-    expect(tiles[1].get('img').attributes('src')).toBe('/icons/icon-appointment.svg');
+    expect(tiles[1].find('.app-drawer__icon svg [fill="currentColor"]').exists()).toBe(true);
+    expect(tiles[1].classes()).not.toContain('app-drawer__tile--current');
     expect(tiles[2].text()).toContain('Send');
     expect(tiles[2].attributes('href')).toBe(SEND_URL);
     expect(tiles[2].attributes('target')).toBe('_blank');
     expect(tiles[2].attributes('rel')).toBe('noopener noreferrer');
-    expect(tiles[2].get('img').attributes('src')).toBe('/icons/icon-send.svg');
+    expect(tiles[2].find('.app-drawer__icon svg [fill="currentColor"]').exists()).toBe(true);
+    expect(tiles[2].classes()).not.toContain('app-drawer__tile--current');
   });
 
   it('collapses the actions into a menu with the same links, settings and theme toggle for compact layouts', async () => {

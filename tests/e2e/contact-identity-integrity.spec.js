@@ -559,7 +559,7 @@ test.describe('Contact and identity integrity', () => {
       await patchPrincipalEmails('addItem', alias);
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
       await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await page.getByRole('button', { name: 'Add identity' }).click();
 
       const form = page.locator('.identity-detail__editor');
@@ -756,7 +756,7 @@ test.describe('Contact and identity integrity', () => {
       draftId = null;
 
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await page.locator('.contacts__row').filter({ hasText: alias }).click();
       const deleteIdentity = page.locator('.identity-detail')
         .getByRole('button', { name: 'Delete', exact: true });
@@ -806,7 +806,7 @@ test.describe('Contact and identity integrity', () => {
       await patchPrincipalEmails('addItem', alias);
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
       await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await expect(page.getByRole('heading', { name: 'Identities' })).toBeVisible();
       await page.getByRole('button', { name: 'Add identity' }).click();
       const form = page.locator('.contacts__form');
@@ -872,7 +872,7 @@ test.describe('Contact and identity integrity', () => {
       }).toEqual({ name: 'Alias E2E Updated', email: alias });
 
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await page.locator('.contacts__row').filter({ hasText: alias }).click();
       await page.locator('.identity-detail')
         .getByRole('button', { name: 'Delete', exact: true })
@@ -906,7 +906,7 @@ test.describe('Contact and identity integrity', () => {
     try {
       await page.getByRole('button', { name: 'Contacts', exact: true }).click();
       await expect(page.locator('.contacts')).toBeVisible({ timeout: 30_000 });
-      await page.getByRole('button', { name: 'Manage identities' }).click();
+      await page.getByRole('button', { name: /^Identities/ }).click();
       await page.getByRole('button', { name: 'Add identity' }).click();
       const form = page.locator('.contacts__form');
       await form.locator('input[type="text"]').fill('Unavailable Address');

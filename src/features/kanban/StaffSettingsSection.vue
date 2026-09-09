@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
  * Staff-only rows of the settings dialog. A "Bolt colors" palette switch
- * on top; below it, until the account has unlocked the feature, a single
- * code textbox, and afterwards an on/off switch for the board with a
- * retry when the sample-folder seed failed.
+ * on top, then a "Refresh beacons" button that restarts the current
+ * announcement round (OB-3.7); below it, until the account has unlocked
+ * the feature, a single code textbox, and afterwards an on/off switch for
+ * the board with a retry when the sample-folder seed failed.
  *
  * Opening the section warms the board chunk, the seed module and the
  * audio clip, so when the code is accepted everything visible starts in
@@ -15,6 +16,7 @@ import {
   computed, onMounted, ref, watch,
 } from 'vue';
 
+import { useFeatureBeaconsStore } from '../../stores/feature-beacons-store';
 import { useMailStore } from '../../stores/mail-store';
 import { useSettingsStore } from '../../stores/settings-store';
 import { isUnlockCode, useKanbanStore } from './kanban-store';
@@ -24,6 +26,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+const beaconStore = useFeatureBeaconsStore();
 const kanban = useKanbanStore();
 const mailStore = useMailStore();
 const settingsStore = useSettingsStore();
@@ -84,6 +87,13 @@ function toggleEnabled() {
 function togglePalette() {
   void settingsStore.update({ palette: boltPalette.value ? 'classic' : 'bolt' });
 }
+
+// The beacon layer stays hidden behind this dialog, so closing it shows
+// the restarted round at once.
+function refreshBeacons() {
+  beaconStore.restart();
+  emit('close');
+}
 </script>
 
 <template>
@@ -103,6 +113,21 @@ function togglePalette() {
         @click="togglePalette"
       >
         <span class="settings-dialog__switch-knob" aria-hidden="true" />
+      </button>
+    </div>
+
+    <div class="settings-dialog__row">
+      <div class="settings-dialog__row-text">
+        <span class="settings-dialog__row-title">Feature beacons</span>
+        <span class="settings-dialog__row-hint">Bring back this round's new-feature dots and the New pill as if you had never seen them.</span>
+      </div>
+      <button
+        type="button"
+        class="settings-dialog__btn"
+        data-refresh-beacons
+        @click="refreshBeacons"
+      >
+        Refresh beacons
       </button>
     </div>
 

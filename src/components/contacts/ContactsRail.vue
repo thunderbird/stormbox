@@ -7,7 +7,7 @@ import {
   Trash2,
   Users,
 } from '@lucide/vue';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import { useContactDragDrop } from '../../composables/useContactDragDrop';
 import type { AddressbookRow } from '../../types';
@@ -44,6 +44,21 @@ const emit = defineEmits<{
 
 const hoveredDropTarget = ref<number | null>(null);
 const dropAnnouncement = ref('');
+
+// The user's own books come first. Below them, under a Manage title, sit
+// Identities, the system-managed Trusted senders book, and Trash.
+const TRASH_ENTRY = 'trash';
+type RailEntry = AddressbookRow | typeof TRASH_ENTRY;
+const railEntries = computed<RailEntry[]>(() => [
+  ...props.addressbooks.filter((book) => !isTrustedSendersBook(book)),
+  ...props.addressbooks.filter(isTrustedSendersBook),
+  TRASH_ENTRY,
+]);
+const ownBookCount = computed(() =>
+  props.addressbooks.filter((book) => !isTrustedSendersBook(book)).length);
+function entryKey(entry: RailEntry): string | number {
+  return entry === TRASH_ENTRY ? entry : entry.id;
+}
 const {
   endContactDrag,
   readContactDrop,
@@ -165,76 +180,81 @@ function onInvalidDrop(event: DragEvent): void {
         <span class="contacts-rail__count">{{ contactCount }}</span>
       </button>
 
-      <button
-        v-for="book in addressbooks"
-        :key="book.id"
-        class="contacts-rail__book contacts__book"
-        type="button"
-        :class="{
-          'contacts-rail__book--active':
-            kind === 'contacts' && selectedBookId === book.id,
-          'contacts-rail__book--drop-target': hoveredDropTarget === book.id,
-          'contacts-rail__book--read-only': book.may_write !== 1,
-        }"
-        :aria-pressed="kind === 'contacts' && selectedBookId === book.id"
-        @click="emit('selectBook', book.id)"
-        @dragover="onBookDragOver(book, $event)"
-        @dragleave="onBookDragLeave(book, $event)"
-        @drop.prevent="onBookDrop(book, $event)"
-      >
-        <BookUser
-          v-if="isTrustedSendersBook(book)"
-          :size="16"
-          :stroke-width="1.75"
-          aria-hidden="true"
-        />
-        <ContactRound
-          v-else
-          :size="16"
-          :stroke-width="1.75"
-          aria-hidden="true"
-        />
-        <span class="contacts-rail__book-label">
-          <span class="contacts-rail__name">{{ addressBookDisplayName(book) }}</span>
-          <span v-if="book.is_default === 1" class="contacts-rail__badge">
-            Personal
-          </span>
-        </span>
-        <span v-if="hoveredDropTarget === book.id" class="contacts-rail__drop-label">
-          Move here
-        </span>
-        <span v-else class="contacts-rail__count">{{ bookCounts.get(book.id) ?? 0 }}</span>
-      </button>
+      <template v-for="(entry, index) in railEntries" :key="entryKey(entry)">
+        <template v-if="index === ownBookCount">
+          <h3 class="contacts-rail__section-title">Manage</h3>
+          <div class="contacts__identity-section">
+            <button
+              class="contacts-rail__book contacts__book"
+              type="button"
+              :class="{ 'contacts-rail__book--active': kind === 'identities' }"
+              :aria-pressed="kind === 'identities'"
+              @click="emit('selectIdentities')"
+              @dragover="onInvalidDragOver"
+              @drop.prevent="onInvalidDrop"
+            >
+              <AtSign :size="16" :stroke-width="1.75" aria-hidden="true" />
+              <span class="contacts-rail__name">Identities</span>
+              <span class="contacts-rail__count">{{ identityCount }}</span>
+            </button>
+          </div>
+        </template>
 
-      <button
-        class="contacts-rail__book contacts-rail__trash contacts__book"
-        type="button"
-        :class="{ 'contacts-rail__book--active': kind === 'trash' }"
-        :aria-pressed="kind === 'trash'"
-        @click="emit('selectTrash')"
-        @dragover="onInvalidDragOver"
-        @drop.prevent="onInvalidDrop"
-      >
-        <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span class="contacts-rail__name">Trash</span>
-        <span class="contacts-rail__count">{{ trashCount }}</span>
-      </button>
-
-      <div class="contacts-rail__identity contacts__identity-section">
         <button
-          class="contacts-rail__book contacts__book"
+          v-if="entry === TRASH_ENTRY"
+          class="contacts-rail__book contacts-rail__trash contacts__book"
           type="button"
-          :class="{ 'contacts-rail__book--active': kind === 'identities' }"
-          :aria-pressed="kind === 'identities'"
-          @click="emit('selectIdentities')"
+          :class="{ 'contacts-rail__book--active': kind === 'trash' }"
+          :aria-pressed="kind === 'trash'"
+          @click="emit('selectTrash')"
           @dragover="onInvalidDragOver"
           @drop.prevent="onInvalidDrop"
         >
-          <AtSign :size="16" :stroke-width="1.75" aria-hidden="true" />
-          <span class="contacts-rail__name">Manage identities</span>
-          <span class="contacts-rail__count">{{ identityCount }}</span>
+          <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+          <span class="contacts-rail__name">Trash</span>
+          <span class="contacts-rail__count">{{ trashCount }}</span>
         </button>
-      </div>
+
+        <button
+          v-else
+          class="contacts-rail__book contacts__book"
+          type="button"
+          :class="{
+            'contacts-rail__book--active':
+              kind === 'contacts' && selectedBookId === entry.id,
+            'contacts-rail__book--drop-target': hoveredDropTarget === entry.id,
+            'contacts-rail__book--read-only': entry.may_write !== 1,
+          }"
+          :aria-pressed="kind === 'contacts' && selectedBookId === entry.id"
+          @click="emit('selectBook', entry.id)"
+          @dragover="onBookDragOver(entry, $event)"
+          @dragleave="onBookDragLeave(entry, $event)"
+          @drop.prevent="onBookDrop(entry, $event)"
+        >
+          <BookUser
+            v-if="isTrustedSendersBook(entry)"
+            :size="16"
+            :stroke-width="1.75"
+            aria-hidden="true"
+          />
+          <ContactRound
+            v-else
+            :size="16"
+            :stroke-width="1.75"
+            aria-hidden="true"
+          />
+          <span class="contacts-rail__book-label">
+            <span class="contacts-rail__name">{{ addressBookDisplayName(entry) }}</span>
+            <span v-if="entry.is_default === 1" class="contacts-rail__badge">
+              Personal
+            </span>
+          </span>
+          <span v-if="hoveredDropTarget === entry.id" class="contacts-rail__drop-label">
+            Move here
+          </span>
+          <span v-else class="contacts-rail__count">{{ bookCounts.get(entry.id) ?? 0 }}</span>
+        </button>
+      </template>
     </div>
     <span
       v-if="dropAnnouncement"
@@ -440,14 +460,17 @@ function onInvalidDrop(event: DragEvent): void {
   color: var(--text, #1a1d24);
 }
 
-.contacts-rail__trash {
-  margin-top: auto;
-}
-
-.contacts-rail__identity {
-  margin-top: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-soft, #eef0f5);
+/* Heads the Manage rows, sized like the Settings subtitle. The margin is
+   one empty row (7px padding, 1px border, 14px text at normal line height,
+   plus the list gap) below the last address book. */
+.contacts-rail__section-title {
+  margin: 35px 0 0;
+  padding: 4px 10px;
+  color: var(--muted, #6b7388);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .contacts-rail__announcement {

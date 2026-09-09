@@ -44,7 +44,7 @@ export const FEATURE_CARDS: readonly FeatureCard[] = [
   },
   {
     icon: Paperclip,
-    title: 'Attachments and Clipboard',
+    title: 'Attachments and clipboard',
     description: 'Attach files, paste images, and paste links over selected text in a message.',
     spotlight: 'attachments',
   },

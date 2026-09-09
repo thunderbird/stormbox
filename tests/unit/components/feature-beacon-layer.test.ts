@@ -21,6 +21,7 @@ const COMPOSE = '.sidebar__compose';
 const CONTACTS = '.app-spaces [aria-label="Contacts"]';
 const MANAGE_FOLDERS = '.folder-tree__manage';
 const STARRED_FILTER = '.msg-list__filter--starred';
+const SETTINGS_GEAR = '.app-spaces [data-settings-gear]';
 
 const RECTS = {
   [COMPOSE]: {
@@ -34,6 +35,9 @@ const RECTS = {
   },
   [STARRED_FILTER]: {
     left: 320, top: 60, width: 60, height: 28,
+  },
+  [SETTINGS_GEAR]: {
+    left: 8, top: 600, width: 40, height: 40,
   },
 };
 
@@ -49,7 +53,10 @@ function mountAnchors(html: string) {
 
 const ALL_ANCHORS = `
   <button class="sidebar__compose">New Message</button>
-  <nav class="app-spaces"><button aria-label="Contacts">Contacts</button></nav>
+  <nav class="app-spaces">
+    <button aria-label="Contacts">Contacts</button>
+    <button aria-label="Settings" data-settings-gear>Settings</button>
+  </nav>
   <button class="folder-tree__manage">Manage</button>
   <button class="msg-list__filter msg-list__filter--starred">Starred</button>
 `;
@@ -90,7 +97,7 @@ describe('FeatureBeaconLayer', () => {
     const wrapper = mountLayer();
     await settle();
 
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages', 'keyboardShortcuts']);
     const dot = wrapper.get('[data-beacon="newMessage"]');
     expect(dot.attributes('aria-label')).toBe('New: A new composer');
     expect(dot.attributes('aria-haspopup')).toBe('dialog');
@@ -98,6 +105,21 @@ describe('FeatureBeaconLayer', () => {
     // Centred on the anchor's top-right corner: (230, 60) minus half of 32.
     expect(dot.attributes('style')).toContain('left: 214px');
     expect(dot.attributes('style')).toContain('top: 44px');
+  });
+
+  it('centres an inline-start dot on the anchor\'s left edge at mid-height', async () => {
+    const IDENTITIES = '.contacts__identity-section button';
+    layout.setRect(IDENTITIES, {
+      left: 40, top: 300, width: 180, height: 35,
+    });
+    mountAnchors('<div class="contacts__identity-section"><button>Identities</button></div>');
+    const wrapper = mountLayer();
+    await settle();
+
+    // (40, 317.5) minus half of 32.
+    const dot = wrapper.get('[data-beacon="manageIdentities"]');
+    expect(dot.attributes('style')).toContain('left: 24px');
+    expect(dot.attributes('style')).toContain('top: 301.5px');
   });
 
   it('skips anchors that are missing, zero-sized, or covered', async () => {
@@ -162,7 +184,7 @@ describe('FeatureBeaconLayer', () => {
     await settle();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages', 'keyboardShortcuts']);
     expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
       .toEqual({ seen: ['manageFolders'], sessions: 1 });
   });
@@ -373,7 +395,7 @@ describe('FeatureBeaconLayer', () => {
     mountAnchors(ALL_ANCHORS);
     const wrapper = mountLayer();
     const store = useFeatureBeaconsStore();
-    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders', 'starMessages'] as const) {
+    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders', 'starMessages', 'keyboardShortcuts'] as const) {
       store.markSeen(id);
     }
     await settle();

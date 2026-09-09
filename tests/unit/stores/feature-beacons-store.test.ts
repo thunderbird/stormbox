@@ -229,6 +229,40 @@ describe('feature beacons store', () => {
     expect(progress()).toEqual({ seen: [], sessions: BEACON_SESSION_LIMIT });
   });
 
+  it('restart forgets a retired round and arms it again as session 1', () => {
+    window.localStorage.setItem(WHATS_NEW_STORAGE_KEY, '1');
+    const store = useFeatureBeaconsStore();
+    store.arm();
+    for (const id of BEACON_IDS) store.markSeen(id);
+    expect(store.enabled).toBe(false);
+
+    store.restart();
+
+    expect(store.enabled).toBe(true);
+    expect(store.sessions).toBe(1);
+    expect(store.seen).toEqual([]);
+    expect(store.count).toBe(BEACON_IDS.length);
+    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBeNull();
+    expect(progress()).toEqual({ seen: [], sessions: 1 });
+  });
+
+  it('restart mid-round drops seen beacons and the open card', () => {
+    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
+      seen: ['newMessage'],
+      sessions: BEACON_SESSION_LIMIT - 1,
+    }));
+    const store = useFeatureBeaconsStore();
+    store.arm();
+    store.open('contacts');
+
+    store.restart();
+
+    expect(store.openId).toBeNull();
+    expect(store.seen).toEqual([]);
+    expect(store.sessions).toBe(1);
+    expect(progress()).toEqual({ seen: [], sessions: 1 });
+  });
+
   it('degrades to session-only state when storage is blocked', () => {
     const blocked = () => {
       throw new DOMException('blocked', 'SecurityError');
