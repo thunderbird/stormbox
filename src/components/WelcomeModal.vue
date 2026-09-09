@@ -322,10 +322,6 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
 }
 
-.welcome__logo {
-  filter: drop-shadow(0 8px 12px color-mix(in srgb, #000 22%, transparent));
-}
-
 .welcome__hero h1 {
   margin: 0;
   font-family: var(--font-display);
