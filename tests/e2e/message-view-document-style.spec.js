@@ -138,7 +138,8 @@ test('preserves complete-email presentation without active document controls', a
     expect(result).toEqual({
       rootClass: 'email-root',
       bodyClass: 'email-body',
-      iframeFallback: 'rgb(255, 255, 255)',
+      // The light --panel surface (Bolt ramp base, assets/styles.css).
+      iframeFallback: 'rgb(252, 252, 253)',
       htmlBackground: 'rgba(0, 0, 0, 0)',
       bodyBackground: 'rgb(32, 48, 64)',
       bodyColor: 'rgb(245, 245, 245)',

@@ -104,7 +104,9 @@ test.describe('Delete message e2e', () => {
           await discardCompose(page);
         } else {
           await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
-          await page.getByTitle('Delete').click();
+          // Scoped to the open message: every list row carries its own
+          // Delete in the hover overlay.
+          await page.locator('.message-view__header').getByRole('button', { name: 'Delete' }).click();
         }
 
         await expect.poll(
