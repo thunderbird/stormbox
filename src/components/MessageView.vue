@@ -131,17 +131,23 @@ const {
 });
 
 /**
- * The message's Cc recipients, so the audience is visible before replying
- * (CS-2.7). There is no `cc_text` column, and there should not be: the
- * addresses are already cached one per row, which is the form Reply All
- * needs anyway.
+ * The message's Cc and Bcc recipients, so the audience is visible before
+ * replying (CS-2.7). There is no `cc_text` column, and there should not be:
+ * the addresses are already cached one per row, which is the form Reply All
+ * needs anyway. Bcc is only ever present on the user's own copy (drafts,
+ * scheduled, Sent); the server strips the header before delivery (RFC 8621
+ * §7.5), so a received message has none to show.
  */
-const ccText = computed(() => formatAddressList(
-  mailStore.selectedMessageAddresses
-    .filter((row) => row.kind === 'cc' && row.email)
-    .sort((a, b) => a.position - b.position)
-    .map((row) => ({ ...(row.name ? { name: row.name } : {}), email: row.email })),
-));
+function addressText(kind: 'cc' | 'bcc') {
+  return formatAddressList(
+    mailStore.selectedMessageAddresses
+      .filter((row) => row.kind === kind && row.email)
+      .sort((a, b) => a.position - b.position)
+      .map((row) => ({ ...(row.name ? { name: row.name } : {}), email: row.email })),
+  );
+}
+const ccText = computed(() => addressText('cc'));
+const bccText = computed(() => addressText('bcc'));
 
 let resizeObserver = null;
 let iframeMeasurementCleanup = null;
@@ -720,6 +726,10 @@ function closeMessageView() {
           <div v-if="ccText" class="message-view__metadata-row">
             <dt>Cc</dt>
             <dd>{{ ccText }}</dd>
+          </div>
+          <div v-if="bccText" class="message-view__metadata-row">
+            <dt>Bcc</dt>
+            <dd>{{ bccText }}</dd>
           </div>
           <div class="message-view__metadata-row message-view__title">
             <dt>Subject</dt>

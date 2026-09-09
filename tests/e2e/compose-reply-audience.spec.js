@@ -350,7 +350,7 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
     }
   });
 
-  test('Cc and Bcc address a message from the composer, and Bcc stays hidden', async ({ sharedPage: page }, testInfo) => {
+  test('Cc and Bcc address a message from the composer; Bcc shows on the Sent copy and nowhere else', async ({ sharedPage: page }, testInfo) => {
     const consoleLines = consoleLinesFor(page);
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
@@ -411,6 +411,21 @@ test.describe('Reply audience, Cc/Bcc and threading', () => {
       expect(emailsOf(stored.cc)).toEqual([SHARED_TEST_OIDC_EMAIL.toLowerCase()]);
       expect(stored.cc[0].name, 'a comma in a display name is not a separator')
         .toBe('Watcher, A');
+      // The author's copy keeps Bcc: the server strips the header from the
+      // outgoing message only, so this is the one record of who was
+      // blind-copied (#125).
+      expect(emailsOf(stored.bcc), 'the Sent copy keeps its Bcc')
+        .toEqual([selfEmail().toLowerCase()]);
+
+      // ...and the detail view shows it from the cached address rows.
+      await clickFolder(page, sent.name);
+      await openMessageBySubject(page, subject);
+      const bccRow = page.locator('.message-view__metadata-row')
+        .filter({ hasText: /^Bcc/ });
+      await expect(bccRow, 'the Sent copy should list its Bcc').toHaveCount(1);
+      await expect(bccRow).toContainText(selfEmail());
+      await expect(page.locator('.message-view__metadata-row').filter({ hasText: /^Cc/ }))
+        .toContainText(SHARED_TEST_OIDC_EMAIL);
 
       // Bcc is addressed but must not be visible in the delivered copy.
       await expect.poll(
