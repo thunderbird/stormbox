@@ -527,6 +527,16 @@ async function bulkDelete() {
   }
 }
 
+async function bulkCancelSend() {
+  const ids = [...selectedIds.value];
+  if (ids.length === 0) return;
+  try {
+    await mailStore.cancelScheduledSends(ids);
+  } catch (err) {
+    console.warn('[message-list] bulk cancel send failed', err?.message ?? err);
+  }
+}
+
 async function bulkWhitelist() {
   const ids = [...selectedIds.value];
   if (ids.length === 0 || bulkWhitelisting.value) return;
@@ -595,6 +605,7 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
           @archive="bulkArchive"
           @junk="bulkJunk"
           @delete="bulkDelete"
+          @cancel-send="bulkCancelSend"
           @mark-read="bulkMarkRead"
           @mark-unread="bulkMarkUnread"
           @whitelist="bulkWhitelist"

@@ -9,8 +9,9 @@ import type { FolderRow } from '../types';
 /**
  * The bulk-action buttons for a checkbox selection: archive, junk,
  * delete, mark read/unread, plus "Not junk" inside a Junk folder. Which
- * buttons show depends on the folder the selected rows live in (the
- * managed Scheduled mailbox allows only the read/unread pair). The owner
+ * buttons show depends on the folder the selected rows live in: the
+ * Scheduled mailbox drops archive and junk, and its delete slot cancels
+ * the selected sends instead of destroying mail (SL-5.6). The owner
  * runs the actions; this component only renders the row of buttons.
  */
 const props = withDefaults(defineProps<{
@@ -27,6 +28,7 @@ const emit = defineEmits<{
   (e: 'archive'): void;
   (e: 'junk'): void;
   (e: 'delete'): void;
+  (e: 'cancel-send'): void;
   (e: 'mark-read'): void;
   (e: 'mark-unread'): void;
   (e: 'whitelist'): void;
@@ -54,7 +56,17 @@ const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
   <button v-if="!isInJunkFolder && !isInScheduledFolder" class="msg-list__bulk-action" type="button" @click="emit('junk')" title="Junk" aria-label="Mark as junk">
     <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="junkIcon" />
   </button>
-  <button v-if="!isInScheduledFolder" class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="emit('delete')" title="Delete" aria-label="Delete">
+  <button
+    v-if="isInScheduledFolder"
+    class="msg-list__bulk-action msg-list__bulk-action--danger"
+    type="button"
+    @click="emit('cancel-send')"
+    title="Cancel send"
+    aria-label="Cancel send — return the selected messages to Drafts"
+  >
+    <Trash2 :size="18" :stroke-width="1.65" />
+  </button>
+  <button v-else class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="emit('delete')" title="Delete" aria-label="Delete">
     <Trash2 :size="18" :stroke-width="1.65" />
   </button>
   <button class="msg-list__bulk-action" type="button" @click="emit('mark-read')" title="Mark as read" aria-label="Mark as read">

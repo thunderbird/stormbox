@@ -86,6 +86,27 @@ async function scheduledMailboxOf(jmap) {
   return mailboxes.find((mailbox) => mailbox.role === 'scheduled') ?? null;
 }
 
+/** Server-side message count of the Scheduled mailbox; 0 before it exists. */
+async function scheduledTotalOf(jmap) {
+  const response = await jmapRequest(jmap, [[
+    'Mailbox/get',
+    { accountId: jmap.accountId, properties: ['id', 'role', 'totalEmails'] },
+    'scheduled-total',
+  ]]);
+  const scheduled = (pickResponse(response, 'Mailbox/get')?.list ?? [])
+    .find((mailbox) => mailbox.role === 'scheduled');
+  return Number(scheduled?.totalEmails ?? 0);
+}
+
+/** The text a folder badge should show for `count`: no badge at all for 0. */
+async function expectFolderBadge(badge, count) {
+  if (count === 0) {
+    await expect(badge).toHaveCount(0, { timeout: 30_000 });
+  } else {
+    await expect(badge).toHaveText(String(count), { timeout: 30_000 });
+  }
+}
+
 async function cleanupSendLaterArtifacts(jmap) {
   const emails = await matchingEmails(jmap, SUBJECT_PREFIX);
   const emailIds = emails.map((email) => email.id);
@@ -218,6 +239,9 @@ test.describe('Send Later', () => {
     const subjectSoon = `${SUBJECT_PREFIX} soon ${stamp}`;
     const scheduledFolderName = page.locator('.folder-node__name')
       .filter({ hasText: /^Scheduled$/ });
+    // Schedules left behind by other work in this account still count;
+    // the badge assertions are relative to what is already waiting.
+    const baselineScheduled = await scheduledTotalOf(jmap);
 
     try {
       // ---- schedule #1 via a preset (tomorrow morning) ----------------
@@ -305,6 +329,13 @@ test.describe('Send Later', () => {
       expect(draftsIndex).toBeGreaterThanOrEqual(0);
       expect(scheduledIndex).toBe(draftsIndex + 1);
 
+      // The badge counts waiting sends even though scheduled mail is
+      // created $seen (SL-5.7).
+      const scheduledBadge = page.locator('.folder-node')
+        .filter({ has: scheduledFolderName })
+        .locator('.folder-node__count');
+      await expectFolderBadge(scheduledBadge, baselineScheduled + 2);
+
       // ---- normal list rendering, soonest-first ------------------------
       await clickFolder(page, 'Scheduled');
       const rows = page.locator('.msg-list__item');
@@ -355,12 +386,20 @@ test.describe('Send Later', () => {
       expect(canceledRemote[0].mailboxIds).toEqual({ [drafts.id]: true });
       expect(canceledRemote[0].keywords?.$draft).toBe(true);
 
-      // ---- cancel the last test schedule -------------------------------
-      await openMessageBySubject(page, subjectLater);
-      await page.locator('.message-view__scheduled')
-        .getByRole('button', { name: 'Cancel send' }).click();
+      await expectFolderBadge(scheduledBadge, baselineScheduled + 1);
+
+      // ---- cancel the last schedule from multi-select -----------------
+      // The Scheduled folder's bulk "delete" slot cancels the send
+      // (SL-5.6): the message returns to Drafts instead of being
+      // destroyed with its submission still held.
+      await laterRow.locator('.msg-list__check input').click();
+      const bulkActions = page.locator('.msg-list__bulk-actions');
+      await expect(bulkActions.locator('[title="Delete"]')).toHaveCount(0);
+      await bulkActions.locator('[title="Cancel send"]').click();
       await waitForPendingMutations(page);
+      await expect(laterRow).toHaveCount(0, { timeout: 30_000 });
       await expect(scheduledFolderName).toBeVisible();
+      await expectFolderBadge(scheduledBadge, baselineScheduled);
       await expect.poll(
         async () => ((await localScheduledRows(page)) ?? []).filter(
           (row) => row.subject === subjectSoon || row.subject === subjectLater,

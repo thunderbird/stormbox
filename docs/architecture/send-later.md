@@ -151,6 +151,16 @@ rows, and the store independently refuses destroy/move requests that target
 them. Canceling deselects the message first so the restored draft does not
 auto-open the compose editor mid-cancel.
 
+Multi-select in Scheduled keeps the delete slot but relabels it `Cancel send`
+and routes it to `cancelScheduledSends`, one durable cancel per message.
+Destroying or trashing the Email on its own never stops delivery — Stalwart
+keeps the queued copy and releases it on time (spec, reference-server note
+4) — so no Stormbox affordance in Scheduled ever performs a plain delete.
+
+The folder badge reads `total_emails` for the `scheduled` role
+(`folderBadgeCount` in `src/utils/folder-presentation.ts`): the messages are
+`$seen` by design, so an unread badge would always be empty.
+
 Compose controls (split button, presets, custom picker with IANA time-zone
 search, DST validation, synced `timeZone` setting) live in
 `ComposeDialog.vue`, `ScheduleSendDialog.vue`, and `src/utils/schedule-time.ts`;

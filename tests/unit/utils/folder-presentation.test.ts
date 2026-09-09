@@ -2,11 +2,26 @@ import { describe, it, expect } from 'vitest';
 
 import {
   DEFAULT_FOLDER_COLOR,
+  folderBadgeCount,
   folderCompare,
   folderPresentation,
   folderSortKey,
   isMainFolder,
 } from '../../../src/utils/folder-presentation';
+
+describe('folderBadgeCount', () => {
+  it('badges unread mail for ordinary folders', () => {
+    expect(folderBadgeCount({ role: 'inbox', unread_emails: 3, total_emails: 40 })).toBe(3);
+    expect(folderBadgeCount({ role: null, unread_emails: '2', total_emails: 9 })).toBe(2);
+    expect(folderBadgeCount({ role: 'sent', unread_emails: null, total_emails: 9 })).toBe(0);
+  });
+
+  it('badges every pending send for Scheduled, whose mail is created $seen', () => {
+    expect(folderBadgeCount({ role: 'scheduled', unread_emails: 0, total_emails: 1 })).toBe(1);
+    expect(folderBadgeCount({ role: 'scheduled', unread_emails: 0, total_emails: '4' })).toBe(4);
+    expect(folderBadgeCount({ role: 'scheduled', unread_emails: 0, total_emails: null })).toBe(0);
+  });
+});
 
 describe('folderPresentation', () => {
   it('returns the role icon and accent for a JMAP role', () => {

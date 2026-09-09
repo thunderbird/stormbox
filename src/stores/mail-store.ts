@@ -2021,6 +2021,62 @@ export const useMailStore = defineStore('mail', () => {
       selectMessage(null);
       clearSelection();
     }
+    const outcome = await runCancelScheduledSendMutation(id);
+    if (outcome.ok) {
+      setNotice('Sending canceled. The message is back in Drafts.');
+      return true;
+    }
+    error.value = outcome.description
+      ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
+    return false;
+  }
+
+  /**
+   * Cancel every selected scheduled send (the Scheduled folder's bulk
+   * "delete"): one durable cancelScheduledSend mutation per message,
+   * run in turn so each reads fresh submission state. Reports one
+   * notice or one error for the batch; rows that could not be canceled
+   * keep retrying in the background like the single-message path.
+   */
+  async function cancelScheduledSends(
+    ids: number[],
+  ): Promise<{ succeeded: number; failed: number }> {
+    const summary = { succeeded: 0, failed: 0 };
+    if (!repo || authStore.accountId == null) return summary;
+    const numeric = normalizeMessageIds(ids);
+    if (numeric.length === 0) return summary;
+    if (selectedMessageId.value != null && numeric.includes(Number(selectedMessageId.value))) {
+      selectMessage(null);
+    }
+    clearSelectionFor(numeric);
+    let firstDescription: string | null = null;
+    for (const id of numeric) {
+      const outcome = await runCancelScheduledSendMutation(id);
+      if (outcome.ok) {
+        summary.succeeded += 1;
+      } else {
+        summary.failed += 1;
+        firstDescription ??= outcome.description;
+      }
+    }
+    if (summary.failed === 0) {
+      setNotice(summary.succeeded === 1
+        ? 'Sending canceled. The message is back in Drafts.'
+        : `Sending canceled for ${summary.succeeded} messages. They are back in Drafts.`);
+    } else if (numeric.length === 1) {
+      error.value = firstDescription
+        ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
+    } else {
+      error.value = `Could not cancel ${summary.failed} of ${numeric.length} scheduled sends yet; `
+        + 'they will keep retrying in the background.';
+    }
+    return summary;
+  }
+
+  async function runCancelScheduledSendMutation(
+    id: number,
+  ): Promise<{ ok: boolean; description: string | null }> {
+    if (!repo || authStore.accountId == null) return { ok: false, description: null };
     const mutation = await repo.insertPendingMutation({
       accountId: authStore.accountId,
       mutationType: MUTATION_TYPE.CANCEL_SCHEDULED_SEND,
@@ -2032,10 +2088,7 @@ export const useMailStore = defineStore('mail', () => {
       : await repo.drainOutbox(authStore.accountId);
     const succeeded = (result?.failed ?? 0) === 0
       && ((result?.attempted ?? 0) > 0 || (result?.succeeded ?? 0) > 0);
-    if (succeeded) {
-      setNotice('Sending canceled. The message is back in Drafts.');
-      return true;
-    }
+    if (succeeded) return { ok: true, description: null };
     // Cancel rejections carry precise reasons worth showing verbatim
     // (already sent, state unknown after the target passed).
     let description: string | null = null;
@@ -2048,9 +2101,7 @@ export const useMailStore = defineStore('mail', () => {
         // Fall through to the generic line.
       }
     }
-    error.value = description
-      ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
-    return false;
+    return { ok: false, description };
   }
 
   /**
@@ -3239,6 +3290,7 @@ export const useMailStore = defineStore('mail', () => {
     destroyMessages,
     permanentlyDestroyMessages,
     cancelScheduledSend,
+    cancelScheduledSends,
     moveMessage,
     moveMessages,
     archiveMessages,

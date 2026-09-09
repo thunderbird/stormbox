@@ -233,6 +233,24 @@ describe('FolderTree collapsed unread totals', () => {
     expect(nodeByName(wrapper, 'Alpha').find('.folder-node__count').text()).toBe('2');
     expect(nodeByName(wrapper, 'Gamma').find('.folder-node__count').text()).toBe('3');
   });
+
+  it('badges the Scheduled folder with its message total, not its unread count', async () => {
+    const mailStore = useMailStore();
+    useAuthStore().accountId = 1;
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox', role: 'inbox', unread_emails: 0, total_emails: 12 }),
+      // Scheduled mail is created $seen, so unread stays 0 while sends wait.
+      makeFolder(2, { name: 'Scheduled', role: 'scheduled', unread_emails: 0, total_emails: 1 }),
+      makeFolder(3, { name: 'Sent', role: 'sent', unread_emails: 0, total_emails: 30 }),
+    ];
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(nodeByName(wrapper, 'Scheduled').find('.folder-node__count').text()).toBe('1');
+    expect(nodeByName(wrapper, 'Inbox').find('.folder-node__count').exists()).toBe(false);
+    expect(nodeByName(wrapper, 'Sent').find('.folder-node__count').exists()).toBe(false);
+  });
 });
 
 describe('FolderTree starred folders', () => {

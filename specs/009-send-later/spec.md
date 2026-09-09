@@ -196,10 +196,17 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   junk, delete, and draft-edit actions shall not be offered, and their
   keyboard shortcuts shall be inert; the metadata row shall label the target
   instant `Send at`.
-- **SL-5.6 — Bulk-action gating.** Bulk archive, junk, delete, and move
-  affordances shall be unavailable for the Scheduled folder, and the store
-  shall independently refuse destroy/move requests that target scheduled
-  messages.
+- **SL-5.6 — Bulk-action gating.** Bulk archive, junk, and move affordances
+  shall be unavailable for the Scheduled folder. The bulk delete slot shall
+  remain, labeled `Cancel send`, and shall enqueue the durable cancel (SL-6.1)
+  for each selected message rather than destroying or trashing it, because
+  removing the Email alone leaves its held submission pending (see the
+  reference-server notes). The store shall independently refuse destroy/move
+  requests that target scheduled messages.
+- **SL-5.7 — Badge count.** The Scheduled folder's sidebar badge shall show
+  the number of messages waiting in the folder (`totalEmails`) rather than its
+  unread count, since scheduled Emails are created `$seen` (SL-3.3) and would
+  otherwise never badge. An empty Scheduled folder shows no badge.
 
 ## 6. Cancellation, release, and reconciliation
 
@@ -284,6 +291,12 @@ weakening its correctness contract:
    Stormbox holds the Email in the visible Scheduled mailbox and performs
    idempotent Drafts or Sent filing after the server has decided cancellation
    or release (SL-6.2, SL-6.4).
+4. Destroying the scheduled Email, or moving it to Trash, does not cancel its
+   held submission: the queued copy still leaves at the target instant and the
+   record turns `final`. This is what an IMAP client's delete/expunge does.
+   Only `EmailSubmission/set { undoStatus: "canceled" }` prevents delivery,
+   so every delete affordance Stormbox offers in Scheduled routes through the
+   cancel operation (SL-5.5, SL-5.6).
 
 The workaround must not become a client-side scheduler: the server owns the
 delayed delivery timer, and Stormbox never waits in an open tab to submit
@@ -299,6 +312,11 @@ later.
   `jmap-schedule-capability.test.ts`, `jmap-schedule-time.test.ts`, and
   `tests/unit/utils/schedule-time.test.ts` (DST/timezone), plus compose-store,
   settings-store, ScheduleSendDialog, and ComposeDialog tests.
+  `tests/unit/utils/folder-presentation.test.ts` and
+  `tests/unit/components/folder-tree.test.ts` pin the Scheduled badge
+  (SL-5.7); `tests/unit/components/message-list-bulk-actions.test.ts` and the
+  `cancelScheduledSends` cases in `tests/unit/stores/mail-store.test.ts` pin
+  the bulk Cancel send slot (SL-5.6).
 - Live Stalwart: `tests/integration/send-later-live.test.ts` covers the target
   instant on `Email.sentAt`, the raw MIME `Date` header, and
   `EmailSubmission.sendAt`; role-folder placement; pre-release cancellation
@@ -307,7 +325,8 @@ later.
   of an externally created schedule.
 - Browser: `tests/e2e/send-later.spec.js` covers split-control geometry,
   staged preset/custom selection with explicit Send-later confirmation,
-  permanent real-folder placement below Drafts, soonest-first ordering, normal
-  list/detail rendering with the scheduled banner, inert reply/delete
-  shortcuts, cancellation back to Drafts, and empty-folder persistence, in
-  Firefox and Chromium.
+  permanent real-folder placement below Drafts, the waiting-send badge,
+  soonest-first ordering, normal list/detail rendering with the scheduled
+  banner, inert reply/delete shortcuts, cancellation back to Drafts from the
+  banner and from the multi-select Cancel send slot, and empty-folder
+  persistence, in Firefox and Chromium.

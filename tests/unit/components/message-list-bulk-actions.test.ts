@@ -261,6 +261,35 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
+  it('offers Cancel send in place of Delete inside the Scheduled folder', async () => {
+    const { mailStore, wrapper } = mountList({
+      folder: makeFolder(2, { name: 'Scheduled', role: 'scheduled' }),
+      rows: [
+        makeRow(1, { scheduled_undo_status: 'pending' }),
+        makeRow(2, { scheduled_undo_status: 'pending' }),
+      ],
+    });
+    mailStore.selectedIds = new Set([1, 2]);
+    await nextTick();
+
+    const actions = wrapper.findAll('.msg-list__bulk-actions .msg-list__bulk-action');
+    expect(actions.map((button) => button.attributes('title'))).toEqual([
+      'Cancel send',
+      'Mark as read',
+      'Mark as unread',
+      'Clear selection',
+    ]);
+
+    const cancelSpy = vi.spyOn(mailStore, 'cancelScheduledSends')
+      .mockResolvedValue({ succeeded: 2, failed: 0 });
+    const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+    await wrapper.find('.msg-list__bulk-actions [title="Cancel send"]').trigger('click');
+
+    expect(cancelSpy).toHaveBeenCalledWith([1, 2]);
+    expect(destroySpy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it('dispatches the store actions for the selected ids', async () => {
     const { mailStore, wrapper } = mountList();
     mailStore.selectedIds = new Set([1, 3]);

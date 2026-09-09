@@ -7,6 +7,7 @@ import { useMessageDragDrop } from '../composables/useMessageDragDrop';
 import FolderNode from './FolderNode.vue';
 import FolderManagerDialog from './FolderManagerDialog.vue';
 import {
+  folderBadgeCount,
   folderCompare,
   folderPresentation,
   isMainFolder,
@@ -59,12 +60,11 @@ function buildTree(folderRows) {
     const childrenForFolder = children(folder.id);
     const presentation = folderPresentation(folder);
     const builtChildren = childrenForFolder.map((c) => build(c, depth + 1));
-    // Roll the subtree's unread total up to each node so a collapsed
-    // folder can show the unread count of everything hidden beneath it.
-    const ownUnread = Number(folder.unread_emails) || 0;
+    // Roll the subtree's badge total up to each node so a collapsed
+    // folder can show the count of everything hidden beneath it.
     const subtreeUnread = builtChildren.reduce(
       (sum, child) => sum + (Number(child.subtree_unread) || 0),
-      ownUnread,
+      folderBadgeCount(folder),
     );
     return {
       ...folder,

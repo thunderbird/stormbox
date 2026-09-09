@@ -1323,6 +1323,106 @@ describe('junkMessages (mark as junk)', () => {
   });
 });
 
+describe('cancelScheduledSends (Scheduled folder bulk delete)', () => {
+  function seedScheduled() {
+    const scheduled = makeFolder(2, { role: 'scheduled', may_remove_items: 1, total_emails: 2 });
+    const rows = [
+      makeRow(10, { scheduled_undo_status: 'pending' }),
+      makeRow(11, { scheduled_undo_status: 'pending' }),
+    ];
+    return { scheduled, rows };
+  }
+
+  it('enqueues one durable cancel per message, clears the selection, and reports the batch', async () => {
+    const { scheduled, rows } = seedScheduled();
+    const { mailStore, repo } = await setupStore({
+      folders: [scheduled],
+      views: { 2: { rows, total: 2 } },
+    });
+    await flush();
+    mailStore.selectFolder(scheduled.id);
+    await flush();
+    mailStore.selectedIds = new Set([10, 11]);
+
+    const insertCalls = [];
+    repo.insertPendingMutation = async (input) => {
+      insertCalls.push(input);
+      return { id: 100 + insertCalls.length };
+    };
+    const runCalls = [];
+    repo.runMutation = async (_accountId, mutationId) => {
+      runCalls.push(mutationId);
+      return { attempted: 1, succeeded: 1, failed: 0 };
+    };
+
+    const result = await mailStore.cancelScheduledSends([10, 11]);
+
+    expect(result).toEqual({ succeeded: 2, failed: 0 });
+    expect(insertCalls.map((c) => c.mutationType))
+      .toEqual([MUTATION_TYPE.CANCEL_SCHEDULED_SEND, MUTATION_TYPE.CANCEL_SCHEDULED_SEND]);
+    expect(insertCalls.map((c) => c.targetMessageId)).toEqual([10, 11]);
+    expect(insertCalls.map((c) => JSON.parse(c.requestJson))).toEqual([
+      { messageId: 10 },
+      { messageId: 11 },
+    ]);
+    expect(runCalls).toEqual([101, 102]);
+    expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.notice).toBe('Sending canceled for 2 messages. They are back in Drafts.');
+    expect(mailStore.error).toBeNull();
+  });
+
+  it('never routes the Scheduled delete through destroyMessages', async () => {
+    const { scheduled, rows } = seedScheduled();
+    const { mailStore, repo } = await setupStore({
+      folders: [scheduled],
+      views: { 2: { rows, total: 2 } },
+    });
+    await flush();
+    mailStore.selectFolder(scheduled.id);
+    await flush();
+    repo.insertPendingMutation = vi.fn(async () => ({ id: 1 }));
+
+    await mailStore.destroyMessages([10, 11]);
+
+    expect(repo.insertPendingMutation).not.toHaveBeenCalled();
+    expect(mailStore.error).toBe('Scheduled messages can’t be deleted. Cancel the send instead.');
+  });
+
+  it('surfaces the precise rejection for a lone failure and a tally for a mixed batch', async () => {
+    const { scheduled, rows } = seedScheduled();
+    const { mailStore, repo } = await setupStore({
+      folders: [scheduled],
+      views: { 2: { rows, total: 2 } },
+    });
+    await flush();
+    mailStore.selectFolder(scheduled.id);
+    await flush();
+
+    let nextId = 0;
+    repo.insertPendingMutation = async () => ({ id: ++nextId });
+    repo.runMutation = async (_accountId, mutationId) => (
+      mutationId % 2 === 1
+        ? { attempted: 1, succeeded: 0, failed: 1 }
+        : { attempted: 1, succeeded: 1, failed: 0 }
+    );
+    repo.getPendingMutationError = async () => ({
+      error_json: JSON.stringify({
+        type: 'scheduleAlreadySent',
+        description: 'This message was already sent and can no longer be canceled.',
+      }),
+    });
+
+    expect(await mailStore.cancelScheduledSends([10])).toEqual({ succeeded: 0, failed: 1 });
+    expect(mailStore.error).toBe('This message was already sent and can no longer be canceled.');
+
+    mailStore.error = null;
+    expect(await mailStore.cancelScheduledSends([10, 11])).toEqual({ succeeded: 1, failed: 1 });
+    expect(mailStore.error).toBe(
+      'Could not cancel 1 of 2 scheduled sends yet; they will keep retrying in the background.',
+    );
+  });
+});
+
 describe('successor selection after removal', () => {
   it('selects the next message after deleting the previewed row', async () => {
     const inbox = makeFolder(1, { total_emails: 3 });

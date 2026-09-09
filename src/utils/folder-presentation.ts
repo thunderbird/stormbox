@@ -87,6 +87,23 @@ export function folderPresentation(folder: FolderPresentationInput): NamedFolder
   };
 }
 
+export interface FolderBadgeInput {
+  role?: MailboxRole | null;
+  unread_emails?: number | string | null;
+  total_emails?: number | string | null;
+}
+
+/**
+ * The number a folder's own sidebar badge shows. Unread for every
+ * folder except Scheduled, whose messages are created `$seen`
+ * (SL-3.3) and would otherwise never badge: there the badge is the
+ * number of sends still waiting to leave (SL-5.7).
+ */
+export function folderBadgeCount(folder: FolderBadgeInput): number {
+  const source = folder.role === 'scheduled' ? folder.total_emails : folder.unread_emails;
+  return Math.max(0, Number(source) || 0);
+}
+
 /**
  * Display order for the role-anchored "main" folders. Anything else
  * sorts after them and falls back to alphabetical.
