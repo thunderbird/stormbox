@@ -78,7 +78,10 @@ grey-cloud DNS) stay completely untouched. The Worker owns CORS:
 Allowlist per environment (defined in `routes.ts`):
 
 - **Stage**: `https://webmail.stage-thundermail.com`, `https://localhost:3000`, `http://localhost:3000`
-- **Prod**: `https://webmail.thundermail.com` (strict, no dev origin)
+- **Prod**: `https://webmail.thundermail.com`, `https://alpha-app.thundermail.com` (strict, no dev origin)
+
+Changing the allowlist only takes effect after `npm run deploy:production`
+republishes the Worker.
 
 Unknown origins receive no `Access-Control-*` headers; the browser
 will block the response from reaching the SPA, which is the desired

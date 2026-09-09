@@ -11,10 +11,12 @@ import type { Oidc } from 'oidc-spa/core';
 import { computed, ref } from 'vue';
 
 import { initOidc, getOidc } from '../services/auth';
-import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL } from '../defines';
+import { currentHref, replaceLocation } from '../services/navigation';
+import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL, STAFF_APP_URL } from '../defines';
 import { AUTH_STATE } from '../constants/states';
 import type { AuthState } from '../constants/states';
 import { isStaffEmail } from '../constants/staff';
+import { staffRedirectUrl } from '../utils/staff-redirect';
 import { getRepositoryAsync } from '../composables/useRepository';
 
 interface BasicAuth { kind: 'basic'; username: string; password: string }
@@ -76,7 +78,10 @@ export const useAuthStore = defineStore('auth', () => {
   const recoveryEmail = ref<string | null>(null);
   const error = ref<string | null>(null);
 
-  /** Global staff flag: gates staff-only UI, carries no other behaviour. */
+  /**
+   * Global staff flag: gates staff-only UI. The same claim decides the
+   * sign-in redirect to STAFF_APP_URL in connectViaOidc.
+   */
   const isStaff = computed(() => isStaffEmail(recoveryEmail.value));
 
   const serverOrigin = computed(() => parseServerUrl().origin);
@@ -200,6 +205,18 @@ export const useAuthStore = defineStore('auth', () => {
     }
     const emailClaim = stringClaim(tokens?.decodedIdToken?.email);
     const recoveryEmailClaim = stringClaim(tokens?.decodedIdToken?.recovery_email);
+    // Staff leave for the staff app before any local account exists on
+    // this origin. The OIDC session here is left alone: the destination
+    // signs in through the same Keycloak SSO cookie.
+    const staffRedirect = isStaffEmail(recoveryEmailClaim)
+      ? staffRedirectUrl(STAFF_APP_URL, currentHref())
+      : null;
+    if (staffRedirect) {
+      stopTokenSync();
+      status.value = AUTH_STATE.CONNECTING;
+      replaceLocation(staffRedirect);
+      return false;
+    }
     const connected = await _connect(
       initialAuth,
       emailClaim,

@@ -73,14 +73,15 @@ the current hostname:
 
 - `webmail.stage-thundermail.com` -> `https://jmap.stage-thundermail.com`
   (HTTP) and `wss://jmap.stage-thundermail.com/jmap/ws` (WS)
-- `webmail.thundermail.com` -> `https://jmap.thundermail.com` (HTTP) and
-  `wss://jmap.thundermail.com/jmap/ws` (WS)
+- `webmail.thundermail.com` and `alpha-app.thundermail.com` ->
+  `https://jmap.thundermail.com` (HTTP) and `wss://jmap.thundermail.com/jmap/ws`
+  (WS)
 - hosted sender avatars -> [`https://avatars.thunderbird.net`](https://avatars.thunderbird.net)
   ([thunderbird/avatars](https://github.com/thunderbird/avatars))
 - dev/local product links -> stage services (`accounts-stage.tb.pro`,
   `appointment-stage.tb.pro`, `send-stage.tb.pro`)
 - hosted stage product links -> stage services
-- hosted prod product links -> production services
+- hosted prod and alpha product links -> production services
 
 To point a local build at another JMAP server or bridge, set
 `VITE_JMAP_SERVER_URL` in `.env.local`. The WebSocket auth bridge URL is derived
@@ -88,6 +89,29 @@ from the same origin with `/jmap/ws`.
 To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 `VITE_SEND_URL`. To override sender logo lookup, set
 `VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.
+
+### Hosted deployments
+
+`.github/workflows/deploy.yml` publishes three Cloudflare Pages projects:
+
+| Target  | Origin                            | Backends   | Deploys                                    |
+|---------|-----------------------------------|------------|--------------------------------------------|
+| stage   | `webmail.stage-thundermail.com`   | stage      | every push to `main`, or manual dispatch   |
+| alpha   | `alpha-app.thundermail.com`       | production | every push to `main`, or manual dispatch   |
+| prod    | `webmail.thundermail.com`         | production | manual dispatch from `main` only           |
+
+Alpha is the production configuration on the latest `main`. Staff sign-ins
+(OIDC `recovery_email` on a staff domain, see `src/constants/staff.ts`) on
+`webmail.thundermail.com` are redirected to alpha before a local account is
+created; the prod build sets `VITE_STAFF_APP_URL` to the alpha origin and an
+empty value disables the redirect. The redirect carries `?auto-login=1` so the
+alpha origin signs in through the shared Keycloak session without a click.
+
+Adding a hosted origin needs, besides the workflow job: the Cloudflare Pages
+project and custom domain, the origin in the bridge allowlist
+(`infra/jmap-bridge/src/routes.ts`, redeployed with `npm run deploy:production`),
+and the origin in the Keycloak `thunderbird-stormbox` client's redirect URIs,
+post-logout redirect URIs and web origins.
 
 Contacts Trash limits live in `stormbox.config.json`. Before deployment, set
 `contactsTrash.serverFileStorage` to the Stalwart FileStorage `maxSize`,

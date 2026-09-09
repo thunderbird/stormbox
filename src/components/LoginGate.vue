@@ -1,14 +1,35 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Loader2 } from '@lucide/vue';
 import { NoticeWarningIcon } from '@thunderbirdops/services-ui';
 import AppButton from './AppButton.vue';
 
 import { useAuthStore } from '../stores/auth-store';
+import { getOidc } from '../services/auth';
 import { AUTH_STATE } from '../constants/states';
+import { hasAutoLoginFlag, withoutAutoLoginFlag } from '../utils/staff-redirect';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const authStore = useAuthStore();
+
+// A staff redirect from the production origin lands here with the
+// auto-login flag. The flag is dropped from the URL first so a reload or
+// a failed sign-in cannot loop, then the shared Keycloak SSO session
+// completes the sign-in without a click. An already-live OIDC session
+// is connected by initialize(), so only the flag is dropped.
+let autoLoginHandled = false;
+watch(() => authStore.status, (status) => {
+  if (autoLoginHandled || status !== AUTH_STATE.OIDC_READY) return;
+  if (typeof window === 'undefined' || !hasAutoLoginFlag(window.location.search)) return;
+  autoLoginHandled = true;
+  window.history.replaceState(
+    window.history.state,
+    '',
+    withoutAutoLoginFlag(window.location.href),
+  );
+  if (getOidc()?.isUserLoggedIn) return;
+  void authStore.connectViaOidc();
+}, { immediate: true });
 
 const showPasswordForm = ref(false);
 const username = ref('');

@@ -14,6 +14,25 @@ const authService = vi.hoisted(() => ({
 // load and throws under happy-dom unless the OIDC bootstrap is stubbed.
 vi.mock('../../../src/services/auth', () => authService);
 
+// The store navigates through services/navigation so the redirect can be
+// observed here without a real page load.
+const navigation = vi.hoisted(() => ({
+  currentHref: vi.fn(() => 'https://webmail.thundermail.com/'),
+  replaceLocation: vi.fn(),
+}));
+vi.mock('../../../src/services/navigation', () => navigation);
+
+// STAFF_APP_URL is fixed at build time; expose it as a getter so each
+// test can pick the origin staff are sent to (empty disables the redirect).
+const definesOverrides = vi.hoisted(() => ({ STAFF_APP_URL: '' }));
+vi.mock('../../../src/defines', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/defines')>();
+  return {
+    ...actual,
+    get STAFF_APP_URL() { return definesOverrides.STAFF_APP_URL; },
+  };
+});
+
 // Inject a fake repository so logout can dispatch stopSyncAccount
 // without needing a real shared worker.
 import {
@@ -45,6 +64,10 @@ function oidcTokens(accessToken: string, issuedAtTime: number) {
 beforeEach(() => {
   setActivePinia(createPinia());
   __resetRepositoryForTests();
+  definesOverrides.STAFF_APP_URL = '';
+  navigation.currentHref.mockReset();
+  navigation.currentHref.mockReturnValue('https://webmail.thundermail.com/');
+  navigation.replaceLocation.mockReset();
   authService.initOidc.mockReset();
   authService.initOidc.mockResolvedValue(null);
   authService.getOidc.mockReset();
@@ -378,6 +401,86 @@ describe('auth-store', () => {
       expect(authStore.email).toBeNull();
       expect(authStore.recoveryEmail).toBeNull();
       expect(authStore.isStaff).toBe(false);
+    });
+  });
+
+  describe('staff redirect', () => {
+    const STAFF_APP = 'https://alpha-app.thundermail.com';
+
+    function loggedInOidc(recoveryEmail: string | undefined) {
+      const unsubscribeFromTokensChange = vi.fn();
+      return {
+        isUserLoggedIn: true,
+        getTokens: vi.fn().mockResolvedValue({
+          ...oidcTokens('token', 1_000),
+          decodedIdToken: {
+            email: 'mailbox@thundermail.com',
+            ...(recoveryEmail === undefined ? {} : { recovery_email: recoveryEmail }),
+          },
+        }),
+        subscribeToTokensChange: vi.fn(() => ({ unsubscribeFromTokensChange })),
+        unsubscribeFromTokensChange,
+      };
+    }
+
+    it('sends a staff sign-in to the staff app without creating a local account', async () => {
+      definesOverrides.STAFF_APP_URL = STAFF_APP;
+      navigation.currentHref.mockReturnValue('https://webmail.thundermail.com/inbox?view=compact');
+      const oidc = loggedInOidc('staffer@thunderbird.net');
+      authService.getOidc.mockReturnValue(oidc);
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(false);
+
+      expect(navigation.replaceLocation).toHaveBeenCalledWith(
+        'https://alpha-app.thundermail.com/inbox?view=compact&auto-login=1',
+      );
+      expect(repo.startSyncAccount).not.toHaveBeenCalled();
+      expect(oidc.unsubscribeFromTokensChange).toHaveBeenCalled();
+      expect(authStore.accountId).toBeNull();
+      expect(authStore.status).toBe(AUTH_STATE.CONNECTING);
+    });
+
+    it('connects non-staff sign-ins on the current origin', async () => {
+      definesOverrides.STAFF_APP_URL = STAFF_APP;
+      authService.getOidc.mockReturnValue(loggedInOidc('someone@gmail.com'));
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(navigation.replaceLocation).not.toHaveBeenCalled();
+      expect(repo.startSyncAccount).toHaveBeenCalledTimes(1);
+      expect(authStore.isStaff).toBe(false);
+    });
+
+    it('connects staff on the current origin when no staff app is configured', async () => {
+      definesOverrides.STAFF_APP_URL = '';
+      authService.getOidc.mockReturnValue(loggedInOidc('staffer@thunderbird.net'));
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(navigation.replaceLocation).not.toHaveBeenCalled();
+      expect(repo.startSyncAccount).toHaveBeenCalledTimes(1);
+      expect(authStore.isStaff).toBe(true);
+    });
+
+    it('connects staff when the page already lives on the staff app origin', async () => {
+      definesOverrides.STAFF_APP_URL = STAFF_APP;
+      navigation.currentHref.mockReturnValue(`${STAFF_APP}/inbox`);
+      authService.getOidc.mockReturnValue(loggedInOidc('staffer@thunderbird.net'));
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(navigation.replaceLocation).not.toHaveBeenCalled();
+      expect(repo.startSyncAccount).toHaveBeenCalledTimes(1);
+      expect(authStore.isStaff).toBe(true);
     });
   });
 });

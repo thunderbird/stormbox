@@ -81,12 +81,14 @@ describe('jmap-bridge routes.allowedOrigins', () => {
     expect(STAGE_ROUTE.allowedOrigins.has('http://localhost:3000')).toBe(true);
   });
 
-  it('stage does NOT allow the prod webmail origin', () => {
+  it('stage does NOT allow the prod-configured webmail origins', () => {
     expect(STAGE_ROUTE.allowedOrigins.has('https://webmail.thundermail.com')).toBe(false);
+    expect(STAGE_ROUTE.allowedOrigins.has('https://alpha-app.thundermail.com')).toBe(false);
   });
 
-  it('prod allows only the prod webmail origin (no dev)', () => {
+  it('prod allows only the prod and alpha webmail origins (no dev)', () => {
     expect(PROD_ROUTE.allowedOrigins.has('https://webmail.thundermail.com')).toBe(true);
+    expect(PROD_ROUTE.allowedOrigins.has('https://alpha-app.thundermail.com')).toBe(true);
     expect(PROD_ROUTE.allowedOrigins.has('https://webmail.stage-thundermail.com')).toBe(false);
     expect(PROD_ROUTE.allowedOrigins.has('https://localhost:3000')).toBe(false);
   });
