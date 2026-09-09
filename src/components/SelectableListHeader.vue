@@ -94,7 +94,11 @@ watchPostEffect(() => {
     </div>
 
     <span
-      :class="['selectable-list-header__count', countClass]"
+      :class="[
+        'selectable-list-header__count',
+        { 'selectable-list-header__count--total': selectedCount === 0 },
+        countClass,
+      ]"
       aria-live="polite"
     >
       <template v-if="selectedCount > 0">

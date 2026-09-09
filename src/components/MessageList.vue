@@ -795,6 +795,17 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
   min-height: 0;
   height: 100%;
 }
+.msg-list__header {
+  container-type: inline-size;
+}
+/* Select-all, the two filters and Refresh need ~290px; the total count
+   (up to ~85px with four digits) goes first when the pane cannot fit it
+   too. The selected count stays. */
+@container (max-width: 379px) {
+  .msg-list__header :deep(.selectable-list-header__count--total) {
+    display: none;
+  }
+}
 .msg-list__filters {
   flex: 1;
   min-width: 0;
