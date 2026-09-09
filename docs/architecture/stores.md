@@ -119,10 +119,26 @@ flurry of MESSAGES touches collapses into one re-read pass — see
 User actions that change server state are queued through
 `pending_mutations` and drained by the worker-side `OutboxRunner`.
 Mail triage that must be on screen when the action returns
-(`destroy` / `move`) writes a row and awaits `runMutation`. Mark-seen
-and keywords enqueue and let the runner drain. Settings patch through
+(`destroy` / `move`) writes a row and awaits `runMutation`. Keywords
+enqueue and let the runner drain. Settings patch through
 `applySettingsPatch`, which coalesces `pushSettings` in the same
 transaction.
+
+### One keyword path
+
+Every keyword write in `mail-store` — mark read/unread, star, junk,
+not-junk — is a wrapper over `setKeywordsMany(ids, { add, remove })`.
+It drops rows already in the target state, applies the rest through one
+`replaceMessageKeywordsMany` transaction (`keywords_json`, the derived
+`is_seen` / `is_flagged` / `is_junk` columns and `message_keywords`
+together), and enqueues one `setKeywords` row for the batch with the
+derived-column patch in `optimisticPatchJson` and `targetMessageId` set
+only when the batch has a single row. `markManyFlagged` and
+`toggleManyFlagged` (modal over a selection: any starred → unstar all)
+add the scheduled-row filter on top; `markManySeen` / `toggleManySeen`
+are the same shape for `$seen`. New keyword features extend this path
+rather than writing `pending_mutations` themselves
+(`specs/011-message-keywords/spec.md`, MK-1.2).
 
 ### Mutation payloads carry local ids for mail
 

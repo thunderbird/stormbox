@@ -6,8 +6,9 @@
  * is emitted back to the owner.
  */
 import { computed } from 'vue';
-import { Paperclip, Star } from '@lucide/vue';
+import { Paperclip, Star, Trash2 } from '@lucide/vue';
 
+import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import type { JmapViewSort } from '../constants/states';
 import { useSenderAvatars } from '../composables/useSenderAvatars';
 import {
@@ -30,6 +31,15 @@ const props = withDefaults(defineProps<{
   sort?: JmapViewSort;
   /** False on surfaces without multi-select: no checkbox is rendered. */
   selectable?: boolean;
+  /**
+   * Overlay star / archive / delete at the row's inline-end on hover. The
+   * star keeps its slot when the row is not hovered so a starred message
+   * shows its star in the same place; the summary reserves that slot and
+   * the date sits under archive and delete. Pointer-only: the buttons are
+   * not Tab stops. The single-column layout has no hover menu; it always
+   * shows the star (set or not) and never archive or delete.
+   */
+  hoverActions?: boolean;
 }>(), {
   focused: false,
   selected: false,
@@ -37,6 +47,7 @@ const props = withDefaults(defineProps<{
   showsRecipients: false,
   sort: 'received',
   selectable: true,
+  hoverActions: false,
 });
 
 const emit = defineEmits<{
@@ -44,11 +55,15 @@ const emit = defineEmits<{
   (e: 'checkbox-click', event: MouseEvent): void;
   (e: 'dragstart', event: DragEvent): void;
   (e: 'dragend', event: DragEvent): void;
+  (e: 'star'): void;
+  (e: 'archive'): void;
+  (e: 'delete'): void;
 }>();
 
 const { senderAvatar, onAvatarError } = useSenderAvatars();
 
 const isUnread = computed(() => Number(props.message.is_seen) === 0);
+const isFlagged = computed(() => Number(props.message.is_flagged) === 1);
 const correspondent = computed(() => rowCorrespondent(props.message, props.showsRecipients));
 const avatar = computed(() => senderAvatar(correspondent.value));
 const label = computed(() => correspondentLabel(props.message, props.showsRecipients));
@@ -79,6 +94,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   >
     <div
       class="msg-list__item"
+      :class="{ 'msg-list__item--hover-actions': hoverActions }"
       tabindex="-1"
       :draggable="message.scheduled_undo_status == null"
       @click="emit('row-click', $event)"
@@ -121,10 +137,49 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
           <span class="msg-list__from">{{ label }}</span>
           <span class="msg-list__subject">{{ message.subject || '(no subject)' }}</span>
           <span class="msg-list__icons">
-            <Star v-if="Number(message.is_flagged) === 1" :size="13" :stroke-width="2" class="msg-list__star" />
+            <Star v-if="isFlagged && !hoverActions" :size="13" :stroke-width="2" class="msg-list__star" />
             <Paperclip v-if="Number(message.has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
           </span>
           <span class="msg-list__date">{{ dateText }}</span>
+          <div
+            v-if="hoverActions"
+            class="msg-list__actions"
+            draggable="false"
+            @click.stop
+          >
+            <button
+              type="button"
+              class="msg-list__action msg-list__action--star"
+              :class="{ 'msg-list__action--starred': isFlagged }"
+              tabindex="-1"
+              :title="isFlagged ? 'Unstar' : 'Star'"
+              :aria-label="isFlagged ? 'Unstar' : 'Star'"
+              :aria-pressed="isFlagged"
+              @click="emit('star')"
+            >
+              <Star :size="17" :stroke-width="1.75" :fill="isFlagged ? 'currentColor' : 'none'" />
+            </button>
+            <button
+              type="button"
+              class="msg-list__action"
+              tabindex="-1"
+              title="Archive"
+              aria-label="Archive"
+              @click="emit('archive')"
+            >
+              <span class="msg-list__action-icon--folder" aria-hidden="true" v-html="archiveIcon" />
+            </button>
+            <button
+              type="button"
+              class="msg-list__action msg-list__action--danger"
+              tabindex="-1"
+              title="Delete"
+              aria-label="Delete"
+              @click="emit('delete')"
+            >
+              <Trash2 :size="18" :stroke-width="1.65" />
+            </button>
+          </div>
         </div>
         <p v-if="message.preview" class="msg-list__preview">
           {{ message.preview }}
@@ -182,6 +237,95 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
 .msg-list__item:hover { background: var(--rowHover); }
 .msg-list__content {
   min-width: 0;
+}
+
+/* The action overlay is centred on the summary line, over its last two
+   columns: the star over the reserved 34px slot, archive and delete over
+   the 64px date (34 + 8 gap + 64 = 3 × 34 + 2 × 2). The preview line below
+   stays uncovered. Only a set star is visible at rest; hovering the row
+   shows all three on the row's own background. The single-column layout
+   (App.vue SINGLE_COLUMN_WIDTH) has no hover: the star is always visible
+   in its slot and archive and delete are not rendered. */
+.msg-list__actions {
+  position: absolute;
+  inset-inline-end: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+.msg-list__action {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  flex-shrink: 0;
+  visibility: hidden;
+  pointer-events: auto;
+}
+.msg-list__action--starred {
+  visibility: visible;
+}
+@media (min-width: 640px) {
+  /* Inherit down the chain so the overlay matches hover, focused and
+     selected row fills alike. */
+  .msg-list__item--hover-actions:hover .msg-list__content,
+  .msg-list__item--hover-actions:hover .msg-list__summary,
+  .msg-list__item--hover-actions:hover .msg-list__actions {
+    background: inherit;
+  }
+  .msg-list__item--hover-actions:hover .msg-list__action {
+    visibility: visible;
+  }
+}
+@media (max-width: 639px) {
+  .msg-list__actions {
+    /* Sit on the star slot only: the date column and the gap before it. */
+    inset-inline-end: 72px;
+  }
+  .msg-list__action--star {
+    visibility: visible;
+  }
+  .msg-list__action:not(.msg-list__action--star) {
+    display: none;
+  }
+}
+.msg-list__action:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+.msg-list__action--starred,
+.msg-list__action--starred:hover {
+  color: #f5b700;
+}
+.msg-list__action--danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: #ff6b6b;
+}
+.msg-list__action-icon--folder {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+.msg-list__action-icon--folder :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.msg-list__action-icon--folder :deep([fill="context-fill"]) {
+  fill: color-mix(in srgb, currentColor 20%, transparent);
+}
+.msg-list__action-icon--folder :deep([fill="context-stroke"]) {
+  fill: currentColor;
 }
 
 .msg-list__state {
@@ -260,6 +404,16 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   grid-template-areas: "from subject icons date";
   align-items: baseline;
   column-gap: 8px;
+}
+/* Reserve the star's overlay slot and pin the date to the width archive
+   and delete cover (see .msg-list__actions). */
+.msg-list__item--hover-actions .msg-list__summary {
+  position: relative;
+  grid-template-columns: clamp(86px, 28%, 200px) minmax(0, 1fr) auto 34px 64px;
+  grid-template-areas: "from subject icons star date";
+}
+.msg-list__item--hover-actions .msg-list__date {
+  text-align: end;
 }
 .msg-list__from {
   grid-area: from;

@@ -2,6 +2,7 @@
 import {
   computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
+import type { Ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import { RefreshCw } from '@lucide/vue';
@@ -39,17 +40,20 @@ const folderName = computed(() => mailStore.currentFolder?.name ?? 'Mail');
 const { messages, selectedIds, focusedMessageId } = storeToRefs(mailStore);
 
 const unreadOnly = ref(false);
+const flaggedOnly = ref(false);
 const quickFilterNeedle = computed(() => normalizeFilterText(props.quickFilterQuery));
 const quickFilterActive = computed(() => quickFilterNeedle.value.length > 0);
-const denseLocalFilterActive = computed(() => unreadOnly.value || quickFilterActive.value);
+const denseLocalFilterActive = computed(() => (
+  unreadOnly.value || flaggedOnly.value || quickFilterActive.value
+));
 // Per R-2.8 (specs/001-mvp-scope/spec.md) and the project constitution,
 // the open folder's canonical message set is the mailbox-window query
 // view (query_view_items + messages) exposed through
-// mailStore.messages. Both All and Unread derive from that single
-// source; Unread is a dense local filter over it and must never read
-// from a broader projection like folder_messages — that would let the
-// Unread count exceed the All count and violate the user-facing
-// invariant.
+// mailStore.messages. All, Unread and Starred derive from that single
+// source; Unread and Starred are dense local filters over it (they
+// combine as AND) and must never read from a broader projection like
+// folder_messages — that would let a filter count exceed the All count
+// and violate the user-facing invariant.
 const visibleMessages = computed(() => {
   if (!denseLocalFilterActive.value) return messages.value;
   return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: true }));
@@ -467,7 +471,10 @@ function selectAllForCurrentFilter() {
     selectedIds.value = next;
     return;
   }
-  void mailStore.selectAllLoadedMessages({ unreadOnly: unreadOnly.value });
+  void mailStore.selectAllLoadedMessages({
+    unreadOnly: unreadOnly.value,
+    flaggedOnly: flaggedOnly.value,
+  });
 }
 
 function toggleSelectAll() {
@@ -489,8 +496,40 @@ const canWhitelistInJunk = computed(() => {
 });
 const bulkWhitelisting = ref(false);
 
+// Per-row hover actions (star, archive, delete). The Scheduled mailbox
+// has neither archive nor plain delete, so its rows get none.
+const rowHoverActions = computed(() => mailStore.currentFolder?.role !== 'scheduled');
+
+async function toggleStar(message: { id: number; is_flagged?: number | null }) {
+  await mailStore.markManyFlagged([message.id], Number(message.is_flagged) !== 1);
+}
+
+async function archiveOne(id: number) {
+  try {
+    await mailStore.archiveMessages([id]);
+  } catch (err) {
+    console.warn('[message-list] archive failed', err?.message ?? err);
+  }
+}
+
+async function deleteOne(id: number) {
+  try {
+    await mailStore.destroyMessages([id]);
+  } catch (err) {
+    console.warn('[message-list] delete failed', err?.message ?? err);
+  }
+}
+
 async function bulkMarkRead() {
   await mailStore.markManySeen([...selectedIds.value], true);
+}
+
+const anySelectedStarred = computed(() => messages.value.some(
+  (row) => selectedIds.value.has(row.id) && Number(row.is_flagged) === 1,
+));
+
+async function bulkToggleStar() {
+  await mailStore.toggleManyFlagged([...selectedIds.value]);
 }
 
 async function bulkMarkUnread() {
@@ -550,16 +589,24 @@ async function bulkWhitelist() {
   }
 }
 
-function toggleUnreadFilter() {
+function toggleDenseFilter(filter: Ref<boolean>) {
   mailStore.selectMessage(null);
-  unreadOnly.value = !unreadOnly.value;
-  if (unreadOnly.value) {
-    // Unread filters every cached row in the folder, not just the
+  filter.value = !filter.value;
+  if (filter.value) {
+    // Dense filters cover every cached row in the folder, not just the
     // positional window. Pull the full canonical view into the
     // buffer so the filter count and rendered rows reflect the
     // whole folder. This is a local SQLite read, never a JMAP call.
     void mailStore.expandFolderViewIntoMemory();
   }
+}
+
+function toggleUnreadFilter() {
+  toggleDenseFilter(unreadOnly);
+}
+
+function toggleFlaggedFilter() {
+  toggleDenseFilter(flaggedOnly);
 }
 
 function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
@@ -571,6 +618,7 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
     return true;
   }
   if (unreadOnly.value && Number(row.is_seen) !== 0) return false;
+  if (flaggedOnly.value && Number(row.is_flagged) !== 1) return false;
   if (quickFilterActive.value && !messageMatchesQuickFilter(row, quickFilterNeedle.value)) return false;
   return true;
 }
@@ -602,10 +650,12 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
           :folder="mailStore.currentFolder"
           :can-whitelist="canWhitelistInJunk"
           :whitelisting="bulkWhitelisting"
+          :any-starred="anySelectedStarred"
           @archive="bulkArchive"
           @junk="bulkJunk"
           @delete="bulkDelete"
           @cancel-send="bulkCancelSend"
+          @toggle-star="bulkToggleStar"
           @mark-read="bulkMarkRead"
           @mark-unread="bulkMarkUnread"
           @whitelist="bulkWhitelist"
@@ -621,6 +671,15 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
             @click="toggleUnreadFilter"
           >
             Unread
+          </button>
+          <button
+            class="msg-list__filter msg-list__filter--starred"
+            :class="{ 'is-active': flaggedOnly }"
+            type="button"
+            :aria-pressed="flaggedOnly"
+            @click="toggleFlaggedFilter"
+          >
+            Starred
           </button>
         </div>
       </template>
@@ -668,10 +727,14 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
             :dragging="isDraggingMessage(visibleMessages[v.index].id)"
             :shows-recipients="listShowsRecipients"
             :sort="mailStore.currentSort"
+            :hover-actions="rowHoverActions"
             @row-click="onRowClick(v.index, $event)"
             @checkbox-click="onCheckboxClick(v.index, $event)"
             @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
             @dragend="endMessageDrag"
+            @star="toggleStar(visibleMessages[v.index])"
+            @archive="archiveOne(visibleMessages[v.index].id)"
+            @delete="deleteOne(visibleMessages[v.index].id)"
           />
           <li
             v-else
@@ -704,8 +767,14 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
     <div v-else-if="quickFilterActive" class="msg-list__placeholder">
       <p>No messages matching "{{ props.quickFilterQuery.trim() }}" in {{ folderName }}.</p>
     </div>
+    <div v-else-if="unreadOnly && flaggedOnly" class="msg-list__placeholder">
+      <p>No unread starred messages in {{ folderName }}.</p>
+    </div>
     <div v-else-if="unreadOnly" class="msg-list__placeholder">
       <p>No unread messages in {{ folderName }}.</p>
+    </div>
+    <div v-else-if="flaggedOnly" class="msg-list__placeholder">
+      <p>No starred messages in {{ folderName }}.</p>
     </div>
     <div v-else-if="mailStore.currentFolderId" class="msg-list__placeholder">
       <p>{{ folderName }} is empty.</p>

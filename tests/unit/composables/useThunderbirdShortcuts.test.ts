@@ -575,6 +575,20 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     expect(toggleSpy).toHaveBeenCalledWith([1]);
   });
 
+  it('S toggles the star on the targeted messages', async () => {
+    mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1), makeRow(2)];
+    mailStore.selectedIds = new Set([1, 2]);
+    const toggleSpy = vi.spyOn(mailStore, 'toggleManyFlagged').mockResolvedValue(2);
+
+    const event = fireKey('s');
+    await Promise.resolve();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(toggleSpy).toHaveBeenCalledWith([1, 2]);
+  });
+
   it('delegates P to previous-unread navigation', () => {
     const { messageListCommands } = mountHarness();
 
@@ -760,21 +774,24 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     }
   });
 
-  it('A archives and M toggles read; Shift+I and U do nothing', async () => {
+  it('A archives, M toggles read and S toggles the star; Shift+I and U do nothing', async () => {
     mountHarness();
     const mailStore = viewing();
     const archive = vi.spyOn(mailStore, 'archiveMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
     const markSeen = vi.spyOn(mailStore, 'markManySeen').mockResolvedValue(1);
     const toggle = vi.spyOn(mailStore, 'toggleManySeen').mockResolvedValue(1);
+    const star = vi.spyOn(mailStore, 'toggleManyFlagged').mockResolvedValue(1);
 
     fireKey('a');
     const shiftI = fireKey('I', { shiftKey: true });
     const u = fireKey('u');
     fireKey('m');
+    fireKey('s');
     await Promise.resolve();
 
     expect(archive).toHaveBeenCalledWith([7]);
     expect(toggle).toHaveBeenCalledWith([7]);
+    expect(star).toHaveBeenCalledWith([7]);
     expect(markSeen).not.toHaveBeenCalled();
     expect(shiftI.defaultPrevented).toBe(false);
     expect(u.defaultPrevented).toBe(false);

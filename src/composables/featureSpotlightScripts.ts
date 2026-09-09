@@ -62,6 +62,7 @@ export const SPOTLIGHT_TARGETS = {
   sharedFolders: '[data-tour="shared-folders"]',
   userFolders: '[data-tour="user-folders"]',
   folderTree: '.folder-tree',
+  starredFilter: '.msg-list__filter--starred',
 } as const;
 
 const SCHEDULE_MENU_DISABLED_CLASS = 'app-dropdown--disabled';

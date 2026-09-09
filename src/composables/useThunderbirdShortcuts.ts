@@ -218,7 +218,8 @@ export function useThunderbirdShortcuts({
       case 'archive':
       case 'delete':
       case 'deleteForever':
-      case 'toggleRead': {
+      case 'toggleRead':
+      case 'toggleStar': {
         const targetIds = targetsForMessageAction(action);
         if (targetIds == null) return;
         event.preventDefault();
@@ -227,6 +228,8 @@ export function useThunderbirdShortcuts({
           void mailStore.archiveMessages(targetIds);
         } else if (action === 'toggleRead') {
           void mailStore.toggleManySeen(targetIds);
+        } else if (action === 'toggleStar') {
+          void mailStore.toggleManyFlagged(targetIds);
         } else {
           try {
             if (action === 'deleteForever') {

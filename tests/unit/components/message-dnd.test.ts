@@ -299,7 +299,7 @@ describe('MessageList row click viewing', () => {
     expect(selectAll.element.checked).toBe(false);
   });
 
-  it('uses Unread as a lone text toggle and selects only visible unread rows', async () => {
+  it('uses Unread as a text toggle and selects only visible unread rows', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
     mailStore.currentFolderId = 1;
@@ -314,8 +314,7 @@ describe('MessageList row click viewing', () => {
     await nextTick();
 
     const filters = wrapper.findAll('.msg-list__filter');
-    expect(filters).toHaveLength(1);
-    expect(filters[0].text()).toBe('Unread');
+    expect(filters.map((button) => button.text())).toEqual(['Unread', 'Starred']);
 
     await filters[0].trigger('click');
     await nextTick();

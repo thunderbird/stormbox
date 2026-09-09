@@ -31,6 +31,7 @@ export type ShortcutAction =
   | 'quickFilter'
   | 'archive'
   | 'toggleRead'
+  | 'toggleStar'
   | 'delete'
   | 'deleteForever'
   | 'selectAll'
@@ -65,6 +66,7 @@ const WEB_SHORTCUTS: ShortcutTable = {
   quickFilter: [{ key: '/', ignoreShift: true }, { key: 'k', mod: true, inEditable: true }],
   archive: [{ key: 'a' }],
   toggleRead: [{ key: 'm' }],
+  toggleStar: [{ key: 's' }],
   delete: [
     { key: 'Delete', hintPlatform: 'other' },
     { key: 'Backspace', macOnly: true },
@@ -91,6 +93,7 @@ const THUNDERBIRD_SHORTCUTS: ShortcutTable = {
   quickFilter: [{ key: 'k', mod: true, inEditable: true }],
   archive: [{ key: 'a' }],
   toggleRead: [{ key: 'm' }],
+  toggleStar: [{ key: 's' }],
   delete: [
     { key: 'Delete', hintPlatform: 'other' },
     { key: 'Backspace', hintPlatform: 'mac' },

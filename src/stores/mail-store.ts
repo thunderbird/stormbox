@@ -1139,11 +1139,14 @@ export const useMailStore = defineStore('mail', () => {
    * Unread filter is on, we still source from the same canonical
    * view: a row that is not in the query view is not in the folder
    * from the user's perspective, even if it lingers in
-   * `folder_messages`. Treating Unread as a strict subset of All is
-   * required by R-2.8 and avoids the split-source bug where Unread
-   * could appear to outnumber All.
+   * `folder_messages`. Treating Unread (and Starred) as a strict subset
+   * of All is required by R-2.8 and avoids the split-source bug where a
+   * filter could appear to outnumber All.
    */
-  async function selectAllLoadedMessages({ unreadOnly = false }: { unreadOnly?: boolean } = {}): Promise<number> {
+  async function selectAllLoadedMessages({
+    unreadOnly = false,
+    flaggedOnly = false,
+  }: { unreadOnly?: boolean; flaggedOnly?: boolean } = {}): Promise<number> {
     const state = folderState;
     let rows: CachedRow[] = messages.value;
 
@@ -1173,6 +1176,7 @@ export const useMailStore = defineStore('mail', () => {
       const id = Number(row?.id);
       if (!Number.isFinite(id)) continue;
       if (unreadOnly && Number(row?.is_seen) !== 0) continue;
+      if (flaggedOnly && Number(row?.is_flagged) !== 1) continue;
       next.add(id);
     }
     if (next.size === 0) return 0;
@@ -1379,32 +1383,7 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   async function _setSeen(messageId: number, seen: boolean) {
-    if (!repo || authStore.accountId == null) return;
-    const local = messages.value.find((m) => m?.id === messageId);
-    const currentSeen = Number(local?.is_seen ?? 0) === 1;
-    if (currentSeen === seen) return;
-    const keywordsJson = JSON.parse(local?.keywords_json ?? '{}');
-    if (seen) {
-      keywordsJson.$seen = true;
-    } else {
-      delete keywordsJson.$seen;
-    }
-    await repo.replaceMessageKeywords(messageId, Object.keys(keywordsJson), JSON.stringify(keywordsJson));
-    // Queue the server-side write. The worker-side OutboxRunner picks
-    // this row up via the onMutationInserted hook fired by
-    // PENDING_MUTATION_INSERT, so we do NOT have to call runMutation
-    // / drainOutbox here. Fire-and-forget by design: the optimistic
-    // patch above already un-bolded the row in the list and the
-    // runner handles retry + backoff on the server side.
-    await repo.insertPendingMutation({
-      accountId: authStore.accountId,
-      mutationType: MUTATION_TYPE.SET_KEYWORDS,
-      targetMessageId: messageId,
-      requestJson: JSON.stringify(
-        seen ? { add: ['$seen'], remove: [] } : { add: [], remove: ['$seen'] },
-      ),
-      optimisticPatchJson: JSON.stringify({ is_seen: seen ? 1 : 0 }),
-    });
+    await setKeywordsMany([messageId], seen ? { add: ['$seen'] } : { remove: ['$seen'] });
   }
 
   /**
@@ -1425,18 +1404,36 @@ export const useMailStore = defineStore('mail', () => {
     );
   }
 
+  interface KeywordPatch {
+    add?: ReadonlyArray<string>;
+    remove?: ReadonlyArray<string>;
+  }
+
+  /** Keywords the list paints from a dedicated column, for the optimistic patch. */
+  const KEYWORD_COLUMNS: Readonly<Record<string, 'is_seen' | 'is_flagged' | 'is_junk'>> = {
+    $seen: 'is_seen',
+    $flagged: 'is_flagged',
+    $junk: 'is_junk',
+  };
+
   /**
-   * Bulk mark-seen. The store queues one semantic operation; the JMAP
-   * backend owns any wire-level chunking required by the live Session.
+   * The one keyword write path. Applies `add` / `remove` to each row's
+   * cached keywords, skips rows already in the target state, writes the
+   * result to SQLite in one transaction, and queues one setKeywords
+   * mutation for the batch; the JMAP backend owns wire-level chunking.
+   * The worker's OutboxRunner picks the row up via onMutationInserted,
+   * so nothing here drains the outbox. Returns the number of rows
+   * changed; a failure is logged and reported as 0.
    */
-  async function markManySeen(
+  async function setKeywordsMany(
     ids: number[],
-    seen: boolean,
+    patch: KeywordPatch,
     options: Pick<BulkSourceOptions, 'rows'> = {},
   ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     if (!repo || authStore.accountId == null) return 0;
-    const normalized = normalizeMessageIds(ids);
+    const add = patch.add ?? [];
+    const remove = patch.remove ?? [];
     const rowFor = loadedRowLookup(options.rows);
     const optimisticItems: Array<{
       messageId: number;
@@ -1444,16 +1441,20 @@ export const useMailStore = defineStore('mail', () => {
       keywordsJson: string;
     }> = [];
     const changedIds: number[] = [];
-    for (const id of normalized) {
-      const before = rowFor(id);
-      const wasSeen = Number(before?.is_seen ?? 0) === 1;
-      if (wasSeen === seen) continue;
-      const keywordsJson = JSON.parse(before?.keywords_json ?? '{}');
-      if (seen) {
-        keywordsJson.$seen = true;
-      } else {
-        delete keywordsJson.$seen;
+    for (const id of normalizeMessageIds(ids)) {
+      const keywordsJson = JSON.parse(rowFor(id)?.keywords_json ?? '{}');
+      let changed = false;
+      for (const keyword of add) {
+        if (keywordsJson[keyword] === true) continue;
+        keywordsJson[keyword] = true;
+        changed = true;
       }
+      for (const keyword of remove) {
+        if (!(keyword in keywordsJson)) continue;
+        delete keywordsJson[keyword];
+        changed = true;
+      }
+      if (!changed) continue;
       optimisticItems.push({
         messageId: id,
         keywords: Object.keys(keywordsJson),
@@ -1462,37 +1463,51 @@ export const useMailStore = defineStore('mail', () => {
       changedIds.push(id);
     }
     if (changedIds.length === 0) return 0;
+    const optimisticPatch: Partial<Record<'is_seen' | 'is_flagged' | 'is_junk', 0 | 1>> = {};
+    for (const keyword of add) {
+      const column = KEYWORD_COLUMNS[keyword];
+      if (column) optimisticPatch[column] = 1;
+    }
+    for (const keyword of remove) {
+      const column = KEYWORD_COLUMNS[keyword];
+      if (column) optimisticPatch[column] = 0;
+    }
     try {
       if (typeof repo.replaceMessageKeywordsMany === 'function') {
         await repo.replaceMessageKeywordsMany(optimisticItems);
       } else {
         for (const item of optimisticItems) {
-          await repo.replaceMessageKeywords(
-            item.messageId,
-            item.keywords,
-            item.keywordsJson,
-          );
+          await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
         }
       }
       await repo.insertPendingMutation({
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SET_KEYWORDS,
         targetMessageId: changedIds.length === 1 ? changedIds[0] : null,
-        requestJson: JSON.stringify(
-          seen
-            ? { messageIds: changedIds, add: ['$seen'], remove: [] }
-            : { messageIds: changedIds, add: [], remove: ['$seen'] },
-        ),
-        optimisticPatchJson: JSON.stringify({ is_seen: seen ? 1 : 0 }),
+        requestJson: JSON.stringify({ messageIds: changedIds, add: [...add], remove: [...remove] }),
+        optimisticPatchJson: Object.keys(optimisticPatch).length > 0
+          ? JSON.stringify(optimisticPatch)
+          : null,
       });
       return changedIds.length;
     } catch (err) {
-      console.warn('[mail-store] markManySeen failed', {
+      console.warn('[mail-store] setKeywordsMany failed', {
         ids: changedIds,
+        add,
+        remove,
         err: err?.message ?? err,
       });
       return 0;
     }
+  }
+
+  /** Bulk mark-seen; see setKeywordsMany. */
+  async function markManySeen(
+    ids: number[],
+    seen: boolean,
+    options: Pick<BulkSourceOptions, 'rows'> = {},
+  ): Promise<number> {
+    return setKeywordsMany(ids, seen ? { add: ['$seen'] } : { remove: ['$seen'] }, options);
   }
 
   async function toggleManySeen(ids: number[]): Promise<number> {
@@ -1500,6 +1515,44 @@ export const useMailStore = defineStore('mail', () => {
     const first = messages.value.find((m) => m?.id === ids[0]);
     const seen = Number(first?.is_seen ?? 0) === 1;
     return markManySeen(ids, !seen);
+  }
+
+  /**
+   * Star ($flagged, RFC 8621 §4.1.1) or unstar messages. Scheduled rows
+   * are skipped like every other keyword flip on them.
+   */
+  async function markManyFlagged(
+    ids: number[],
+    flagged: boolean,
+    options: BulkSourceOptions = {},
+  ): Promise<number> {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    if (authStore.accountId == null) return 0;
+    const source = resolveSourceFolder(options.sourceFolderId);
+    const mutable = await filterMutableMessageIds(
+      normalizeMessageIds(ids),
+      source?.account_id ?? authStore.accountId,
+    );
+    if (mutable.ids.length === 0) return 0;
+    return setKeywordsMany(
+      mutable.ids,
+      flagged ? { add: ['$flagged'] } : { remove: ['$flagged'] },
+      options,
+    );
+  }
+
+  /**
+   * Modal star toggle over a selection: if any target row is starred,
+   * unstar them all; otherwise star them all.
+   */
+  async function toggleManyFlagged(
+    ids: number[],
+    options: BulkSourceOptions = {},
+  ): Promise<number> {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    const rowFor = loadedRowLookup(options.rows);
+    const anyFlagged = ids.some((id) => Number(rowFor(id)?.is_flagged ?? 0) === 1);
+    return markManyFlagged(ids, !anyFlagged, options);
   }
 
   async function archiveMessages(ids: number[], options: Pick<BulkSourceOptions, 'sourceFolderId'> = {}) {
@@ -1561,29 +1614,7 @@ export const useMailStore = defineStore('mail', () => {
     if (rows.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
     const junkIds = rows.map((r) => r.id);
 
-    const optimisticItems = rows.map((row) => {
-      const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
-      delete keywordsJson.$notjunk;
-      keywordsJson.$junk = true;
-      return {
-        messageId: row.id,
-        keywords: Object.keys(keywordsJson),
-        keywordsJson: JSON.stringify(keywordsJson),
-      };
-    });
-    if (typeof repo.replaceMessageKeywordsMany === 'function') {
-      await repo.replaceMessageKeywordsMany(optimisticItems);
-    } else {
-      for (const item of optimisticItems) {
-        await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
-      }
-    }
-    await repo.insertPendingMutation({
-      accountId: authStore.accountId,
-      mutationType: MUTATION_TYPE.SET_KEYWORDS,
-      targetMessageId: junkIds.length === 1 ? junkIds[0] : null,
-      requestJson: JSON.stringify({ messageIds: junkIds, add: ['$junk'], remove: ['$notjunk'] }),
-    });
+    await setKeywordsMany(junkIds, { add: ['$junk'], remove: ['$notjunk'] }, { rows });
 
     const result = await moveMessages(junkIds, junk.id, { sourceFolderId: source.id });
     if (result.succeeded > 0) {
@@ -1701,29 +1732,7 @@ export const useMailStore = defineStore('mail', () => {
 
     // 2a) Rescue the selected messages' spam keywords: one optimistic
     //     transaction plus one queued setKeywords for the whole batch.
-    const optimisticItems = rows.map((row) => {
-      const keywordsJson = JSON.parse(row.keywords_json ?? '{}');
-      delete keywordsJson.$junk;
-      keywordsJson.$notjunk = true;
-      return {
-        messageId: row.id,
-        keywords: Object.keys(keywordsJson),
-        keywordsJson: JSON.stringify(keywordsJson),
-      };
-    });
-    if (typeof repo.replaceMessageKeywordsMany === 'function') {
-      await repo.replaceMessageKeywordsMany(optimisticItems);
-    } else {
-      for (const item of optimisticItems) {
-        await repo.replaceMessageKeywords(item.messageId, item.keywords, item.keywordsJson);
-      }
-    }
-    await repo.insertPendingMutation({
-      accountId: authStore.accountId,
-      mutationType: MUTATION_TYPE.SET_KEYWORDS,
-      targetMessageId: rescueIds.length === 1 ? rescueIds[0] : null,
-      requestJson: JSON.stringify({ messageIds: rescueIds, add: ['$notjunk'], remove: ['$junk'] }),
-    });
+    await setKeywordsMany(rescueIds, { add: ['$notjunk'], remove: ['$junk'] }, { rows });
 
     // 2b) Move them all out of Junk into the Inbox (the visible effect).
     const result = await moveMessages(rescueIds, target.id, { sourceFolderId: source.id });
@@ -3284,6 +3293,9 @@ export const useMailStore = defineStore('mail', () => {
     selectAllLoadedMessages,
     markRead,
     markUnread,
+    setKeywordsMany,
+    markManyFlagged,
+    toggleManyFlagged,
     markManySeen,
     toggleManySeen,
     destroyMessage,

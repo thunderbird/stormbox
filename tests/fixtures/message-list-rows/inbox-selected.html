@@ -1,6 +1,6 @@
 <ol class="msg-list__items" role="presentation" style="height: 384px;">
   <li id="msg-row-1" data-index="0" role="option" aria-selected="true" class="is-selected" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(0px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="true">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="true">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox" checked=""></label>
         <!--v-if-->
       </div>
@@ -8,25 +8,59 @@
         <!--v-if--><span>S1</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">Sender 1</span><span class="msg-list__subject">Subject 1</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 15, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">Sender 1</span><span class="msg-list__subject">Subject 1</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 15, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star" tabindex="-1" title="Star" aria-label="Star" aria-pressed="false"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <p class="msg-list__preview">Preview text for message 1</p>
       </div>
     </div>
   </li>
   <li id="msg-row-2" data-index="1" role="option" aria-selected="true" class="is-focused is-selected is-unread" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(64px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="true">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="true">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox" checked=""></label><span class="msg-list__unread-dot" aria-label="Unread"></span></div>
       <div class="msg-list__avatar" aria-hidden="true">
         <!--v-if--><span>S2</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">Sender 2</span><span class="msg-list__subject">Subject 2</span><span class="msg-list__icons"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star msg-list__star"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path></svg><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paperclip-icon lucide-paperclip msg-list__attach"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"></path></svg></span><span class="msg-list__date">Nov 16, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">Sender 2</span><span class="msg-list__subject">Subject 2</span><span class="msg-list__icons"><!--v-if--><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-paperclip-icon lucide-paperclip msg-list__attach"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"></path></svg></span><span class="msg-list__date">Nov 16, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star msg-list__action--starred" tabindex="-1" title="Unstar" aria-label="Unstar" aria-pressed="true"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <p class="msg-list__preview">Preview text for message 2</p>
       </div>
     </div>
   </li>
   <li id="msg-row-3" data-index="2" role="option" aria-selected="false" class="" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(128px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="true">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="true">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox"></label>
         <!--v-if-->
       </div>
@@ -34,13 +68,30 @@
         <!--v-if--><span>S3</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">Sender 3</span><span class="msg-list__subject">(no subject)</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 17, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">Sender 3</span><span class="msg-list__subject">(no subject)</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 17, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star" tabindex="-1" title="Star" aria-label="Star" aria-pressed="false"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <!--v-if-->
       </div>
     </div>
   </li>
   <li id="msg-row-4" data-index="3" role="option" aria-selected="false" class="" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(192px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="false">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="false">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox"></label>
         <!--v-if-->
       </div>
@@ -48,13 +99,30 @@
         <!--v-if--><span>S4</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">Sender 4</span><span class="msg-list__subject">Subject 4</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 18, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">Sender 4</span><span class="msg-list__subject">Subject 4</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 18, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star" tabindex="-1" title="Star" aria-label="Star" aria-pressed="false"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <p class="msg-list__preview">Preview text for message 4</p>
       </div>
     </div>
   </li>
   <li id="msg-row-5" data-index="4" role="option" aria-selected="false" class="" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(256px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="true">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="true">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox"></label>
         <!--v-if-->
       </div>
@@ -62,19 +130,53 @@
         <!--v-if--><span>?</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">(no sender)</span><span class="msg-list__subject">Subject 5</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 19, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">(no sender)</span><span class="msg-list__subject">Subject 5</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 19, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star" tabindex="-1" title="Star" aria-label="Star" aria-pressed="false"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <p class="msg-list__preview">Preview text for message 5</p>
       </div>
     </div>
   </li>
   <li id="msg-row-6" data-index="5" role="option" aria-selected="false" class="is-unread" style="position: absolute; top: 0px; left: 0px; right: 0px; transform: translateY(320px); height: 64px;">
-    <div class="msg-list__item" tabindex="-1" draggable="true">
+    <div class="msg-list__item msg-list__item--hover-actions" tabindex="-1" draggable="true">
       <div class="msg-list__state"><label class="msg-list__check" draggable="false"><input type="checkbox"></label><span class="msg-list__unread-dot" aria-label="Unread"></span></div>
       <div class="msg-list__avatar" aria-hidden="true">
         <!--v-if--><span>S6</span>
       </div>
       <div class="msg-list__content">
-        <div class="msg-list__summary"><span class="msg-list__from">Sender 6</span><span class="msg-list__subject">Subject 6</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 20, 2023</span></div>
+        <div class="msg-list__summary"><span class="msg-list__from">Sender 6</span><span class="msg-list__subject">Subject 6</span><span class="msg-list__icons"><!--v-if--><!--v-if--></span><span class="msg-list__date">Nov 20, 2023</span>
+          <div class="msg-list__actions" draggable="false"><button type="button" class="msg-list__action msg-list__action--star" tabindex="-1" title="Star" aria-label="Star" aria-pressed="false"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-star-icon lucide-star">
+                <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"></path>
+              </svg></button><button type="button" class="msg-list__action" tabindex="-1" title="Archive" aria-label="Archive"><span class="msg-list__action-icon--folder" aria-hidden="true"><!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+<svg xmlns="http://www.w3.org/2000/svg" fill-opacity="context-fill-opacity" viewBox="0 0 20 20" height="20" width="20">
+  <path d="M5.5 3A2.495 2.495 0 0 0 3 5.5v9C3 15.885 4.115 17 5.5 17h9c1.385 0 2.5-1.115 2.5-2.5v-9C17 4.115 15.885 3 14.5 3ZM14 5h.5c.277 0 .5.223.5.5V7h-1.473c0 1.657-1.87 3-3.527 3S6.479 8.657 6.479 7H5V5.5c0-.277.223-.5.5-.5H6Z" fill="context-fill"></path>
+  <path d="M5.5 2C3.57 2 2 3.57 2 5.5v9C2 16.43 3.57 18 5.5 18h9c1.93 0 3.5-1.57 3.5-3.5v-9C18 3.57 16.43 2 14.5 2Zm0 1h9C15.894 3 17 4.106 17 5.5V7h-1V5.5c0-.822-.678-1.5-1.5-1.5h-9C4.678 4 4 4.678 4 5.5V7H3V5.5C3 4.106 4.106 3 5.5 3Zm0 2h9c.286 0 .5.214.5.5V7h-1.496a.5.5 0 0 0-.5.502c.003 1.15-1.327 2.514-3.004 2.514S6.993 8.652 6.996 7.502a.5.5 0 0 0-.5-.502H5V5.5c0-.286.214-.5.5-.5ZM3 8h3.115C6.41 9.632 8.01 11.016 10 11.016V12h1v-1h-.63c1.816-.158 3.239-1.47 3.515-3H17v6.5c0 1.394-1.106 2.5-2.5 2.5H10v-1H9v1H5.5A2.484 2.484 0 0 1 3 14.5Zm7 8h1v-1h-1zm0-1v-1H9v1zm0-1h1v-1h-1zm0-1v-1H9v1z" fill="context-stroke"></path>
+</svg>
+</span></button><button type="button" class="msg-list__action msg-list__action--danger" tabindex="-1" title="Delete" aria-label="Delete"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash2-icon lucide-trash-2">
+                <path d="M10 11v6"></path>
+                <path d="M14 11v6"></path>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+                <path d="M3 6h18"></path>
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg></button></div>
+        </div>
         <p class="msg-list__preview">Preview text for message 6</p>
       </div>
     </div>

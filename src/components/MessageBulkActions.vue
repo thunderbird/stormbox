@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Mail, MailOpen, Trash2 } from '@lucide/vue';
+import { Mail, MailOpen, Star, Trash2 } from '@lucide/vue';
 
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -8,20 +8,25 @@ import type { FolderRow } from '../types';
 
 /**
  * The bulk-action buttons for a checkbox selection: archive, junk,
- * delete, mark read/unread, plus "Not junk" inside a Junk folder. Which
- * buttons show depends on the folder the selected rows live in: the
- * Scheduled mailbox drops archive and junk, and its delete slot cancels
- * the selected sends instead of destroying mail (SL-5.6). The owner
- * runs the actions; this component only renders the row of buttons.
+ * delete, star, mark read/unread, plus "Not junk" inside a Junk folder.
+ * Which buttons show depends on the folder the selected rows live in:
+ * the Scheduled mailbox drops archive, junk and star, and its delete
+ * slot cancels the selected sends instead of destroying mail (SL-5.6).
+ * Star is modal (MK-2.4): it unstars when any selected row is starred,
+ * otherwise stars them all. The owner runs the actions; this component
+ * only renders the row of buttons.
  */
 const props = withDefaults(defineProps<{
   folder: FolderRow | null | undefined;
   /** Whether "Not junk" applies (Junk folder of the primary account). */
   canWhitelist?: boolean;
   whitelisting?: boolean;
+  /** Whether any selected row is starred; picks the star button's verb. */
+  anyStarred?: boolean;
 }>(), {
   canWhitelist: false,
   whitelisting: false,
+  anyStarred: false,
 });
 
 const emit = defineEmits<{
@@ -29,6 +34,7 @@ const emit = defineEmits<{
   (e: 'junk'): void;
   (e: 'delete'): void;
   (e: 'cancel-send'): void;
+  (e: 'toggle-star'): void;
   (e: 'mark-read'): void;
   (e: 'mark-unread'): void;
   (e: 'whitelist'): void;
@@ -69,6 +75,18 @@ const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
   <button v-else class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="emit('delete')" title="Delete" aria-label="Delete">
     <Trash2 :size="18" :stroke-width="1.65" />
   </button>
+  <button
+    v-if="!isInScheduledFolder"
+    class="msg-list__bulk-action msg-list__bulk-action--star"
+    :class="{ 'msg-list__bulk-action--starred': anyStarred }"
+    type="button"
+    :title="anyStarred ? 'Unstar' : 'Star'"
+    :aria-label="anyStarred ? 'Unstar' : 'Star'"
+    :aria-pressed="anyStarred"
+    @click="emit('toggle-star')"
+  >
+    <Star :size="17" :stroke-width="1.75" :fill="anyStarred ? 'currentColor' : 'none'" />
+  </button>
   <button class="msg-list__bulk-action" type="button" @click="emit('mark-read')" title="Mark as read" aria-label="Mark as read">
     <MailOpen :size="16" :stroke-width="1.75" />
   </button>
@@ -99,6 +117,10 @@ const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
 .msg-list__bulk-action--danger:hover {
   background: rgba(255, 107, 107, 0.12);
   color: #ff6b6b;
+}
+.msg-list__bulk-action--starred,
+.msg-list__bulk-action--starred:hover {
+  color: #f5b700;
 }
 /* "Not junk" is the contextual, Junk-only primary action; a filled
    accent button set apart from the icon buttons, matching the same

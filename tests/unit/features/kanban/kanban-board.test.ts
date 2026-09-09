@@ -653,7 +653,7 @@ describe('KanbanColumn selection', () => {
 
     const actions = header(wrapper).findAll('.selectable-list-header__selection-actions button');
     expect(actions.map((button) => button.attributes('title'))).toEqual([
-      'Archive', 'Junk', 'Delete', 'Mark as read', 'Mark as unread', 'Clear selection',
+      'Archive', 'Junk', 'Delete', 'Star', 'Mark as read', 'Mark as unread', 'Clear selection',
     ]);
     expect(header(wrapper).find('.selectable-list-header__count').text()).toBe('1 selected');
     expect(header(wrapper).find('.kanban-column__count').exists()).toBe(false);

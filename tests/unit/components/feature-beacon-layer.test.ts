@@ -20,6 +20,7 @@ import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-lay
 const COMPOSE = '.sidebar__compose';
 const CONTACTS = '.app-spaces [aria-label="Contacts"]';
 const MANAGE_FOLDERS = '.folder-tree__manage';
+const STARRED_FILTER = '.msg-list__filter--starred';
 
 const RECTS = {
   [COMPOSE]: {
@@ -30,6 +31,9 @@ const RECTS = {
   },
   [MANAGE_FOLDERS]: {
     left: 200, top: 110, width: 28, height: 28,
+  },
+  [STARRED_FILTER]: {
+    left: 320, top: 60, width: 60, height: 28,
   },
 };
 
@@ -47,6 +51,7 @@ const ALL_ANCHORS = `
   <button class="sidebar__compose">New Message</button>
   <nav class="app-spaces"><button aria-label="Contacts">Contacts</button></nav>
   <button class="folder-tree__manage">Manage</button>
+  <button class="msg-list__filter msg-list__filter--starred">Starred</button>
 `;
 
 function mountLayer() {
@@ -85,7 +90,7 @@ describe('FeatureBeaconLayer', () => {
     const wrapper = mountLayer();
     await settle();
 
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages']);
     const dot = wrapper.get('[data-beacon="newMessage"]');
     expect(dot.attributes('aria-label')).toBe('New: A new composer');
     expect(dot.attributes('aria-haspopup')).toBe('dialog');
@@ -157,7 +162,7 @@ describe('FeatureBeaconLayer', () => {
     await settle();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages']);
     expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
       .toEqual({ seen: ['manageFolders'], sessions: 1 });
   });
@@ -368,7 +373,7 @@ describe('FeatureBeaconLayer', () => {
     mountAnchors(ALL_ANCHORS);
     const wrapper = mountLayer();
     const store = useFeatureBeaconsStore();
-    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders'] as const) {
+    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders', 'starMessages'] as const) {
       store.markSeen(id);
     }
     await settle();

@@ -699,7 +699,7 @@ describe('App mail layout', () => {
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
     expect(wrapper.findAll('.feature-beacons__dot').map((dot) => dot.attributes('data-beacon')))
       .toEqual(['newMessage', 'contacts']);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
@@ -715,7 +715,7 @@ describe('App mail layout', () => {
     await card.get('.feature-beacons__got-it').trigger('click');
     await settleBeacons();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('5 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
     expect(wrapper.find('[data-beacon="newMessage"]').exists()).toBe(false);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
@@ -732,7 +732,7 @@ describe('App mail layout', () => {
     // action that a menu could not.
     expect(wrapper.find('.beacon-menu [role="menu"]').exists()).toBe(false);
     expect(wrapper.get('.beacon-menu__popover').attributes('aria-label')).toBe('New features');
-    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(6);
+    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(7);
 
     await wrapper.get('.beacon-menu__dismiss').trigger('click');
     await settleBeacons();
@@ -920,7 +920,7 @@ describe('App mail layout', () => {
     await settleBeacons();
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(true);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('6 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });

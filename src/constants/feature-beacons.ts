@@ -5,6 +5,7 @@ import {
   FolderTree,
   Minus,
   PenLine,
+  Star,
   UsersRound,
 } from '@lucide/vue';
 
@@ -22,7 +23,8 @@ export type BeaconId =
   | 'composeSchedule'
   | 'contacts'
   | 'manageIdentities'
-  | 'manageFolders';
+  | 'manageFolders'
+  | 'starMessages';
 
 export type BeaconStage = 'composer' | 'contacts';
 
@@ -100,6 +102,15 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     title: 'Manage Folders',
     body: 'Create folders, choose which ones to show, and star favorites so they float to the top of the list.',
     icon: FolderTree,
+  },
+  {
+    // The row's own star is hidden until hover, so the dot sits on the
+    // always-visible Starred filter instead.
+    id: 'starMessages',
+    anchor: SPOTLIGHT_TARGETS.starredFilter,
+    title: 'Star a message',
+    body: 'Hover a message and click the star, or press S. Starred here shows only the messages you starred, and stars sync with your other mail apps.',
+    icon: Star,
   },
 ];
 

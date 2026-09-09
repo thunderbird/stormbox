@@ -193,6 +193,40 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
+  it('offers a Starred filter beside Unread that narrows rows and select-all to starred mail', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [
+        makeRow(1, { is_flagged: 0 }),
+        makeRow(2, { is_flagged: 1, is_seen: 0 }),
+        makeRow(3, { is_flagged: 1 }),
+      ],
+    });
+    useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
+    const shortcuts = mountShortcutBroker();
+
+    const filters = wrapper.findAll('.msg-list__filter');
+    expect(filters.map((button) => button.text())).toEqual(['Unread', 'Starred']);
+
+    await filters[1].trigger('click');
+    expect(filters[1].attributes('aria-pressed')).toBe('true');
+    expect(wrapper.find('.msg-list__count').text()).toBe('2 messages');
+
+    fireKey('a', { ctrlKey: true });
+    await nextTick();
+    expect([...mailStore.selectedIds].sort()).toEqual([2, 3]);
+
+    // Unread and Starred combine as AND.
+    mailStore.selectedIds = new Set();
+    await nextTick();
+    await wrapper.findAll('.msg-list__filter')[0].trigger('click');
+    fireKey('a', { ctrlKey: true });
+    await nextTick();
+    expect([...mailStore.selectedIds]).toEqual([2]);
+
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
   it('shows the filter buttons and no bulk actions without a selection', async () => {
     const { wrapper } = mountList();
     await nextTick();
@@ -215,6 +249,7 @@ describe('MessageList bulk actions header', () => {
       'Archive',
       'Junk',
       'Delete',
+      'Star',
       'Mark as read',
       'Mark as unread',
       'Clear selection',
@@ -235,6 +270,7 @@ describe('MessageList bulk actions header', () => {
       'Whitelist senders and move to Inbox',
       'Archive',
       'Delete',
+      'Star',
       'Mark as read',
       'Mark as unread',
       'Clear selection',
@@ -311,6 +347,28 @@ describe('MessageList bulk actions header', () => {
     expect(destroySpy).toHaveBeenCalledWith([1, 3]);
     expect(seenSpy).toHaveBeenNthCalledWith(1, [1, 3], true);
     expect(seenSpy).toHaveBeenNthCalledWith(2, [1, 3], false);
+    wrapper.unmount();
+  });
+
+  it('offers a modal Star toggle that reads Unstar once any selected row is starred', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [makeRow(1), makeRow(2, { is_flagged: 1 }), makeRow(3)],
+    });
+    mailStore.selectedIds = new Set([1, 3]);
+    await nextTick();
+
+    const star = wrapper.find('.msg-list__bulk-actions .msg-list__bulk-action--star');
+    expect(star.attributes('title')).toBe('Star');
+    expect(star.attributes('aria-pressed')).toBe('false');
+
+    const toggleSpy = vi.spyOn(mailStore, 'toggleManyFlagged').mockResolvedValue(2);
+    await star.trigger('click');
+    expect(toggleSpy).toHaveBeenCalledWith([1, 3]);
+
+    mailStore.selectedIds = new Set([1, 2]);
+    await nextTick();
+    expect(star.attributes('title')).toBe('Unstar');
+    expect(star.attributes('aria-pressed')).toBe('true');
     wrapper.unmount();
   });
 
