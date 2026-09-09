@@ -905,7 +905,6 @@ function unwatchSystemTheme() {
     inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
   --modal-scrim: color-mix(in srgb, #000 64%, transparent);
   --modal-scrim-blur: blur(12px);
-  --top-nav-shadow: transparent;
   --top-nav-wordmark: var(--accent);
   --top-nav-input-bg: var(--surface);
   --top-nav-popover-bg: var(--colour-neutral-base);
@@ -1033,18 +1032,6 @@ body.spotlighting .folder-subs {
   padding: 0 16px 0 14px;
   /* No bottom hairline: the bar reads as one surface with the sidebar. */
   background: var(--top-nav-bg);
-}
-/* Drop shadow onto the panes below. */
-.quick-filter::after {
-  content: "";
-  position: absolute;
-  z-index: 1;
-  top: 100%;
-  left: 0;
-  right: 0;
-  height: 8px;
-  background: linear-gradient(to bottom, var(--top-nav-shadow), transparent);
-  pointer-events: none;
 }
 .quick-filter__brand {
   display: inline-flex;

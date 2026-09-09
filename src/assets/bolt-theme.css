@@ -68,9 +68,6 @@ html.palette-bolt .account-menu__avatar {
   width: 40px;
   height: 40px;
 }
-html.palette-bolt.light {
-  --top-nav-shadow: color-mix(in srgb, #000 10%, transparent);
-}
 html.palette-bolt .msg-list,
 html.palette-bolt .message-view,
 html.palette-bolt .message-view__details,
