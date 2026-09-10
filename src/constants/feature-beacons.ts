@@ -117,7 +117,7 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     id: 'starMessages',
     anchor: SPOTLIGHT_TARGETS.starredFilter,
     title: 'Star a message',
-    body: 'Hover a message and click the star, or press S. Starred here shows only the messages you starred, and stars sync with your other mail apps.',
+    body: 'Hover a message and click the star, or press S to star a message, and then use the Starred filter to view them.',
     icon: Star,
   },
   {
