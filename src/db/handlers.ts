@@ -2461,7 +2461,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     [DB_RPC.MESSAGE_SET_SCHEDULED]: async ({
       accountId, emailRemoteId, submissionRemoteId = null, undoStatus,
     }) => {
-      const statuses = new Set(['pending', 'final', 'canceled', 'unknown']);
+      const statuses = new Set(['pending', 'final', 'canceled']);
       if (undoStatus != null && !statuses.has(undoStatus)) {
         throw new Error(`message.setScheduled got an unknown undo status: ${undoStatus}`);
       }
@@ -2581,6 +2581,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * `messages` for `accountId`. Stores call this before enqueuing
      * a mutation so a stale UI id (e.g. a row the user double-clicked
      * Delete on) is dropped instead of failing the mutation FK check.
+     * `excludeScheduled` also drops rows whose submission is pending;
+     * settled rows are ordinary mail.
      */
     [DB_RPC.MESSAGE_FILTER_EXISTING_IDS]: async ({
       accountId, ids, excludeScheduled = false,
@@ -2593,7 +2595,9 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const rows = await engine.all(
         `SELECT id FROM messages
           WHERE account_id = ? AND id IN (${placeholders})
-            ${excludeScheduled ? 'AND scheduled_undo_status IS NULL' : ''}`,
+            ${excludeScheduled
+              ? "AND (scheduled_undo_status IS NULL OR scheduled_undo_status <> 'pending')"
+              : ''}`,
         [accountId, ...numeric],
       );
       return rows.map((r) => Number(r.id));

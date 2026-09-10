@@ -116,7 +116,8 @@ export interface SeedScheduledMessageOptions {
   sentAt?: string;
   /** Submission the row is tracked under; null seeds an untracked row. */
   submissionId?: string | null;
-  undoStatus?: string;
+  /** Null leaves the row untracked: mail parked in Scheduled by another client. */
+  undoStatus?: string | null;
 }
 
 /**

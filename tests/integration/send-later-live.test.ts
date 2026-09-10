@@ -5,8 +5,10 @@
  * and check every surface that carries the target instant (Email.sentAt,
  * the raw MIME Date header, EmailSubmission.sendAt) plus conditional
  * subscription; cancel it back to Drafts; release a short schedule
- * through delivery and Sent filing; and adopt a schedule created by
- * another client into a fresh engine (reload recovery).
+ * through delivery and Sent filing; adopt a schedule created by another
+ * client into a fresh engine (reload recovery); and reconcile a released
+ * message that an external IMAP client deleted from Scheduled and then
+ * restored there.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -22,14 +24,17 @@ import {
 import { DB_RPC } from '../../src/db/protocol';
 import { syncIdentities } from '../../src/sync/backends/jmap/identities';
 import { syncMailboxes } from '../../src/sync/backends/jmap/mailboxes';
+import { EMAIL_LIST_PROPERTIES, persistEmails } from '../../src/sync/backends/jmap/messages';
 import { MUTATION_TYPES } from '../../src/sync/backends/jmap/outbox';
 import {
   fetchSubmissionRecords,
   syncSubmissionsForAccount,
 } from '../../src/sync/backends/jmap/submissions';
 import { makeOperationId } from '../../src/utils/message-id';
+import { connectImap } from '../e2e/helpers/imap-client';
 import {
   INTEGRATION_TEST_OIDC_EMAIL,
+  INTEGRATION_TEST_OIDC_PASSWORD,
   SHARED_TEST_OIDC_EMAIL,
   SHARED_TEST_OIDC_PASSWORD,
 } from '../e2e/helpers/stack-env';
@@ -201,6 +206,28 @@ describe.sequential('live Stalwart Send Later', () => {
       account: context.account,
     });
     return records.filter((record) => record.emailId === emailRemoteId);
+  }
+
+  function syncSubmissions() {
+    return syncSubmissionsForAccount({
+      transport: context.transport,
+      account: context.account,
+      handlers: context.handlers,
+    });
+  }
+
+  /** Mirror the server's current placement of one Email into the cache, as Email/changes would. */
+  async function refreshLocalEmail(remoteId: string) {
+    const email = await remoteEmail(mail, remoteId, EMAIL_LIST_PROPERTIES);
+    expect(email).toBeTruthy();
+    await persistEmails({ account: context.account, emails: [email], handlers: context.handlers });
+  }
+
+  async function waitForFinalRecord(emailRemoteId: string) {
+    return pollUntil(async () => {
+      const records = await submissionForEmail(emailRemoteId);
+      return records.find((record) => record.undoStatus === 'final') ?? null;
+    }, { timeoutMs: 90_000, label: 'submission release' });
   }
 
   /**
@@ -411,10 +438,7 @@ describe.sequential('live Stalwart Send Later', () => {
 
     // The server releases the submission at the target and retains the
     // record as final (RFC 8621 §7).
-    const finalRecord = await pollUntil(async () => {
-      const records = await submissionForEmail(row.remote_id);
-      return records.find((record) => record.undoStatus === 'final') ?? null;
-    }, { timeoutMs: 90_000, label: 'submission release' });
+    const finalRecord = await waitForFinalRecord(row.remote_id);
     expect(finalRecord.undoStatus).toBe('final');
 
     // The delivered copy arrives in the recipient's inbox, attachment
@@ -455,6 +479,84 @@ describe.sequential('live Stalwart Send Later', () => {
     await drainScheduleMutations();
     const scheduledRemoteId = await scheduledMailboxRemoteId();
     expect((await remoteMailbox(mail, scheduledRemoteId as string)).isSubscribed).toBe(true);
+  }, 180_000);
+
+  /**
+   * Scheduled is an ordinary IMAP folder, so an external client can
+   * delete from it and undo that delete. The server never files a
+   * released message itself, so a client that is not looking at release
+   * time leaves it in Scheduled for the IMAP client to find. Pins that
+   * the delete is respected (no copy resurrected into Sent) and that the
+   * undo — which puts a sent message back into Scheduled with nothing
+   * local tracking it — is reconciled into Sent instead of leaving a row
+   * no pass revisits and no action can touch.
+   */
+  it('reconciles a released message an IMAP client deleted from Scheduled and restored', async () => {
+    const subject = `${prefix} imap undo`;
+    const outcome = await runMutation(MUTATION_TYPES.SEND, sendRequest({
+      subject,
+      scheduledAt: futureTargetAt(10),
+    }));
+    expect(outcome.ok).toBe(true);
+    const row = await trackedRowBySubject(subject);
+    expect(row.scheduled_undo_status).toBe('pending');
+    await drainScheduleMutations();
+
+    // Released while no Stormbox pass is looking: the sent message still
+    // sits in Scheduled, which is where the IMAP client sees it.
+    await waitForFinalRecord(row.remote_id);
+    const mailboxes = await remoteMailboxes(mail);
+    const scheduled = findScheduledMailbox(mailboxes);
+    const trash = mailboxes.find((mailbox: any) => mailbox.role === 'trash');
+    expect(scheduled?.role).toBe('scheduled');
+    expect(trash).toBeTruthy();
+
+    const imap = await connectImap({
+      username: INTEGRATION_TEST_OIDC_EMAIL,
+      password: INTEGRATION_TEST_OIDC_PASSWORD,
+    });
+    try {
+      // External client deletes it from Scheduled (a move to Trash).
+      await imap.select(scheduled.name);
+      const scheduledUid = await imap.waitForUidBySubject(subject);
+      await imap.uidMove(scheduledUid, trash.name);
+      expect((await remoteEmail(mail, row.remote_id)).mailboxIds).toEqual({ [trash.id]: true });
+
+      // Stormbox catches up. The schedule is over and the message is no
+      // longer in Scheduled, so it stays where the user put it (SL-6.4).
+      await refreshLocalEmail(row.remote_id);
+      await syncSubmissions();
+      await drainScheduleMutations();
+      await syncSubmissions();
+      expect.soft((await trackedRowBySubject(subject)).scheduled_undo_status).toBeNull();
+      expect.soft((await remoteEmail(mail, row.remote_id)).mailboxIds)
+        .toEqual({ [trash.id]: true });
+
+      // External client undoes the delete: a sent message is back in
+      // Scheduled and nothing local marks it as scheduled.
+      await imap.select(trash.name);
+      const trashUid = await imap.waitForUidBySubject(subject);
+      await imap.uidMove(trashUid, scheduled.name);
+    } finally {
+      await imap.logout();
+    }
+    expect((await remoteEmail(mail, row.remote_id)).mailboxIds[scheduled.id]).toBe(true);
+    await refreshLocalEmail(row.remote_id);
+    expect((await placementsOf(row.id)).map((p: any) => p.role)).toContain('scheduled');
+
+    // Reconciliation reads the Scheduled folder itself, so the untracked
+    // row meets its final record: filed to Sent, columns cleared.
+    const first = await syncSubmissions();
+    expect(first.unresolvedSettled).toBe(true);
+    await drainScheduleMutations();
+    const second = await syncSubmissions();
+    expect(second.unresolvedSettled).toBe(false);
+    const after = await trackedRowBySubject(subject);
+    expect(after.scheduled_undo_status).toBeNull();
+    expect(after.scheduled_submission_remote_id).toBeNull();
+    expect((await placementsOf(after.id)).map((p: any) => p.role)).toEqual(['sent']);
+    expect((await remoteEmail(mail, row.remote_id)).mailboxIds)
+      .toEqual({ [sentFolder.remote_id]: true });
   }, 180_000);
 
   it('a fresh client adopts a schedule created by another client', async () => {

@@ -151,10 +151,16 @@ export interface MessageRow {
   updated_at: number;
   /** EmailSubmission id holding this message for Send Later, if any. */
   scheduled_submission_remote_id: string | null;
-  /** Last known undo status of that submission; null when not scheduled. */
-  scheduled_undo_status: 'pending' | 'final' | 'canceled' | 'unknown' | null;
+  /**
+   * Last known undo status of that submission. The message is scheduled
+   * only while this is `pending`; `final`/`canceled` rows are settled
+   * mail awaiting a filing handoff, and null is ordinary mail.
+   */
+  scheduled_undo_status: ScheduledUndoStatus;
   view_position?: number;
 }
+
+export type ScheduledUndoStatus = 'pending' | 'final' | 'canceled' | null;
 
 export interface BodyAttachmentRow {
   part_id: string;

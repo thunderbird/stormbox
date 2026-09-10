@@ -155,23 +155,33 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 - **SL-4.4 — Stalwart-compatible reads.** All submission reads shall use one
   unfiltered `EmailSubmission/query` plus explicit `EmailSubmission/get(ids)`
   with client-side filtering, never Stalwart's unreliable `undoStatus` query
-  filter, and shall not branch by server version. An `undoStatus` outside
-  `pending`/`final`/`canceled` shall be treated as unreadable rather than
-  interpreted.
-- **SL-4.5 — Thin synchronizer.** One account-scoped synchronizer shall
-  reconcile the scheduling columns against the server's submissions: tracked
-  rows may transition to `final`, `canceled`, or `unknown`; untracked pending
-  future-dated submissions created by other clients shall be adopted by
-  fetching their Emails through standard persistence. It shall hold no state
-  machine and re-derive every decision each pass.
+  filter, and shall not branch by server version. Tracked submission ids the
+  listing omits shall be read explicitly by id before they count as gone. An
+  `undoStatus` outside `pending`/`final`/`canceled` shall be treated as
+  unreadable rather than interpreted, and an unreadable status keeps the row
+  pending.
+- **SL-4.5 — Thin, folder-driven synchronizer.** One account-scoped
+  synchronizer shall reconcile the scheduling columns against the server's
+  submissions for every tracked row and for every message the local
+  Scheduled folder holds, whoever put it there. A message is scheduled
+  exactly while its status is `pending`; `final` and `canceled` are settled
+  rows awaiting handoff (SL-6.4, SL-6.5), and a row without columns is
+  ordinary mail wherever it sits. Untracked pending future-dated submissions
+  created by other clients shall be adopted by fetching their Emails through
+  standard persistence. The synchronizer shall hold no state machine and
+  re-derive every decision each pass.
 - **SL-4.6 — Sync triggers.** The synchronizer shall run on `EmailSubmission`
-  StateChange, connect/reconnect, Scheduled-folder open, and one non-durable
+  StateChange, on `Mailbox` StateChange while the account has scheduled work
+  (tracked rows or a non-empty Scheduled folder), on connect/reconnect, after
+  the Scheduled folder's window sync when it is opened, and on one non-durable
   account-level wake-up armed at the nearest pending `sent_at`. There shall be
   no per-message timers and no durable polling mutations.
 - **SL-4.7 — Missing records.** A submission the server no longer shows is
-  conclusive for nothing: a pending row whose target has passed becomes
-  `unknown` (RFC 8621 §7 allows reaping) and is never guessed as sent or
-  canceled; a pending row with a future target keeps waiting.
+  never guessed as sent or canceled. A pending row with a future target keeps
+  waiting; a pending row whose target has passed has nothing left to cancel
+  (RFC 8621 §7 allows reaping), so its columns clear and the message becomes
+  ordinary mail where it stands. A message in Scheduled with no submission at
+  all is ordinary mail and is never given scheduling state.
 
 ## 5. Scheduled folder presentation
 
@@ -182,7 +192,9 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 - **SL-5.2 — Placement.** The folder shall render as a default folder between
   Drafts and Sent, with its own icon, protected like the other role folders
   (not renameable, deletable, reparentable, or subscribable) and additionally
-  not usable as an ordinary move/copy target.
+  not usable as an ordinary move/copy target, since dropping mail into it
+  schedules nothing. Moving mail out of it is gated per message (SL-5.6), not
+  per folder.
 - **SL-5.3 — Normal list machinery.** Opening Scheduled shall use the same
   mailbox-window query, `messages` rows, and message-list component as every
   other real folder. There shall be no synthetic folder ids, synthetic message
@@ -190,19 +202,25 @@ durable outbox, and user-visible success follows a durable local checkpoint.
 - **SL-5.4 — Soonest-first order.** The Scheduled view shall sort by ascending
   `sentAt` (soonest departure first), and list rows shall display the active
   sort timestamp rather than unconditionally showing `received_at`.
-- **SL-5.5 — Read-only detail.** Opening a scheduled message shall render
-  through the normal detail view with a scheduled banner showing the resolved
-  send time and a `Cancel send` action. Reply, Reply All, Forward, archive,
-  junk, delete, and draft-edit actions shall not be offered, and their
-  keyboard shortcuts shall be inert; the metadata row shall label the target
-  instant `Send at`.
-- **SL-5.6 — Bulk-action gating.** Bulk archive, junk, and move affordances
-  shall be unavailable for the Scheduled folder. The bulk delete slot shall
-  remain, labeled `Cancel send`, and shall enqueue the durable cancel (SL-6.1)
-  for each selected message rather than destroying or trashing it, because
-  removing the Email alone leaves its held submission pending (see the
-  reference-server notes). The store shall independently refuse destroy/move
-  requests that target scheduled messages.
+- **SL-5.5 — Read-only detail.** Opening a pending scheduled message shall
+  render through the normal detail view with a scheduled banner showing the
+  resolved send time and a `Cancel send` action. Reply, Reply All, Forward,
+  archive, junk, delete, and draft-edit actions shall not be offered, and
+  their keyboard shortcuts shall be inert; the metadata row shall label the
+  target instant `Send at`. A settled message awaiting handoff keeps the
+  banner (released or canceled) without the cancel action; any other message
+  opened from Scheduled renders exactly as it would in any folder.
+- **SL-5.6 — Per-message gating.** Every scheduling restriction shall key on
+  the message's own pending status, never on the folder it is listed in.
+  While a selection contains a pending message, bulk archive, junk, and star
+  shall be unavailable and the delete slot shall read `Cancel send`, enqueuing
+  the durable cancel (SL-6.1) for each pending message rather than destroying
+  or trashing it, because removing the Email alone leaves its held submission
+  pending (see the reference-server notes). Pending rows shall offer no hover
+  actions and shall not be draggable. A selection without pending messages
+  shall offer the ordinary actions, and Delete shall trash them like mail
+  anywhere else. The store shall independently refuse destroy/move requests
+  that include a pending message and shall not refuse any other.
 - **SL-5.7 — Badge count.** The Scheduled folder's sidebar badge shall show
   the number of messages waiting in the folder (`totalEmails`) rather than its
   unread count, since scheduled Emails are created `$seen` (SL-3.3) and would
@@ -220,15 +238,19 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   `$draft`, with no `onSuccessUpdateEmail` capability branch.
 - **SL-6.3 — Convergent outcomes.** Already-canceled plus Drafts placement is
   success; `final` is too late and eligible for Sent filing; a vanished record
-  is retryable while the target is future and terminal-`unknown` once it has
-  passed. Cancellation shall be reported successful only after server state
-  and the normal cache agree, and the scheduling columns shall clear only
-  then.
-- **SL-6.4 — Release filing.** When a submission turns `final`, the
-  synchronizer shall enqueue the existing generic move operation to file the
-  cached Email from Scheduled to Sent, clearing the scheduling columns only
-  after placement confirms. A crash between the two repeats the idempotent
-  move.
+  is retryable while the target is future and, once it has passed, terminal:
+  the columns clear and the message is ordinary mail (SL-4.7). Cancellation
+  shall be reported successful only after server state and the normal cache
+  agree, and the scheduling columns shall clear only then.
+- **SL-6.4 — Release filing.** When a submission turns `final` while its
+  Email is in Scheduled, the synchronizer shall enqueue the existing generic
+  move operation to file the cached Email from Scheduled to Sent, clearing the
+  scheduling columns only after placement confirms. A crash between the two
+  repeats the idempotent move. A settled message that is no longer in
+  Scheduled — filed by the handoff, or moved or deleted by another client —
+  has its columns cleared and stays where it is; the synchronizer shall not
+  refile it. A released message another client puts back into Scheduled is
+  filed again on the next pass.
 - **SL-6.5 — External cancellation.** A submission another client canceled
   shall hand the row to the same durable cancel operation for Drafts
   restoration.
@@ -295,8 +317,15 @@ weakening its correctness contract:
    held submission: the queued copy still leaves at the target instant and the
    record turns `final`. This is what an IMAP client's delete/expunge does.
    Only `EmailSubmission/set { undoStatus: "canceled" }` prevents delivery,
-   so every delete affordance Stormbox offers in Scheduled routes through the
-   cancel operation (SL-5.5, SL-5.6).
+   so every delete affordance Stormbox offers for a pending message routes
+   through the cancel operation (SL-5.5, SL-5.6).
+5. Scheduled is an ordinary IMAP folder to every other client. An IMAP move
+   (`UID MOVE`, or `\Deleted` + `EXPUNGE`) removes the mailbox membership and
+   an undo of that delete puts the message back, so a released message can
+   reappear in Scheduled beside its Sent copy, and any message can be parked
+   there. Neither carries a pending submission, so reconciliation is driven
+   by the folder's contents (SL-4.5) and restrictions by the message's own
+   status (SL-5.6): the former is filed to Sent, the latter is ordinary mail.
 
 The workaround must not become a client-side scheduler: the server owns the
 delayed delivery timer, and Stormbox never waits in an open tab to submit
@@ -314,19 +343,26 @@ later.
   settings-store, ScheduleSendDialog, and ComposeDialog tests.
   `tests/unit/utils/folder-presentation.test.ts` and
   `tests/unit/components/folder-tree.test.ts` pin the Scheduled badge
-  (SL-5.7); `tests/unit/components/message-list-bulk-actions.test.ts` and the
-  `cancelScheduledSends` cases in `tests/unit/stores/mail-store.test.ts` pin
-  the bulk Cancel send slot (SL-5.6).
+  (SL-5.7); `tests/unit/components/message-list-bulk-actions.test.ts`,
+  `tests/unit/utils/folder-capabilities.test.ts`, and the
+  `cancelScheduledSends`/`destroyMessages` cases in
+  `tests/unit/stores/mail-store.test.ts` pin per-message gating (SL-5.6).
 - Live Stalwart: `tests/integration/send-later-live.test.ts` covers the target
   instant on `Email.sentAt`, the raw MIME `Date` header, and
   `EmailSubmission.sendAt`; role-folder placement; pre-release cancellation
   to Drafts with no delivery; short-delay release through delivery, Sent
-  filing, and cleared tracking (with an attachment); and fresh-client adoption
-  of an externally created schedule.
+  filing, and cleared tracking (with an attachment); fresh-client adoption of
+  an externally created schedule; and, over a real IMAP session
+  (`tests/e2e/helpers/imap-client.js`), a released message deleted from
+  Scheduled and restored by the IMAP client being reconciled to Sent with
+  cleared columns instead of sticking (SL-4.5, SL-4.7, SL-6.4).
 - Browser: `tests/e2e/send-later.spec.js` covers split-control geometry,
   staged preset/custom selection with explicit Send-later confirmation,
   permanent real-folder placement below Drafts, the waiting-send badge,
   soonest-first ordering, normal list/detail rendering with the scheduled
   banner, inert reply/delete shortcuts, cancellation back to Drafts from the
-  banner and from the multi-select Cancel send slot, and empty-folder
-  persistence, in Firefox and Chromium.
+  banner and from the multi-select Cancel send slot, empty-folder
+  persistence, and mail an IMAP client puts into Scheduled — a sent message
+  copied back is filed to Sent on folder open, and a parked ordinary message
+  shows the full toolbar and is deletable to Trash (SL-5.5, SL-5.6) — in
+  Firefox and Chromium.

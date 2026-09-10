@@ -25,6 +25,7 @@ import {
   isComposingKeyEvent,
   isEditableTarget,
 } from '../utils/keyboard';
+import { isScheduledMessage } from '../utils/scheduled-message';
 
 export interface UseThunderbirdShortcutsOptions {
   /** Current app space ('mail' | 'contacts'). */
@@ -83,7 +84,7 @@ function hasScheduledTarget(
   return mailStore.messages.some((message) =>
     message?.id != null
     && targets.has(Number(message.id))
-    && message.scheduled_undo_status != null);
+    && isScheduledMessage(message));
 }
 
 type ShortcutHandler = (event: KeyboardEvent) => void | Promise<void>;
@@ -187,13 +188,13 @@ export function useThunderbirdShortcuts({
       // they settle a tick later. The handler stays synchronous — it has a
       // keystroke to preventDefault — and the composer opens when the read
       // returns, which is the same latency the toolbar buttons have.
-      // Scheduled (Send Later) mail is read-only outgoing mail, so these
+      // A pending scheduled send is read-only outgoing mail, so these
       // stand down for it just like the hidden toolbar buttons.
       case 'reply':
       case 'replyAll':
       case 'forward': {
         const singleTarget = getSingleMessage(mailStore);
-        const single = singleTarget?.scheduled_undo_status == null ? singleTarget : null;
+        const single = isScheduledMessage(singleTarget) ? null : singleTarget;
         if (!single) return;
         event.preventDefault();
         const body = mailStore.messageBody ?? {};

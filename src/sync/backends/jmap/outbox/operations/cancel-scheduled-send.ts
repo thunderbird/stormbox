@@ -6,9 +6,10 @@
  * deliberately checkpoint-free: nothing here is ambiguous the way a send
  * is. Every attempt re-reads the current submission and Email state and
  * converges — already-canceled plus Drafts placement is success, `final`
- * is too late, and a submission the server no longer shows is resolved
- * conservatively (retry while the target is still in the future,
- * `unknown` once it has passed; never guessed as sent or canceled).
+ * is too late, and a submission the server no longer shows (read
+ * explicitly by id, not just listed) is retried while the target is
+ * still in the future and fails terminally once it has passed, since
+ * nothing remains to cancel.
  *
  * Server writes are the one portable two-call sequence:
  * `EmailSubmission/set { undoStatus: "canceled" }` (RFC 8621 §7.3), then
@@ -20,7 +21,7 @@ import { DB_RPC } from '../../../../../db/protocol';
 import { callJmap, pickResponse } from '../../invoke';
 import { scheduleClockWindow } from '../../schedule-time';
 import { scheduledMailboxRemoteId } from '../../scheduled-mailbox';
-import { fetchSubmissionRecords, pickRecordForRow } from '../../submissions';
+import { fetchSubmissionRecordsFor, pickRecordForRow } from '../../submissions';
 import { JMAP_CAPS } from '../../transport';
 import { extractMethodError } from '../errors';
 import { reconcileMessageFromServer } from '../messages-shared';
@@ -101,7 +102,10 @@ async function runCancelScheduledSend({
   // ---- current submission state, read fresh on every attempt ---------
   let records;
   try {
-    records = await fetchSubmissionRecords({ transport, account, useWebSocket });
+    records = await fetchSubmissionRecordsFor(
+      { transport, account, useWebSocket },
+      [message.scheduled_submission_remote_id],
+    );
   } catch (err: any) {
     return {
       ok: false,
@@ -131,9 +135,10 @@ async function runCancelScheduledSend({
     const clock = scheduleClockWindow(transport);
     if (message.sent_at != null && Number(message.sent_at) <= clock.lowerMs) {
       // The target passed and the record is gone — RFC 8621 §7 lets the
-      // server destroy finished records, so nothing can prove whether
-      // the message went out. Mark it unknown; never guess.
-      await setScheduledColumns(handlers, account.id, message.remote_id, 'unknown');
+      // server destroy finished records — so there is nothing left to
+      // cancel and nothing to prove whether the message went out. The
+      // row is ordinary mail again; the user decides what to do with it.
+      await setScheduledColumns(handlers, account.id, message.remote_id, null);
       return {
         ok: false,
         error: {

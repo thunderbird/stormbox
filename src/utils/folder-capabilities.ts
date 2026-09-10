@@ -100,9 +100,9 @@ export function folderCapabilities(
     mayDelete: right(parsed, 'mayDelete', fallback),
   };
   const isSystemProtected = isPrimary && folder.role != null;
-  // The Scheduled role folder (SL-5.2) is closed to ordinary message
-  // transfers: its contents are owned by the scheduling flow, where a
-  // stray move would strand or duplicate a held submission.
+  // The Scheduled role folder (SL-5.2) is not a transfer target: dropping
+  // mail into it schedules nothing. Moving mail out of it is gated per
+  // message on a pending submission (SL-5.6), not on the folder.
   const isScheduled = isPrimary && folder.role === 'scheduled';
   const subscribed = isSystemProtected
     || (isPrimary
@@ -120,7 +120,7 @@ export function folderCapabilities(
     mayStar: !isSystemProtected && subscribed,
     mayReparent: !isSystemProtected && rights.mayRename,
     mayDeleteWithMail: !isSystemProtected && rights.mayDelete && rights.mayRemoveItems,
-    mayMoveMessages: rights.mayRemoveItems && !isScheduled,
+    mayMoveMessages: rights.mayRemoveItems,
     mayCopyMessagesFrom: rights.mayReadItems,
     mayCopyMessagesTo: rights.mayAddItems && !isScheduled,
   };

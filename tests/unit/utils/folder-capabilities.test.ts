@@ -122,15 +122,17 @@ describe('folderCapabilities', () => {
     expect(capabilities.mayCreateChild).toBe(true);
   });
 
-  it('closes the Scheduled role folder to ordinary message transfers', () => {
+  it('closes the Scheduled role folder as a transfer target but not as a source', () => {
     const capabilities = folderCapabilities(folder({
       name: 'Scheduled',
       role: 'scheduled',
     }), 1);
 
     expect(capabilities.mayAddItems).toBe(false);
-    expect(capabilities.mayMoveMessages).toBe(false);
     expect(capabilities.mayCopyMessagesTo).toBe(false);
+    // Moving out is gated per message on a pending submission (SL-5.6),
+    // so anything else parked in the folder stays movable and deletable.
+    expect(capabilities.mayMoveMessages).toBe(true);
     expect(capabilities.mayCopyMessagesFrom).toBe(true);
   });
 

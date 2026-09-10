@@ -9,12 +9,12 @@ import type { FolderRow } from '../types';
 /**
  * The bulk-action buttons for a checkbox selection: archive, junk,
  * delete, star, mark read/unread, plus "Not junk" inside a Junk folder.
- * Which buttons show depends on the folder the selected rows live in:
- * the Scheduled mailbox drops archive, junk and star, and its delete
- * slot cancels the selected sends instead of destroying mail (SL-5.6).
- * Star is modal (MK-2.4): it unstars when any selected row is starred,
- * otherwise stars them all. The owner runs the actions; this component
- * only renders the row of buttons.
+ * Which buttons show depends on the selected rows: while any of them is
+ * a pending scheduled send, archive, junk and star are dropped and the
+ * delete slot cancels the selected sends instead of destroying mail
+ * (SL-5.6). Star is modal (MK-2.4): it unstars when any selected row is
+ * starred, otherwise stars them all. The owner runs the actions; this
+ * component only renders the row of buttons.
  */
 const props = withDefaults(defineProps<{
   folder: FolderRow | null | undefined;
@@ -23,10 +23,13 @@ const props = withDefaults(defineProps<{
   whitelisting?: boolean;
   /** Whether any selected row is starred; picks the star button's verb. */
   anyStarred?: boolean;
+  /** Whether any selected row is a pending scheduled send. */
+  anyScheduled?: boolean;
 }>(), {
   canWhitelist: false,
   whitelisting: false,
   anyStarred: false,
+  anyScheduled: false,
 });
 
 const emit = defineEmits<{
@@ -41,7 +44,6 @@ const emit = defineEmits<{
 }>();
 
 const isInJunkFolder = computed(() => props.folder?.role === 'junk');
-const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
 </script>
 
 <template>
@@ -56,14 +58,14 @@ const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
   >
     Not junk
   </button>
-  <button v-if="!isInScheduledFolder" class="msg-list__bulk-action" type="button" @click="emit('archive')" title="Archive" aria-label="Archive">
+  <button v-if="!anyScheduled" class="msg-list__bulk-action" type="button" @click="emit('archive')" title="Archive" aria-label="Archive">
     <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
   </button>
-  <button v-if="!isInJunkFolder && !isInScheduledFolder" class="msg-list__bulk-action" type="button" @click="emit('junk')" title="Junk" aria-label="Mark as junk">
+  <button v-if="!isInJunkFolder && !anyScheduled" class="msg-list__bulk-action" type="button" @click="emit('junk')" title="Junk" aria-label="Mark as junk">
     <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="junkIcon" />
   </button>
   <button
-    v-if="isInScheduledFolder"
+    v-if="anyScheduled"
     class="msg-list__bulk-action msg-list__bulk-action--danger"
     type="button"
     @click="emit('cancel-send')"
@@ -76,7 +78,7 @@ const isInScheduledFolder = computed(() => props.folder?.role === 'scheduled');
     <Trash2 :size="18" :stroke-width="1.65" />
   </button>
   <button
-    v-if="!isInScheduledFolder"
+    v-if="!anyScheduled"
     class="msg-list__bulk-action msg-list__bulk-action--star"
     :class="{ 'msg-list__bulk-action--starred': anyStarred }"
     type="button"

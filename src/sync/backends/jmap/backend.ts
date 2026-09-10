@@ -701,7 +701,6 @@ export class JmapBackend {
     this._foregroundFolderWindowCount += 1;
     try {
       const folder = await this._loadFolder(folderId);
-      this._maybeSyncSubmissionsForFolder(folder);
       const defaultSort = await this._defaultSortFor(folder);
       const sortProp = range.sortProp ?? defaultSort.sortProp;
       const sortAscending = range.sortAscending
@@ -724,6 +723,7 @@ export class JmapBackend {
         'jmap-backend',
         `ensureFolderWindow offset=${range.offset ?? 0} anchor=${range.anchor ?? ''} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
       );
+      this._maybeSyncSubmissionsForFolder(folder);
       return r;
     } finally {
       this._foregroundFolderWindowCount = Math.max(0, this._foregroundFolderWindowCount - 1);
@@ -733,8 +733,8 @@ export class JmapBackend {
   /**
    * Opening the Scheduled mailbox is a natural moment for the schedule
    * columns to be fresh (the user is looking right at them), so it
-   * triggers a fire-and-forget submission pass alongside the normal
-   * window sync.
+   * triggers a fire-and-forget submission pass once the window sync has
+   * mirrored the folder's contents the pass reconciles.
    */
   _maybeSyncSubmissionsForFolder(folder: any) {
     if (!folder || Number(folder.account_id) !== Number(this.account?.id)) return;
@@ -744,10 +744,19 @@ export class JmapBackend {
     });
   }
 
-  async _hasTrackedSchedules(accountId: number): Promise<boolean> {
+  /**
+   * Whether a submission pass has anything to reconcile: a tracked row,
+   * or any message the cached Scheduled folder holds.
+   */
+  async _hasScheduledWork(accountId: number): Promise<boolean> {
     const rows = await this.handlers[DB_RPC.QUERY]({
-      sql: `SELECT 1 FROM messages
-             WHERE account_id = ? AND scheduled_undo_status IS NOT NULL
+      sql: `SELECT 1 FROM messages m
+             WHERE m.account_id = ?
+               AND (m.scheduled_undo_status IS NOT NULL
+                    OR EXISTS (SELECT 1 FROM folder_messages fm
+                                 JOIN folders f ON f.id = fm.folder_id
+                                WHERE fm.message_id = m.id
+                                  AND f.role = 'scheduled' AND f.is_deleted = 0))
              LIMIT 1`,
       params: [accountId],
     });
@@ -1870,6 +1879,7 @@ export class JmapBackend {
 
   async _syncAccountStateChange(account, types) {
     let needViewRefresh = false;
+    let mailboxesChanged = false;
     const viewRefreshTypes: string[] = [];
     const failedTypes: Record<string, string> = {};
     // Contact deletions must land before Email events from the same push so an
@@ -1914,15 +1924,7 @@ export class JmapBackend {
                 repairArchive: account.id === this.account.id,
               });
             }
-            if (
-              account.id === this.account.id
-              && !Object.hasOwn(types, 'EmailSubmission')
-              && await this._hasTrackedSchedules(account.id)
-            ) {
-              void this._syncSubmissionsWithRetry(
-                'mailbox-triggered submission sync failed',
-              );
-            }
+            mailboxesChanged = true;
             break;
           }
           case 'Email': {
@@ -2012,6 +2014,18 @@ export class JmapBackend {
           error,
         );
       }
+    }
+    // Mailbox counts move when a schedule releases or another client
+    // files mail into or out of Scheduled. Fires after the Email changes
+    // of the same push so the pass reads current placements; an
+    // EmailSubmission change already ran its own pass above.
+    if (
+      mailboxesChanged
+      && account.id === this.account.id
+      && !Object.hasOwn(types, 'EmailSubmission')
+      && await this._hasScheduledWork(account.id)
+    ) {
+      void this._syncSubmissionsWithRetry('mailbox-triggered submission sync failed');
     }
     return failedTypes;
   }

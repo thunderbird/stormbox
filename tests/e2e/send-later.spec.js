@@ -1,8 +1,12 @@
 import { expect } from '@playwright/test';
 
+import { connectImap } from './helpers/imap-client.js';
 import {
   connectJmap,
+  createEmailInMailbox,
   destroyEmails,
+  ensureMailbox,
+  getEmailMailboxIds,
   jmapRequest,
   listMailboxes,
   mailboxByRole,
@@ -13,7 +17,7 @@ import {
   resetSharedSession,
   test,
 } from './helpers/shared-session.js';
-import { SHARED_TEST_OIDC_EMAIL } from './helpers/stack-env.js';
+import { selfEmail, SHARED_TEST_OIDC_EMAIL } from './helpers/stack-env.js';
 import {
   clickFolder,
   expectRowSoon,
@@ -180,6 +184,50 @@ async function localScheduledRows(page) {
       params: [account.id],
     });
   });
+}
+
+/** Submit an existing Email through this account's first identity; resolves once the server reports it final. */
+async function submitAndAwaitFinal(jmap, emailId) {
+  const identities = await jmapRequest(jmap, [[
+    'Identity/get',
+    { accountId: jmap.accountId, properties: ['id', 'email'] },
+    'identities',
+  ]]);
+  const identity = pickResponse(identities, 'Identity/get')?.list?.[0];
+  if (!identity) throw new Error('Test account has no identity to submit with');
+  const response = await jmapRequest(jmap, [[
+    'EmailSubmission/set',
+    {
+      accountId: jmap.accountId,
+      create: { now: { emailId, identityId: identity.id } },
+    },
+    'submit-now',
+  ]]);
+  const set = pickResponse(response, 'EmailSubmission/set');
+  if (!set?.created?.now?.id) {
+    throw new Error(`EmailSubmission/set create failed: ${JSON.stringify(set?.notCreated ?? set)}`);
+  }
+  await expect.poll(
+    async () => (await submissionsForEmails(jmap, [emailId]))
+      .map((submission) => submission.undoStatus)[0] ?? null,
+    { timeout: 30_000, message: 'the immediate submission should settle as final' },
+  ).toBe('final');
+}
+
+/** A minimal RFC 5322 message an IMAP client could APPEND. */
+function rfc822Message(subject) {
+  return [
+    `From: ${selfEmail()}`,
+    `To: ${selfEmail()}`,
+    `Subject: ${subject}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@e2e.example>`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    'Parked in Scheduled by an IMAP client.',
+    '',
+  ].join('\r\n');
 }
 
 async function openComposer(page) {
@@ -425,6 +473,80 @@ test.describe('Send Later', () => {
         expect(submission.undoStatus).toBe('canceled');
       }
     } finally {
+      await cleanupSendLaterArtifacts(jmap);
+    }
+  });
+
+  // Scheduled is an ordinary IMAP folder, so other clients can put mail
+  // there: an undo of a delete puts a sent message back, a drag or an
+  // offline replay parks anything. Neither holds a pending submission,
+  // so neither may end up untouchable (SL-5.6): the sent one is filed
+  // to Sent by reconciliation and the other stays ordinary, deletable
+  // mail.
+  test('reconciles or frees mail an IMAP client puts into Scheduled', async ({ sharedPage: page }) => {
+    test.setTimeout(120_000);
+    const jmap = await connectJmap();
+    const stamp = Date.now();
+    const subjectSent = `${SUBJECT_PREFIX} imap sent ${stamp}`;
+    const subjectPlain = `${SUBJECT_PREFIX} imap plain ${stamp}`;
+    const mailboxes = await listMailboxes(jmap);
+    const sent = mailboxByRole(mailboxes, 'sent');
+    const trash = mailboxByRole(mailboxes, 'trash');
+    const scheduled = await ensureMailbox(jmap, { name: 'Scheduled', role: 'scheduled' });
+    const imap = await connectImap();
+
+    try {
+      // A message this account really sent: in Sent with a final submission.
+      const sentId = await createEmailInMailbox(jmap, {
+        mailboxId: sent.id,
+        fromEmail: selfEmail(),
+        subject: subjectSent,
+        keywords: { $seen: true },
+      });
+      await submitAndAwaitFinal(jmap, sentId);
+
+      // The IMAP client puts it back into Scheduled and parks an
+      // ordinary message there as well.
+      await imap.select(sent.name);
+      const sentUid = await imap.waitForUidBySubject(subjectSent);
+      await imap.uidCopy(sentUid, scheduled.name);
+      expect(await getEmailMailboxIds(jmap, sentId)).toEqual({
+        [sent.id]: true,
+        [scheduled.id]: true,
+      });
+      await imap.append(scheduled.name, rfc822Message(subjectPlain));
+
+      // Opening the folder reconciles its contents: the sent message
+      // leaves for Sent on the server and in the list, with no
+      // scheduling columns left behind.
+      await clickFolder(page, 'Scheduled');
+      const rows = page.locator('.msg-list__item');
+      await expectRowSoon(page, subjectPlain);
+      await expect(rows.filter({ hasText: subjectSent })).toHaveCount(0, { timeout: 30_000 });
+      await expect.poll(
+        async () => getEmailMailboxIds(jmap, sentId),
+        { timeout: 30_000, message: 'the sent message should be filed back to Sent only' },
+      ).toEqual({ [sent.id]: true });
+      await expect.poll(
+        async () => ((await localScheduledRows(page)) ?? [])
+          .filter((row) => row.subject === subjectSent).length,
+        { timeout: 45_000, message: 'the filed message should drop its scheduling columns' },
+      ).toBe(0);
+
+      // The parked message is ordinary mail: full toolbar, no banner,
+      // and Delete moves it to Trash like anywhere else.
+      await openMessageBySubject(page, subjectPlain);
+      await expect(page.locator('.message-view__scheduled')).toHaveCount(0);
+      await expect(page.locator('.message-view [aria-label="Reply"]')).toHaveCount(1);
+      await page.locator('.message-view__header').getByRole('button', { name: 'Delete' }).click();
+      await expect(rows.filter({ hasText: subjectPlain })).toHaveCount(0, { timeout: 30_000 });
+      await waitForPendingMutations(page);
+      const parked = (await matchingEmails(jmap, subjectPlain))
+        .find((email) => email.subject === subjectPlain);
+      expect(parked).toBeTruthy();
+      expect(parked.mailboxIds).toEqual({ [trash.id]: true });
+    } finally {
+      await imap.logout();
       await cleanupSendLaterArtifacts(jmap);
     }
   });

@@ -18,6 +18,7 @@ import {
   rowTimestamp,
   type MessageRowLike,
 } from '../utils/message-row-presentation';
+import { isScheduledMessage } from '../utils/scheduled-message';
 
 const props = withDefaults(defineProps<{
   message: MessageRowLike & { id: number };
@@ -96,7 +97,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
       class="msg-list__item"
       :class="{ 'msg-list__item--hover-actions': hoverActions }"
       tabindex="-1"
-      :draggable="message.scheduled_undo_status == null"
+      :draggable="!isScheduledMessage(message)"
       @click="emit('row-click', $event)"
       @dragstart="emit('dragstart', $event)"
       @dragend="emit('dragend', $event)"

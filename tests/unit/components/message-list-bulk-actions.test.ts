@@ -297,15 +297,18 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
-  it('offers Cancel send in place of Delete inside the Scheduled folder', async () => {
+  it('offers Cancel send in place of Delete while a pending send is selected', async () => {
+    // Row 3 is a sent message another client put back into Scheduled:
+    // the cancel only targets the rows that still hold a submission.
     const { mailStore, wrapper } = mountList({
       folder: makeFolder(2, { name: 'Scheduled', role: 'scheduled' }),
       rows: [
         makeRow(1, { scheduled_undo_status: 'pending' }),
         makeRow(2, { scheduled_undo_status: 'pending' }),
+        makeRow(3, { scheduled_undo_status: null }),
       ],
     });
-    mailStore.selectedIds = new Set([1, 2]);
+    mailStore.selectedIds = new Set([1, 2, 3]);
     await nextTick();
 
     const actions = wrapper.findAll('.msg-list__bulk-actions .msg-list__bulk-action');
@@ -323,6 +326,34 @@ describe('MessageList bulk actions header', () => {
 
     expect(cancelSpy).toHaveBeenCalledWith([1, 2]);
     expect(destroySpy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('keeps the ordinary actions for non-pending mail selected in the Scheduled folder', async () => {
+    const { mailStore, wrapper } = mountList({
+      folder: makeFolder(2, { name: 'Scheduled', role: 'scheduled' }),
+      rows: [
+        makeRow(1, { scheduled_undo_status: 'pending' }),
+        makeRow(3, { scheduled_undo_status: null }),
+      ],
+    });
+    mailStore.selectedIds = new Set([3]);
+    await nextTick();
+
+    const actions = wrapper.findAll('.msg-list__bulk-actions .msg-list__bulk-action');
+    expect(actions.map((button) => button.attributes('title'))).toEqual([
+      'Archive',
+      'Junk',
+      'Delete',
+      'Star',
+      'Mark as read',
+      'Mark as unread',
+      'Clear selection',
+    ]);
+
+    const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
+    await wrapper.find('.msg-list__bulk-actions [title="Delete"]').trigger('click');
+    expect(destroySpy).toHaveBeenCalledWith([3]);
     wrapper.unmount();
   });
 

@@ -37,6 +37,7 @@ import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { formatAddressList } from '../utils/address-parse';
 import { titleWithShortcut, type ShortcutAction } from '../constants/shortcuts';
 import { plaintextToHtml } from '../utils/plaintext-html';
+import { isScheduledMessage } from '../utils/scheduled-message';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
 import forwardIcon from '../assets/icons/tb-forward.svg?raw';
@@ -564,19 +565,18 @@ async function junk() {
 }
 
 // Send Later: a scheduled message renders through the normal detail
-// view; the scheduling columns on its row only add this banner, swap
-// the toolbar to read-only + Cancel Send, and label the Date row with
-// the send time.
+// view. While its submission is pending the toolbar is read-only and the
+// banner owns Cancel Send; a settled row keeps the ordinary toolbar and
+// only shows the banner while its filing handoff is in flight. Either
+// way the Date row is labeled with the send time.
 const scheduledStatus = computed(() => {
   const value = message.value?.scheduled_undo_status;
-  return value === 'pending' || value === 'unknown' || value === 'final' || value === 'canceled'
+  return value === 'pending' || value === 'final' || value === 'canceled'
     ? value
     : null;
 });
-const isScheduledMessage = computed(() => scheduledStatus.value != null);
-const canCancelScheduled = computed(
-  () => scheduledStatus.value === 'pending' || scheduledStatus.value === 'unknown',
-);
+const hasScheduledBanner = computed(() => scheduledStatus.value != null);
+const isPendingScheduled = computed(() => isScheduledMessage(message.value));
 const cancelingScheduled = ref(false);
 
 function describeTimeUntil(ms) {
@@ -598,8 +598,6 @@ const scheduledBannerText = computed(() => {
       const relative = describeTimeUntil(sendAt);
       return `Scheduled to send ${fmtDate(sendAt)}${relative ? ` (${relative})` : ''}.`;
     }
-    case 'unknown':
-      return 'The scheduled time has passed, but the server has not confirmed sending yet.';
     case 'final':
       return 'This message was sent and is moving to your Sent folder.';
     case 'canceled':
@@ -665,10 +663,10 @@ function closeMessageView() {
         >
           <span class="message-view__whitelist-label">Not junk</span>
         </button>
-        <!-- A scheduled message is read-only: the toolbar keeps only
-             Back and the view-mode toggle, and the banner below owns
-             Cancel Send. -->
-        <template v-if="!isScheduledMessage">
+        <!-- A pending scheduled message is read-only: the toolbar keeps
+             only Back and the view-mode toggle, and the banner below
+             owns Cancel Send. -->
+        <template v-if="!isPendingScheduled">
           <AppIconButton class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </AppIconButton>
@@ -700,11 +698,11 @@ function closeMessageView() {
           <Sun v-else :size="16" :stroke-width="1.75" />
         </AppIconButton>
       </header>
-      <div v-if="isScheduledMessage" class="message-view__scheduled" role="status">
+      <div v-if="hasScheduledBanner" class="message-view__scheduled" role="status">
         <Clock :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span class="message-view__scheduled-text">{{ scheduledBannerText }}</span>
         <button
-          v-if="canCancelScheduled"
+          v-if="isPendingScheduled"
           class="message-view__scheduled-cancel"
           type="button"
           :disabled="cancelingScheduled"
@@ -736,9 +734,9 @@ function closeMessageView() {
             <dd><h2>{{ message.subject || '(no subject)' }}</h2></dd>
           </div>
           <div class="message-view__metadata-row">
-            <dt>{{ isScheduledMessage ? 'Send at' : 'Date' }}</dt>
+            <dt>{{ hasScheduledBanner ? 'Send at' : 'Date' }}</dt>
             <dd class="message-view__date">
-              {{ fmtDate(isScheduledMessage ? (message.sent_at ?? message.received_at) : message.received_at) }}
+              {{ fmtDate(hasScheduledBanner ? (message.sent_at ?? message.received_at) : message.received_at) }}
             </dd>
           </div>
         </dl>

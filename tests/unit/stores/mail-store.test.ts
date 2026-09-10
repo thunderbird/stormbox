@@ -244,7 +244,7 @@ function makeRepo(): any {
         .map(Number)
         .filter((id) =>
           Number.isFinite(id)
-          && (!excludeScheduled || byId.get(id)?.scheduled_undo_status == null));
+          && (!excludeScheduled || byId.get(id)?.scheduled_undo_status !== 'pending'));
     },
     async getPendingMutationError() { return null; },
   };
@@ -1503,10 +1503,11 @@ describe('cancelScheduledSends (Scheduled folder bulk delete)', () => {
     expect(mailStore.error).toBeNull();
   });
 
-  it('never routes the Scheduled delete through destroyMessages', async () => {
+  it('never routes a pending send through destroyMessages', async () => {
     const { scheduled, rows } = seedScheduled();
+    const trash = makeFolder(3, { role: 'trash', may_add_items: 1 });
     const { mailStore, repo } = await setupStore({
-      folders: [scheduled],
+      folders: [scheduled, trash],
       views: { 2: { rows, total: 2 } },
     });
     await flush();
@@ -1518,6 +1519,40 @@ describe('cancelScheduledSends (Scheduled folder bulk delete)', () => {
 
     expect(repo.insertPendingMutation).not.toHaveBeenCalled();
     expect(mailStore.error).toBe('Scheduled messages can’t be deleted. Cancel the send instead.');
+  });
+
+  it('deletes mail in the Scheduled folder whose send is not pending', async () => {
+    // A sent message another client put back into Scheduled, and a row
+    // whose filing handoff is in flight: neither holds a submission the
+    // delete could strand, so the folder itself blocks nothing.
+    const scheduled = makeFolder(2, { role: 'scheduled', may_remove_items: 1, total_emails: 2 });
+    const trash = makeFolder(3, { role: 'trash', may_add_items: 1 });
+    const rows = [
+      makeRow(10, { scheduled_undo_status: null }),
+      makeRow(11, { scheduled_undo_status: 'final' }),
+    ];
+    const { mailStore, repo } = await setupStore({
+      folders: [scheduled, trash],
+      views: { 2: { rows, total: 2 } },
+    });
+    await flush();
+    mailStore.selectFolder(scheduled.id);
+    await flush();
+    const inserted = [];
+    repo.insertPendingMutation = async (input) => {
+      inserted.push(input);
+      return { id: 100 + inserted.length };
+    };
+
+    await mailStore.destroyMessages([10, 11]);
+
+    expect(mailStore.error).toBeNull();
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].mutationType).toBe(MUTATION_TYPE.MOVE_TO_FOLDERS);
+    expect(JSON.parse(inserted[0].requestJson)).toEqual({
+      messageIds: [10, 11], addFolderIds: [trash.id], removeFolderIds: [scheduled.id],
+    });
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([]);
   });
 
   it('surfaces the precise rejection for a lone failure and a tally for a mixed batch', async () => {

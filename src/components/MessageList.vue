@@ -17,6 +17,7 @@ import {
 } from '../composables/useThunderbirdShortcuts';
 import { folderShowsRecipients } from '../utils/message-row-presentation';
 import { messageMatchesQuickFilter, normalizeFilterText } from '../utils/quick-filter';
+import { isScheduledMessage } from '../utils/scheduled-message';
 import MessageBulkActions from './MessageBulkActions.vue';
 import MessageListRow from './MessageListRow.vue';
 import SelectableListHeader from './SelectableListHeader.vue';
@@ -496,9 +497,12 @@ const canWhitelistInJunk = computed(() => {
 });
 const bulkWhitelisting = ref(false);
 
-// Per-row hover actions (star, archive, delete). The Scheduled mailbox
-// has neither archive nor plain delete, so its rows get none.
-const rowHoverActions = computed(() => mailStore.currentFolder?.role !== 'scheduled');
+// Per-row hover actions (star, archive, delete). A pending scheduled
+// send has neither archive nor plain delete, so its row gets none;
+// anything else in the Scheduled folder is ordinary mail.
+function rowHoverActions(message: { scheduled_undo_status?: string | null }) {
+  return !isScheduledMessage(message);
+}
 
 async function toggleStar(message: { id: number; is_flagged?: number | null }) {
   await mailStore.markManyFlagged([message.id], Number(message.is_flagged) !== 1);
@@ -526,6 +530,10 @@ async function bulkMarkRead() {
 
 const anySelectedStarred = computed(() => messages.value.some(
   (row) => selectedIds.value.has(row.id) && Number(row.is_flagged) === 1,
+));
+
+const anySelectedScheduled = computed(() => messages.value.some(
+  (row) => selectedIds.value.has(row.id) && isScheduledMessage(row),
 ));
 
 async function bulkToggleStar() {
@@ -566,8 +574,11 @@ async function bulkDelete() {
   }
 }
 
+/** Cancel the pending sends in the selection; other selected rows are left alone. */
 async function bulkCancelSend() {
-  const ids = [...selectedIds.value];
+  const ids = messages.value
+    .filter((row) => selectedIds.value.has(row.id) && isScheduledMessage(row))
+    .map((row) => row.id);
   if (ids.length === 0) return;
   try {
     await mailStore.cancelScheduledSends(ids);
@@ -651,6 +662,7 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
           :can-whitelist="canWhitelistInJunk"
           :whitelisting="bulkWhitelisting"
           :any-starred="anySelectedStarred"
+          :any-scheduled="anySelectedScheduled"
           @archive="bulkArchive"
           @junk="bulkJunk"
           @delete="bulkDelete"
@@ -727,7 +739,7 @@ function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
             :dragging="isDraggingMessage(visibleMessages[v.index].id)"
             :shows-recipients="listShowsRecipients"
             :sort="mailStore.currentSort"
-            :hover-actions="rowHoverActions"
+            :hover-actions="rowHoverActions(visibleMessages[v.index])"
             @row-click="onRowClick(v.index, $event)"
             @checkbox-click="onCheckboxClick(v.index, $event)"
             @dragstart="onRowDragStart(visibleMessages[v.index], $event)"

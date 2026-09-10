@@ -358,7 +358,7 @@ describe('syncSubmissionsForAccount', () => {
     expect(await pendingMutations(MUTATION_TYPE.CANCEL_SCHEDULED_SEND)).toHaveLength(1);
   });
 
-  it('never guesses a vanished record: unknown after the target, pending before', async () => {
+  it('keeps waiting on a vanished record before the target and releases the row after it', async () => {
     await seedScheduledMessage('e-future', { sentAt: FUTURE_AT });
     await seedScheduledMessage('e-past', { sentAt: PAST_AT });
     const t = submissionTransport([]);
@@ -366,7 +366,141 @@ describe('syncSubmissionsForAccount', () => {
     await syncSubmissionsForAccount({ transport: t, account, handlers });
 
     expect((await messageRow('e-future')).scheduled_undo_status).toBe('pending');
-    expect((await messageRow('e-past')).scheduled_undo_status).toBe('unknown');
+    // Nothing remains to cancel, so the row is ordinary mail again; the
+    // explicit get below is what makes "vanished" conclusive.
+    expect(await messageRow('e-past')).toMatchObject({
+      scheduled_undo_status: null,
+      scheduled_submission_remote_id: null,
+    });
+    const gets = t.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name, params]) => name === 'EmailSubmission/get' && Array.isArray(params.ids));
+    expect(gets.map(([, params]) => params.ids.sort())).toEqual([['sub-e-future', 'sub-e-past']]);
+    expect(await pendingMutations()).toHaveLength(0);
+  });
+
+  it('reads a tracked submission the unfiltered listing omits by explicit id', async () => {
+    // Stalwart lists only recent sendAt values; the record still answers
+    // an explicit EmailSubmission/get.
+    const seeded = await seedScheduledMessage('e-1', { sentAt: PAST_AT });
+    const unlisted = { id: 'sub-e-1', emailId: 'e-1', undoStatus: 'final', sendAt: PAST_AT };
+    const t = submissionTransport([]);
+    t.handle('EmailSubmission/get', (params) => ({
+      list: (params.ids ?? []).includes(unlisted.id) ? [unlisted] : [],
+      notFound: (params.ids ?? []).filter((id) => id !== unlisted.id),
+      state: 'subg-state',
+    }));
+
+    const result = await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect((await messageRow('e-1')).scheduled_undo_status).toBe('final');
+    expect(result.unresolvedSettled).toBe(true);
+    const moves = await pendingMutations(MUTATION_TYPE.MOVE_TO_FOLDERS);
+    expect(moves.map((move) => Number(move.target_message_id))).toEqual([seeded.id]);
+  });
+
+  it('keeps a row whose record status is unreadable cancelable', async () => {
+    await seedScheduledMessage('e-1');
+    const t = submissionTransport([
+      { id: 'sub-e-1', emailId: 'e-1', undoStatus: 'mystery', sendAt: FUTURE_AT },
+    ]);
+
+    await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect((await messageRow('e-1')).scheduled_undo_status).toBe('pending');
+    expect(await pendingMutations()).toHaveLength(0);
+  });
+
+  it('reconciles an untracked sent message another client put back in Scheduled', async () => {
+    // The stranded shape: filed to Sent and cleared, then re-added to
+    // Scheduled through IMAP (an undo-delete, a drag) with a final record.
+    const seeded = await seedScheduledMessage('e-1', { undoStatus: null, submissionId: null });
+    await engine.run(
+      `INSERT INTO folder_messages(folder_id, message_id, account_id, added_at)
+       VALUES (?, ?, ?, ?)`,
+      [sentFolder.id, seeded.id, account.id, NOW],
+    );
+    const t = submissionTransport([
+      { id: 'sub-e-1', emailId: 'e-1', undoStatus: 'final', sendAt: PAST_AT },
+    ]);
+
+    const first = await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect(await messageRow('e-1')).toMatchObject({
+      scheduled_undo_status: 'final',
+      scheduled_submission_remote_id: 'sub-e-1',
+    });
+    expect(first.unresolvedSettled).toBe(true);
+    const moves = await pendingMutations(MUTATION_TYPE.MOVE_TO_FOLDERS);
+    expect(moves).toHaveLength(1);
+    expect(JSON.parse(moves[0].request_json)).toEqual({
+      messageIds: [seeded.id],
+      addFolderIds: [sentFolder.id],
+      removeFolderIds: [scheduledFolder.id],
+    });
+
+    // Once the move has landed the row is ordinary Sent mail again.
+    await engine.run(
+      'DELETE FROM folder_messages WHERE message_id = ? AND folder_id = ?',
+      [seeded.id, scheduledFolder.id],
+    );
+    const second = await syncSubmissionsForAccount({ transport: t, account, handlers });
+    expect(second.unresolvedSettled).toBe(false);
+    expect(await messageRow('e-1')).toMatchObject({
+      scheduled_undo_status: null,
+      scheduled_submission_remote_id: null,
+    });
+  });
+
+  it('leaves ordinary mail parked in Scheduled without a submission alone', async () => {
+    await seedScheduledMessage('e-plain', { undoStatus: null, submissionId: null });
+    const t = submissionTransport([]);
+
+    const result = await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect(await messageRow('e-plain')).toMatchObject({
+      scheduled_undo_status: null,
+      scheduled_submission_remote_id: null,
+    });
+    expect(result.unresolvedSettled).toBe(false);
+    expect(await pendingMutations()).toHaveLength(0);
+  });
+
+  it('respects another client moving a released message out of Scheduled', async () => {
+    // Deleted through IMAP before the release was observed: the message
+    // stays where the user put it instead of being refiled into Sent.
+    const seeded = await seedScheduledMessage('e-1', { sentAt: PAST_AT });
+    await engine.run(
+      'UPDATE folder_messages SET folder_id = ? WHERE message_id = ? AND folder_id = ?',
+      [ctx.draftsFolder.id, seeded.id, scheduledFolder.id],
+    );
+    const t = submissionTransport([
+      { id: 'sub-e-1', emailId: 'e-1', undoStatus: 'final', sendAt: PAST_AT },
+    ]);
+
+    const result = await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect(await messageRow('e-1')).toMatchObject({
+      scheduled_undo_status: null,
+      scheduled_submission_remote_id: null,
+    });
+    expect(result.unresolvedSettled).toBe(false);
+    expect(await pendingMutations()).toHaveLength(0);
+  });
+
+  it('clears a canceled row that has already left Scheduled', async () => {
+    const seeded = await seedScheduledMessage('e-1', { undoStatus: 'canceled' });
+    await engine.run(
+      'UPDATE folder_messages SET folder_id = ? WHERE message_id = ? AND folder_id = ?',
+      [ctx.draftsFolder.id, seeded.id, scheduledFolder.id],
+    );
+    const t = submissionTransport([]);
+
+    const result = await syncSubmissionsForAccount({ transport: t, account, handlers });
+
+    expect((await messageRow('e-1')).scheduled_undo_status).toBeNull();
+    expect(result.unresolvedSettled).toBe(false);
+    expect(await pendingMutations(MUTATION_TYPE.CANCEL_SCHEDULED_SEND)).toHaveLength(0);
   });
 
   it('does not re-arm a one-second poll for a visible past-due pending record', async () => {

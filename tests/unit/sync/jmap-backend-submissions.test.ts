@@ -369,7 +369,55 @@ describe('submission sync triggers', () => {
     });
   });
 
-  it('does not read submissions for ordinary Mailbox changes without tracked schedules', async () => {
+  it('a Mailbox StateChange reconciles untracked mail the Scheduled folder holds', async () => {
+    // Nothing tracked locally, but another client parked a message in
+    // Scheduled: the folder's contents are what the pass reconciles.
+    const scheduledFolder = await engine.get(
+      "SELECT * FROM folders WHERE account_id = ? AND remote_id = 'mb-sched'",
+      [account.id],
+    );
+    const seedTransport = new MockTransport();
+    seedTransport.handle('Email/query', () => ({
+      ids: ['e-parked'], total: 1, queryState: 'qs', canCalculateChanges: true, position: 0,
+    }));
+    seedTransport.handle('Email/get', (params) => ({
+      list: params.ids.map((id) => ({
+        id,
+        blobId: `b-${id}`,
+        threadId: `t-${id}`,
+        mailboxIds: { 'mb-sched': true },
+        keywords: { $seen: true },
+        size: 1,
+        receivedAt: new Date().toISOString(),
+        sentAt: new Date().toISOString(),
+        messageId: [`<${id}@example.com>`],
+        from: [{ email: 'me@example.com' }],
+        to: [{ email: 'rcpt@example.com' }],
+        subject: 'parked',
+        preview: '',
+        hasAttachment: false,
+      })),
+      state: 'es',
+    }));
+    await syncFolderWindow({
+      transport: seedTransport, account, folder: scheduledFolder, handlers,
+    });
+    transport.handle('Mailbox/get', () => ({
+      list: [
+        { id: 'mb-inbox', name: 'Inbox', role: 'inbox', parentId: null, isSubscribed: true },
+        { id: 'mb-sched', name: 'Scheduled', role: 'scheduled', parentId: null, isSubscribed: true },
+      ],
+      notFound: [],
+      state: 'mailboxes-2',
+    }));
+
+    await backend._syncAccountStateChange(account, { Mailbox: 'mailboxes-2' });
+    await vi.waitFor(() => {
+      expect(submissionQueryCount()).toBe(1);
+    });
+  });
+
+  it('does not read submissions for ordinary Mailbox changes without scheduled work', async () => {
     transport.handle('Mailbox/get', () => ({
       list: [{
         id: 'mb-inbox',

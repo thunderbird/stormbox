@@ -1,8 +1,8 @@
 /**
  * Durable cancel-scheduled-send tests: the portable two-call revoke +
  * restore sequence, idempotency (duplicate cancels, already-canceled
- * records), the release-vs-cancel race, and the conservative handling
- * of submissions the server no longer shows.
+ * records), the release-vs-cancel race, and the handling of submissions
+ * the server no longer shows even when read explicitly by id.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -288,7 +288,7 @@ describe('runCancelScheduledSend', () => {
     expect(calls.emailSet).toHaveLength(0);
   });
 
-  it('resolves a vanished record after the target as unknown, never a guess', async () => {
+  it('releases the row as ordinary mail when the record vanished after the target', async () => {
     await engine.close();
     engine = await bootTestEngine();
     handlers = makeHandlers(engine);
@@ -319,7 +319,15 @@ describe('runCancelScheduledSend', () => {
     expect(result.error.type).toBe('scheduleStateUnknown');
     expect(result.error.terminal).toBe(true);
     expect(calls.emailSet).toHaveLength(0);
-    expect((await refreshedMessage()).scheduled_undo_status).toBe('unknown');
+    // The tracked id was read explicitly, not only through the listing.
+    const explicitGets = transport.requests
+      .flatMap((request) => request.methodCalls)
+      .filter(([name, params]) => name === 'EmailSubmission/get' && Array.isArray(params.ids));
+    expect(explicitGets.map(([, params]) => params.ids)).toEqual([['sub-1']]);
+    expect(await refreshedMessage()).toMatchObject({
+      scheduled_undo_status: null,
+      scheduled_submission_remote_id: null,
+    });
   });
 
   it('treats success as cancel done even when the Email is gone from the server', async () => {

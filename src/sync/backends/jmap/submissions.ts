@@ -3,21 +3,27 @@
  *
  * Scheduled messages are ordinary cached messages in the real Scheduled
  * mailbox; the only extra state is two columns on their `messages` rows
- * (submission remote id + undo status). This module keeps those columns
- * honest against the server and hands settled schedules to existing
- * durable operations — the generic move for released sends, the cancel
- * operation for externally canceled ones. It holds no state machine of
- * its own: every pass re-reads both sides and converges.
+ * (submission remote id + undo status). A message is scheduled exactly
+ * while that status is `pending`; everything else is ordinary mail
+ * wherever it sits. This module keeps the columns honest against the
+ * server for every tracked row and for everything the Scheduled mailbox
+ * holds, and hands settled schedules to existing durable operations —
+ * the generic move for released sends, the cancel operation for
+ * externally canceled ones. It holds no state machine of its own: every
+ * pass re-reads both sides and converges.
  *
  * Stalwart 0.15.4 compatibility: filtered EmailSubmission/query
  * (undoStatus, before/after) returns unreliable results, so the one
  * portable read is an unfiltered query for ids, an explicit get, and
- * client-side filtering. Do not branch by server version.
+ * client-side filtering. The unfiltered query also lists only recent
+ * sendAt values, so tracked ids it omits are read explicitly by id.
+ * Do not branch by server version.
  */
 
 import { MUTATION_TYPE } from '../../../constants/states';
 import { DB_RPC } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
+import type { ScheduledUndoStatus } from '../../../types/db';
 import { callJmap, pickResponse, requireResponse } from './invoke';
 import { maxObjectsInGet } from './limits';
 import { EMAIL_LIST_PROPERTIES, persistEmails } from './messages';
@@ -46,6 +52,20 @@ interface SubmissionSyncArgs {
   useWebSocket?: boolean;
 }
 
+type SubmissionReadArgs = Omit<SubmissionSyncArgs, 'handlers'>;
+
+const SUBMISSION_PROPERTIES = ['id', 'emailId', 'undoStatus', 'sendAt'];
+
+/** One row the pass reconciles, with its Scheduled placement resolved. */
+interface ReconcileRow {
+  id: number;
+  remote_id: string;
+  sent_at: number | null;
+  scheduled_submission_remote_id: string | null;
+  scheduled_undo_status: ScheduledUndoStatus;
+  in_scheduled: number;
+}
+
 function submissionPagingError(reason: CompleteQueryFailureReason): Error {
   switch (reason) {
     case 'queryStateChanged':
@@ -66,13 +86,29 @@ function submissionPagingError(reason: CompleteQueryFailureReason): Error {
 }
 
 /**
- * Every retained submission the server will show us, validated but not
- * interpreted. An undoStatus outside the RFC 8621 §7 set maps to null so
- * callers treat it conservatively instead of misreading it.
+ * Validate one raw EmailSubmission object without interpreting it. An
+ * undoStatus outside the RFC 8621 §7 set maps to null so callers treat
+ * it conservatively instead of misreading it.
  */
+function toSubmissionRecord(raw: any): SubmissionRecord | null {
+  if (!raw || typeof raw.id !== 'string' || typeof raw.emailId !== 'string') return null;
+  return {
+    id: raw.id,
+    emailId: raw.emailId,
+    undoStatus:
+      raw.undoStatus === 'pending'
+      || raw.undoStatus === 'final'
+      || raw.undoStatus === 'canceled'
+        ? raw.undoStatus
+        : null,
+    sendAt: typeof raw.sendAt === 'string' ? raw.sendAt : null,
+  };
+}
+
+/** Every retained submission the unfiltered query lists. */
 export async function fetchSubmissionRecords({
   transport, account, useWebSocket = false,
-}: Omit<SubmissionSyncArgs, 'handlers'>): Promise<SubmissionRecord[]> {
+}: SubmissionReadArgs): Promise<SubmissionRecord[]> {
   const records: SubmissionRecord[] = [];
   const seen = new Set<string>();
   const limit = maxObjectsInGet(transport);
@@ -103,7 +139,7 @@ export async function fetchSubmissionRecords({
                 name: 'EmailSubmission/query',
                 path: '/ids',
               },
-              properties: ['id', 'emailId', 'undoStatus', 'sendAt'],
+              properties: SUBMISSION_PROPERTIES,
             },
             getCallId,
           ],
@@ -147,26 +183,12 @@ export async function fetchSubmissionRecords({
       }
       const byId = new Map(got.list.map((raw: any) => [raw?.id, raw]));
       for (const id of pageIds) {
-        const raw: any = byId.get(id);
-        if (
-          !raw
-          || typeof raw.emailId !== 'string'
-          || seen.has(id)
-        ) {
+        const record = toSubmissionRecord(byId.get(id));
+        if (!record || seen.has(id)) {
           throw new Error('EmailSubmission paging returned incomplete records');
         }
         seen.add(id);
-        records.push({
-          id,
-          emailId: raw.emailId,
-          undoStatus:
-            raw.undoStatus === 'pending'
-            || raw.undoStatus === 'final'
-            || raw.undoStatus === 'canceled'
-              ? raw.undoStatus
-              : null,
-          sendAt: typeof raw.sendAt === 'string' ? raw.sendAt : null,
-        });
+        records.push(record);
       }
     },
   });
@@ -176,10 +198,61 @@ export async function fetchSubmissionRecords({
   return records;
 }
 
+/** Explicit EmailSubmission/get for known ids; absent ids are simply omitted. */
+async function fetchSubmissionRecordsById(
+  { transport, account, useWebSocket = false }: SubmissionReadArgs,
+  ids: string[],
+): Promise<SubmissionRecord[]> {
+  const records: SubmissionRecord[] = [];
+  const limit = maxObjectsInGet(transport);
+  for (let offset = 0; offset < ids.length; offset += limit) {
+    const payload = await callJmap(transport, {
+      using: [JMAP_CAPS.CORE, JMAP_CAPS.MAIL, JMAP_CAPS.SUBMISSION],
+      methodCalls: [[
+        'EmailSubmission/get',
+        {
+          accountId: account.remote_account_id,
+          ids: ids.slice(offset, offset + limit),
+          properties: SUBMISSION_PROPERTIES,
+        },
+        `subid-${offset}`,
+      ]],
+      useWebSocket,
+    });
+    const got = requireResponse(payload, 'EmailSubmission/get');
+    if (!Array.isArray(got.list)) {
+      throw new Error('EmailSubmission/get returned a malformed response');
+    }
+    for (const raw of got.list) {
+      const record = toSubmissionRecord(raw);
+      if (!record) throw new Error('EmailSubmission/get returned incomplete records');
+      records.push(record);
+    }
+  }
+  return records;
+}
+
 /**
- * The record that speaks for one tracked message. Once an id is known,
- * only that immutable server object is authoritative; emailId fallback is
- * reserved for acceptance recovery where the submission id was unavailable.
+ * The unfiltered listing plus explicit reads of any tracked submission
+ * ids it omitted. A tracked id still absent afterwards is genuinely gone.
+ */
+export async function fetchSubmissionRecordsFor(
+  args: SubmissionReadArgs,
+  trackedSubmissionIds: Iterable<string | null | undefined>,
+): Promise<SubmissionRecord[]> {
+  const records = await fetchSubmissionRecords(args);
+  const listed = new Set(records.map((record) => record.id));
+  const missing = [...new Set(trackedSubmissionIds)].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0 && !listed.has(id),
+  );
+  if (missing.length === 0) return records;
+  return records.concat(await fetchSubmissionRecordsById(args, missing));
+}
+
+/**
+ * The record that speaks for one message. Once an id is tracked, only
+ * that immutable server object is authoritative; emailId fallback covers
+ * untracked rows (acceptance recovery, other clients' schedules).
  */
 export function pickRecordForRow(
   records: SubmissionRecord[],
@@ -198,7 +271,7 @@ async function setScheduled(
   accountId: number,
   emailRemoteId: string,
   submissionRemoteId: string | null,
-  undoStatus: 'pending' | 'final' | 'canceled' | 'unknown' | null,
+  undoStatus: ScheduledUndoStatus,
 ): Promise<void> {
   await handlers[DB_RPC.MESSAGE_SET_SCHEDULED]({
     accountId, emailRemoteId, submissionRemoteId, undoStatus,
@@ -231,7 +304,7 @@ async function handoffMutationState(
     : null;
 }
 
-/** Local folder ids the settled-row handoffs need, resolved per pass. */
+/** Local folder ids the pass needs, resolved per pass. */
 async function resolveHandoffFolders(
   handlers: SubmissionSyncArgs['handlers'],
   accountId: number,
@@ -252,6 +325,51 @@ async function resolveHandoffFolders(
 }
 
 /**
+ * Every tracked row plus everything the local mirror of the Scheduled
+ * mailbox holds. Mail another client parks there — or a released
+ * message it never filed — is reconciled like any tracked row.
+ */
+async function loadReconcileRows(
+  handlers: SubmissionSyncArgs['handlers'],
+  accountId: number,
+  scheduledFolderId: number | null,
+): Promise<ReconcileRow[]> {
+  const folderId = scheduledFolderId ?? -1;
+  return handlers[DB_RPC.QUERY]({
+    sql: `SELECT m.id, m.remote_id, m.sent_at, m.scheduled_submission_remote_id,
+                 m.scheduled_undo_status,
+                 EXISTS (SELECT 1 FROM folder_messages fm
+                          WHERE fm.message_id = m.id AND fm.folder_id = ?) AS in_scheduled
+            FROM messages m
+           WHERE m.account_id = ?
+             AND (m.scheduled_undo_status IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM folder_messages fm
+                              WHERE fm.message_id = m.id AND fm.folder_id = ?))`,
+    params: [folderId, accountId, folderId],
+  });
+}
+
+async function enqueueHandoff(
+  handlers: SubmissionSyncArgs['handlers'],
+  accountId: number,
+  mutationType: string,
+  row: ReconcileRow,
+  request: Record<string, unknown>,
+): Promise<boolean> {
+  const state = await handoffMutationState(handlers, accountId, mutationType, row.id);
+  if (state == null) {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId,
+      mutationType,
+      targetMessageId: row.id,
+      requestJson: JSON.stringify(request),
+      optimisticPatchJson: null,
+    });
+  }
+  return state !== 'conflicted';
+}
+
+/**
  * Reconcile local scheduling state with the server's submissions and
  * hand settled rows to durable operations. Level-based: every pass
  * re-derives all decisions, so triggers can fire as often as they like.
@@ -266,61 +384,63 @@ export async function syncSubmissionsForAccount({
   nearestPendingAt: number | null;
   unresolvedSettled: boolean;
 }> {
-  const records = await fetchSubmissionRecords({ transport, account, useWebSocket });
+  const { sentFolderId, scheduledFolderId } = await resolveHandoffFolders(
+    handlers,
+    account.id,
+  );
+  const rows = await loadReconcileRows(handlers, account.id, scheduledFolderId);
+  const records = await fetchSubmissionRecordsFor(
+    { transport, account, useWebSocket },
+    rows.map((row) => row.scheduled_submission_remote_id),
+  );
   const byEmailId = new Map<string, SubmissionRecord[]>();
   for (const record of records) {
     const group = byEmailId.get(record.emailId) ?? [];
     group.push(record);
     byEmailId.set(record.emailId, group);
   }
-
-  const tracked: any[] = await handlers[DB_RPC.QUERY]({
-    sql: `SELECT id, remote_id, sent_at, scheduled_submission_remote_id,
-                 scheduled_undo_status
-            FROM messages
-           WHERE account_id = ? AND scheduled_undo_status IS NOT NULL`,
-    params: [account.id],
-  });
   const clock = scheduleClockWindow(transport);
 
-  // ---- transitions for rows we already track -------------------------
-  for (const row of tracked) {
+  // ---- per-row status from the server's records ----------------------
+  for (const row of rows) {
     const record = pickRecordForRow(
       byEmailId.get(row.remote_id) ?? [],
       row.scheduled_submission_remote_id ?? null,
     );
-    if (!record) {
-      // No record: settled rows keep their status (records are reaped
-      // after resolution; the handoff below still runs). A pending row
-      // whose target has passed can no longer be confirmed either way —
-      // RFC 8621 §7 lets the server destroy finished records — so it
-      // becomes 'unknown', never guessed as sent or canceled.
-      if (
-        row.scheduled_undo_status === 'pending'
-        && row.sent_at != null
-        && Number(row.sent_at) <= clock.lowerMs
-      ) {
-        await setScheduled(handlers, account.id, row.remote_id, null, 'unknown');
-        row.scheduled_undo_status = 'unknown';
-      }
+    let nextStatus: ScheduledUndoStatus;
+    let nextId: string | null;
+    if (record) {
+      // An unreadable status may still release, so the row stays
+      // cancelable rather than guessed as settled.
+      nextStatus = record.undoStatus ?? 'pending';
+      nextId = record.id;
+    } else if (row.scheduled_undo_status === 'pending') {
+      // Not listed yet while the target is still ahead: keep waiting.
+      // Past the target, RFC 8621 §7 lets the server drop the record;
+      // nothing remains to cancel, so the row is ordinary mail again.
+      if (row.sent_at != null && Number(row.sent_at) > clock.lowerMs) continue;
+      nextStatus = null;
+      nextId = null;
+    } else {
+      // Settled rows keep the status the server already reported;
+      // untracked rows without a record stay untracked.
       continue;
     }
-    const next = record.undoStatus ?? 'unknown';
     if (
-      next !== row.scheduled_undo_status
-      || record.id !== row.scheduled_submission_remote_id
+      nextStatus !== row.scheduled_undo_status
+      || nextId !== row.scheduled_submission_remote_id
     ) {
-      await setScheduled(handlers, account.id, row.remote_id, record.id, next);
-      row.scheduled_undo_status = next;
-      row.scheduled_submission_remote_id = record.id;
+      await setScheduled(handlers, account.id, row.remote_id, nextId, nextStatus);
+      row.scheduled_undo_status = nextStatus;
+      row.scheduled_submission_remote_id = nextId;
     }
   }
 
   // ---- discovery of schedules created by other clients ---------------
-  const trackedRemoteIds = new Set(tracked.map((row) => row.remote_id));
+  const reconciledRemoteIds = new Set(rows.map((row) => row.remote_id));
   const external: Array<{ emailId: string; record: SubmissionRecord }> = [];
   for (const [emailId, group] of byEmailId) {
-    if (trackedRemoteIds.has(emailId)) continue;
+    if (reconciledRemoteIds.has(emailId)) continue;
     const pending = group.find((record) =>
       record.undoStatus === 'pending'
       && record.sendAt != null
@@ -379,72 +499,42 @@ export async function syncSubmissionsForAccount({
   }
 
   // ---- hand settled rows to durable operations -----------------------
-  const settled = tracked.filter((row) =>
-    row.scheduled_undo_status === 'final' || row.scheduled_undo_status === 'canceled');
   let unresolvedSettled = false;
-  if (settled.length > 0) {
-    const { sentFolderId, scheduledFolderId } = await resolveHandoffFolders(
-      handlers,
-      account.id,
-    );
-    for (const row of settled) {
-      const placements: any[] = await handlers[DB_RPC.QUERY]({
-        sql: `SELECT f.id AS folder_id, f.role, f.remote_id
-                FROM folder_messages fm
-                JOIN folders f ON f.id = fm.folder_id
-               WHERE fm.message_id = ?`,
-        params: [row.id],
-      });
-      if (row.scheduled_undo_status === 'final') {
-        // Released by the server. Local resolution is the existing move
-        // to Sent; the columns clear only once placement confirms it, so
-        // a crash between the two repeats the idempotent move instead of
-        // stranding a released message under scheduling adornments.
-        const inSent = placements.some((p) => p.role === 'sent');
-        const inScheduled = scheduledFolderId != null
-          && placements.some((p) => Number(p.folder_id) === scheduledFolderId);
-        if (inSent && !inScheduled) {
-          await setScheduled(handlers, account.id, row.remote_id, null, null);
-          continue;
-        }
-        if (sentFolderId == null || scheduledFolderId == null) {
-          continue;
-        }
-        const moveState = await handoffMutationState(
-          handlers, account.id, MUTATION_TYPE.MOVE_TO_FOLDERS, row.id,
-        );
-        if (moveState == null) {
-          await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-            accountId: account.id,
-            mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
-            targetMessageId: row.id,
-            requestJson: JSON.stringify({
-              messageIds: [row.id],
-              addFolderIds: [sentFolderId],
-              removeFolderIds: [scheduledFolderId],
-            }),
-            optimisticPatchJson: null,
-          });
-        }
-        if (moveState !== 'conflicted') unresolvedSettled = true;
-      } else {
-        // Canceled from another client. The durable cancel operation
-        // already knows how to converge this: restore Drafts + $draft,
-        // then clear the columns once server and cache agree.
-        const cancelState = await handoffMutationState(
-          handlers, account.id, MUTATION_TYPE.CANCEL_SCHEDULED_SEND, row.id,
-        );
-        if (cancelState == null) {
-          await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
-            accountId: account.id,
-            mutationType: MUTATION_TYPE.CANCEL_SCHEDULED_SEND,
-            targetMessageId: row.id,
-            requestJson: JSON.stringify({ messageId: row.id }),
-            optimisticPatchJson: null,
-          });
-        }
-        if (cancelState !== 'conflicted') unresolvedSettled = true;
-      }
+  for (const row of rows) {
+    if (row.scheduled_undo_status !== 'final' && row.scheduled_undo_status !== 'canceled') {
+      continue;
+    }
+    // Placement is only known once the Scheduled folder is cached.
+    if (scheduledFolderId == null) continue;
+    if (Number(row.in_scheduled) !== 1) {
+      // Out of Scheduled — filed by the handoff or moved by someone else.
+      // Either way the schedule is over; the message stays where it is.
+      await setScheduled(handlers, account.id, row.remote_id, null, null);
+      continue;
+    }
+    if (row.scheduled_undo_status === 'final') {
+      // Released by the server: file it with the existing move. The
+      // columns clear on a later pass once it has left Scheduled, so a
+      // crash in between repeats the idempotent move.
+      if (sentFolderId == null) continue;
+      const live = await enqueueHandoff(
+        handlers, account.id, MUTATION_TYPE.MOVE_TO_FOLDERS, row,
+        {
+          messageIds: [row.id],
+          addFolderIds: [sentFolderId],
+          removeFolderIds: [scheduledFolderId],
+        },
+      );
+      if (live) unresolvedSettled = true;
+    } else {
+      // Canceled from another client. The durable cancel operation
+      // restores Drafts + $draft and clears the columns once server and
+      // cache agree.
+      const live = await enqueueHandoff(
+        handlers, account.id, MUTATION_TYPE.CANCEL_SCHEDULED_SEND, row,
+        { messageId: row.id },
+      );
+      if (live) unresolvedSettled = true;
     }
   }
 

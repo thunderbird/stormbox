@@ -79,6 +79,11 @@ export const SMTP_HOST = process.env.SMTP_HOST ?? host;
 
 export const SMTP_TLS_PORT = Number(process.env.SMTP_TLS_PORT ?? 465);
 
+/** Stalwart's plain IMAP listener; tests use it to act as an external IMAP client. */
+export const IMAP_HOST = process.env.IMAP_HOST ?? host;
+
+export const IMAP_PORT = Number(process.env.IMAP_PORT ?? 143);
+
 // Pinned literally to `admin` because that's what the argon2id
 // hash baked into configure-stalwart.mjs is over. The OIDC
 // password and the SMTP app password are intentionally

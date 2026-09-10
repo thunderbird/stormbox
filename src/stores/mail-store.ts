@@ -33,6 +33,7 @@ import { buildInlineImageDataUrl, isInlineImageType } from '../utils/message-htm
 import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
+import { isScheduledMessage } from '../utils/scheduled-message';
 import { createContactUid } from '../utils/contact-uid';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
@@ -1813,18 +1814,16 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'You do not have permission to remove messages from this folder.';
       return;
     }
-    // Deleting a scheduled message would leave its held submission
-    // pending server-side; the send has to be canceled instead.
-    if (source.role === 'scheduled') {
-      error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
-      return;
-    }
     // Drop ids that no longer exist in messages (e.g. a previous
     // delete attempt already wiped them but the UI still shows them
     // because the user clicked before the row re-rendered). The
     // PENDING_MUTATION_INSERT FK check would null the target out,
     // but skipping them here keeps the pending row clean and avoids
     // an extra outbox dispatch for nothing.
+    //
+    // Deleting a message whose submission is still pending would leave
+    // that submission held server-side; the send has to be canceled
+    // instead. Everything else in the Scheduled folder is ordinary mail.
     const mutable = await filterMutableMessageIds(ids, source.account_id);
     if (mutable.blockedScheduled) {
       error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
@@ -2257,6 +2256,11 @@ export const useMailStore = defineStore('mail', () => {
     return source.account_id === target.account_id ? 'move' : 'copy';
   }
 
+  /**
+   * Existing ids minus rows whose submission is still pending; those are
+   * reported as `blockedScheduled` so callers steer the user to Cancel
+   * send. Scheduling gates per message, never per folder (SL-5.6).
+   */
   async function filterMutableMessageIds(
     ids: number[],
     accountId: number = authStore.accountId!,
@@ -2274,7 +2278,7 @@ export const useMailStore = defineStore('mail', () => {
     const loadedScheduled = messages.value.some((message) =>
       message?.id != null
       && numeric.includes(Number(message.id))
-      && message.scheduled_undo_status != null);
+      && isScheduledMessage(message));
     return {
       ids: existing.map(Number).filter((id) => mutableSet.has(id)),
       blockedScheduled:
@@ -2543,9 +2547,6 @@ export const useMailStore = defineStore('mail', () => {
     }
     const sourceCapabilities = folderCapabilities(source, authStore.accountId);
     const targetCapabilities = folderCapabilities(target, authStore.accountId);
-    // mayMoveMessages rather than raw mayRemoveItems: the managed
-    // Scheduled mailbox keeps its remove right (the cancel operation
-    // needs it) while ordinary drag/move out of it stays blocked.
     if (source.account_id === target.account_id && !sourceCapabilities.mayMoveMessages) {
       throwMoveError('Cannot move messages out of this folder.');
     }
