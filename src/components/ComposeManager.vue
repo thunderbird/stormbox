@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { LoaderCircle } from '@lucide/vue';
 
 import { COMPOSE_STATE } from '../constants/states';
 import {
@@ -162,6 +163,14 @@ function isSending(session: ComposeSession): boolean {
         :aria-busy="isSending(session) ? 'true' : undefined"
         @click="composeStore.restore(session.id)"
       >
+        <LoaderCircle
+          v-if="isSending(session)"
+          class="compose-dock__spinner"
+          :size="16"
+          :stroke-width="2"
+          aria-hidden="true"
+          focusable="false"
+        />
         <span class="compose-dock__text">
           <span class="compose-dock__title">{{ dockLabel(session) }}</span>
           <span
@@ -277,7 +286,27 @@ function isSending(session: ComposeSession): boolean {
 }
 
 .compose-dock__item--sending {
-  --compose-dock-outline: color-mix(in srgb, var(--accent, #1373d9) 45%, var(--surface, #fff));
+  --compose-dock-outline: var(--accent, #1373d9);
+  background: color-mix(in srgb, var(--accent, #1373d9) 12%, var(--surface, #fff));
+}
+
+.compose-dock__item--sending .compose-dock__status {
+  color: var(--text, #111827);
+  font-weight: 600;
+}
+
+.compose-dock__spinner {
+  flex: 0 0 auto;
+  color: var(--accent, #1373d9);
+  animation: compose-dock-spin 0.9s linear infinite;
+}
+
+@keyframes compose-dock-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compose-dock__spinner { animation: none; }
 }
 
 .compose-dock__close {

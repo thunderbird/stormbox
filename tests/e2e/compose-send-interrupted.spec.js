@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+
 import {
   cleanupEmail,
   connectJmap,
@@ -5,6 +7,7 @@ import {
   listMailboxes,
   mailboxByRole,
   pickResponse,
+  sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
 import { FAULTS_PATH, STATUS_PATH, SUBMISSION_FAULTS } from '../fixtures/ws-proxy/inject.mjs';
 import {
@@ -23,6 +26,7 @@ import {
 import {
   composeSendButton,
   composeSubject,
+  discardCompose,
   fillRecipient,
   waitForIdentities,
 } from './helpers/compose.js';
@@ -201,19 +205,25 @@ async function sendAndWait(page, { to, subject }) {
 }
 
 /** Write a message in the dialog and press Send, without waiting for it. */
-async function composeAndSend(page, { to, subject }) {
+async function composeAndSend(page, {
+  to,
+  subject,
+  body = 'Interrupted send e2e body.',
+  beforeSend,
+}) {
   await waitForWebSocketLeg();
   // The shortcut is a document-level handler, so it needs focus outside
   // whatever the previous case left it in.
   await page.locator('.folder-node').first().click();
   await page.keyboard.press('c');
-  await expect(page.locator('.compose-dialog')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.compose-dialog--expanded')).toBeVisible({ timeout: 10_000 });
   await waitForIdentities(page);
   await fillRecipient(page, 'To', to);
   await composeSubject(page).fill(subject);
-  const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
+  const editor = page.locator('.compose-dialog--expanded .editor[contenteditable]').first();
   await editor.click();
-  await page.keyboard.type('Interrupted send e2e body.');
+  await page.keyboard.type(body);
+  if (beforeSend) await beforeSend();
   await composeSendButton(page).click();
 }
 
@@ -350,6 +360,10 @@ test.describe('Interrupted send', () => {
     await resetSharedSession(sharedPage, {
       extraSubjectPrefixes: [SUBJECT_PREFIX],
     });
+    await sweepOrphanTestMessages(recipient, {
+      subjectPrefixes: [SUBJECT_PREFIX],
+      throwOnError: true,
+    });
   });
 
   /** Trash every copy the case produced, on both accounts. */
@@ -363,6 +377,120 @@ test.describe('Interrupted send', () => {
     for (const id of await findAllByExactSubject(recipient, recipientInbox, subject).catch(() => [])) {
       await cleanupEmail(recipient, id, recipientTrash.id).catch(() => {});
     }
+  }
+
+  for (const theme of ['light', 'dark']) {
+    test(`captures regular and sending dock states (${theme})`, async ({ sharedPage: page }, testInfo) => {
+      const subject = `${SUBJECT_PREFIX} dock ${Date.now()}`;
+      const outputDir = `screenshots/compose-dock/${testInfo.project.name}/${theme}`;
+      const originalClasses = await page.locator('html').getAttribute('class');
+      const originalViewport = page.viewportSize();
+      let regularBackground;
+      let regularWidth;
+      await mkdir(outputDir, { recursive: true });
+
+      const capture = async (name) => {
+        const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
+        await page.mouse.move(0, 0);
+        const detail = `${outputDir}/${name}.png`;
+        const context = `${outputDir}/${name}-context.png`;
+        await dock.screenshot({ path: detail, animations: 'disabled', timeout: 5_000 });
+        await page.screenshot({ path: context, animations: 'disabled', timeout: 5_000 });
+        await testInfo.attach(`${theme}-${name}`, { path: detail, contentType: 'image/png' });
+        await testInfo.attach(`${theme}-${name}-context`, { path: context, contentType: 'image/png' });
+      };
+
+      try {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.emulateMedia({ colorScheme: theme, reducedMotion: 'no-preference' });
+        await page.evaluate((value) => {
+          document.documentElement.classList.remove('light', 'dark');
+          document.documentElement.classList.add(value);
+        }, theme);
+        await page.evaluate(() => document.fonts.ready);
+        await composeAndSend(page, {
+          to: SHARED_TEST_OIDC_EMAIL,
+          subject,
+          body: `Design review test. ${SUBMISSION_FAULTS.HOLD}`,
+          beforeSend: async () => {
+            const minimize = page.getByRole('button', { name: 'Minimize', exact: true });
+            await expect(minimize).toBeEnabled({ timeout: 30_000 });
+            await minimize.click();
+            const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
+            await expect(dock).toBeVisible();
+            await expect(dock.locator('.compose-dock__status')).toHaveCount(0);
+            await expect(dock.locator('.compose-dock__spinner')).toHaveCount(0);
+            await expect(dock.locator('.compose-dock__close')).toBeEnabled({ timeout: 30_000 });
+            await expect(page.locator('.compose-dock-flight')).toHaveCount(0);
+            regularBackground = await dock.evaluate((node) => getComputedStyle(node).backgroundColor);
+            regularWidth = (await dock.boundingBox()).width;
+            await capture('regular-minimized');
+            await page.setViewportSize({ width: 375, height: 812 });
+            const narrowBox = await dock.boundingBox();
+            expect(narrowBox.x).toBeGreaterThanOrEqual(0);
+            expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(375);
+            await expect(dock.locator('.compose-dock__title')).toHaveCSS('text-overflow', 'ellipsis');
+            await capture('regular-narrow');
+            await page.setViewportSize({ width: 1280, height: 900 });
+            await dock.locator('.compose-dock__restore').click();
+            await expect(page.locator('.compose-dialog--expanded')).toBeVisible();
+          },
+        });
+
+        const created = await waitForCreatedEmailId(page, subject);
+        expect((await faultApplied('HOLD', created)).effect).toBe('responseWithheld');
+        const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
+        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
+        await expect(dock.locator('.compose-dock__close')).toBeDisabled();
+        await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
+        const spinner = dock.locator('.compose-dock__spinner');
+        await expect(spinner).toBeVisible();
+        await expect(spinner).not.toHaveCSS('animation-name', 'none');
+        expect(await dock.evaluate((node) => getComputedStyle(node).backgroundColor))
+          .not.toBe(regularBackground);
+        expect((await dock.boundingBox()).width).toBeCloseTo(regularWidth, 0);
+        await expect(page.locator('.compose-dock-flight')).toHaveCount(0);
+        expect((await findSendMutation(page, subject)).local_status).toBe('in_flight');
+        await capture('sending-in-progress');
+        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
+        await page.setViewportSize({ width: 375, height: 812 });
+        const narrowBox = await dock.boundingBox();
+        expect(narrowBox.x).toBeGreaterThanOrEqual(0);
+        expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(375);
+        await expect(spinner).toHaveCSS('width', '16px');
+        await capture('sending-narrow');
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        await expect(spinner).toHaveCSS('animation-name', 'none');
+        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
+
+        // The proxy forwarded a real submission; only the response is held.
+        await expect.poll(
+          async () => (await findAllByExactSubject(recipient, recipientInbox, subject)).length,
+          { timeout: 90_000 },
+        ).toBe(1);
+        await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 90_000 });
+      } finally {
+        // Never delete a row while its send is still running.
+        await expect.poll(async () => {
+          const row = await findSendMutation(page, subject);
+          return row == null || !['pending', 'retry', 'in_flight'].includes(row.local_status);
+        }, { timeout: 90_000 }).toBe(true);
+        const row = await findSendMutation(page, subject);
+        if (row) await deleteMutation(page, row.id);
+        const remainingDock = page.locator('.compose-dock__item').filter({ hasText: subject });
+        if (await remainingDock.count()) await remainingDock.locator('.compose-dock__restore').click();
+        if (await page.locator('.compose-dialog--expanded').count()) await discardCompose(page);
+        await sweep(subject);
+        await attachConsoleTail(testInfo, consoleLinesFor(page));
+        await page.evaluate((value) => {
+          if (value == null) document.documentElement.removeAttribute('class');
+          else document.documentElement.setAttribute('class', value);
+        }, originalClasses);
+        await page.emulateMedia({ colorScheme: null, reducedMotion: null });
+        if (originalViewport) await page.setViewportSize(originalViewport);
+      }
+    });
   }
 
   test('resolves a lost submission response into a completed send', async ({ sharedPage: page }, testInfo) => {

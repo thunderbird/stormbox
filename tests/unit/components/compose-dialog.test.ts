@@ -1539,6 +1539,59 @@ describe('ComposeDialog accessibility', () => {
 });
 
 describe('ComposeManager window presentation', () => {
+  it.each([
+    [null, 'Sending…'],
+    ['2026-10-01T12:00:00Z', 'Scheduling…'],
+  ] as const)('marks only the pending dock session: %s', async (scheduledAt, label) => {
+    const composeStore = useComposeStore();
+    const id = composeStore.open({ subject: 'Design review' });
+    composeStore.minimize(id);
+    const otherId = composeStore.open({ subject: 'Another draft' });
+    composeStore.minimize(otherId);
+    const wrapper = mount(ComposeManager, {
+      attachTo: document.body,
+      global: { stubs: { ComposeDialog: true } },
+    });
+    mountedWrappers.push(wrapper);
+    try {
+      await nextTick();
+      const item = wrapper.get(`[data-session-id="${id}"]`);
+      const other = wrapper.get(`[data-session-id="${otherId}"]`);
+      const restore = item.get('.compose-dock__restore').element;
+      const close = item.get('.compose-dock__close').element;
+      expect(item.find('.compose-dock__spinner').exists()).toBe(false);
+      expect(item.find('.compose-dock__status').exists()).toBe(false);
+      expect(item.get('.compose-dock__close').attributes('disabled')).toBeUndefined();
+
+      const session = composeStore.sessionById(id)!;
+      session.status = COMPOSE_STATE.SENDING;
+      session.sendingScheduledAt = scheduledAt;
+      await nextTick();
+
+      expect(item.get('.compose-dock__spinner').attributes('aria-hidden')).toBe('true');
+      expect(item.get('.compose-dock__status').text()).toBe(label);
+      expect(item.get('.compose-dock__title').text()).toBe('Design review');
+      expect(item.get('.compose-dock__restore').attributes('aria-busy')).toBe('true');
+      expect(item.get('.compose-dock__restore').attributes('disabled')).toBeUndefined();
+      expect(item.get('.compose-dock__close').attributes('disabled')).toBeDefined();
+      expect(item.get('.compose-dock__restore').element).toBe(restore);
+      expect(item.get('.compose-dock__close').element).toBe(close);
+      expect(other.find('.compose-dock__spinner').exists()).toBe(false);
+      expect(other.classes()).not.toContain('compose-dock__item--sending');
+
+      session.status = COMPOSE_STATE.FAILED;
+      session.sendingScheduledAt = null;
+      session.error = 'Send failed';
+      await nextTick();
+      expect(item.find('.compose-dock__spinner').exists()).toBe(false);
+      expect(item.classes()).not.toContain('compose-dock__item--sending');
+      expect(item.get('.compose-dock__status').text()).toBe('Send failed');
+      expect(item.get('.compose-dock__close').attributes('disabled')).toBeUndefined();
+    } finally {
+      composeStore.$reset();
+    }
+  });
+
   it('shows one expanded session and docks every minimized session', async () => {
     const composeStore = useComposeStore();
     composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
