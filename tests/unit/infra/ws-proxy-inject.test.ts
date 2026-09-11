@@ -19,6 +19,7 @@ import {
   CONTACT_CACHE_FAULT,
   CONTACT_CACHE_REFUSALS,
   DRAFT_FAULTS,
+  DRAFT_HOLD_MS,
 } from '../../fixtures/ws-proxy/inject.mjs';
 
 function requestFrame(methodCalls: any[], id = 'r7') {
@@ -312,6 +313,28 @@ describe('ws-proxy draft fault injection', () => {
         mode: 'DRAFT_CREATE',
         emailId: 'draft-new',
         effect: 'responseBlanked',
+        at: expect.any(Number),
+      },
+    ]);
+  });
+
+  it('forwards a held draft create and delays its successful response', () => {
+    const applied: any[] = [];
+    const injector = createInjector({ applied });
+    expect(injector.onClientFrame(draftCreate(DRAFT_FAULTS.HOLD_CREATE)))
+      .toMatchObject({ action: 'forward', kind: 'HOLD_CREATE' });
+
+    const decision = injector.onServerFrame(responseFrame(
+      [['Email/set', { created: { draft: { id: 'draft-new' } } }, 'dc1']],
+      'draft-create',
+    ));
+
+    expect(decision).toEqual({ action: 'delay', kind: 'DRAFT_HOLD', ms: DRAFT_HOLD_MS });
+    expect(applied).toEqual([
+      {
+        mode: 'DRAFT_HOLD',
+        emailId: 'draft-new',
+        effect: 'responseDelayed',
         at: expect.any(Number),
       },
     ]);

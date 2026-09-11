@@ -24,7 +24,7 @@
  *   runMutation
  */
 
-import { DB_RPC } from '../../../db/protocol';
+import { DB_RPC, type MutationProgress } from '../../../db/protocol';
 import {
   MUTATION_RECOVERY_POLICIES,
   SERVICE_KIND,
@@ -48,7 +48,7 @@ import {
   syncContactCardChanges,
 } from './contacts';
 import { MUTATION_TYPES, processMutationRow } from './outbox';
-import { OutboxRunner } from './outbox-runner';
+import { OutboxRunner, type ProcessRowContext } from './outbox-runner';
 import { loadScheduleCapability } from './schedule-capability';
 import {
   scheduleClockWindow,
@@ -355,7 +355,7 @@ export class JmapBackend {
     return this._refreshContactsTrash();
   }
 
-  async _processMutationRow(row: any) {
+  async _processMutationRow(row: any, context?: ProcessRowContext) {
     if (CONTACTS_TRASH_GATED_MUTATIONS.has(row.mutation_type)) {
       const readiness = await this._contactsTrashReadyForMutation();
       if (!readiness.ok) return readiness;
@@ -366,6 +366,7 @@ export class JmapBackend {
       handlers: this.handlers,
       row,
       useWebSocket: this._wsReady(),
+      onProgress: context?.onProgress,
     });
   }
 
@@ -434,7 +435,7 @@ export class JmapBackend {
     this.outboxRunner = new OutboxRunner({
       accountId: this.account.id,
       handlers: this.handlers,
-      processRow: (row) => this._processMutationRow(row),
+      processRow: (row, context) => this._processMutationRow(row, context),
       options: runnerOptions,
     });
     // Reclaim rows stranded in_flight by an earlier crash. Migration 002
@@ -1432,11 +1433,14 @@ export class JmapBackend {
     return this.outboxRunner.drain();
   }
 
-  async runMutation(mutationId) {
+  async runMutation(
+    mutationId,
+    options: { onProgress?: (progress: MutationProgress) => void } = {},
+  ) {
     if (!this.outboxRunner) {
       return { attempted: 0, succeeded: 0, failed: 0 };
     }
-    return this.outboxRunner.runMutation(mutationId);
+    return this.outboxRunner.runMutation(mutationId, options);
   }
 
   attachmentLimits(localAccountId: number) {

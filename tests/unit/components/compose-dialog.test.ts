@@ -25,6 +25,7 @@ import { COMPOSE_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
+import { useMailStore } from '../../../src/stores/mail-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 
 const mountedWrappers: Array<{ unmount: () => void }> = [];
@@ -850,6 +851,90 @@ describe('ComposeDialog send control', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 
+  it('turns a burst of Send activations into one send and goes inert (CS-1.15)', async () => {
+    // Enter held on the focused Send button fires a click per key repeat;
+    // Ctrl+Enter can land in the same burst. Every activation after the
+    // first must join the send already claimed, and the message must not
+    // accept edits or another Send until the outcome is known.
+    let releaseSave: (result: any) => void = () => {};
+    const mutations: string[] = [];
+    __setRepositoryForTests({
+      subscribe: vi.fn(() => () => {}),
+      getAccount: vi.fn(async () => ({ id: 1, primary_email: 'sender@example.com' })),
+      listIdentities: vi.fn(async () => [{ id: 1, name: 'Sender', email: 'sender@example.com' }]),
+      ensureIdentities: vi.fn(async () => {}),
+      insertPendingMutation: vi.fn(async (input: any) => {
+        mutations.push(input.mutationType);
+        return { id: mutations.length };
+      }),
+      runMutation: vi.fn(async (_accountId: number, id: number) => (id === 1
+        ? new Promise((resolve) => { releaseSave = resolve; })
+        : new Promise(() => {}))),
+    });
+    useAuthStore().accountId = 1;
+    useMailStore().folders = [{
+      id: 10, account_id: 1, remote_id: 'mb-drafts', role: 'drafts', name: 'Drafts',
+    } as any];
+    const composeStore = useComposeStore();
+    await composeStore.attach();
+    await flushPromises();
+    const sessionId = composeStore.open({ to: [{ email: 'recipient@example.com' }] });
+    const wrapper = mount(ComposeManager, { attachTo: document.body, global: { stubs: { teleport: true } } });
+    mountedWrappers.push(wrapper);
+    await nextTick();
+    // A draft save is on the wire when Send is pressed.
+    composeStore.sessionById(sessionId)!.draft.subject = 'Once';
+    void composeStore.saveDraft(sessionId, { explicit: true });
+    await flushPromises();
+    expect(mutations).toEqual(['saveDraft']);
+
+    const send = wrapper.get('footer .compose-send');
+    const dialog = wrapper.get('.compose-dialog').element as HTMLElement;
+    await send.trigger('click');
+    await send.trigger('click');
+    dialog.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true,
+    }));
+    await nextTick();
+
+    const session = composeStore.sessionById(sessionId)!;
+    expect(session.status).toBe(COMPOSE_STATE.SENDING);
+    expect(send.attributes('disabled')).toBeDefined();
+    expect(send.text()).toBe('Sending…');
+    expect((wrapper.get('.compose-dialog__body').element as HTMLElement).inert).toBe(true);
+    // The composer has left the centre of the screen for the dock.
+    expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(false);
+    const dockItem = wrapper.get('.compose-dock__item');
+    expect(dockItem.get('.compose-dock__title').text()).toBe('Once');
+    expect(dockItem.get('.compose-dock__status').text()).toBe('Sending…');
+    expect(dockItem.get('.compose-dock__close').attributes('disabled')).toBeDefined();
+    // Restoring it to look is allowed; editing is not.
+    await dockItem.get('.compose-dock__restore').trigger('click');
+    expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(true);
+    expect((wrapper.get('.compose-dialog__body').element as HTMLElement).inert).toBe(true);
+
+    releaseSave({
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      result: {
+        revision: 1,
+        emailId: 'draft-1',
+        localMessageId: 1,
+        messageId: '<revision-1@example.com>',
+        payloadHash: 'hash-1',
+      },
+    });
+    await flushPromises();
+    expect(mutations).toEqual(['saveDraft', 'send']);
+    // Still sending, no longer saving: the window can be put back in the dock.
+    expect(session.status).toBe(COMPOSE_STATE.SENDING);
+    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('[aria-label="Minimize"]').trigger('click');
+    expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(false);
+    expect(wrapper.get('.compose-dock__status').text()).toBe('Sending…');
+  });
+
   it('keeps Discard available but disables conflicting actions while saving', async () => {
     const { wrapper, composeStore } = await mountOpenCompose();
     const session = composeStore.activeSession!;
@@ -1117,7 +1202,8 @@ describe('ComposeDialog scheduled send control', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(wrapper.get('.compose-send').text()).toBe('Scheduling…');
     expect(wrapper.get('.compose-send').attributes('disabled')).toBeDefined();
-    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeDefined();
+    // The window may go to the dock while scheduling; it may not be closed.
+    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeUndefined();
     expect(wrapper.get('[aria-label="Close options"]').attributes('aria-disabled')).toBe('true');
 
     finish(false);

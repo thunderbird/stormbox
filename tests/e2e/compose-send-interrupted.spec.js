@@ -621,9 +621,10 @@ test.describe('Interrupted send', () => {
         page.locator('.store-error-toast__item--success')
           .filter({ hasText: /accepted for delivery/i }),
       ).toBeVisible({ timeout: 30_000 });
-      expect(
-        await findSendMutation(page, subject),
-        'a completed send retires its row',
+      // The composer closes at acceptance (CS-1.16); filing finishes behind it.
+      await expect.poll(
+        async () => findSendMutation(page, subject),
+        { timeout: 60_000, message: 'a completed send retires its row' },
       ).toBeNull();
 
       await expect.poll(

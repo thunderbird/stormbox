@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
+import { COMPOSE_STATE } from '../constants/states';
 import {
   COMPOSE_PRESENTATION,
   useComposeStore,
@@ -111,6 +112,28 @@ function dockLabel(session: ComposeSession): string {
   const recipient = session.draft.to[0] ?? session.draft.cc[0] ?? session.draft.bcc[0];
   return recipient?.name?.trim() || recipient?.email || 'New message';
 }
+
+/** What the dock says about a session's send, or null when there is nothing to say. */
+function dockSendStatus(session: ComposeSession): string | null {
+  switch (session.status) {
+    case COMPOSE_STATE.SENDING:
+      return session.sendingScheduledAt ? 'Scheduling…' : 'Sending…';
+    case COMPOSE_STATE.FAILED:
+      return session.error ? 'Send failed' : null;
+    case COMPOSE_STATE.IDLE:
+    case COMPOSE_STATE.EDITING:
+    case COMPOSE_STATE.SENT:
+      return null;
+    default: {
+      const exhaustive: never = session.status;
+      return exhaustive;
+    }
+  }
+}
+
+function isSending(session: ComposeSession): boolean {
+  return session.status === COMPOSE_STATE.SENDING;
+}
 </script>
 
 <template>
@@ -129,22 +152,39 @@ function dockLabel(session: ComposeSession): string {
       v-for="session in minimizedSessions"
       :key="session.id"
       class="compose-dock__item"
+      :class="{ 'compose-dock__item--sending': isSending(session) }"
       :data-session-id="session.id"
     >
       <button
         type="button"
         class="compose-dock__restore"
         :aria-label="`Restore ${dockLabel(session)}`"
+        :aria-busy="isSending(session) ? 'true' : undefined"
         @click="composeStore.restore(session.id)"
       >
-        <span class="compose-dock__title">{{ dockLabel(session) }}</span>
-        <span v-if="session.saveError" class="compose-dock__error" aria-label="Draft save failed">!</span>
+        <span class="compose-dock__text">
+          <span class="compose-dock__title">{{ dockLabel(session) }}</span>
+          <span
+            v-if="dockSendStatus(session)"
+            class="compose-dock__status"
+            :class="{ 'compose-dock__status--failed': session.status === COMPOSE_STATE.FAILED }"
+            role="status"
+            aria-live="polite"
+          >{{ dockSendStatus(session) }}</span>
+        </span>
+        <span
+          v-if="session.saveError || (session.status === COMPOSE_STATE.FAILED && session.error)"
+          class="compose-dock__error"
+          :aria-label="session.status === COMPOSE_STATE.FAILED && session.error
+            ? 'Send failed'
+            : 'Draft save failed'"
+        >!</span>
       </button>
       <button
         type="button"
         class="compose-dock__close"
         :aria-label="`Close ${dockLabel(session)}`"
-        :disabled="session.isSaving || session.isDiscarding"
+        :disabled="isSending(session) || session.isSaving || session.isDiscarding"
         @click="composeStore.requestClose(session.id)"
       >×</button>
     </div>
@@ -208,15 +248,36 @@ function dockLabel(session: ComposeSession): string {
   text-align: left;
 }
 
+.compose-dock__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
 .compose-dock__title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.compose-dock__status {
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.compose-dock__status--failed,
 .compose-dock__error {
   color: var(--colour-ti-critical, #b3261e);
+}
+
+.compose-dock__error {
   font-weight: 700;
+}
+
+.compose-dock__item--sending {
+  --compose-dock-outline: color-mix(in srgb, var(--accent, #1373d9) 45%, var(--surface, #fff));
 }
 
 .compose-dock__close {

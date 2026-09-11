@@ -19,7 +19,12 @@ import type {
 } from '../types/db';
 import type { ServerClockReferenceLike } from '../utils/schedule-time';
 import { assertSupportedBrowser } from './availability';
-import { BROADCAST_CHANNEL, DB_RPC, SHARED_WORKER_NAME } from './protocol';
+import {
+  BROADCAST_CHANNEL,
+  DB_RPC,
+  SHARED_WORKER_NAME,
+  type MutationProgress,
+} from './protocol';
 import {
   RPC_CANCEL,
   RPC_PROGRESS,
@@ -61,6 +66,11 @@ export interface TransferCallOptions {
   onProgress?: (progress: BlobTransferProgress) => void;
 }
 
+interface CallOptions {
+  signal?: AbortSignal;
+  onProgress?: (progress: any) => void;
+}
+
 /**
  * @typedef {import('./protocol').DB_RPC} DBRpcMethods
  */
@@ -96,7 +106,7 @@ export class Repository {
   _pending: Map<number, {
     resolve: (v: any) => void;
     reject: (e: any) => void;
-    onProgress?: (progress: BlobTransferProgress) => void;
+    onProgress?: (progress: any) => void;
     removeAbort?: () => void;
   }>;
   _listeners: Set<(tables: string[]) => void>;
@@ -136,7 +146,7 @@ export class Repository {
   _call<T = any>(
     method: string,
     params: any = {},
-    options: TransferCallOptions = {},
+    options: CallOptions = {},
   ): Promise<T> {
     const id = this._nextId;
     this._nextId += 1;
@@ -641,8 +651,17 @@ export class Repository {
     return this.call(DB_RPC.SYNC_DRAIN_OUTBOX, { accountId, limit });
   }
 
-  runMutation(accountId, mutationId) {
-    return this.call(DB_RPC.SYNC_RUN_MUTATION, { accountId, mutationId });
+  /**
+   * Run one mutation row and resolve with its terminal outcome. `onProgress`
+   * receives the row's interim reports; for a send that is `submitted`,
+   * which arrives before filing and draft cleanup finish.
+   */
+  runMutation(
+    accountId: number,
+    mutationId: number,
+    { onProgress }: { onProgress?: (progress: MutationProgress) => void } = {},
+  ) {
+    return this._call(DB_RPC.SYNC_RUN_MUTATION, { accountId, mutationId }, { onProgress });
   }
 
   getAttachmentLimits(accountId: number): Promise<AttachmentLimits> {

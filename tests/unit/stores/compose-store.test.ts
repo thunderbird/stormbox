@@ -1456,10 +1456,10 @@ describe('compose-store send safety', () => {
     await composeStore.attach();
     await waitForAsyncWatchers();
 
-    composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'First' });
-    const sending = composeStore.send();
+    const firstId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'First' });
+    const sending = composeStore.send(firstId);
     await waitForAsyncWatchers();
-    expect(composeStore.status).toBe(COMPOSE_STATE.SENDING);
+    expect(composeStore.sessionById(firstId)?.status).toBe(COMPOSE_STATE.SENDING);
 
     // Logout, then the user opens a fresh composer.
     composeStore.$reset();
@@ -1536,13 +1536,74 @@ describe('compose-store send safety', () => {
     const composeStore = await composerWithOutcome({
       attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
     });
-    composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
 
-    const firstSend = composeStore.send();
+    const firstSend = composeStore.send(sessionId);
 
-    await expect(composeStore.send()).resolves.toBe(false);
+    await expect(composeStore.send(sessionId)).resolves.toBe(true);
     await expect(firstSend).resolves.toBe(true);
     expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues one SEND for a burst of activations that lands during an in-flight save', async () => {
+    // Send waits for the session's in-flight autosave before it queues
+    // (CD-6.5). Every Enter that arrives during that wait must join the
+    // same send rather than queue a delivery of its own (CS-1.15).
+    vi.useFakeTimers();
+    try {
+      let releaseSave: (result: any) => void = () => {};
+      const repo = {
+        subscribe: vi.fn(() => () => {}),
+        getAccount: vi.fn(async () => ({ id: 1, primary_email: 'me@example.com' })),
+        listIdentities: vi.fn(async () => [identity({ id: 1, email: 'me@example.com' })]),
+        ensureIdentities: vi.fn(async () => {}),
+        insertPendingMutation: vi.fn(async (input: any) => ({
+          id: input.mutationType === MUTATION_TYPE.SAVE_DRAFT ? 1 : 7,
+        })),
+        runMutation: vi.fn(async (_accountId: number, id: number) => (id === 1
+          ? new Promise((resolve) => { releaseSave = resolve; })
+          : { attempted: 1, succeeded: 1, failed: 0, result: { filed: true } })),
+      };
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+      authStore.accountId = 1;
+      const mailStore = useMailStore();
+      mailStore.folders = [{
+        id: 10, account_id: 1, remote_id: 'mb-drafts', role: 'drafts', name: 'Drafts',
+      } as any];
+      const composeStore = useComposeStore();
+      await composeStore.attach();
+      await waitForAsyncWatchers();
+      const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }] });
+      const session = composeStore.sessionById(sessionId)!;
+      session.draft.subject = 'Typed just before Send';
+      composeStore.touchSession(sessionId);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+
+      const sends = [composeStore.send(sessionId), composeStore.send(sessionId), composeStore.send(sessionId)];
+      expect(session.status).toBe(COMPOSE_STATE.SENDING);
+      releaseSave({
+        attempted: 1,
+        succeeded: 1,
+        failed: 0,
+        result: {
+          revision: 1,
+          emailId: 'draft-1',
+          localMessageId: 1,
+          messageId: '<revision-1@example.com>',
+          payloadHash: 'hash-1',
+        },
+      });
+      await expect(Promise.all(sends)).resolves.toEqual([true, true, true]);
+
+      const queued = repo.insertPendingMutation.mock.calls
+        .map(([input]) => input.mutationType)
+        .filter((type) => type === MUTATION_TYPE.SEND);
+      expect(queued).toEqual([MUTATION_TYPE.SEND]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('queues a scheduled send as the shared SEND mutation with scheduledAt', async () => {
@@ -1588,7 +1649,7 @@ describe('compose-store send safety', () => {
     const targetAt = new Date(Date.now() + 60_000);
 
     const first = composeStore.scheduleSend(sessionId, targetAt);
-    await expect(composeStore.scheduleSend(sessionId, targetAt)).resolves.toBe(false);
+    await expect(composeStore.scheduleSend(sessionId, targetAt)).resolves.toBe(true);
     await expect(first).resolves.toBe(true);
 
     expect(lastRepo.insertPendingMutation).toHaveBeenCalledTimes(1);
@@ -2124,7 +2185,11 @@ describe('compose-store send safety', () => {
 
 describe('compose-store sessions and draft autosave', () => {
   async function autosaveStore(
-    runMutationImpl?: (accountId: number, id: number) => Promise<any>,
+    runMutationImpl?: (
+      accountId: number,
+      id: number,
+      options?: { onProgress?: (progress: any) => void },
+    ) => Promise<any>,
     configuredIdentities: IdentityRow[] = [identity({
       id: 1,
       remote_id: 'identity-1',
@@ -2192,16 +2257,94 @@ describe('compose-store sessions and draft autosave', () => {
       .toBe(COMPOSE_PRESENTATION.MINIMIZED);
   });
 
-  it('refuses to minimize or replace a sending session', () => {
-    const composeStore = useComposeStore();
-    const sessionId = composeStore.open({ subject: 'Sending' });
+  it('docks a session for the duration of its send and keeps the workspace usable', async () => {
+    // Send returns the screen to the user (CS-1.16): the sending session
+    // waits in the dock, other messages can be opened or restored around
+    // it, and it can be looked at but not closed until the outcome is in.
+    const { composeStore, repo } = await autosaveStore(async () =>
+      new Promise(() => {}));
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Sending' });
     const session = composeStore.sessionById(sessionId)!;
-    session.status = COMPOSE_STATE.SENDING;
 
-    expect(composeStore.minimize(sessionId)).toBe(false);
-    expect(composeStore.open({ subject: 'Other' })).toBe(sessionId);
-    expect(composeStore.sessions).toHaveLength(1);
+    void composeStore.send(sessionId);
+    expect(session.status).toBe(COMPOSE_STATE.SENDING);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(composeStore.activeSessionId).toBeNull();
+    await waitForAsyncWatchers();
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+
+    const otherId = composeStore.open({ subject: 'Other' });
+    expect(composeStore.sessions).toHaveLength(2);
+    expect(composeStore.activeSessionId).toBe(otherId);
+
+    expect(composeStore.restore(sessionId)).toBe(true);
     expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
+    expect(composeStore.sessionById(otherId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(composeStore.minimize(sessionId)).toBe(true);
+    expect(composeStore.close(sessionId)).toBe(false);
+    expect(composeStore.requestClose(sessionId)).toBe(false);
+    expect(composeStore.sessions).toHaveLength(2);
+  });
+
+  it('brings a failed send back from the dock when nothing else is open', async () => {
+    const { composeStore } = await autosaveStore(async () => ({
+      attempted: 1, succeeded: 0, failed: 1, errorType: 'forbidden',
+    }));
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Refused' });
+    const session = composeStore.sessionById(sessionId)!;
+
+    await expect(composeStore.send(sessionId)).resolves.toBe(false);
+
+    expect(session.status).toBe(COMPOSE_STATE.FAILED);
+    expect(session.error).toBe('Send failed; the message stays in your outbox.');
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
+    expect(composeStore.activeSessionId).toBe(sessionId);
+  });
+
+  it('closes the composer once the submission is accepted, before filing finishes', async () => {
+    // The wait ends at acceptance (CS-1.3, CS-1.16); the Sent copy and
+    // draft cleanup are the outbox's work and need not hold the composer.
+    let finishFiling: (result: any) => void = () => {};
+    const { composeStore } = await autosaveStore(async (_accountId, _id, options) => {
+      options?.onProgress?.({
+        kind: 'send',
+        phase: 'submitted',
+        createdRemoteId: 'email-1',
+        submissionRemoteId: 'submission-1',
+      });
+      return new Promise((resolve) => { finishFiling = resolve; });
+    });
+    const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Quick' });
+
+    const sending = composeStore.send(sessionId);
+    await waitForAsyncWatchers();
+
+    expect(composeStore.sessionById(sessionId)).toBeNull();
+    expect(composeStore.notice).toBe('Message accepted for delivery.');
+
+    finishFiling({ attempted: 1, succeeded: 1, failed: 0, result: { filed: false } });
+    await expect(sending).resolves.toBe(true);
+    expect(composeStore.notice)
+      .toBe('Message accepted for delivery. Your Sent folder will show it shortly.');
+  });
+
+  it('leaves a failed send in the dock while another message is being written', async () => {
+    let releaseSend: (result: any) => void = () => {};
+    const { composeStore } = await autosaveStore(async () =>
+      new Promise((resolve) => { releaseSend = resolve; }));
+    const sendingId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Refused' });
+    const sending = composeStore.send(sendingId);
+    await waitForAsyncWatchers();
+    const otherId = composeStore.open({ subject: 'Other' });
+
+    releaseSend({ attempted: 1, succeeded: 0, failed: 1, errorType: 'forbidden' });
+    await expect(sending).resolves.toBe(false);
+
+    const failed = composeStore.sessionById(sendingId)!;
+    expect(failed.status).toBe(COMPOSE_STATE.FAILED);
+    expect(failed.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(composeStore.activeSessionId).toBe(otherId);
   });
 
   it('computes dirty state relative to the initialized seed', () => {

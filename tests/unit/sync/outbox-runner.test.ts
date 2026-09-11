@@ -968,6 +968,51 @@ describe('OutboxRunner runMutation', () => {
     await runner.stop();
   });
 
+  it('forwards a row\'s progress to the awaiting caller before the row settles', async () => {
+    // A send reports `submitted` mid-flight so the composer can stop
+    // waiting while filing continues; the report must reach the caller
+    // ahead of the terminal outcome and only that caller's row.
+    const localMsg = await seedMessage('e-1');
+    const seen: Array<{ progress: any; settled: boolean }> = [];
+    let settled = false;
+    let release: () => void = () => {};
+    const runner = new OutboxRunner({
+      accountId,
+      handlers,
+      processRow: async (_row, { onProgress }) => {
+        onProgress({
+          kind: 'send',
+          phase: 'submitted',
+          createdRemoteId: 'email-1',
+          submissionRemoteId: 'submission-1',
+        });
+        await new Promise<void>((resolve) => { release = resolve; });
+        return { ok: true, result: { filed: true } };
+      },
+      options: { notifyDelayMs: 0 },
+    });
+    const mutationId = await insertSetKeywords({ targetMessageId: localMsg });
+    const outcome = runner.runMutation(mutationId, {
+      onProgress: (progress) => seen.push({ progress, settled }),
+    }).then((result) => { settled = true; return result; });
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual({
+      progress: {
+        kind: 'send',
+        phase: 'submitted',
+        createdRemoteId: 'email-1',
+        submissionRemoteId: 'submission-1',
+      },
+      settled: false,
+    });
+    release();
+    expect(await outcome).toEqual({
+      attempted: 1, succeeded: 1, failed: 0, result: { filed: true },
+    });
+    expect(runner._progressListeners.size).toBe(0);
+    await runner.stop();
+  });
+
   it('reports failure once a transient error blows through the attempt cap', async () => {
     const localMsg = await seedMessage('e-1');
     const runner = new OutboxRunner({

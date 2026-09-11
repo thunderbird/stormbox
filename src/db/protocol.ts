@@ -210,3 +210,18 @@ export const TABLE_FAMILIES = Object.freeze({
   SYNC: 'sync',
   MUTATIONS: 'mutations',
 });
+
+/**
+ * Progress a `SYNC_RUN_MUTATION` call reports before it resolves. A send
+ * reports `submitted` once the server has accepted the submission and the
+ * acceptance is checkpointed, so the caller can stop waiting while filing
+ * and draft cleanup continue in the outbox (CS-1.3, CS-1.16).
+ */
+export interface SendMutationProgress {
+  kind: 'send';
+  phase: 'submitted';
+  createdRemoteId: string;
+  submissionRemoteId: string;
+}
+
+export type MutationProgress = SendMutationProgress;

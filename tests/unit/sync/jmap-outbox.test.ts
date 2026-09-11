@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import { bootTestEngine } from '../../../src/db/bootstrap-memory';
 import { makeHandlers } from '../../../src/db/handlers';
@@ -3106,6 +3106,77 @@ describe('drainOutbox', () => {
       type: 'acceptanceCheckpointFailed',
       result: { submitted: true, filed: false, submissionRemoteId: 'sub-21' },
     });
+  });
+
+  it('reports submitted once acceptance is durable and before filing begins', async () => {
+    // The composer stops waiting on this report (CS-1.16), so it must
+    // follow the checkpoint that forbids resubmission and precede the
+    // Sent-copy round trips.
+    const { drafts, sent, identity } = await seedSendScaffolding();
+    const transport = new MockTransport();
+    const order: string[] = [];
+    transport.handle('Email/set', () => {
+      order.push('Email/set');
+      return { created: { c1: { id: 'em-new' } } };
+    });
+    transport.handle('EmailSubmission/set', () => {
+      order.push('EmailSubmission/set');
+      return { created: { s1: { id: 'sub-22' } } };
+    });
+    transport.handle('Email/get', (params) => {
+      order.push('Email/get');
+      return sentEmailGetResponse(params);
+    });
+    const inserted = await insertSendMutation({ drafts, sent, identity });
+    const row = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [inserted.id]);
+    const reports: any[] = [];
+    const checkpointWrites: string[] = [];
+    const observedHandlers = {
+      ...handlers,
+      [DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]: async (params) => {
+        const saved = await handlers[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST](params);
+        checkpointWrites.push('accepted');
+        return saved;
+      },
+    };
+
+    const result = await processMutationRow({
+      transport,
+      account,
+      handlers: observedHandlers,
+      row,
+      onProgress: (progress) => {
+        reports.push({ progress, seen: [...order], writes: [...checkpointWrites] });
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].progress).toEqual({
+      kind: 'send',
+      phase: 'submitted',
+      createdRemoteId: 'em-new',
+      submissionRemoteId: 'sub-22',
+    });
+    expect(reports[0].writes).toEqual(['accepted']);
+    expect(reports[0].seen).toEqual(['Email/set', 'EmailSubmission/set']);
+  });
+
+  it('does not report submitted for a send the server refused', async () => {
+    const { drafts, sent, identity } = await seedSendScaffolding();
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({ created: { c1: { id: 'em-new' } } }));
+    transport.handle('EmailSubmission/set', () => ({
+      notCreated: { s1: { type: 'forbiddenFrom' } },
+    }));
+    const inserted = await insertSendMutation({ drafts, sent, identity });
+    const row = await engine.get('SELECT * FROM pending_mutations WHERE id = ?', [inserted.id]);
+    const onProgress = vi.fn();
+
+    const result = await processMutationRow({ transport, account, handlers, row, onProgress });
+
+    expect(result.ok).toBe(false);
+    expect(onProgress).not.toHaveBeenCalled();
   });
 
   it('still warns when the park itself cannot be written', async () => {

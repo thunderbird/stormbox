@@ -607,10 +607,8 @@ function identityInitials(id: IdentityRow): string {
           <button
             type="button"
             class="icon icon--minimize"
-            :disabled="scheduleBusy || session.isSaving || session.isDiscarding"
-            :title="isScheduling
-              ? 'Scheduling — please wait'
-              : (isSending ? 'Sending — please wait' : 'Minimize')"
+            :disabled="session.isSaving || session.isDiscarding"
+            title="Minimize"
             aria-label="Minimize"
             @click="composeStore.minimize(session.id)"
           >−</button>
@@ -663,6 +661,10 @@ function identityInitials(id: IdentityRow): string {
         </div>
       </header>
 
+      <!-- Inert from the first Send activation until the outcome is known:
+           the text on its way to the server cannot be edited or re-sent
+           (CS-1.15). display: contents keeps the card's own flex layout. -->
+      <div class="compose-dialog__body" :inert="isSending">
       <div class="row">
         <label :id="fromLabelId">From</label>
         <!-- An identity is a person with an address, so its rows wear the
@@ -964,6 +966,7 @@ function identityInitials(id: IdentityRow): string {
           </span>
         </div>
       </footer>
+      </div>
 
       <ScheduleSendDialog
         v-if="customScheduleOpen"
@@ -1074,6 +1077,9 @@ function identityInitials(id: IdentityRow): string {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+}
+.compose-dialog__body {
+  display: contents;
 }
 .compose-dialog__card header h2 { margin: 0; font-size: 16px; }
 .compose-dialog__window-actions {

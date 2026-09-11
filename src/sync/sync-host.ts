@@ -274,12 +274,15 @@ export function makeSyncRpcHandlers({
       return backend.drainOutbox(limit);
     },
 
-    [DB_RPC.SYNC_RUN_MUTATION]: async ({ accountId, mutationId }) => {
+    [DB_RPC.SYNC_RUN_MUTATION]: async (
+      { accountId, mutationId },
+      { reportProgress }: any = {},
+    ) => {
       const backend = backends.get(accountId);
       if (!backend) {
         return { attempted: 0, succeeded: 0, failed: 0 };
       }
-      return backend.runMutation(mutationId);
+      return backend.runMutation(mutationId, { onProgress: reportProgress });
     },
 
     [DB_RPC.SYNC_GET_ATTACHMENT_LIMITS]: async ({ accountId }) => {

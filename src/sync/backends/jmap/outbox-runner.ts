@@ -36,7 +36,7 @@
  * stub processRow.
  */
 
-import { DB_RPC } from '../../../db/protocol';
+import { DB_RPC, type MutationProgress } from '../../../db/protocol';
 import { wlog } from '../../../db/worker-log';
 import { MUTATION_TYPE } from '../../../constants/states';
 import { classifyAuthenticationOrAuthorizationError } from './transport';
@@ -66,10 +66,20 @@ const DEFAULT_BACKOFF_BASE_MS = 1_000;
 const DEFAULT_BACKOFF_CAP_MS = 60_000;
 const DRAIN_BATCH_SIZE = 50;
 
+export type ProcessRowContext = {
+  /** Forwards a row's progress reports to every runMutation caller awaiting it. */
+  onProgress: (progress: MutationProgress) => void;
+};
+
+type ProcessRow = (
+  row: any,
+  context: ProcessRowContext,
+) => Promise<{ ok: boolean; error?: any; result?: any }>;
+
 export class OutboxRunner {
   _accountId: number;
   _handlers: Record<string, (p: any) => Promise<any>>;
-  _processRow: (row: any) => Promise<{ ok: boolean; error?: any; result?: any }>;
+  _processRow: ProcessRow;
   _maxAttempts: number;
   _maxAttemptsByType: Map<string, number>;
   _notifyDelayMs: number;
@@ -88,6 +98,7 @@ export class OutboxRunner {
   _completedPhases: Set<string>;
   _targetLocks: Map<string, Promise<void>>;
   _awaiters: Map<number, Array<{ resolve: (v: any) => void; mutationType: string }>>;
+  _progressListeners: Map<number, Set<(progress: MutationProgress) => void>>;
   _tallyListeners: Set<(id: number, outcome: any) => void>;
 
   _onForegroundChange: ((delta: number) => void) | null;
@@ -100,7 +111,7 @@ export class OutboxRunner {
   }: {
     accountId: number;
     handlers: Record<string, (p: any) => Promise<any>>;
-    processRow: (row: any) => Promise<{ ok: boolean; error?: any; result?: any }>;
+    processRow: ProcessRow;
     options?: any;
   }) {
     if (accountId == null) throw new Error('OutboxRunner requires accountId');
@@ -146,6 +157,7 @@ export class OutboxRunner {
 
     this._targetLocks = new Map();
     this._awaiters = new Map();
+    this._progressListeners = new Map();
     this._tallyListeners = new Set();
     this._notifyTimer = null;
     this._wakeTimer = null;
@@ -289,11 +301,35 @@ export class OutboxRunner {
    * send the difference between "did not go out" and "may have gone out"
    * decides what the composer is allowed to offer, and the row is gone by
    * the time a caller could read it on the paths that succeed.
+   *
+   * `onProgress` receives the row's progress reports (a send's `submitted`)
+   * until the row settles. It is registered before the first read so a
+   * row already running under the auto-notified drain can still reach it.
    */
-  async runMutation(mutationId) {
+  async runMutation(
+    mutationId,
+    { onProgress }: { onProgress?: (progress: MutationProgress) => void } = {},
+  ) {
     if (this._stopped) {
       return { attempted: 0, succeeded: 0, failed: 0 };
     }
+    if (onProgress) {
+      const listeners = this._progressListeners.get(mutationId) ?? new Set();
+      listeners.add(onProgress);
+      this._progressListeners.set(mutationId, listeners);
+    }
+    try {
+      return await this._awaitMutation(mutationId);
+    } finally {
+      if (onProgress) {
+        const listeners = this._progressListeners.get(mutationId);
+        listeners?.delete(onProgress);
+        if (listeners?.size === 0) this._progressListeners.delete(mutationId);
+      }
+    }
+  }
+
+  async _awaitMutation(mutationId) {
     const row = await this._loadRow(mutationId);
     if (!row) {
       // Already deleted = already succeeded by a prior pass.
@@ -441,10 +477,24 @@ export class OutboxRunner {
       }
     }
     this._awaiters.clear();
+    this._progressListeners.clear();
     this._targetLocks.clear();
   }
 
   // ----- internals -----------------------------------------------------
+
+  _emitProgress(mutationId: number, progress: MutationProgress) {
+    const listeners = this._progressListeners.get(mutationId);
+    if (!listeners) return;
+    for (const listener of listeners) {
+      try {
+        listener(progress);
+      } catch {
+        // A listener is UI-side glue; its failure must not change the
+        // row's outcome.
+      }
+    }
+  }
 
   _cancelNotifyTimer() {
     if (this._notifyTimer != null) {
@@ -580,7 +630,9 @@ export class OutboxRunner {
         return;
       }
       try {
-        result = await this._processRow(activeRow);
+        result = await this._processRow(activeRow, {
+          onProgress: (progress) => this._emitProgress(activeRow.id, progress),
+        });
       } catch (err) {
         // A throw means the request never produced a response, so for
         // most mutations a retry is both safe and desirable. For a send

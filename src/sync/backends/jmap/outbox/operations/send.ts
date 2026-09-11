@@ -1,5 +1,5 @@
 import { MUTATION_TYPE, SEND_PHASE } from '../../../../../constants/states';
-import { DB_RPC } from '../../../../../db/protocol';
+import { DB_RPC, type SendMutationProgress } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
 import { addressKey } from '../../../../../utils/address-key';
 import { createContactUid } from '../../../../../utils/contact-uid';
@@ -168,7 +168,16 @@ async function verifySendAttachmentSources({
  * checkpoint, resume, and ambiguity rule is shared.
  */
 async function runSend({
-  transport, account, handlers, row, request, useWebSocket,
+  transport, account, handlers, row, request, useWebSocket, onProgress,
+}: {
+  transport: any;
+  account: any;
+  handlers: Record<string, (params: any) => Promise<any>>;
+  row: any;
+  request: any;
+  useWebSocket: boolean;
+  /** Called once the acceptance checkpoint is durable; filing still follows. */
+  onProgress?: (progress: SendMutationProgress) => void;
 }): Promise<SendOutcome> {
   // ---- phase 0: checkpoint ------------------------------------------
   //
@@ -324,6 +333,7 @@ async function runSend({
         account,
         request,
         allowMissing: row?.account_id == null,
+        onProgress,
       });
       if (recorded.err) {
         return {
@@ -730,6 +740,7 @@ async function runSend({
       account,
       request,
       allowMissing: row?.account_id == null,
+      onProgress,
     });
     if (recorded.err) {
       return {
@@ -1052,30 +1063,55 @@ async function parkUnknown(handlers, rowId, checkpoint) {
  * `postSubmissionFailure` rather than letting it reach the runner, which
  * would classify it as an ordinary transport failure and have the
  * composer invite a second delivery.
+ *
+ * Progress is reported only after that write succeeds: a caller that
+ * stops waiting on `submitted` must be looking at a row that can never
+ * resubmit.
  */
 async function recordAcceptedSubmission({
   handlers, rowId, checkpoint, submissionRemoteId, account, request, allowMissing = false,
+  onProgress,
+}: {
+  handlers: Record<string, (params: any) => Promise<any>>;
+  rowId: number | null;
+  checkpoint: any;
+  submissionRemoteId: string;
+  account: any;
+  request: any;
+  allowMissing?: boolean;
+  onProgress?: (progress: SendMutationProgress) => void;
 }): Promise<{ checkpoint?: any; err?: any }> {
+  let saved;
   try {
     if (allowMissing) {
-      const saved = await saveCheckpoint(
+      saved = await saveCheckpoint(
         handlers,
         rowId,
         { ...checkpoint, submissionRemoteId },
         SEND_PHASE.SUBMITTED,
       );
-      return { checkpoint: saved };
+    } else {
+      saved = await handlers[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]({
+        accountId: account.id,
+        rowId,
+        checkpoint: { ...checkpoint, submissionRemoteId },
+        senders: trustedRecipients(request),
+      });
     }
-    const saved = await handlers[DB_RPC.SEND_ACCEPT_AND_QUEUE_TRUST]({
-      accountId: account.id,
-      rowId,
-      checkpoint: { ...checkpoint, submissionRemoteId },
-      senders: trustedRecipients(request),
-    });
-    return { checkpoint: saved };
   } catch (err: any) {
     return { err };
   }
+  try {
+    onProgress?.({
+      kind: 'send',
+      phase: 'submitted',
+      createdRemoteId: checkpoint.emailRemoteId,
+      submissionRemoteId,
+    });
+  } catch (err: any) {
+    wlog.warn('jmap-outbox', `send progress listener threw: ${err?.message ?? err}`);
+  }
+  return { checkpoint: saved };
 }
 
 /**

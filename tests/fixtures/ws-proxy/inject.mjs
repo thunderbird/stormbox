@@ -65,7 +65,14 @@ export const SUBMISSION_FAULTS = {
 export const DRAFT_FAULTS = {
   LOSE_CREATE: 'stormbox-lose-draft-create',
   LOSE_CLEANUP: 'stormbox-lose-draft-cleanup',
+  /** Forward the draft create, deliver its answer late. Models a slow
+   *  server, so a save is still on the wire when Send is hammered
+   *  (CS-1.15). */
+  HOLD_CREATE: 'stormbox-hold-draft-create',
 };
+
+/** How long HOLD_CREATE keeps a draft create's response from the client. */
+export const DRAFT_HOLD_MS = 2_500;
 
 /**
  * Break the read-back after a contact write the server accepted, for the
@@ -111,6 +118,7 @@ export const KNOWN_FAULT_MODES = Object.freeze([
   'CONTACT_CACHE',
   'DRAFT_CREATE',
   'DRAFT_CLEANUP',
+  'DRAFT_HOLD',
 ]);
 
 /**
@@ -264,6 +272,7 @@ function createdIdsFor(frame, creations) {
  *   { action: 'answer', response }    reply to the client, do not forward
  *   { action: 'drop' }                swallow the frame entirely
  *   { action: 'replace', response }   pass this instead
+ *   { action: 'delay', ms }           pass the frame along after `ms`
  *
  * State is per connection because the arming is: a send's create and its
  * submission always travel the same socket.
@@ -420,6 +429,10 @@ export function createInjector({ applied = [] } = {}) {
           kind: 'DRAFT_CREATE',
           response: { '@type': 'Response', requestId: frame.requestId, methodResponses: [] },
         };
+      }
+      if (pendingDraft.mode === 'HOLD_CREATE' && emailId) {
+        record('DRAFT_HOLD', emailId, 'responseDelayed');
+        return { action: 'delay', kind: 'DRAFT_HOLD', ms: DRAFT_HOLD_MS };
       }
       return { action: 'forward' };
     }

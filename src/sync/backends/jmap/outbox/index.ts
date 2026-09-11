@@ -59,7 +59,7 @@
  */
 
 import { MUTATION_TYPE as MUTATION_TYPES } from '../../../../constants/states';
-import { DB_RPC } from '../../../../db/protocol';
+import { DB_RPC, type MutationProgress } from '../../../../db/protocol';
 import { deleteRow, markFailed, markRow } from './batch';
 import {
   runCreateAddressBook,
@@ -151,7 +151,15 @@ export async function drainOutbox({
  * for the runner's retryable-vs-terminal classification.
  */
 export async function processMutationRow({
-  transport, account, handlers, row, useWebSocket = false,
+  transport, account, handlers, row, useWebSocket = false, onProgress,
+}: {
+  transport: any;
+  account: any;
+  handlers: Record<string, (params: any) => Promise<any>>;
+  row: any;
+  useWebSocket?: boolean;
+  /** Receives a send's `submitted` report; other mutation types report nothing. */
+  onProgress?: (progress: MutationProgress) => void;
 }): Promise<{ ok: boolean; error?: any; response?: any; result?: any }> {
   const identityWrite = row.mutation_type === MUTATION_TYPES.CREATE_IDENTITY
     || row.mutation_type === MUTATION_TYPES.UPDATE_IDENTITY
@@ -182,7 +190,9 @@ export async function processMutationRow({
       return runDestroy({ transport, handlers, row, request, useWebSocket });
     case MUTATION_TYPES.SEND:
       return toProcessResult(
-        await runSend({ transport, account, handlers, row, request, useWebSocket }),
+        await runSend({
+          transport, account, handlers, row, request, useWebSocket, onProgress,
+        }),
       );
     case MUTATION_TYPES.CANCEL_SCHEDULED_SEND:
       return runCancelScheduledSend({

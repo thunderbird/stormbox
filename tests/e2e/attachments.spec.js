@@ -570,8 +570,9 @@ test.describe('Attachment browser coverage', () => {
       await expect(editor).toContainText('Compose attachment body survives its draft checkpoint.');
 
       await composer.getByRole('button', { name: 'Send', exact: true }).click();
-      await expect(composer).toBeHidden({ timeout: 60_000 });
-      await expect(page.getByText('Message accepted for delivery.', { exact: true })).toBeVisible();
+      // The session docks at activation and closes at acceptance (CS-1.16).
+      await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 60_000 });
+      await expect(page.getByText(/^Message accepted for delivery\./)).toBeVisible({ timeout: 30_000 });
       await waitForPendingMutations(page);
 
       let sentEmail = null;

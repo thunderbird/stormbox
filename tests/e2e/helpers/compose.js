@@ -22,13 +22,15 @@ function fieldId(label) {
   return id;
 }
 
+// Fields are scoped to the expanded composer: docked sessions stay mounted
+// (CD-1.5), and one may still be sending while the next message is written.
 export function composeRow(page, label) {
-  return page.locator(`.compose-dialog .row:has(#${fieldId(label)})`);
+  return page.locator(`.compose-dialog--expanded .row:has(#${fieldId(label)})`);
 }
 
 /** The subject, which is an ordinary text box and stays one. */
 export function composeSubject(page) {
-  return page.locator('.compose-dialog .row')
+  return page.locator('.compose-dialog--expanded .row')
     .filter({ hasText: /^Subject$/ })
     .locator('input');
 }
@@ -41,7 +43,7 @@ export function composeSendButton(page) {
 
 /** The text input of a recipient field: what is being typed, not what is committed. */
 export function recipientInput(page, label) {
-  return page.locator(`.compose-dialog #${fieldId(label)}`);
+  return page.locator(`.compose-dialog--expanded #${fieldId(label)}`);
 }
 
 export function recipientPills(page, label) {

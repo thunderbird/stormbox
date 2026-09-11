@@ -145,6 +145,13 @@ server.on('upgrade', (req, socket, head) => {
           clientWs.send(JSON.stringify(decision.response));
           return;
         }
+        if (decision.action === 'delay') {
+          console.log(`[ws-proxy] delaying a response ${decision.ms}ms under ${decision.kind}`);
+          setTimeout(() => {
+            if (clientWs.readyState === WebSocket.OPEN) clientWs.send(data, { binary: isBinary });
+          }, decision.ms);
+          return;
+        }
       }
       clientWs.send(data, { binary: isBinary });
     });
