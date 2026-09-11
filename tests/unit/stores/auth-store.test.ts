@@ -423,6 +423,47 @@ describe('auth-store', () => {
       };
     }
 
+    it.each([
+      'mzlatest@thunderbird.net',
+      'staff+mzlatest@thunderbird.net',
+      'prefixmzlatestsuffix@example.org',
+      ' Staff+MZLATEST@Thunderbird.NET ',
+    ])('keeps mzlatest recovery email on the current origin: %s', async (recoveryEmail) => {
+      definesOverrides.STAFF_APP_URL = STAFF_APP;
+      const oidc = loggedInOidc(recoveryEmail);
+      authService.getOidc.mockReturnValue(oidc);
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      const authStore = useAuthStore();
+
+      await expect(authStore.connectViaOidc()).resolves.toBe(true);
+      expect(navigation.replaceLocation).not.toHaveBeenCalled();
+      expect(repo.startSyncAccount).toHaveBeenCalledTimes(1);
+      expect(authStore.accountId).toBe(42);
+      expect(authStore.status).toBe(AUTH_STATE.CONNECTED);
+      expect(authStore.isStaff).toBe(true);
+      expect(oidc.unsubscribeFromTokensChange).not.toHaveBeenCalled();
+      authStore.$reset();
+    });
+
+    it('does not exempt a staff sign-in because only the standard email contains mzlatest', async () => {
+      definesOverrides.STAFF_APP_URL = STAFF_APP;
+      const oidc = loggedInOidc('staffer@thunderbird.net');
+      oidc.getTokens.mockResolvedValue({
+        ...oidcTokens('token', 1_000),
+        decodedIdToken: {
+          email: 'mzlatest@thundermail.com',
+          recovery_email: 'staffer@thunderbird.net',
+        },
+      });
+      authService.getOidc.mockReturnValue(oidc);
+      const repo = makeRepo();
+      __setRepositoryForTests(repo);
+      await expect(useAuthStore().connectViaOidc()).resolves.toBe(false);
+      expect(navigation.replaceLocation).toHaveBeenCalledWith(`${STAFF_APP}/?auto-login=1`);
+      expect(repo.startSyncAccount).not.toHaveBeenCalled();
+    });
+
     it('sends a staff sign-in to the staff app without creating a local account', async () => {
       definesOverrides.STAFF_APP_URL = STAFF_APP;
       navigation.currentHref.mockReturnValue('https://webmail.thundermail.com/inbox?view=compact');

@@ -111,6 +111,10 @@ created; the prod build sets `VITE_STAFF_APP_URL` to the alpha origin and an
 empty value disables the redirect. The redirect carries `?auto-login=1` so the
 alpha origin signs in through the shared Keycloak session without a click.
 
+Recovery emails containing `mzlatest` (case-insensitive) are exempt from this
+forced redirect and connect on the current origin. This exception does not
+change staff-only feature access.
+
 Adding a hosted origin needs, besides the workflow job: the Cloudflare Pages
 project and custom domain, the origin in the bridge allowlist
 (`infra/jmap-bridge/src/routes.ts`, redeployed with `npm run deploy:production`),

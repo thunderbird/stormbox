@@ -209,6 +209,7 @@ export const useAuthStore = defineStore('auth', () => {
     // this origin. The OIDC session here is left alone: the destination
     // signs in through the same Keycloak SSO cookie.
     const staffRedirect = isStaffEmail(recoveryEmailClaim)
+      && !recoveryEmailClaim?.toLowerCase().includes('mzlatest')
       ? staffRedirectUrl(STAFF_APP_URL, currentHref())
       : null;
     if (staffRedirect) {
