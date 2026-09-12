@@ -17,13 +17,14 @@ import ComposeDialog from '../../../src/components/ComposeDialog.vue';
 import ComposeManager from '../../../src/components/ComposeManager.vue';
 import RichTextEditor from '../../../src/components/RichTextEditor.vue';
 import ScheduleSendDialog from '../../../src/components/ScheduleSendDialog.vue';
+import StoreErrorToast from '../../../src/components/StoreErrorToast.vue';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
 } from '../../../src/composables/useRepository';
 import { COMPOSE_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
-import { useComposeStore } from '../../../src/stores/compose-store';
+import { COMPOSE_PRESENTATION, useComposeStore } from '../../../src/stores/compose-store';
 import { useContactsStore } from '../../../src/stores/contacts-store';
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
@@ -902,16 +903,19 @@ describe('ComposeDialog send control', () => {
     expect(send.attributes('disabled')).toBeDefined();
     expect(send.text()).toBe('Sending…');
     expect((wrapper.get('.compose-dialog__body').element as HTMLElement).inert).toBe(true);
-    // The composer has left the centre of the screen for the dock.
+    // The composer has left the screen: neither expanded nor in the dock
+    // (CS-1.16); the send toast stands in for it.
     expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(false);
-    const dockItem = wrapper.get('.compose-dock__item');
-    expect(dockItem.get('.compose-dock__title').text()).toBe('Once');
-    expect(dockItem.get('.compose-dock__status').text()).toBe('Sending…');
-    expect(dockItem.get('.compose-dock__close').attributes('disabled')).toBeDefined();
-    // Restoring it to look is allowed; editing is not.
-    await dockItem.get('.compose-dock__restore').trigger('click');
-    expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(true);
-    expect((wrapper.get('.compose-dialog__body').element as HTMLElement).inert).toBe(true);
+    expect(wrapper.find('.compose-dock__item').exists()).toBe(false);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
+    const toast = mount(StoreErrorToast, { attachTo: document.body });
+    mountedWrappers.push(toast);
+    await nextTick();
+    const progress = toast.get(`.store-error-toast__item[data-session-id="${sessionId}"]`);
+    expect(progress.classes()).toContain('store-error-toast__item--progress');
+    expect(progress.text()).toBe('Sending “Once”…');
+    expect(progress.find('.store-error-toast__dismiss').exists()).toBe(false);
+    expect(progress.find('.store-error-toast__action').exists()).toBe(false);
 
     releaseSave({
       attempted: 1,
@@ -927,12 +931,14 @@ describe('ComposeDialog send control', () => {
     });
     await flushPromises();
     expect(mutations).toEqual(['saveDraft', 'send']);
-    // Still sending, no longer saving: the window can be put back in the dock.
+    // Still sending once the save has answered: still off screen, still
+    // reported by the toast.
     expect(session.status).toBe(COMPOSE_STATE.SENDING);
-    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeUndefined();
-    await wrapper.get('[aria-label="Minimize"]').trigger('click');
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
     expect(wrapper.find('.compose-dialog--expanded').exists()).toBe(false);
-    expect(wrapper.get('.compose-dock__status').text()).toBe('Sending…');
+    expect(wrapper.find('.compose-dock__item').exists()).toBe(false);
+    expect(toast.get(`.store-error-toast__item[data-session-id="${sessionId}"]`).text())
+      .toBe('Sending “Once”…');
   });
 
   it('keeps Discard available but disables conflicting actions while saving', async () => {
@@ -1539,10 +1545,9 @@ describe('ComposeDialog accessibility', () => {
 });
 
 describe('ComposeManager window presentation', () => {
-  it.each([
-    [null, 'Sending…'],
-    ['2026-10-01T12:00:00Z', 'Scheduling…'],
-  ] as const)('marks only the pending dock session: %s', async (scheduledAt, label) => {
+  it('keeps a sending session out of the dock and marks a docked failure', async () => {
+    // A session is off screen while it sends (CS-1.16); the dock only ever
+    // carries the failure that docked it (CD-1.7).
     const composeStore = useComposeStore();
     const id = composeStore.open({ subject: 'Design review' });
     composeStore.minimize(id);
@@ -1556,37 +1561,26 @@ describe('ComposeManager window presentation', () => {
     try {
       await nextTick();
       const item = wrapper.get(`[data-session-id="${id}"]`);
-      const other = wrapper.get(`[data-session-id="${otherId}"]`);
-      const restore = item.get('.compose-dock__restore').element;
-      const close = item.get('.compose-dock__close').element;
-      expect(item.find('.compose-dock__spinner').exists()).toBe(false);
       expect(item.find('.compose-dock__status').exists()).toBe(false);
       expect(item.get('.compose-dock__close').attributes('disabled')).toBeUndefined();
 
       const session = composeStore.sessionById(id)!;
       session.status = COMPOSE_STATE.SENDING;
-      session.sendingScheduledAt = scheduledAt;
+      session.presentation = COMPOSE_PRESENTATION.HIDDEN;
       await nextTick();
-
-      expect(item.get('.compose-dock__spinner').attributes('aria-hidden')).toBe('true');
-      expect(item.get('.compose-dock__status').text()).toBe(label);
-      expect(item.get('.compose-dock__title').text()).toBe('Design review');
-      expect(item.get('.compose-dock__restore').attributes('aria-busy')).toBe('true');
-      expect(item.get('.compose-dock__restore').attributes('disabled')).toBeUndefined();
-      expect(item.get('.compose-dock__close').attributes('disabled')).toBeDefined();
-      expect(item.get('.compose-dock__restore').element).toBe(restore);
-      expect(item.get('.compose-dock__close').element).toBe(close);
-      expect(other.find('.compose-dock__spinner').exists()).toBe(false);
-      expect(other.classes()).not.toContain('compose-dock__item--sending');
+      expect(wrapper.find(`[data-session-id="${id}"]`).exists()).toBe(false);
+      expect(wrapper.get(`[data-session-id="${otherId}"]`).find('.compose-dock__status').exists())
+        .toBe(false);
 
       session.status = COMPOSE_STATE.FAILED;
-      session.sendingScheduledAt = null;
+      session.presentation = COMPOSE_PRESENTATION.MINIMIZED;
       session.error = 'Send failed';
       await nextTick();
-      expect(item.find('.compose-dock__spinner').exists()).toBe(false);
-      expect(item.classes()).not.toContain('compose-dock__item--sending');
-      expect(item.get('.compose-dock__status').text()).toBe('Send failed');
-      expect(item.get('.compose-dock__close').attributes('disabled')).toBeUndefined();
+      const failed = wrapper.get(`[data-session-id="${id}"]`);
+      expect(failed.get('.compose-dock__title').text()).toBe('Design review');
+      expect(failed.get('.compose-dock__status').text()).toBe('Send failed');
+      expect(failed.get('.compose-dock__error').attributes('aria-label')).toBe('Send failed');
+      expect(failed.get('.compose-dock__close').attributes('disabled')).toBeUndefined();
     } finally {
       composeStore.$reset();
     }

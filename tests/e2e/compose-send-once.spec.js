@@ -24,13 +24,15 @@ import { waitForPendingMutations } from './helpers/ui.js';
 import {
   composeSendButton,
   composeSubject,
+  discardCompose,
   fillRecipient,
   waitForIdentities,
 } from './helpers/compose.js';
 
 /**
  * Hammering Send produces one message (CS-1.15) and the composer leaves
- * the screen while the server works (CS-1.16, CD-1.7).
+ * the screen while the server works, the send toast standing in for it
+ * (CS-1.16, CD-1.7).
  *
  * The harmful case is Send activated while the session's autosave is
  * still on the wire: send has to wait for that save (CD-6.5), and every
@@ -118,7 +120,7 @@ async function findAllByExactSubject(jmap, mailbox, subject, limit = 30) {
 /** Live outbox rows by type and status. */
 async function mutationRows(page) {
   return page.evaluate(async () => globalThis.__repo.call('db.query', {
-    sql: `SELECT mutation_type, local_status, request_json
+    sql: `SELECT id, mutation_type, local_status, request_json
             FROM pending_mutations
            ORDER BY id`,
     params: [],
@@ -217,12 +219,14 @@ test.describe('Send once', () => {
       await page.keyboard.press('Enter');
       await page.keyboard.press('Control+Enter');
 
-      // CS-1.16: the message left the centre of the screen at activation
-      // and its bar reports the send.
-      const dockItem = page.locator('.compose-dock__item').filter({ hasText: subject });
-      await expect(dockItem.locator('.compose-dock__status')).toHaveText('Sending…', { timeout: 10_000 });
+      // CS-1.16: the message left the screen at activation — neither
+      // expanded nor docked — and the send toast reports for it, offering
+      // nothing to press.
+      const sendToast = page.locator('.store-error-toast__item--progress').filter({ hasText: subject });
+      await expect(sendToast).toHaveText(`Sending “${subject}”…`, { timeout: 10_000 });
       await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
-      await expect(dockItem.locator('.compose-dock__close')).toBeDisabled();
+      await expect(page.locator('.compose-dock__item').filter({ hasText: subject })).toHaveCount(0);
+      await expect(sendToast.locator('button')).toHaveCount(0);
 
       // The hold really applied to this session's save.
       await expect.poll(async () => (await holdsApplied()).length, {
@@ -230,11 +234,13 @@ test.describe('Send once', () => {
         message: 'the ws-proxy should have held the draft create',
       }).toBeGreaterThan(holdsBefore);
 
-      // The composer closes at acceptance and the outbox finishes filing.
+      // The composer closes at acceptance, the send toast gives way to the
+      // confirmation, and the outbox finishes filing.
       await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 90_000 });
       await expect(
         page.locator('.store-error-toast__item--success').filter({ hasText: /accepted for delivery/i }),
       ).toBeVisible({ timeout: 30_000 });
+      await expect(sendToast).toHaveCount(0);
       await waitForPendingMutations(page, { timeout: 60_000 });
 
       // Completed rows retire, so the count of sends is read from the
@@ -262,6 +268,87 @@ test.describe('Send once', () => {
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       await sweep(subject);
+    }
+  });
+
+  test('a send refused while another message is being written docks and is offered from the toast', async ({ sharedPage: page }, testInfo) => {
+    // The failure must not take the screen from the message being written
+    // (CS-1.16): the refused session docks with the failure marked, the
+    // toast that reported the send reports the refusal, and Open brings the
+    // session back with its error. The server refuses the envelope because
+    // the domain has no public suffix — accepted by the client, rejected
+    // by Stalwart's sanitizer — and the held autosave keeps the send in
+    // flight long enough for the other message to be opened first.
+    const subject = `${SUBJECT_PREFIX} refused ${Date.now()} ${DRAFT_FAULTS.HOLD_CREATE}`;
+    const otherSubject = `${SUBJECT_PREFIX} other ${Date.now()}`;
+    try {
+      await waitForProxiedSocket();
+      await page.locator('.folder-node').first().click();
+      await page.keyboard.press('c');
+      await expect(page.locator('.compose-dialog--expanded')).toBeVisible({ timeout: 10_000 });
+      await waitForIdentities(page);
+      await fillRecipient(page, 'To', 'nobody@mail.internal');
+      await composeSubject(page).fill(subject);
+      const editor = page.locator('.compose-dialog .editor[contenteditable]').first();
+      await editor.click();
+      await page.keyboard.type('Refused by the server while another message is open.');
+      await expect.poll(() => saveInFlight(page), {
+        timeout: 30_000,
+        intervals: [50],
+        message: 'the autosave should be on the wire before Send is pressed',
+      }).toBe(true);
+      await composeSendButton(page).click();
+
+      const sendToast = page.locator('.store-error-toast__item').filter({ hasText: subject });
+      const sendToastMessage = sendToast.locator('.store-error-toast__message');
+      await expect(sendToastMessage).toHaveText(`Sending “${subject}”…`, { timeout: 10_000 });
+      await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
+
+      // Another message is opened while the send waits for its held save.
+      await page.locator('.folder-node').first().click();
+      await page.keyboard.press('c');
+      await expect(page.locator('.compose-dialog--expanded')).toBeVisible({ timeout: 10_000 });
+      await composeSubject(page).fill(otherSubject);
+
+      // The refusal lands behind the open message: docked, marked, and
+      // reported by the same toast.
+      await expect(sendToastMessage).toHaveText(`Couldn’t send “${subject}”.`, { timeout: 60_000 });
+      await expect(sendToast).not.toHaveClass(/store-error-toast__item--progress/);
+      const dockItem = page.locator('.compose-dock__item').filter({ hasText: subject });
+      await expect(dockItem.locator('.compose-dock__status')).toHaveText('Send failed');
+      await expect(page.locator('.compose-dialog--expanded')).toHaveCount(1);
+      await expect(composeSubject(page)).toHaveValue(otherSubject);
+      const rows = await sendRowsFor(page, subject);
+      expect(rows.map((r) => r.local_status), 'the refused row stays for the user to act on')
+        .toEqual(['conflicted']);
+
+      // Open swaps the two: the refused message returns with its error and
+      // the other one docks.
+      await sendToast.getByRole('button', { name: 'Open' }).click();
+      await expect(composeSubject(page)).toHaveValue(subject);
+      await expect(page.locator('.compose-dialog--expanded .compose-error')).toHaveText(/Send failed/i);
+      await expect(sendToast).toHaveCount(0);
+      await expect(dockItem).toHaveCount(0);
+      await expect(page.locator('.compose-dock__item').filter({ hasText: otherSubject })).toHaveCount(1);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      // Retire the refused row so later specs do not inherit a failed send,
+      // then discard both messages.
+      for (const row of await sendRowsFor(page, subject).catch(() => [])) {
+        await page.evaluate(async (id) => {
+          await globalThis.__repo.call('db.query', {
+            sql: 'DELETE FROM pending_mutations WHERE id = ?',
+            params: [id],
+          });
+        }, row.id).catch(() => {});
+      }
+      for (let i = 0; i < 2; i += 1) {
+        if (await page.locator('.compose-dialog--expanded').count()) await discardCompose(page).catch(() => {});
+        const docked = page.locator('.compose-dock__restore').first();
+        if (await docked.count()) await docked.click().catch(() => {});
+      }
+      await sweep(subject);
+      await sweep(otherSubject);
     }
   });
 });

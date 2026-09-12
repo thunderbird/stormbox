@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
-import { LoaderCircle } from '@lucide/vue';
 
 import { COMPOSE_STATE } from '../constants/states';
 import {
   COMPOSE_PRESENTATION,
+  sessionLabel,
   useComposeStore,
+  type ComposePresentation,
   type ComposeSession,
 } from '../stores/compose-store';
 import ComposeDialog from './ComposeDialog.vue';
 
-/** Duration of the outline that flies from the composer card to its dock item on minimize. */
+/** Duration of the outline that flies from the composer card to its dock item or send toast. */
 const MINIMIZE_FLIGHT_MS = 380;
 
 interface FlightRect {
@@ -28,9 +29,10 @@ const minimizedSessions = computed(() =>
   ));
 
 // Minimizing hides a large card and reveals a small dock item elsewhere on
-// screen. A translucent outline travels between the two so the eye can
-// follow where the draft went. Presentation changes are watched with sync
-// flush so the card can be measured before Vue hides it.
+// screen; Send hides it and reveals the send toast. A translucent outline
+// travels between the two so the eye can follow where the draft went.
+// Presentation changes are watched with sync flush so the card can be
+// measured before Vue hides it.
 const flightRect = shallowRef<FlightRect | null>(null);
 const flightLanding = ref(false);
 let flightTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,12 +56,28 @@ function clearFlight(): void {
   flightLanding.value = false;
 }
 
-async function flyToDock(sessionId: string, from: FlightRect): Promise<void> {
+/** Where a session that just left the screen now lives, or null when nothing on screen stands for it. */
+function landingSelector(sessionId: string, presentation: ComposePresentation): string | null {
+  switch (presentation) {
+    case COMPOSE_PRESENTATION.MINIMIZED:
+      return `.compose-dock__item[data-session-id="${sessionId}"]`;
+    case COMPOSE_PRESENTATION.HIDDEN:
+      return `.store-error-toast__item[data-session-id="${sessionId}"]`;
+    case COMPOSE_PRESENTATION.EXPANDED:
+      return null;
+    default: {
+      const exhaustive: never = presentation;
+      return exhaustive;
+    }
+  }
+}
+
+async function flyTo(selector: string, from: FlightRect): Promise<void> {
   // Called from a sync watcher, before Vue has queued the re-render; yield a
-  // microtask so the following tick waits for the dock item to mount.
+  // microtask so the following tick waits for the landing element to mount.
   await Promise.resolve();
   await nextTick();
-  const to = rectOf(document.querySelector(`.compose-dock__item[data-session-id="${sessionId}"]`));
+  const to = rectOf(document.querySelector(selector));
   if (!to) return;
   clearFlight();
   flightRect.value = from;
@@ -83,11 +101,14 @@ watch(
         .map((entry) => entry.slice(0, entry.lastIndexOf(':'))),
     );
     for (const entry of next) {
-      if (!entry.endsWith(`:${COMPOSE_PRESENTATION.MINIMIZED}`)) continue;
-      const id = entry.slice(0, entry.lastIndexOf(':'));
+      const separator = entry.lastIndexOf(':');
+      const id = entry.slice(0, separator);
       if (!wasExpanded.has(id)) continue;
+      const presentation = entry.slice(separator + 1) as ComposePresentation;
+      const selector = landingSelector(id, presentation);
+      if (!selector) continue;
       const from = rectOf(document.querySelector('.compose-dialog--expanded .compose-dialog__card'));
-      if (from) void flyToDock(id, from);
+      if (from) void flyTo(selector, from);
     }
   },
   { flush: 'sync' },
@@ -107,20 +128,16 @@ const flightStyle = computed(() => {
   };
 });
 
-function dockLabel(session: ComposeSession): string {
-  const subject = session.draft.subject.trim();
-  if (subject) return subject;
-  const recipient = session.draft.to[0] ?? session.draft.cc[0] ?? session.draft.bcc[0];
-  return recipient?.name?.trim() || recipient?.email || 'New message';
-}
-
-/** What the dock says about a session's send, or null when there is nothing to say. */
+/**
+ * What the dock says about a session's send, or null when there is nothing
+ * to say. A sending session is off screen rather than docked (CS-1.16), so
+ * only a failure ever reaches the bar.
+ */
 function dockSendStatus(session: ComposeSession): string | null {
   switch (session.status) {
-    case COMPOSE_STATE.SENDING:
-      return session.sendingScheduledAt ? 'Scheduling…' : 'Sending…';
     case COMPOSE_STATE.FAILED:
       return session.error ? 'Send failed' : null;
+    case COMPOSE_STATE.SENDING:
     case COMPOSE_STATE.IDLE:
     case COMPOSE_STATE.EDITING:
     case COMPOSE_STATE.SENT:
@@ -130,10 +147,6 @@ function dockSendStatus(session: ComposeSession): string | null {
       return exhaustive;
     }
   }
-}
-
-function isSending(session: ComposeSession): boolean {
-  return session.status === COMPOSE_STATE.SENDING;
 }
 </script>
 
@@ -153,26 +166,16 @@ function isSending(session: ComposeSession): boolean {
       v-for="session in minimizedSessions"
       :key="session.id"
       class="compose-dock__item"
-      :class="{ 'compose-dock__item--sending': isSending(session) }"
       :data-session-id="session.id"
     >
       <button
         type="button"
         class="compose-dock__restore"
-        :aria-label="`Restore ${dockLabel(session)}`"
-        :aria-busy="isSending(session) ? 'true' : undefined"
+        :aria-label="`Restore ${sessionLabel(session)}`"
         @click="composeStore.restore(session.id)"
       >
-        <LoaderCircle
-          v-if="isSending(session)"
-          class="compose-dock__spinner"
-          :size="16"
-          :stroke-width="2"
-          aria-hidden="true"
-          focusable="false"
-        />
         <span class="compose-dock__text">
-          <span class="compose-dock__title">{{ dockLabel(session) }}</span>
+          <span class="compose-dock__title">{{ sessionLabel(session) }}</span>
           <span
             v-if="dockSendStatus(session)"
             class="compose-dock__status"
@@ -192,8 +195,8 @@ function isSending(session: ComposeSession): boolean {
       <button
         type="button"
         class="compose-dock__close"
-        :aria-label="`Close ${dockLabel(session)}`"
-        :disabled="isSending(session) || session.isSaving || session.isDiscarding"
+        :aria-label="`Close ${sessionLabel(session)}`"
+        :disabled="session.isSaving || session.isDiscarding"
         @click="composeStore.requestClose(session.id)"
       >×</button>
     </div>
@@ -283,30 +286,6 @@ function isSending(session: ComposeSession): boolean {
 
 .compose-dock__error {
   font-weight: 700;
-}
-
-.compose-dock__item--sending {
-  --compose-dock-outline: var(--accent, #1373d9);
-  background: color-mix(in srgb, var(--accent, #1373d9) 12%, var(--surface, #fff));
-}
-
-.compose-dock__item--sending .compose-dock__status {
-  color: var(--text, #111827);
-  font-weight: 600;
-}
-
-.compose-dock__spinner {
-  flex: 0 0 auto;
-  color: var(--accent, #1373d9);
-  animation: compose-dock-spin 0.9s linear infinite;
-}
-
-@keyframes compose-dock-spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compose-dock__spinner { animation: none; }
 }
 
 .compose-dock__close {

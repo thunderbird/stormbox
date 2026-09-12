@@ -322,8 +322,9 @@ test.describe('Send Later', () => {
       await expect(composer.locator('.compose-send')).toHaveText(/Send/);
       await expect(composer.locator('.compose-schedule-menu__selection')).toHaveText('Tomorrow');
       await composer.locator('.compose-send').click();
-      // The session docks while scheduling (CS-1.16) and closes once the
-      // schedule is accepted; the next composer must not open beside it.
+      // The session leaves the screen while scheduling (CS-1.16) and closes
+      // once the schedule is accepted; the next composer must not open
+      // beside it.
       await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 30_000 });
 
       // The real folder appears in the tree once a schedule is active.

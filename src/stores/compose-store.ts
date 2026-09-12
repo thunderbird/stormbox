@@ -156,6 +156,8 @@ function emptyDraft(): Draft {
 export const COMPOSE_PRESENTATION = {
   EXPANDED: 'expanded',
   MINIMIZED: 'minimized',
+  /** Off screen while its send is in flight; the send toast is its only representation (CS-1.16). */
+  HIDDEN: 'hidden',
 } as const;
 
 export type ComposePresentation =
@@ -209,6 +211,13 @@ export interface ComposeSession {
   status: ComposeState;
   /** Target time of the send in flight; null for a send-now or when idle. */
   sendingScheduledAt: string | null;
+  /**
+   * The send failed while the session was off screen and another composer
+   * was expanded, so the session docked instead of returning; the send toast
+   * reports the failure and offers Open until the session is restored or
+   * the notice dismissed (CS-1.16).
+   */
+  dockedSendFailure: boolean;
   error: string | null;
   saveError: string | null;
   isSaving: boolean;
@@ -259,10 +268,19 @@ export function isExpandedPresentation(presentation: ComposePresentation): boole
     case COMPOSE_PRESENTATION.EXPANDED:
       return true;
     case COMPOSE_PRESENTATION.MINIMIZED:
+    case COMPOSE_PRESENTATION.HIDDEN:
       return false;
     default:
       return assertNever(presentation);
   }
+}
+
+/** The session's name in the dock and the send toast: subject, then first recipient, then “New message” (CD-1.6). */
+export function sessionLabel(session: ComposeSession): string {
+  const subject = session.draft.subject.trim();
+  if (subject) return subject;
+  const recipient = session.draft.to[0] ?? session.draft.cc[0] ?? session.draft.bcc[0];
+  return recipient?.name?.trim() || recipient?.email || 'New message';
 }
 
 function makeSessionId(): string {
@@ -1448,6 +1466,7 @@ export const useComposeStore = defineStore('compose', () => {
       presentation: COMPOSE_PRESENTATION.EXPANDED,
       status: COMPOSE_STATE.EDITING,
       sendingScheduledAt: null,
+      dockedSendFailure: false,
       error: null,
       saveError: null,
       isSaving: false,
@@ -1529,15 +1548,37 @@ export const useComposeStore = defineStore('compose', () => {
     if (activeSessionId.value === session.id) activeSessionId.value = null;
   }
 
+  /** Off screen for the send: not expanded, not in the dock; the send toast stands in (CS-1.16). */
+  function hide(session: ComposeSession): void {
+    session.presentation = COMPOSE_PRESENTATION.HIDDEN;
+    if (activeSessionId.value === session.id) activeSessionId.value = null;
+  }
+
+  /**
+   * Bring a docked session back to the screen. A hidden session has no
+   * Restore: its send has to settle first, and failSend decides where it
+   * lands (CS-1.16).
+   */
   function restore(sessionId: string): boolean {
     const session = sessionById(sessionId);
-    if (!session) return false;
+    if (!session || session.presentation === COMPOSE_PRESENTATION.HIDDEN) return false;
+    expand(session);
+    return true;
+  }
+
+  function expand(session: ComposeSession): void {
+    session.dockedSendFailure = false;
     const expanded = activeSession.value;
-    if (expanded?.id === session.id) return true;
+    if (expanded?.id === session.id) return;
     if (expanded) expanded.presentation = COMPOSE_PRESENTATION.MINIMIZED;
     session.presentation = COMPOSE_PRESENTATION.EXPANDED;
     activeSessionId.value = session.id;
-    return true;
+  }
+
+  /** Dismiss the failure toast of a docked session without opening it. */
+  function dismissSendFailureNotice(sessionId: string): void {
+    const session = sessionById(sessionId);
+    if (session) session.dockedSendFailure = false;
   }
 
   function selectFromIndex(
@@ -2577,11 +2618,14 @@ export const useComposeStore = defineStore('compose', () => {
         runtime.blocked = false;
         scheduleAutosave(session.id);
       }
-      // A send fails out of the dock. The message comes back to the
-      // screen when nothing else is being written; otherwise the dock
-      // item carries the failure until the user opens it (CS-1.16).
+      // A send fails off screen. The message comes back when nothing else
+      // is being written; otherwise it docks with the failure marked and
+      // the send toast offers to open it (CS-1.16).
       if (!isExpandedPresentation(session.presentation) && !activeSession.value) {
-        restore(session.id);
+        expand(session);
+      } else if (session.presentation === COMPOSE_PRESENTATION.HIDDEN) {
+        dock(session);
+        session.dockedSendFailure = true;
       }
     } else {
       fallbackStatus.value = COMPOSE_STATE.FAILED;
@@ -2730,8 +2774,8 @@ export const useComposeStore = defineStore('compose', () => {
     session.sendingScheduledAt = scheduledAt;
     session.error = null;
     // The screen goes back to the user while the server does its work:
-    // the session waits in the dock and reports from there (CS-1.16).
-    dock(session);
+    // the session leaves it and the send toast reports for it (CS-1.16).
+    hide(session);
     const sessionRuntime = runtimeFor(session.id);
     clearAutosaveTimer(session.id);
     sessionRuntime.blocked = true;
@@ -2994,6 +3038,7 @@ export const useComposeStore = defineStore('compose', () => {
     close,
     minimize,
     restore,
+    dismissSendFailureNotice,
     isSessionDirty,
     isSessionMeaningfullyNonEmpty,
     uncheckpointedAttachmentCount,

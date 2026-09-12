@@ -380,21 +380,21 @@ test.describe('Interrupted send', () => {
   }
 
   for (const theme of ['light', 'dark']) {
-    test(`captures regular and sending dock states (${theme})`, async ({ sharedPage: page }, testInfo) => {
+    test(`captures the docked and the sending states (${theme})`, async ({ sharedPage: page }, testInfo) => {
+      // A minimized session is a dock item; a sending session is off screen
+      // and the send toast stands in for it (CS-1.16). Both are captured in
+      // both themes at desktop and phone widths.
       const subject = `${SUBJECT_PREFIX} dock ${Date.now()}`;
-      const outputDir = `screenshots/compose-dock/${testInfo.project.name}/${theme}`;
+      const outputDir = `screenshots/compose-send-states/${testInfo.project.name}/${theme}`;
       const originalClasses = await page.locator('html').getAttribute('class');
       const originalViewport = page.viewportSize();
-      let regularBackground;
-      let regularWidth;
       await mkdir(outputDir, { recursive: true });
 
-      const capture = async (name) => {
-        const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
+      const capture = async (name, target) => {
         await page.mouse.move(0, 0);
         const detail = `${outputDir}/${name}.png`;
         const context = `${outputDir}/${name}-context.png`;
-        await dock.screenshot({ path: detail, animations: 'disabled', timeout: 5_000 });
+        await target.screenshot({ path: detail, animations: 'disabled', timeout: 5_000 });
         await page.screenshot({ path: context, animations: 'disabled', timeout: 5_000 });
         await testInfo.attach(`${theme}-${name}`, { path: detail, contentType: 'image/png' });
         await testInfo.attach(`${theme}-${name}-context`, { path: context, contentType: 'image/png' });
@@ -419,18 +419,15 @@ test.describe('Interrupted send', () => {
             const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
             await expect(dock).toBeVisible();
             await expect(dock.locator('.compose-dock__status')).toHaveCount(0);
-            await expect(dock.locator('.compose-dock__spinner')).toHaveCount(0);
             await expect(dock.locator('.compose-dock__close')).toBeEnabled({ timeout: 30_000 });
             await expect(page.locator('.compose-dock-flight')).toHaveCount(0);
-            regularBackground = await dock.evaluate((node) => getComputedStyle(node).backgroundColor);
-            regularWidth = (await dock.boundingBox()).width;
-            await capture('regular-minimized');
+            await capture('regular-minimized', dock);
             await page.setViewportSize({ width: 375, height: 812 });
             const narrowBox = await dock.boundingBox();
             expect(narrowBox.x).toBeGreaterThanOrEqual(0);
             expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(375);
             await expect(dock.locator('.compose-dock__title')).toHaveCSS('text-overflow', 'ellipsis');
-            await capture('regular-narrow');
+            await capture('regular-narrow', dock);
             await page.setViewportSize({ width: 1280, height: 900 });
             await dock.locator('.compose-dock__restore').click();
             await expect(page.locator('.compose-dialog--expanded')).toBeVisible();
@@ -439,30 +436,30 @@ test.describe('Interrupted send', () => {
 
         const created = await waitForCreatedEmailId(page, subject);
         expect((await faultApplied('HOLD', created)).effect).toBe('responseWithheld');
-        const dock = page.locator('.compose-dock__item').filter({ hasText: subject });
-        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
-        await expect(dock.locator('.compose-dock__close')).toBeDisabled();
+        const sendToast = page.locator('.store-error-toast__item--progress').filter({ hasText: subject });
+        await expect(sendToast).toHaveText(`Sending “${subject}”…`);
+        await expect(sendToast).toHaveAttribute('aria-busy', 'true');
+        await expect(sendToast.locator('button')).toHaveCount(0);
         await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
-        const spinner = dock.locator('.compose-dock__spinner');
-        await expect(spinner).toBeVisible();
-        await expect(spinner).not.toHaveCSS('animation-name', 'none');
-        expect(await dock.evaluate((node) => getComputedStyle(node).backgroundColor))
-          .not.toBe(regularBackground);
-        expect((await dock.boundingBox()).width).toBeCloseTo(regularWidth, 0);
+        await expect(page.locator('.compose-dock__item').filter({ hasText: subject })).toHaveCount(0);
+        const line = sendToast.locator('.store-error-toast__progress');
+        await expect(line).toBeVisible();
+        expect(await line.evaluate((node) => getComputedStyle(node, '::after').animationName))
+          .not.toBe('none');
         await expect(page.locator('.compose-dock-flight')).toHaveCount(0);
         expect((await findSendMutation(page, subject)).local_status).toBe('in_flight');
-        await capture('sending-in-progress');
-        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
+        await capture('sending-in-progress', sendToast);
         await page.setViewportSize({ width: 375, height: 812 });
-        const narrowBox = await dock.boundingBox();
+        const narrowBox = await sendToast.boundingBox();
         expect(narrowBox.x).toBeGreaterThanOrEqual(0);
         expect(narrowBox.x + narrowBox.width).toBeLessThanOrEqual(375);
-        await expect(spinner).toHaveCSS('width', '16px');
-        await capture('sending-narrow');
+        await capture('sending-narrow', sendToast);
         await page.setViewportSize({ width: 1280, height: 900 });
         await page.emulateMedia({ reducedMotion: 'reduce' });
-        await expect(spinner).toHaveCSS('animation-name', 'none');
-        await expect(dock.locator('.compose-dock__status')).toHaveText('Sending…');
+        await expect.poll(
+          () => line.evaluate((node) => getComputedStyle(node, '::after').animationName),
+        ).toBe('none');
+        await expect(sendToast).toHaveText(`Sending “${subject}”…`);
 
         // The proxy forwarded a real submission; only the response is held.
         await expect.poll(
@@ -470,6 +467,7 @@ test.describe('Interrupted send', () => {
           { timeout: 90_000 },
         ).toBe(1);
         await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 90_000 });
+        await expect(sendToast).toHaveCount(0);
       } finally {
         // Never delete a row while its send is still running.
         await expect.poll(async () => {

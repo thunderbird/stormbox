@@ -2257,10 +2257,11 @@ describe('compose-store sessions and draft autosave', () => {
       .toBe(COMPOSE_PRESENTATION.MINIMIZED);
   });
 
-  it('docks a session for the duration of its send and keeps the workspace usable', async () => {
-    // Send returns the screen to the user (CS-1.16): the sending session
-    // waits in the dock, other messages can be opened or restored around
-    // it, and it can be looked at but not closed until the outcome is in.
+  it('takes a session off screen for the duration of its send and keeps the workspace usable', async () => {
+    // Send returns the screen to the user (CS-1.16): the sending session is
+    // neither expanded nor docked, other messages can be opened and worked
+    // on around it, and nothing can bring it back or close it until the
+    // outcome is in.
     const { composeStore, repo } = await autosaveStore(async () =>
       new Promise(() => {}));
     const sessionId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Sending' });
@@ -2268,26 +2269,25 @@ describe('compose-store sessions and draft autosave', () => {
 
     void composeStore.send(sessionId);
     expect(session.status).toBe(COMPOSE_STATE.SENDING);
-    expect(session.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
     expect(composeStore.activeSessionId).toBeNull();
     await waitForAsyncWatchers();
     expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
 
+    expect(composeStore.restore(sessionId)).toBe(false);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
+    expect(composeStore.close(sessionId)).toBe(false);
+    expect(composeStore.requestClose(sessionId)).toBe(false);
+
     const otherId = composeStore.open({ subject: 'Other' });
     expect(composeStore.sessions).toHaveLength(2);
     expect(composeStore.activeSessionId).toBe(otherId);
-
-    expect(composeStore.restore(sessionId)).toBe(true);
-    expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
-    expect(composeStore.sessionById(otherId)?.presentation)
-      .toBe(COMPOSE_PRESENTATION.MINIMIZED);
-    expect(composeStore.minimize(sessionId)).toBe(true);
-    expect(composeStore.close(sessionId)).toBe(false);
-    expect(composeStore.requestClose(sessionId)).toBe(false);
-    expect(composeStore.sessions).toHaveLength(2);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
+    expect(composeStore.restore(sessionId)).toBe(false);
+    expect(composeStore.activeSessionId).toBe(otherId);
   });
 
-  it('brings a failed send back from the dock when nothing else is open', async () => {
+  it('brings a failed send back to the screen when nothing else is open', async () => {
     const { composeStore } = await autosaveStore(async () => ({
       attempted: 1, succeeded: 0, failed: 1, errorType: 'forbidden',
     }));
@@ -2300,6 +2300,8 @@ describe('compose-store sessions and draft autosave', () => {
     expect(session.error).toBe('Send failed; the message stays in your outbox.');
     expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
     expect(composeStore.activeSessionId).toBe(sessionId);
+    // The composer itself shows the error; no toast is owed.
+    expect(session.dockedSendFailure).toBe(false);
   });
 
   it('closes the composer once the submission is accepted, before filing finishes', async () => {
@@ -2329,7 +2331,10 @@ describe('compose-store sessions and draft autosave', () => {
       .toBe('Message accepted for delivery. Your Sent folder will show it shortly.');
   });
 
-  it('leaves a failed send in the dock while another message is being written', async () => {
+  it('docks a failed send while another message is being written and offers it from the toast', async () => {
+    // The failure must not take the screen from the message being written
+    // (CS-1.16): the session docks with the failure marked, and the send
+    // toast keeps offering Open until it is restored or dismissed.
     let releaseSend: (result: any) => void = () => {};
     const { composeStore } = await autosaveStore(async () =>
       new Promise((resolve) => { releaseSend = resolve; }));
@@ -2344,7 +2349,45 @@ describe('compose-store sessions and draft autosave', () => {
     const failed = composeStore.sessionById(sendingId)!;
     expect(failed.status).toBe(COMPOSE_STATE.FAILED);
     expect(failed.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+    expect(failed.dockedSendFailure).toBe(true);
     expect(composeStore.activeSessionId).toBe(otherId);
+
+    composeStore.dismissSendFailureNotice(sendingId);
+    expect(failed.dockedSendFailure).toBe(false);
+    expect(failed.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
+
+    failed.dockedSendFailure = true;
+    expect(composeStore.restore(sendingId)).toBe(true);
+    expect(failed.dockedSendFailure).toBe(false);
+    expect(failed.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
+    expect(composeStore.sessionById(otherId)?.presentation)
+      .toBe(COMPOSE_PRESENTATION.MINIMIZED);
+  });
+
+  it('starts a send with no failure notice carried over from the last one', async () => {
+    // A resend after a docked failure must not surface the old failure
+    // toast once the new send settles as accepted.
+    let releaseSend: (result: any) => void = () => {};
+    const { composeStore } = await autosaveStore(async () =>
+      new Promise((resolve) => { releaseSend = resolve; }));
+    const sendingId = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Twice' });
+    const first = composeStore.send(sendingId);
+    await waitForAsyncWatchers();
+    composeStore.open({ subject: 'Other' });
+    releaseSend({ attempted: 1, succeeded: 0, failed: 1, errorType: 'forbidden' });
+    await expect(first).resolves.toBe(false);
+    const session = composeStore.sessionById(sendingId)!;
+    expect(session.dockedSendFailure).toBe(true);
+
+    expect(composeStore.restore(sendingId)).toBe(true);
+    const second = composeStore.send(sendingId);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
+    expect(session.dockedSendFailure).toBe(false);
+    await waitForAsyncWatchers();
+    releaseSend({ attempted: 1, succeeded: 1, failed: 0, result: { submitted: true, filed: true } });
+    await expect(second).resolves.toBe(true);
+    expect(composeStore.sessionById(sendingId)).toBeNull();
+    expect(composeStore.notice).toBe('Message accepted for delivery.');
   });
 
   it('computes dirty state relative to the initialized seed', () => {
