@@ -2276,6 +2276,9 @@ describe('compose-store sessions and draft autosave', () => {
 
     expect(composeStore.restore(sessionId)).toBe(false);
     expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
+    // A Minimize that lands after Send must not put the send in the dock.
+    expect(composeStore.minimize(sessionId)).toBe(false);
+    expect(session.presentation).toBe(COMPOSE_PRESENTATION.HIDDEN);
     expect(composeStore.close(sessionId)).toBe(false);
     expect(composeStore.requestClose(sessionId)).toBe(false);
 

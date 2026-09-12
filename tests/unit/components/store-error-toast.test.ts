@@ -115,7 +115,9 @@ describe('StoreErrorToast send progress', () => {
     expect(item.attributes('aria-busy')).toBeUndefined();
     expect(item.get('.store-error-toast__message').text()).toBe('Couldn’t send “Refused”.');
     expect(item.find('.store-error-toast__progress').exists()).toBe(false);
-    expect(item.get('.store-error-toast__dismiss').attributes('aria-label')).toBe('Dismiss');
+    expect(item.get('.store-error-toast__dismiss').attributes('aria-label'))
+      .toBe('Dismiss the send failure of “Refused”');
+    expect(item.get('.store-error-toast__action').attributes('aria-label')).toBe('Open “Refused”');
 
     await item.get('.store-error-toast__action').trigger('click');
     expect(session.presentation).toBe(COMPOSE_PRESENTATION.EXPANDED);
@@ -141,6 +143,38 @@ describe('StoreErrorToast send progress', () => {
     expect(session.presentation).toBe(COMPOSE_PRESENTATION.MINIMIZED);
     await nextTick();
     expect(wrapper.find(`[data-session-id="${id}"]`).exists()).toBe(false);
+  });
+
+  it('names Open and Dismiss after their session when several failures are showing', async () => {
+    // Two failures give two Open and two Dismiss buttons; each accessible
+    // name has to say which message it acts on.
+    const composeStore = useComposeStore();
+    const subjects = ['First refused', 'Second refused'];
+    const ids = subjects.map((subject) => {
+      const id = composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject });
+      const session = composeStore.sessionById(id)!;
+      session.status = COMPOSE_STATE.FAILED;
+      session.error = 'Send failed; the message stays in your outbox.';
+      composeStore.minimize(id);
+      session.dockedSendFailure = true;
+      return id;
+    });
+    composeStore.open({ subject: 'Other' });
+    const wrapper = mountToast();
+    await nextTick();
+
+    const names = (selector: string) => ids.map((id) =>
+      wrapper.get(`[data-session-id="${id}"] ${selector}`).attributes('aria-label'));
+    const openNames = names('.store-error-toast__action');
+    const dismissNames = names('.store-error-toast__dismiss');
+    expect(new Set(openNames).size).toBe(2);
+    expect(new Set(dismissNames).size).toBe(2);
+    subjects.forEach((subject, index) => {
+      expect(openNames[index]).toContain(subject);
+      expect(dismissNames[index]).toContain(subject);
+      expect(wrapper.get(`[data-session-id="${ids[index]}"] .store-error-toast__action`).text())
+        .toBe('Open');
+    });
   });
 
   it('shows no toast for a minimized session whose failure the user has already seen', async () => {

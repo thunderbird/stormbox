@@ -1536,9 +1536,13 @@ export const useComposeStore = defineStore('compose', () => {
     return true;
   }
 
+  /** Dock an expanded session. A hidden session stays off screen until its send settles (CS-1.16). */
   function minimize(sessionId: string | null = activeSessionId.value): boolean {
     const session = sessionById(sessionId);
-    if (!session || session.isSaving || session.isDiscarding) return false;
+    if (!session
+        || session.presentation === COMPOSE_PRESENTATION.HIDDEN
+        || session.isSaving
+        || session.isDiscarding) return false;
     dock(session);
     return true;
   }

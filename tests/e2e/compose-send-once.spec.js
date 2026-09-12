@@ -278,9 +278,14 @@ test.describe('Send once', () => {
     // session back with its error. The server refuses the envelope because
     // the domain has no public suffix — accepted by the client, rejected
     // by Stalwart's sanitizer — and the held autosave keeps the send in
-    // flight long enough for the other message to be opened first.
-    const subject = `${SUBJECT_PREFIX} refused ${Date.now()} ${DRAFT_FAULTS.HOLD_CREATE}`;
+    // flight long enough for the other message to be opened first. The
+    // subject ends in one unbreakable run so the toast has to fit it, and
+    // its buttons, into a phone-width viewport.
+    const subject = `${SUBJECT_PREFIX} refused ${Date.now()} ${DRAFT_FAULTS.HOLD_CREATE} ${'unbroken'.repeat(30)}`;
     const otherSubject = `${SUBJECT_PREFIX} other ${Date.now()}`;
+    const originalViewport = page.viewportSize();
+    const within = (box, width) => box != null
+      && box.x >= 0 && box.x + box.width <= width && box.width > 0 && box.height > 0;
     try {
       await waitForProxiedSocket();
       await page.locator('.folder-node').first().click();
@@ -322,9 +327,26 @@ test.describe('Send once', () => {
       expect(rows.map((r) => r.local_status), 'the refused row stays for the user to act on')
         .toEqual(['conflicted']);
 
+      // Both controls stay reachable however long the subject, at desktop
+      // and phone widths.
+      const open = sendToast.getByRole('button', { name: `Open “${subject}”` });
+      const dismiss = sendToast.getByRole('button', { name: /^Dismiss the send failure of/ });
+      for (const width of [originalViewport?.width ?? 1280, 375]) {
+        await page.setViewportSize({ width, height: originalViewport?.height ?? 900 });
+        const toastBox = await sendToast.boundingBox();
+        expect(within(toastBox, width), `the toast fits a ${width}px viewport`).toBe(true);
+        for (const [name, control] of [['Open', open], ['Dismiss', dismiss]]) {
+          const box = await control.boundingBox();
+          expect(within(box, width), `${name} is on screen at ${width}px`).toBe(true);
+          expect(box.x + box.width, `${name} is inside the toast at ${width}px`)
+            .toBeLessThanOrEqual(toastBox.x + toastBox.width + 0.5);
+        }
+      }
+      if (originalViewport) await page.setViewportSize(originalViewport);
+
       // Open swaps the two: the refused message returns with its error and
       // the other one docks.
-      await sendToast.getByRole('button', { name: 'Open' }).click();
+      await open.click();
       await expect(composeSubject(page)).toHaveValue(subject);
       await expect(page.locator('.compose-dialog--expanded .compose-error')).toHaveText(/Send failed/i);
       await expect(sendToast).toHaveCount(0);
@@ -332,8 +354,17 @@ test.describe('Send once', () => {
       await expect(page.locator('.compose-dock__item').filter({ hasText: otherSubject })).toHaveCount(1);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
-      // Retire the refused row so later specs do not inherit a failed send,
-      // then discard both messages.
+      if (originalViewport) await page.setViewportSize(originalViewport).catch(() => {});
+      // Never delete a row while its send is still running, and never try
+      // to discard a session that is still off screen: wait for the send to
+      // settle, retire the refused row so later specs do not inherit a
+      // failed send, then discard both messages.
+      await expect.poll(async () => {
+        const rows = await sendRowsFor(page, subject);
+        return rows.every((row) => !['pending', 'retry', 'in_flight'].includes(row.local_status));
+      }, { timeout: 90_000 }).toBe(true).catch(() => {});
+      await expect(page.locator('.store-error-toast__item--progress').filter({ hasText: subject }))
+        .toHaveCount(0, { timeout: 30_000 }).catch(() => {});
       for (const row of await sendRowsFor(page, subject).catch(() => [])) {
         await page.evaluate(async (id) => {
           await globalThis.__repo.call('db.query', {

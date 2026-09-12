@@ -1208,8 +1208,7 @@ describe('ComposeDialog scheduled send control', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(wrapper.get('.compose-send').text()).toBe('Scheduling…');
     expect(wrapper.get('.compose-send').attributes('disabled')).toBeDefined();
-    // The window may go to the dock while scheduling; it may not be closed.
-    expect(wrapper.get('[aria-label="Minimize"]').attributes('disabled')).toBeUndefined();
+    // The window may not be closed while scheduling.
     expect(wrapper.get('[aria-label="Close options"]').attributes('aria-disabled')).toBe('true');
 
     finish(false);

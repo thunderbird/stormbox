@@ -13,6 +13,13 @@ import { useContactsStore } from '../stores/contacts-store';
 
 interface ToastAction {
   label: string;
+  /** Accessible name; says which message the action is for when several toasts show. */
+  name: string;
+  run: () => void;
+}
+
+interface ToastDismiss {
+  name: string;
   run: () => void;
 }
 
@@ -24,7 +31,11 @@ interface ToastEntry {
   sessionId?: string;
   action?: ToastAction;
   /** Null for an entry that resolves on its own and offers no dismiss. */
-  dismiss: (() => void) | null;
+  dismiss: ToastDismiss | null;
+}
+
+function plainDismiss(run: () => void): ToastDismiss {
+  return { name: 'Dismiss', run };
 }
 
 const mailStore = useMailStore();
@@ -41,7 +52,7 @@ const entries = computed<ToastEntry[]>(() => {
       key: 'mail',
       message: mailStore.error,
       kind: 'error',
-      dismiss: () => { mailStore.error = null; },
+      dismiss: plainDismiss(() => { mailStore.error = null; }),
     });
   }
   if (mailStore.notice) {
@@ -49,7 +60,7 @@ const entries = computed<ToastEntry[]>(() => {
       key: 'mail-notice',
       message: mailStore.notice,
       kind: 'success',
-      dismiss: () => { mailStore.notice = null; },
+      dismiss: plainDismiss(() => { mailStore.notice = null; }),
     });
   }
   // One entry per session whose send has taken it off screen: progress
@@ -57,13 +68,14 @@ const entries = computed<ToastEntry[]>(() => {
   // because another composer was expanded — the failure with Open. The
   // entry keeps its key across the two so the same toast changes state.
   for (const session of composeStore.sessions) {
+    const label = sessionLabel(session);
     if (session.presentation === COMPOSE_PRESENTATION.HIDDEN
         && session.status === COMPOSE_STATE.SENDING) {
       out.push({
         key: `compose-send:${session.id}`,
         sessionId: session.id,
         kind: 'progress',
-        message: `${session.sendingScheduledAt ? 'Scheduling' : 'Sending'} “${sessionLabel(session)}”…`,
+        message: `${session.sendingScheduledAt ? 'Scheduling' : 'Sending'} “${label}”…`,
         dismiss: null,
       });
     } else if (session.dockedSendFailure) {
@@ -71,9 +83,16 @@ const entries = computed<ToastEntry[]>(() => {
         key: `compose-send:${session.id}`,
         sessionId: session.id,
         kind: 'error',
-        message: `Couldn’t send “${sessionLabel(session)}”.`,
-        action: { label: 'Open', run: () => { composeStore.restore(session.id); } },
-        dismiss: () => { composeStore.dismissSendFailureNotice(session.id); },
+        message: `Couldn’t send “${label}”.`,
+        action: {
+          label: 'Open',
+          name: `Open “${label}”`,
+          run: () => { composeStore.restore(session.id); },
+        },
+        dismiss: {
+          name: `Dismiss the send failure of “${label}”`,
+          run: () => { composeStore.dismissSendFailureNotice(session.id); },
+        },
       });
     }
   }
@@ -82,7 +101,7 @@ const entries = computed<ToastEntry[]>(() => {
       key: 'compose',
       message: composeStore.error,
       kind: 'error',
-      dismiss: () => { composeStore.error = null; },
+      dismiss: plainDismiss(() => { composeStore.error = null; }),
     });
   }
   if (composeStore.notice) {
@@ -90,7 +109,7 @@ const entries = computed<ToastEntry[]>(() => {
       key: 'compose-notice',
       message: composeStore.notice,
       kind: 'success',
-      dismiss: () => { composeStore.clearNotice(); },
+      dismiss: plainDismiss(() => { composeStore.clearNotice(); }),
     });
   }
   if (contactsStore.error) {
@@ -98,7 +117,7 @@ const entries = computed<ToastEntry[]>(() => {
       key: 'contacts',
       message: contactsStore.error,
       kind: 'error',
-      dismiss: () => { contactsStore.error = null; },
+      dismiss: plainDismiss(() => { contactsStore.error = null; }),
     });
   }
   return out;
@@ -129,15 +148,16 @@ const entries = computed<ToastEntry[]>(() => {
         v-if="entry.action"
         class="store-error-toast__action"
         type="button"
+        :aria-label="entry.action.name"
         @click="entry.action.run()"
       >{{ entry.action.label }}</button>
       <button
         v-if="entry.dismiss"
         class="store-error-toast__dismiss"
         type="button"
-        aria-label="Dismiss"
+        :aria-label="entry.dismiss.name"
         title="Dismiss"
-        @click="entry.dismiss()"
+        @click="entry.dismiss.run()"
       >
         <X :size="14" :stroke-width="2" aria-hidden="true" />
       </button>
@@ -170,7 +190,7 @@ const entries = computed<ToastEntry[]>(() => {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  max-width: 560px;
+  max-width: min(560px, calc(100vw - 32px));
   padding: 10px 12px 10px 14px;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -195,9 +215,13 @@ const entries = computed<ToastEntry[]>(() => {
   border-color: var(--border, #d9d9de);
 }
 
+/* The message yields to the controls: an unbreakable subject wraps inside
+   the toast instead of pushing Open and Dismiss out of it. */
 .store-error-toast__message {
   flex: 1;
+  min-width: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .store-error-toast__action {
