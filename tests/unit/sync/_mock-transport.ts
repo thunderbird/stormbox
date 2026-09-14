@@ -48,6 +48,10 @@ export class MockTransport {
   requests: Array<{ using: any; methodCalls: any }>;
   uploads: Array<{ accountId: string; type: string; body: any }>;
   _uploadHandler: ((args: { accountId: string; type: string; body: any }) => any) | null;
+  downloads: Array<{ accountId: string; blobId: string; type?: string; name?: string }>;
+  _downloadHandler: ((args: {
+    accountId: string; blobId: string; type?: string; name?: string;
+  }) => any) | null;
 
   constructor(session: any = null) {
     this._session = session ?? mockSession();
@@ -67,6 +71,8 @@ export class MockTransport {
     this.requests = [];
     this.uploads = [];
     this._uploadHandler = null;
+    this.downloads = [];
+    this._downloadHandler = null;
   }
 
   set session(s) {
@@ -123,6 +129,24 @@ export class MockTransport {
       type,
       size: body?.length ?? body?.byteLength ?? 0,
     };
+  }
+
+  handleDownload(fn: (args: {
+    accountId: string; blobId: string; type?: string; name?: string;
+  }) => any) {
+    this._downloadHandler = fn;
+  }
+
+  async download({ accountId, blobId, type, name }: {
+    accountId: string; blobId: string; type?: string; name?: string;
+  }) {
+    const args = { accountId, blobId, type, name };
+    this.downloads.push(args);
+    if (!this._downloadHandler) {
+      throw new Error(`MockTransport has no download handler for ${blobId}`);
+    }
+    const value = await this._downloadHandler(args);
+    return typeof value === 'string' ? new TextEncoder().encode(value) : value;
   }
 
   /** Teardown surface JmapBackend.stop() calls. Nothing here holds a

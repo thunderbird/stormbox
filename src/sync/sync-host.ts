@@ -266,6 +266,12 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_FOLDER_INDEX]: async ({ accountId, folderId, options }) =>
       syncClient.ensureFolderIndex(accountId, folderId, options ?? {}),
 
+    [DB_RPC.SYNC_GET_MAIL_RULES]: async ({ accountId }) => {
+      const backend = backends.get(accountId);
+      if (!backend) throw new Error(`No JMAP backend registered for account ${accountId}`);
+      return backend.getMailRules();
+    },
+
     [DB_RPC.SYNC_DRAIN_OUTBOX]: async ({ accountId, limit = 25 }) => {
       const backend = backends.get(accountId);
       if (!backend) {

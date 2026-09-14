@@ -51,6 +51,7 @@ import AppDrawer from './components/AppDrawer.vue';
 import TopNavMenu from './components/TopNavMenu.vue';
 import AccountAvatarMenu from './components/AccountAvatarMenu.vue';
 import WelcomeModal from './components/WelcomeModal.vue';
+import MailRulesDialog from './components/MailRulesDialog.vue';
 import SpotlightOverlay from './components/SpotlightOverlay.vue';
 import FeatureBeaconLayer from './components/FeatureBeaconLayer.vue';
 import FeatureBeaconMenu from './components/FeatureBeaconMenu.vue';
@@ -163,6 +164,7 @@ const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
 const showSettingsDialog = ref(false);
+const showMailRules = ref(false);
 const spotlight = useFeatureSpotlight(() => createSpotlightScripts({
   composeStore,
   currentSpace: () => space.value,
@@ -192,11 +194,12 @@ const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED
   && !showWelcomeModal.value
   && !showSettingsDialog.value
+  && !showMailRules.value
   && beaconStore.openId == null,
 );
 // Beacon dots would sit on top of these dialogs' scrims.
 const showFeatureBeacons = computed(() =>
-  !showWelcomeModal.value && !showSettingsDialog.value);
+  !showWelcomeModal.value && !showSettingsDialog.value && !showMailRules.value);
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const wantsMessageDetailView = computed(() => mailStore.selectedMessageId != null);
 // Multi-select never opens the message view: the bulk actions live in
@@ -749,7 +752,9 @@ function unwatchSystemTheme() {
           @open-settings="showSettingsDialog = true"
         />
         <FeatureBeaconMenu @reveal="revealBeacon" />
-        <AccountAvatarMenu />
+        <AccountAvatarMenu
+          @show-mail-rules="showMailRules = true"
+        />
       </div>
     </header>
 
@@ -856,6 +861,7 @@ function unwatchSystemTheme() {
       singular-item-label="message"
       :total="mailStore.bulkOperation.total"
     />
+    <MailRulesDialog v-if="showMailRules" @close="showMailRules = false" />
     <WelcomeModal
       v-if="showWelcomeModal"
       :active-spotlight="activeSpotlight"

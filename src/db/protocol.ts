@@ -185,6 +185,7 @@ export const DB_RPC = Object.freeze({
   SYNC_INVENTORY_ADDRESSBOOK: 'sync.inventoryAddressbook',
   SYNC_ENSURE_CONTACTS: 'sync.ensureContacts',
   SYNC_ENSURE_FOLDER_INDEX: 'sync.ensureFolderIndex',
+  SYNC_GET_MAIL_RULES: 'sync.getMailRules',
   SYNC_DRAIN_OUTBOX: 'sync.drainOutbox',
   SYNC_RUN_MUTATION: 'sync.runMutation',
   SYNC_GET_ATTACHMENT_LIMITS: 'sync.getAttachmentLimits',
