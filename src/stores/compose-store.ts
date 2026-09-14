@@ -2804,8 +2804,8 @@ export const useComposeStore = defineStore('compose', () => {
       setNotice(scheduledAt
         ? 'Message scheduled.'
         : filed === false
-          ? 'Message accepted for delivery. Your Sent folder will show it shortly.'
-          : 'Message accepted for delivery.');
+          ? 'Message sent. It will be visible in your Sent folder shortly.'
+          : 'Message sent.');
     };
     try {
       const captured = capturedAttachments(session);
@@ -2863,7 +2863,7 @@ export const useComposeStore = defineStore('compose', () => {
       if (accepted) {
         // Closed at acceptance; only the filing report is still of use.
         if (result.result?.filed === false && !scheduledAt) {
-          setNotice('Message accepted for delivery. Your Sent folder will show it shortly.');
+          setNotice('Message sent. It will be visible in your Sent folder shortly.');
         }
         return true;
       }

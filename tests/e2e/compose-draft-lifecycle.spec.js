@@ -337,7 +337,7 @@ test.describe('Compose draft lifecycle', () => {
 
       await page.getByRole('button', { name: 'Send', exact: true }).click();
       await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0, { timeout: 60_000 });
-      await expect(page.getByText('Message accepted for delivery.', { exact: true })).toBeVisible();
+      await expect(page.getByText('Message sent.', { exact: true })).toBeVisible();
       await expect.poll(
         async () => (await emailsByExactSubject(jmap, drafts.id, subject)).length,
         { timeout: 30_000 },

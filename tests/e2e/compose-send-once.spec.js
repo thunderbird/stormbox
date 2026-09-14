@@ -238,7 +238,7 @@ test.describe('Send once', () => {
       // confirmation, and the outbox finishes filing.
       await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 90_000 });
       await expect(
-        page.locator('.store-error-toast__item--success').filter({ hasText: /accepted for delivery/i }),
+        page.locator('.store-error-toast__item--success').filter({ hasText: /^Message sent\./i }),
       ).toBeVisible({ timeout: 30_000 });
       await expect(sendToast).toHaveCount(0);
       await waitForPendingMutations(page, { timeout: 60_000 });

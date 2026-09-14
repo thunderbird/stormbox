@@ -572,7 +572,7 @@ test.describe('Attachment browser coverage', () => {
       await composer.getByRole('button', { name: 'Send', exact: true }).click();
       // The session leaves the screen at activation and closes at acceptance (CS-1.16).
       await expect(page.locator('.compose-dialog')).toHaveCount(0, { timeout: 60_000 });
-      await expect(page.getByText(/^Message accepted for delivery\./)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(/^Message sent\./)).toBeVisible({ timeout: 30_000 });
       await waitForPendingMutations(page);
 
       let sentEmail = null;

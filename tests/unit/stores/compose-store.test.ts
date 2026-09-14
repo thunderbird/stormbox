@@ -2004,7 +2004,7 @@ describe('compose-store send safety', () => {
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(true);
-    expect(composeStore.notice).toBe('Message accepted for delivery.');
+    expect(composeStore.notice).toBe('Message sent.');
     expect(composeStore.notice).not.toMatch(/delivered|sent to/i);
   });
 
@@ -2024,7 +2024,7 @@ describe('compose-store send safety', () => {
     expect(composeStore.status).toBe(COMPOSE_STATE.IDLE);
     expect(composeStore.isOpen).toBe(false);
     expect(composeStore.error).toBeNull();
-    expect(composeStore.notice).toMatch(/accepted for delivery/);
+    expect(composeStore.notice).toMatch(/^Message sent\./);
     expect(composeStore.notice).toMatch(/Sent folder/);
   });
 
@@ -2134,7 +2134,7 @@ describe('compose-store send safety', () => {
     composeStore.open({ to: [{ email: 'rcpt@example.com' }], subject: 'Hello' });
 
     await expect(composeStore.send()).resolves.toBe(true);
-    expect(composeStore.notice).toMatch(/accepted for delivery/);
+    expect(composeStore.notice).toMatch(/^Message sent\./);
   });
 
   it('takes the outbox at its word when the row is already gone', async () => {
@@ -2326,12 +2326,12 @@ describe('compose-store sessions and draft autosave', () => {
     await waitForAsyncWatchers();
 
     expect(composeStore.sessionById(sessionId)).toBeNull();
-    expect(composeStore.notice).toBe('Message accepted for delivery.');
+    expect(composeStore.notice).toBe('Message sent.');
 
     finishFiling({ attempted: 1, succeeded: 1, failed: 0, result: { filed: false } });
     await expect(sending).resolves.toBe(true);
     expect(composeStore.notice)
-      .toBe('Message accepted for delivery. Your Sent folder will show it shortly.');
+      .toBe('Message sent. It will be visible in your Sent folder shortly.');
   });
 
   it('docks a failed send while another message is being written and offers it from the toast', async () => {
@@ -2390,7 +2390,7 @@ describe('compose-store sessions and draft autosave', () => {
     releaseSend({ attempted: 1, succeeded: 1, failed: 0, result: { submitted: true, filed: true } });
     await expect(second).resolves.toBe(true);
     expect(composeStore.sessionById(sendingId)).toBeNull();
-    expect(composeStore.notice).toBe('Message accepted for delivery.');
+    expect(composeStore.notice).toBe('Message sent.');
   });
 
   it('computes dirty state relative to the initialized seed', () => {

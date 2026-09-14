@@ -745,7 +745,7 @@ test.describe('Interrupted send', () => {
       await expect(page.locator('.compose-dialog')).toBeHidden({ timeout: 90_000 });
       await expect(
         page.locator('.store-error-toast__item--success')
-          .filter({ hasText: /accepted for delivery/i }),
+          .filter({ hasText: /^Message sent\./i }),
       ).toBeVisible({ timeout: 30_000 });
       // The composer closes at acceptance (CS-1.16); filing finishes behind it.
       await expect.poll(

@@ -201,11 +201,11 @@ describe('StoreErrorToast send progress', () => {
       .toContain('store-error-toast__item--progress');
 
     composeStore.sessions = composeStore.sessions.filter((session) => session.id !== id);
-    composeStore.notice = 'Message accepted for delivery.';
+    composeStore.notice = 'Message sent.';
     await nextTick();
     expect(wrapper.find(`[data-session-id="${id}"]`).exists()).toBe(false);
     const success = wrapper.get('.store-error-toast__item--success');
-    expect(success.text()).toBe('Message accepted for delivery.');
+    expect(success.text()).toBe('Message sent.');
     expect(success.find('.store-error-toast__dismiss').exists()).toBe(true);
   });
 });
