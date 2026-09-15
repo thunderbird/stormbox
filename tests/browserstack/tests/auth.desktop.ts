@@ -1,6 +1,6 @@
 import { test as setup } from '@playwright/test';
 
-import { initializeEmptyAuthStorage, ensureStormboxSignedIn } from '../../utils/auth';
+import { initializeEmptyAuthStorage, ensureStormboxSignedIn } from '../utils/auth';
 
 initializeEmptyAuthStorage();
 
