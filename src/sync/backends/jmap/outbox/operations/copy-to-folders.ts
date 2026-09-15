@@ -546,9 +546,4 @@ async function refreshCopiedDestinationCounters({
   }
 }
 
-export {
-  fetchAndPersistCopiedEmails,
-  reconcileCopiedDestinationViews,
-  refreshCopiedDestinationCounters,
-  runCopyToFolders,
-};
+export { runCopyToFolders };

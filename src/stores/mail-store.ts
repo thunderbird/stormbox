@@ -1389,7 +1389,7 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Bulk actions default to the open folder's painted rows. A surface
-   * that lists another folder (the kanban board) names that folder and
+   * that lists another folder names that folder and
    * hands over the rows it has, so keyword flips still start from the
    * row's current state.
    */

@@ -121,18 +121,15 @@ html.palette-bolt .message-view__action--whitelist:hover,
 html.palette-bolt .message-view__action--whitelist:disabled,
 html.palette-bolt .message-view__action--whitelist:disabled:hover,
 html.palette-bolt .folder-create__btn--primary,
-html.palette-bolt .folder-subs__btn--primary,
-html.palette-bolt .kanban-unlock__btn--primary {
+html.palette-bolt .folder-subs__btn--primary {
   background: var(--primary-filled-gradient);
   color: var(--bolt-filled-fg);
 }
 html.palette-bolt .folder-create__btn--primary,
-html.palette-bolt .folder-subs__btn--primary,
-html.palette-bolt .kanban-unlock__btn--primary {
+html.palette-bolt .folder-subs__btn--primary {
   border-color: var(--colour-primary-hover);
 }
 html.palette-bolt .folder-create__btn--primary:hover:not(:disabled),
-html.palette-bolt .folder-subs__btn--primary:hover:not(:disabled),
-html.palette-bolt .kanban-unlock__btn--primary:hover:not(:disabled) {
+html.palette-bolt .folder-subs__btn--primary:hover:not(:disabled) {
   background: var(--colour-primary-hover);
 }

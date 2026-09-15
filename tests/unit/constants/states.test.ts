@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   ADDRESSBOOK_PHASE,
   CONTACT_PHASE,
-  CREATE_EMAILS_PHASE,
   IDENTITY_PHASE,
   MUTATION_RECOVERY_POLICIES,
   MUTATION_TYPE,
@@ -42,12 +41,6 @@ describe('mutation registries', () => {
         mutationType: MUTATION_TYPE.DESTROY_ADDRESSBOOK,
         replayablePhases: [ADDRESSBOOK_PHASE.DESTROY_SUBMITTING],
         completedPhases: [ADDRESSBOOK_PHASE.CACHE_PENDING],
-      },
-      {
-        // Email/set create has no idempotency key: nothing is replayable.
-        mutationType: MUTATION_TYPE.CREATE_EMAILS,
-        replayablePhases: [],
-        completedPhases: [CREATE_EMAILS_PHASE.CACHE_PENDING],
       },
     ]);
   });

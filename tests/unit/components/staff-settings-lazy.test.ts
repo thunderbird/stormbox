@@ -6,37 +6,28 @@ import {
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
-vi.mock('../../../../src/services/auth', () => ({
+vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
 
-// Records whether the staff chunks (the dialog section with the kanban
-// seed, and the celebration host with fireworks and the audio clip) were
-// ever evaluated.
-const staffModules = vi.hoisted(() => ({ section: false, celebration: false }));
-vi.mock('../../../../src/features/kanban/StaffSettingsSection.vue', () => {
+// Records whether the staff section chunk was ever evaluated.
+const staffModules = vi.hoisted(() => ({ section: false }));
+vi.mock('../../../src/components/settings/StaffSettingsSection.vue', () => {
   staffModules.section = true;
   return {
     __esModule: true,
     default: { name: 'StaffSettingsSection', template: '<div data-staff-settings />' },
   };
 });
-vi.mock('../../../../src/features/kanban/KanbanCelebration.vue', () => {
-  staffModules.celebration = true;
-  return {
-    __esModule: true,
-    default: { name: 'KanbanCelebration', template: '<div data-kanban-celebration />' },
-  };
-});
 
-import App from '../../../../src/App.vue';
-import { AUTH_STATE } from '../../../../src/constants/states';
-import { useAuthStore } from '../../../../src/stores/auth-store';
+import App from '../../../src/App.vue';
+import { AUTH_STATE } from '../../../src/constants/states';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
-} from '../../../../src/composables/useRepository';
+} from '../../../src/composables/useRepository';
 
 function makeRepo() {
   let settings: Record<string, unknown> = {};
@@ -101,7 +92,7 @@ afterEach(() => {
 });
 
 describe('staff chunk loading', () => {
-  it('renders the gear and dialog for a non-staff session without evaluating any staff module', async () => {
+  it('renders the gear and dialog for a non-staff session without evaluating the staff section', async () => {
     const authStore = useAuthStore();
     authStore.recoveryEmail = 'someone@gmail.com';
     const wrapper = mountApp();
@@ -116,15 +107,12 @@ describe('staff chunk loading', () => {
     expect(dialog!.querySelector('[data-system-theme-toggle]')).not.toBeNull();
     expect(dialog!.querySelector('[data-staff-settings]')).toBeNull();
     expect(staffModules.section).toBe(false);
-    expect(staffModules.celebration).toBe(false);
 
-    // Becoming staff loads both: the celebration host right away, the
-    // section once the dialog shows it.
+    // Becoming staff loads the section once the dialog shows it.
     authStore.recoveryEmail = 'boss@thunderbird.net';
     await vi.waitFor(() => {
       expect(dialog!.querySelector('[data-staff-settings]')).not.toBeNull();
     });
     expect(staffModules.section).toBe(true);
-    expect(staffModules.celebration).toBe(true);
   });
 });

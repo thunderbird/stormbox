@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * One positioned message-list row. Owns the row's markup and styling so
- * every list surface (folder list, kanban columns) renders the same row;
+ * every list surface renders the same row;
  * selection, focus and drag state come in as props and every interaction
  * is emitted back to the owner.
  */

@@ -269,7 +269,6 @@ html.dark .message-view__action--whitelist:disabled,
 html.dark .message-view__action--whitelist:disabled:hover,
 html.dark .folder-create__btn--primary,
 html.dark .folder-subs__btn--primary,
-html.dark .kanban-unlock__btn--primary,
 html.dark .settings-dialog__btn--primary,
 html.dark .scheme-picker__option[aria-checked="true"] {
   color: var(--panel2);

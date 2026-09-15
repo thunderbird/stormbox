@@ -4,7 +4,7 @@
  * "follow system theme" switch and a button that reopens Welcome (OB-1.7).
  * Staff additionally get a "Staff settings"
  * section below a rule; that section is an async chunk so non-staff never
- * download the kanban feature, fireworks or audio it carries.
+ * download it.
  */
 import {
   computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref,
@@ -19,7 +19,7 @@ import { isComposingKeyEvent } from '../../utils/keyboard';
 import ShortcutSchemePicker from './ShortcutSchemePicker.vue';
 
 const StaffSettingsSection = defineAsyncComponent(
-  () => import('../../features/kanban/StaffSettingsSection.vue'),
+  () => import('./StaffSettingsSection.vue'),
 );
 
 defineProps<{

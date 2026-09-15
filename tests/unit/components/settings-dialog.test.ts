@@ -18,6 +18,7 @@ import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
+import { useFeatureFlagsStore } from '../../../src/stores/feature-flags-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __resetRepositoryForTests,
@@ -140,8 +141,46 @@ describe('settings gear and dialog', () => {
     expect(panel.querySelector('[data-show-welcome]')!.textContent!.trim()).toBe('Show welcome');
     expect(panel.querySelector('hr')).toBeNull();
     expect(panel.textContent).not.toContain('Staff settings');
-    expect(panel.querySelector('[data-kanban-unlock-code]')).toBeNull();
+    expect(panel.querySelector('[data-palette-toggle]')).toBeNull();
     expect(panel.querySelector('[data-refresh-beacons]')).toBeNull();
+    expect(panel.querySelector('[data-feature-code]')).toBeNull();
+  });
+
+  it('staff get a feature-code box; a wrong code is rejected and enables nothing, Enter submits', async () => {
+    useAuthStore().recoveryEmail = 'boss@thunderbird.net';
+    const wrapper = mountApp();
+    await flushPromises();
+    const panel = await openSettings(wrapper);
+    const input = await vi.waitFor(() => {
+      const el = panel.querySelector<HTMLInputElement>('[data-feature-code]');
+      if (!el) throw new Error('feature code box not rendered');
+      return el;
+    });
+    const submit = panel.querySelector<HTMLButtonElement>('[data-feature-code-submit]')!;
+    expect(submit.textContent!.trim()).toBe('Activate');
+    expect(submit.disabled).toBe(true);
+    expect(panel.querySelector('[role="alert"]')).toBeNull();
+
+    input.value = 'no-such-feature';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+    expect(submit.disabled).toBe(false);
+
+    input.form!.requestSubmit();
+    await flushPromises();
+    const alert = panel.querySelector('[role="alert"]')!;
+    expect(alert.textContent).toContain('Unknown feature code');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(dialog()).not.toBeNull();
+    expect(useFeatureFlagsStore().enabled).toEqual([]);
+    expect(localStorage.getItem('stormbox.featureFlags.1.v1')).toBeNull();
+
+    // Editing the code clears the rejection.
+    input.value = 'no-such-feature-2';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises();
+    expect(panel.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('staff can restart a finished beacon round from Settings, which closes to show it', async () => {
@@ -171,7 +210,27 @@ describe('settings gear and dialog', () => {
     expect(wrapper.get('.beacon-menu').text()).toContain(`${BEACON_IDS.length} new`);
   });
 
-  it('staff get a rule and Staff settings with the feature code below', async () => {
+  it('shows no staff section when the account has no recovery_email claim', async () => {
+    useAuthStore().recoveryEmail = null;
+    const wrapper = mountApp();
+    await flushPromises();
+    const panel = await openSettings(wrapper);
+    expect(panel.querySelector('[data-staff-settings]')).toBeNull();
+    expect(panel.textContent).not.toContain('Staff settings');
+  });
+
+  it('the gear sits at the foot of the spaces rail above the sidebar toggle', async () => {
+    const wrapper = mountApp();
+    await flushPromises();
+
+    expect(wrapper.find('.quick-filter__actions [data-settings-gear]').exists()).toBe(false);
+    const rail = wrapper.get('.app-spaces__bottom-actions');
+    const children = Array.from(rail.element.children);
+    expect(children[0]?.matches('[data-settings-gear]')).toBe(true);
+    expect(children[1]?.getAttribute('aria-label')).toBe('Hide folder list');
+  });
+
+  it('staff get a rule and Staff settings with the palette switch below', async () => {
     useAuthStore().recoveryEmail = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
@@ -183,12 +242,39 @@ describe('settings gear and dialog', () => {
     expect(panel.querySelector('hr')).not.toBeNull();
     expect(panel.querySelector('h3')!.textContent).toBe('Staff settings');
     const markers = Array.from(panel.querySelectorAll(
-      '[data-system-theme-toggle], hr, h3, [data-kanban-unlock-code]',
+      '[data-system-theme-toggle], hr, h3, [data-palette-toggle]',
     ));
     expect(markers.map((el) => el.getAttribute('data-system-theme-toggle') != null
       ? 'system-theme'
-      : el.getAttribute('data-kanban-unlock-code') != null ? 'code' : el.tagName.toLowerCase()))
-      .toEqual(['system-theme', 'hr', 'h3', 'code']);
+      : el.getAttribute('data-palette-toggle') != null ? 'palette' : el.tagName.toLowerCase()))
+      .toEqual(['system-theme', 'hr', 'h3', 'palette']);
+    const titles = Array.from(panel.querySelectorAll('[data-staff-settings] .settings-dialog__row-title'))
+      .map((el) => el.textContent);
+    expect(titles).toEqual(['Bolt colors', 'Feature beacons']);
+  });
+
+  it('the Bolt colors switch persists the palette and flags <html>', async () => {
+    useAuthStore().recoveryEmail = 'boss@thunderbird.net';
+    const wrapper = mountApp();
+    await flushPromises();
+    const panel = await openSettings(wrapper);
+    const toggle = await vi.waitFor(() => {
+      const button = panel.querySelector<HTMLButtonElement>('[data-palette-toggle]');
+      if (!button) throw new Error('palette switch not rendered');
+      return button;
+    });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+    toggle.click();
+    await flushPromises();
+    expect(useSettingsStore().get('palette')).toBe('bolt');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(document.documentElement.classList.contains('palette-bolt')).toBe(true);
+
+    toggle.click();
+    await flushPromises();
+    expect(useSettingsStore().get('palette')).toBe('classic');
+    expect(document.documentElement.classList.contains('palette-bolt')).toBe(false);
   });
 
   it('the scheme radio persists shortcutScheme and re-labels the Quick Filter badge', async () => {
