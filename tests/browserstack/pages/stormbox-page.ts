@@ -74,14 +74,14 @@ export class StormboxPage {
   readonly manageFoldersAddTopLevelBtn: Locator;
   readonly manageFoldersNewFolderDialog: Locator;
   readonly manageFoldersNewFolderNameInput: Locator;
-  readonly manageFoldersNewFolderParentSelect: Locator;
+  readonly manageFoldersNewFolderParentDropdown: Locator;
   readonly manageFoldersNewFolderCreateBtn: Locator;
   readonly manageFoldersNewFolderCancelBtn: Locator;
   readonly manageFoldersNewFolderNameExistsText: Locator;
   readonly manageFoldersExpandInboxBtn: Locator;
   readonly manageFoldersRenameNameInput: Locator;
   readonly manageFoldersMoveRenameSaveBtn: Locator;
-  readonly manageFoldersMoveParentSelect: Locator;
+  readonly manageFoldersMoveParentDropdown: Locator;
   readonly foldersPanelExpandInboxBtn: Locator;
   readonly manageFoldersDeleteSelectedFoldersBtn: Locator;
   readonly manageFoldersDialogDeleteNFoldersText: Locator;
@@ -152,13 +152,13 @@ export class StormboxPage {
     this.manageFoldersAddTopLevelBtn = this.manageFoldersDialog.getByRole('button', { name: 'New folder', exact: true });
     this.manageFoldersNewFolderDialog = page.getByRole('dialog', { name: 'New folder' });
     this.manageFoldersNewFolderNameInput = this.manageFoldersNewFolderDialog.getByRole('textbox', { name: 'Name' });
-    this.manageFoldersNewFolderParentSelect = this.manageFoldersNewFolderDialog.locator('select[data-folder-create-parent]');
+    this.manageFoldersNewFolderParentDropdown = this.manageFoldersNewFolderDialog.locator('[data-folder-create-parent]');
     this.manageFoldersNewFolderCreateBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Create' });
     this.manageFoldersNewFolderCancelBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Cancel' });
     this.manageFoldersNewFolderNameExistsText = this.manageFoldersNewFolderDialog.getByText('A folder with that name already exists here.', { exact: true });
     this.manageFoldersExpandInboxBtn = this.manageFoldersDialog.getByRole('button', { name: 'Expand inbox' });
     this.manageFoldersRenameNameInput = this.manageFoldersDialog.getByRole('textbox', { name: 'Name' })
-    this.manageFoldersMoveParentSelect = this.manageFoldersDialog.locator('[data-folder-move-select]');
+    this.manageFoldersMoveParentDropdown = this.manageFoldersDialog.locator('[data-folder-move-select]');
     this.manageFoldersMoveRenameSaveBtn = this.manageFoldersDialog.getByRole('button', { name: 'Save' });
     this.foldersPanelExpandInboxBtn = page.locator('.folder-node')
       .filter({ has: page.getByText('Inbox', { exact: true }) })
@@ -308,23 +308,12 @@ export class StormboxPage {
 
     await this.manageFoldersNewFolderNameInput.fill(fName);
 
-    if (parentFolder == 'Top Level') {
-     // the parent selector options don't have a 'value' for 'Top Level' so if 'Top Level' just add by name
-     await this.manageFoldersNewFolderParentSelect.selectOption({ label: parentFolder });
-    } else {
-      // when adding sub-folders a space is added to the front of the folder name in the select parent element
-      // so locate by 'hasText' so will ignore any leading spaces, and then select via the option value not text
-      // because all the folders except 'Top Level' have value attributes in each folder name in the select list
-      const value = await this.manageFoldersNewFolderParentSelect
-        .locator('option')
-        .filter({ hasText: parentFolder })
-        .getAttribute('value');
-
-      if (value === null) {
-        throw new Error(`Could not find option for folder: ${parentFolder}`);
-      }
-      await this.manageFoldersNewFolderParentSelect.selectOption({ value });
-    }
+    await this.selectFolderParent(
+      this.manageFoldersNewFolderParentDropdown,
+      'Parent folder',
+      parentFolder,
+      projectName,
+    );
 
     // now we have the name and parent set, just click create
     await this.manageFoldersNewFolderCreateBtn.click({ force: projectName.toLowerCase().includes('android')});
@@ -337,6 +326,15 @@ export class StormboxPage {
     } else {
       await expect(this.manageFoldersNewFolderDialog).not.toBeVisible();
     }
+  }
+
+  async selectMoveFolderParent(parentFolder: string, projectName = 'desktop') {
+    await this.selectFolderParent(
+      this.manageFoldersMoveParentDropdown,
+      'Move to parent',
+      parentFolder,
+      projectName,
+    );
   }
 
   private async exerciseQuickFilter() {
@@ -484,6 +482,33 @@ export class StormboxPage {
 
   private escapeRegExp(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private async selectFolderParent(
+    dropdown: Locator,
+    menuName: string,
+    parentFolder: string,
+    projectName: string,
+  ) {
+    const menu = dropdown.getByRole('menu', { name: menuName, exact: true });
+    if (!await menu.isVisible()) {
+      await dropdown.locator('summary').click({
+        force: projectName.toLowerCase().includes('android'),
+      });
+    }
+
+    const option = menu.getByRole('menuitemradio', {
+      name: new RegExp(`^\\s*${this.escapeRegExp(parentFolder)}\\s*$`, 'i'),
+    });
+    await expect(option).toBeVisible();
+
+    if (projectName.toLowerCase().includes('android')) {
+      // Android can position compact dropdown options outside the pointer viewport.
+      await option.dispatchEvent('click');
+      return;
+    }
+
+    await option.click();
   }
 
   private async assertExternalLinkOpensInNewTab(link: Locator, expectedUrl: RegExp, projectName: string) {

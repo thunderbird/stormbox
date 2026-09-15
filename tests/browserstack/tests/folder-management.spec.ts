@@ -249,7 +249,7 @@ test.describe('stormbox folder management', {
 
       await folderEditBtn.click({ force: onAndroid });
       await stormbox.manageFoldersMoveRenameSaveBtn.scrollIntoViewIfNeeded();
-      await stormbox.manageFoldersMoveParentSelect.selectOption({ label: 'Inbox' });
+      await stormbox.selectMoveFolderParent('Inbox', testInfo.project.name);
       await stormbox.manageFoldersMoveRenameSaveBtn.click({ force: onAndroid });
       await stormbox.closeManageFoldersDialog();
 
