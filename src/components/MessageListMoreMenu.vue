@@ -82,27 +82,35 @@ defineExpose({ focusTrigger });
     >
       <template v-for="(group, index) in groups" :key="group.id">
         <div v-if="index > 0" class="msg-list__more-separator" role="separator" />
-        <div v-if="group.label" class="app-dropdown__heading msg-list__more-heading" :title="group.label">
-          {{ group.label }}
+        <div role="group" :aria-label="group.label ?? undefined">
+          <div
+            v-if="group.label"
+            class="app-dropdown__heading msg-list__more-heading"
+            :title="group.label"
+            aria-hidden="true"
+          >
+            {{ group.label }}
+          </div>
+          <button
+            v-for="item in group.items"
+            :key="item.id"
+            class="app-dropdown__item msg-list__more-item"
+            :class="{ 'msg-list__more-item--danger': item.danger }"
+            type="button"
+            tabindex="-1"
+            :role="item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'"
+            :aria-checked="item.checked === undefined ? undefined : item.checked"
+            :aria-disabled="item.disabled ? 'true' : undefined"
+            :data-more-item="item.id"
+            @click="activate(item, $event)"
+          >
+            <span class="msg-list__more-icon" aria-hidden="true">
+              <span v-if="item.rawIcon" class="msg-list__more-icon-raw" v-html="item.rawIcon" />
+              <component :is="item.icon" v-else-if="item.icon" :size="16" :stroke-width="1.75" />
+            </span>
+            <span class="msg-list__more-label">{{ item.label }}</span>
+          </button>
         </div>
-        <button
-          v-for="item in group.items"
-          :key="item.id"
-          class="app-dropdown__item msg-list__more-item"
-          :class="{ 'msg-list__more-item--danger': item.danger }"
-          type="button"
-          :role="item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'"
-          :aria-checked="item.checked === undefined ? undefined : item.checked"
-          :aria-disabled="item.disabled ? 'true' : undefined"
-          :data-more-item="item.id"
-          @click="activate(item, $event)"
-        >
-          <span class="msg-list__more-icon" aria-hidden="true">
-            <span v-if="item.rawIcon" class="msg-list__more-icon-raw" v-html="item.rawIcon" />
-            <component :is="item.icon" v-else-if="item.icon" :size="16" :stroke-width="1.75" />
-          </span>
-          <span class="msg-list__more-label">{{ item.label }}</span>
-        </button>
       </template>
     </div>
   </AppDropdown>
@@ -147,6 +155,10 @@ defineExpose({ focusTrigger });
 }
 .msg-list__more-item {
   width: 100%;
+}
+.msg-list__more-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .msg-list__more-item[aria-disabled="true"] {
   opacity: 0.5;

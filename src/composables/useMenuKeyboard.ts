@@ -34,6 +34,16 @@ export function useMenuKeyboard(options: UseMenuKeyboardOptions) {
   }
 
   function onKeydown(event: KeyboardEvent): void {
+    // Tab leaves the composite: the panel closes and focus returns to the
+    // summary, from which the browser's default Tab continues.
+    if (event.key === 'Tab') {
+      const details = options.menuEl.value?.closest('details');
+      if (details instanceof HTMLDetailsElement && details.open) {
+        details.open = false;
+        details.querySelector<HTMLElement>('summary')?.focus();
+      }
+      return;
+    }
     const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
     if (!keys.includes(event.key)) return;
     const list = items();

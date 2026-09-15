@@ -59,12 +59,15 @@ function optionsFor(rows: FolderRow[]): FolderOption[] {
 // ones, then one group per shared account), in structural order with
 // the folder list's icons.
 const folderOptionGroups = computed<FolderOptionGroup[]>(() => {
+  const own = mailStore.accounts.find((account) => Number(account.is_primary) === 1) ?? null;
+  const shared = mailStore.sharedFolderGroups;
   const groups: FolderOptionGroup[] = [{
     key: 'primary',
-    label: null,
+    // The own account is named only when another account's folders follow.
+    label: shared.length > 0 ? (own?.display_name ?? own?.primary_email ?? 'My account') : null,
     options: optionsFor(mailStore.sidebarPrimaryFolders),
   }];
-  for (const group of mailStore.sharedFolderGroups) {
+  for (const group of shared) {
     const options = optionsFor(group.folders);
     if (options.length === 0) continue;
     groups.push({
@@ -153,6 +156,7 @@ defineExpose({ focusTrigger });
           :key="option.folder.id"
           class="app-dropdown__item msg-list__folder-option"
           type="button"
+          tabindex="-1"
           role="option"
           :aria-selected="option.folder.id === folderId"
           :style="{ '--folder-tone': option.color, paddingLeft: `${8 + option.depth * 14}px` }"
@@ -242,7 +246,8 @@ defineExpose({ focusTrigger });
   margin-left: 2px;
 }
 .msg-list__folder-menu {
-  min-width: 220px;
+  /* At least as wide as the trigger it hangs from. */
+  min-width: max(220px, 100%);
   max-width: min(360px, 80vw);
 }
 .msg-list__folder-heading {
@@ -255,6 +260,10 @@ defineExpose({ focusTrigger });
 }
 .msg-list__folder-option[aria-selected="true"] {
   background: var(--rowActive);
+}
+.msg-list__folder-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .msg-list__folder-option-icon {
   display: block;

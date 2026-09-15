@@ -249,6 +249,100 @@ describe('message list header tiers', () => {
   });
 });
 
+describe('More menu focus hand-over', () => {
+  it('moves focus from a dissolving More menu to the control that returns to the row', async () => {
+    seedInbox();
+    // A controllable ResizeObserver stands in for the layout engine.
+    const observers: Array<(entries: Array<{ contentRect: { width: number } }>) => void> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      callback: (entries: Array<{ contentRect: { width: number } }>) => void;
+      constructor(callback: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        this.callback = callback;
+        observers.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    });
+    const wrapper = mountAtWidth(300);
+    await nextTick();
+    const trigger = wrapper.find('[data-more-menu]');
+    (trigger.element as HTMLElement).focus();
+    expect(document.activeElement).toBe(trigger.element);
+
+    // The column widens (as after a neighbour is removed): the menu goes,
+    // + comes back to the row, and focus lands on it.
+    for (const callback of observers) callback([{ contentRect: { width: 600 } }]);
+    await nextTick();
+    await nextTick();
+    expect(wrapper.find('[data-more-menu]').exists()).toBe(false);
+    expect(document.activeElement).toBe(wrapper.find('.msg-list__add-column').element);
+    vi.unstubAllGlobals();
+  });
+
+  it('also hands focus over from an open menu item', async () => {
+    seedInbox();
+    const observers: Array<(entries: Array<{ contentRect: { width: number } }>) => void> = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        observers.push(callback);
+      }
+      observe() {}
+      disconnect() {}
+    });
+    const wrapper = mountAtWidth(300);
+    await nextTick();
+    const details = wrapper.find('details.msg-list__more');
+    (details.element as HTMLDetailsElement).open = true;
+    await details.trigger('toggle');
+    await nextTick();
+    const item = wrapper.find('[data-more-item="refresh"]');
+    (item.element as HTMLElement).focus();
+    expect(document.activeElement).toBe(item.element);
+
+    for (const callback of observers) callback([{ contentRect: { width: 600 } }]);
+    await nextTick();
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('.msg-list__add-column').element);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('keyboard focus after a row removal', () => {
+  it('moves focus to the list when the focused row leaves the DOM', async () => {
+    const mailStore = seedInbox();
+    const wrapper = mountAtWidth(600);
+    await nextTick();
+    const checkbox = wrapper.findAll('.msg-list__item input[type="checkbox"]')[1];
+    (checkbox.element as HTMLElement).focus();
+    expect(document.activeElement).toBe(checkbox.element);
+
+    // The row is gone (deleted, archived or moved) and took focus with it.
+    mailStore.messages = [makeRow(1), makeRow(3)];
+    mailStore.totalForFolder = 2;
+    await nextTick();
+    await nextTick();
+    const active = document.activeElement as HTMLElement;
+    expect(active).not.toBe(document.body);
+    expect(wrapper.find('.msg-list').element.contains(active)).toBe(true);
+    expect(active.getAttribute('role')).toBe('listbox');
+  });
+
+  it('leaves focus alone when it was outside the list', async () => {
+    const mailStore = seedInbox();
+    mountAtWidth(600);
+    await nextTick();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+
+    mailStore.messages = [makeRow(1), makeRow(3)];
+    await nextTick();
+    await nextTick();
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+});
+
 describe('bulk row overflow', () => {
   it('keeps Delete and Clear in a narrow row and lists the other actions in the More menu with the folder as heading', async () => {
     const mailStore = seedInbox();

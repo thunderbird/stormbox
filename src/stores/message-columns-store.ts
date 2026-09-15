@@ -126,6 +126,12 @@ export const useMessageColumnsStore = defineStore('message-columns', () => {
 
   const primaryWidth = ref(MESSAGE_COLUMN_DEFAULT_WIDTH);
   const extraColumns = ref<MessageColumnConfig[]>([]);
+  /**
+   * The column a message was last opened from. Not persisted: it only
+   * lets the columns area, remounted after the single-column layout
+   * showed the message, scroll back to that column.
+   */
+  const lastActiveColumnId = ref<string | null>(null);
   let nextColumnSeq = 1;
   let loadedKey: string | null = null;
 
@@ -268,12 +274,14 @@ export const useMessageColumnsStore = defineStore('message-columns', () => {
   /** Drops the in-memory layout to the default single column (tests, sign-out). */
   function $reset(): void {
     loadedKey = null;
+    lastActiveColumnId.value = null;
     applyStored(null);
   }
 
   return {
     primaryWidth,
     extraColumns,
+    lastActiveColumnId,
     accountKey,
     columns,
     canAddColumn,

@@ -3361,4 +3361,63 @@ describe('per-folder views for message list columns', () => {
     expect(mailStore.folderView(2).isLoading).toBe(false);
     expect(mailStore.messages.map((row) => row?.id)).toEqual([1]);
   });
+
+  it('runs one manual refresh per folder at a time', async () => {
+    // Two columns showing the same folder each have a Refresh control.
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1), makeFolder(2, { total_emails: 1 })],
+      views: {
+        1: { rows: [makeRow(1)], total: 1 },
+        2: { rows: [makeRow(21)], total: 1 },
+      },
+    });
+    mailStore.bindFolderView(2);
+    await flush();
+    let resets = 0;
+    repo.resetViewForFolder = async () => {
+      resets += 1;
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+      return { deleted: 1 };
+    };
+
+    const first = mailStore.refresh(2);
+    const second = mailStore.refresh(2);
+    await Promise.all([first, second]);
+    await flush();
+    expect(resets).toBe(1);
+
+    // Once settled the next click refreshes again.
+    await mailStore.refresh(2);
+    expect(resets).toBe(2);
+  });
+
+  it('drops a folder\'s open message, cursor and checked rows once no column shows it', async () => {
+    const { mailStore } = await setupStore({
+      folders: [makeFolder(1), makeFolder(2, { total_emails: 2 })],
+      views: {
+        1: { rows: [makeRow(1)], total: 1 },
+        2: { rows: [makeRow(21), makeRow(22)], total: 2 },
+      },
+    });
+    const release = mailStore.bindFolderView(2);
+    await flush();
+    mailStore.selectMessage(21, 2);
+    mailStore.setSelection(2, new Set([22]));
+
+    // Still shown: nothing changes.
+    mailStore.releaseFolderInteractions(2);
+    expect(mailStore.selectedMessageId).toBe(21);
+    expect([...mailStore.selectedIds]).toEqual([22]);
+
+    release();
+    mailStore.releaseFolderInteractions(2);
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect(mailStore.focusedMessageId).toBeNull();
+    expect(mailStore.selectedIds.size).toBe(0);
+
+    // The primary folder is always shown.
+    mailStore.selectMessage(1, 1);
+    mailStore.releaseFolderInteractions(1);
+    expect(mailStore.selectedMessageId).toBe(1);
+  });
 });

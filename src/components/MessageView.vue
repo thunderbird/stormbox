@@ -822,6 +822,19 @@ function closeMessageView() {
   padding: 11px var(--message-toolbar-edge-inset);
   overflow: hidden;
   border-bottom: 1px solid var(--border);
+  container-type: inline-size;
+}
+/* At the pane's minimum width (240px) up to eight toolbar buttons must
+   fit: they narrow and their negative margins take back the flex gap.
+   (A container can only be queried from its descendants, hence the
+   rule targets the buttons, not the header.) */
+@container (max-width: 279px) {
+  .message-view__header .message-view__action {
+    width: 28px;
+    flex-basis: 28px;
+    margin-left: -4px;
+    margin-right: -4px;
+  }
 }
 .message-view__details {
   flex: 0 0 auto;

@@ -290,6 +290,36 @@ describe('MessageColumns', () => {
     expect(document.activeElement).toBe(columns[0].find('.msg-list__add-column').element);
   });
 
+  it('drops the open message and checked rows of a folder its column stops showing', async () => {
+    const mailStore = seedFolders();
+    const wrapper = mountColumns();
+    const id = addColumnFor(2);
+    addColumnFor(2);
+    await nextTick();
+
+    const columns = columnsOf(wrapper);
+    await columns[1].findAll('.msg-list__content')[0].trigger('click');
+    expect(mailStore.selectedMessageId).toBe(21);
+
+    // Column 2 switches to Projects while column 3 still shows Archive.
+    await columns[1].findAll('[role="option"]')[2].trigger('click');
+    await nextTick();
+    await nextTick();
+    expect(useMessageColumnsStore().columns[1].folderId).toBe(3);
+    expect(mailStore.selectedMessageId).toBe(21);
+
+    // Removing column 3 leaves no column on Archive.
+    await columnsOf(wrapper)[2].findAll('.msg-list__check input')[1].trigger('click');
+    expect([...mailStore.selectedIds]).toEqual([22]);
+    // With rows checked the column control sits in the More menu.
+    await columnsOf(wrapper)[2].find('[data-more-item="remove-column"]').trigger('click');
+    await nextTick();
+    await nextTick();
+    expect(useMessageColumnsStore().columns.map((column) => column.id)).toEqual(['primary', id]);
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect(mailStore.selectedIds.size).toBe(0);
+  });
+
   it('keeps the primary column on the folder list selection while other columns keep theirs', async () => {
     const mailStore = seedFolders();
     const wrapper = mountColumns();

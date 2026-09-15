@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick } from 'vue';
+import {
+  computed, nextTick, onMounted, ref,
+} from 'vue';
 
 import { useColumnResize } from '../composables/useColumnResize';
+import { useMailStore } from '../stores/mail-store';
 import {
   MESSAGE_COLUMN_MAX_WIDTH,
   MESSAGE_COLUMN_MIN_WIDTH,
   MESSAGE_COLUMN_RESIZER_WIDTH,
+  PRIMARY_COLUMN_ID,
   type MessageColumn,
   useMessageColumnsStore,
 } from '../stores/message-columns-store';
@@ -27,6 +31,7 @@ const props = withDefaults(defineProps<{
 });
 
 const columnsStore = useMessageColumnsStore();
+const mailStore = useMailStore();
 
 const columns = computed(() => columnsStore.columns);
 
@@ -70,23 +75,47 @@ async function addColumn() {
 async function removeColumn(id: string) {
   const index = columns.value.findIndex((column) => column.id === id);
   if (index <= 0) return;
+  const previousFolderId = columns.value[index].folderId;
   columnsStore.removeColumn(id);
   await nextTick();
+  // The folder's open message, cursor and checked rows go with the column
+  // unless another column still shows it.
+  mailStore.releaseFolderInteractions(previousFolderId);
   // Focus lands on the neighbour to the left: its remove control, or
   // the primary column's add control when the removed column was second.
   const neighbour = columns.value[Math.min(index - 1, columns.value.length - 1)];
   listHandles.get(neighbour.id)?.focusColumnControl();
 }
 
-function changeFolder(id: string, folderId: number) {
+async function changeFolder(id: string, folderId: number) {
+  const previousFolderId = columns.value.find((column) => column.id === id)?.folderId ?? null;
   columnsStore.setColumnFolder(id, folderId);
+  await nextTick();
+  mailStore.releaseFolderInteractions(previousFolderId);
 }
+
+// In the single-column layout the area unmounts while a message is open;
+// on return it scrolls back to the column the message was opened from.
+const areaEl = ref<HTMLElement | null>(null);
+function rememberActiveColumn(id: string) {
+  columnsStore.lastActiveColumnId = id;
+}
+onMounted(async () => {
+  const id = columnsStore.lastActiveColumnId;
+  if (!id || !areaEl.value) return;
+  await nextTick();
+  const column = areaEl.value.querySelector<HTMLElement>(`[data-column-id="${id}"]`)
+    ?? (id === PRIMARY_COLUMN_ID ? areaEl.value.querySelector<HTMLElement>('.msg-list--primary') : null);
+  if (!column) return;
+  areaEl.value.scrollLeft = column.offsetLeft - areaEl.value.offsetLeft;
+});
 
 defineExpose({ addColumn, removeColumn });
 </script>
 
 <template>
   <div
+    ref="areaEl"
     class="msg-columns"
     :class="{ 'msg-columns--resizing': activeResizePane !== null }"
     :style="{
@@ -109,6 +138,7 @@ defineExpose({ addColumn, removeColumn });
         @add-column="addColumn"
         @remove-column="removeColumn(column.id)"
         @change-folder="changeFolder(column.id, $event)"
+        @open="rememberActiveColumn(column.id)"
       />
       <div
         v-if="showsResizerAfter(index)"
@@ -137,7 +167,6 @@ defineExpose({ addColumn, removeColumn });
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-gutter: stable;
 }
 /* A column asks for its stored width and gives way down to the minimum
    when the area is short of room; only past that does the area scroll.
@@ -160,9 +189,14 @@ defineExpose({ addColumn, removeColumn });
 /* One column fills the screen in the single-column layout (R-10.3); the
    user swipes between columns and the handles have no job there. */
 @media (max-width: 639px) {
+  /* Swipe/snap is the interaction here; the scrollbar would only take a
+     row of height from the list. */
   .msg-columns {
     scroll-snap-type: x mandatory;
-    scrollbar-gutter: auto;
+    scrollbar-width: none;
+  }
+  .msg-columns::-webkit-scrollbar {
+    display: none;
   }
   .msg-columns > .msg-columns__column,
   .msg-columns > .msg-columns__column--last {

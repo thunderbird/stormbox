@@ -61,9 +61,18 @@ export function useMessageListFilters(input: UseMessageListFiltersInput) {
     return input.messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: false }));
   });
 
+  function closeOpenMessageIfFilteredOut() {
+    const openId = input.openMessageId.value;
+    if (openId == null) return;
+    const openRow = input.messages.value.find((row) => row?.id === openId);
+    if (!openRow || !messagePassesActiveFilters(openRow, { includeSticky: false })) {
+      input.closeOpenMessage();
+    }
+  }
+
   function toggleDenseFilter(filter: Ref<boolean>) {
-    input.closeOpenMessage();
     filter.value = !filter.value;
+    closeOpenMessageIfFilteredOut();
     if (filter.value) {
       // Dense filters cover every cached row in the folder, not just the
       // positional window, so the filter count and rendered rows reflect
@@ -84,9 +93,7 @@ export function useMessageListFilters(input: UseMessageListFiltersInput) {
   // when it becomes active, pull the full cached view into the window
   // so the From / To / Subject match covers every cached row.
   watch(input.quickFilterQuery, (next, prev) => {
-    if (next !== prev && input.openMessageId.value != null) {
-      input.closeOpenMessage();
-    }
+    if (next !== prev) closeOpenMessageIfFilteredOut();
     const becameActive = normalizeFilterText(next).length > 0
       && normalizeFilterText(prev).length === 0;
     if (becameActive) input.expandFolderView();

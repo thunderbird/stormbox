@@ -227,6 +227,49 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
+  it('keeps the open message selected when it matches the filter being enabled', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [
+        makeRow(1),
+        makeRow(2, { is_flagged: 1, is_seen: 0, subject: 'Matching message' }),
+      ],
+    });
+    mailStore.selectMessage(2, 1);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter--starred').trigger('click');
+    expect(mailStore.selectedMessageId).toBe(2);
+    expect(mailStore.openMessageFolderId).toBe(1);
+
+    await wrapper.findAll('.msg-list__filter')[0].trigger('click');
+    expect(mailStore.selectedMessageId).toBe(2);
+
+    await wrapper.setProps({ quickFilterQuery: 'matching' });
+    await nextTick();
+    expect(mailStore.selectedMessageId).toBe(2);
+    wrapper.unmount();
+  });
+
+  it('closes the open message only when a new filter excludes it', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [
+        makeRow(1, { subject: 'Does not match' }),
+        makeRow(2, { is_flagged: 1, subject: 'Matching message' }),
+      ],
+    });
+    mailStore.selectMessage(1, 1);
+    await nextTick();
+
+    await wrapper.find('.msg-list__filter--starred').trigger('click');
+    expect(mailStore.selectedMessageId).toBeNull();
+
+    mailStore.selectMessage(2, 1);
+    await wrapper.setProps({ quickFilterQuery: 'not present' });
+    await nextTick();
+    expect(mailStore.selectedMessageId).toBeNull();
+    wrapper.unmount();
+  });
+
   it('shows the filter buttons and no bulk actions without a selection', async () => {
     const { wrapper } = mountList();
     await nextTick();

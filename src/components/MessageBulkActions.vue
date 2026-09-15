@@ -1,103 +1,53 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import { Mail, MailOpen, Star, Trash2 } from '@lucide/vue';
-
-import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
-import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
-import type { FolderRow } from '../types';
+import type { BulkActionItem } from '../composables/useBulkActionItems';
 
 /**
- * The bulk-action buttons for a checkbox selection: archive, junk,
- * delete, star, mark read/unread, plus "Not junk" inside a Junk folder.
- * Archive is not offered inside the Archive folder and Junk not inside
- * Junk. Which buttons show depends on the selected rows: while any of them is
- * a pending scheduled send, archive, junk and star are dropped and the
- * delete slot cancels the selected sends instead of destroying mail
- * (SL-5.6). Star is modal (MK-2.4): it unstars when any selected row is
- * starred, otherwise stars them all. The owner runs the actions; this
- * component only renders the row of buttons.
+ * The inline bulk-action buttons of a checkbox selection. The owner
+ * decides which actions exist and which of them stay in the header row
+ * (see `useBulkActionItems` / `splitBulkActions`); this component only
+ * renders that row of buttons. Actions that did not fit are the owner's
+ * to show in its overflow menu.
  */
-const props = withDefaults(defineProps<{
-  folder: FolderRow | null | undefined;
-  /** Whether "Not junk" applies (Junk folder of the primary account). */
-  canWhitelist?: boolean;
-  whitelisting?: boolean;
-  /** Whether any selected row is starred; picks the star button's verb. */
-  anyStarred?: boolean;
-  /** Whether any selected row is a pending scheduled send. */
-  anyScheduled?: boolean;
-}>(), {
-  canWhitelist: false,
-  whitelisting: false,
-  anyStarred: false,
-  anyScheduled: false,
-});
-
-const emit = defineEmits<{
-  (e: 'archive'): void;
-  (e: 'junk'): void;
-  (e: 'delete'): void;
-  (e: 'cancel-send'): void;
-  (e: 'toggle-star'): void;
-  (e: 'mark-read'): void;
-  (e: 'mark-unread'): void;
-  (e: 'whitelist'): void;
+defineProps<{
+  items: readonly BulkActionItem[];
 }>();
-
-const isInJunkFolder = computed(() => props.folder?.role === 'junk');
-// Archiving mail that is already in Archive is a no-op, so the button is
-// not offered there.
-const isInArchiveFolder = computed(() => props.folder?.role === 'archive');
 </script>
 
 <template>
   <button
-    v-if="canWhitelist"
-    class="msg-list__bulk-action msg-list__bulk-action--whitelist"
+    v-for="item in items"
+    :key="item.id"
+    class="msg-list__bulk-action"
+    :class="{
+      'msg-list__bulk-action--danger': item.variant === 'danger',
+      'msg-list__bulk-action--star': item.variant === 'star',
+      'msg-list__bulk-action--starred': item.variant === 'star' && item.pressed,
+      'msg-list__bulk-action--whitelist': item.variant === 'whitelist',
+    }"
     type="button"
-    :disabled="whitelisting"
-    @click="emit('whitelist')"
-    title="Whitelist senders and move to Inbox"
-    aria-label="Not junk — whitelist senders and move the selected messages to Inbox"
+    :disabled="item.disabled"
+    :title="item.title"
+    :aria-label="item.ariaLabel"
+    :aria-pressed="item.variant === 'star' ? item.pressed : undefined"
+    :data-bulk-action="item.id"
+    @click="item.run()"
   >
-    Not junk
-  </button>
-  <button v-if="!anyScheduled && !isInArchiveFolder" class="msg-list__bulk-action" type="button" @click="emit('archive')" title="Archive" aria-label="Archive">
-    <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
-  </button>
-  <button v-if="!isInJunkFolder && !anyScheduled" class="msg-list__bulk-action" type="button" @click="emit('junk')" title="Junk" aria-label="Mark as junk">
-    <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="junkIcon" />
-  </button>
-  <button
-    v-if="anyScheduled"
-    class="msg-list__bulk-action msg-list__bulk-action--danger"
-    type="button"
-    @click="emit('cancel-send')"
-    title="Cancel send"
-    aria-label="Cancel send — return the selected messages to Drafts"
-  >
-    <Trash2 :size="18" :stroke-width="1.65" />
-  </button>
-  <button v-else class="msg-list__bulk-action msg-list__bulk-action--danger" type="button" @click="emit('delete')" title="Delete" aria-label="Delete">
-    <Trash2 :size="18" :stroke-width="1.65" />
-  </button>
-  <button
-    v-if="!anyScheduled"
-    class="msg-list__bulk-action msg-list__bulk-action--star"
-    :class="{ 'msg-list__bulk-action--starred': anyStarred }"
-    type="button"
-    :title="anyStarred ? 'Unstar' : 'Star'"
-    :aria-label="anyStarred ? 'Unstar' : 'Star'"
-    :aria-pressed="anyStarred"
-    @click="emit('toggle-star')"
-  >
-    <Star :size="17" :stroke-width="1.75" :fill="anyStarred ? 'currentColor' : 'none'" />
-  </button>
-  <button class="msg-list__bulk-action" type="button" @click="emit('mark-read')" title="Mark as read" aria-label="Mark as read">
-    <MailOpen :size="16" :stroke-width="1.75" />
-  </button>
-  <button class="msg-list__bulk-action" type="button" @click="emit('mark-unread')" title="Mark as unread" aria-label="Mark as unread">
-    <Mail :size="16" :stroke-width="1.75" />
+    <template v-if="item.variant === 'whitelist'">
+      {{ item.label }}
+    </template>
+    <span
+      v-else-if="item.rawIcon"
+      class="msg-list__bulk-icon msg-list__bulk-icon--folder"
+      aria-hidden="true"
+      v-html="item.rawIcon"
+    />
+    <component
+      :is="item.icon"
+      v-else-if="item.icon"
+      :size="item.variant === 'star' ? 17 : item.variant === 'danger' ? 18 : 16"
+      :stroke-width="item.variant === 'danger' ? 1.65 : 1.75"
+      :fill="item.variant === 'star' ? (item.pressed ? 'currentColor' : 'none') : undefined"
+    />
   </button>
 </template>
 

@@ -488,6 +488,17 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
     "subject subject subject";
   row-gap: 2px;
 }
+/* Stacked rows keep the star slot on the sender line so the overlay never
+   sits on the wrapped subject. */
+.msg-list--card .msg-list__item--hover-actions .msg-list__summary {
+  grid-template-columns: minmax(0, 1fr) auto 34px 64px;
+  grid-template-areas:
+    "from icons star date"
+    "subject subject subject subject";
+}
+.msg-list--card .msg-list__actions {
+  top: 9px;
+}
 .msg-list--card .msg-list__from,
 .msg-list--card .msg-list__subject {
   font-size: 13px;

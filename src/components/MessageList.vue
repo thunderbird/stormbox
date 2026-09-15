@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  computed, onBeforeUnmount, onMounted, ref, watch,
+  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
 import {
   Circle, Plus, RefreshCw, Star, X,
@@ -65,6 +65,8 @@ const emit = defineEmits<{
   'add-column': [];
   'remove-column': [];
   'change-folder': [folderId: number];
+  /** A row was opened in this column. */
+  'open': [messageId: number];
 }>();
 
 // Failed avatar domains are remembered for this list's lifetime and
@@ -133,6 +135,7 @@ const openMessageId = computed<number | null>(() => (
 
 function openMessage(id: number | null) {
   mailStore.selectMessage(id, id == null ? undefined : folderId.value);
+  if (id != null) emit('open', id);
 }
 
 const {
@@ -321,6 +324,7 @@ onMounted(() => {
     selectAll: selectAllForCurrentFilter,
     folderId: () => folderId.value,
     primary: () => props.primary,
+    containsFocus: () => msgListEl.value?.contains(document.activeElement) === true,
   });
 });
 
@@ -610,6 +614,38 @@ function focusColumnControl() {
   moreMenuEl.value?.focusTrigger();
 }
 
+// A width change can dissolve the More menu (its controls return to the
+// row) while its trigger or one of its items has focus, e.g. the column
+// that grows into a removed neighbour's space; the focus follows the
+// control into the row.
+watch(showsMoreMenu, (shows, showed) => {
+  if (!showed || shows) return;
+  const active = document.activeElement;
+  const menu = msgListEl.value?.querySelector('.msg-list__more');
+  if (!menu || !active || !menu.contains(active)) return;
+  void nextTick(() => focusColumnControl());
+});
+
+// Keyboard focus survives a row removal: when the focused element left
+// the DOM with its row (Delete, Archive, a move), focus goes to the list
+// itself instead of falling to the document body.
+let focusWithin = false;
+function onListFocusIn() {
+  focusWithin = true;
+}
+function onListFocusOut(event: FocusEvent) {
+  const next = event.relatedTarget;
+  if (next instanceof Node && msgListEl.value?.contains(next)) return;
+  focusWithin = false;
+}
+watch(() => visibleMessages.value.length, async (count, previous) => {
+  if (!focusWithin || count >= previous) return;
+  await nextTick();
+  const active = document.activeElement;
+  if (active && active !== document.body && msgListEl.value?.contains(active)) return;
+  (scrollEl.value ?? msgListEl.value?.querySelector<HTMLElement>('input, button'))?.focus();
+});
+
 defineExpose({ focusColumnControl, focusFolderPicker });
 </script>
 
@@ -627,6 +663,8 @@ defineExpose({ focusColumnControl, focusFolderPicker });
     role="region"
     :aria-label="regionLabel"
     :data-column-id="listId || undefined"
+    @focusin="onListFocusIn"
+    @focusout="onListFocusOut"
     @dragenter="onColumnDragEnter"
     @dragover="onColumnDragOver"
     @dragleave="onColumnDragLeave"

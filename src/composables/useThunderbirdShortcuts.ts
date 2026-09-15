@@ -51,6 +51,8 @@ export interface MessageListCommands {
   folderId?: () => number | null;
   /** True for the primary column, the fallback when no list owns the target. */
   primary?: () => boolean;
+  /** True while keyboard focus is inside the registering list. */
+  containsFocus?: () => boolean;
 }
 
 const messageListCommandRegistry: MessageListCommands[] = [];
@@ -84,10 +86,14 @@ function resolveMessageListCommands(
 ): MessageListCommands | null {
   if (messageListCommandRegistry.length === 0) return null;
   const target = targetFolderId(mailStore);
-  return messageListCommandRegistry.find((entry) => {
+  const owners = messageListCommandRegistry.filter((entry) => {
     const folderId = entry.folderId?.();
     return folderId !== undefined && folderId != null && Number(folderId) === Number(target);
-  })
+  });
+  // Two columns may show the same folder; the one the keyboard is in
+  // wins, since the filters that shape navigation are per column.
+  return owners.find((entry) => entry.containsFocus?.() === true)
+    ?? owners[0]
     ?? messageListCommandRegistry.find((entry) => entry.primary?.() === true)
     ?? messageListCommandRegistry.find((entry) => entry.folderId === undefined)
     ?? messageListCommandRegistry[messageListCommandRegistry.length - 1]

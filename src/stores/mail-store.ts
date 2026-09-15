@@ -835,6 +835,20 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
+  /**
+   * A folder that no column shows any more must not keep the open
+   * message, the cursor or the checked rows: those would act on rows
+   * the user cannot see. No-op while any column (the primary included)
+   * still shows the folder.
+   */
+  function releaseFolderInteractions(folderId: number | null) {
+    if (folderId == null) return;
+    const id = Number(folderId);
+    if ((boundFolderCounts.get(id) ?? 0) > 0) return;
+    if (Number(currentFolderId.value) === id) return;
+    clearInteractionForFolder(id);
+  }
+
   function ensureFolderState(folderId: number): FolderCache {
     const id = Number(folderId);
     let state = folderStates.get(id);
@@ -1122,14 +1136,21 @@ export const useMailStore = defineStore('mail', () => {
    * at `offset`, then hand the folder's view a fresh copy so every
    * column bound to it repaints.
    */
-  function _splice(state: FolderCache, offset: number, rows: MessageRow[]) {
+  function _splice(
+    state: FolderCache,
+    offset: number,
+    rows: MessageRow[],
+    { publish = true } = {},
+  ) {
     if (state.rows.length < offset + rows.length) {
       state.rows.length = offset + rows.length;
     }
     for (let i = 0; i < rows.length; i += 1) {
       state.rows[offset + i] = rows[i];
     }
-    publishView(state);
+    // A batch caller publishes once after every range instead of copying
+    // the positional array per range.
+    if (publish) publishView(state);
     if (offset === 0) {
       maybePrefetchInitialBodies(state);
     }
@@ -1265,7 +1286,7 @@ export const useMailStore = defineStore('mail', () => {
       for (let i = rows.length; i < limit; i += 1) {
         state.rows[offset + i] = undefined;
       }
-      if (rows.length > 0) _splice(state, offset, rows);
+      if (rows.length > 0) _splice(state, offset, rows, { publish: false });
     }
 
     // Trim painted ranges that extend past the (possibly shrunken)
@@ -2957,10 +2978,28 @@ export const useMailStore = defineStore('mail', () => {
    * cleared query_view_items. The nuke is the only way to guarantee
    * the next paint matches the server.
    */
-  async function refresh(folderId: number | null = currentFolderId.value) {
-    if (!repo || authStore.accountId == null || folderId == null) return;
-    const state = folderStates.get(Number(folderId));
-    if (!state) return;
+  /**
+   * One manual refresh per folder at a time: two columns showing the
+   * same folder each have a Refresh control, and a second reset of the
+   * same view mid-flight would restore a different snapshot.
+   */
+  const manualRefreshInflight = new Map<number, Promise<void>>();
+
+  function refresh(folderId: number | null = currentFolderId.value): Promise<void> {
+    if (!repo || authStore.accountId == null || folderId == null) return Promise.resolve();
+    const id = Number(folderId);
+    const inflight = manualRefreshInflight.get(id);
+    if (inflight) return inflight;
+    const run = _refreshFolder(id).finally(() => {
+      if (manualRefreshInflight.get(id) === run) manualRefreshInflight.delete(id);
+    });
+    manualRefreshInflight.set(id, run);
+    return run;
+  }
+
+  async function _refreshFolder(folderId: number) {
+    const state = folderStates.get(folderId);
+    if (!state || !repo || authStore.accountId == null) return;
     const refreshSelection = snapshotRefreshSelection(state);
     state.lastFailedRange = null;
     state.view.isLoading = true;
@@ -3568,6 +3607,7 @@ export const useMailStore = defineStore('mail', () => {
     rowsForFolder,
     findLoadedRow,
     bindFolderView,
+    releaseFolderInteractions,
     openFolderView,
     selectedMessageId,
     selectedMessageFolderId,

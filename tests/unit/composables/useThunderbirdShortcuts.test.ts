@@ -314,6 +314,43 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     expect(messageListCommands?.navigate).toHaveBeenCalledWith('nextUnread');
   });
 
+  it('routes a command to the focused column when two columns show the same folder', () => {
+    // Each column filters its rows on its own; the one holding the
+    // keyboard navigates.
+    const mailStore = useMailStore() as any;
+    mailStore.folders = [{ id: 7, account_id: 1, name: 'Inbox', role: 'inbox' }];
+    mailStore.selectFolder(7);
+    mailStore.messages = [makeRow(1), makeRow(2)];
+    const primary = {
+      navigate: vi.fn(),
+      selectAll: vi.fn(),
+      folderId: () => 7,
+      primary: () => true,
+      containsFocus: () => false,
+    };
+    mountHarness({ messageListCommands: primary });
+    const twin = {
+      navigate: vi.fn(),
+      selectAll: vi.fn(),
+      folderId: () => 7,
+      containsFocus: () => true,
+    };
+    const unregisterTwin = registerMessageListCommands(twin);
+    try {
+      fireKey('n');
+      expect(twin.navigate).toHaveBeenCalledWith('nextUnread');
+      expect(primary.navigate).not.toHaveBeenCalled();
+
+      twin.containsFocus = () => false;
+      fireKey('n');
+      // Neither holds focus: the first registered owner of the folder.
+      expect(primary.navigate).toHaveBeenCalledWith('nextUnread');
+      expect(twin.navigate).toHaveBeenCalledTimes(1);
+    } finally {
+      unregisterTwin();
+    }
+  });
+
   it('plain A archives without selecting all loaded rows', async () => {
     mountHarness();
     const mailStore = useMailStore() as any;

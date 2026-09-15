@@ -314,6 +314,11 @@ watch(folderListHidden, () => {
   clampColumnWidths();
 });
 
+// Another column needs its minimum beside the folder list.
+watch(() => columnsStore.columns.length, () => {
+  clampColumnWidths();
+});
+
 watch(() => authStore.status, (status) => {
   if (status === AUTH_STATE.CONNECTED) {
     maybeShowOnboardingModal();
@@ -553,17 +558,21 @@ function availablePaneWidth() {
 
 // Width the panes beside the sidebar need so it can never push them into
 // horizontal overflow (R-10.1): the Contacts columns at their minimums, and in
-// Mail one message list column at its minimum plus the message view minimum
-// (the columns area scrolls when more columns are open).
+// Mail every open message list column at its minimum (with the handles
+// between them) plus the message view minimum. The columns area only scrolls
+// once even that does not fit beside the folder list's own minimum.
 function sidebarNeighbourReserve() {
   if (space.value === 'contacts') {
     return contactsDetailVisible.value
       ? DIRECTORY_COLUMN_MIN_WIDTHS.list + DIRECTORY_RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
       : DIRECTORY_COLUMN_MIN_WIDTHS.list;
   }
+  const columnCount = Math.max(1, columnsStore.columns.length);
+  const columnsMinimum = columnCount * MESSAGE_COLUMN_MIN_WIDTH
+    + (columnCount - 1) * MESSAGE_COLUMN_RESIZER_WIDTH;
   return displayedMessageView.value
-    ? MIN_COLUMN_WIDTHS.messageList + MESSAGE_COLUMN_RESIZER_WIDTH + MIN_COLUMN_WIDTHS.messageView
-    : MIN_COLUMN_WIDTHS.messageList;
+    ? columnsMinimum + MESSAGE_COLUMN_RESIZER_WIDTH + MIN_COLUMN_WIDTHS.messageView
+    : columnsMinimum;
 }
 
 function maxFolderListWidth() {
