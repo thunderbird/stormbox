@@ -64,20 +64,28 @@ smaller change than a second cache, and it lets the primary column be
 - Re-picking the primary folder in the sidebar clears that folder's
   selection and open message (existing behaviour) and scrolls the column
   to the top.
-- Column widths are clamped to 280–720px; the last column stretches when
-  the reading pane is hidden so a single column still fills the width.
+- Column widths are clamped to 280–720px. When the area is short of room
+  the columns give way proportionally down to 280px before the area
+  scrolls, so one column never overflows a narrow window; the last column
+  stretches when the reading pane is hidden so a single column still
+  fills the width.
 - The pinned-folder set is the last one a tab sent; two tabs with different
   columns on one origin race, and the losing tab's extra folders fall back
   to recency-based refresh.
 
 ## Verification map
 
-- Unit: `tests/unit/stores/message-columns-store.test.ts`,
-  `tests/unit/components/message-columns.test.ts`,
-  `tests/unit/stores/mail-store.test.ts` (folder-keyed selection and open
-  message), `tests/unit/composables/useThunderbirdShortcuts.test.ts`
-  (routing to the checked column), `tests/unit/sync/jmap-backend.test.ts`
-  (pinned view refresh), `tests/unit/db/*` (local placement on move).
+- Unit: `tests/unit/stores/message-columns-store.test.ts` (config, limit,
+  persistence, remote-id resolution), `tests/unit/components/message-columns.test.ts`
+  (add/remove/focus, primary follows the folder list, opening from another
+  column, cross-column drop and same-folder no-op, unique DOM ids, shortcut
+  routing), `tests/unit/stores/mail-store.test.ts` "per-folder views"
+  (bound views, broadcast refresh, folder-keyed selection and open message,
+  cache-only repaint after a move), `tests/unit/sync/jmap-backend.test.ts`
+  (pinned view refresh), `tests/unit/sync/outbox-effects.test.ts` (local
+  placement and the stale fallback), `tests/unit/components/responsive-css.test.ts`
+  (title-row corner controls, single-column snapping), and the updated
+  MessageList, MessageView and shortcut tests (folder-specific actions).
 - Browser: `tests/e2e/message-columns.spec.js` adds a column, moves by drag
   and drop across columns with UI, cache and server assertions, checks the
   same-folder no-op and persistence across reload, on Chromium and Firefox.

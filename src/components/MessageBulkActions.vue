@@ -9,7 +9,8 @@ import type { FolderRow } from '../types';
 /**
  * The bulk-action buttons for a checkbox selection: archive, junk,
  * delete, star, mark read/unread, plus "Not junk" inside a Junk folder.
- * Which buttons show depends on the selected rows: while any of them is
+ * Archive is not offered inside the Archive folder and Junk not inside
+ * Junk. Which buttons show depends on the selected rows: while any of them is
  * a pending scheduled send, archive, junk and star are dropped and the
  * delete slot cancels the selected sends instead of destroying mail
  * (SL-5.6). Star is modal (MK-2.4): it unstars when any selected row is
@@ -44,6 +45,9 @@ const emit = defineEmits<{
 }>();
 
 const isInJunkFolder = computed(() => props.folder?.role === 'junk');
+// Archiving mail that is already in Archive is a no-op, so the button is
+// not offered there.
+const isInArchiveFolder = computed(() => props.folder?.role === 'archive');
 </script>
 
 <template>
@@ -58,7 +62,7 @@ const isInJunkFolder = computed(() => props.folder?.role === 'junk');
   >
     Not junk
   </button>
-  <button v-if="!anyScheduled" class="msg-list__bulk-action" type="button" @click="emit('archive')" title="Archive" aria-label="Archive">
+  <button v-if="!anyScheduled && !isInArchiveFolder" class="msg-list__bulk-action" type="button" @click="emit('archive')" title="Archive" aria-label="Archive">
     <span class="msg-list__bulk-icon msg-list__bulk-icon--folder" aria-hidden="true" v-html="archiveIcon" />
   </button>
   <button v-if="!isInJunkFolder && !anyScheduled" class="msg-list__bulk-action" type="button" @click="emit('junk')" title="Junk" aria-label="Mark as junk">

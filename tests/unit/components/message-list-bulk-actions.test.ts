@@ -278,6 +278,20 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
+  it('omits Archive from the bulk toolbar and the row overlay inside the Archive folder', async () => {
+    const { mailStore, wrapper } = mountList({
+      folder: makeFolder(2, { name: 'Archive', role: 'archive' }),
+    });
+    mailStore.selectedIds = new Set([1]);
+    await nextTick();
+
+    const titles = wrapper
+      .findAll('.msg-list__bulk-actions .msg-list__bulk-action')
+      .map((button) => button.attributes('title'));
+    expect(titles).toEqual(['Junk', 'Delete', 'Star', 'Mark as read', 'Mark as unread', 'Clear selection']);
+    wrapper.unmount();
+  });
+
   it('shows neither Junk nor Not junk actions in a shared Junk folder', async () => {
     const { mailStore, wrapper } = mountList({
       folder: makeFolder(2, {

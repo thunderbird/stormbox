@@ -1,32 +1,33 @@
 <script setup lang="ts">
 import {
-  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
+  computed, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
-import type { Ref } from 'vue';
-import { useVirtualizer } from '@tanstack/vue-virtual';
-import { Plus, RefreshCw, X } from '@lucide/vue';
+import {
+  Circle, Plus, RefreshCw, Star, X,
+} from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
-import { MAX_MESSAGE_COLUMNS } from '../stores/message-columns-store';
+import { useBulkActionItems } from '../composables/useBulkActionItems';
 import { useListSelection } from '../composables/useListSelection';
 import {
   useMessageDragDrop,
   useMessageDropTarget,
 } from '../composables/useMessageDragDrop';
+import { useMessageListFilters } from '../composables/useMessageListFilters';
+import { useMessageListHeader } from '../composables/useMessageListHeader';
+import { useMessageListViewport } from '../composables/useMessageListViewport';
 import { provideSenderAvatars } from '../composables/useSenderAvatars';
 import {
   registerMessageListCommands,
   type MessageListNavigationCommand,
 } from '../composables/useThunderbirdShortcuts';
-import { closeContainingDropdown } from '../utils/dropdown';
-import { flattenFolderTree, folderPresentation } from '../utils/folder-presentation';
 import { folderShowsRecipients } from '../utils/message-row-presentation';
-import { messageMatchesQuickFilter, normalizeFilterText } from '../utils/quick-filter';
 import { isScheduledMessage } from '../utils/scheduled-message';
 import type { CachedRow } from '../stores/mail-store-types';
 import type { FolderRow } from '../types';
-import AppDropdown from './AppDropdown.vue';
 import MessageBulkActions from './MessageBulkActions.vue';
+import MessageListHeaderTitle from './MessageListHeaderTitle.vue';
+import MessageListMoreMenu from './MessageListMoreMenu.vue';
 import MessageListRow from './MessageListRow.vue';
 import SelectableListHeader from './SelectableListHeader.vue';
 
@@ -36,9 +37,10 @@ const mailStore = useMailStore();
  * One message list column. The primary column follows the folder the
  * folder list selects (`mailStore.currentFolderId`) and carries the
  * "add column" control; every other column picks its own folder from
- * the dropdown in its title row and can be removed. Apart from that
- * title row, every column is the same list: the folder's cached window,
- * the shared header, selection, keyboard navigation and bulk actions.
+ * the dropdown at the start of its header and can be removed. Apart
+ * from that, every column is the same list: the folder's cached window,
+ * the shared one-row header, selection, keyboard navigation and bulk
+ * actions.
  */
 const props = withDefaults(defineProps<{
   /** Folder to list; omitted means the primary column's folder. */
@@ -74,7 +76,6 @@ const folderId = computed<number | null>(() => (
 ));
 const folder = computed<FolderRow | null>(() => mailStore.folderById(folderId.value));
 const folderName = computed(() => folder.value?.name ?? 'Mail');
-const folderIcon = computed(() => (folder.value ? folderPresentation(folder.value).icon : ''));
 const regionLabel = computed(() => (
   folder.value
     ? `${folder.value.name} messages, column ${props.columnIndex}`
@@ -134,28 +135,22 @@ function openMessage(id: number | null) {
   mailStore.selectMessage(id, id == null ? undefined : folderId.value);
 }
 
-const unreadOnly = ref(false);
-const flaggedOnly = ref(false);
-const quickFilterNeedle = computed(() => normalizeFilterText(props.quickFilterQuery));
-const quickFilterActive = computed(() => quickFilterNeedle.value.length > 0);
-const denseLocalFilterActive = computed(() => (
-  unreadOnly.value || flaggedOnly.value || quickFilterActive.value
-));
-// Per R-2.8 (specs/001-mvp-scope/spec.md) and the project constitution,
-// the folder's canonical message set is the mailbox-window query view
-// (query_view_items + messages) exposed through the folder view. All,
-// Unread and Starred derive from that single source; Unread and Starred
-// are dense local filters over it (they combine as AND) and must never
-// read from a broader projection like folder_messages — that would let
-// a filter count exceed the All count and violate the user-facing
-// invariant.
-const visibleMessages = computed(() => {
-  if (!denseLocalFilterActive.value) return messages.value;
-  return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: true }));
-});
-const selectAllTargetMessages = computed(() => {
-  if (!denseLocalFilterActive.value) return messages.value;
-  return messages.value.filter((row) => messagePassesActiveFilters(row, { includeSticky: false }));
+const {
+  unreadOnly,
+  flaggedOnly,
+  quickFilterActive,
+  denseLocalFilterActive,
+  visibleMessages,
+  selectAllTargetMessages,
+  toggleUnreadFilter,
+  toggleFlaggedFilter,
+} = useMessageListFilters({
+  messages,
+  quickFilterQuery: computed(() => props.quickFilterQuery),
+  openMessageId,
+  selectedIds,
+  closeOpenMessage: () => openMessage(null),
+  expandFolderView: () => { void mailStore.expandFolderViewIntoMemory(folderId.value); },
 });
 
 // Virtualizer count is the FOLDER TOTAL, not loaded count. That way
@@ -292,139 +287,24 @@ function navigateRelative(direction: 1 | -1, unreadOnly: boolean): void {
   }
 }
 
-const CARD_LAYOUT_WIDTH = 360;
-const ROW_HEIGHT = 64;
-const CARD_ROW_HEIGHT = 112;
 const msgListEl = ref<HTMLElement | null>(null);
-const scrollEl = ref(null);
-const listWidth = ref(0);
-const cardLayout = computed(() => listWidth.value > 0 && listWidth.value < CARD_LAYOUT_WIDTH);
-let listResizeObserver: ResizeObserver | null = null;
-
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: rowCount.value,
-    getScrollElement: () => scrollEl.value,
-    estimateSize: () => (cardLayout.value ? CARD_ROW_HEIGHT : ROW_HEIGHT),
-    overscan: 8,
-    getItemKey: (i) => visibleMessages.value[i]?.id ?? `_ph_${i}`,
-  })),
-);
-
-const totalSize = computed(() => virtualizer.value.getTotalSize());
-const virtualItems = computed(() => virtualizer.value.getVirtualItems());
-
-// Throttle the scroll-driven fetch. 100ms leading-edge guard so a
-// fast scroll doesn't fire 50 round trips, PLUS a trailing-edge
-// fire so the final visible range after the user releases the
-// scrollbar always gets a load.
-//
-// The trailing edge is what makes the throttle correct rather than
-// just leaky. Without it, when the user drags a long distance and
-// releases inside the 100ms window after the last fired load, the
-// final visible range never gets requested - the watcher only fires
-// when virtualItems changes, and a stationary scrollbar produces no
-// further changes. mail-store's .finally re-pump cannot save us
-// either: it requires a load to actually be inflight when the
-// release happens, and with a fast cache that load may complete
-// before the user has moved at all.
-const THROTTLE_MS = 100;
-let lastPrefetch = 0;
-let trailingTimer: ReturnType<typeof setTimeout> | null = null;
-let unregisterMessageListCommands: (() => void) | null = null;
-
-function fireLoad(first: number, last: number) {
-  const id = folderId.value;
-  if (id == null) return;
-  lastPrefetch = performance.now();
-  mailStore.ensureLoaded(first, last + 1, id);
-  // Window-driven body prefetch. Safe to call before metadata has
-  // landed: it skips undefined slots and the next throttled tick
-  // after ensureLoaded fills them will pick them up. Click-time
-  // fetches that collide with this background work are deduped in
-  // the JMAP backend's in-flight body map.
-  mailStore.enqueueVisibleBodyPrefetch(first, last + 1, id);
-}
-
-watch(virtualItems, (items) => {
-  if (denseLocalFilterActive.value) return;
-  if (!items.length) return;
-  const id = folderId.value;
-  if (id == null) return;
-  const first = items[0].index;
-  const last = items[items.length - 1].index;
-  // Always update the requested range so the inflight-page chain in
-  // mail-store can re-pump against the latest visible window.
-  mailStore.setRequestedRange(id, first, last + 1);
-
-  const now = performance.now();
-  const sinceLast = now - lastPrefetch;
-
-  if (sinceLast >= THROTTLE_MS) {
-    if (trailingTimer != null) {
-      clearTimeout(trailingTimer);
-      trailingTimer = null;
-    }
-    fireLoad(first, last);
-    return;
-  }
-
-  // Throttled. Schedule (or refresh) a trailing-edge fire so the
-  // final visible range always gets a load even if the user stops
-  // scrolling mid-window.
-  if (trailingTimer != null) clearTimeout(trailingTimer);
-  trailingTimer = setTimeout(() => {
-    trailingTimer = null;
-    if (folderId.value == null) return;
-    const latestItems = virtualizer.value.getVirtualItems();
-    if (!latestItems.length) return;
-    fireLoad(latestItems[0].index, latestItems[latestItems.length - 1].index);
-  }, THROTTLE_MS - sinceLast + 10);
+const {
+  scrollEl,
+  listWidth,
+  cardLayout,
+  totalSize,
+  virtualItems,
+  onScroll,
+} = useMessageListViewport({
+  listEl: msgListEl,
+  folderId,
+  primary: computed(() => props.primary),
+  visibleMessages,
+  rowCount,
+  denseFilterActive: denseLocalFilterActive,
+  focusedMessageId,
 });
 
-watch(
-  () => props.quickFilterQuery,
-  (next, prev) => {
-    if (next !== prev && openMessageId.value != null) {
-      openMessage(null);
-    }
-    // The quick filter is a dense local filter over the entire folder.
-    // Pull the full cached canonical view into the buffer so the
-    // From / To / Subject match can fire across every cached row,
-    // not just the positional window the virtualizer has loaded.
-    const becameActive = normalizeFilterText(next).length > 0
-      && normalizeFilterText(prev).length === 0;
-    if (becameActive) {
-      void mailStore.expandFolderViewIntoMemory(folderId.value);
-    }
-  },
-);
-
-// Persist scroll position per folder. rAF-throttled so we don't write
-// on every pixel.
-let scrollWriteScheduled = false;
-function onScroll() {
-  if (scrollWriteScheduled) return;
-  scrollWriteScheduled = true;
-  requestAnimationFrame(() => {
-    scrollWriteScheduled = false;
-    const id = folderId.value;
-    if (id != null && scrollEl.value) {
-      mailStore.setScrollTop(id, scrollEl.value.scrollTop);
-    }
-  });
-}
-
-// Keep the virtualized viewport following the keyboard cursor. Every
-// path that moves the cursor — Arrow and Shift+Arrow (useListSelection),
-// the registered list commands (F/B/N/P/Home/End), a row click, and the
-// neighbour that becomes current
-// after a delete/archive — funnels through mailStore.focusedMessageId.
-// Because the list is virtualized, an off-screen cursor row isn't even
-// in the DOM to scroll to, so watching this single source of truth and
-// driving the virtualizer is the general fix rather than patching each
-// call site. Tracking the cursor (not the previewed selectedMessageId)
-// is what lets a Shift+Arrow range extension scroll the viewport too.
 // aria-activedescendant target for the scroller's listbox role. The
 // cursor row is always scrolled into view, so its <li id> is rendered
 // and the reference resolves; undefined clears it when nothing is
@@ -433,60 +313,7 @@ const activeRowDomId = computed(() => (focusedMessageId.value == null
   ? undefined
   : `${rowDomIdPrefix.value}${focusedMessageId.value}`));
 
-function scrollCursorIntoView(messageId: number) {
-  if (!scrollEl.value) return;
-  const index = visibleMessages.value.findIndex((row) => row?.id === messageId);
-  if (index < 0) return;
-  // align: 'auto' is a no-op when the row is already fully visible, so a
-  // plain row click never yanks the list; it scrolls only the minimum
-  // needed when keyboard nav steps the cursor past a viewport edge.
-  virtualizer.value.scrollToIndex(index, { align: 'auto' });
-}
-
-watch(
-  focusedMessageId,
-  async (messageId) => {
-    if (messageId == null) return;
-    // Let visibleMessages / virtualizer count settle (e.g. when a
-    // delete mutates the row array in the same tick as the cursor
-    // move) before resolving the target index.
-    await nextTick();
-    if (focusedMessageId.value !== messageId) return;
-    scrollCursorIntoView(messageId);
-  },
-);
-
-// A folder change restores that folder's remembered scroll position;
-// re-picking the primary column's folder in the folder list scrolls
-// it back to the top.
-watch(
-  [folderId, () => mailStore.folderPickCount],
-  async ([id, pickCount], [previousId, previousPickCount]) => {
-    virtualizer.value.measure();
-    if (id == null) return;
-    if (id === previousId && pickCount !== previousPickCount) {
-      if (!props.primary) return;
-      mailStore.setScrollTop(id, 0);
-      if (scrollEl.value) scrollEl.value.scrollTop = 0;
-      return;
-    }
-    // If a dense filter is already active when we switch folders,
-    // pull the new folder's full canonical view into the buffer so
-    // the filter applies across every cached row, not just the
-    // positional window the virtualizer will pull on first paint.
-    if (denseLocalFilterActive.value) {
-      void mailStore.expandFolderViewIntoMemory(id);
-    }
-    // Wait for the new folder's rows to bind before restoring scroll;
-    // the scroller's scrollHeight needs to reflect the new totalSize
-    // so the assignment doesn't get clamped.
-    await nextTick();
-    if (scrollEl.value) {
-      scrollEl.value.scrollTop = mailStore.getScrollTop(id);
-    }
-  },
-  { immediate: true },
-);
+let unregisterMessageListCommands: (() => void) | null = null;
 
 onMounted(() => {
   unregisterMessageListCommands = registerMessageListCommands({
@@ -495,32 +322,11 @@ onMounted(() => {
     folderId: () => folderId.value,
     primary: () => props.primary,
   });
-  if (msgListEl.value) {
-    listWidth.value = msgListEl.value.clientWidth;
-    if (typeof ResizeObserver === 'function') {
-      listResizeObserver = new ResizeObserver(([entry]) => {
-        listWidth.value = entry.contentRect.width;
-      });
-      listResizeObserver.observe(msgListEl.value);
-    }
-  }
-  virtualizer.value.measure();
 });
 
 onBeforeUnmount(() => {
   unregisterMessageListCommands?.();
   unregisterMessageListCommands = null;
-  if (trailingTimer != null) {
-    clearTimeout(trailingTimer);
-    trailingTimer = null;
-  }
-  listResizeObserver?.disconnect();
-  listResizeObserver = null;
-});
-
-watch(cardLayout, async () => {
-  await nextTick();
-  virtualizer.value.measure();
 });
 
 /**
@@ -571,6 +377,8 @@ function isDraggingMessage(messageId) {
 }
 
 const listShowsRecipients = computed(() => folderShowsRecipients(folder.value));
+// Archiving from Archive is a no-op; the row overlay and the bulk toolbar leave it out.
+const isArchiveFolder = computed(() => folder.value?.role === 'archive');
 
 const allLoadedSelected = computed(() => {
   const loadedIds = [];
@@ -730,146 +538,76 @@ async function bulkWhitelist() {
   }
 }
 
-function toggleDenseFilter(filter: Ref<boolean>) {
-  openMessage(null);
-  filter.value = !filter.value;
-  if (filter.value) {
-    // Dense filters cover every cached row in the folder, not just the
-    // positional window. Pull the full canonical view into the
-    // buffer so the filter count and rendered rows reflect the
-    // whole folder. This is a local SQLite read, never a JMAP call.
-    void mailStore.expandFolderViewIntoMemory(folderId.value);
-  }
-}
+// ----- header row: title, filters, count, controls and the More menu ----
 
-function toggleUnreadFilter() {
-  toggleDenseFilter(unreadOnly);
-}
-
-function toggleFlaggedFilter() {
-  toggleDenseFilter(flaggedOnly);
-}
-
-function messagePassesActiveFilters(row, { includeSticky = true } = {}) {
-  if (row?.id == null) return false;
-  if (
-    includeSticky
-    && (row.id === openMessageId.value || selectedIds.value.has(row.id))
-  ) {
-    return true;
-  }
-  if (unreadOnly.value && Number(row.is_seen) !== 0) return false;
-  if (flaggedOnly.value && Number(row.is_flagged) !== 1) return false;
-  if (quickFilterActive.value && !messageMatchesQuickFilter(row, quickFilterNeedle.value)) return false;
-  return true;
-}
-
-// ----- column title row: folder picker and column controls -------------
-
-const addColumnTitle = computed(() => (
-  props.canAddColumn
-    ? 'Add a message list column'
-    : `Up to ${MAX_MESSAGE_COLUMNS} columns can be shown`
-));
-
-interface FolderOption {
-  folder: FolderRow;
-  depth: number;
-  icon: string;
-  color: string;
-}
-interface FolderOptionGroup {
-  key: string;
-  label: string | null;
-  options: FolderOption[];
-}
-
-function optionsFor(rows: FolderRow[]): FolderOption[] {
-  return flattenFolderTree(rows.filter((row) => Number(row.is_deleted) !== 1))
-    .map(({ folder: row, depth }) => ({ folder: row, depth, ...folderPresentation(row) }));
-}
-
-// The folders the folder list shows (system folders plus subscribed
-// ones, then one group per shared account), in structural order with
-// the folder list's icons.
-const folderOptionGroups = computed<FolderOptionGroup[]>(() => {
-  const groups: FolderOptionGroup[] = [{
-    key: 'primary',
-    label: null,
-    options: optionsFor(mailStore.sidebarPrimaryFolders),
-  }];
-  for (const group of mailStore.sharedFolderGroups) {
-    const options = optionsFor(group.folders);
-    if (options.length === 0) continue;
-    groups.push({
-      key: `account-${group.account.id}`,
-      label: group.account.display_name ?? group.account.primary_email ?? 'Shared',
-      options,
-    });
-  }
-  return groups;
+const bulkActionItems = useBulkActionItems({
+  folder,
+  canWhitelist: canWhitelistInJunk,
+  whitelisting: bulkWhitelisting,
+  anyStarred: anySelectedStarred,
+  anyScheduled: anySelectedScheduled,
+  handlers: {
+    archive: bulkArchive,
+    junk: bulkJunk,
+    delete: bulkDelete,
+    cancelSend: bulkCancelSend,
+    toggleStar: bulkToggleStar,
+    markRead: bulkMarkRead,
+    markUnread: bulkMarkUnread,
+    whitelist: bulkWhitelist,
+  },
 });
 
-const folderTriggerEl = ref<HTMLElement | null>(null);
-const folderMenuEl = ref<HTMLElement | null>(null);
+function refresh() {
+  void mailStore.refresh(folderId.value);
+}
+
+const {
+  tier: headerTier,
+  showsCount: headerShowsCount,
+  filterLabels: headerFilterLabels,
+  showsInlineControls,
+  showsMoreMenu,
+  moreMenuGroups,
+  bulkActions,
+  addColumnTitle,
+  removeColumnTitle,
+} = useMessageListHeader({
+  listWidth,
+  hasSelection,
+  folderId,
+  folderName,
+  isLoading,
+  primary: computed(() => props.primary),
+  canAddColumn: computed(() => props.canAddColumn),
+  columnIndex: computed(() => props.columnIndex),
+  bulkActionItems,
+  refresh,
+  addColumn: () => emit('add-column'),
+  removeColumn: () => emit('remove-column'),
+});
+
+const titleEl = ref<InstanceType<typeof MessageListHeaderTitle> | null>(null);
+const moreMenuEl = ref<InstanceType<typeof MessageListMoreMenu> | null>(null);
 const addColumnEl = ref<HTMLButtonElement | null>(null);
 const removeColumnEl = ref<HTMLButtonElement | null>(null);
 
-function pickFolder(id: number, event: Event) {
-  closeContainingDropdown(event);
-  if (id !== folderId.value) emit('change-folder', id);
-  folderTriggerEl.value?.focus();
-}
-
-function folderOptionButtons(): HTMLButtonElement[] {
-  return Array.from(folderMenuEl.value?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
-}
-
-// The listbox opens on the chosen folder (or its first option) and the
-// arrow keys move between options; Escape and outside clicks are the
-// dropdown widget's.
-function onFolderMenuToggle(event: Event) {
-  const details = event.currentTarget as HTMLDetailsElement | null;
-  if (!details?.open) return;
-  void nextTick(() => {
-    const buttons = folderOptionButtons();
-    const selected = buttons.find((button) => button.getAttribute('aria-selected') === 'true');
-    (selected ?? buttons[0])?.focus();
-  });
-}
-
-function onFolderMenuKeydown(event: KeyboardEvent) {
-  const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
-  if (!keys.includes(event.key)) return;
-  const buttons = folderOptionButtons();
-  if (buttons.length === 0) return;
-  event.preventDefault();
-  const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
-  let next: number;
-  switch (event.key) {
-    case 'ArrowDown':
-      next = current < 0 ? 0 : Math.min(buttons.length - 1, current + 1);
-      break;
-    case 'ArrowUp':
-      next = current < 0 ? buttons.length - 1 : Math.max(0, current - 1);
-      break;
-    case 'Home':
-      next = 0;
-      break;
-    default:
-      next = buttons.length - 1;
-  }
-  buttons[next]?.focus();
-}
-
 /** Focus the folder dropdown trigger (a newly added column starts here). */
 function focusFolderPicker() {
-  folderTriggerEl.value?.focus();
+  titleEl.value?.focusTrigger();
 }
 
-/** Focus the column's own control: "+" on the primary column, "×" on the others. */
+/**
+ * Focus the column's own control: "+" on the primary column, "×" on
+ * the others, or the More menu that holds it in a narrow column.
+ */
 function focusColumnControl() {
-  (props.primary ? addColumnEl.value : removeColumnEl.value)?.focus();
+  const inline = props.primary ? addColumnEl.value : removeColumnEl.value;
+  if (inline) {
+    inline.focus();
+    return;
+  }
+  moreMenuEl.value?.focusTrigger();
 }
 
 defineExpose({ focusColumnControl, focusFolderPicker });
@@ -894,96 +632,9 @@ defineExpose({ focusColumnControl, focusFolderPicker });
     @dragleave="onColumnDragLeave"
     @drop="onColumnDrop"
   >
-    <div class="msg-list__titlebar">
-      <template v-if="primary">
-        <h2 class="msg-list__title" :title="folderName">
-          <span
-            v-if="folderIcon"
-            class="msg-list__title-icon"
-            :style="{ '--folder-tone': folder ? folderPresentation(folder).color : undefined }"
-            aria-hidden="true"
-            v-html="folderIcon"
-          />
-          <span class="msg-list__title-name">{{ folder ? folderName : 'Messages' }}</span>
-        </h2>
-        <button
-          ref="addColumnEl"
-          class="msg-list__column-control msg-list__add-column"
-          type="button"
-          :disabled="!canAddColumn"
-          :title="addColumnTitle"
-          :aria-label="addColumnTitle"
-          @click="emit('add-column')"
-        >
-          <Plus :size="18" :stroke-width="1.75" aria-hidden="true" />
-        </button>
-      </template>
-      <template v-else>
-        <AppDropdown class="msg-list__folder-picker" group="message-columns" @toggle="onFolderMenuToggle">
-          <summary
-            ref="folderTriggerEl"
-            class="app-dropdown__summary msg-list__folder-trigger"
-            :class="{ 'msg-list__folder-trigger--empty': !folder }"
-            aria-haspopup="listbox"
-            :aria-label="folder ? `Folder for column ${columnIndex}: ${folderName}` : `Choose a folder for column ${columnIndex}`"
-            :title="folder ? folderName : 'Choose a folder'"
-          >
-            <span
-              v-if="folderIcon"
-              class="msg-list__title-icon"
-              :style="{ '--folder-tone': folder ? folderPresentation(folder).color : undefined }"
-              aria-hidden="true"
-              v-html="folderIcon"
-            />
-            <span class="msg-list__title-name">{{ folder ? folderName : 'Choose a folder…' }}</span>
-          </summary>
-          <div
-            ref="folderMenuEl"
-            class="app-dropdown__menu msg-list__folder-menu"
-            role="listbox"
-            :aria-label="`Folders for column ${columnIndex}`"
-            @keydown="onFolderMenuKeydown"
-          >
-            <div
-              v-for="group in folderOptionGroups"
-              :key="group.key"
-              role="group"
-              :aria-label="group.label ?? undefined"
-            >
-              <div v-if="group.label" class="app-dropdown__heading msg-list__folder-heading" :title="group.label">
-                {{ group.label }}
-              </div>
-              <button
-                v-for="option in group.options"
-                :key="option.folder.id"
-                class="app-dropdown__item msg-list__folder-option"
-                type="button"
-                role="option"
-                :aria-selected="option.folder.id === folderId"
-                :style="{ '--folder-tone': option.color, paddingLeft: `${8 + option.depth * 14}px` }"
-                @click="pickFolder(option.folder.id, $event)"
-              >
-                <span class="msg-list__folder-option-icon" aria-hidden="true" v-html="option.icon" />
-                <span class="msg-list__folder-option-name">{{ option.folder.name || '(unnamed)' }}</span>
-              </button>
-            </div>
-          </div>
-        </AppDropdown>
-        <button
-          ref="removeColumnEl"
-          class="msg-list__column-control msg-list__remove-column"
-          type="button"
-          title="Remove column"
-          :aria-label="`Remove column ${columnIndex}`"
-          @click="emit('remove-column')"
-        >
-          <X :size="18" :stroke-width="1.75" aria-hidden="true" />
-        </button>
-      </template>
-    </div>
-
     <SelectableListHeader
       class="msg-list__header"
+      :data-header-tier="headerTier"
       :all-selected="allLoadedSelected"
       clear-class="msg-list__bulk-action msg-list__bulk-action--ghost"
       count-class="msg-list__count"
@@ -993,62 +644,99 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       selection-actions-class="msg-list__bulk-actions"
       singular-item-label="message"
       :selected-count="selectionCount"
+      :show-total-count="headerShowsCount"
       :total-count="rowCount"
       @clear-selection="selectNone"
       @toggle-all="toggleSelectAll"
     >
       <template #selection-actions>
-        <MessageBulkActions
-          :folder="folder"
-          :can-whitelist="canWhitelistInJunk"
-          :whitelisting="bulkWhitelisting"
-          :any-starred="anySelectedStarred"
-          :any-scheduled="anySelectedScheduled"
-          @archive="bulkArchive"
-          @junk="bulkJunk"
-          @delete="bulkDelete"
-          @cancel-send="bulkCancelSend"
-          @toggle-star="bulkToggleStar"
-          @mark-read="bulkMarkRead"
-          @mark-unread="bulkMarkUnread"
-          @whitelist="bulkWhitelist"
-        />
+        <MessageBulkActions :items="bulkActions.inline" />
       </template>
       <template #normal-actions>
-        <div class="msg-list__filters" role="group" aria-label="Message filters">
+        <MessageListHeaderTitle
+          ref="titleEl"
+          :primary="primary"
+          :folder="folder"
+          :folder-id="folderId"
+          :column-index="columnIndex"
+          :compact="!headerFilterLabels"
+          @pick="emit('change-folder', $event)"
+        />
+        <div
+          v-if="folderId != null"
+          class="msg-list__filters"
+          :class="{ 'msg-list__filters--icons': !headerFilterLabels }"
+          role="group"
+          aria-label="Message filters"
+        >
           <button
             class="msg-list__filter"
             :class="{ 'is-active': unreadOnly }"
             type="button"
             :aria-pressed="unreadOnly"
-            :disabled="folderId == null"
+            aria-label="Unread"
+            title="Unread"
             @click="toggleUnreadFilter"
           >
-            Unread
+            <Circle v-if="!headerFilterLabels" :size="10" :stroke-width="2" fill="currentColor" aria-hidden="true" />
+            <template v-else>Unread</template>
           </button>
           <button
             class="msg-list__filter msg-list__filter--starred"
             :class="{ 'is-active': flaggedOnly }"
             type="button"
             :aria-pressed="flaggedOnly"
-            :disabled="folderId == null"
+            aria-label="Starred"
+            title="Starred"
             @click="toggleFlaggedFilter"
           >
-            Starred
+            <Star v-if="!headerFilterLabels" :size="16" :stroke-width="1.75" aria-hidden="true" />
+            <template v-else>Starred</template>
           </button>
         </div>
       </template>
       <template #trailing>
-        <button
-          class="msg-list__refresh"
-          type="button"
-          :aria-label="isLoading ? 'Refreshing' : 'Refresh'"
-          :title="isLoading ? 'Refreshing…' : 'Refresh'"
-          :disabled="folderId == null"
-          @click="mailStore.refresh(folderId)"
-        >
-          <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': isLoading }" />
-        </button>
+        <template v-if="showsInlineControls">
+          <button
+            v-if="folderId != null"
+            class="msg-list__refresh"
+            type="button"
+            :aria-label="isLoading ? 'Refreshing' : 'Refresh'"
+            :title="isLoading ? 'Refreshing…' : 'Refresh'"
+            @click="refresh"
+          >
+            <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': isLoading }" />
+          </button>
+          <button
+            v-if="primary"
+            ref="addColumnEl"
+            class="msg-list__column-control msg-list__add-column"
+            type="button"
+            :disabled="!canAddColumn"
+            :title="addColumnTitle"
+            :aria-label="addColumnTitle"
+            @click="emit('add-column')"
+          >
+            <Plus :size="18" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+          <button
+            v-else
+            ref="removeColumnEl"
+            class="msg-list__column-control msg-list__remove-column"
+            type="button"
+            title="Remove column"
+            :aria-label="removeColumnTitle"
+            @click="emit('remove-column')"
+          >
+            <X :size="18" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </template>
+        <MessageListMoreMenu
+          v-if="showsMoreMenu"
+          ref="moreMenuEl"
+          :groups="moreMenuGroups"
+          :label="`More actions for column ${columnIndex}`"
+        />
       </template>
     </SelectableListHeader>
 
@@ -1086,6 +774,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             :shows-recipients="listShowsRecipients"
             :sort="listSort"
             :hover-actions="rowHoverActions(visibleMessages[v.index])"
+            :archive-action="!isArchiveFolder"
             @row-click="onRowClick(v.index, $event)"
             @checkbox-click="onCheckboxClick(v.index, $event)"
             @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
@@ -1149,7 +838,10 @@ defineExpose({ focusColumnControl, focusFolderPicker });
 <style scoped>
 .msg-list {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  /* The header's nowrap row must never size the column: the track is
+     the column's width and the header shrinks into it. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
   border-right: 1px solid var(--border);
   background: var(--panel);
   min-width: 0;
@@ -1168,110 +860,15 @@ defineExpose({ focusColumnControl, focusFolderPicker });
 .msg-list.is-drop-invalid {
   box-shadow: inset 0 0 0 2px color-mix(in srgb, #d93025 55%, transparent);
 }
-/* Title row: folder (static for the primary column, a dropdown for the
-   others) at the start, the column control pinned to the end corner.
-   The name truncates so the control never wraps out of the corner. */
-.msg-list__titlebar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 42px;
-  padding: 4px 8px 4px 12px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.msg-list__title,
-.msg-list__folder-picker {
-  flex: 1 1 auto;
+/* One row at every width: the title at the start is the only flexible
+   item, so the controls after it keep their place; what has no room
+   moves into the More menu (see the tier constants in the script). */
+.msg-list__header {
   min-width: 0;
+  flex-wrap: nowrap;
 }
-.msg-list__title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-.msg-list__title-icon {
-  display: block;
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  color: var(--folder-tone, var(--muted));
-}
-.msg-list__title-icon :deep(svg),
-.msg-list__folder-option-icon :deep(svg) {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.msg-list__title-icon :deep([fill="context-fill"]),
-.msg-list__folder-option-icon :deep([fill="context-fill"]) {
-  fill: color-mix(in srgb, currentColor 20%, transparent);
-}
-.msg-list__title-icon :deep([fill="context-stroke"]),
-.msg-list__folder-option-icon :deep([fill="context-stroke"]) {
-  fill: currentColor;
-}
-.msg-list__title-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.msg-list__folder-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  min-height: 32px;
-  padding: 4px 8px;
-  border: 1px solid var(--control-border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 600;
-}
-.msg-list__folder-trigger:focus-visible {
-  border-color: var(--accent);
-  outline: none;
-}
-.msg-list__folder-trigger::after {
-  flex-shrink: 0;
-}
-.msg-list__folder-trigger--empty {
-  color: var(--muted);
-  font-weight: 500;
-}
-.msg-list__folder-menu {
-  min-width: 220px;
-  max-width: min(360px, 80vw);
-}
-.msg-list__folder-heading {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.msg-list__folder-option {
-  width: 100%;
-}
-.msg-list__folder-option[aria-selected="true"] {
-  background: var(--rowActive);
-}
-.msg-list__folder-option-icon {
-  display: block;
-  width: 18px;
-  height: 18px;
-  color: var(--folder-tone, var(--muted));
-}
-.msg-list__folder-option-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.msg-list__header :deep(.selectable-list-header__normal-actions) {
+  gap: 10px;
 }
 .msg-list__column-control {
   display: inline-grid;
@@ -1300,23 +897,17 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   background: transparent;
   color: var(--muted);
 }
-.msg-list__header {
-  container-type: inline-size;
-}
-/* Select-all, the two filters and Refresh need ~290px; the total count
-   (up to ~85px with four digits) goes first when the pane cannot fit it
-   too. The selected count stays. */
-@container (max-width: 379px) {
-  .msg-list__header :deep(.selectable-list-header__count--total) {
-    display: none;
-  }
-}
 .msg-list__filters {
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.msg-list__filters--icons .msg-list__filter {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  padding: 0;
 }
 .msg-list__filter {
   border: 1px solid var(--border);

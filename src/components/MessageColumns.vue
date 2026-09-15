@@ -89,7 +89,10 @@ defineExpose({ addColumn, removeColumn });
   <div
     class="msg-columns"
     :class="{ 'msg-columns--resizing': activeResizePane !== null }"
-    :style="{ '--message-column-resizer-width': `${MESSAGE_COLUMN_RESIZER_WIDTH}px` }"
+    :style="{
+      '--message-column-resizer-width': `${MESSAGE_COLUMN_RESIZER_WIDTH}px`,
+      '--message-column-min-width': `${MESSAGE_COLUMN_MIN_WIDTH}px`,
+    }"
   >
     <template v-for="(column, index) in columns" :key="column.id">
       <MessageList
@@ -136,11 +139,13 @@ defineExpose({ addColumn, removeColumn });
   overflow-y: hidden;
   scrollbar-gutter: stable;
 }
-/* The handle after a column draws the divider, so the column's own
+/* A column asks for its stored width and gives way down to the minimum
+   when the area is short of room; only past that does the area scroll.
+   The handle after a column draws the divider, so the column's own
    right border would double it. */
 .msg-columns > .msg-columns__column {
-  flex: 0 0 var(--message-column-width, 360px);
-  min-width: 0;
+  flex: 0 1 var(--message-column-width, 360px);
+  min-width: var(--message-column-min-width, 280px);
   height: 100%;
   border-right: 0;
 }
@@ -162,6 +167,7 @@ defineExpose({ addColumn, removeColumn });
   .msg-columns > .msg-columns__column,
   .msg-columns > .msg-columns__column--last {
     flex: 0 0 100%;
+    min-width: 0;
     scroll-snap-align: start;
   }
   .msg-columns__resizer {

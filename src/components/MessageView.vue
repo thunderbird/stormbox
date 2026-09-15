@@ -533,8 +533,10 @@ async function archive() {
 }
 
 // Whitelisting only makes sense for messages currently in the Junk
-// folder; the toolbar button is gated on this.
+// folder; the toolbar button is gated on this. Archiving from Archive
+// is a no-op, so that button is gated the same way.
 const isInJunkFolder = computed(() => mailStore.openMessageFolder?.role === 'junk');
+const isInArchiveFolder = computed(() => mailStore.openMessageFolder?.role === 'archive');
 const canWhitelistInJunk = computed(() => {
   const current = mailStore.openMessageFolder;
   return current?.role === 'junk'
@@ -666,7 +668,7 @@ function closeMessageView() {
              only Back and the view-mode toggle, and the banner below
              owns Cancel Send. -->
         <template v-if="!isPendingScheduled">
-          <AppIconButton class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
+          <AppIconButton v-if="!isInArchiveFolder" class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </AppIconButton>
           <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">

@@ -219,6 +219,41 @@ describe('MessageView with a sparse messages array', () => {
     expect(titles).not.toContain('Whitelist sender and move to Inbox');
   });
 
+  it('omits Archive for a message opened from the Archive folder and acts on that folder', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+    mailStore.folders = [
+      { id: 1, account_id: 1, remote_id: 'inbox', name: 'Inbox', role: 'inbox', is_deleted: 0 },
+      { id: 2, account_id: 1, remote_id: 'archive', name: 'Archive', role: 'archive', is_deleted: 0 },
+    ];
+    // The message list's primary column shows Inbox; the message was
+    // opened from a column showing Archive.
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [{ id: 7, subject: 'Inbox mail', from_text: 'a@example.com', received_at: 1 }];
+    mailStore.bindFolderView(2);
+    mailStore.selectFolder(2);
+    mailStore.messages = [{ id: 42, subject: 'Archived mail', from_text: 'b@example.com', received_at: 2 }];
+    mailStore.selectFolder(1);
+    mailStore.selectMessage(42, 2);
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+    expect(wrapper.find('h2').text()).toBe('Archived mail');
+    const titles = wrapper
+      .findAll('.message-view__header .message-view__action')
+      .map((button) => button.attributes('title'));
+    expect(titles).not.toContain('Archive (A)');
+    expect(titles).toContain('Junk');
+
+    const junkSpy = vi.spyOn(mailStore, 'junkMessages').mockResolvedValue({ succeeded: 1, failed: 0, skipped: 0 });
+    await wrapper.find('.message-view__header [aria-label="Mark as junk"]').trigger('click');
+    expect(junkSpy).toHaveBeenCalledWith([42], { sourceFolderId: 2 });
+  });
+
   it('closes the message view from the back toolbar action', async () => {
     const authStore = useAuthStore();
     authStore.accountId = 1;

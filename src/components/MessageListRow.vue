@@ -47,6 +47,8 @@ const props = withDefaults(defineProps<{
    * shows the star (set or not) and never archive or delete.
    */
   hoverActions?: boolean;
+  /** False where archiving is a no-op (the Archive folder): the overlay drops its Archive button. */
+  archiveAction?: boolean;
 }>(), {
   focused: false,
   selected: false,
@@ -55,6 +57,7 @@ const props = withDefaults(defineProps<{
   sort: 'received',
   selectable: true,
   hoverActions: false,
+  archiveAction: true,
   domIdPrefix: 'msg-row-',
 });
 
@@ -168,6 +171,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               <Star :size="17" :stroke-width="1.75" :fill="isFlagged ? 'currentColor' : 'none'" />
             </button>
             <button
+              v-if="archiveAction"
               type="button"
               class="msg-list__action"
               tabindex="-1"

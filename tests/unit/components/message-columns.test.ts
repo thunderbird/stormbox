@@ -210,7 +210,7 @@ describe('MessageColumns', () => {
     expect(columns[0].find('.msg-list__add-column').exists()).toBe(true);
     expect(columns[0].find('.msg-list__remove-column').exists()).toBe(false);
     expect(columns[0].findAll('.msg-list__item')).toHaveLength(3);
-    // The single column's handle keeps the pre-columns label.
+    // A lone column's handle is labelled as the message list's.
     expect(wrapper.find('[aria-label="Resize message list"]').exists()).toBe(true);
 
     await columns[0].find('.msg-list__add-column').trigger('click');

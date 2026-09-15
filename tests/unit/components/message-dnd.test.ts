@@ -665,6 +665,33 @@ describe('MessageList row click viewing', () => {
   });
 });
 
+describe('MessageList row actions per folder', () => {
+  it('drops the Archive hover action inside the Archive folder and keeps it elsewhere', async () => {
+    const mailStore = useMailStore();
+    mailStore.folders = [
+      makeFolder(1, { name: 'Inbox' }),
+      makeFolder(2, { name: 'Archive', role: 'archive' }),
+    ];
+    mailStore.currentFolderId = 2;
+    mailStore.messages = [makeRow(1)];
+    mailStore.totalForFolder = 1;
+
+    const archiveWrapper = mount(MessageList);
+    await nextTick();
+    expect(archiveWrapper.find('.msg-list__action[title="Archive"]').exists()).toBe(false);
+    expect(archiveWrapper.find('.msg-list__action[title="Delete"]').exists()).toBe(true);
+    archiveWrapper.unmount();
+
+    mailStore.currentFolderId = 1;
+    mailStore.messages = [makeRow(1)];
+    mailStore.totalForFolder = 1;
+    const inboxWrapper = mount(MessageList);
+    await nextTick();
+    expect(inboxWrapper.find('.msg-list__action[title="Archive"]').exists()).toBe(true);
+    inboxWrapper.unmount();
+  });
+});
+
 describe('message drag and folder drop components', () => {
   it('starts a row drag with all selected message ids when the dragged row is selected', async () => {
     const mailStore = useMailStore();

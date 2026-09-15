@@ -252,6 +252,10 @@ export function useThunderbirdShortcuts({
 
       case 'clearSelection':
         if (mailStore.selectedIds.size === 0) return;
+        // An open dropdown (a column's folder picker or More menu) owns
+        // Escape: it closes on the same capture-phase listener, registered
+        // after this one, so the selection must not go with it.
+        if (document.querySelector('details.app-dropdown[open]')) return;
         event.preventDefault();
         mailStore.clearSelection();
         return;

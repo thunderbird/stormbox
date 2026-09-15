@@ -55,6 +55,7 @@ import {
 const SIMPLE_SPEC_SUBJECT_PREFIXES = [
   'ArchiveAction e2e',
   'Bulk delete e2e',
+  'Columns e2e',
   'Compose send e2e',
   'Delete e2e',
   'Delete inbox e2e',
