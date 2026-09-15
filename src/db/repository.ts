@@ -577,6 +577,14 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_FOLDER_WINDOW, { accountId, folderId, range });
   }
 
+  /**
+   * Name the folders the UI is displaying so push catch-up reconciles
+   * their views regardless of how recently they were synced.
+   */
+  setActiveFolderViews(accountId: number, folderIds: number[]) {
+    return this.call(DB_RPC.SYNC_SET_ACTIVE_FOLDER_VIEWS, { accountId, folderIds });
+  }
+
   ensureMessageBody(accountId, messageId) {
     return this.call(DB_RPC.SYNC_ENSURE_MESSAGE_BODY, { accountId, messageId });
   }

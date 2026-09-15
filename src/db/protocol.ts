@@ -174,6 +174,7 @@ export const DB_RPC = Object.freeze({
   SYNC_STOP_ACCOUNT: 'sync.stopAccount',
   SYNC_ENSURE_FOLDER_TREE: 'sync.ensureFolderTree',
   SYNC_ENSURE_FOLDER_WINDOW: 'sync.ensureFolderWindow',
+  SYNC_SET_ACTIVE_FOLDER_VIEWS: 'sync.setActiveFolderViews',
   SYNC_ENSURE_MESSAGE_BODY: 'sync.ensureMessageBody',
   SYNC_ENSURE_MESSAGE_BODIES: 'sync.ensureMessageBodies',
   SYNC_MESSAGE_BODY_FOR_DISPLAY: 'sync.messageBodyForDisplay',

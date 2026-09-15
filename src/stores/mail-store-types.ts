@@ -10,10 +10,24 @@ import type { MessageRow } from '../types';
 
 export type CachedRow = MessageRow | undefined;
 
+/**
+ * Reactive projection of a folder's cached window that a message list
+ * column binds to. `messages` is replaced with a fresh copy of the
+ * positional buffer on every change; `total` mirrors the authoritative
+ * query-view total; `isLoading` is true while the folder has no painted
+ * page yet or is being rebuilt.
+ */
+export interface FolderView {
+  messages: CachedRow[];
+  total: number;
+  isLoading: boolean;
+}
+
 export interface FolderCache {
   folderId: number;
   total: number;
   rows: CachedRow[];
+  view: FolderView;
   paintedRanges: Array<{ start: number; end: number }>;
   sortProp: JmapViewSort;
   scrollTop: number;

@@ -107,13 +107,12 @@ const textHtml = computed(() => {
     ADD_ATTR: ['target'],
   });
 });
-const message = computed(() =>
-  // The messages array is positional and can carry explicit `undefined`
-  // slots (sparse query_view_items, mid-shrink, etc.) — guard the slot
-  // access so find() doesn't throw on a hole.
-  mailStore.messages.find((m) => m?.id === mailStore.selectedMessageId) ?? null,
-);
+// The open message is resolved by the store from the folder it was
+// opened in, so a message read from any list column shows here.
+const message = computed(() => mailStore.openMessage ?? null);
 const selectedMessageId = computed(() => mailStore.selectedMessageId);
+/** Folder the open message was opened from; folder-specific actions act on it. */
+const messageSource = computed(() => ({ sourceFolderId: mailStore.openMessageFolderId }));
 const messageAccountId = computed(() => message.value?.account_id ?? null);
 const attachmentParts = computed(() => (
   Array.isArray(body.value?.attachments) ? body.value.attachments : []
@@ -527,7 +526,7 @@ async function forward() {
 async function archive() {
   if (!message.value) return;
   try {
-    await mailStore.archiveMessages([message.value.id]);
+    await mailStore.archiveMessages([message.value.id], messageSource.value);
   } catch (err) {
     console.warn('[message-view] archive failed', err?.message ?? err);
   }
@@ -535,9 +534,9 @@ async function archive() {
 
 // Whitelisting only makes sense for messages currently in the Junk
 // folder; the toolbar button is gated on this.
-const isInJunkFolder = computed(() => mailStore.currentFolder?.role === 'junk');
+const isInJunkFolder = computed(() => mailStore.openMessageFolder?.role === 'junk');
 const canWhitelistInJunk = computed(() => {
-  const current = mailStore.currentFolder;
+  const current = mailStore.openMessageFolder;
   return current?.role === 'junk'
     && mailStore.primaryFolders.some((folder) => folder.id === current.id);
 });
@@ -547,7 +546,7 @@ async function whitelistSender() {
   if (!message.value || whitelisting.value) return;
   whitelisting.value = true;
   try {
-    await mailStore.whitelistSender(message.value.id);
+    await mailStore.whitelistSender(message.value.id, messageSource.value);
   } catch (err) {
     console.warn('[message-view] whitelist failed', err?.message ?? err);
   } finally {
@@ -558,7 +557,7 @@ async function whitelistSender() {
 async function junk() {
   if (!message.value) return;
   try {
-    await mailStore.junkMessages([message.value.id]);
+    await mailStore.junkMessages([message.value.id], messageSource.value);
   } catch (err) {
     console.warn('[message-view] junk failed', err?.message ?? err);
   }
@@ -622,7 +621,7 @@ async function cancelScheduledSend() {
 async function destroy() {
   if (!message.value) return;
   try {
-    await mailStore.destroyMessage(message.value.id);
+    await mailStore.destroyMessage(message.value.id, messageSource.value);
   } catch (err) {
     // The store has already populated mailStore.error with a
     // human-readable string in describeMutationFailure. Suppress the

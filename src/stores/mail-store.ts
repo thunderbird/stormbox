@@ -19,7 +19,13 @@
  */
 
 import { defineStore } from 'pinia';
-import { computed, ref, watch } from 'vue';
+import {
+  computed,
+  reactive,
+  ref,
+  shallowReactive,
+  watch,
+} from 'vue';
 
 import { getRepositoryAsync } from '../composables/useRepository';
 import { useAuthStore } from './auth-store';
@@ -40,7 +46,7 @@ import { MUTATION_TYPE } from '../constants/states';
 import type { JmapViewSort, MailboxRole, MutationType } from '../constants/states';
 import type { AccountRow, FolderRow, MessageRow, QueryViewProgress } from '../types';
 import type { Repository } from '../db/repository';
-import type { CachedRow, FolderCache } from './mail-store-types';
+import type { CachedRow, FolderCache, FolderView } from './mail-store-types';
 
 interface MutationOutcome {
   attempted: number;
@@ -100,15 +106,129 @@ export const useMailStore = defineStore('mail', () => {
   const authStore = useAuthStore();
 
   const folders = ref<FolderRow[]>([]);
+  /**
+   * Folder of the primary message list column: what the folder list
+   * highlights and what `selectFolder` sets. Other columns bind their
+   * own folder through `bindFolderView`.
+   */
   const currentFolderId = ref<number | null>(null);
-  // Bound to the current folder's positional `rows` array. Indices
-  // we haven't fetched are `undefined`, so the virtualiser renders
-  // skeleton placeholders for them and the scrollbar reflects the
-  // true total.
-  const messages = ref<CachedRow[]>([]);
-  const totalForFolder = ref(0);
+  /**
+   * Bumped by every `selectFolder`, re-picks included, so the primary
+   * column can react to the same folder being chosen again.
+   */
+  const folderPickCount = ref(0);
   const folderProgress = ref<Map<number, QueryViewProgress>>(new Map());
-  const selectedMessageId = ref<number | null>(null);
+
+  /**
+   * Per-folder cache. Keys live as long as the store does (i.e. as
+   * long as the user is logged in), so navigating Inbox -> Archives
+   * -> Inbox restores the original Inbox state with no network IO and
+   * no UI flicker.
+   *
+   * Each entry owns its own pageInflight: a single shared inflight
+   * promise across folders is what caused mid-switch deadlocks where
+   * folder B's ensureLoaded returned folder A's still-pending load
+   * and never started B's own _loadPage. With per-folder inflight
+   * the user can flip between folders as fast as they want and each
+   * folder's loading state is independent.
+   *
+   * The map is shallow-reactive so `folderView(id)` re-evaluates when a
+   * folder's cache is created; each cache carries a reactive `view`
+   * (rows copy, total, loading flag) that the list columns bind to.
+   * See {@link FolderCache} for shape details.
+   */
+  const folderStates = shallowReactive(new Map<number, FolderCache>());
+  /** View of the primary column while it has no folder; never written to in production. */
+  const noFolderView = reactive<FolderView>({ messages: [], total: 0, isLoading: false });
+  /** Shared read-only view for a folder that has no cache yet. */
+  const unboundFolderView: FolderView = Object.freeze({
+    messages: Object.freeze([]) as unknown as CachedRow[],
+    total: 0,
+    isLoading: false,
+  });
+  /**
+   * Folders currently displayed by a list column, ref-counted. Together
+   * with `currentFolderId` these are the folders whose painted pages are
+   * re-read on every MESSAGES broadcast and that the sync layer is told
+   * to keep fresh on push (`setActiveFolderViews`).
+   */
+  const boundFolderCounts = new Map<number, number>();
+
+  function folderView(folderId: number | null | undefined): FolderView {
+    if (folderId == null) return noFolderView;
+    return folderStates.get(Number(folderId))?.view ?? unboundFolderView;
+  }
+
+  /** Rows a folder's column currently paints (sparse: unfetched positions are undefined). */
+  function rowsForFolder(folderId: number | null | undefined): CachedRow[] {
+    return folderView(folderId).messages;
+  }
+
+  function publishView(state: FolderCache) {
+    state.view.messages = state.rows.slice();
+    state.view.total = state.total;
+  }
+
+  /** Whether `state` is still the live cache for its folder (not replaced by a reset). */
+  function isLiveState(state: FolderCache): boolean {
+    return folderStates.get(state.folderId) === state;
+  }
+
+  // Positional rows of the primary column's folder. Indices we haven't
+  // fetched are `undefined`, so the virtualiser renders skeleton
+  // placeholders for them and the scrollbar reflects the true total.
+  // Writable so callers (and tests) can seed the primary view directly.
+  const messages = computed<CachedRow[]>({
+    get: () => folderView(currentFolderId.value).messages,
+    set: (rows) => {
+      if (currentFolderId.value == null) {
+        noFolderView.messages = rows;
+        return;
+      }
+      const state = ensureFolderState(currentFolderId.value);
+      state.rows = rows.slice();
+      publishView(state);
+    },
+  });
+  const totalForFolder = computed<number>({
+    get: () => folderView(currentFolderId.value).total,
+    set: (total) => {
+      if (currentFolderId.value == null) {
+        noFolderView.total = total;
+        return;
+      }
+      const state = ensureFolderState(currentFolderId.value);
+      state.total = total;
+      publishView(state);
+    },
+  });
+  const isLoading = computed<boolean>({
+    get: () => folderView(currentFolderId.value).isLoading,
+    set: (loading) => {
+      const view = currentFolderId.value == null
+        ? noFolderView
+        : ensureFolderState(currentFolderId.value).view;
+      view.isLoading = loading;
+    },
+  });
+
+  /**
+   * The open (previewed) message and the folder it was opened from. The
+   * folder is recorded because several columns can be on screen: the
+   * reading pane resolves the row from that folder's view and the
+   * folder-specific actions (archive, junk, whitelist) act on it.
+   */
+  const openMessageRef = ref<{ id: number | null; folderId: number | null }>({
+    id: null,
+    folderId: null,
+  });
+  const selectedMessageId = computed<number | null>({
+    get: () => openMessageRef.value.id,
+    set: (id) => {
+      openMessageRef.value = { id, folderId: resolveFolderForMessage(id) };
+    },
+  });
+  const selectedMessageFolderId = computed(() => openMessageRef.value.folderId);
   // Keyboard "cursor": the active row, as a stable id. Single source of
   // truth for which row the keyboard is on, written by every navigation
   // path (Arrow/Shift+Arrow via useListSelection, F/B/N/P/Home/End via
@@ -117,16 +237,86 @@ export const useMailStore = defineStore('mail', () => {
   // aria-activedescendant off this. It coincides with selectedMessageId
   // on plain nav/click but intentionally diverges during a Shift+Arrow
   // range extension, where the cursor advances without changing the
-  // previewed message.
-  const focusedMessageId = ref<number | null>(null);
+  // previewed message. `focusedFolderId` names the column that owns it.
+  const focusedRef = ref<{ id: number | null; folderId: number | null }>({
+    id: null,
+    folderId: null,
+  });
+  const focusedMessageId = computed<number | null>({
+    get: () => focusedRef.value.id,
+    set: (id) => {
+      setFocusedMessage(id, resolveFolderForMessage(id));
+    },
+  });
+  const focusedFolderId = computed(() => focusedRef.value.folderId);
+
+  function setFocusedMessage(id: number | null, folderId: number | null) {
+    focusedRef.value = { id, folderId: id == null ? null : folderId };
+  }
+
   // Multi-select set, distinct from `selectedMessageId` (which is the
   // "focused / previewed" row). Ports Overture's split between
   // SelectionController (set) and SingleSelectionController (current).
   // The Set instance is replaced (not mutated in place) by helpers so
   // Vue's reactivity picks up changes — same pattern useListSelection
-  // uses.
-  const selectedIds = ref<Set<number>>(new Set());
-  const isLoading = ref(false);
+  // uses. There is one selection across every column; `folderId` names
+  // the folder its rows belong to.
+  const selection = ref<{ folderId: number | null; ids: Set<number> }>({
+    folderId: null,
+    ids: new Set(),
+  });
+  const selectedIds = computed<Set<number>>({
+    get: () => selection.value.ids,
+    set: (ids) => {
+      setSelection(selection.value.folderId ?? currentFolderId.value, ids);
+    },
+  });
+  const selectionFolderId = computed(() =>
+    (selection.value.ids.size > 0 ? selection.value.folderId : null));
+
+  /** Replace the selection with `ids` from `folderId`; an empty set clears it. */
+  function setSelection(folderId: number | null, ids: Set<number>) {
+    selection.value = { folderId: ids.size > 0 ? folderId : null, ids };
+  }
+
+  /**
+   * Folder a message id belongs to among the loaded views: the folder
+   * that already owns the open message or selection wins when it holds
+   * the row, then any bound view, then the primary column's folder.
+   */
+  function resolveFolderForMessage(id: number | null): number | null {
+    if (id == null) return null;
+    for (const candidate of [openMessageRef.value.folderId, selection.value.folderId]) {
+      if (candidate != null && rowInFolder(candidate, id)) return candidate;
+    }
+    return folderIdOfLoadedRow(id) ?? currentFolderId.value;
+  }
+
+  function rowInFolder(folderId: number | null | undefined, id: number): CachedRow {
+    return rowsForFolder(folderId).find((row) => row?.id === id);
+  }
+
+  function folderIdOfLoadedRow(id: number): number | null {
+    for (const state of folderStates.values()) {
+      if (state.rows.some((row) => row?.id === id)) return state.folderId;
+    }
+    return null;
+  }
+
+  /**
+   * A cached row by id: the source folder's view first, then every
+   * other loaded view. Message ids are local and unique across folders.
+   */
+  function findLoadedRow(id: number, folderId?: number | null): CachedRow {
+    const own = folderId == null ? undefined : rowInFolder(folderId, id);
+    if (own) return own;
+    for (const state of folderStates.values()) {
+      const row = state.rows.find((candidate) => candidate?.id === id);
+      if (row) return row;
+    }
+    return noFolderView.messages.find((row) => row?.id === id);
+  }
+
   const error = ref<string | null>(null);
   // Transient success confirmation (e.g. "Whitelisted sender"). Cleared
   // automatically after a few seconds; rendered by StoreErrorToast.
@@ -184,24 +374,6 @@ export const useMailStore = defineStore('mail', () => {
     }
   }
 
-  /**
-   * Per-folder cache. Keys live as long as the store does (i.e. as
-   * long as the user is logged in), so navigating Inbox -> Archives
-   * -> Inbox restores the original Inbox state with no network IO and
-   * no UI flicker.
-   *
-   * Each entry owns its own pageInflight: a single shared inflight
-   * promise across folders is what caused mid-switch deadlocks where
-   * folder B's ensureLoaded returned folder A's still-pending load
-   * and never started B's own _loadPage. With per-folder inflight
-   * the user can flip between folders as fast as they want and each
-   * folder's loading state is independent.
-   *
-   * See {@link FolderCache} for shape details.
-   */
-  const folderStates: Map<number, FolderCache> = new Map();
-  let folderState: FolderCache | null = null;
-
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
 
@@ -223,11 +395,16 @@ export const useMailStore = defineStore('mail', () => {
   let refreshFolderProgressInflight: Promise<void> | null = null;
   let refreshFolderProgressDirty = false;
   const staleFolderIds = new Set<number>();
-  let manualRefreshFolderId: number | null = null;
+  /** Folders whose manual refresh is in flight; broadcasts leave them alone until it lands. */
+  const manualRefreshFolderIds = new Set<number>();
 
-  const currentFolder = computed(
-    () => folders.value.find((f) => f.id === currentFolderId.value) ?? null,
-  );
+  function folderById(folderId: number | null | undefined): FolderRow | null {
+    if (folderId == null) return null;
+    const id = Number(folderId);
+    return folders.value.find((f) => Number(f.id) === id) ?? null;
+  }
+
+  const currentFolder = computed(() => folderById(currentFolderId.value));
 
   /**
    * Sort of the open folder's canonical view. MessageList shows the
@@ -235,6 +412,22 @@ export const useMailStore = defineStore('mail', () => {
    * explainable from what is on screen.
    */
   const currentSort = computed<JmapViewSort>(() => _sortPropFor(currentFolder.value));
+
+  /** Sort of any folder's canonical view, for columns bound to a folder other than the primary. */
+  function sortForFolder(folderId: number | null | undefined): JmapViewSort {
+    return _sortPropFor(folderById(folderId));
+  }
+
+  /** Row of the open message, resolved from the folder it was opened in. */
+  const openMessage = computed<CachedRow>(() => {
+    const id = openMessageRef.value.id;
+    if (id == null) return undefined;
+    return findLoadedRow(id, openMessageRef.value.folderId ?? currentFolderId.value);
+  });
+  /** Folder the open message was opened from; the primary folder when unknown. */
+  const openMessageFolderId = computed(() =>
+    openMessageRef.value.folderId ?? currentFolderId.value);
+  const openMessageFolder = computed(() => folderById(openMessageFolderId.value));
 
   // Accounts visible in this session: the signed-in (primary) account
   // plus any shared accounts (RFC 9670) the server advertised. Loaded
@@ -304,16 +497,15 @@ export const useMailStore = defineStore('mail', () => {
   function $reset() {
     folders.value = [];
     accounts.value = [];
-    messages.value = [];
     currentFolderId.value = null;
-    totalForFolder.value = 0;
-    selectedMessageId.value = null;
-    focusedMessageId.value = null;
-    selectedIds.value = new Set();
+    noFolderView.messages = [];
+    noFolderView.total = 0;
+    noFolderView.isLoading = false;
+    openMessageRef.value = { id: null, folderId: null };
+    focusedRef.value = { id: null, folderId: null };
+    selection.value = { folderId: null, ids: new Set() };
     folderProgress.value = new Map();
     folderStates.clear();
-    folderState = null;
-    isLoading.value = false;
     error.value = null;
     notice.value = null;
     if (noticeTimer) {
@@ -328,7 +520,7 @@ export const useMailStore = defineStore('mail', () => {
     refreshFolderProgressDirty = false;
     staleFolderIds.clear();
     folderDeleteMailboxHasEmailIds.clear();
-    manualRefreshFolderId = null;
+    manualRefreshFolderIds.clear();
   }
 
   /**
@@ -383,19 +575,65 @@ export const useMailStore = defineStore('mail', () => {
       refreshFolders();
     }
     if (tables.includes(TABLE_FAMILIES.MESSAGES)) {
-      const manualRefreshOwnsCurrentFolder = manualRefreshFolderId != null
-        && Number(currentFolderId.value) === manualRefreshFolderId;
-      if (currentFolderId.value != null && !manualRefreshOwnsCurrentFolder) {
+      if (activeFolderIds().some((folderId) => !manualRefreshFolderIds.has(folderId))) {
         refreshLoadedPages();
       }
       refreshFolderProgress();
-      if (selectedMessageId.value != null && !manualRefreshOwnsCurrentFolder) {
+      const openId = openMessageRef.value.id;
+      const openFolderId = openMessageFolderId.value;
+      const manualRefreshOwnsOpenMessage = openFolderId != null
+        && manualRefreshFolderIds.has(openFolderId);
+      if (openId != null && !manualRefreshOwnsOpenMessage) {
         // Re-issue a display load using a fresh token so a stale
         // in-flight Email/get for the same id cannot land after
         // this broadcast did and clobber the new body.
-        void bodyPrefetch.loadBodyForDisplay(selectedMessageId.value, bodyPrefetch.nextDisplayToken());
+        void bodyPrefetch.loadBodyForDisplay(openId, bodyPrefetch.nextDisplayToken());
       }
     }
+  }
+
+  /**
+   * Folders whose cached windows the UI is showing: every column-bound
+   * folder plus the primary column's folder.
+   */
+  function activeFolderIds(): number[] {
+    const ids = new Set<number>(boundFolderCounts.keys());
+    if (currentFolderId.value != null) ids.add(Number(currentFolderId.value));
+    return [...ids];
+  }
+
+  /**
+   * Tell the sync layer which folder views to keep fresh on push, so a
+   * folder shown in a column is reconciled like the folder list's
+   * selected folder even when recency alone would have skipped it.
+   */
+  function pushActiveFolderViews() {
+    if (!repo || authStore.accountId == null) return;
+    if (typeof repo.setActiveFolderViews !== 'function') return;
+    void repo.setActiveFolderViews(authStore.accountId, activeFolderIds()).catch((err) => {
+      console.warn('[mail-store] setActiveFolderViews failed', err);
+    });
+  }
+
+  /**
+   * Bind a list column to a folder: creates the folder's cache, primes
+   * its first page, and keeps it in the broadcast/push refresh set until
+   * the returned release function runs.
+   */
+  function bindFolderView(folderId: number): () => void {
+    const id = Number(folderId);
+    boundFolderCounts.set(id, (boundFolderCounts.get(id) ?? 0) + 1);
+    openFolderView(id);
+    pushActiveFolderViews();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = (boundFolderCounts.get(id) ?? 0) - 1;
+      if (count <= 0) boundFolderCounts.delete(id);
+      else boundFolderCounts.set(id, count);
+      pushActiveFolderViews();
+    };
   }
 
   // Optimistic isSubscribed values for folders whose mutation is still
@@ -546,78 +784,104 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Switch the open folder. Synchronous-feeling: the cached rows for
-   * this folder paint immediately, and only a never-visited folder
-   * shows a spinner. The actual network round trip is fired in the
-   * background and lands via the broadcast.
+   * Switch the primary column's folder. Synchronous-feeling: the cached
+   * rows for this folder paint immediately, and only a never-visited
+   * folder shows a spinner. The actual network round trip is fired in
+   * the background and lands via the broadcast.
    *
-   * Returns once the very first page has either resolved from cache
-   * or completed its initial fetch, so callers that want to await
-   * "navigation complete" can. Subsequent visits resolve immediately
-   * because the cache is already populated.
+   * The selection, cursor and open message are dropped when they belong
+   * to the folder being left or the one being picked (a re-pick resets
+   * the column too); state owned by another column's folder is kept.
    */
   function selectFolder(folderId: number | null) {
     // Switch synchronously so the FolderTree highlight and the
     // MessageList rebind in the same tick. Any awaited work below
     // could race against another selectFolder call from a rapid
-    // click, leaving currentFolderId on one folder and folderState
+    // click, leaving currentFolderId on one folder and the cache
     // on another — keeping this function sync avoids that class of
     // bug entirely.
+    const previous = currentFolderId.value;
     currentFolderId.value = folderId;
-    selectedMessageId.value = null;
-    focusedMessageId.value = null;
-    selectedIds.value = new Set();
-    messageBody.value = null;
-    selectedMessageAddresses.value = [];
+    folderPickCount.value += 1;
+    clearInteractionForFolder(previous);
+    clearInteractionForFolder(folderId);
     if (folderId == null) {
-      folderState = null;
-      messages.value = [];
-      totalForFolder.value = 0;
-      isLoading.value = false;
+      noFolderView.messages = [];
+      noFolderView.total = 0;
+      noFolderView.isLoading = false;
       return;
     }
+    openFolderView(folderId);
+  }
 
-    let state = folderStates.get(folderId);
-    if (!state) {
-      const folderRow = folders.value.find((f) => f.id === folderId);
-      state = {
-        folderId,
-        total: Number(folderRow?.total_emails ?? 0) || 0,
-        rows: [],
-        paintedRanges: [],
-        sortProp: _sortPropFor(folderRow),
-        scrollTop: 0,
-        pageInflight: null,
-        requestedRange: null,
-      };
-      folderStates.set(folderId, state);
-    } else {
-      // Revisit: keep the cached state.total. Don't reset it from
-      // folder.total_emails — that's an older Mailbox/get value
-      // and can clobber a JMAP-authoritative count from the last
-      // _loadPage. The currentFolder.total_emails watch picks up
-      // any actual growth (new mail since we were last here), and
-      // _loadPage's partial-cache fallthrough will reconcile a
-      // shrink the next time we read.
+  /**
+   * Drop the selection, cursor and open message when they belong to
+   * `folderId`. `null` matches state that was never attributed to a
+   * folder (the primary column before any folder was picked).
+   */
+  function clearInteractionForFolder(folderId: number | null) {
+    const matches = (owner: number | null) => (
+      folderId == null ? owner == null : Number(owner) === Number(folderId));
+    if (matches(openMessageRef.value.folderId) && openMessageRef.value.id != null) {
+      openMessageRef.value = { id: null, folderId: null };
+      messageBody.value = null;
+      selectedMessageAddresses.value = [];
     }
-    if (staleFolderIds.has(Number(folderId))) {
-      invalidateFolderStateForFreshWindow(folderId);
+    if (matches(focusedRef.value.folderId)) {
+      focusedRef.value = { id: null, folderId: null };
     }
-    folderState = state;
-    totalForFolder.value = state.total;
-    messages.value = state.rows;
-    isLoading.value = state.paintedRanges.length === 0;
+    if (matches(selection.value.folderId) && selection.value.ids.size > 0) {
+      selection.value = { folderId: null, ids: new Set() };
+    }
+  }
+
+  function ensureFolderState(folderId: number): FolderCache {
+    const id = Number(folderId);
+    let state = folderStates.get(id);
+    if (state) return state;
+    const folderRow = folderById(id);
+    const total = Number(folderRow?.total_emails ?? 0) || 0;
+    state = {
+      folderId: id,
+      total,
+      rows: [],
+      paintedRanges: [],
+      sortProp: _sortPropFor(folderRow),
+      scrollTop: 0,
+      pageInflight: null,
+      requestedRange: null,
+      view: reactive<FolderView>({ messages: [], total, isLoading: false }),
+    };
+    folderStates.set(id, state);
+    return state;
+  }
+
+  /**
+   * Open a folder's cached window for display in a column. Creates the
+   * cache on first visit and primes page 0; a revisit keeps the cached
+   * total (an older Mailbox/get value must not clobber a JMAP-
+   * authoritative count) and re-checks the view for staleness and
+   * drift. Returns the reactive view the column binds to.
+   */
+  function openFolderView(folderId: number): FolderView {
+    const state = ensureFolderState(folderId);
+    if (staleFolderIds.has(state.folderId)) {
+      invalidateFolderStateForFreshWindow(state.folderId);
+    }
+    publishView(state);
+    state.view.isLoading = state.paintedRanges.length === 0 && state.rows.length === 0;
     void reconcileSelectedFolderViewState(state);
 
     // Prime page 0 once for first-time visits. Fire and forget:
     // the MessageList's virtualItems watch will re-pump
-    // ensureLoaded for whatever range is visible, and selectFolder
-    // returning synchronously means a rapid switch doesn't sit on
-    // an old folder's pending load.
+    // ensureLoaded for whatever range is visible, and returning
+    // synchronously means a rapid switch doesn't sit on an old
+    // folder's pending load.
     if (state.paintedRanges.length === 0 && authStore.accountId != null && repo) {
-      ensureLoaded(0, PAGE_SIZE);
+      ensureLoaded(0, PAGE_SIZE, state.folderId);
     }
     void checkAndRepairFolderViewDrift(state);
+    return state.view;
   }
 
   /**
@@ -645,7 +909,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function checkAndRepairFolderViewDrift(state: FolderCache) {
     if (!repo || authStore.accountId == null) return;
-    if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    if (!isLiveState(state)) return;
     if (state.needsFreshWindow) return;
     if (state.driftCheckInflight) return state.driftCheckInflight;
     if (state.driftRebuildAttempted) return;
@@ -657,7 +921,7 @@ export const useMailStore = defineStore('mail', () => {
           folderId: state.folderId,
           sort: state.sortProp,
         });
-        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        if (!isLiveState(state)) return;
         const queryViewTotal = Number(consistency?.queryViewTotal ?? 0);
         const queryViewExists = !!consistency?.queryViewExists;
         const membershipTotal = Number(consistency?.membershipTotal ?? 0);
@@ -690,9 +954,9 @@ export const useMailStore = defineStore('mail', () => {
         } catch (err) {
           console.warn('[mail-store] resetViewForFolder during drift repair failed', err);
         }
-        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        if (!isLiveState(state)) return;
         invalidateFolderStateForFreshWindow(state.folderId);
-        await ensureLoaded(0, PAGE_SIZE);
+        await ensureLoaded(0, PAGE_SIZE, state.folderId);
       } catch (err) {
         console.warn('[mail-store] checkFolderViewConsistency failed', err);
       } finally {
@@ -713,9 +977,14 @@ export const useMailStore = defineStore('mail', () => {
    * .finally re-evaluates against the *latest* visible range so a
    * fast scroll across several pages hydrates the right window.
    */
-  async function ensureLoaded(start: number, end: number) {
-    const state = folderState;
-    if (!state || state.folderId !== currentFolderId.value) return;
+  async function ensureLoaded(
+    start: number,
+    end: number,
+    folderId: number | null = currentFolderId.value,
+  ) {
+    if (folderId == null) return;
+    const state = folderStates.get(Number(folderId));
+    if (!state) return;
     if (authStore.accountId == null || !repo) return;
     if (state.pageInflight) return state.pageInflight;
 
@@ -758,8 +1027,8 @@ export const useMailStore = defineStore('mail', () => {
       })
       .finally(() => {
         state.pageInflight = null;
-        if (folderState === state) isLoading.value = false;
-        if (folderState !== state || !state.requestedRange) return;
+        state.view.isLoading = false;
+        if (!isLiveState(state) || !state.requestedRange) return;
         const { start: s, end: e } = state.requestedRange;
         const nextOffset = Math.max(0, Number(s ?? 0));
         const nextEnd = Math.max(nextOffset + 1, Number(e ?? nextOffset + 1));
@@ -773,7 +1042,7 @@ export const useMailStore = defineStore('mail', () => {
           // of looping in place.
           return;
         }
-        ensureLoaded(s, e);
+        ensureLoaded(s, e, state.folderId);
       });
     return state.pageInflight;
   }
@@ -793,7 +1062,7 @@ export const useMailStore = defineStore('mail', () => {
         offset,
         limit,
       });
-      if (state !== folderState) return;
+      if (!isLiveState(state)) return;
       const expectedFromTotal = state.total > 0
         ? Math.max(0, Math.min(limit, state.total - offset))
         : null;
@@ -820,12 +1089,12 @@ export const useMailStore = defineStore('mail', () => {
       limit,
       ..._jmapSortFor(state.sortProp),
     });
-    if (state !== folderState) return;
+    if (!isLiveState(state)) return;
     state.needsFreshWindow = false;
     staleFolderIds.delete(state.folderId);
     if (Number.isFinite(result?.total)) {
       state.total = Number(result.total);
-      totalForFolder.value = state.total;
+      state.view.total = state.total;
     }
     const rows = await repo.listMessagesForView({
       accountId: accountIdForFolder(state.folderId),
@@ -834,7 +1103,7 @@ export const useMailStore = defineStore('mail', () => {
       offset,
       limit,
     });
-    if (state !== folderState) return;
+    if (!isLiveState(state)) return;
     if (rows.length > 0) _splice(state, offset, rows);
     // Always mark the requested range as covered up to the
     // server's authoritative end. If the server reported fewer
@@ -850,11 +1119,8 @@ export const useMailStore = defineStore('mail', () => {
 
   /**
    * Splice a page of rows into the folder's positional array starting
-   * at `offset`. We mutate state.rows in place so the messages.value
-   * binding (which points to the same array reference) stays live;
-   * Vue's deep-watcher treats the assignment-trigger via the
-   * messages.value = state.rows below as a fresh subscription source
-   * but reads the same content.
+   * at `offset`, then hand the folder's view a fresh copy so every
+   * column bound to it repaints.
    */
   function _splice(state: FolderCache, offset: number, rows: MessageRow[]) {
     if (state.rows.length < offset + rows.length) {
@@ -863,12 +1129,8 @@ export const useMailStore = defineStore('mail', () => {
     for (let i = 0; i < rows.length; i += 1) {
       state.rows[offset + i] = rows[i];
     }
-    if (state === folderState) {
-      // Force a reactive update by handing Vue a fresh array reference
-      // pointing at the same per-folder buffer.
-      messages.value = state.rows.slice();
-    }
-    if (offset === 0 && state === folderState) {
+    publishView(state);
+    if (offset === 0) {
       maybePrefetchInitialBodies(state);
     }
   }
@@ -930,26 +1192,40 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Re-read every page we've already painted for the current folder
-   * from SQLite. Triggered by table-touched broadcasts after read/
-   * flag changes and after query_view_items has been updated by a
-   * queryChanges pass. Does not fetch new pages.
-   *
-   * The query_views.total is the authoritative count for the open
-   * view (it tracks Email/query / Email/queryChanges totals). We
-   * read it via queryViewProgress here so a remote delete that
-   * shrank the view propagates into state.total / totalForFolder
-   * even when folder.total_emails (the Mailbox total) hasn't caught
-   * up yet. Trailing entries inside painted ranges are cleared and
-   * state.rows is trimmed so the virtualizer's row count tracks the
-   * actual content, not the pre-delete cache shape.
+   * Re-read the painted pages of every displayed folder (the column-
+   * bound folders and the primary column's) from SQLite. Triggered by
+   * table-touched broadcasts after read/flag changes and after
+   * query_view_items has been updated by a queryChanges pass. Does not
+   * fetch new pages. A folder whose manual refresh is in flight is
+   * skipped; that path repaints it itself.
    *
    * Always call through refreshLoadedPages (above) so concurrent
    * broadcast bursts coalesce into one re-read pass.
    */
   async function _refreshLoadedPages() {
-    const state = folderState;
-    if (!repo || !state || state.folderId !== currentFolderId.value) return;
+    if (!repo) return;
+    for (const folderId of activeFolderIds()) {
+      if (manualRefreshFolderIds.has(folderId)) continue;
+      const state = folderStates.get(folderId);
+      if (!state) continue;
+      await _refreshLoadedPagesFor(state);
+    }
+  }
+
+  /**
+   * Re-read one folder's painted pages from SQLite.
+   *
+   * The query_views.total is the authoritative count for the view (it
+   * tracks Email/query / Email/queryChanges totals). We read it via
+   * queryViewProgress here so a remote delete that shrank the view
+   * propagates into state.total even when folder.total_emails (the
+   * Mailbox total) hasn't caught up yet. Trailing entries inside
+   * painted ranges are cleared and state.rows is trimmed so the
+   * virtualizer's row count tracks the actual content, not the
+   * pre-delete cache shape.
+   */
+  async function _refreshLoadedPagesFor(state: FolderCache) {
+    if (!repo || !isLiveState(state)) return;
     const beforeRows = state.rows.slice();
 
     try {
@@ -958,17 +1234,17 @@ export const useMailStore = defineStore('mail', () => {
         folderId: state.folderId,
         sort: state.sortProp,
       });
-      if (state !== folderState) return;
+      if (!isLiveState(state)) return;
       if (Number.isFinite(progress?.total)) {
         const newTotal = Number(progress.total);
         if (newTotal !== state.total) {
           state.total = newTotal;
-          totalForFolder.value = newTotal;
+          state.view.total = newTotal;
         }
       }
       if (progress?.stale) {
         invalidateFolderStateForFreshWindow(state.folderId);
-        await ensureLoaded(0, PAGE_SIZE);
+        await ensureLoaded(0, PAGE_SIZE, state.folderId);
         return;
       }
     } catch (err) {
@@ -985,7 +1261,7 @@ export const useMailStore = defineStore('mail', () => {
         offset,
         limit,
       });
-      if (state !== folderState) return;
+      if (!isLiveState(state)) return;
       for (let i = rows.length; i < limit; i += 1) {
         state.rows[offset + i] = undefined;
       }
@@ -1015,44 +1291,45 @@ export const useMailStore = defineStore('mail', () => {
     if (len !== state.rows.length) {
       state.rows.length = len;
     }
-    messages.value = state.rows.slice();
+    publishView(state);
 
     const removedIds = removedMessageIds(beforeRows, state.rows);
-    const nextPreviewId = nextPreviewIdAfterRemoval(removedIds, beforeRows);
+    const nextPreviewId = nextPreviewIdAfterRemoval(removedIds, beforeRows, state.folderId);
 
     // Prune the multi-select set: a delete (local or peer) may have
     // dropped one of the selected ids out of the query view. Mirrors
-    // Overture's SelectionController.contentWasUpdated.
-    if (selectedIds.value.size > 0) {
+    // Overture's SelectionController.contentWasUpdated. Only the folder
+    // that owns the selection can invalidate it.
+    if (selection.value.ids.size > 0 && Number(selection.value.folderId) === state.folderId) {
       const live = new Set();
       for (const row of state.rows) {
         if (row?.id != null) live.add(row.id);
       }
       let removed = 0;
-      const next = new Set(selectedIds.value);
+      const next = new Set(selection.value.ids);
       for (const id of next) {
         if (!live.has(id)) {
           next.delete(id);
           removed += 1;
         }
       }
-      if (removed) selectedIds.value = next;
+      if (removed) setSelection(state.folderId, next);
     }
 
-    applyPreviewAfterRemoval(nextPreviewId);
+    applyPreviewAfterRemoval(nextPreviewId, state.folderId);
 
     // If the view grew (new mail extended state.total beyond the
     // last painted position) load the new tail through the same
     // ensureLoaded path so the message at the head is visible
     // without waiting for the MessageList virtualizer to notice
     // the rowCount change and re-pump.
-    if (state.total > 0 && state === folderState) {
+    if (state.total > 0 && isLiveState(state)) {
       const lastPainted = state.paintedRanges.reduce(
         (acc, r) => Math.max(acc, r.end),
         0,
       );
       if (lastPainted < state.total) {
-        await ensureLoaded(0, Math.min(state.total, PAGE_SIZE));
+        await ensureLoaded(0, Math.min(state.total, PAGE_SIZE), state.folderId);
       }
     }
   }
@@ -1096,10 +1373,10 @@ export const useMailStore = defineStore('mail', () => {
    * see the cost only when they actively engage a dense filter, and
    * never on plain scrolling.
    */
-  function expandFolderViewIntoMemory() {
-    const state = folderState;
-    if (!repo || authStore.accountId == null) return Promise.resolve();
-    if (!state || state.folderId !== currentFolderId.value) return Promise.resolve();
+  function expandFolderViewIntoMemory(folderId: number | null = currentFolderId.value) {
+    if (!repo || authStore.accountId == null || folderId == null) return Promise.resolve();
+    const state = folderStates.get(Number(folderId));
+    if (!state) return Promise.resolve();
     if (state.expandInflight) return state.expandInflight;
     const total = Math.max(0, Number(state.total) || 0);
     if (total === 0) return Promise.resolve();
@@ -1116,7 +1393,7 @@ export const useMailStore = defineStore('mail', () => {
           offset: 0,
           limit: total,
         });
-        if (state !== folderState || state.folderId !== currentFolderId.value) return;
+        if (!isLiveState(state)) return;
         if (!Array.isArray(rows) || rows.length === 0) return;
         _splice(state, 0, rows);
         // Mark the canonical span as painted. If the cache is sparse,
@@ -1147,15 +1424,16 @@ export const useMailStore = defineStore('mail', () => {
   async function selectAllLoadedMessages({
     unreadOnly = false,
     flaggedOnly = false,
-  }: { unreadOnly?: boolean; flaggedOnly?: boolean } = {}): Promise<number> {
-    const state = folderState;
-    let rows: CachedRow[] = messages.value;
+    folderId = currentFolderId.value,
+  }: { unreadOnly?: boolean; flaggedOnly?: boolean; folderId?: number | null } = {}): Promise<number> {
+    const state = folderId == null ? null : folderStates.get(Number(folderId)) ?? null;
+    let rows: CachedRow[] = rowsForFolder(folderId);
 
-    if (repo && authStore.accountId != null && state && state.folderId === currentFolderId.value) {
+    if (repo && authStore.accountId != null && state) {
       const limit = Math.max(
         Number(state.total) || 0,
         state.rows.length,
-        messages.value.length,
+        rows.length,
       );
       if (limit > 0) {
         const cachedRows = await repo.listMessagesForView({
@@ -1165,8 +1443,8 @@ export const useMailStore = defineStore('mail', () => {
           offset: 0,
           limit,
         });
-        if (state !== folderState || state.folderId !== currentFolderId.value) {
-          return selectedIds.value.size;
+        if (!isLiveState(state)) {
+          return selection.value.ids.size;
         }
         rows = cachedRows;
       }
@@ -1181,7 +1459,7 @@ export const useMailStore = defineStore('mail', () => {
       next.add(id);
     }
     if (next.size === 0) return 0;
-    selectedIds.value = next;
+    setSelection(folderId, next);
     return next.size;
   }
 
@@ -1191,7 +1469,7 @@ export const useMailStore = defineStore('mail', () => {
     staleFolderIds.add(id);
     const state = folderStates.get(id);
     if (!state) return;
-    const folderRow = folders.value.find((f) => Number(f.id) === id);
+    const folderRow = folderById(id);
     const knownTotal = Number(folderRow?.index_total ?? folderRow?.total_emails ?? 0) || 0;
     state.rows = [];
     state.paintedRanges = [];
@@ -1202,16 +1480,13 @@ export const useMailStore = defineStore('mail', () => {
     state.didInitialBodyPrefetch = false;
     state.expandInflight = null;
     state.needsFreshWindow = true;
-    if (folderState === state) {
-      totalForFolder.value = state.total;
-      messages.value = [];
-      isLoading.value = true;
-    }
+    publishView(state);
+    state.view.isLoading = true;
   }
 
   async function reconcileSelectedFolderViewState(state: FolderCache | null) {
     if (!repo || authStore.accountId == null || !state) return;
-    if (state.folderId !== currentFolderId.value || folderState !== state) return;
+    if (!isLiveState(state)) return;
     if (state.needsFreshWindow) return;
     try {
       const progress = await repo.queryViewProgress({
@@ -1219,17 +1494,17 @@ export const useMailStore = defineStore('mail', () => {
         folderId: state.folderId,
         sort: state.sortProp,
       });
-      if (state.folderId !== currentFolderId.value || folderState !== state) return;
+      if (!isLiveState(state)) return;
       if (progress?.stale) {
         invalidateFolderStateForFreshWindow(state.folderId);
-        await ensureLoaded(0, PAGE_SIZE);
+        await ensureLoaded(0, PAGE_SIZE, state.folderId);
         return;
       }
       if (Number.isFinite(progress?.total)) {
         const newTotal = Number(progress.total);
         if (newTotal !== state.total) {
           state.total = newTotal;
-          totalForFolder.value = state.total;
+          state.view.total = state.total;
         }
       }
       if (state.paintedRanges.length > 0) {
@@ -1241,7 +1516,7 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   function maybePrefetchInitialBodies(state: FolderCache) {
-    const folder = folders.value.find((f) => f.id === state.folderId);
+    const folder = folderById(state.folderId);
     const isSmallFolder = Number(state.total ?? 0) <= PAGE_SIZE;
     const shouldPrefetch = folder?.role === 'inbox' || isSmallFolder;
     if (!shouldPrefetch || state.didInitialBodyPrefetch) return;
@@ -1249,38 +1524,48 @@ export const useMailStore = defineStore('mail', () => {
     bodyPrefetch.enqueueInitialPrefetch(state.rows);
   }
 
-  function nearbyMessageIds(messageId: number): number[] {
-    const idx = messages.value.findIndex((row) => row?.id === messageId);
+  function nearbyMessageIds(messageId: number, folderId: number | null): number[] {
+    const rows = rowsForFolder(folderId);
+    const idx = rows.findIndex((row) => row?.id === messageId);
     if (idx < 0) return [messageId];
     const order = [idx, idx + 1, idx + 2, idx - 1];
     return order
-      .map((i) => messages.value[i]?.id)
+      .map((i) => rows[i]?.id)
       .filter((id): id is number => id != null);
   }
 
   /**
-   * Prefetch bodies for the virtualizer's visible window. Called
-   * from MessageList every time the user pauses scrolling (the
-   * watcher is throttled to 100 ms there). Delegates to the
-   * body-prefetch composable, which dedupes against its in-flight
-   * queue and skips rows whose body is already cached.
+   * Prefetch bodies for a column's visible window. Called from
+   * MessageList every time the user pauses scrolling (the watcher is
+   * throttled to 100 ms there). Delegates to the body-prefetch
+   * composable, which dedupes against its in-flight queue and skips
+   * rows whose body is already cached.
    */
-  function enqueueVisibleBodyPrefetch(start: number, end: number) {
-    bodyPrefetch.enqueueVisibleBodyPrefetch(start, end, messages.value);
+  function enqueueVisibleBodyPrefetch(
+    start: number,
+    end: number,
+    folderId: number | null = currentFolderId.value,
+  ) {
+    bodyPrefetch.enqueueVisibleBodyPrefetch(start, end, rowsForFolder(folderId));
   }
 
   /**
-   * Open a message. The store only declares which message to show;
-   * the body-prefetch composable owns the actual Email/get path
-   * (including the token guard against fast selection churn) and
-   * the cache vs network decision.
+   * Open a message from `folderId` (the column it was clicked in; the
+   * folder that holds the row, then the primary folder, when omitted).
+   * The store only declares which message to show; the body-prefetch
+   * composable owns the actual Email/get path (including the token
+   * guard against fast selection churn) and the cache vs network
+   * decision.
    */
-  function selectMessage(messageId: number | null) {
-    selectedMessageId.value = messageId;
+  function selectMessage(messageId: number | null, folderId?: number | null) {
+    const owner = messageId == null
+      ? null
+      : (folderId ?? resolveFolderForMessage(messageId));
+    openMessageRef.value = { id: messageId, folderId: owner };
     // Plain navigation, row clicks, list commands, and delete-advance couple the
     // cursor to the preview. Shift+Arrow range extension is the one
     // path that moves the cursor without calling selectMessage.
-    focusedMessageId.value = messageId;
+    setFocusedMessage(messageId, owner);
     if (messageId == null || authStore.accountId == null) {
       bodyPrefetch.messageBody.value = null;
       selectedMessageAddresses.value = [];
@@ -1292,20 +1577,20 @@ export const useMailStore = defineStore('mail', () => {
     void bodyPrefetch.loadBodyForDisplay(messageId, token);
     void loadSelectedMessageAddresses(messageId);
 
-    if (!_isSeenInList(messageId)) {
+    if (!_isSeenInList(messageId, owner)) {
       markRead(messageId).catch((err) => {
         console.warn('[mail-store] markRead failed', err);
       });
     }
 
-    const neighbors = nearbyMessageIds(messageId).filter((id) => id !== messageId);
+    const neighbors = nearbyMessageIds(messageId, owner).filter((id) => id !== messageId);
     if (neighbors.length > 0) {
       bodyPrefetch.enqueueBodyPrefetch(neighbors);
     }
   }
 
-  function _isSeenInList(messageId: number): boolean {
-    const m = messages.value.find((row) => row?.id === messageId);
+  function _isSeenInList(messageId: number, folderId: number | null): boolean {
+    const m = findLoadedRow(messageId, folderId);
     return !!m && Number(m.is_seen) === 1;
   }
 
@@ -1323,7 +1608,7 @@ export const useMailStore = defineStore('mail', () => {
     name: string | null = null,
     messageAccountId: number | null = null,
   ): Promise<string | null> {
-    const ownerAccountId = messageAccountId ?? accountIdForFolder(currentFolderId.value);
+    const ownerAccountId = messageAccountId ?? accountIdForFolder(openMessageFolderId.value);
     if (!repo || ownerAccountId == null || !blobId) return null;
     if (!isInlineImageType(mimeType)) return null;
     try {
@@ -1388,19 +1673,22 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Bulk actions default to the open folder's painted rows. A surface
-   * that lists another folder names that folder and
-   * hands over the rows it has, so keyword flips still start from the
-   * row's current state.
+   * Bulk actions default to the primary column's folder. A column that
+   * lists another folder names it as `sourceFolderId`; rows are read
+   * from that folder's cached view (then any other loaded view), and a
+   * caller may hand over rows the store has not cached.
    */
   interface BulkSourceOptions {
     sourceFolderId?: number | null;
     rows?: ReadonlyArray<CachedRow | undefined>;
   }
 
-  function loadedRowLookup(rows?: ReadonlyArray<CachedRow | undefined>) {
+  function loadedRowLookup(
+    rows?: ReadonlyArray<CachedRow | undefined>,
+    sourceFolderId?: number | null,
+  ) {
     return (id: number): CachedRow | undefined => (
-      messages.value.find((m) => m?.id === id)
+      findLoadedRow(id, sourceFolderId)
       ?? rows?.find((m) => m?.id === id)
     );
   }
@@ -1429,13 +1717,13 @@ export const useMailStore = defineStore('mail', () => {
   async function setKeywordsMany(
     ids: number[],
     patch: KeywordPatch,
-    options: Pick<BulkSourceOptions, 'rows'> = {},
+    options: BulkSourceOptions = {},
   ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     if (!repo || authStore.accountId == null) return 0;
     const add = patch.add ?? [];
     const remove = patch.remove ?? [];
-    const rowFor = loadedRowLookup(options.rows);
+    const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
     const optimisticItems: Array<{
       messageId: number;
       keywords: string[];
@@ -1506,16 +1794,16 @@ export const useMailStore = defineStore('mail', () => {
   async function markManySeen(
     ids: number[],
     seen: boolean,
-    options: Pick<BulkSourceOptions, 'rows'> = {},
+    options: BulkSourceOptions = {},
   ): Promise<number> {
     return setKeywordsMany(ids, seen ? { add: ['$seen'] } : { remove: ['$seen'] }, options);
   }
 
-  async function toggleManySeen(ids: number[]): Promise<number> {
+  async function toggleManySeen(ids: number[], options: BulkSourceOptions = {}): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
-    const first = messages.value.find((m) => m?.id === ids[0]);
+    const first = loadedRowLookup(options.rows, options.sourceFolderId)(ids[0]);
     const seen = Number(first?.is_seen ?? 0) === 1;
-    return markManySeen(ids, !seen);
+    return markManySeen(ids, !seen, options);
   }
 
   /**
@@ -1551,7 +1839,7 @@ export const useMailStore = defineStore('mail', () => {
     options: BulkSourceOptions = {},
   ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
-    const rowFor = loadedRowLookup(options.rows);
+    const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
     const anyFlagged = ids.some((id) => Number(rowFor(id)?.is_flagged ?? 0) === 1);
     return markManyFlagged(ids, !anyFlagged, options);
   }
@@ -1608,7 +1896,7 @@ export const useMailStore = defineStore('mail', () => {
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
 
-    const rowFor = loadedRowLookup(options.rows);
+    const rowFor = loadedRowLookup(options.rows, source.id);
     const rows = mutable.ids
       .map((id) => rowFor(id))
       .filter((row): row is CachedRow => row != null);
@@ -1694,7 +1982,7 @@ export const useMailStore = defineStore('mail', () => {
     // still rescued below; they just contribute no trusted sender.
     const rows: CachedRow[] = [];
     const sendersByEmail = new Map<string, { name: string | null; email: string }>();
-    const rowFor = loadedRowLookup(options.rows);
+    const rowFor = loadedRowLookup(options.rows, source.id);
     for (const id of messageIds) {
       const row = rowFor(id);
       if (!row) continue;
@@ -1770,15 +2058,18 @@ export const useMailStore = defineStore('mail', () => {
    * silently moving the message. Shares the batch work with
    * whitelistSenders.
    */
-  async function whitelistSender(messageId: number): Promise<MoveResult> {
+  async function whitelistSender(
+    messageId: number,
+    options: Pick<BulkSourceOptions, 'sourceFolderId'> = {},
+  ): Promise<MoveResult> {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
-    const row = messages.value.find((m) => m?.id === messageId);
+    const row = findLoadedRow(messageId, options.sourceFolderId);
     if (!row) return { succeeded: 0, failed: 0, skipped: 0 };
     if (!parseSender(row.from_text)) {
       error.value = 'Could not determine the sender to whitelist.';
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
-    return whitelistSenders([messageId]);
+    return whitelistSenders([messageId], options);
   }
 
   /**
@@ -1854,11 +2145,8 @@ export const useMailStore = defineStore('mail', () => {
     const overlayLabel = permanent
       ? 'Deleting messages permanently'
       : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
-    // Decided when the mutation completes (see moveMessages).
     const finalize = (succeeded: number[]) => (
-      Number(source.id) === Number(currentFolder.value?.id)
-        ? finalizeRemovedMessages(succeeded, trashTarget?.id ?? null)
-        : finalizeMovedFromClosedFolder(succeeded, source.id, trashTarget?.id ?? null));
+      finalizeMovedMessages(succeeded, source.id, trashTarget?.id ?? null));
     let succeededIds: number[];
     try {
       succeededIds = await runBulkMutation({
@@ -1881,29 +2169,49 @@ export const useMailStore = defineStore('mail', () => {
     await finalize(succeededIds);
   }
 
-  async function finalizeRemovedMessages(
+  /**
+   * Bring the cached windows in line after messages left `sourceFolderId`
+   * for `destinationFolderId` (null for a permanent destroy). The source
+   * cache is compacted in memory; the destination cache, when one
+   * exists, is re-read from SQLite, which the outbox has already
+   * updated: a message it could place lands without a server round
+   * trip, otherwise the view is stale and refetches its first page.
+   */
+  async function finalizeMovedMessages(
     succeededIds: number[],
+    sourceFolderId: number,
     destinationFolderId: number | null,
   ) {
     if (succeededIds.length === 0) return;
-    const nextPreviewId = nextPreviewIdAfterRemoval(succeededIds);
-    spliceMessagesOut(succeededIds);
+    const sourceState = folderStates.get(Number(sourceFolderId)) ?? null;
+    const nextPreviewId = nextPreviewIdAfterRemoval(
+      succeededIds,
+      sourceState?.rows ?? rowsForFolder(sourceFolderId),
+      sourceFolderId,
+    );
+    if (sourceState) spliceMessagesOut(sourceState, succeededIds);
     await refreshFolders();
-    if (destinationFolderId != null
-      && destinationFolderId !== currentFolder.value?.id) {
-      invalidateFolderStateForFreshWindow(destinationFolderId);
+    const destinationState = destinationFolderId == null
+      ? null
+      : folderStates.get(Number(destinationFolderId)) ?? null;
+    if (destinationState && destinationState !== sourceState) {
+      if (destinationState.paintedRanges.length > 0) {
+        await _refreshLoadedPagesFor(destinationState);
+      } else {
+        invalidateFolderStateForFreshWindow(destinationState.folderId);
+      }
     }
     clearSelectionFor(succeededIds);
-    applyPreviewAfterRemoval(nextPreviewId);
+    applyPreviewAfterRemoval(nextPreviewId, sourceFolderId);
   }
 
   /**
-   * Synchronous, RPC-free removal of the given message ids from
-   * the current folder's in-memory state. Called right after a
-   * successful destroy/move mutation so the UI updates instantly
-   * without waiting for the broadcast-triggered refreshLoadedPages
-   * (which would do a full SQLite re-read just to land back at
-   * the same state we already know).
+   * Synchronous, RPC-free removal of the given message ids from a
+   * folder's in-memory state. Called right after a successful
+   * destroy/move mutation so the UI updates instantly without waiting
+   * for the broadcast-triggered refreshLoadedPages (which would do a
+   * full SQLite re-read just to land back at the same state we already
+   * know).
    *
    * Mirrors the row compaction that QUERY_VIEW_APPLY_CHANGES did
    * server-side: rows are spliced out, total decrements, and
@@ -1911,10 +2219,8 @@ export const useMailStore = defineStore('mail', () => {
    * change still come through the broadcast + refreshLoadedPages
    * path; this only short-circuits the self-induced case.
    */
-  function spliceMessagesOut(ids: number[]) {
+  function spliceMessagesOut(state: FolderCache, ids: number[]) {
     if (!Array.isArray(ids) || ids.length === 0) return;
-    const state = folderState;
-    if (!state) return;
     const toRemove = new Set<number>();
     for (const id of ids) {
       if (Number.isFinite(id)) toRemove.add(Number(id));
@@ -1934,10 +2240,7 @@ export const useMailStore = defineStore('mail', () => {
       if (range.end > state.total) range.end = Math.max(range.start, state.total);
       if (range.end <= range.start) state.paintedRanges.splice(i, 1);
     }
-    if (folderState === state) {
-      totalForFolder.value = state.total;
-      messages.value = state.rows.slice();
-    }
+    publishView(state);
   }
 
   function removedMessageIds(beforeRows: CachedRow[], afterRows: CachedRow[]): number[] {
@@ -1954,15 +2257,29 @@ export const useMailStore = defineStore('mail', () => {
     return [...new Set(removed)];
   }
 
-  function nextPreviewIdAfterRemoval(ids: number | number[], rows: CachedRow[] = folderState?.rows ?? messages.value): number | null | undefined {
+  /**
+   * The row to preview next once `ids` leave `folderId`: the neighbour
+   * after the first removed row, else the one before, else null. Returns
+   * undefined when neither the open message nor the checkbox selection
+   * from that folder was affected, so other columns' state stays put.
+   */
+  function nextPreviewIdAfterRemoval(
+    ids: number | number[],
+    rows: CachedRow[],
+    folderId: number | null,
+  ): number | null | undefined {
     const removed = new Set(normalizeMessageIds(ids));
     if (removed.size === 0) return undefined;
 
-    const previewWasRemoved = selectedMessageId.value != null
-      && removed.has(Number(selectedMessageId.value));
+    const ownsOpenMessage = openMessageRef.value.id != null
+      && Number(openMessageRef.value.folderId ?? currentFolderId.value) === Number(folderId);
+    const ownsSelection = selection.value.ids.size > 0
+      && Number(selection.value.folderId ?? currentFolderId.value) === Number(folderId);
+    const previewWasRemoved = ownsOpenMessage
+      && removed.has(Number(openMessageRef.value.id));
     let checkboxSelectionWasRemoved = false;
-    if (selectedMessageId.value == null && selectedIds.value.size > 0) {
-      for (const id of selectedIds.value) {
+    if (openMessageRef.value.id == null && ownsSelection) {
+      for (const id of selection.value.ids) {
         if (removed.has(Number(id))) {
           checkboxSelectionWasRemoved = true;
           break;
@@ -1992,9 +2309,12 @@ export const useMailStore = defineStore('mail', () => {
     return null;
   }
 
-  function applyPreviewAfterRemoval(nextPreviewId: number | null | undefined) {
+  function applyPreviewAfterRemoval(
+    nextPreviewId: number | null | undefined,
+    folderId: number | null,
+  ) {
     if (nextPreviewId === undefined) return;
-    selectMessage(nextPreviewId ?? null);
+    selectMessage(nextPreviewId ?? null, nextPreviewId == null ? undefined : folderId);
   }
 
   /**
@@ -2002,12 +2322,18 @@ export const useMailStore = defineStore('mail', () => {
    * named export so the open-message Delete button and any other
    * single-target caller stay readable.
    */
-  async function destroyMessage(messageId: number, options: { permanent?: boolean } = {}) {
+  async function destroyMessage(
+    messageId: number,
+    options: { permanent?: boolean } & Pick<BulkSourceOptions, 'sourceFolderId'> = {},
+  ) {
     return destroyMessages([messageId], options);
   }
 
-  async function permanentlyDestroyMessages(ids: number[]) {
-    return destroyMessages(ids, { permanent: true });
+  async function permanentlyDestroyMessages(
+    ids: number[],
+    options: Pick<BulkSourceOptions, 'sourceFolderId'> = {},
+  ) {
+    return destroyMessages(ids, { ...options, permanent: true });
   }
 
   /**
@@ -2142,13 +2468,8 @@ export const useMailStore = defineStore('mail', () => {
     if (Number(source.id) === Number(target.id)) {
       return { succeeded: 0, failed: 0, skipped: messageIds.length };
     }
-    // Decided when the mutation completes, not when it starts: the user
-    // may switch folders while it is in flight, and finalizeRemovedMessages
-    // splices whatever list is open at that moment.
     const finalizeMove = (succeeded: number[]) => (
-      Number(source.id) === Number(currentFolder.value?.id)
-        ? finalizeRemovedMessages(succeeded, target.id)
-        : finalizeMovedFromClosedFolder(succeeded, source.id, target.id));
+      finalizeMovedMessages(succeeded, source.id, target.id));
 
     const mutable = await filterMutableMessageIds(messageIds, source.account_id);
     if (mutable.blockedScheduled) {
@@ -2206,28 +2527,6 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
-  /**
-   * A move whose source folder is not the open one has no painted rows
-   * to splice; both folders' cached windows are stale (the source lost
-   * rows, the target gained them). If either is the open folder, pull
-   * its first page again so the view repaints without a manual refresh.
-   */
-  async function finalizeMovedFromClosedFolder(
-    succeededIds: number[],
-    sourceFolderId: number,
-    targetFolderId: number | null,
-  ) {
-    if (succeededIds.length === 0) return;
-    await refreshFolders();
-    invalidateFolderStateForFreshWindow(sourceFolderId);
-    if (targetFolderId != null) invalidateFolderStateForFreshWindow(targetFolderId);
-    clearSelectionFor(succeededIds);
-    const openId = Number(currentFolder.value?.id);
-    if ((targetFolderId != null && openId === Number(targetFolderId)) || openId === Number(sourceFolderId)) {
-      void ensureLoaded(0, PAGE_SIZE);
-    }
-  }
-
   function resolveSourceFolder(sourceFolderId: number | null | undefined): FolderRow | null {
     return sourceFolderId == null ? currentFolder.value : findFolder(sourceFolderId);
   }
@@ -2275,10 +2574,7 @@ export const useMailStore = defineStore('mail', () => {
       excludeScheduled: true,
     });
     const mutableSet = new Set(mutable.map(Number));
-    const loadedScheduled = messages.value.some((message) =>
-      message?.id != null
-      && numeric.includes(Number(message.id))
-      && isScheduledMessage(message));
+    const loadedScheduled = numeric.some((id) => isScheduledMessage(findLoadedRow(id)));
     return {
       ids: existing.map(Number).filter((id) => mutableSet.has(id)),
       blockedScheduled:
@@ -2290,27 +2586,27 @@ export const useMailStore = defineStore('mail', () => {
     const normalized = normalizeMessageIds(ids);
     if (normalized.length === 0) return;
     const set = new Set(normalized);
-    if (selectedMessageId.value != null && set.has(Number(selectedMessageId.value))) {
-      selectedMessageId.value = null;
+    if (openMessageRef.value.id != null && set.has(Number(openMessageRef.value.id))) {
+      openMessageRef.value = { id: null, folderId: null };
       messageBody.value = null;
       selectedMessageAddresses.value = [];
     }
-    if (focusedMessageId.value != null && set.has(Number(focusedMessageId.value))) {
-      focusedMessageId.value = null;
+    if (focusedRef.value.id != null && set.has(Number(focusedRef.value.id))) {
+      focusedRef.value = { id: null, folderId: null };
     }
-    if (selectedIds.value.size > 0) {
+    if (selection.value.ids.size > 0) {
       let changed = false;
-      const next = new Set(selectedIds.value);
+      const next = new Set(selection.value.ids);
       for (const id of normalized) {
         if (next.delete(id)) changed = true;
       }
-      if (changed) selectedIds.value = next;
+      if (changed) setSelection(selection.value.folderId, next);
     }
   }
 
   function clearSelection() {
-    if (selectedIds.value.size === 0) return;
-    selectedIds.value = new Set();
+    if (selection.value.ids.size === 0) return;
+    selection.value = { folderId: null, ids: new Set() };
   }
 
   async function loadMutationError(mutationId: number | null | undefined) {
@@ -2564,8 +2860,9 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   function snapshotRefreshSelection(state: FolderCache): RefreshSelectionSnapshot | null {
-    const selectedId = Number(selectedMessageId.value);
+    const selectedId = Number(openMessageRef.value.id);
     if (!Number.isFinite(selectedId)) return null;
+    if (Number(openMessageFolderId.value) !== state.folderId) return null;
     const index = state.rows.findIndex((row) => row?.id === selectedId);
     if (index < 0) return null;
     return {
@@ -2579,13 +2876,13 @@ export const useMailStore = defineStore('mail', () => {
     const restored = state.rows.some((row) =>
       row?.id === snapshot.id && (!snapshot.remoteId || row.remote_id === snapshot.remoteId),
     );
-    if (restored) selectMessage(snapshot.id);
+    if (restored) selectMessage(snapshot.id, state.folderId);
     return restored;
   }
 
   async function restoreSelectionAfterRefresh(state: FolderCache, snapshot: RefreshSelectionSnapshot | null) {
     if (!snapshot || !repo || authStore.accountId == null) return;
-    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+    if (!isLiveState(state)) return;
 
     if (selectRefreshSelectionIfLoaded(state, snapshot)) return;
 
@@ -2611,7 +2908,7 @@ export const useMailStore = defineStore('mail', () => {
       return;
     }
 
-    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+    if (!isLiveState(state)) return;
     const ids = Array.isArray(anchorResult?.ids)
       ? anchorResult.ids.map((id) => String(id))
       : [];
@@ -2621,29 +2918,30 @@ export const useMailStore = defineStore('mail', () => {
     }
     if (Number.isFinite(anchorResult?.total)) {
       state.total = Number(anchorResult.total);
-      totalForFolder.value = state.total;
+      state.view.total = state.total;
     }
 
     const position = Number(anchorResult?.position);
     const offset = Number.isFinite(position)
       ? Math.max(0, position)
       : Math.max(0, snapshot.index);
-    await ensureLoaded(offset, offset + 1);
-    if (state !== folderState || state.folderId !== currentFolderId.value) return;
+    await ensureLoaded(offset, offset + 1, state.folderId);
+    if (!isLiveState(state)) return;
 
     if (selectRefreshSelectionIfLoaded(state, snapshot)) return;
     clearRefreshSelectionIfUnchanged(snapshot);
   }
 
   function clearRefreshSelectionIfUnchanged(snapshot: RefreshSelectionSnapshot) {
-    if (selectedMessageId.value === snapshot.id) {
+    if (openMessageRef.value.id === snapshot.id) {
       selectMessage(null);
     }
   }
 
   /**
-   * Nuke the current folder's local view cache and rebuild from the
-   * server. Bound to the toolbar refresh button.
+   * Nuke a folder's local view cache and rebuild from the server.
+   * Bound to each column's Refresh button; defaults to the primary
+   * column's folder.
    *
    * The point of this is to be the user's recovery path when local
    * SQLite state has drifted from the server: ghost messages, stale
@@ -2659,13 +2957,14 @@ export const useMailStore = defineStore('mail', () => {
    * cleared query_view_items. The nuke is the only way to guarantee
    * the next paint matches the server.
    */
-  async function refresh() {
-    if (!repo || authStore.accountId == null || !folderState) return;
-    const state = folderState;
+  async function refresh(folderId: number | null = currentFolderId.value) {
+    if (!repo || authStore.accountId == null || folderId == null) return;
+    const state = folderStates.get(Number(folderId));
+    if (!state) return;
     const refreshSelection = snapshotRefreshSelection(state);
     state.lastFailedRange = null;
-    isLoading.value = true;
-    manualRefreshFolderId = state.folderId;
+    state.view.isLoading = true;
+    manualRefreshFolderIds.add(state.folderId);
     try {
       await repo.ensureFolderTree(authStore.accountId);
 
@@ -2675,36 +2974,29 @@ export const useMailStore = defineStore('mail', () => {
       state.total = 0;
       state.requestedRange = null;
       state.pageInflight = null;
-      if (state === folderState) {
-        totalForFolder.value = 0;
-        messages.value = [];
-      }
+      publishView(state);
 
       const result = await repo.ensureFolderWindow(
         accountIdForFolder(state.folderId),
         state.folderId,
         { offset: 0, limit: PAGE_SIZE, ..._jmapSortFor(state.sortProp) },
       );
-      if (state !== folderState) return;
+      if (!isLiveState(state)) return;
       if (Number.isFinite(result?.total)) {
         state.total = Number(result.total);
-        totalForFolder.value = state.total;
+        state.view.total = state.total;
       }
       // The manual refresh is the user's explicit recovery path; let
       // the next folder open re-check for drift with a clean slate.
       state.driftRebuildAttempted = false;
-      await ensureLoaded(0, PAGE_SIZE);
+      await ensureLoaded(0, PAGE_SIZE, state.folderId);
       await restoreSelectionAfterRefresh(state, refreshSelection);
     } catch (err) {
       console.warn('[mail-store] refresh failed', err);
       error.value = err?.message ?? String(err);
     } finally {
-      if (manualRefreshFolderId === state.folderId) {
-        manualRefreshFolderId = null;
-      }
-      if (folderState === state) {
-        isLoading.value = false;
-      }
+      manualRefreshFolderIds.delete(state.folderId);
+      state.view.isLoading = false;
     }
   }
 
@@ -3264,14 +3556,30 @@ export const useMailStore = defineStore('mail', () => {
     currentFolderId,
     currentFolder,
     currentSort,
+    folderPickCount,
+    folderById,
+    sortForFolder,
     sortPropFor: _sortPropFor,
     jmapSortFor: _jmapSortFor,
     inbox,
     messages,
     totalForFolder,
+    folderView,
+    rowsForFolder,
+    findLoadedRow,
+    bindFolderView,
+    openFolderView,
     selectedMessageId,
+    selectedMessageFolderId,
+    openMessage,
+    openMessageFolderId,
+    openMessageFolder,
     focusedMessageId,
+    focusedFolderId,
+    setFocusedMessage,
     selectedIds,
+    selectionFolderId,
+    setSelection,
     messageBody,
     selectedMessageAddresses,
     isLoading,

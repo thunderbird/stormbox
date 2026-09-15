@@ -205,6 +205,13 @@ export function makeSyncRpcHandlers({
     [DB_RPC.SYNC_ENSURE_FOLDER_WINDOW]: async ({ accountId, folderId, range }) =>
       syncClient.ensureFolderWindow(accountId, folderId, range ?? {}),
 
+    [DB_RPC.SYNC_SET_ACTIVE_FOLDER_VIEWS]: async ({ accountId, folderIds }) => {
+      const backend = backends.get(accountId);
+      if (!backend) return { applied: false };
+      backend.setActiveFolderViews(folderIds ?? []);
+      return { applied: true };
+    },
+
     [DB_RPC.SYNC_ENSURE_MESSAGE_BODY]: async ({ accountId, messageId }) =>
       syncClient.ensureMessageBody(accountId, messageId),
 

@@ -269,7 +269,7 @@ describe('MessageView with a sparse messages array', () => {
 
     await wrapper.find('.message-view__header [aria-label="Mark as junk"]').trigger('click');
 
-    expect(junkSpy).toHaveBeenCalledWith([42]);
+    expect(junkSpy).toHaveBeenCalledWith([42], { sourceFolderId: null });
   });
 
   it('shows Cc and Bcc so the audience is visible before replying', async () => {

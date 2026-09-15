@@ -187,7 +187,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     fireKey('Delete');
     await Promise.resolve();
 
-    expect(destroySpy).toHaveBeenCalledWith([1]);
+    expect(destroySpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
   });
 
   it('Backspace destroys the viewed message', async () => {
@@ -200,7 +200,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     fireKey('Backspace');
     await Promise.resolve();
 
-    expect(destroySpy).toHaveBeenCalledWith([1]);
+    expect(destroySpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
   });
 
   it('delegates Ctrl+A to the registered message list', () => {
@@ -330,7 +330,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     fireKey('a');
     await Promise.resolve();
 
-    expect(archiveSpy).toHaveBeenCalledWith([1]);
+    expect(archiveSpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
     expect(mailStore.selectedIds.size).toBe(0);
   });
 
@@ -492,7 +492,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     await Promise.resolve();
     checkbox.remove();
 
-    expect(destroySpy).toHaveBeenCalledWith([1]);
+    expect(destroySpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
   });
 
   it('does not handle excluded shortcuts', async () => {
@@ -572,7 +572,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     fireKey('m');
     await Promise.resolve();
 
-    expect(toggleSpy).toHaveBeenCalledWith([1]);
+    expect(toggleSpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
   });
 
   it('S toggles the star on the targeted messages', async () => {
@@ -586,7 +586,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     await Promise.resolve();
 
     expect(event.defaultPrevented).toBe(true);
-    expect(toggleSpy).toHaveBeenCalledWith([1, 2]);
+    expect(toggleSpy).toHaveBeenCalledWith([1, 2], { sourceFolderId: null });
   });
 
   it('delegates P to previous-unread navigation', () => {
@@ -619,7 +619,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     fireKey('Delete', { shiftKey: true });
     await Promise.resolve();
 
-    expect(purgeSpy).toHaveBeenCalledWith([1]);
+    expect(purgeSpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
     // Shift+Delete must not also dispatch the ordinary delete path.
     expect(destroySpy).not.toHaveBeenCalled();
   });
@@ -665,7 +665,7 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     }));
     await Promise.resolve();
 
-    expect(destroySpy).toHaveBeenCalledWith([1]);
+    expect(destroySpy).toHaveBeenCalledWith([1], { sourceFolderId: null });
   });
 });
 
@@ -789,9 +789,9 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     fireKey('s');
     await Promise.resolve();
 
-    expect(archive).toHaveBeenCalledWith([7]);
-    expect(toggle).toHaveBeenCalledWith([7]);
-    expect(star).toHaveBeenCalledWith([7]);
+    expect(archive).toHaveBeenCalledWith([7], { sourceFolderId: null });
+    expect(toggle).toHaveBeenCalledWith([7], { sourceFolderId: null });
+    expect(star).toHaveBeenCalledWith([7], { sourceFolderId: null });
     expect(markSeen).not.toHaveBeenCalled();
     expect(shiftI.defaultPrevented).toBe(false);
     expect(u.defaultPrevented).toBe(false);
@@ -811,8 +811,8 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     fireKey('Delete');
     fireKey('Delete', { shiftKey: true });
     await Promise.resolve();
-    expect(destroy).toHaveBeenCalledWith([7]);
-    expect(purge).toHaveBeenCalledWith([7]);
+    expect(destroy).toHaveBeenCalledWith([7], { sourceFolderId: null });
+    expect(purge).toHaveBeenCalledWith([7], { sourceFolderId: null });
 
     const restore = onMac();
     try {
@@ -840,7 +840,7 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     expect(selectAll.defaultPrevented).toBe(false);
     expect(star.defaultPrevented).toBe(false);
     expect(messageListCommands?.selectAll).not.toHaveBeenCalled();
-    expect(archive).toHaveBeenCalledWith([7]);
+    expect(archive).toHaveBeenCalledWith([7], { sourceFolderId: null });
   });
 
   it('J/K step through messages and N/P through unread ones; B is unbound', () => {

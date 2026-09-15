@@ -163,6 +163,7 @@ export class JmapBackend {
   _bodyFetchInflight: Map<number, Promise<any>>;
   _bodyPriorityInflight: Map<number, Promise<any>>;
   _eagerBodyPrefetchCap: number;
+  _activeFolderIds: Set<number>;
   _indexerTickDelayMs: number;
   _indexerChunksPerTick: number;
   _indexerFolderFailures: Map<number, { count: number; nextRetryAfter: number }>;
@@ -234,6 +235,11 @@ export class JmapBackend {
     // once; we fetch only the most recent few and let the rest
     // fall back to click-time fetch.
     this._eagerBodyPrefetchCap = options.eagerBodyPrefetchCap ?? 10;
+    // Folders the UI is displaying in message list columns. Their
+    // mailbox-window views are reconciled on every push catch-up in
+    // addition to the inbox and the recently synced views, so a column
+    // stays live however many other folders were synced since.
+    this._activeFolderIds = new Set();
     // Indexer tuning. The indexer can run for large folders while the
     // user is actively reading mail, so its work must be split into
     // foreground-sized chunks. Each chunk writes query_view_items,
@@ -696,6 +702,20 @@ export class JmapBackend {
       }
     }
     return result;
+  }
+
+  /**
+   * Replace the set of folders whose views push catch-up must always
+   * reconcile (the folders shown in message list columns). Ids belong
+   * to this backend's primary or shared accounts; unknown ids are
+   * harmless because the refresh query is still scoped per account.
+   */
+  setActiveFolderViews(folderIds: number[] = []) {
+    this._activeFolderIds = new Set(
+      (Array.isArray(folderIds) ? folderIds : [])
+        .map(Number)
+        .filter((id) => Number.isFinite(id)),
+    );
   }
 
   async ensureFolderWindow(folderId: number, range: any = {}) {
@@ -2144,6 +2164,13 @@ export class JmapBackend {
   async _refreshActiveQueryViews(account = this.account) {
     if (!account) return;
     const forceInbox = account.id === this.account.id ? 1 : 0;
+    // Views the UI pinned (folders shown in list columns) are refreshed
+    // regardless of recency; the account scope above filters out ids
+    // that belong to another account.
+    const pinned = [...this._activeFolderIds];
+    const pinnedClause = pinned.length > 0
+      ? `OR folder_id IN (${pinned.map(() => '?').join(',')})`
+      : '';
     const views = await this.handlers[DB_RPC.QUERY]({
       sql: `SELECT * FROM query_views
              WHERE account_id = ? AND view_type = 'mailbox-window'
@@ -2158,6 +2185,7 @@ export class JmapBackend {
                    ORDER BY last_accessed_at DESC
                    LIMIT ?
                  )
+                 ${pinnedClause}
                )
              ORDER BY last_accessed_at DESC`,
       params: [
@@ -2166,6 +2194,7 @@ export class JmapBackend {
         account.id,
         account.id,
         ACTIVE_VIEW_REFRESH_LIMIT,
+        ...pinned,
       ],
     });
     // Track ids that newly entered an active view as a result of
