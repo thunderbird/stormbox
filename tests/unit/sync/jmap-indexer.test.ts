@@ -108,7 +108,7 @@ function registerInboxFixtures(t) {
       accountId: account.remote_account_id,
       filter: params.filter,
       sort: params.sort,
-      queryState: `qs-${position}-${ids.length}`,
+      queryState: 'qs-inbox',
       canCalculateChanges: true,
       position,
       total: INBOX_TOTAL,
@@ -432,7 +432,7 @@ describe('metadata indexer: shared accounts', () => {
         accountId: params.accountId,
         filter: params.filter,
         sort: params.sort,
-        queryState: `qs-${mailbox}-${position}-${ids.length}`,
+        queryState: `qs-${mailbox}`,
         canCalculateChanges: true,
         position,
         total,
@@ -626,7 +626,7 @@ describe('metadata indexer: folder failure isolation', () => {
         accountId: params.accountId,
         filter: params.filter,
         sort: params.sort,
-        queryState: `qs-${mailbox}-${position}-${ids.length}`,
+        queryState: `qs-${mailbox}`,
         canCalculateChanges: true,
         position,
         total,
@@ -682,7 +682,7 @@ describe('metadata indexer: folder failure isolation', () => {
         accountId: account.remote_account_id,
         filter: params.filter,
         sort: params.sort,
-        queryState: `qs-${position}-${ids.length}`,
+        queryState: 'qs-inbox',
         canCalculateChanges: true,
         position,
         total: INBOX_TOTAL,
@@ -737,6 +737,47 @@ describe('metadata indexer: folder failure isolation', () => {
     // Backed off on the following tick rather than re-probed.
     await backend._runMetadataIndexerChunk();
     expect(inboxQueryCount()).toBe(1);
+  });
+
+  it('backs off a folder whose view resets on every page instead of refetching it each tick', async () => {
+    // Every page arrives under a new query state and the server cannot
+    // calculate the delta, so each page replaces the cached positions
+    // and coverage never grows past one page. Rows are fetched each
+    // time, but that is not progress.
+    let queries = 0;
+    transport.handle('Email/query', (params) => {
+      queries += 1;
+      const position = Number(params.position ?? 0);
+      const limit = Number(params.limit ?? 100);
+      const ids = [];
+      for (let i = position; i < Math.min(position + limit, INBOX_TOTAL); i += 1) {
+        ids.push(`e-${i}`);
+      }
+      return {
+        accountId: account.remote_account_id,
+        filter: params.filter,
+        sort: params.sort,
+        queryState: `qs-${queries}`,
+        canCalculateChanges: false,
+        position,
+        total: INBOX_TOTAL,
+        ids,
+      };
+    });
+    await backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 100 });
+    const coveredAfterFirstPage = (await readProgress(inbox.id)).covered;
+    expect(coveredAfterFirstPage).toBe(100);
+
+    // One reset page per tick, then the folder is marked failed.
+    const before = inboxQueryCount();
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(before + 1);
+    expect((await readProgress(inbox.id)).covered).toBeLessThanOrEqual(coveredAfterFirstPage);
+    expect(backend._indexerFolderFailures.has(inbox.id)).toBe(true);
+
+    // Backed off: no traffic on the following tick.
+    await backend._runMetadataIndexerChunk();
+    expect(inboxQueryCount()).toBe(before + 1);
   });
 
   it('resumes indexing a folder once its failure clears and the sync succeeds', async () => {

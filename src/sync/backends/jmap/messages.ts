@@ -19,6 +19,7 @@
  */
 
 import { DB_RPC } from '../../../db/protocol';
+import { wlog } from '../../../db/worker-log';
 import { MUTATION_TYPE } from '../../../constants/states';
 import { addressKey } from '../../../utils/address-key';
 import { createContactUid } from '../../../utils/contact-uid';
@@ -115,6 +116,17 @@ export async function syncFolderWindow({
   if (ids.some((id) => !returnedIds.has(id))) {
     throw new Error('Email/get omitted a message from the query window');
   }
+  const dropOtherPositions = await reconcileCachedPositionsForPage({
+    transport,
+    account,
+    folder,
+    handlers,
+    sortProp,
+    sortAscending,
+    collapseThreads,
+    pageQueryState: query.queryState,
+    useWebSocket,
+  });
   const persisted = await handlers[DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]({
     accountId: account.id,
     folderId: folder.id,
@@ -128,6 +140,7 @@ export async function syncFolderWindow({
     position: resolvedPosition,
     ids,
     messages: list.map((email) => emailToRecord(email)),
+    dropOtherPositions,
   });
 
   return {
@@ -138,7 +151,58 @@ export async function syncFolderWindow({
     ids,
     viewId: persisted.viewId,
     emailState: got?.state ?? null,
+    /** True when the view's other cached positions were dropped for this page. */
+    resetOtherPositions: dropOtherPositions,
   };
+}
+
+/**
+ * A page fetched under query state B is about to be written beside
+ * positions cached under an older state A. Positions are only
+ * comparable within one state (RFC 8620 §5.6), so the cached ones are
+ * brought forward with Email/queryChanges A→B first. Returns true when
+ * that is not possible (no state, the server cannot calculate the
+ * changes, or the server moved on again meanwhile): the caller then
+ * drops the other positions and keeps only the page it just fetched.
+ * Without this, a background page fetch advanced the view's state and
+ * every later queryChanges reported "nothing new" for a head that had
+ * silently missed deliveries and removals.
+ */
+async function reconcileCachedPositionsForPage({
+  transport, account, folder, handlers,
+  sortProp, sortAscending, collapseThreads,
+  pageQueryState,
+  useWebSocket,
+}): Promise<boolean> {
+  const stored = await handlers[DB_RPC.FOLDER_WINDOW_VIEW_STATE]({
+    accountId: account.id,
+    folderId: folder.id,
+    folderRemoteId: folder.remote_id,
+    sortProp,
+    sortAscending,
+    collapseThreads,
+  });
+  if (!stored?.exists || stored.itemCount === 0) return false;
+  if (!stored.queryState || stored.queryState === pageQueryState) return false;
+  if (stored.canCalculateChanges === false) return true;
+  try {
+    const delta = await syncFolderWindowChanges({
+      transport,
+      account,
+      folder,
+      handlers,
+      sinceQueryState: stored.queryState,
+      sortProp,
+      sortAscending,
+      collapseThreads,
+      useWebSocket,
+    });
+    if (delta.needsFullSync) return true;
+    return delta.queryState !== pageQueryState;
+  } catch (err) {
+    wlog.warn('jmap-messages', `queryChanges before page write failed for ${folder.name}; dropping cached positions`, err);
+    return true;
+  }
 }
 
 /**
@@ -196,11 +260,16 @@ export async function syncFolderWindowChanges({
   });
   const change = pickResponse(result, 'Email/queryChanges');
   if (!change || !change.newQueryState) {
+    wlog.info('jmap-messages', `queryChanges folder=${folder.name} since=${sinceQueryState}: full sync needed`);
     return { needsFullSync: true };
   }
 
   const additions = change.added ?? [];
   const removedIds = change.removed ?? [];
+  wlog.info(
+    'jmap-messages',
+    `queryChanges folder=${folder.name} ${sinceQueryState}->${change.newQueryState} added=${additions.length} removed=${removedIds.length} total=${change.total ?? '?'}`,
+  );
   const got = pickResponse(result, 'Email/get');
   if (!got) return { needsFullSync: true };
   const list = got?.list ?? [];

@@ -50,7 +50,10 @@ import {
   batchResult,
   compactViewAfterDeletingPositions,
   numericUnique,
+  placeMessageInQueryView,
   placeholdersFor,
+  shiftViewRangesForInsert,
+  shiftViewRangesForRemovals,
 } from './batch-helpers';
 import { DB_RPC, TABLE_FAMILIES } from './protocol';
 
@@ -1177,6 +1180,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
             WHERE view_id = ? AND position > ?`,
           [viewId, oldPos],
         );
+        await shiftViewRangesForRemovals(tx, viewId, [oldPos]);
       }
       await tx.run(
         `UPDATE query_view_items
@@ -1195,6 +1199,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           WHERE view_id = ? AND position < 0`,
         [viewId],
       );
+      await shiftViewRangesForInsert(tx, viewId, idx, ts);
     }
   }
 
@@ -2003,6 +2008,40 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return { upserted: messages.length };
     },
 
+    /**
+     * The stored state of one mailbox-window view, for a page fetch to
+     * decide whether the positions it already holds were computed under
+     * the query state the new page comes with.
+     */
+    [DB_RPC.FOLDER_WINDOW_VIEW_STATE]: async ({
+      accountId,
+      folderId,
+      folderRemoteId,
+      sortProp = 'receivedAt',
+      sortAscending = false,
+      collapseThreads = false,
+    }) => {
+      const filterJson = JSON.stringify({ inMailbox: folderRemoteId });
+      const sortJson = JSON.stringify([{ property: sortProp, isAscending: !!sortAscending }]);
+      const view = await engine.get(
+        `SELECT id, query_state, can_calculate_changes FROM query_views
+          WHERE account_id = ? AND view_type = 'mailbox-window'
+            AND folder_id = ? AND filter_json = ? AND sort_json = ? AND collapse_threads = ?`,
+        [accountId, Number(folderId), filterJson, sortJson, collapseThreads ? 1 : 0],
+      );
+      if (!view) return { exists: false, queryState: null, canCalculateChanges: null, itemCount: 0 };
+      const count = await engine.get(
+        'SELECT COUNT(*) AS c FROM query_view_items WHERE view_id = ?',
+        [view.id],
+      );
+      return {
+        exists: true,
+        queryState: view.query_state ?? null,
+        canCalculateChanges: view.can_calculate_changes == null ? null : Number(view.can_calculate_changes) === 1,
+        itemCount: Number(count?.c ?? 0),
+      };
+    },
+
     [DB_RPC.FOLDER_WINDOW_PERSIST_BATCH]: async ({
       accountId,
       folderId,
@@ -2016,6 +2055,13 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       position = 0,
       ids = [],
       messages = [],
+      /**
+       * Drop every cached item and range outside this page: set when the
+       * page was computed under a query state the rest of the view could
+       * not be brought forward to, so the other positions are no longer
+       * trustworthy.
+       */
+      dropOtherPositions = false,
     }) => {
       const safeFolderId = Number(folderId);
       if (!Number.isFinite(safeFolderId)) {
@@ -2069,6 +2115,15 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         viewId = Number(viewRow?.id);
         if (!Number.isFinite(viewId)) {
           throw new Error('folderWindow.persistBatch failed to resolve query view id');
+        }
+
+        if (dropOtherPositions) {
+          await tx.run(
+            `DELETE FROM query_view_items
+              WHERE view_id = ? AND (position < ? OR position >= ?)`,
+            [viewId, safePosition, safePosition + remoteIds.length],
+          );
+          await tx.run('DELETE FROM query_view_ranges WHERE view_id = ?', [viewId]);
         }
 
         if (remoteIds.length > 0) {
@@ -3199,26 +3254,54 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           }
         }
 
+        // Destination views: the moved rows are placed at their sorted
+        // position inside each view's cached prefix so a column showing
+        // the destination repaints from SQLite; a view where a position
+        // cannot be known is marked stale and refetches on next read.
+        const remoteIdById = new Map<number, string | null>(
+          messageRows.map((row) => [Number(row.id), row.remote_id == null ? null : String(row.remote_id)]),
+        );
         for (const folderId of addList) {
           const delta = deltas.get(folderId);
           const added = Number(delta?.addTotal ?? 0);
           if (added <= 0) continue;
           const viewRows = await tx.all(
-            `SELECT id FROM query_views
+            `SELECT id, sort_json, total FROM query_views
               WHERE account_id = ? AND folder_id = ?
                 AND view_type = 'mailbox-window'`,
             [accountId, folderId],
           );
           if (viewRows.length === 0) continue;
-          const viewIds = viewRows.map((r) => Number(r.id));
-          await tx.run(
-            `UPDATE query_views
-                SET stale = 1,
-                    total = COALESCE(total, 0) + ?,
-                    updated_at = ?
-              WHERE id IN (${placeholdersFor(viewIds)})`,
-            [added, ts, ...viewIds],
-          );
+          const folderAdditions = additions.filter((add) => add.folderId === folderId);
+          for (const view of viewRows) {
+            const viewId = Number(view.id);
+            let total = Number(view.total ?? 0);
+            let unplaced = 0;
+            for (const add of folderAdditions) {
+              const remoteId = remoteIdById.get(Number(add.messageId));
+              const placed = remoteId
+                ? await placeMessageInQueryView(tx, {
+                  viewId,
+                  sortJson: view.sort_json,
+                  total,
+                  accountId,
+                  messageId: Number(add.messageId),
+                  remoteId,
+                  ts,
+                })
+                : false;
+              if (placed) total += 1;
+              else unplaced += 1;
+            }
+            await tx.run(
+              `UPDATE query_views
+                  SET stale = CASE WHEN ? > 0 THEN 1 ELSE stale END,
+                      total = COALESCE(total, 0) + ?,
+                      updated_at = ?
+                WHERE id = ?`,
+              [unplaced, added, ts, viewId],
+            );
+          }
         }
       });
       broadcaster.touch(TABLE_FAMILIES.FOLDERS);

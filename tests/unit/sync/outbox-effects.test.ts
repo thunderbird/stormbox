@@ -141,19 +141,47 @@ async function loadViewItems(viewId: number) {
   );
 }
 
+/**
+ * Seed the Trash mailbox-window view through the normal sync path with
+ * the given remote ids (newest first) and their receivedAt offsets from
+ * NOW in hours; `total` may exceed the ids to leave the view partly cached.
+ */
+async function seedTrashView(entries: Array<[string, number]>, total = entries.length) {
+  const trashTransport = new MockTransport();
+  trashTransport.handle('Email/query', () => ({
+    ids: entries.map(([id]) => id),
+    total,
+    queryState: 'trash-qs',
+    canCalculateChanges: true,
+    position: 0,
+  }));
+  trashTransport.handle('Email/get', (params: any) => ({
+    list: params.ids.map((id: string) => {
+      const hours = entries.find(([entryId]) => entryId === id)?.[1] ?? 0;
+      return {
+        ...emailFixture(id),
+        mailboxIds: { 'mb-trash': true },
+        receivedAt: new Date(NOW + hours * 3_600_000).toISOString(),
+      };
+    }),
+    state: 'es',
+  }));
+  await syncFolderWindow({
+    transport: trashTransport, account, folder: trash, handlers,
+  });
+}
+
+async function loadViewRanges(viewId: number) {
+  return engine.all(
+    `SELECT start_position, end_position FROM query_view_ranges
+      WHERE view_id = ? ORDER BY start_position, end_position`,
+    [viewId],
+  );
+}
+
 describe('OUTBOX_APPLY_MOVE_BATCH', () => {
-  it('moves folder membership, drops the source view entry, and marks the destination stale', async () => {
-    // Seed an existing (empty) Trash view through the normal sync path
-    // so the destination has a query_views row that the move handler
-    // can mark stale.
-    const trashTransport = new MockTransport();
-    trashTransport.handle('Email/query', () => ({
-      ids: [], total: 0, queryState: 'trash-qs', canCalculateChanges: true, position: 0,
-    }));
-    trashTransport.handle('Email/get', () => ({ list: [], state: 'es' }));
-    await syncFolderWindow({
-      transport: trashTransport, account, folder: trash, handlers,
-    });
+  it('moves folder membership, drops the source view entry, and places the row in an empty cached destination', async () => {
+    await seedTrashView([]);
 
     await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
       accountId: account.id,
@@ -170,8 +198,77 @@ describe('OUTBOX_APPLY_MOVE_BATCH', () => {
     expect(Number(inboxView.total)).toBe(0);
     expect(await loadViewItems(inboxView.id)).toEqual([]);
 
+    // An empty, fully cached view knows the row's position: it is the
+    // whole view, so the destination repaints from SQLite without a
+    // stale flag.
+    const trashView = await loadTrashView();
+    expect(Number(trashView.stale)).toBe(0);
+    expect(Number(trashView.total)).toBe(1);
+    expect(await loadViewItems(trashView.id)).toEqual([{ position: 0, remote_id: 'e-1' }]);
+    expect(await loadViewRanges(trashView.id)).toEqual([{ start_position: 0, end_position: 1 }]);
+    expect(await handlers[DB_RPC.MESSAGE_LIST_FOR_VIEW]({
+      accountId: account.id, folderId: trash.id, sort: 'received', offset: 0, limit: 10,
+    })).toMatchObject([{ remote_id: 'e-1', view_position: 0 }]);
+  });
+
+  it('places a moved row at its sorted position inside the destination view\'s cached prefix', async () => {
+    // Trash holds a newer and an older message than the one moving in.
+    await seedTrashView([['t-new', 2], ['t-old', -2]]);
+
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
+      addFolderIds: [trash.id],
+      removeFolderIds: [inbox.id],
+    });
+
+    const trashView = await loadTrashView();
+    expect(Number(trashView.stale)).toBe(0);
+    expect(Number(trashView.total)).toBe(3);
+    expect(await loadViewItems(trashView.id)).toEqual([
+      { position: 0, remote_id: 't-new' },
+      { position: 1, remote_id: 'e-1' },
+      { position: 2, remote_id: 't-old' },
+    ]);
+    expect(await loadViewRanges(trashView.id)).toEqual([{ start_position: 0, end_position: 3 }]);
+  });
+
+  it('marks the destination stale when the moved row sorts past the cached prefix of a partly cached view', async () => {
+    // Two newer rows are cached out of five: the moved row's position
+    // among the three unfetched older ones cannot be known locally.
+    await seedTrashView([['t-newest', 3], ['t-newer', 2]], 5);
+
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
+      addFolderIds: [trash.id],
+      removeFolderIds: [inbox.id],
+    });
+
     const trashView = await loadTrashView();
     expect(Number(trashView.stale)).toBe(1);
+    expect(Number(trashView.total)).toBe(6);
+    expect((await loadViewItems(trashView.id)).map((row) => row.remote_id))
+      .toEqual(['t-newest', 't-newer']);
+  });
+
+  it('marks the destination stale when a cached row shares the moved row\'s sort key', async () => {
+    // The server's order among equal receivedAt values is unknown here,
+    // so the row is not placed on either side of its twin.
+    await seedTrashView([['t-newer', 2], ['t-twin', 0], ['t-older', -2]]);
+
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id,
+      messageIds: [messageId],
+      addFolderIds: [trash.id],
+      removeFolderIds: [inbox.id],
+    });
+
+    const trashView = await loadTrashView();
+    expect(Number(trashView.stale)).toBe(1);
+    expect(Number(trashView.total)).toBe(4);
+    expect((await loadViewItems(trashView.id)).map((row) => row.remote_id))
+      .toEqual(['t-newer', 't-twin', 't-older']);
   });
 
   it('is a no-op when messageIds is empty (defensive guard against partial mutation rows)', async () => {

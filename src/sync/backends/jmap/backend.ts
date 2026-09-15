@@ -164,6 +164,7 @@ export class JmapBackend {
   _bodyPriorityInflight: Map<number, Promise<any>>;
   _eagerBodyPrefetchCap: number;
   _activeFolderIds: Set<number>;
+  _viewRefreshLock: Promise<void>;
   _indexerTickDelayMs: number;
   _indexerChunksPerTick: number;
   _indexerFolderFailures: Map<number, { count: number; nextRetryAfter: number }>;
@@ -240,6 +241,7 @@ export class JmapBackend {
     // addition to the inbox and the recently synced views, so a column
     // stays live however many other folders were synced since.
     this._activeFolderIds = new Set();
+    this._viewRefreshLock = Promise.resolve();
     // Indexer tuning. The indexer can run for large folders while the
     // user is actively reading mail, so its work must be split into
     // foreground-sized chunks. Each chunk writes query_view_items,
@@ -711,11 +713,55 @@ export class JmapBackend {
    * harmless because the refresh query is still scoped per account.
    */
   setActiveFolderViews(folderIds: number[] = []) {
-    this._activeFolderIds = new Set(
+    const next = new Set(
       (Array.isArray(folderIds) ? folderIds : [])
         .map(Number)
         .filter((id) => Number.isFinite(id)),
     );
+    const added = [...next].filter((id) => !this._activeFolderIds.has(id));
+    this._activeFolderIds = next;
+    wlog.info(
+      'jmap-backend',
+      `active folder views=${[...next].join(',') || '(none)'} added=${added.join(',') || '(none)'}`,
+    );
+    // A folder that just came on screen catches up now rather than on
+    // the next push: mail delivered to it while it was off screen and
+    // outside the recency set is otherwise shown from the stale view.
+    if (added.length > 0) {
+      this._catchUpPinnedFolderViews(added).catch((err) => {
+        wlog.warn('jmap-backend', 'pinned folder view catch-up failed', err);
+      });
+    }
+  }
+
+  /** Reconcile the cached mailbox-window views of `folderIds` against the server. */
+  async _catchUpPinnedFolderViews(folderIds: number[]) {
+    if (!this.account || folderIds.length === 0) return;
+    await this._withViewRefreshLock(async () => {
+      const views = await this.handlers[DB_RPC.QUERY]({
+        sql: `SELECT * FROM query_views
+               WHERE view_type = 'mailbox-window'
+                 AND folder_id IN (${folderIds.map(() => '?').join(',')})
+               ORDER BY last_accessed_at DESC`,
+        params: folderIds,
+      });
+      wlog.info(
+        'jmap-backend',
+        `pinned folder catch-up folders=${folderIds.join(',')} views=${views.length}`,
+      );
+      await this._refreshQueryViews(views);
+    });
+  }
+
+  /**
+   * View reconciles run one at a time: a push catch-up and a pinned
+   * folder catch-up applying the same queryChanges delta to one view
+   * concurrently would insert it twice.
+   */
+  _withViewRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this._viewRefreshLock.then(fn, fn);
+    this._viewRefreshLock = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   async ensureFolderWindow(folderId: number, range: any = {}) {
@@ -726,7 +772,7 @@ export class JmapBackend {
       const sortProp = range.sortProp ?? defaultSort.sortProp;
       const sortAscending = range.sortAscending
         ?? (range.sortProp == null ? defaultSort.sortAscending : false);
-      const r = await syncFolderWindow({
+      const r = await this._withViewRefreshLock(() => syncFolderWindow({
         transport: this.transport,
         account: this._accountForFolder(folder),
         folder,
@@ -739,7 +785,7 @@ export class JmapBackend {
         anchorOffset: range.anchorOffset ?? 0,
         collapseThreads: range.collapseThreads ?? false,
         useWebSocket: this._wsReady(),
-      });
+      }));
       wlog.info(
         'jmap-backend',
         `ensureFolderWindow offset=${range.offset ?? 0} anchor=${range.anchor ?? ''} fetched=${r?.fetched ?? 0} total=${r?.total ?? '?'}`,
@@ -935,6 +981,7 @@ export class JmapBackend {
     let offset = Number(options.offset ?? 0);
     let total = Number(options.total ?? folder.total_emails ?? 0);
     let fetched = 0;
+    let reset = false;
     for (let i = 0; i < maxChunks; i += 1) {
       if (yieldToForeground && this._foregroundFolderWindowCount > 0) {
         // Foreground request arrived (user scrolled, clicked, etc.);
@@ -951,7 +998,7 @@ export class JmapBackend {
         limit,
       });
       if (!gap) break;
-      const result = await syncFolderWindow({
+      const result = await this._withViewRefreshLock(() => syncFolderWindow({
         transport: this.transport,
         account: folderAccount,
         folder,
@@ -962,10 +1009,17 @@ export class JmapBackend {
         limit: gap.limit,
         collapseThreads: false,
         useWebSocket: this._wsReady(),
-      });
+      }));
       fetched += result?.fetched ?? 0;
       total = Number(result?.total ?? total);
       offset = gap.offset + gap.limit;
+      if (result?.resetOtherPositions) {
+        // The page could not be reconciled with the positions cached so
+        // far and replaced them; the gap map is stale, so this chunk
+        // ends and the next tick re-plans from the fresh coverage.
+        reset = true;
+        break;
+      }
       if ((result?.ids?.length ?? 0) === 0) {
         // A JMAP query result is a dense list: empty at this position
         // means the server's real result ends here (or its advertised
@@ -976,7 +1030,7 @@ export class JmapBackend {
         break;
       }
     }
-    return { fetched, total };
+    return { fetched, total, reset };
   }
 
   _scheduleMetadataIndexer(delayMs) {
@@ -1094,16 +1148,16 @@ export class JmapBackend {
           if ((result?.fetched ?? 0) > 0) {
             wlog.info(
               'jmap-backend',
-              `metadata indexer account=${this._accountForFolder(folder).remote_account_id} folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}`,
+              `metadata indexer account=${this._accountForFolder(folder).remote_account_id} folder=${folder.name} fetched=${result.fetched} total=${result.total} chunkLimit=${chunkLimit}${result.reset ? ' reset=1' : ''}`,
             );
-            this._indexerFolderFailures.delete(folder.id);
-            break;
           }
-          // The sync returned without throwing but fetched nothing.
-          // It only counts as stuck when coverage did not move at
-          // all: a concurrent foreground sync may have advanced it,
-          // and a server that corrected an overstated total downward
-          // may have completed it — neither is a failure.
+          // Progress is coverage, not rows fetched: a page that had to
+          // replace the view's other positions fetched rows but may have
+          // left coverage where it was (or lower), and repeating that
+          // every tick would spin against a server whose state keeps
+          // moving. A concurrent foreground sync may also have advanced
+          // coverage, and a server that corrected an overstated total
+          // downward may have completed it — neither is a failure.
           const after = await this._queryViewProgress(folder);
           const advanced = after.covered > progress.covered;
           const complete = after.total > 0 && after.covered >= after.total;
@@ -1111,7 +1165,10 @@ export class JmapBackend {
             this._indexerFolderFailures.delete(folder.id);
             break;
           }
-          this._markIndexerFolderFailed(folder, 'no coverage progress');
+          this._markIndexerFolderFailed(
+            folder,
+            result?.reset ? 'view reset without coverage progress' : 'no coverage progress',
+          );
           failedAttempts += 1;
         } catch (err) {
           this._markIndexerFolderFailed(folder, err);
@@ -2083,7 +2140,7 @@ export class JmapBackend {
       pageSize: 300,
       maxPosition: 300,
       readPage: async ({ position, limit }) => {
-        const page = await syncFolderWindow({
+        const page = await this._withViewRefreshLock(() => syncFolderWindow({
           transport: this.transport,
           account: this.account,
           folder: sent,
@@ -2092,7 +2149,7 @@ export class JmapBackend {
           position,
           limit,
           useWebSocket: this._wsReady(),
-        });
+        }));
         const total = page.total == null ? null : Number(page.total);
         return {
           ids: page.ids,
@@ -2163,6 +2220,10 @@ export class JmapBackend {
 
   async _refreshActiveQueryViews(account = this.account) {
     if (!account) return;
+    await this._withViewRefreshLock(() => this._refreshActiveQueryViewsUnlocked(account));
+  }
+
+  async _refreshActiveQueryViewsUnlocked(account) {
     const forceInbox = account.id === this.account.id ? 1 : 0;
     // Views the UI pinned (folders shown in list columns) are refreshed
     // regardless of recency; the account scope above filters out ids
@@ -2197,24 +2258,41 @@ export class JmapBackend {
         ...pinned,
       ],
     });
-    // Track ids that newly entered an active view as a result of
-    // this refresh so we can eagerly fetch their bodies into the
-    // DB. The expected case is a single EmailDelivery push adding
-    // one row to the inbox; doing the body fetch now means the
-    // click-to-render path is a local SQL read instead of a
-    // server round trip.
+    await this._refreshQueryViews(views, account);
+  }
+
+  /**
+   * Reconcile cached mailbox-window views against the server: a
+   * queryChanges catch-up when the view has a query state, a full window
+   * sync otherwise. Each view's own account is used unless `account`
+   * names it. Ids that newly entered a view get their bodies fetched
+   * eagerly: the expected case is a single EmailDelivery push adding one
+   * row to the inbox, and fetching now makes the click-to-render path a
+   * local read instead of a server round trip.
+   */
+  async _refreshQueryViews(views: any[], account: any = null) {
     /** @type {{ id: string, index: number }[]} */
     const newlyAdded = [];
+    let prefetchAccount = account;
     for (const view of views) {
       const folder = await this._loadFolder(view.folder_id);
       if (!folder) continue;
+      let viewAccount = account;
+      if (!viewAccount) {
+        try {
+          viewAccount = this._accountForFolder(folder);
+        } catch {
+          continue;
+        }
+      }
+      prefetchAccount = prefetchAccount ?? viewAccount;
       const sortJson = JSON.parse(view.sort_json);
       const sortProp = sortJson?.[0]?.property ?? 'receivedAt';
       const sortAscending = sortJson?.[0]?.isAscending === true;
       const result = view.query_state
         ? await syncFolderWindowChanges({
           transport: this.transport,
-          account,
+          account: viewAccount,
           folder,
           handlers: this.handlers,
           sinceQueryState: view.query_state,
@@ -2227,7 +2305,7 @@ export class JmapBackend {
       if (result.needsFullSync) {
         await syncFolderWindow({
           transport: this.transport,
-          account,
+          account: viewAccount,
           folder,
           handlers: this.handlers,
           sortProp,
@@ -2241,8 +2319,8 @@ export class JmapBackend {
         if (add?.id) newlyAdded.push({ id: add.id, index: Number(add.index ?? 0) });
       }
     }
-    if (newlyAdded.length > 0) {
-      await this._prefetchBodiesForNewlyDelivered(account, newlyAdded);
+    if (newlyAdded.length > 0 && prefetchAccount) {
+      await this._prefetchBodiesForNewlyDelivered(prefetchAccount, newlyAdded);
     }
   }
 

@@ -1967,6 +1967,150 @@ describe('JmapBackend startup catch-up resilience', () => {
     await backend._refreshActiveQueryViews(account);
     expect(seenInMailboxes).not.toContain('mb-column');
   });
+
+  it('catches a newly pinned folder up at once instead of waiting for the next push', async () => {
+    // Mail delivered to a folder while it was off screen and outside the
+    // recency set sits in a stale view; pinning the folder (a column
+    // opens it) reconciles that view immediately, and only that view.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [
+        { remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1, unreadEmails: 0 },
+        { remoteId: 'mb-column', name: 'Column folder', role: null, totalEmails: 1, unreadEmails: 0 },
+      ],
+    });
+    const folderRows = await handlers[DB_RPC.FOLDER_LIST]({ accountId: account.id });
+    const byRemote = new Map<string, any>(folderRows.map((f: any) => [f.remote_id, f]));
+    const now = Date.now();
+    for (const remote of ['mb-inbox', 'mb-column']) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `INSERT INTO query_views(
+                account_id, view_type, folder_id, filter_json, sort_json,
+                collapse_threads, query_state, can_calculate_changes, total,
+                created_at, updated_at, last_accessed_at
+              ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, ?, 1, 1, ?, ?, ?)`,
+        params: [
+          account.id,
+          byRemote.get(remote).id,
+          JSON.stringify({ inMailbox: remote }),
+          JSON.stringify([{ property: 'receivedAt', isAscending: false }]),
+          `eqs-${remote}`, now, now, now,
+        ],
+      });
+    }
+
+    const transport = new MockTransport();
+    const seenInMailboxes: string[] = [];
+    let resolveCatchUp: (() => void) | null = null;
+    const caughtUp = new Promise<void>((resolve) => { resolveCatchUp = resolve; });
+    transport.handle('Email/queryChanges', (params) => {
+      seenInMailboxes.push(params.filter?.inMailbox);
+      resolveCatchUp?.();
+      return {
+        oldQueryState: params.sinceQueryState,
+        newQueryState: `${params.sinceQueryState}-2`,
+        total: 1,
+        removed: [],
+        added: [],
+      };
+    });
+    transport.handle('Email/get', () => ({ list: [], state: 'es-1' }));
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = account;
+
+    backend.setActiveFolderViews([byRemote.get('mb-column').id]);
+    await caughtUp;
+    await new Promise((resolve) => { setTimeout(resolve, 0); });
+    expect(seenInMailboxes).toEqual(['mb-column']);
+
+    // Re-sending the same set pins nothing new and issues no request; a
+    // folder without a cached view has nothing to catch up.
+    seenInMailboxes.length = 0;
+    backend.setActiveFolderViews([byRemote.get('mb-column').id]);
+    backend.setActiveFolderViews([byRemote.get('mb-column').id, 999_999]);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(seenInMailboxes).toEqual([]);
+  });
+
+  it('serialises page loads and the indexer with view catch-ups under one lock', async () => {
+    // Every writer of query_view_items and query_views.query_state runs
+    // under _withViewRefreshLock: a page fetched while a catch-up is
+    // half applied would be reconciled against positions that are about
+    // to change.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox', totalEmails: 1, unreadEmails: 0 }],
+    });
+    const [inbox] = await handlers[DB_RPC.FOLDER_LIST]({ accountId: account.id });
+    const transport = new MockTransport();
+    transport.handle('Email/query', () => ({
+      ids: ['e-1'], total: 1, queryState: 'qs', canCalculateChanges: true, position: 0,
+    }));
+    transport.handle('Email/get', (params: any) => ({
+      list: (params.ids ?? []).map((id: string) => ({
+        id,
+        blobId: `b-${id}`,
+        threadId: `t-${id}`,
+        mailboxIds: { 'mb-inbox': true },
+        keywords: {},
+        size: 1,
+        receivedAt: '2026-05-01T12:00:00Z',
+        sentAt: '2026-05-01T12:00:00Z',
+        from: [{ email: 'a@example.com' }],
+        to: [],
+        subject: id,
+        preview: '',
+        hasAttachment: false,
+      })),
+      state: 'es',
+    }));
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = account;
+
+    const order: string[] = [];
+    let releaseCatchUp: (() => void) | null = null;
+    const holding = backend._withViewRefreshLock(async () => {
+      order.push('catch-up start');
+      await new Promise<void>((resolve) => { releaseCatchUp = resolve; });
+      order.push('catch-up end');
+    });
+    const page = backend.ensureFolderWindow(inbox.id, { offset: 0, limit: 10 })
+      .then(() => order.push('page'));
+    const index = backend.ensureFolderIndex(inbox.id, { limit: 10 })
+      .then(() => order.push('index'));
+    await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(transport.requests).toHaveLength(0);
+
+    releaseCatchUp?.();
+    await Promise.all([holding, page, index]);
+    expect(order.slice(0, 2)).toEqual(['catch-up start', 'catch-up end']);
+    expect(order).toContain('page');
+    expect(order).toContain('index');
+  });
 });
 
 describe('JmapBackend.stop with a stalled request', () => {

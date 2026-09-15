@@ -102,6 +102,7 @@ export const DB_RPC = Object.freeze({
   QUERY_VIEW_APPLY_CHANGES: 'queryView.applyChanges',
   QUERY_VIEW_DROP_REMOTE_IDS: 'queryView.dropRemoteIds',
   FOLDER_WINDOW_PERSIST_BATCH: 'folderWindow.persistBatch',
+  FOLDER_WINDOW_VIEW_STATE: 'folderWindow.viewState',
   FOLDER_WINDOW_APPLY_CHANGES_BATCH: 'folderWindow.applyChangesBatch',
   QUERY_VIEW_RESET_FOR_FOLDER: 'queryView.resetForFolder',
   /**

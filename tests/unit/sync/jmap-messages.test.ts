@@ -250,6 +250,11 @@ describe('syncFolderWindow', () => {
       canCalculateChanges: true,
       position: 2,
     }));
+    // The state moved between the two fetches; the cached positions are
+    // brought forward (nothing changed) before the new page lands.
+    overlap.handle('Email/queryChanges', (params) => ({
+      oldQueryState: params.sinceQueryState, newQueryState: 'qs-2', total: 4, removed: [], added: [],
+    }));
     overlap.handle('Email/get', (params) => ({
       list: params.ids.map((id) => emailFixture({ id })),
       state: 'es-2',
@@ -273,6 +278,65 @@ describe('syncFolderWindow', () => {
       [2, 'e-3'],
       [3, 'e-4'],
     ]);
+  });
+
+  it('brings cached positions forward with queryChanges before writing a page fetched under a newer state', async () => {
+    const first = new MockTransport();
+    first.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'], total: 4, queryState: 'qs-1', canCalculateChanges: true, position: 0,
+    }));
+    first.handle('Email/get', (params) => ({ list: params.ids.map((id) => emailFixture({ id })), state: 'es-1' }));
+    await syncFolderWindow({ transport: first, account, folder: inbox, handlers, position: 0, limit: 2 });
+
+    // A delivery landed at the top while the client was elsewhere; a
+    // background page fetch for positions 3-4 arrives under the new state.
+    const later = new MockTransport();
+    const seen: string[] = [];
+    later.handle('Email/query', () => ({
+      ids: ['e-3', 'e-4'], total: 5, queryState: 'qs-2', canCalculateChanges: true, position: 3,
+    }));
+    later.handle('Email/queryChanges', (params) => {
+      seen.push(`qc:${params.sinceQueryState}`);
+      return {
+        oldQueryState: params.sinceQueryState, newQueryState: 'qs-2', total: 5, removed: [], added: [{ id: 'e-new', index: 0 }],
+      };
+    });
+    later.handle('Email/get', (params) => ({ list: params.ids.map((id) => emailFixture({ id })), state: 'es-2' }));
+    await syncFolderWindow({ transport: later, account, folder: inbox, handlers, position: 3, limit: 2 });
+
+    expect(seen).toEqual(['qc:qs-1']);
+    const view = await engine.get('SELECT id, query_state FROM query_views WHERE account_id = ? AND folder_id = ?', [account.id, inbox.id]);
+    expect(view.query_state).toBe('qs-2');
+    const items = await engine.all('SELECT position, remote_id FROM query_view_items WHERE view_id = ? ORDER BY position', [view.id]);
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([
+      [0, 'e-new'], [1, 'e-1'], [2, 'e-2'], [3, 'e-3'], [4, 'e-4'],
+    ]);
+  });
+
+  it('drops the cached positions when a page arrives under a newer state the server cannot calculate changes from', async () => {
+    const first = new MockTransport();
+    first.handle('Email/query', () => ({
+      ids: ['e-1', 'e-2'], total: 4, queryState: 'qs-1', canCalculateChanges: true, position: 0,
+    }));
+    first.handle('Email/get', (params) => ({ list: params.ids.map((id) => emailFixture({ id })), state: 'es-1' }));
+    await syncFolderWindow({ transport: first, account, folder: inbox, handlers, position: 0, limit: 2 });
+
+    const later = new MockTransport();
+    later.handle('Email/query', () => ({
+      ids: ['e-3', 'e-4'], total: 4, queryState: 'qs-9', canCalculateChanges: true, position: 2,
+    }));
+    later.handle('Email/queryChanges', () => {
+      throw new Error('cannotCalculateChanges');
+    });
+    later.handle('Email/get', (params) => ({ list: params.ids.map((id) => emailFixture({ id })), state: 'es-9' }));
+    await syncFolderWindow({ transport: later, account, folder: inbox, handlers, position: 2, limit: 2 });
+
+    const view = await engine.get('SELECT id, query_state FROM query_views WHERE account_id = ? AND folder_id = ?', [account.id, inbox.id]);
+    expect(view.query_state).toBe('qs-9');
+    const items = await engine.all('SELECT position, remote_id FROM query_view_items WHERE view_id = ? ORDER BY position', [view.id]);
+    expect(items.map((i) => [Number(i.position), i.remote_id])).toEqual([[2, 'e-3'], [3, 'e-4']]);
+    const ranges = await engine.all('SELECT start_position, end_position FROM query_view_ranges WHERE view_id = ?', [view.id]);
+    expect(ranges.map((r) => [Number(r.start_position), Number(r.end_position)])).toEqual([[2, 4]]);
   });
 
   it('builds folder_messages entries linking the message to the inbox', async () => {

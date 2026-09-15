@@ -974,6 +974,57 @@ describe('queryView.applyChanges', () => {
     expect(result).toEqual({ removed: 0, added: 0 });
     expect(broadcaster.flush()).not.toContain(TABLE_FAMILIES.MESSAGES);
   });
+
+  async function readRanges(viewId) {
+    const rows = await engine.all(
+      `SELECT start_position, end_position FROM query_view_ranges
+        WHERE view_id = ? ORDER BY start_position, end_position`,
+      [viewId],
+    );
+    return rows.map((r) => [Number(r.start_position), Number(r.end_position)]);
+  }
+
+  async function seedRanges(viewId, ranges) {
+    await h[DB_RPC.TRANSACTION]({
+      statements: ranges.map(([start, end]) => ({
+        sql: `INSERT INTO query_view_ranges(view_id, start_position, end_position, fetched_at)
+              VALUES (?, ?, ?, ?)`,
+        params: [viewId, start, end, 1],
+      })),
+    });
+  }
+
+  // Coverage is read from query_view_ranges; a positional shift of the
+  // items that left the ranges behind would claim positions as fetched
+  // that now hold other messages (or none).
+  it('keeps the fetched ranges aligned with shifted positions', async () => {
+    const account = await seedAccount();
+    const folder = await seedFolder(account.id, { remoteId: 'mb-inbox', totalEmails: 6 });
+    const viewId = await seedView(account, folder, ['a', 'b', 'c', 'd', 'e', 'f']);
+    await seedRanges(viewId, [[0, 2], [4, 6]]);
+
+    // Insert at 1 inside [0,2): it grows; [4,6) moves down.
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId, removed: [], added: [{ id: 'x', index: 1 }],
+    });
+    expect(await readRanges(viewId)).toEqual([[0, 3], [5, 7]]);
+
+    // Insert at 4 in the gap: a one-item range of its own.
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId, removed: [], added: [{ id: 'y', index: 4 }],
+    });
+    expect(await readRanges(viewId)).toEqual([[0, 3], [4, 5], [6, 8]]);
+
+    // Remove 'a' (position 0) and 'e' (position 6): the first range
+    // shrinks, the ranges after it move up, the last one also shrinks.
+    await h[DB_RPC.QUERY_VIEW_APPLY_CHANGES]({
+      viewId, removed: ['a', 'e'], added: [],
+    });
+    expect(await readItems(viewId)).toEqual([
+      [0, 'x'], [1, 'b'], [2, 'c'], [3, 'y'], [4, 'd'], [5, 'f'],
+    ]);
+    expect(await readRanges(viewId)).toEqual([[0, 2], [3, 4], [5, 6]]);
+  });
 });
 
 describe('contacts and autocomplete', () => {

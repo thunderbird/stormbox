@@ -222,7 +222,7 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
     expect(await loadTrashView()).toBeNull();
   });
 
-  it('marks an existing destination view stale without clearing painted ranges', async () => {
+  it('places the row in an existing empty destination view without clearing painted ranges', async () => {
     // Pre-seed a Trash query_view (simulating the user having visited
     // Trash earlier in the session).
     const trashTransport = new MockTransport();
@@ -278,9 +278,16 @@ describe('outbox moveToFolders (Inbox -> Trash)', () => {
     });
     expect(summary.succeeded).toBe(1);
 
+    // A fully cached destination learns the moved row's position locally
+    // (it is the only row), so the view stays fresh rather than stale.
     const trashViewAfter = await loadTrashView();
-    expect(Number(trashViewAfter.stale)).toBe(1);
+    expect(Number(trashViewAfter.stale)).toBe(0);
     expect(Number(trashViewAfter.total)).toBe(1);
+    const items = await engine.all(
+      'SELECT position, remote_id FROM query_view_items WHERE view_id = ?',
+      [trashViewAfter.id],
+    );
+    expect(items).toEqual([{ position: 0, remote_id: 'e-1' }]);
     const rangesAfter = await engine.all(
       'SELECT view_id FROM query_view_ranges WHERE view_id = ?',
       [trashViewAfter.id],
