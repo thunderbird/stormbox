@@ -33,6 +33,12 @@ const props = withDefaults(defineProps<{
   /** False on surfaces without multi-select: no checkbox is rendered. */
   selectable?: boolean;
   /**
+   * Prefix of the row's DOM id (`${domIdPrefix}${message.id}`). Lists
+   * that can show one folder side by side pass a per-list prefix so
+   * `aria-activedescendant` and row anchors stay unique in the page.
+   */
+  domIdPrefix?: string;
+  /**
    * Overlay star / archive / delete at the row's inline-end on hover. The
    * star keeps its slot when the row is not hovered so a starred message
    * shows its star in the same place; the summary reserves that slot and
@@ -49,6 +55,7 @@ const props = withDefaults(defineProps<{
   sort: 'received',
   selectable: true,
   hoverActions: false,
+  domIdPrefix: 'msg-row-',
 });
 
 const emit = defineEmits<{
@@ -73,7 +80,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
 
 <template>
   <li
-    :id="`msg-row-${message.id}`"
+    :id="`${domIdPrefix}${message.id}`"
     :data-index="index"
     role="option"
     :aria-selected="selected"

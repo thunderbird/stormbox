@@ -26,6 +26,7 @@ import {
 import { APP_TITLE } from '../../../src/app-config';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useMailStore } from '../../../src/stores/mail-store';
+import { useMessageColumnsStore } from '../../../src/stores/message-columns-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import { COMPOSE_PRESENTATION, useComposeStore } from '../../../src/stores/compose-store';
 import {
@@ -1854,9 +1855,10 @@ describe('App mail layout', () => {
     expect(document.body.classList.contains('is-column-resizing')).toBe(false);
     expect(wrapper.get('.shell').attributes('style'))
       .toContain('--folder-list-width: 300px');
+    // Message list column widths live in the columns store, not here.
     expect(JSON.parse(
       window.localStorage.getItem('stormbox.mailColumnWidths.v1') ?? '',
-    )).toEqual({ folderList: 300, messageList: 360 });
+    )).toEqual({ folderList: 300 });
   });
 
   it('resizes and persists the folder column from its keyboard separator', async () => {
@@ -1870,7 +1872,7 @@ describe('App mail layout', () => {
       .toContain('--folder-list-width: 280px');
     expect(JSON.parse(
       window.localStorage.getItem('stormbox.mailColumnWidths.v1') ?? '',
-    )).toEqual({ folderList: 280, messageList: 360 });
+    )).toEqual({ folderList: 280 });
   });
 
   it('resizes the message list column by dragging the message-view border', async () => {
@@ -1880,14 +1882,19 @@ describe('App mail layout', () => {
     const wrapper = mountApp();
     await nextTick();
 
+    // One column: its handle sits between it and the reading pane, and
+    // the shell's columns-area width is that column plus the handle.
+    expect(wrapper.get('.shell').attributes('style'))
+      .toContain('--message-columns-width: 366px');
     const handle = wrapper.get('[aria-label="Resize message list"]').element;
     handle.dispatchEvent(makePointerEvent('pointerdown', 300));
     window.dispatchEvent(makePointerEvent('pointermove', 220));
     window.dispatchEvent(makePointerEvent('pointerup', 220));
     await nextTick();
 
+    expect(useMessageColumnsStore().columnWidth('primary')).toBe(280);
     expect(wrapper.get('.shell').attributes('style'))
-      .toContain('--message-list-width: 280px');
+      .toContain('--message-columns-width: 286px');
   });
 
   it('toggles explicit light and dark themes through the settings store (R-8.4)', async () => {

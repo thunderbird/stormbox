@@ -1,0 +1,171 @@
+<script setup lang="ts">
+import { computed, nextTick } from 'vue';
+
+import { useColumnResize } from '../composables/useColumnResize';
+import {
+  MESSAGE_COLUMN_MAX_WIDTH,
+  MESSAGE_COLUMN_MIN_WIDTH,
+  MESSAGE_COLUMN_RESIZER_WIDTH,
+  type MessageColumn,
+  useMessageColumnsStore,
+} from '../stores/message-columns-store';
+import MessageList from './MessageList.vue';
+
+/**
+ * The message list columns area: one `MessageList` per configured
+ * column with a resize handle after each, scrolling horizontally when
+ * the columns outgrow the space the shell grants. Owns adding and
+ * removing columns and the focus hand-off those imply.
+ */
+const props = withDefaults(defineProps<{
+  quickFilterQuery?: string;
+  /** Whether the reading pane sits beside the columns; the last handle resizes against it. */
+  readingPaneVisible?: boolean;
+}>(), {
+  quickFilterQuery: '',
+  readingPaneVisible: false,
+});
+
+const columnsStore = useMessageColumnsStore();
+
+const columns = computed(() => columnsStore.columns);
+
+type MessageListHandle = InstanceType<typeof MessageList>;
+const listHandles = new Map<string, MessageListHandle>();
+
+function setListHandle(id: string, handle: unknown) {
+  if (handle) listHandles.set(id, handle as MessageListHandle);
+  else listHandles.delete(id);
+}
+
+const {
+  activeResizePane,
+  onResizeHandleKeydown,
+  startColumnResize,
+} = useColumnResize<string>({
+  panes: () => Object.fromEntries(columns.value.map((column) => [column.id, {
+    get: () => column.width,
+    max: () => MESSAGE_COLUMN_MAX_WIDTH,
+    min: () => MESSAGE_COLUMN_MIN_WIDTH,
+    set: (width: number) => columnsStore.setColumnWidth(column.id, width),
+    storageKey: column.id,
+  }])),
+});
+
+function showsResizerAfter(index: number): boolean {
+  return index < columns.value.length - 1 || props.readingPaneVisible;
+}
+
+function columnStyle(column: MessageColumn) {
+  return { '--message-column-width': `${column.width}px` };
+}
+
+async function addColumn() {
+  const id = columnsStore.addColumn();
+  if (!id) return;
+  await nextTick();
+  listHandles.get(id)?.focusFolderPicker();
+}
+
+async function removeColumn(id: string) {
+  const index = columns.value.findIndex((column) => column.id === id);
+  if (index <= 0) return;
+  columnsStore.removeColumn(id);
+  await nextTick();
+  // Focus lands on the neighbour to the left: its remove control, or
+  // the primary column's add control when the removed column was second.
+  const neighbour = columns.value[Math.min(index - 1, columns.value.length - 1)];
+  listHandles.get(neighbour.id)?.focusColumnControl();
+}
+
+function changeFolder(id: string, folderId: number) {
+  columnsStore.setColumnFolder(id, folderId);
+}
+
+defineExpose({ addColumn, removeColumn });
+</script>
+
+<template>
+  <div
+    class="msg-columns"
+    :class="{ 'msg-columns--resizing': activeResizePane !== null }"
+    :style="{ '--message-column-resizer-width': `${MESSAGE_COLUMN_RESIZER_WIDTH}px` }"
+  >
+    <template v-for="(column, index) in columns" :key="column.id">
+      <MessageList
+        :ref="(el) => setListHandle(column.id, el)"
+        class="msg-columns__column"
+        :class="{ 'msg-columns__column--last': index === columns.length - 1 }"
+        :style="columnStyle(column)"
+        :folder-id="column.folderId"
+        :list-id="column.id"
+        :column-index="index + 1"
+        :primary="column.primary"
+        :quick-filter-query="quickFilterQuery"
+        :can-add-column="columnsStore.canAddColumn"
+        @add-column="addColumn"
+        @remove-column="removeColumn(column.id)"
+        @change-folder="changeFolder(column.id, $event)"
+      />
+      <div
+        v-if="showsResizerAfter(index)"
+        class="column-resizer msg-columns__resizer"
+        :class="{ 'is-active': activeResizePane === column.id }"
+        role="separator"
+        :aria-label="index === 0 && columns.length === 1 ? 'Resize message list' : `Resize column ${index + 1}`"
+        aria-orientation="vertical"
+        :aria-valuemin="MESSAGE_COLUMN_MIN_WIDTH"
+        :aria-valuemax="MESSAGE_COLUMN_MAX_WIDTH"
+        :aria-valuenow="column.width"
+        tabindex="0"
+        @pointerdown="startColumnResize(column.id, $event)"
+        @keydown="onResizeHandleKeydown(column.id, $event)"
+      />
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.msg-columns {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-gutter: stable;
+}
+/* The handle after a column draws the divider, so the column's own
+   right border would double it. */
+.msg-columns > .msg-columns__column {
+  flex: 0 0 var(--message-column-width, 360px);
+  min-width: 0;
+  height: 100%;
+  border-right: 0;
+}
+/* The last column stretches so a lone column fills the area when the
+   reading pane is hidden; every other column keeps its width. */
+.msg-columns > .msg-columns__column--last {
+  flex-grow: 1;
+}
+.msg-columns__resizer {
+  flex: 0 0 var(--message-column-resizer-width, 6px);
+}
+/* One column fills the screen in the single-column layout (R-10.3); the
+   user swipes between columns and the handles have no job there. */
+@media (max-width: 639px) {
+  .msg-columns {
+    scroll-snap-type: x mandatory;
+    scrollbar-gutter: auto;
+  }
+  .msg-columns > .msg-columns__column,
+  .msg-columns > .msg-columns__column--last {
+    flex: 0 0 100%;
+    scroll-snap-align: start;
+  }
+  .msg-columns__resizer {
+    display: none;
+  }
+}
+</style>

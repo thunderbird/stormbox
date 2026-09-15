@@ -16,8 +16,13 @@ export interface ColumnResizePaneOptions<Pane extends string> {
 export interface UseColumnResizeOptions<Pane extends string> {
   onLoad?: () => void;
   onUserResize?: () => void;
-  panes: Record<Pane, ColumnResizePaneOptions<Pane>>;
-  storageKey: string;
+  /**
+   * The resizable panes, or a getter for surfaces whose panes come and
+   * go (message list columns). The getter is read on every interaction.
+   */
+  panes: Record<Pane, ColumnResizePaneOptions<Pane>> | (() => Record<Pane, ColumnResizePaneOptions<Pane>>);
+  /** localStorage key for the widths; omit when the owner persists them itself. */
+  storageKey?: string;
 }
 
 interface ColumnResizeState<Pane extends string> {
@@ -33,26 +38,40 @@ function clamp(value: number, min: number, max: number): number {
 export function useColumnResize<Pane extends string>(
   options: UseColumnResizeOptions<Pane>,
 ) {
-  const paneKeys = Object.keys(options.panes) as Pane[];
   const activeResizePane = ref<Pane | null>(null);
   let resizeState: ColumnResizeState<Pane> | null = null;
 
+  function panes(): Record<Pane, ColumnResizePaneOptions<Pane>> {
+    return typeof options.panes === 'function' ? options.panes() : options.panes;
+  }
+
+  function paneKeys(): Pane[] {
+    return Object.keys(panes()) as Pane[];
+  }
+
+  function paneOptionsFor(pane: Pane): ColumnResizePaneOptions<Pane> | null {
+    return panes()[pane] ?? null;
+  }
+
   function widths(): Record<Pane, number> {
-    return paneKeys.reduce((values, pane) => {
-      values[pane] = options.panes[pane].get();
+    const current = panes();
+    return (Object.keys(current) as Pane[]).reduce((values, pane) => {
+      values[pane] = current[pane].get();
       return values;
     }, {} as Record<Pane, number>);
   }
 
   function paneCanResize(pane: Pane): boolean {
-    return options.panes[pane].canResize?.() !== false;
+    const paneOptions = paneOptionsFor(pane);
+    return paneOptions != null && paneOptions.canResize?.() !== false;
   }
 
   function clampPane(
     pane: Pane,
     snapshot: Readonly<Record<Pane, number>> = widths(),
   ): number {
-    const paneOptions = options.panes[pane];
+    const paneOptions = paneOptionsFor(pane);
+    if (!paneOptions) return 0;
     const width = clamp(
       paneOptions.get(),
       paneOptions.min(),
@@ -63,9 +82,11 @@ export function useColumnResize<Pane extends string>(
   }
 
   function saveWidths(): void {
+    if (!options.storageKey) return;
     try {
-      const stored = paneKeys.reduce<Record<string, number>>((values, pane) => {
-        const paneOptions = options.panes[pane];
+      const current = panes();
+      const stored = paneKeys().reduce<Record<string, number>>((values, pane) => {
+        const paneOptions = current[pane];
         values[paneOptions.storageKey] = paneOptions.get();
         return values;
       }, {});
@@ -76,13 +97,15 @@ export function useColumnResize<Pane extends string>(
   }
 
   function loadWidths(): void {
+    if (!options.storageKey) return;
     try {
       const raw = window.localStorage?.getItem(options.storageKey);
       if (!raw) return;
       const stored = JSON.parse(raw) as Record<string, unknown>;
       let loaded = false;
-      for (const pane of paneKeys) {
-        const paneOptions = options.panes[pane];
+      const current = panes();
+      for (const pane of paneKeys()) {
+        const paneOptions = current[pane];
         const value = stored?.[paneOptions.storageKey];
         if (typeof value !== 'number' || !Number.isFinite(value)) continue;
         paneOptions.set(value);
@@ -107,7 +130,8 @@ export function useColumnResize<Pane extends string>(
 
   function onColumnResizeMove(event: PointerEvent): void {
     if (!resizeState) return;
-    const paneOptions = options.panes[resizeState.pane];
+    const paneOptions = paneOptionsFor(resizeState.pane);
+    if (!paneOptions) return;
     paneOptions.set(clamp(
       resizeState.widths[resizeState.pane] + event.clientX - resizeState.startX,
       paneOptions.min(),
@@ -141,7 +165,8 @@ export function useColumnResize<Pane extends string>(
     event.preventDefault();
     options.onUserResize?.();
     const snapshot = widths();
-    const paneOptions = options.panes[pane];
+    const paneOptions = paneOptionsFor(pane);
+    if (!paneOptions) return;
     const direction = event.key === 'ArrowRight' ? 1 : -1;
     const step = event.shiftKey ? 40 : 10;
     paneOptions.set(clamp(

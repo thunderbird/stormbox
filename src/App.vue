@@ -23,6 +23,11 @@ import { BUG_REPORT_URL, FEEDBACK_URL } from './defines';
 
 import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
+import {
+  MESSAGE_COLUMN_MIN_WIDTH,
+  MESSAGE_COLUMN_RESIZER_WIDTH,
+  useMessageColumnsStore,
+} from './stores/message-columns-store';
 import { useContactsStore } from './stores/contacts-store';
 import { COMPOSE_PRESENTATION, useComposeStore } from './stores/compose-store';
 import { useSettingsStore } from './stores/settings-store';
@@ -39,7 +44,7 @@ import {
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
 import FolderTree from './components/FolderTree.vue';
-import MessageList from './components/MessageList.vue';
+import MessageColumns from './components/MessageColumns.vue';
 import MessageView from './components/MessageView.vue';
 import ComposeManager from './components/ComposeManager.vue';
 import ContactsView from './components/ContactsView.vue';
@@ -62,6 +67,7 @@ import SettingsDialog from './components/settings/SettingsDialog.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
+const columnsStore = useMessageColumnsStore();
 const contactsStore = useContactsStore();
 const composeStore = useComposeStore();
 const settingsStore = useSettingsStore();
@@ -114,7 +120,7 @@ const documentTitle = computed(() => {
 });
 useTitle(documentTitle, { restoreOnUnmount: false });
 
-type ResizePane = 'folderList' | 'messageList';
+type ResizePane = 'folderList';
 
 const RESIZE_STORAGE_KEY = 'stormbox.mailColumnWidths.v1';
 const SPACE_RAIL_WIDTH = 56;
@@ -125,16 +131,14 @@ const FOLDER_LIST_TRANSITION_MS = 360;
 const MESSAGE_VIEW_PRELOAD_MS = 50;
 const DEFAULT_COLUMN_WIDTHS = {
   folderList: 240,
-  messageList: 360,
 };
 const MIN_COLUMN_WIDTHS = {
   folderList: 180,
-  messageList: 280,
+  messageList: MESSAGE_COLUMN_MIN_WIDTH,
   messageView: 240,
 };
 const MAX_COLUMN_WIDTHS = {
   folderList: 420,
-  messageList: 720,
 };
 const shellEl = ref<HTMLElement | null>(null);
 const quickFilterInputEl = ref<HTMLInputElement | null>(null);
@@ -148,7 +152,6 @@ watch(palette, (value) => applyPalette(value));
 const themeToggleLabel = computed(() =>
   appliedTheme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
-const messageListWidth = ref(DEFAULT_COLUMN_WIDTHS.messageList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
 const showSettingsDialog = ref(false);
@@ -209,9 +212,20 @@ const displayedMessageList = computed(() =>
 let messageViewTimer: number | null = null;
 let responsiveFolderListHidden = false;
 
+// Width the columns area asks for: every column plus the handle after
+// each one (the last handle exists only beside the reading pane). The
+// grid track caps it so the reading pane keeps its minimum; the area
+// then scrolls horizontally.
+const messageColumnsWidth = computed(() => {
+  const columns = columnsStore.columns;
+  const resizers = Math.max(0, columns.length - 1) + (displayedMessageView.value ? 1 : 0);
+  return columns.reduce((sum, column) => sum + column.width, 0)
+    + resizers * MESSAGE_COLUMN_RESIZER_WIDTH;
+});
+
 const shellStyle = computed(() => ({
   '--folder-list-width': `${folderListWidth.value}px`,
-  '--message-list-width': `${messageListWidth.value}px`,
+  '--message-columns-width': `${messageColumnsWidth.value}px`,
   '--message-list-min-width': `${MIN_COLUMN_WIDTHS.messageList}px`,
   '--message-view-min-width': `${MIN_COLUMN_WIDTHS.messageView}px`,
   '--column-resizer-width': `${RESIZER_WIDTH}px`,
@@ -227,21 +241,12 @@ const {
   panes: {
     folderList: {
       get: () => folderListWidth.value,
-      max: (widths) => maxFolderListWidth(widths.messageList),
+      max: () => maxFolderListWidth(),
       min: () => MIN_COLUMN_WIDTHS.folderList,
       set: (width) => {
         folderListWidth.value = width;
       },
       storageKey: 'folderList',
-    },
-    messageList: {
-      get: () => messageListWidth.value,
-      max: (widths) => maxMessageListWidth(widths.folderList),
-      min: () => MIN_COLUMN_WIDTHS.messageList,
-      set: (width) => {
-        messageListWidth.value = width;
-      },
-      storageKey: 'messageList',
     },
   },
   storageKey: RESIZE_STORAGE_KEY,
@@ -542,44 +547,35 @@ function clearMessageViewTimer() {
 
 function availablePaneWidth() {
   const shellWidth = shellEl.value?.clientWidth || window.innerWidth || 0;
-  const messageViewResizer = space.value === 'mail' && displayedMessageView.value ? 1 : 0;
-  const resizerCount = (folderListHidden.value ? 0 : 1) + messageViewResizer;
+  const resizerCount = folderListHidden.value ? 0 : 1;
   return Math.max(0, shellWidth - SPACE_RAIL_WIDTH - resizerCount * RESIZER_WIDTH);
 }
 
-// Width the columns beside the sidebar need so it can never push them into
+// Width the panes beside the sidebar need so it can never push them into
 // horizontal overflow (R-10.1): the Contacts columns at their minimums, and in
-// Mail the message list at its current width plus the message view minimum.
-function sidebarNeighbourReserve(messageList: number) {
+// Mail one message list column at its minimum plus the message view minimum
+// (the columns area scrolls when more columns are open).
+function sidebarNeighbourReserve() {
   if (space.value === 'contacts') {
     return contactsDetailVisible.value
       ? DIRECTORY_COLUMN_MIN_WIDTHS.list + DIRECTORY_RESIZER_WIDTH + DIRECTORY_COLUMN_MIN_WIDTHS.detail
       : DIRECTORY_COLUMN_MIN_WIDTHS.list;
   }
   return displayedMessageView.value
-    ? messageList + MIN_COLUMN_WIDTHS.messageView
+    ? MIN_COLUMN_WIDTHS.messageList + MESSAGE_COLUMN_RESIZER_WIDTH + MIN_COLUMN_WIDTHS.messageView
     : MIN_COLUMN_WIDTHS.messageList;
 }
 
-function maxFolderListWidth(messageList: number) {
+function maxFolderListWidth() {
   return Math.min(
     MAX_COLUMN_WIDTHS.folderList,
-    availablePaneWidth() - sidebarNeighbourReserve(messageList),
+    availablePaneWidth() - sidebarNeighbourReserve(),
   );
-}
-
-function maxMessageListWidth(folderList: number) {
-  const reserve = displayedMessageView.value ? MIN_COLUMN_WIDTHS.messageView : 0;
-  const folderReserve = folderListHidden.value ? 0 : folderList;
-  return Math.min(MAX_COLUMN_WIDTHS.messageList, availablePaneWidth() - folderReserve - reserve);
 }
 
 function clampColumnWidths() {
   if (!folderListHidden.value) {
     clampPane('folderList');
-  }
-  if (space.value === 'mail') {
-    clampPane('messageList');
   }
 }
 
@@ -781,7 +777,7 @@ function unwatchSystemTheme() {
       :aria-label="`Resize ${sidebarLabel}`"
       aria-orientation="vertical"
       :aria-valuemin="MIN_COLUMN_WIDTHS.folderList"
-      :aria-valuemax="maxFolderListWidth(messageListWidth)"
+      :aria-valuemax="maxFolderListWidth()"
       :aria-valuenow="folderListWidth"
       :aria-hidden="folderListHidden"
       :tabindex="folderListHidden ? -1 : 0"
@@ -790,22 +786,10 @@ function unwatchSystemTheme() {
     />
 
     <template v-if="space === 'mail'">
-      <MessageList v-if="displayedMessageList" :quick-filter-query="quickFilterQuery" />
-      <div
-        v-if="displayedMessageView && displayedMessageList"
-        class="column-resizer column-resizer--message-list"
-        :class="{
-          'is-active': activeResizePane === 'messageList',
-        }"
-        role="separator"
-        aria-label="Resize message list"
-        aria-orientation="vertical"
-        :aria-valuemin="MIN_COLUMN_WIDTHS.messageList"
-        :aria-valuemax="maxMessageListWidth(folderListWidth)"
-        :aria-valuenow="messageListWidth"
-        tabindex="0"
-        @pointerdown="startColumnResize('messageList', $event)"
-        @keydown="onResizeHandleKeydown('messageList', $event)"
+      <MessageColumns
+        v-if="displayedMessageList"
+        :quick-filter-query="quickFilterQuery"
+        :reading-pane-visible="displayedMessageView"
       />
       <MessageView v-if="displayedMessageView" />
     </template>
@@ -896,6 +880,10 @@ html.light,
   --top-nav-wordmark: var(--accent);
 }
 
+/* The columns area asks for the sum of its column widths; the grid gives
+   it that much only while the reading pane keeps its minimum, and the
+   area scrolls horizontally past that (the column handles live inside
+   it, so no resizer track sits between the two). */
 .shell {
   position: relative;
   --folder-resizer-width: var(--column-resizer-width, 6px);
@@ -904,8 +892,7 @@ html.light,
     56px
     auto
     var(--folder-resizer-width)
-    minmax(var(--message-list-min-width, 280px), var(--message-list-width, 360px))
-    var(--column-resizer-width, 6px)
+    minmax(var(--message-list-min-width, 280px), var(--message-columns-width, 360px))
     minmax(var(--message-view-min-width, 320px), 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   height: var(--app-viewport-height);
@@ -919,7 +906,6 @@ html.light,
     auto
     var(--folder-resizer-width)
     minmax(var(--message-list-min-width, 280px), 1fr)
-    0px
     0px;
 }
 .shell--message-list-hidden {
@@ -927,7 +913,6 @@ html.light,
     56px
     auto
     var(--folder-resizer-width)
-    0px
     0px
     minmax(0, 1fr);
 }
@@ -973,12 +958,11 @@ body.spotlighting .folder-subs {
  * Force every shell column to be allowed to shrink so its children can
  * own the vertical scroll. */
 .shell > * { min-height: 0; min-width: 0; }
-.shell > .msg-list {
+.shell > .msg-columns {
   grid-column: 4;
-  border-right: 0;
 }
 .shell > .message-view {
-  grid-column: 6;
+  grid-column: 5;
 }
 .shell--message-list-hidden > .message-view {
   grid-column: 4 / -1;
@@ -1178,7 +1162,7 @@ body.spotlighting .folder-subs {
   .shell .column-resizer--folder-list {
     display: none;
   }
-  .shell--message-view-hidden > .msg-list,
+  .shell--message-view-hidden > .msg-columns,
   .shell--message-list-hidden > .message-view {
     grid-column: 2 / -1;
   }
@@ -1233,10 +1217,10 @@ body.spotlighting .folder-subs {
   .shell .sidebar-slot--hidden {
     width: min(var(--folder-list-width, 240px), 100vw);
   }
-  .shell > .msg-list,
+  .shell > .msg-columns,
   .shell > .message-view,
   .shell > .contacts,
-  .shell--message-view-hidden > .msg-list,
+  .shell--message-view-hidden > .msg-columns,
   .shell--message-list-hidden > .message-view {
     grid-column: 1;
     grid-row: 2;

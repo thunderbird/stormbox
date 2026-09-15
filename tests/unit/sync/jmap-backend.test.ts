@@ -1871,6 +1871,102 @@ describe('JmapBackend startup catch-up resilience', () => {
 
     await backend.stop();
   });
+
+  it('reconciles the folders the UI pinned as list columns however many other views were synced since', async () => {
+    // Recency alone keeps ACTIVE_VIEW_REFRESH_LIMIT views fresh; a folder
+    // shown in a message list column must be reconciled regardless, so
+    // setActiveFolderViews adds those folders to the catch-up.
+    const account = (await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      displayName: 'Tester',
+      primaryEmail: 'tester@example.com',
+      serverOrigin: 'https://mail.example.com',
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    })).row;
+    const folderDefs = [
+      { remoteId: 'mb-inbox', name: 'Inbox', role: 'inbox' },
+      { remoteId: 'mb-column', name: 'Column folder', role: null },
+      ...Array.from({ length: 5 }, (_, i) => ({
+        remoteId: `mb-f${i + 1}`, name: `Folder ${i + 1}`, role: null,
+      })),
+    ];
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: folderDefs.map((f) => ({ ...f, totalEmails: 1, unreadEmails: 0 })),
+    });
+    const folderRows = await handlers[DB_RPC.FOLDER_LIST]({ accountId: account.id });
+    const byRemote = new Map<string, any>(folderRows.map((f: any) => [f.remote_id, f]));
+
+    // The column folder's view is the oldest; five others were synced after it.
+    const baseTs = Date.now();
+    const seeds: Array<[string, number]> = [
+      ['mb-column', baseTs - 20_000],
+      ['mb-inbox', baseTs - 10_000],
+      ['mb-f1', baseTs - 5],
+      ['mb-f2', baseTs - 4],
+      ['mb-f3', baseTs - 3],
+      ['mb-f4', baseTs - 2],
+      ['mb-f5', baseTs - 1],
+    ];
+    for (const [remote, accessedAt] of seeds) {
+      await handlers[DB_RPC.QUERY]({
+        sql: `INSERT INTO query_views(
+                account_id, view_type, folder_id, filter_json, sort_json,
+                collapse_threads, query_state, can_calculate_changes, total,
+                created_at, updated_at, last_accessed_at
+              ) VALUES (?, 'mailbox-window', ?, ?, ?, 0, ?, 1, 1, ?, ?, ?)`,
+        params: [
+          account.id,
+          byRemote.get(remote).id,
+          JSON.stringify({ inMailbox: remote }),
+          JSON.stringify([{ property: 'receivedAt', isAscending: false }]),
+          `eqs-${remote}`, baseTs, baseTs, accessedAt,
+        ],
+      });
+    }
+
+    const transport = new MockTransport();
+    const seenInMailboxes: string[] = [];
+    transport.handle('Email/queryChanges', (params) => {
+      seenInMailboxes.push(params.filter?.inMailbox);
+      return {
+        oldQueryState: params.sinceQueryState,
+        newQueryState: `${params.sinceQueryState}-2`,
+        total: 1,
+        removed: [],
+        added: [],
+      };
+    });
+    transport.handle('Email/get', () => ({ list: [], state: 'es-1' }));
+    const backend = new JmapBackend({
+      transport,
+      serverOrigin: 'https://mail.example.com',
+      handlers,
+      options: { useWebSocket: false },
+    });
+    backend.account = account;
+
+    await backend._refreshActiveQueryViews(account);
+    expect(seenInMailboxes).toContain('mb-inbox');
+    expect(seenInMailboxes).not.toContain('mb-column');
+
+    seenInMailboxes.length = 0;
+    backend.setActiveFolderViews([byRemote.get('mb-column').id, 999_999]);
+    await backend._refreshActiveQueryViews(account);
+    expect(seenInMailboxes).toContain('mb-column');
+    expect(seenInMailboxes).toContain('mb-inbox');
+
+    // Unpinned, the folder is back to recency-based refresh: with its
+    // view once more the oldest, it drops out again.
+    await handlers[DB_RPC.QUERY]({
+      sql: `UPDATE query_views SET last_accessed_at = ? WHERE folder_id = ?`,
+      params: [baseTs - 30_000, byRemote.get('mb-column').id],
+    });
+    seenInMailboxes.length = 0;
+    backend.setActiveFolderViews([]);
+    await backend._refreshActiveQueryViews(account);
+    expect(seenInMailboxes).not.toContain('mb-column');
+  });
 });
 
 describe('JmapBackend.stop with a stalled request', () => {

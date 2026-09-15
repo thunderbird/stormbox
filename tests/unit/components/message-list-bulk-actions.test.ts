@@ -353,7 +353,7 @@ describe('MessageList bulk actions header', () => {
 
     const destroySpy = vi.spyOn(mailStore, 'destroyMessages').mockResolvedValue(undefined);
     await wrapper.find('.msg-list__bulk-actions [title="Delete"]').trigger('click');
-    expect(destroySpy).toHaveBeenCalledWith([3]);
+    expect(destroySpy).toHaveBeenCalledWith([3], { sourceFolderId: 2 });
     wrapper.unmount();
   });
 
@@ -373,11 +373,14 @@ describe('MessageList bulk actions header', () => {
     await wrapper.find('.msg-list__bulk-actions [title="Mark as read"]').trigger('click');
     await wrapper.find('.msg-list__bulk-actions [title="Mark as unread"]').trigger('click');
 
-    expect(archiveSpy).toHaveBeenCalledWith([1, 3]);
-    expect(junkSpy).toHaveBeenCalledWith([1, 3]);
-    expect(destroySpy).toHaveBeenCalledWith([1, 3]);
-    expect(seenSpy).toHaveBeenNthCalledWith(1, [1, 3], true);
-    expect(seenSpy).toHaveBeenNthCalledWith(2, [1, 3], false);
+    // Every action names the column's folder so a column showing another
+    // folder than the primary one acts on its own rows.
+    const source = { sourceFolderId: 1 };
+    expect(archiveSpy).toHaveBeenCalledWith([1, 3], source);
+    expect(junkSpy).toHaveBeenCalledWith([1, 3], source);
+    expect(destroySpy).toHaveBeenCalledWith([1, 3], source);
+    expect(seenSpy).toHaveBeenNthCalledWith(1, [1, 3], true, source);
+    expect(seenSpy).toHaveBeenNthCalledWith(2, [1, 3], false, source);
     wrapper.unmount();
   });
 
@@ -394,7 +397,7 @@ describe('MessageList bulk actions header', () => {
 
     const toggleSpy = vi.spyOn(mailStore, 'toggleManyFlagged').mockResolvedValue(2);
     await star.trigger('click');
-    expect(toggleSpy).toHaveBeenCalledWith([1, 3]);
+    expect(toggleSpy).toHaveBeenCalledWith([1, 3], { sourceFolderId: 1 });
 
     mailStore.selectedIds = new Set([1, 2]);
     await nextTick();

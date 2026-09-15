@@ -29,4 +29,19 @@ describe('single-column responsive CSS contracts', () => {
       /@media\s*\(max-width:\s*639px\)\s*\{[\s\S]*?\.msg-list__check\s*\{[\s\S]*?opacity:\s*1;[\s\S]*?\.msg-list__unread-dot\s*\{[\s\S]*?opacity:\s*0;/,
     );
   });
+
+  it('keeps a column\'s title row controls in the corner at every width and swipes between columns below 640px', () => {
+    const list = readSource('../../../src/components/MessageList.vue');
+    const columns = readSource('../../../src/components/MessageColumns.vue');
+
+    // The folder name shrinks and truncates; the +/× control never shrinks or wraps.
+    expect(list).toMatch(/\.msg-list__titlebar\s*\{[\s\S]*?display:\s*flex;/);
+    expect(list).toMatch(/\.msg-list__title,\s*\.msg-list__folder-picker\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-width:\s*0;/);
+    expect(list).toMatch(/\.msg-list__title-name\s*\{[\s\S]*?overflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/);
+    expect(list).toMatch(/\.msg-list__column-control\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+    // Below 640px each column fills the area and the user swipes between them.
+    expect(columns).toMatch(
+      /@media\s*\(max-width:\s*639px\)\s*\{[\s\S]*?scroll-snap-type:\s*x mandatory;[\s\S]*?flex:\s*0 0 100%;[\s\S]*?scroll-snap-align:\s*start;/,
+    );
+  });
 });
