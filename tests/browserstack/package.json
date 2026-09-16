@@ -21,10 +21,14 @@
     "e2e:browserstack:desktop:safari": "browserstack-node-sdk playwright test --grep @stormbox-desktop --project=Safari-OSX --browserstack.config browserstack-desktop.yml --browserstack.buildName 'Webmail E2E Tests Safari Desktop'",
     "e2e:browserstack:mobile:android:chrome": "browserstack-node-sdk playwright test --grep @stormbox-mobile --project=android-chrome --browserstack.config browserstack-mobile.yml --browserstack.buildName 'Webmail E2E Tests Android Chrome'"
   },
+  "overrides": {
+    "js-yaml@^3": "3.15.2",
+    "js-yaml@^4": "4.3.2"
+  },
   "devDependencies": {
     "@playwright/test": "1.59.1",
     "@types/node": "24.10.1",
-    "browserstack-node-sdk": "1.65.2",
+    "browserstack-node-sdk": "1.70.1",
     "dotenv": "16.6.1",
     "typescript": "5.9.3"
   }
