@@ -28,6 +28,8 @@
  *                      Identity/set writes with authoritative read-back
  *   'createAddressbook' / 'updateAddressbook' / 'destroyAddressbook'
  *                      AddressBook/set writes with authoritative inventory
+ *   'setSieveRules'    SieveScript upload, validation, and activation
+ *                      through JMAP for Sieve (RFC 9661)
  *
  * Move and destroy delegate the cache effect to the protocol-neutral
  * OUTBOX_APPLY_MOVE_BATCH / OUTBOX_APPLY_DESTROY_BATCH DB handlers,
@@ -90,6 +92,7 @@ import { runPushSettings } from './operations/settings';
 import { runPushContactsTrash } from './operations/contacts-trash';
 import { runUpdateMailbox } from './operations/update-mailbox';
 import { toProcessResult } from './send-outcome';
+import { runSetSieveRules } from '../sieve';
 
 export { applySendLocally } from './send-apply';
 export { MUTATION_TYPES };
@@ -173,7 +176,19 @@ export async function processMutationRow({
       })
     : [];
   const currentRow = currentRows[0] ?? row;
-  const request = JSON.parse(currentRow.request_json);
+  let request;
+  try {
+    request = JSON.parse(currentRow.request_json);
+  } catch {
+    return {
+      ok: false,
+      error: {
+        type: 'invalidArguments',
+        message: 'The durable mutation payload is not valid JSON.',
+        terminal: true,
+      },
+    };
+  }
   switch (currentRow.mutation_type) {
     case MUTATION_TYPES.SET_KEYWORDS:
       return runSetKeywords({ transport, handlers, row, request, useWebSocket });
@@ -256,6 +271,8 @@ export async function processMutationRow({
       return runPushSettings({ transport, account, handlers, useWebSocket });
     case MUTATION_TYPES.PUSH_CONTACTS_TRASH:
       return runPushContactsTrash({ transport, account, handlers, useWebSocket });
+    case MUTATION_TYPES.SET_SIEVE_RULES:
+      return runSetSieveRules({ transport, account, request, useWebSocket });
     default:
       return {
         ok: false,

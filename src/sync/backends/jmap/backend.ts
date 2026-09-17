@@ -61,6 +61,7 @@ import { attachmentTransferLimits, maxObjectsInGet } from './limits';
 import { bytesToBase64 } from '../../../utils/inline-images';
 import { addressKey } from '../../../utils/address-key';
 import { createContactUid } from '../../../utils/contact-uid';
+import { getMailRules } from './sieve';
 
 const SUBSCRIBED_TYPES = [
   'Mailbox',
@@ -1501,6 +1502,14 @@ export class JmapBackend {
       state: JSON.stringify({ completedAt: Date.now() }),
     });
     return { considered: recipients.size, alreadyImported: false, deferred: false };
+  }
+
+  async getMailRules() {
+    return getMailRules({
+      transport: this.transport,
+      account: this.account,
+      useWebSocket: this._wsReady(),
+    });
   }
 
   async drainOutbox() {

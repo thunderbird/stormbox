@@ -1443,6 +1443,10 @@ describe('App mail layout', () => {
     expect(settingsLink.attributes('href')).toBe(ACCOUNTS_URL);
     expect(settingsLink.text()).toContain('Account Settings');
 
+    const rulesButton = avatarMenu.findAll('button.account-menu__item')
+      .find((button) => button.text().includes('Mail Rules'));
+    expect(rulesButton?.text()).toContain('Mail Rules');
+
     const logoutButton = avatarMenu.findAll('button.account-menu__item')
       .find((button) => button.text().includes('Log Out'));
     if (!logoutButton) throw new Error('Could not find Log Out account menu item');

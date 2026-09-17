@@ -28,6 +28,7 @@ const JMAP_SUBMISSION = 'urn:ietf:params:jmap:submission';
 const JMAP_CONTACTS = 'urn:ietf:params:jmap:contacts';
 const JMAP_QUOTA = 'urn:ietf:params:jmap:quota';
 const JMAP_FILENODE = 'urn:ietf:params:jmap:filenode';
+const JMAP_SIEVE = 'urn:ietf:params:jmap:sieve';
 const JMAP_WEBSOCKET_CAP = 'urn:ietf:params:jmap:websocket';
 
 export const JMAP_CAPS = Object.freeze({
@@ -37,6 +38,7 @@ export const JMAP_CAPS = Object.freeze({
   CONTACTS: JMAP_CONTACTS,
   QUOTA: JMAP_QUOTA,
   FILENODE: JMAP_FILENODE,
+  SIEVE: JMAP_SIEVE,
   WEBSOCKET: JMAP_WEBSOCKET_CAP,
 });
 
