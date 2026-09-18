@@ -41,12 +41,15 @@ defineProps<{
       aria-hidden="true"
       v-html="item.rawIcon"
     />
+    <!-- Lucide spreads props over its fill="none" default, so fill must
+         always be a string: an undefined value drops the attribute and
+         the SVG paints its closed shapes black. -->
     <component
       :is="item.icon"
       v-else-if="item.icon"
       :size="item.variant === 'star' ? 17 : item.variant === 'danger' ? 18 : 16"
       :stroke-width="item.variant === 'danger' ? 1.65 : 1.75"
-      :fill="item.variant === 'star' ? (item.pressed ? 'currentColor' : 'none') : undefined"
+      :fill="item.variant === 'star' && item.pressed ? 'currentColor' : 'none'"
     />
   </button>
 </template>

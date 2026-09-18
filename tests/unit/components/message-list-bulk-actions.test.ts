@@ -441,6 +441,30 @@ describe('MessageList bulk actions header', () => {
     wrapper.unmount();
   });
 
+  it('renders every Lucide bulk icon with an explicit fill so its strokes stay visible', async () => {
+    const { mailStore, wrapper } = mountList({
+      rows: [makeRow(1), makeRow(2, { is_flagged: 1 }), makeRow(3)],
+    });
+    mailStore.selectedIds = new Set([1, 3]);
+    await nextTick();
+
+    // Lucide icons are stroke-only. An <svg> without fill="none" falls back
+    // to a black fill, and the Mail icon's rect then covers its flap.
+    const fillOf = (title: string) => wrapper
+      .get(`.msg-list__bulk-actions [title="${title}"] svg`)
+      .attributes('fill');
+    expect(fillOf('Mark as unread')).toBe('none');
+    expect(fillOf('Mark as read')).toBe('none');
+    expect(fillOf('Delete')).toBe('none');
+    expect(fillOf('Star')).toBe('none');
+
+    // The pressed star is the one bulk icon that is filled.
+    mailStore.selectedIds = new Set([1, 2]);
+    await nextTick();
+    expect(fillOf('Unstar')).toBe('currentColor');
+    wrapper.unmount();
+  });
+
   it('offers a modal Star toggle that reads Unstar once any selected row is starred', async () => {
     const { mailStore, wrapper } = mountList({
       rows: [makeRow(1), makeRow(2, { is_flagged: 1 }), makeRow(3)],
