@@ -350,6 +350,31 @@ describe('drainOutbox', () => {
     expect(setRequest.update['e-2']).toEqual({ 'keywords/$seen': true });
   });
 
+  it('sends keywords lowercase and clears every recorded spelling of a removed one (MK-1.5)', async () => {
+    await handlers[DB_RPC.PENDING_MUTATION_INSERT]({
+      accountId: account.id,
+      mutationType: MUTATION_TYPES.SET_KEYWORDS,
+      targetMessageId: messageId,
+      requestJson: JSON.stringify({ add: ['Receipts'], remove: ['Work', 'work'] }),
+      optimisticPatchJson: null,
+    });
+
+    const transport = new MockTransport();
+    let setRequest;
+    transport.handle('Email/set', (params) => {
+      setRequest = params;
+      return { accountId: 'acct-1', updated: { 'e-1': null } };
+    });
+
+    await drainOutbox({ transport, account, handlers });
+
+    expect(setRequest.update['e-1']).toEqual({
+      'keywords/receipts': true,
+      'keywords/Work': null,
+      'keywords/work': null,
+    });
+  });
+
   it('runs moveToFolders by translating local folder ids to remote ids', async () => {
     // Create a second folder and seed it as an Archive.
     await handlers[DB_RPC.FOLDER_UPSERT_MANY]({

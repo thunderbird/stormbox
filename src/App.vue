@@ -60,10 +60,12 @@ import FeatureBeaconLayer from './components/FeatureBeaconLayer.vue';
 import FeatureBeaconMenu from './components/FeatureBeaconMenu.vue';
 import { useFeatureSpotlight } from './composables/useFeatureSpotlight';
 import { createSpotlightScripts } from './composables/featureSpotlightScripts';
+import { useTagManagerRequest } from './composables/useTagManagerRequest';
 import type { SpotlightId } from './constants/feature-tour';
 import { beaconById, type BeaconId } from './constants/feature-beacons';
 import { useFeatureBeaconsStore } from './stores/feature-beacons-store';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
+import TagManagerDialog from './components/tags/TagManagerDialog.vue';
 
 const authStore = useAuthStore();
 const mailStore = useMailStore();
@@ -155,6 +157,12 @@ const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
 const showSettingsDialog = ref(false);
+/** The tag manager opens on request from the sidebar's Tags heading and the tag menus. */
+const showTagManager = ref(false);
+const tagManagerRequest = useTagManagerRequest();
+watch(tagManagerRequest.requested, () => {
+  showTagManager.value = true;
+});
 const spotlight = useFeatureSpotlight(() => createSpotlightScripts({
   composeStore,
   currentSpace: () => space.value,
@@ -184,11 +192,12 @@ const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED
   && !showWelcomeModal.value
   && !showSettingsDialog.value
+  && !showTagManager.value
   && beaconStore.openId == null,
 );
 // Beacon dots would sit on top of these dialogs' scrims.
 const showFeatureBeacons = computed(() =>
-  !showWelcomeModal.value && !showSettingsDialog.value);
+  !showWelcomeModal.value && !showSettingsDialog.value && !showTagManager.value);
 const windowWidth = ref(typeof window === 'undefined' ? COMPACT_READING_WIDTH : window.innerWidth);
 const wantsMessageDetailView = computed(() => mailStore.selectedMessageId != null);
 // Multi-select never opens the message view: the bulk actions live in
@@ -843,6 +852,10 @@ function unwatchSystemTheme() {
       :applied-theme="appliedTheme"
       @close="showSettingsDialog = false"
       @show-welcome="showWelcomeModalAgain"
+    />
+    <TagManagerDialog
+      v-if="showTagManager"
+      @close="showTagManager = false"
     />
   </div>
 </template>

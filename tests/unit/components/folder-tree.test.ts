@@ -505,3 +505,54 @@ describe('FolderTree shared account sections', () => {
     expect(dialog.text()).toContain('shared');
   });
 });
+
+describe('FolderTree Tags section (MK-3.4)', () => {
+  it('lists Starred and every defined tag with counts, and picking one opens its tag view', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    mailStore.tagCounts = new Map([['$flagged', 3], ['$label2', 2]]);
+
+    const wrapper = mount(FolderTree);
+    await nextTick();
+
+    expect(wrapper.find('[data-tag-views] .folder-tree__heading').text()).toBe('Tags');
+    const rows = wrapper.findAll('[data-tag-view]');
+    expect(rows.map((row) => row.attributes('data-tag-view'))).toEqual([
+      '$flagged', '$label1', '$label2', '$label3', '$label4', '$label5',
+    ]);
+    expect(rows[0].text()).toBe('Starred3');
+    expect(rows[2].text()).toBe('Work2');
+    expect(rows[1].find('.tag-view-node__count').exists()).toBe(false);
+
+    await rows[2].find('button').trigger('click');
+    expect(mailStore.currentFolderId).toBe(mailStore.tagViewIdFor('$label2'));
+    await nextTick();
+    expect(wrapper.find('[data-tag-view="$label2"]').classes()).toContain('is-current');
+    expect(wrapper.find('[data-tag-view="$label2"] button').attributes('aria-current')).toBe('page');
+  });
+
+  it('adds the tag to messages dropped on a tag row, and stars them on the Starred row', async () => {
+    const mailStore = useMailStore();
+    seedFolders(mailStore);
+    const wrapper = mount(FolderTree);
+    await nextTick();
+    const tagSpy = vi.spyOn(mailStore, 'setTagsMany').mockResolvedValue(2);
+    const starSpy = vi.spyOn(mailStore, 'markManyFlagged').mockResolvedValue(2);
+
+    const payload = JSON.stringify({ ids: [7, 8], sourceFolderId: 1 });
+    const transfer = {
+      types: ['application/x-stormbox-message-ids'],
+      dropEffect: 'none',
+      getData: () => payload,
+      setData() {},
+    };
+
+    const work = wrapper.find('[data-tag-view="$label2"]');
+    await work.trigger('dragenter', { dataTransfer: transfer });
+    await work.trigger('drop', { dataTransfer: transfer });
+    expect(tagSpy).toHaveBeenCalledWith([7, 8], { add: ['$label2'] }, { sourceFolderId: 1 });
+
+    await wrapper.find('[data-tag-view="$flagged"]').trigger('drop', { dataTransfer: transfer });
+    expect(starSpy).toHaveBeenCalledWith([7, 8], true, { sourceFolderId: 1 });
+  });
+});

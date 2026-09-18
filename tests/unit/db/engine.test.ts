@@ -9,7 +9,7 @@ describe('Engine migrations', () => {
   it('records the applied migration version via PRAGMA user_version on a fresh database', async () => {
     const engine = await bootTestEngine();
     const row = await engine.get('PRAGMA user_version');
-    expect(LATEST_VERSION).toBe(16);
+    expect(LATEST_VERSION).toBe(17);
     expect(Number(row?.user_version)).toBe(LATEST_VERSION);
     await engine.close();
   });
@@ -79,6 +79,7 @@ describe('Engine migrations', () => {
       'folder_messages_by_folder_sent',
       'message_addresses_email',
       'message_keywords_keyword',
+      'message_keywords_lower',
       'body_parts_attachments',
       'body_values_lru',
       'query_view_items_message',

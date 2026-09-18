@@ -139,7 +139,9 @@ describe('settings gear and dialog', () => {
     expect(panel.querySelector('[role="radiogroup"]')).not.toBeNull();
     expect(panel.querySelector('[data-system-theme-toggle]')).not.toBeNull();
     expect(panel.querySelector('[data-show-welcome]')!.textContent!.trim()).toBe('Show welcome');
-    expect(panel.querySelector('hr')).toBeNull();
+    // Tags have their own dialog (TagManagerDialog); no staff rule either.
+    expect(panel.querySelectorAll('hr')).toHaveLength(0);
+    expect(panel.querySelector('[data-tag-editor]')).toBeNull();
     expect(panel.textContent).not.toContain('Staff settings');
     expect(panel.querySelector('[data-palette-toggle]')).toBeNull();
     expect(panel.querySelector('[data-refresh-beacons]')).toBeNull();

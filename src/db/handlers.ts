@@ -2658,6 +2658,82 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       return rows.map((r) => Number(r.id));
     },
 
+    /**
+     * Every distinct keyword on the cached messages of `accountIds`, with
+     * how many messages carry it, most common first. Spellings that differ
+     * only in case are one keyword (MK-1.5); `excludeKeywords` (lowercase)
+     * are left out at the query. Feeds the sidebar's tag counts and the
+     * tag settings' "keywords on your messages" list (MK-6.4).
+     */
+    [DB_RPC.MESSAGE_LIST_KEYWORDS]: async ({ accountIds, excludeKeywords = [] }) => {
+      const numeric = (Array.isArray(accountIds) ? accountIds : [])
+        .map(Number)
+        .filter((id) => Number.isFinite(id));
+      if (numeric.length === 0) return [];
+      const excluded = (Array.isArray(excludeKeywords) ? excludeKeywords : [])
+        .filter((k) => typeof k === 'string')
+        .map((k) => k.toLowerCase());
+      const placeholders = numeric.map(() => '?').join(',');
+      const exclusion = excluded.length > 0
+        ? `AND LOWER(mk.keyword) NOT IN (${excluded.map(() => '?').join(',')})`
+        : '';
+      const rows = await engine.all(
+        `SELECT LOWER(mk.keyword) AS keyword, COUNT(*) AS count
+           FROM message_keywords mk
+           JOIN messages m ON m.id = mk.message_id
+          WHERE m.account_id IN (${placeholders}) ${exclusion}
+          GROUP BY LOWER(mk.keyword)
+          ORDER BY count DESC, keyword ASC`,
+        [...numeric, ...excluded],
+      );
+      return rows.map((r) => ({ keyword: String(r.keyword), count: Number(r.count) }));
+    },
+
+    /**
+     * A tag view (specs/011 MK-3.4): every cached message of `accountIds`
+     * carrying `keyword`, newest first, regardless of folder. A local
+     * smart view over the cache, not a mailbox window, so it pages by
+     * offset. Each row names one folder it lives in as `source_folder_id`
+     * so callers can resolve account and transfer rules.
+     */
+    [DB_RPC.MESSAGE_LIST_FOR_KEYWORD]: async ({
+      accountIds, keyword, offset = 0, limit = 500,
+    }) => {
+      const numeric = (Array.isArray(accountIds) ? accountIds : [])
+        .map(Number)
+        .filter((id) => Number.isFinite(id));
+      if (numeric.length === 0 || typeof keyword !== 'string' || keyword.length === 0) return [];
+      const placeholders = numeric.map(() => '?').join(',');
+      return engine.all(
+        `SELECT m.*,
+                (SELECT fm.folder_id FROM folder_messages fm
+                  WHERE fm.message_id = m.id
+                  ORDER BY fm.folder_id ASC LIMIT 1) AS source_folder_id
+           FROM message_keywords mk
+           JOIN messages m ON m.id = mk.message_id
+          WHERE LOWER(mk.keyword) = ? AND m.account_id IN (${placeholders})
+          ORDER BY m.received_at DESC, m.id DESC
+          LIMIT ? OFFSET ?`,
+        [keyword.toLowerCase(), ...numeric, Number(limit), Number(offset)],
+      );
+    },
+
+    [DB_RPC.MESSAGE_COUNT_FOR_KEYWORD]: async ({ accountIds, keyword }) => {
+      const numeric = (Array.isArray(accountIds) ? accountIds : [])
+        .map(Number)
+        .filter((id) => Number.isFinite(id));
+      if (numeric.length === 0 || typeof keyword !== 'string' || keyword.length === 0) return 0;
+      const placeholders = numeric.map(() => '?').join(',');
+      const row = await engine.get(
+        `SELECT COUNT(*) AS count
+           FROM message_keywords mk
+           JOIN messages m ON m.id = mk.message_id
+          WHERE LOWER(mk.keyword) = ? AND m.account_id IN (${placeholders})`,
+        [keyword.toLowerCase(), ...numeric],
+      );
+      return Number(row?.count ?? 0);
+    },
+
     [DB_RPC.MESSAGE_REPLACE_KEYWORDS]: async ({ messageId, keywords, keywordsJson }) => {
       const ts = now();
       await engine.transaction(async (tx) => {

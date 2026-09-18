@@ -20,6 +20,7 @@ import { nextTick } from 'vue';
 
 import { useMailStore } from '../../../src/stores/mail-store';
 import { useAuthStore } from '../../../src/stores/auth-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -134,6 +135,39 @@ function makeRepo(): any {
         .slice(offset, offset + limit);
       if (view.returnPlaceholders) return slice;
       return slice.filter((r) => r !== undefined && r !== null);
+    },
+
+    // Tag views read every seeded folder view's rows by keyword; tests
+    // seed keywords_json on rows.
+    _keywordRows(keyword) {
+      const out = [];
+      for (const [folderId, view] of views) {
+        for (const row of view.rows ?? []) {
+          if (!row) continue;
+          const keywords = JSON.parse(row.keywords_json ?? '{}');
+          if (keywords[keyword] === true) out.push({ ...row, source_folder_id: folderId });
+        }
+      }
+      return out.sort((a, b) => Number(b.received_at) - Number(a.received_at));
+    },
+    async listMessagesForKeyword({ keyword, offset = 0, limit = 500 }) {
+      calls.listMessagesForKeyword = (calls.listMessagesForKeyword ?? 0) + 1;
+      return repo._keywordRows(keyword).slice(offset, offset + limit);
+    },
+    async countMessagesForKeyword({ keyword }) {
+      return repo._keywordRows(keyword).length;
+    },
+    async listMessageKeywords() {
+      const counts = new Map();
+      for (const view of views.values()) {
+        for (const row of view.rows ?? []) {
+          if (!row) continue;
+          for (const [keyword, on] of Object.entries(JSON.parse(row.keywords_json ?? '{}'))) {
+            if (on === true) counts.set(keyword, (counts.get(keyword) ?? 0) + 1);
+          }
+        }
+      }
+      return [...counts].map(([keyword, count]) => ({ keyword, count }));
     },
 
     async checkFolderViewConsistency({ folderId }) {
@@ -1282,6 +1316,311 @@ describe('starring ($flagged via setKeywordsMany)', () => {
 
     expect(await mailStore.markManyFlagged([1, 2], true)).toBe(1);
     expect(JSON.parse(inserts[0].requestJson).messageIds).toEqual([2]);
+  });
+});
+
+describe('tags (setTagsMany over setKeywordsMany)', () => {
+  async function seed(rows) {
+    const folder = makeFolder(1, { total_emails: rows.length });
+    const { mailStore, repo } = await setupStore({
+      folders: [folder],
+      views: { 1: { rows, total: rows.length } },
+    });
+    await flush();
+    mailStore.selectFolder(folder.id);
+    await flush();
+    const batches = [];
+    repo.replaceMessageKeywordsMany = async (items) => {
+      batches.push(items);
+      return { ok: true, applied: items.length };
+    };
+    const inserts = [];
+    repo.insertPendingMutation = async (input) => {
+      inserts.push(input);
+      return { id: 100 + inserts.length };
+    };
+    return { mailStore, batches, inserts };
+  }
+
+  it('lowercases keywords, skips rows already carrying the canonical key, and queues one batch (MK-1.5)', async () => {
+    const { mailStore, batches, inserts } = await seed([
+      makeRow(1, { keywords_json: '{"$seen":true}' }),
+      makeRow(2, { keywords_json: '{"work":true}' }),
+      makeRow(3, { keywords_json: '{}' }),
+    ]);
+
+    expect(await mailStore.setTagsMany([1, 2, 3], { add: ['Work'] })).toBe(2);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((item) => item.messageId)).toEqual([1, 3]);
+    expect(batches[0][0].keywords).toEqual(['$seen', 'work']);
+    expect(inserts).toHaveLength(1);
+    expect(JSON.parse(inserts[0].requestJson)).toEqual({
+      messageIds: [1, 3],
+      add: ['work'],
+      remove: [],
+    });
+    expect(inserts[0].optimisticPatchJson).toBeNull();
+  });
+
+  it('writes the canonical key beside another cached spelling so derived columns follow (MK-1.5)', async () => {
+    const { mailStore, batches, inserts } = await seed([
+      makeRow(1, { is_seen: 0, keywords_json: '{"$Seen":true}' }),
+      makeRow(2, { keywords_json: '{"Work":true}' }),
+    ]);
+
+    expect(await mailStore.markManySeen([1], true)).toBe(1);
+    expect(batches[0][0].keywords).toEqual(['$Seen', '$seen']);
+    expect(JSON.parse(inserts[0].optimisticPatchJson)).toEqual({ is_seen: 1 });
+
+    expect(await mailStore.setTagsMany([2], { add: ['work'] })).toBe(1);
+    expect(batches[1][0].keywords).toEqual(['Work', 'work']);
+    // A later removal names both spellings.
+    expect(await mailStore.setTagsMany([2], { remove: ['work'] })).toBe(1);
+    expect(batches[2][0].keywords).toEqual([]);
+    expect(new Set(JSON.parse(inserts[2].requestJson).remove)).toEqual(new Set(['work', 'Work']));
+  });
+
+  it('removes every cached spelling and names each on the wire', async () => {
+    const { mailStore, batches, inserts } = await seed([
+      makeRow(1, { keywords_json: '{"Work":true,"$seen":true}' }),
+      makeRow(2, { keywords_json: '{"work":true}' }),
+      makeRow(3, { keywords_json: '{}' }),
+    ]);
+
+    expect(await mailStore.setTagsMany([1, 2, 3], { remove: ['work'] })).toBe(2);
+
+    expect(batches[0][0].keywords).toEqual(['$seen']);
+    expect(batches[0][1].keywords).toEqual([]);
+    const request = JSON.parse(inserts[0].requestJson);
+    expect(request.messageIds).toEqual([1, 2]);
+    expect(request.add).toEqual([]);
+    expect(new Set(request.remove)).toEqual(new Set(['work', 'Work']));
+  });
+
+  it('drops system keywords from a tag patch and skips scheduled rows', async () => {
+    const { mailStore, inserts } = await seed([
+      makeRow(1, { keywords_json: '{}', scheduled_undo_status: 'pending' }),
+      makeRow(2, { keywords_json: '{}' }),
+    ]);
+
+    expect(await mailStore.setTagsMany([1, 2], { add: ['$seen', '$flagged'] })).toBe(0);
+    expect(inserts).toHaveLength(0);
+
+    expect(await mailStore.setTagsMany([1, 2], { add: ['$seen', 'receipts'] })).toBe(1);
+    expect(JSON.parse(inserts[0].requestJson)).toEqual({
+      messageIds: [2],
+      add: ['receipts'],
+      remove: [],
+    });
+  });
+
+  it('toggleTagMany removes the tag only when every target carries it', async () => {
+    const { mailStore, inserts } = await seed([
+      makeRow(1, { keywords_json: '{"work":true}' }),
+      makeRow(2, { keywords_json: '{}' }),
+    ]);
+
+    await mailStore.toggleTagMany([1, 2], 'work');
+    expect(JSON.parse(inserts[0].requestJson)).toEqual({
+      messageIds: [2],
+      add: ['work'],
+      remove: [],
+    });
+
+    await mailStore.toggleTagMany([1], 'WORK');
+    expect(JSON.parse(inserts[1].requestJson)).toEqual({
+      messageIds: [1],
+      add: [],
+      remove: ['work'],
+    });
+  });
+
+  it('clearTagsMany strips every tag keyword but leaves system keywords', async () => {
+    const { mailStore, batches, inserts } = await seed([
+      makeRow(1, { keywords_json: '{"work":true,"$seen":true,"$flagged":true}' }),
+      makeRow(2, { keywords_json: '{"receipts":true}' }),
+      makeRow(3, { keywords_json: '{"$seen":true}' }),
+    ]);
+
+    expect(await mailStore.clearTagsMany([1, 2, 3])).toBe(2);
+    expect(batches[0][0].keywords).toEqual(['$seen', '$flagged']);
+    expect(batches[0][1].keywords).toEqual([]);
+    const request = JSON.parse(inserts[0].requestJson);
+    expect(request.messageIds).toEqual([1, 2]);
+    expect(new Set(request.remove)).toEqual(new Set(['work', 'receipts']));
+
+    expect(await mailStore.clearTagsMany([3])).toBe(0);
+    expect(inserts).toHaveLength(1);
+  });
+
+  it('clearTagsMany reads the keywords from the rows the caller shows over an older cached copy', async () => {
+    const { mailStore, inserts } = await seed([makeRow(3, { keywords_json: '{"$seen":true}' })]);
+    const shown = makeRow(3, { keywords_json: '{"work":true,"$seen":true}' }) as any;
+
+    expect(await mailStore.clearTagsMany([3], { rows: [shown] })).toBe(1);
+    expect(JSON.parse(inserts[0].requestJson)).toMatchObject({ messageIds: [3], remove: ['work'] });
+  });
+});
+
+describe('tag views (MK-3.4)', () => {
+  async function seed() {
+    const inbox = makeFolder(1, { role: 'inbox', total_emails: 3 });
+    const archive = makeFolder(2, { role: 'archive', total_emails: 1 });
+    const { mailStore, repo } = await setupStore({
+      folders: [inbox, archive],
+      views: {
+        1: {
+          rows: [
+            makeRow(1, { keywords_json: '{"$label2":true}', received_at: 1_700_000_000_100 }),
+            makeRow(2, { keywords_json: '{"$flagged":true}', is_flagged: 1, received_at: 1_700_000_000_200 }),
+            makeRow(3, { keywords_json: '{}', received_at: 1_700_000_000_300 }),
+          ],
+          total: 3,
+        },
+        2: {
+          rows: [makeRow(4, { keywords_json: '{"$label2":true,"$seen":true}', received_at: 1_700_000_000_400 })],
+          total: 1,
+        },
+      },
+    });
+    await flush();
+    return { mailStore, repo };
+  }
+
+  it('addresses a tag view by a stable negative id and presents it as a folder named after the tag', async () => {
+    const { mailStore } = await seed();
+    const workId = mailStore.tagViewIdFor('$label2');
+    expect(workId).toBeLessThan(0);
+    expect(mailStore.tagViewIdFor('$LABEL2')).toBe(workId);
+    expect(mailStore.tagViewIdFor('receipts')).not.toBe(workId);
+    expect(mailStore.isTagViewId(workId)).toBe(true);
+    expect(mailStore.isTagViewId(1)).toBe(false);
+    expect(mailStore.tagViewKeyword(workId)).toBe('$label2');
+    expect(mailStore.folderById(workId)).toMatchObject({ id: workId, name: 'Work', role: null, account_id: 1 });
+    expect(mailStore.folderById(mailStore.tagViewIdFor('$flagged'))?.name).toBe('Starred');
+    expect(mailStore.folderById(mailStore.tagViewIdFor('receipts'))?.name).toBe('receipts');
+  });
+
+  it('selecting a tag view lists the keyword\u2019s rows across folders from the cache and reloads on broadcast', async () => {
+    const { mailStore, repo } = await seed();
+    const workId = mailStore.tagViewIdFor('$label2');
+
+    mailStore.selectFolder(workId);
+    await flush();
+
+    expect(mailStore.currentFolderId).toBe(workId);
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([4, 1]);
+    expect(mailStore.totalForFolder).toBe(2);
+    expect(mailStore.isLoading).toBe(false);
+    expect(repo._calls.ensureFolderWindow).toBe(0);
+
+    // A page request is a no-op: the view is loaded whole.
+    await mailStore.ensureLoaded(0, 50, workId);
+    expect(repo._calls.ensureFolderWindow).toBe(0);
+
+    // The keyword leaves a row; the MESSAGES broadcast re-reads the view.
+    repo.setView(2, { rows: [makeRow(4, { keywords_json: '{"$seen":true}', received_at: 1_700_000_000_400 })], total: 1 });
+    repo.triggerBroadcast(['messages']);
+    await flush();
+    await flush();
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([1]);
+  });
+
+  it('refuses filing from a tag view and never treats one as a drop target', async () => {
+    const { mailStore, repo } = await seed();
+    const workId = mailStore.tagViewIdFor('$label2');
+    mailStore.selectFolder(workId);
+    await flush();
+    const inserts = [];
+    repo.insertPendingMutation = async (input) => {
+      inserts.push(input);
+      return { id: 100 + inserts.length };
+    };
+
+    expect(await mailStore.archiveMessages([1], { sourceFolderId: workId })).toEqual({ succeeded: 0, failed: 0, skipped: 1 });
+    expect(mailStore.error).toBe("Open the message's folder to archive it.");
+    expect(await mailStore.junkMessages([1], { sourceFolderId: workId })).toMatchObject({ succeeded: 0, skipped: 1 });
+    await mailStore.destroyMessages([1], { sourceFolderId: workId });
+    expect(await mailStore.moveMessages([1], 2, { sourceFolderId: workId })).toMatchObject({ succeeded: 0, skipped: 1 });
+    expect(mailStore.transferModeForFolder(2, workId)).toBeNull();
+    expect(mailStore.transferModeForFolder(workId, 1)).toBeNull();
+    expect(inserts).toHaveLength(0);
+
+    // Keyword actions still work from a tag view.
+    expect(await mailStore.markManyFlagged([1], true, { sourceFolderId: workId })).toBe(1);
+    expect(JSON.parse(inserts[0].requestJson)).toMatchObject({ messageIds: [1], add: ['$flagged'] });
+  });
+
+  it('counts messages per keyword for the sidebar and reports indexer coverage for the account', async () => {
+    const { mailStore, repo } = await seed();
+    await mailStore.refreshTagCounts();
+    expect(mailStore.tagCounts.get('$label2')).toBe(2);
+    expect(mailStore.tagCounts.get('$flagged')).toBe(1);
+    expect(mailStore.tagCounts.get('nothing')).toBeUndefined();
+
+    // Every folder is fully covered in this fixture.
+    await mailStore.refreshFolders();
+    expect(mailStore.tagViewCoverage).toBe(100);
+    expect(repo._calls.listMessagesForKeyword ?? 0).toBe(0);
+  });
+
+  it('counts a single-page folder toward coverage only once its query view exists', async () => {
+    const { mailStore, repo } = await setupStore({
+      folders: [
+        makeFolder(1, { role: 'inbox', total_emails: 3 }),
+        makeFolder(3, { role: null, name: 'Small', total_emails: 3 }),
+      ],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+    // The small folder has no query view yet: the handler reports its
+    // total with nothing covered.
+    const original = repo.queryViewProgress.bind(repo);
+    repo.queryViewProgress = async (params) => (params.folderId === 3
+      ? { total: 3, covered: 0, percent: 0 }
+      : original(params));
+    await mailStore.refreshFolders();
+
+    // 3 of 6 messages indexed; the tree still shows the small folder complete.
+    expect(mailStore.tagViewCoverage).toBe(50);
+    expect(mailStore.folders.find((f) => f.id === 3)?.index_percent).toBe(100);
+  });
+
+  it('renames the open tag view when its definition is renamed', async () => {
+    const { mailStore } = await seed();
+    const workId = mailStore.tagViewIdFor('$label2');
+    mailStore.selectFolder(workId);
+    await flush();
+    expect(mailStore.currentFolder?.name).toBe('Work');
+
+    const settingsStore = useSettingsStore();
+    await settingsStore.update({
+      messageTags: settingsStore.get('messageTags').map((tag) => (
+        tag.keyword === '$label2' ? { ...tag, name: 'Clients' } : tag
+      )),
+    });
+    expect(mailStore.currentFolder?.name).toBe('Clients');
+    expect(mailStore.folderById(workId)?.name).toBe('Clients');
+  });
+
+  it('notes when a tag view lists fewer messages than the cache counts, and forgets tag state on reset', async () => {
+    const { mailStore, repo } = await seed();
+    const workId = mailStore.tagViewIdFor('$label2');
+    mailStore.selectFolder(workId);
+    await flush();
+    expect(mailStore.tagViewTruncation).toBeNull();
+
+    repo.listMessageKeywords = async () => [{ keyword: '$label2', count: 2500 }];
+    await mailStore.refreshTagCounts();
+    expect(mailStore.tagViewTruncation).toEqual({ shown: 2000, total: 2500 });
+    expect(mailStore.folderById(workId)?.total_emails).toBe(2500);
+
+    mailStore.$reset();
+    expect(mailStore.tagCounts.size).toBe(0);
+    expect(mailStore.tagViewKeyword(workId)).toBeNull();
+    // Ids are handed out afresh for the next session.
+    expect(mailStore.tagViewIdFor('$flagged')).toBe(workId);
   });
 });
 

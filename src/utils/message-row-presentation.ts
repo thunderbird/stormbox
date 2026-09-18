@@ -18,6 +18,7 @@ export interface MessageRowLike {
   is_seen?: number | string | null;
   is_flagged?: number | string | null;
   has_attachment?: number | string | null;
+  keywords_json?: string | null;
   scheduled_undo_status?: string | null;
 }
 

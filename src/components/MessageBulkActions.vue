@@ -6,49 +6,69 @@ import type { BulkActionItem } from '../composables/useBulkActionItems';
  * decides which actions exist and which of them stay in the header row
  * (see `useBulkActionItems` / `splitBulkActions`); this component only
  * renders that row of buttons. Actions that did not fit are the owner's
- * to show in its overflow menu.
+ * to show in its overflow menu. The `tag` action is a menu, not a
+ * button: the owner renders it through the `tag` slot in that item's
+ * place.
  */
 defineProps<{
   items: readonly BulkActionItem[];
 }>();
+
+defineSlots<{
+  tag?: (props: { item: BulkActionItem }) => unknown;
+}>();
 </script>
 
 <template>
-  <button
-    v-for="item in items"
-    :key="item.id"
-    class="msg-list__bulk-action"
-    :class="{
-      'msg-list__bulk-action--danger': item.variant === 'danger',
-      'msg-list__bulk-action--star': item.variant === 'star',
-      'msg-list__bulk-action--starred': item.variant === 'star' && item.pressed,
-      'msg-list__bulk-action--whitelist': item.variant === 'whitelist',
-    }"
-    type="button"
-    :disabled="item.disabled"
-    :title="item.title"
-    :aria-label="item.ariaLabel"
-    :aria-pressed="item.variant === 'star' ? item.pressed : undefined"
-    :data-bulk-action="item.id"
-    @click="item.run()"
-  >
-    <template v-if="item.variant === 'whitelist'">
-      {{ item.label }}
-    </template>
-    <span
-      v-else-if="item.rawIcon"
-      class="msg-list__bulk-icon msg-list__bulk-icon--folder"
-      aria-hidden="true"
-      v-html="item.rawIcon"
-    />
-    <component
-      :is="item.icon"
-      v-else-if="item.icon"
-      :size="item.variant === 'star' ? 17 : item.variant === 'danger' ? 18 : 16"
-      :stroke-width="item.variant === 'danger' ? 1.65 : 1.75"
-      :fill="item.variant === 'star' ? (item.pressed ? 'currentColor' : 'none') : undefined"
-    />
-  </button>
+  <template v-for="item in items" :key="item.id">
+    <slot v-if="item.variant === 'tag'" name="tag" :item="item">
+      <!-- Without a menu from the owner the action still runs (it opens the owner's popover). -->
+      <button
+        class="msg-list__bulk-action"
+        type="button"
+        :title="item.title"
+        :aria-label="item.ariaLabel"
+        :data-bulk-action="item.id"
+        @click="item.run()"
+      >
+        <component :is="item.icon" v-if="item.icon" :size="16" :stroke-width="1.75" />
+      </button>
+    </slot>
+    <button
+      v-else
+      class="msg-list__bulk-action"
+      :class="{
+        'msg-list__bulk-action--danger': item.variant === 'danger',
+        'msg-list__bulk-action--star': item.variant === 'star',
+        'msg-list__bulk-action--starred': item.variant === 'star' && item.pressed,
+        'msg-list__bulk-action--whitelist': item.variant === 'whitelist',
+      }"
+      type="button"
+      :disabled="item.disabled"
+      :title="item.title"
+      :aria-label="item.ariaLabel"
+      :aria-pressed="item.variant === 'star' ? item.pressed : undefined"
+      :data-bulk-action="item.id"
+      @click="item.run()"
+    >
+      <template v-if="item.variant === 'whitelist'">
+        {{ item.label }}
+      </template>
+      <span
+        v-else-if="item.rawIcon"
+        class="msg-list__bulk-icon msg-list__bulk-icon--folder"
+        aria-hidden="true"
+        v-html="item.rawIcon"
+      />
+      <component
+        :is="item.icon"
+        v-else-if="item.icon"
+        :size="item.variant === 'star' ? 17 : item.variant === 'danger' ? 18 : 16"
+        :stroke-width="item.variant === 'danger' ? 1.65 : 1.75"
+        :fill="item.variant === 'star' ? (item.pressed ? 'currentColor' : 'none') : undefined"
+      />
+    </button>
+  </template>
 </template>
 
 <style scoped>

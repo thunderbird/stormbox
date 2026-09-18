@@ -1,6 +1,8 @@
 import { computed } from 'vue';
 import type { Component, Ref } from 'vue';
-import { Mail, MailOpen, Star, Trash2 } from '@lucide/vue';
+import {
+  Mail, MailOpen, Star, Tag, Trash2,
+} from '@lucide/vue';
 
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -13,10 +15,11 @@ export type BulkActionId =
   | 'delete'
   | 'cancel-send'
   | 'toggle-star'
+  | 'tag'
   | 'mark-read'
   | 'mark-unread';
 
-export type BulkActionVariant = 'default' | 'danger' | 'star' | 'whitelist';
+export type BulkActionVariant = 'default' | 'danger' | 'star' | 'whitelist' | 'tag';
 
 export interface BulkActionItem {
   id: BulkActionId;
@@ -47,6 +50,8 @@ export interface BulkActionHandlers {
   delete: () => void;
   cancelSend: () => void;
   toggleStar: () => void;
+  /** Open the tag menu for the selection; the inline slot renders the menu itself. */
+  tag: () => void;
   markRead: () => void;
   markUnread: () => void;
   whitelist: () => void;
@@ -61,24 +66,31 @@ export interface UseBulkActionItemsInput {
   anyStarred: Ref<boolean>;
   /** Whether any selected row is a pending scheduled send. */
   anyScheduled: Ref<boolean>;
+  /**
+   * False in a tag view, whose rows live in many folders: archive, junk
+   * and delete are left out and only keyword actions remain.
+   */
+  fileActions?: Ref<boolean>;
   handlers: BulkActionHandlers;
 }
 
 /**
  * The bulk actions for a checkbox selection, in display order: "Not junk"
- * inside a Junk folder, archive, junk, delete, star, mark read, mark
+ * inside a Junk folder, archive, junk, delete, star, tag, mark read, mark
  * unread. Archive is not offered inside the Archive folder and Junk not
  * inside Junk. While any selected row is a pending scheduled send,
- * archive, junk and star are dropped and the delete slot cancels the
+ * archive, junk, star and tag are dropped and the delete slot cancels the
  * selected sends instead (SL-5.6). Star is modal (MK-2.4): it unstars
- * when any selected row is starred, otherwise stars them all.
+ * when any selected row is starred, otherwise stars them all. Tag opens
+ * the tag menu over the selection (MK-6.6).
  */
 export function useBulkActionItems(input: UseBulkActionItemsInput) {
   return computed<BulkActionItem[]>(() => {
     const role = input.folder.value?.role;
     const scheduled = input.anyScheduled.value;
+    const files = input.fileActions?.value ?? true;
     const items: BulkActionItem[] = [];
-    if (input.canWhitelist.value) {
+    if (files && input.canWhitelist.value) {
       items.push({
         id: 'whitelist',
         label: 'Not junk',
@@ -88,11 +100,11 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         variant: 'whitelist',
         disabled: input.whitelisting.value,
         slots: 3,
-        overflowRank: 5,
+        overflowRank: 6,
         run: input.handlers.whitelist,
       });
     }
-    if (!scheduled && role !== 'archive') {
+    if (files && !scheduled && role !== 'archive') {
       items.push({
         id: 'archive',
         label: 'Archive',
@@ -102,11 +114,11 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         rawIcon: archiveIcon,
         variant: 'default',
         slots: 1,
-        overflowRank: 4,
+        overflowRank: 5,
         run: input.handlers.archive,
       });
     }
-    if (!scheduled && role !== 'junk') {
+    if (files && !scheduled && role !== 'junk') {
       items.push({
         id: 'junk',
         label: 'Mark as junk',
@@ -132,7 +144,7 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         overflowRank: null,
         run: input.handlers.cancelSend,
       });
-    } else {
+    } else if (files) {
       items.push({
         id: 'delete',
         label: 'Delete',
@@ -156,8 +168,19 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         variant: 'star',
         pressed: starred,
         slots: 1,
-        overflowRank: 3,
+        overflowRank: 4,
         run: input.handlers.toggleStar,
+      });
+      items.push({
+        id: 'tag',
+        label: 'Tag…',
+        title: 'Tag',
+        ariaLabel: 'Tag selected messages',
+        icon: Tag,
+        variant: 'tag',
+        slots: 1,
+        overflowRank: 3,
+        run: input.handlers.tag,
       });
     }
     items.push({

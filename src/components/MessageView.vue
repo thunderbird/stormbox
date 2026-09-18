@@ -17,6 +17,8 @@ import {
 } from '@lucide/vue';
 
 import { useMessageAttachments } from '../composables/useMessageAttachments';
+import { useMessageTags } from '../composables/useMessageTags';
+import { requestTagManager } from '../composables/useTagManagerRequest';
 import { invokeThunderbirdShortcut } from '../composables/useThunderbirdShortcuts';
 import { useComposeStore } from '../stores/compose-store';
 import { useMailStore } from '../stores/mail-store';
@@ -46,6 +48,9 @@ import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 import AppIconButton from './AppIconButton.vue';
 import MessageAttachmentBar from './MessageAttachmentBar.vue';
 import MessageAttachmentPreviews from './MessageAttachmentPreviews.vue';
+import MessageTagChip from './MessageTagChip.vue';
+import MessageTagStack from './MessageTagStack.vue';
+import TagPickerPopover, { type PopoverAnchor } from './TagPickerPopover.vue';
 
 // Minimum logical width we lay HTML email out at before scaling down.
 // Reflowing typical marketing HTML below this gets visually messy
@@ -114,6 +119,60 @@ const selectedMessageId = computed(() => mailStore.selectedMessageId);
 /** Folder the open message was opened from; folder-specific actions act on it. */
 const messageSource = computed(() => ({ sourceFolderId: mailStore.openMessageFolderId }));
 const messageAccountId = computed(() => message.value?.account_id ?? null);
+
+// Tags on the open message (MK-6.5): the tag stack in the toolbar opens
+// the tag menu, and the header lists the tags as removable chips. The
+// single-column layout has no row hover, so this is where a phone user
+// tags a single message.
+const { definitions: tagDefinitions, tagsFor } = useMessageTags();
+const messageTags = computed(() => tagsFor(message.value));
+const messageTagTargets = computed(() => (message.value ? [message.value] : []));
+const canTagMessage = computed(() => message.value != null && !isScheduledMessage(message.value));
+
+// The toolbar's tag stack opens the menu as a popover: the header sits in
+// an overflow-hidden article, which would clip an inline dropdown.
+const tagMenuButton = ref<InstanceType<typeof AppIconButton> | null>(null);
+const tagMenuTrigger = computed<HTMLElement | null>(() => (tagMenuButton.value?.$el as HTMLElement | undefined) ?? null);
+const tagMenuAnchor = ref<PopoverAnchor | null>(null);
+const tagStackLabel = computed(() => (
+  messageTags.value.length === 0 ? 'Tag' : `Tags: ${messageTags.value.map((tag) => tag.name).join(', ')}`
+));
+function toggleTagMenu() {
+  if (tagMenuAnchor.value) {
+    tagMenuAnchor.value = null;
+    return;
+  }
+  const rect = tagMenuTrigger.value?.getBoundingClientRect();
+  if (!rect) return;
+  tagMenuAnchor.value = {
+    top: rect.top, left: rect.left, width: rect.width, height: rect.height,
+  };
+}
+function closeTagMenu() {
+  tagMenuAnchor.value = null;
+}
+// A different message (or none) closes the menu with the row it was for.
+watch(() => message.value?.id, closeTagMenu);
+
+async function setMessageTag(keyword: string, on: boolean) {
+  if (!message.value) return;
+  await mailStore.setTagsMany(
+    [message.value.id],
+    on ? { add: [keyword] } : { remove: [keyword] },
+    messageSource.value,
+  );
+}
+
+async function clearMessageTags() {
+  if (!message.value) return;
+  await mailStore.clearTagsMany([message.value.id], { ...messageSource.value, rows: [message.value] });
+}
+
+function manageTags() {
+  closeTagMenu();
+  requestTagManager();
+}
+
 const attachmentParts = computed(() => (
   Array.isArray(body.value?.attachments) ? body.value.attachments : []
 ));
@@ -537,6 +596,9 @@ async function archive() {
 // is a no-op, so that button is gated the same way.
 const isInJunkFolder = computed(() => mailStore.openMessageFolder?.role === 'junk');
 const isInArchiveFolder = computed(() => mailStore.openMessageFolder?.role === 'archive');
+// Opened from a tag view (MK-3.4): the row lives in some folder this pane
+// does not know, so filing actions stand down; keyword actions stay.
+const openedFromTagView = computed(() => mailStore.isTagViewId(mailStore.openMessageFolderId));
 const canWhitelistInJunk = computed(() => {
   const current = mailStore.openMessageFolder;
   return current?.role === 'junk'
@@ -654,7 +716,7 @@ function closeMessageView() {
              the leading edge so it reads as a folder-specific action,
              not one of the always-present icon buttons. -->
         <button
-          v-if="canWhitelistInJunk"
+          v-if="canWhitelistInJunk && !openedFromTagView"
           class="message-view__action message-view__action--whitelist"
           type="button"
           :disabled="whitelisting"
@@ -668,13 +730,13 @@ function closeMessageView() {
              only Back and the view-mode toggle, and the banner below
              owns Cancel Send. -->
         <template v-if="!isPendingScheduled">
-          <AppIconButton v-if="!isInArchiveFolder" class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
+          <AppIconButton v-if="!isInArchiveFolder && !openedFromTagView" class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </AppIconButton>
-          <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
+          <AppIconButton v-if="!isInJunkFolder && !openedFromTagView" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" danger @click="destroy" :title="actionTitle('Delete', 'delete')" aria-label="Delete">
+          <AppIconButton v-if="!openedFromTagView" class="message-view__action" danger @click="destroy" :title="actionTitle('Delete', 'delete')" aria-label="Delete">
             <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
           </AppIconButton>
           <AppIconButton class="message-view__action" @click="reply" :title="actionTitle('Reply', 'reply')" aria-label="Reply">
@@ -686,7 +748,32 @@ function closeMessageView() {
           <AppIconButton class="message-view__action" @click="forward" :title="actionTitle('Forward', 'forward')" aria-label="Forward">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
           </AppIconButton>
+          <!-- The message's tag stack (MK-6.5); opens the tag menu. -->
+          <AppIconButton
+            v-if="canTagMessage"
+            ref="tagMenuButton"
+            class="message-view__action message-view__action--tags"
+            :title="actionTitle(tagStackLabel, 'openTagMenu')"
+            :aria-label="tagStackLabel"
+            aria-haspopup="dialog"
+            :aria-expanded="tagMenuAnchor !== null"
+            data-tag-picker-trigger
+            @click="toggleTagMenu"
+          >
+            <MessageTagStack :tags="messageTags" />
+          </AppIconButton>
         </template>
+        <TagPickerPopover
+          :anchor="tagMenuAnchor"
+          :targets="messageTagTargets"
+          :definitions="tagDefinitions"
+          :trigger="tagMenuTrigger"
+          label="Tags"
+          @close="closeTagMenu"
+          @toggle="setMessageTag"
+          @clear="clearMessageTags"
+          @manage="manageTags"
+        />
         <AppIconButton
           v-if="canForceLightBody"
           class="message-view__action message-view__action--view-mode"
@@ -738,6 +825,21 @@ function closeMessageView() {
             <dt>{{ hasScheduledBanner ? 'Send at' : 'Date' }}</dt>
             <dd class="message-view__date">
               {{ fmtDate(hasScheduledBanner ? (message.sent_at ?? message.received_at) : message.received_at) }}
+            </dd>
+          </div>
+          <div
+            v-if="messageTags.length > 0"
+            class="message-view__metadata-row message-view__tags-row"
+          >
+            <dt>Tags</dt>
+            <dd class="message-view__tags" data-message-tags>
+              <MessageTagChip
+                v-for="tag in messageTags"
+                :key="tag.keyword"
+                :tag="tag"
+                :removable="canTagMessage"
+                @remove="setMessageTag(tag.keyword, false)"
+              />
             </dd>
           </div>
         </dl>
@@ -912,6 +1014,19 @@ function closeMessageView() {
   white-space: normal;
 }
 .message-view__date { font-variant-numeric: tabular-nums; }
+.message-view__tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+/* Sized to its stack (three icons and "+N" run past 34px). */
+.message-view__header .message-view__action--tags {
+  width: auto;
+  min-width: 34px;
+  flex: 0 0 auto;
+  padding: 0 6px;
+}
 /* Whitelist ("Not junk") is a contextual, Junk-only action. It leads
    the action group at the toolbar's leading edge, set apart from the
    always-present icon buttons by a trailing margin. Styled as a filled

@@ -3,6 +3,11 @@
  * opaque JSON; UI reads validate them here.
  */
 
+import {
+  DEFAULT_MESSAGE_TAGS,
+  isMessageTagDefinitionList,
+  type MessageTagDefinition,
+} from '../utils/message-tags';
 import { detectTimeZone, isUsableTimeZone } from '../utils/schedule-time';
 
 export const THEME_VALUES = ['light', 'dark', 'system'] as const;
@@ -30,6 +35,12 @@ export interface Settings {
   primaryIdentityRemoteId: string | null;
   /** IANA time zone used to interpret scheduled-send wall times. */
   timeZone: string;
+  /**
+   * Tag definitions over JMAP keywords (specs/011 MK-6.2). One key, so
+   * two devices editing different tags at once resolve to the later
+   * writer's whole list.
+   */
+  messageTags: MessageTagDefinition[];
 }
 
 export const SETTING_DEFAULTS: Readonly<Settings> = {
@@ -38,6 +49,7 @@ export const SETTING_DEFAULTS: Readonly<Settings> = {
   shortcutScheme: 'web',
   primaryIdentityRemoteId: null,
   timeZone: detectTimeZone(),
+  messageTags: [...DEFAULT_MESSAGE_TAGS],
 };
 
 const SETTING_VALIDATORS: {
@@ -50,6 +62,7 @@ const SETTING_VALIDATORS: {
   primaryIdentityRemoteId: (value): value is string | null =>
     value === null || (typeof value === 'string' && value.length > 0),
   timeZone: isUsableTimeZone,
+  messageTags: isMessageTagDefinitionList,
 };
 
 export function resolveSetting<K extends keyof Settings>(key: K, value: unknown): Settings[K] {

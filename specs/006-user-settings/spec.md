@@ -57,6 +57,7 @@ that mirror.
 | `theme` | `light \| dark \| system` | `system` | Color scheme; `system` follows the OS preference. |
 | `primaryIdentityRemoteId` | `string \| null` | `null` | Client-selected JMAP Identity used as the default From address. |
 | `timeZone` | IANA time-zone string | detected IANA zone, else `UTC` | Wall-time zone used by Send Later presets and custom scheduling. |
+| `messageTags` | `Array<{ keyword, name, color, order }>` | Thunderbird's five default tags | Tag definitions over JMAP keywords (`specs/011-message-keywords/spec.md` §6). One key: two devices editing different tags at once resolve to the later writer's whole list. |
 
 ## Non-goals
 

@@ -140,6 +140,22 @@ are the same shape for `$seen`. New keyword features extend this path
 rather than writing `pending_mutations` themselves
 (`specs/011-message-keywords/spec.md`, MK-1.2).
 
+Keywords are compared and sent lowercase (MK-1.5). A cached keyword in
+another spelling counts as present, and removing it also names that
+spelling in the outbox row's `remove`, since Stalwart stores custom
+keywords verbatim and matches them case-sensitively.
+
+Tags are the same path with a system-keyword guard: `setTagsMany`
+drops `$seen`, `$flagged` and the other client-managed keywords
+(`SYSTEM_KEYWORDS` in `src/utils/message-tags.ts`) from the patch, then
+applies the scheduled-row filter and calls `setKeywordsMany`.
+`toggleTagMany` (add unless every target already carries the tag) and
+`clearTagsMany` (remove every tag keyword the targets carry) back the
+digit shortcuts. Tag definitions — name, color, order per keyword — are
+not mail state: they live in the `messageTags` setting and are read
+through `useMessageTags`; a keyword without a definition still renders
+as a tag named from the keyword.
+
 ### Mutation payloads carry local ids for mail
 
 Mail, send, draft, and mailbox `request_json` uses local ids. The

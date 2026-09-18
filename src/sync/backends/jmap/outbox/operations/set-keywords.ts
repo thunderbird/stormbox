@@ -15,12 +15,16 @@ async function runSetKeywords({ transport, handlers, row, request, useWebSocket 
   if (resolvedByAccount.size === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
+  // Keywords go out lowercase (MK-1.5). A removal also keeps any other
+  // spelling the store saw in the cache, since Stalwart matches custom
+  // keywords case-sensitively.
   const update = {};
-  for (const k of request.add ?? []) {
-    update[`keywords/${k}`] = true;
-  }
   for (const k of request.remove ?? []) {
     update[`keywords/${k}`] = null;
+    update[`keywords/${k.toLowerCase()}`] = null;
+  }
+  for (const k of request.add ?? []) {
+    update[`keywords/${k.toLowerCase()}`] = true;
   }
   for (const [remoteAccountId, resolved] of resolvedByAccount) {
     for (const chunk of chunks(resolved, maxObjectsInSet(transport))) {

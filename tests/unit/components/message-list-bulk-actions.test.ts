@@ -293,6 +293,7 @@ describe('MessageList bulk actions header', () => {
       'Junk',
       'Delete',
       'Star',
+      'Tag',
       'Mark as read',
       'Mark as unread',
       'Clear selection',
@@ -314,6 +315,7 @@ describe('MessageList bulk actions header', () => {
       'Archive',
       'Delete',
       'Star',
+      'Tag',
       'Mark as read',
       'Mark as unread',
       'Clear selection',
@@ -331,7 +333,7 @@ describe('MessageList bulk actions header', () => {
     const titles = wrapper
       .findAll('.msg-list__bulk-actions .msg-list__bulk-action')
       .map((button) => button.attributes('title'));
-    expect(titles).toEqual(['Junk', 'Delete', 'Star', 'Mark as read', 'Mark as unread', 'Clear selection']);
+    expect(titles).toEqual(['Junk', 'Delete', 'Star', 'Tag', 'Mark as read', 'Mark as unread', 'Clear selection']);
     wrapper.unmount();
   });
 
@@ -403,6 +405,7 @@ describe('MessageList bulk actions header', () => {
       'Junk',
       'Delete',
       'Star',
+      'Tag',
       'Mark as read',
       'Mark as unread',
       'Clear selection',
