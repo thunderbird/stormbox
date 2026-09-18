@@ -16,7 +16,9 @@ import {
 import { useMessageListFilters } from '../composables/useMessageListFilters';
 import { useMessageListHeader } from '../composables/useMessageListHeader';
 import { useMessageListViewport } from '../composables/useMessageListViewport';
+import { useMessageTags } from '../composables/useMessageTags';
 import { provideSenderAvatars } from '../composables/useSenderAvatars';
+import { requestTagManager } from '../composables/useTagManagerRequest';
 import {
   registerMessageListCommands,
   type MessageListNavigationCommand,
@@ -30,6 +32,8 @@ import MessageListHeaderTitle from './MessageListHeaderTitle.vue';
 import MessageListMoreMenu from './MessageListMoreMenu.vue';
 import MessageListRow from './MessageListRow.vue';
 import SelectableListHeader from './SelectableListHeader.vue';
+import TagPickerDropdown from './TagPickerDropdown.vue';
+import TagPickerPopover, { type PopoverAnchor } from './TagPickerPopover.vue';
 
 const mailStore = useMailStore();
 
@@ -332,6 +336,7 @@ onMounted(() => {
   unregisterMessageListCommands = registerMessageListCommands({
     navigate: navigateMessageList,
     selectAll: selectAllForCurrentFilter,
+    openTagMenu: openTagMenuForTargets,
     folderId: () => folderId.value,
     primary: () => props.primary,
     containsFocus: () => msgListEl.value?.contains(document.activeElement) === true,
@@ -393,6 +398,37 @@ function isDraggingMessage(messageId) {
 const listShowsRecipients = computed(() => folderShowsRecipients(folder.value));
 // Archiving from Archive is a no-op; the row overlay and the bulk toolbar leave it out.
 const isArchiveFolder = computed(() => folder.value?.role === 'archive');
+// A tag view (MK-3.4) lists one keyword across folders: rows are not
+// filed, moved or dragged from it; keyword actions still apply.
+const isTagView = computed(() => mailStore.isTagViewId(folderId.value));
+const fileActions = computed(() => !isTagView.value);
+/** Share of the account the indexer has covered; a tag view lists what is indexed. */
+const tagViewCoverage = computed(() => (
+  isTagView.value ? mailStore.tagViewCoverage : null
+));
+/**
+ * The note under a tag view's header: which of the account's mail it can
+ * show. Empty (and the row collapsed) when the view is complete and no
+ * caveat applies.
+ */
+const tagViewNote = computed(() => {
+  if (!isTagView.value) return '';
+  const parts: string[] = [];
+  const coverage = tagViewCoverage.value;
+  if (coverage !== null && coverage < 100) {
+    parts.push(`Showing tagged mail from the folders indexed so far (${coverage}%).`);
+  }
+  const truncation = mailStore.tagViewTruncation;
+  if (truncation) {
+    parts.push(`Showing the newest ${truncation.shown.toLocaleString()} of ${truncation.total.toLocaleString()} tagged messages.`);
+  }
+  // A tag view reads the signed-in account only (MK-3.4).
+  if (mailStore.sharedAccounts.length > 0) {
+    parts.push('Shared folders are not included.');
+  }
+  return parts.join(' ');
+});
+const showsTagViewCoverage = computed(() => tagViewNote.value.length > 0);
 
 const allLoadedSelected = computed(() => {
   const loadedIds = [];
@@ -492,6 +528,162 @@ async function bulkToggleStar() {
   await mailStore.toggleManyFlagged([...selectedIds.value], source.value);
 }
 
+// ----- tags (MK-6.6): one menu, three anchors ----------------------------
+// The bulk toolbar hosts the menu as a dropdown; a row's Tag button and
+// the header's overflow menu open the same panel as a popover anchored to
+// the control that raised it, since neither can host a <details>.
+
+const { definitions: tagDefinitions } = useMessageTags();
+
+const selectedRows = computed<CachedRow[]>(() => messages.value.filter(isRowSelected));
+
+interface TagPopoverState {
+  ids: number[];
+  /** Rows as they were when the menu opened; live rows override them by id. */
+  targets: CachedRow[];
+  anchor: PopoverAnchor;
+  /** The control that opened the menu: exempt from outside-click dismissal, and where focus returns. */
+  trigger: HTMLElement | null;
+  returnFocus: HTMLElement | null;
+}
+const tagPopover = ref<TagPopoverState | null>(null);
+
+/** Viewport rectangle of a laid-out element; null for a missing or unpainted one. */
+function anchorOf(element: Element | null | undefined): PopoverAnchor | null {
+  if (!element || element.getClientRects().length === 0) return null;
+  const rect = element.getBoundingClientRect();
+  return {
+    top: rect.top, left: rect.left, width: rect.width, height: rect.height,
+  };
+}
+
+async function applyTagToggle(ids: number[], keyword: string, on: boolean) {
+  if (ids.length === 0) return;
+  await mailStore.setTagsMany(ids, on ? { add: [keyword] } : { remove: [keyword] }, source.value);
+}
+
+async function clearTagsOn(ids: number[], rows: ReadonlyArray<CachedRow | undefined>) {
+  if (ids.length === 0) return;
+  await mailStore.clearTagsMany(ids, { ...source.value, rows });
+}
+
+/** A row's Tag button toggles its menu: a second click closes it. */
+function openRowTagPicker(message: CachedRow & { id: number }, event: MouseEvent) {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  if (tagPopover.value && tagPopover.value.ids.length === 1 && tagPopover.value.ids[0] === message.id) {
+    closeTagPopover();
+    return;
+  }
+  const anchor = anchorOf(trigger);
+  if (!anchor) return;
+  tagPopover.value = {
+    ids: [message.id],
+    targets: [message],
+    anchor,
+    trigger,
+    returnFocus: scrollEl.value,
+  };
+}
+
+/** The overflowed bulk Tag action: the popover hangs off the More menu. */
+function openBulkTagPicker() {
+  const trigger = msgListEl.value?.querySelector<HTMLElement>('[data-more-menu]')
+    ?? msgListEl.value?.querySelector<HTMLElement>('.msg-list__header')
+    ?? null;
+  const anchor = anchorOf(trigger);
+  if (!anchor) return;
+  tagPopover.value = {
+    ids: [...selectedIds.value],
+    targets: selectedRows.value,
+    anchor,
+    trigger,
+    returnFocus: trigger,
+  };
+}
+
+function closeTagPopover() {
+  tagPopover.value = null;
+}
+
+/** The row whose Tag button owns the open menu, for its aria-expanded. */
+const tagMenuRowId = computed<number | null>(() => {
+  const state = tagPopover.value;
+  return state && state.ids.length === 1 && state.trigger?.classList.contains('msg-list__action--tag')
+    ? state.ids[0]
+    : null;
+});
+
+/**
+ * `T` (MK-4.2): the menu for the checked rows hangs off the toolbar's Tag
+ * button (or the More menu holding it); for the open message alone it
+ * hangs off that row's Tag button, or the header when the row is not
+ * painted.
+ */
+function openTagMenuForTargets() {
+  if (selectedIds.value.size > 0) {
+    const inlineTrigger = msgListEl.value?.querySelector<HTMLElement>('[data-tag-picker-trigger]');
+    if (inlineTrigger) {
+      const details = inlineTrigger.closest('details');
+      if (details && !details.open) details.open = true;
+      return;
+    }
+    openBulkTagPicker();
+    return;
+  }
+  const openId = openMessageId.value;
+  if (openId == null) return;
+  const row = messages.value.find((candidate) => candidate?.id === openId);
+  if (!row || isScheduledMessage(row)) return;
+  const trigger = document.getElementById(`${rowDomIdPrefix.value}${openId}`)
+    ?.querySelector<HTMLElement>('.msg-list__action--tag') ?? null;
+  const anchor = anchorOf(trigger) ?? anchorOf(msgListEl.value?.querySelector<HTMLElement>('.msg-list__header'));
+  if (!anchor) return;
+  tagPopover.value = {
+    ids: [openId],
+    targets: [row],
+    anchor,
+    trigger,
+    returnFocus: scrollEl.value,
+  };
+}
+
+/**
+ * Rows re-render as keywords change; the open popover reads each target
+ * from the live window when it is painted and from its opening snapshot
+ * otherwise, so the tri-state covers every id it acts on.
+ */
+const tagPopoverTargets = computed<CachedRow[]>(() => {
+  const state = tagPopover.value;
+  if (!state) return [];
+  const live = new Map<number, CachedRow>();
+  for (const row of messages.value) {
+    if (row?.id != null) live.set(row.id, row);
+  }
+  const snapshot = new Map<number, CachedRow>();
+  for (const row of state.targets) {
+    if (row?.id != null) snapshot.set(row.id, row);
+  }
+  return state.ids.map((id) => live.get(id) ?? snapshot.get(id));
+});
+
+function manageTags() {
+  closeTagPopover();
+  requestTagManager();
+}
+
+/**
+ * Empty state under the dense filters, naming every active one:
+ * "No unread starred messages in Inbox."
+ */
+const filteredEmptyText = computed(() => {
+  const qualifiers = [
+    unreadOnly.value ? 'unread' : null,
+    flaggedOnly.value ? 'starred' : null,
+  ].filter((part): part is string => part !== null);
+  const prefix = qualifiers.length > 0 ? `${qualifiers.join(' ')} ` : '';
+  return `No ${prefix}messages in ${folderName.value}.`;
+});
+
 async function bulkMarkUnread() {
   await mailStore.markManySeen([...selectedIds.value], false, source.value);
 }
@@ -560,12 +752,14 @@ const bulkActionItems = useBulkActionItems({
   whitelisting: bulkWhitelisting,
   anyStarred: anySelectedStarred,
   anyScheduled: anySelectedScheduled,
+  fileActions,
   handlers: {
     archive: bulkArchive,
     junk: bulkJunk,
     delete: bulkDelete,
     cancelSend: bulkCancelSend,
     toggleStar: bulkToggleStar,
+    tag: openBulkTagPicker,
     markRead: bulkMarkRead,
     markUnread: bulkMarkUnread,
     whitelist: bulkWhitelist,
@@ -698,7 +892,20 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       @toggle-all="toggleSelectAll"
     >
       <template #selection-actions>
-        <MessageBulkActions :items="bulkActions.inline" />
+        <MessageBulkActions :items="bulkActions.inline">
+          <template #tag="{ item }">
+            <TagPickerDropdown
+              :targets="selectedRows"
+              :definitions="tagDefinitions"
+              :label="item.ariaLabel"
+              :title="item.title"
+              trigger-class="msg-list__bulk-action msg-list__bulk-action--tag"
+              @toggle="(keyword, on) => applyTagToggle([...selectedIds], keyword, on)"
+              @clear="clearTagsOn([...selectedIds], selectedRows)"
+              @manage="manageTags"
+            />
+          </template>
+        </MessageBulkActions>
       </template>
       <template #normal-actions>
         <MessageListHeaderTitle
@@ -792,6 +999,18 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       </template>
     </SelectableListHeader>
 
+    <!-- Always a grid item (collapsed, not display:none, when idle) so the
+         scroller keeps the stretching third row. -->
+    <p
+      class="msg-list__coverage"
+      :class="{ 'is-idle': !showsTagViewCoverage }"
+      role="status"
+      :aria-hidden="!showsTagViewCoverage"
+      data-tag-view-coverage
+    >
+      <template v-if="showsTagViewCoverage">{{ tagViewNote }}</template>
+    </p>
+
     <div
       v-if="rowCount > 0"
       :id="listboxId"
@@ -826,12 +1045,17 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             :shows-recipients="listShowsRecipients"
             :sort="listSort"
             :hover-actions="rowHoverActions(visibleMessages[v.index])"
-            :archive-action="!isArchiveFolder"
+            :archive-action="fileActions && !isArchiveFolder"
+            :delete-action="fileActions"
+            :draggable="fileActions"
+            :tag-definitions="tagDefinitions"
+            :tag-menu-open="tagMenuRowId === visibleMessages[v.index].id"
             @row-click="onRowClick(v.index, $event)"
             @checkbox-click="onCheckboxClick(v.index, $event)"
             @dragstart="onRowDragStart(visibleMessages[v.index], $event)"
             @dragend="endMessageDrag"
             @star="toggleStar(visibleMessages[v.index])"
+            @tag="openRowTagPicker(visibleMessages[v.index], $event)"
             @archive="archiveOne(visibleMessages[v.index].id)"
             @delete="deleteOne(visibleMessages[v.index].id)"
           />
@@ -866,14 +1090,11 @@ defineExpose({ focusColumnControl, focusFolderPicker });
     <div v-else-if="quickFilterActive" class="msg-list__placeholder">
       <p>No messages matching "{{ props.quickFilterQuery.trim() }}" in {{ folderName }}.</p>
     </div>
-    <div v-else-if="unreadOnly && flaggedOnly" class="msg-list__placeholder">
-      <p>No unread starred messages in {{ folderName }}.</p>
+    <div v-else-if="unreadOnly || flaggedOnly" class="msg-list__placeholder">
+      <p>{{ filteredEmptyText }}</p>
     </div>
-    <div v-else-if="unreadOnly" class="msg-list__placeholder">
-      <p>No unread messages in {{ folderName }}.</p>
-    </div>
-    <div v-else-if="flaggedOnly" class="msg-list__placeholder">
-      <p>No starred messages in {{ folderName }}.</p>
+    <div v-else-if="isTagView" class="msg-list__placeholder">
+      <p>No messages are tagged {{ folderName }}.</p>
     </div>
     <div v-else-if="folderId != null" class="msg-list__placeholder">
       <p>{{ folderName }} is empty.</p>
@@ -884,6 +1105,18 @@ defineExpose({ focusColumnControl, focusFolderPicker });
     <div v-else class="msg-list__placeholder">
       <p>Choose a folder above to show its messages here.</p>
     </div>
+
+    <TagPickerPopover
+      :anchor="tagPopover?.anchor ?? null"
+      :targets="tagPopoverTargets"
+      :definitions="tagDefinitions"
+      :trigger="tagPopover?.trigger ?? null"
+      :return-focus="tagPopover?.returnFocus ?? null"
+      @close="closeTagPopover"
+      @toggle="(keyword, on) => applyTagToggle(tagPopover?.ids ?? [], keyword, on)"
+      @clear="clearTagsOn(tagPopover?.ids ?? [], tagPopoverTargets)"
+      @manage="manageTags"
+    />
   </section>
 </template>
 
@@ -893,7 +1126,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   /* The header's nowrap row must never size the column: the track is
      the column's width and the header shrinks into it. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--border);
   background: var(--panel);
   min-width: 0;
@@ -1081,6 +1314,19 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   to { background-position: -200% 0; }
 }
 
+.msg-list__coverage {
+  margin: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+  color: var(--muted);
+}
+.msg-list__coverage.is-idle {
+  height: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+}
 .msg-list__placeholder {
   margin: 0;
   padding: 32px 24px;

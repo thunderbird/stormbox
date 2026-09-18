@@ -40,6 +40,13 @@ import { parseOneAddress } from '../utils/address-list';
 import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isScheduledMessage } from '../utils/scheduled-message';
+import {
+  isSystemKeyword,
+  normalizeKeyword,
+  resolveTag,
+  tagKeywordsOf,
+} from '../utils/message-tags';
+import { useSettingsStore } from './settings-store';
 import { createContactUid } from '../utils/contact-uid';
 import { TABLE_FAMILIES } from '../db/protocol';
 import { MUTATION_TYPE } from '../constants/states';
@@ -118,6 +125,16 @@ export const useMailStore = defineStore('mail', () => {
    */
   const folderPickCount = ref(0);
   const folderProgress = ref<Map<number, QueryViewProgress>>(new Map());
+
+  // Tag views (see the "Tag views" section below for the functions).
+  const settingsStore = useSettingsStore();
+  const TAG_VIEW_ID_BASE = -1_000_000;
+  /** Rows a tag view loads at most; the sidebar count still reports the total. */
+  const TAG_VIEW_LIMIT = 2000;
+  const tagViewIdsByKeyword = new Map<string, number>();
+  const tagViewKeywordsById = new Map<number, string>();
+  /** Messages per keyword on the signed-in account, from message.listKeywords. */
+  const tagCounts = ref<Map<string, number>>(new Map());
 
   /**
    * Per-folder cache. Keys live as long as the store does (i.e. as
@@ -401,6 +418,7 @@ export const useMailStore = defineStore('mail', () => {
   function folderById(folderId: number | null | undefined): FolderRow | null {
     if (folderId == null) return null;
     const id = Number(folderId);
+    if (isTagViewId(id)) return tagViewFolder(id);
     return folders.value.find((f) => Number(f.id) === id) ?? null;
   }
 
@@ -488,6 +506,147 @@ export const useMailStore = defineStore('mail', () => {
     return folder?.account_id ?? authStore.accountId ?? null;
   }
 
+  // ----- Tag views (specs/011 MK-3.4) --------------------------------------
+  // A tag view lists every cached message of the signed-in account that
+  // carries one keyword, across folders: a local read over
+  // message_keywords, never a server query. It is addressed like a folder
+  // by a negative id so columns, selection, the cursor and the open
+  // message bind to it unchanged; folderById answers with a synthetic row
+  // named after the tag. Rows keep their real folder in source_folder_id.
+  // Filing actions (archive, junk, delete, move, drag) are not offered in
+  // a tag view; keyword actions are.
+
+  function isTagViewId(folderId: number | string | null | undefined): boolean {
+    const id = Number(folderId);
+    return Number.isFinite(id) && id <= TAG_VIEW_ID_BASE;
+  }
+
+  function tagViewIdFor(keyword: string): number {
+    const normalized = normalizeKeyword(keyword);
+    const existing = tagViewIdsByKeyword.get(normalized);
+    if (existing != null) return existing;
+    const id = TAG_VIEW_ID_BASE - tagViewIdsByKeyword.size;
+    tagViewIdsByKeyword.set(normalized, id);
+    tagViewKeywordsById.set(id, normalized);
+    return id;
+  }
+
+  function tagViewKeyword(folderId: number | string | null | undefined): string | null {
+    return tagViewKeywordsById.get(Number(folderId)) ?? null;
+  }
+
+  /** The synthetic folder row a tag view presents to folder-keyed code. */
+  function tagViewFolder(folderId: number): FolderRow | null {
+    const keyword = tagViewKeyword(folderId);
+    if (keyword == null) return null;
+    const name = keyword === '$flagged'
+      ? 'Starred'
+      : resolveTag(keyword, settingsStore.get('messageTags')).name;
+    return {
+      id: folderId,
+      account_id: authStore.accountId ?? 0,
+      remote_id: `tag:${keyword}`,
+      parent_id: null,
+      name,
+      role: null,
+      sort_order: 0,
+      total_emails: tagCounts.value.get(keyword) ?? null,
+      unread_emails: null,
+      total_threads: null,
+      unread_threads: null,
+      may_read_items: 1,
+      may_add_items: 0,
+      may_remove_items: 0,
+      rights_json: null,
+      raw_json: null,
+      is_subscribed: 1,
+      is_starred: 0,
+      is_deleted: 0,
+      updated_at: 0,
+    };
+  }
+
+  async function refreshTagCounts() {
+    if (!repo || authStore.accountId == null) return;
+    if (typeof repo.listMessageKeywords !== 'function') return;
+    try {
+      const entries = await repo.listMessageKeywords([authStore.accountId]);
+      tagCounts.value = new Map(entries.map(({ keyword, count }) => [normalizeKeyword(keyword), count]));
+    } catch (err) {
+      console.warn('[mail-store] refreshTagCounts failed', err);
+    }
+  }
+
+  /**
+   * (Re)read a tag view's rows from the cache. Single-flight per view;
+   * the whole view is loaded at once, capped at TAG_VIEW_LIMIT, so the
+   * positional machinery never has a page to fetch.
+   */
+  function loadTagView(state: FolderCache): Promise<void> {
+    if (!repo || authStore.accountId == null) return Promise.resolve();
+    if (state.pageInflight) return state.pageInflight;
+    const keyword = tagViewKeyword(state.folderId);
+    if (keyword == null) return Promise.resolve();
+    const accountIds = [authStore.accountId];
+    state.pageInflight = (async () => {
+      try {
+        const rows = await repo!.listMessagesForKeyword({
+          accountIds, keyword, offset: 0, limit: TAG_VIEW_LIMIT,
+        });
+        if (!isLiveState(state)) return;
+        state.rows = rows;
+        state.total = rows.length;
+        state.paintedRanges = rows.length > 0 ? [{ start: 0, end: rows.length }] : [];
+        publishView(state);
+      } catch (err) {
+        console.warn('[mail-store] loadTagView failed', err);
+      } finally {
+        if (isLiveState(state)) state.view.isLoading = false;
+        state.pageInflight = null;
+      }
+    })();
+    return state.pageInflight;
+  }
+
+  /**
+   * How much of the signed-in account the metadata indexer has covered,
+   * as a percent, or null before any folder reports. A tag view lists
+   * what is indexed, so an incomplete index is shown rather than read as
+   * an empty tag.
+   */
+  const tagViewCoverage = computed<number | null>(() => {
+    let total = 0;
+    let covered = 0;
+    for (const folder of primaryFolders.value) {
+      const progress = folderProgress.value.get(folder.id);
+      if (!progress) continue;
+      total += Number(progress.total) || 0;
+      covered += Number(progress.covered) || 0;
+    }
+    if (total === 0) return null;
+    return Math.min(100, Math.round((covered / total) * 100));
+  });
+
+  /**
+   * When the open tag view holds more tagged messages than it lists
+   * (TAG_VIEW_LIMIT), how many are shown and how many the cache counts;
+   * null otherwise. The sidebar count is the full one.
+   */
+  const tagViewTruncation = computed<{ shown: number; total: number } | null>(() => {
+    const keyword = tagViewKeyword(currentFolderId.value);
+    if (keyword == null) return null;
+    const total = tagCounts.value.get(keyword) ?? 0;
+    if (total <= TAG_VIEW_LIMIT) return null;
+    return { shown: TAG_VIEW_LIMIT, total };
+  });
+
+  /** Filing from a tag view is refused: the rows live in many folders. */
+  function rejectTagViewSource(sourceFolderId: number | null | undefined, verb: string): boolean {
+    if (!isTagViewId(sourceFolderId)) return false;
+    error.value = `Open the message's folder to ${verb} it.`;
+    return true;
+  }
+
   /**
    * Drop every piece of session-scoped state. Safe to call without a
    * detach: just zeroes the refs and the per-folder cache. Used by
@@ -506,6 +665,9 @@ export const useMailStore = defineStore('mail', () => {
     selection.value = { folderId: null, ids: new Set() };
     folderProgress.value = new Map();
     folderStates.clear();
+    tagViewIdsByKeyword.clear();
+    tagViewKeywordsById.clear();
+    tagCounts.value = new Map();
     error.value = null;
     notice.value = null;
     if (noticeTimer) {
@@ -610,7 +772,9 @@ export const useMailStore = defineStore('mail', () => {
   function pushActiveFolderViews() {
     if (!repo || authStore.accountId == null) return;
     if (typeof repo.setActiveFolderViews !== 'function') return;
-    void repo.setActiveFolderViews(authStore.accountId, activeFolderIds()).catch((err) => {
+    // Tag views have no mailbox window for the sync layer to keep fresh.
+    const folderIds = activeFolderIds().filter((id) => !isTagViewId(id));
+    void repo.setActiveFolderViews(authStore.accountId, folderIds).catch((err) => {
       console.warn('[mail-store] setActiveFolderViews failed', err);
     });
   }
@@ -702,7 +866,7 @@ export const useMailStore = defineStore('mail', () => {
       try {
         do {
           refreshFolderProgressDirty = false;
-          await _refreshFolderProgress();
+          await Promise.all([_refreshFolderProgress(), refreshTagCounts()]);
         } while (refreshFolderProgressDirty);
       } finally {
         refreshFolderProgressInflight = null;
@@ -719,18 +883,16 @@ export const useMailStore = defineStore('mail', () => {
    * trigger a redundant FolderTree re-render — important for
    * Playwright stability during indexer storms.
    */
+  /**
+   * `folderProgress` holds each folder's real query-view coverage, which
+   * tagViewCoverage sums. The folder rows' index_* columns, which the
+   * tree displays, report a folder of at most one page as complete: it
+   * loads whole when opened, so its row never shows indexing.
+   */
   async function _refreshFolderProgress() {
     if (!repo || authStore.accountId == null || folders.value.length === 0) return;
     const next = new Map(folderProgress.value);
     await Promise.all(folders.value.map(async (folder) => {
-      if (Number(folder.total_emails ?? 0) <= PAGE_SIZE) {
-        next.set(folder.id, {
-          total: Number(folder.total_emails ?? 0),
-          covered: Number(folder.total_emails ?? 0),
-          percent: 100,
-        });
-        return;
-      }
       const progress = await repo.queryViewProgress({
         accountId: folder.account_id ?? authStore.accountId,
         folderId: folder.id,
@@ -743,9 +905,12 @@ export const useMailStore = defineStore('mail', () => {
     const remapped = folders.value.map((folder) => {
       const progress = next.get(folder.id);
       if (!progress) return folder;
-      const total = progress.total ?? folder.index_total ?? null;
-      const covered = progress.covered ?? folder.index_covered ?? null;
-      const percent = progress.percent ?? folder.index_percent ?? null;
+      const singlePage = Number(folder.total_emails ?? 0) <= PAGE_SIZE;
+      const total = singlePage
+        ? Number(folder.total_emails ?? 0)
+        : (progress.total ?? folder.index_total ?? null);
+      const covered = singlePage ? total : (progress.covered ?? folder.index_covered ?? null);
+      const percent = singlePage ? 100 : (progress.percent ?? folder.index_percent ?? null);
       if (
         folder.index_total === total
         && folder.index_covered === covered
@@ -879,6 +1044,12 @@ export const useMailStore = defineStore('mail', () => {
    */
   function openFolderView(folderId: number): FolderView {
     const state = ensureFolderState(folderId);
+    if (isTagViewId(state.folderId)) {
+      publishView(state);
+      state.view.isLoading = state.paintedRanges.length === 0 && state.rows.length === 0;
+      void loadTagView(state);
+      return state.view;
+    }
     if (staleFolderIds.has(state.folderId)) {
       invalidateFolderStateForFreshWindow(state.folderId);
     }
@@ -996,7 +1167,7 @@ export const useMailStore = defineStore('mail', () => {
     end: number,
     folderId: number | null = currentFolderId.value,
   ) {
-    if (folderId == null) return;
+    if (folderId == null || isTagViewId(folderId)) return;
     const state = folderStates.get(Number(folderId));
     if (!state) return;
     if (authStore.accountId == null || !repo) return;
@@ -1247,6 +1418,10 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function _refreshLoadedPagesFor(state: FolderCache) {
     if (!repo || !isLiveState(state)) return;
+    if (isTagViewId(state.folderId)) {
+      await loadTagView(state);
+      return;
+    }
     const beforeRows = state.rows.slice();
 
     try {
@@ -1396,6 +1571,8 @@ export const useMailStore = defineStore('mail', () => {
    */
   function expandFolderViewIntoMemory(folderId: number | null = currentFolderId.value) {
     if (!repo || authStore.accountId == null || folderId == null) return Promise.resolve();
+    // A tag view is loaded whole; there is nothing beyond its window.
+    if (isTagViewId(folderId)) return Promise.resolve();
     const state = folderStates.get(Number(folderId));
     if (!state) return Promise.resolve();
     if (state.expandInflight) return state.expandInflight;
@@ -1446,7 +1623,11 @@ export const useMailStore = defineStore('mail', () => {
     unreadOnly = false,
     flaggedOnly = false,
     folderId = currentFolderId.value,
-  }: { unreadOnly?: boolean; flaggedOnly?: boolean; folderId?: number | null } = {}): Promise<number> {
+  }: {
+    unreadOnly?: boolean;
+    flaggedOnly?: boolean;
+    folderId?: number | null;
+  } = {}): Promise<number> {
     const state = folderId == null ? null : folderStates.get(Number(folderId)) ?? null;
     let rows: CachedRow[] = rowsForFolder(folderId);
 
@@ -1704,13 +1885,18 @@ export const useMailStore = defineStore('mail', () => {
     rows?: ReadonlyArray<CachedRow | undefined>;
   }
 
+  /**
+   * Rows the caller passed (the ones on its screen) win over cached
+   * copies: a copy in another view — a tag view, another column — can lag
+   * behind, and keyword changes are computed from what the row carries.
+   */
   function loadedRowLookup(
     rows?: ReadonlyArray<CachedRow | undefined>,
     sourceFolderId?: number | null,
   ) {
     return (id: number): CachedRow | undefined => (
-      findLoadedRow(id, sourceFolderId)
-      ?? rows?.find((m) => m?.id === id)
+      rows?.find((m) => m?.id === id)
+      ?? findLoadedRow(id, sourceFolderId)
     );
   }
 
@@ -1726,6 +1912,10 @@ export const useMailStore = defineStore('mail', () => {
     $junk: 'is_junk',
   };
 
+  function uniqueKeywords(keywords: ReadonlyArray<string>): string[] {
+    return [...new Set(keywords.map(normalizeKeyword))];
+  }
+
   /**
    * The one keyword write path. Applies `add` / `remove` to each row's
    * cached keywords, skips rows already in the target state, writes the
@@ -1734,6 +1924,12 @@ export const useMailStore = defineStore('mail', () => {
    * The worker's OutboxRunner picks the row up via onMutationInserted,
    * so nothing here drains the outbox. Returns the number of rows
    * changed; a failure is logged and reported as 0.
+   *
+   * Keywords are compared and sent lowercase (MK-1.5). Adding writes the
+   * lowercase key even when the cache holds another spelling, so the
+   * derived columns and the wire see the canonical form; the other
+   * spelling is kept so a later removal names it too, since Stalwart
+   * stores custom keywords verbatim and matches them case-sensitively.
    */
   async function setKeywordsMany(
     ids: number[],
@@ -1742,8 +1938,10 @@ export const useMailStore = defineStore('mail', () => {
   ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     if (!repo || authStore.accountId == null) return 0;
-    const add = patch.add ?? [];
-    const remove = patch.remove ?? [];
+    const add = uniqueKeywords(patch.add ?? []);
+    const remove = uniqueKeywords(patch.remove ?? []);
+    if (add.length === 0 && remove.length === 0) return 0;
+    const removeOnWire = new Set(remove);
     const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
     const optimisticItems: Array<{
       messageId: number;
@@ -1753,6 +1951,8 @@ export const useMailStore = defineStore('mail', () => {
     const changedIds: number[] = [];
     for (const id of normalizeMessageIds(ids)) {
       const keywordsJson = JSON.parse(rowFor(id)?.keywords_json ?? '{}');
+      const cachedKeysFor = (keyword: string) =>
+        Object.keys(keywordsJson).filter((key) => normalizeKeyword(key) === keyword);
       let changed = false;
       for (const keyword of add) {
         if (keywordsJson[keyword] === true) continue;
@@ -1760,9 +1960,11 @@ export const useMailStore = defineStore('mail', () => {
         changed = true;
       }
       for (const keyword of remove) {
-        if (!(keyword in keywordsJson)) continue;
-        delete keywordsJson[keyword];
-        changed = true;
+        for (const key of cachedKeysFor(keyword)) {
+          delete keywordsJson[key];
+          removeOnWire.add(key);
+          changed = true;
+        }
       }
       if (!changed) continue;
       optimisticItems.push({
@@ -1794,7 +1996,11 @@ export const useMailStore = defineStore('mail', () => {
         accountId: authStore.accountId,
         mutationType: MUTATION_TYPE.SET_KEYWORDS,
         targetMessageId: changedIds.length === 1 ? changedIds[0] : null,
-        requestJson: JSON.stringify({ messageIds: changedIds, add: [...add], remove: [...remove] }),
+        requestJson: JSON.stringify({
+          messageIds: changedIds,
+          add,
+          remove: [...removeOnWire],
+        }),
         optimisticPatchJson: Object.keys(optimisticPatch).length > 0
           ? JSON.stringify(optimisticPatch)
           : null,
@@ -1865,8 +2071,65 @@ export const useMailStore = defineStore('mail', () => {
     return markManyFlagged(ids, !anyFlagged, options);
   }
 
+  /**
+   * Add and remove tag keywords (specs/011 §6). System keywords are not
+   * tags and are dropped from the patch; scheduled rows are skipped and
+   * the account comes from the source folder, as for the star.
+   */
+  async function setTagsMany(
+    ids: number[],
+    patch: KeywordPatch,
+    options: BulkSourceOptions = {},
+  ): Promise<number> {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    if (authStore.accountId == null) return 0;
+    const add = (patch.add ?? []).filter((keyword) => !isSystemKeyword(keyword));
+    const remove = (patch.remove ?? []).filter((keyword) => !isSystemKeyword(keyword));
+    if (add.length === 0 && remove.length === 0) return 0;
+    const source = resolveSourceFolder(options.sourceFolderId);
+    const mutable = await filterMutableMessageIds(
+      normalizeMessageIds(ids),
+      source?.account_id ?? authStore.accountId,
+    );
+    if (mutable.ids.length === 0) return 0;
+    return setKeywordsMany(mutable.ids, { add, remove }, options);
+  }
+
+  /**
+   * Modal tag toggle over a selection (MK-4.2 digit keys): if every
+   * target row carries the tag, remove it from all; otherwise add it to
+   * the rows missing it.
+   */
+  async function toggleTagMany(
+    ids: number[],
+    keyword: string,
+    options: BulkSourceOptions = {},
+  ): Promise<number> {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
+    const normalized = normalizeKeyword(keyword);
+    const everyTagged = normalizeMessageIds(ids).every((id) =>
+      tagKeywordsOf(rowFor(id)?.keywords_json).includes(normalized));
+    return setTagsMany(ids, everyTagged ? { remove: [normalized] } : { add: [normalized] }, options);
+  }
+
+  /** Remove every tag keyword from the target rows (`0`, MK-4.2). */
+  async function clearTagsMany(ids: number[], options: BulkSourceOptions = {}): Promise<number> {
+    if (!Array.isArray(ids) || ids.length === 0) return 0;
+    const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
+    const remove = new Set<string>();
+    for (const id of normalizeMessageIds(ids)) {
+      for (const keyword of tagKeywordsOf(rowFor(id)?.keywords_json)) remove.add(keyword);
+    }
+    if (remove.size === 0) return 0;
+    return setTagsMany(ids, { remove: [...remove] }, options);
+  }
+
   async function archiveMessages(ids: number[], options: Pick<BulkSourceOptions, 'sourceFolderId'> = {}) {
     const messageIds = normalizeMessageIds(ids);
+    if (rejectTagViewSource(options.sourceFolderId ?? currentFolderId.value, 'archive')) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
       error.value = 'Cannot archive messages because the current folder is no longer available.';
@@ -1894,6 +2157,9 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
+    if (rejectTagViewSource(options.sourceFolderId ?? currentFolderId.value, 'mark as junk')) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
       error.value = 'Cannot mark messages as junk because the current folder is no longer available.';
@@ -2115,6 +2381,7 @@ export const useMailStore = defineStore('mail', () => {
     { permanent = false, sourceFolderId }: { permanent?: boolean } & Pick<BulkSourceOptions, 'sourceFolderId'> = {},
   ) {
     if (!repo || authStore.accountId == null) return;
+    if (rejectTagViewSource(sourceFolderId ?? currentFolderId.value, 'delete')) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
     const source = resolveSourceFolder(sourceFolderId);
     if (!source) {
@@ -2483,6 +2750,12 @@ export const useMailStore = defineStore('mail', () => {
     if (messageIds.length === 0) {
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
+    if (
+      rejectTagViewSource(options.sourceFolderId ?? currentFolderId.value, 'move')
+      || isTagViewId(targetFolderId)
+    ) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
     const source = resolveSourceFolder(options.sourceFolderId);
     const target = findFolder(targetFolderId);
     assertCanMoveToFolder(source, target);
@@ -2548,8 +2821,9 @@ export const useMailStore = defineStore('mail', () => {
     };
   }
 
+  /** The folder a message action came from; a tag view resolves to its synthetic folder. */
   function resolveSourceFolder(sourceFolderId: number | null | undefined): FolderRow | null {
-    return sourceFolderId == null ? currentFolder.value : findFolder(sourceFolderId);
+    return sourceFolderId == null ? currentFolder.value : folderById(sourceFolderId);
   }
 
   async function moveMessage(messageId: number, targetFolderId: number): Promise<boolean> {
@@ -2565,6 +2839,8 @@ export const useMailStore = defineStore('mail', () => {
     targetFolderId: number,
     sourceFolderId?: number | null,
   ): 'move' | 'copy' | null {
+    // A tag view is neither a place messages leave from nor land in.
+    if (isTagViewId(targetFolderId) || isTagViewId(sourceFolderId ?? currentFolderId.value)) return null;
     const source = resolveSourceFolder(sourceFolderId);
     const target = findFolder(targetFolderId);
     try {
@@ -3000,6 +3276,11 @@ export const useMailStore = defineStore('mail', () => {
   async function _refreshFolder(folderId: number) {
     const state = folderStates.get(folderId);
     if (!state || !repo || authStore.accountId == null) return;
+    if (isTagViewId(folderId)) {
+      state.view.isLoading = true;
+      await Promise.all([loadTagView(state), refreshTagCounts()]);
+      return;
+    }
     const refreshSelection = snapshotRefreshSelection(state);
     state.lastFailedRange = null;
     state.view.isLoading = true;
@@ -3645,6 +3926,16 @@ export const useMailStore = defineStore('mail', () => {
     setKeywordsMany,
     markManyFlagged,
     toggleManyFlagged,
+    setTagsMany,
+    toggleTagMany,
+    clearTagsMany,
+    isTagViewId,
+    tagViewIdFor,
+    tagViewKeyword,
+    tagCounts,
+    tagViewCoverage,
+    tagViewTruncation,
+    refreshTagCounts,
     markManySeen,
     toggleManySeen,
     destroyMessage,

@@ -4,8 +4,11 @@ import { Settings2 } from '@lucide/vue';
 
 import { useMailStore } from '../stores/mail-store';
 import { useMessageDragDrop } from '../composables/useMessageDragDrop';
+import { useMessageTags } from '../composables/useMessageTags';
+import { requestTagManager } from '../composables/useTagManagerRequest';
 import FolderNode from './FolderNode.vue';
 import FolderManagerDialog from './FolderManagerDialog.vue';
+import TagViewNode from './TagViewNode.vue';
 import {
   folderBadgeCount,
   folderCompare,
@@ -178,6 +181,82 @@ async function onFolderDrop(folder, event) {
     endMessageDrag();
   }
 }
+
+// ----- Tags section (MK-3.4): one row per defined tag, plus Starred ------
+// Each row opens a local cross-folder view; dropping messages on a row
+// adds that tag to them.
+
+const { definitions: tagDefinitions } = useMessageTags();
+const STARRED_KEYWORD = '$flagged';
+
+const tagRows = computed(() => [
+  {
+    keyword: STARRED_KEYWORD, name: 'Starred', color: null as string | null,
+  },
+  ...tagDefinitions.value.map((definition) => ({
+    keyword: definition.keyword.toLowerCase(),
+    name: definition.name,
+    color: definition.color as string | null,
+  })),
+].map((row) => ({
+  ...row,
+  count: mailStore.tagCounts.get(row.keyword) ?? 0,
+  current: mailStore.currentFolderId != null
+    && mailStore.isTagViewId(mailStore.currentFolderId)
+    && mailStore.tagViewKeyword(mailStore.currentFolderId) === row.keyword,
+})));
+
+const dragOverTagKeyword = ref<string | null>(null);
+
+function pickTag(keyword: string) {
+  mailStore.selectFolder(mailStore.tagViewIdFor(keyword));
+}
+
+function tagDropState(keyword: string): 'tag' | null {
+  return isDragging.value && dragOverTagKeyword.value === keyword ? 'tag' : null;
+}
+
+function onTagDragEnter(keyword: string, event: DragEvent) {
+  if (!hasMessageDrag(event)) return;
+  dragOverTagKeyword.value = keyword;
+  setDropEffect(event, 'copy');
+}
+
+function onTagDragOver(keyword: string, event: DragEvent) {
+  if (!hasMessageDrag(event)) return;
+  dragOverTagKeyword.value = keyword;
+  setDropEffect(event, 'copy');
+}
+
+function onTagDragLeave(keyword: string, event: DragEvent) {
+  if ((event.currentTarget as Element | null)?.contains?.(event.relatedTarget as Node | null)) return;
+  if (dragOverTagKeyword.value === keyword) dragOverTagKeyword.value = null;
+}
+
+async function onTagDrop(keyword: string, event: DragEvent) {
+  if (!hasMessageDrag(event)) return;
+  event.preventDefault();
+  const payload = readMessageDrop(event);
+  dragOverTagKeyword.value = null;
+  try {
+    if (payload?.ids?.length) {
+      const source = { sourceFolderId: payload.sourceFolderId };
+      if (keyword === STARRED_KEYWORD) {
+        await mailStore.markManyFlagged(payload.ids, true, source);
+      } else {
+        await mailStore.setTagsMany(payload.ids, { add: [keyword] }, source);
+      }
+    }
+  } catch (err) {
+    console.warn('[folder-tree] tagging dropped messages failed', err);
+  } finally {
+    endMessageDrag();
+  }
+}
+
+function manageTags() {
+  requestTagManager();
+}
 </script>
 
 <template>
@@ -247,6 +326,36 @@ async function onFolderDrop(folder, event) {
       :on-folder-drag-over="onFolderDragOver"
       :on-folder-drag-leave="onFolderDragLeave"
       :on-folder-drop="onFolderDrop"
+    />
+
+    <div class="folder-tree__heading-row" data-tag-views>
+      <h3 class="folder-tree__heading">Tags</h3>
+      <span class="folder-tree__heading-actions">
+        <button
+          type="button"
+          class="folder-tree__manage"
+          title="Manage Tags"
+          aria-label="Manage Tags"
+          @click="manageTags"
+        >
+          <Settings2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+        </button>
+      </span>
+    </div>
+    <TagViewNode
+      v-for="row in tagRows"
+      :key="row.keyword"
+      :keyword="row.keyword"
+      :name="row.name"
+      :color="row.color"
+      :count="row.count"
+      :current="row.current"
+      :drop-state="tagDropState(row.keyword)"
+      @pick="pickTag"
+      @dragenter="onTagDragEnter"
+      @dragover="onTagDragOver"
+      @dragleave="onTagDragLeave"
+      @drop="onTagDrop"
     />
 
     <template v-for="section in sharedSections" :key="section.account.id">

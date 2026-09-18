@@ -355,6 +355,10 @@ CREATE TABLE message_keywords (
 CREATE INDEX message_keywords_keyword
   ON message_keywords(keyword, message_id);
 
+-- v17: serves the tag views' LOWER(keyword) matches.
+CREATE INDEX message_keywords_lower
+  ON message_keywords(LOWER(keyword), message_id);
+
 CREATE TABLE body_parts (
   id INTEGER PRIMARY KEY,
   message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -748,13 +752,24 @@ from `Email.threadId`.
 
 ### Smart folder: account-wide flagged / unread
 
-`messages_flagged` and `messages_unread` are reserved. No implemented
-list uses these queries.
+`messages_flagged` and `messages_unread` are reserved. The account-wide
+Starred view goes through the keyword path below with `$flagged` rather
+than these indexes; no implemented list uses them.
 
 ### Smart folder: arbitrary keyword
 
-`message_keywords_keyword ON (keyword, message_id)` is reserved for a
-future keyword filter. No implemented list uses it.
+`message_keywords_lower ON (LOWER(keyword), message_id)` (v17) drives
+the tag views (`MESSAGE_LIST_FOR_KEYWORD` / `MESSAGE_COUNT_FOR_KEYWORD`,
+specs/011 MK-3.4): a `message_keywords JOIN messages` read matching the
+keyword with `LOWER()` — the cache keeps the server's spelling, which
+other clients may write in any case — scoped to the signed-in account,
+newest first,
+each row carrying one `source_folder_id` from `folder_messages`. It is a
+local smart view rather than a mailbox window — it has no server
+positions — so it pages by `LIMIT/OFFSET`, which the constitution's rule
+against `OFFSET` over membership tables does not cover. The mail store
+loads a view whole (at most 2000 rows) and re-reads it on every
+`MESSAGES` broadcast.
 
 ### Recipient autocomplete
 

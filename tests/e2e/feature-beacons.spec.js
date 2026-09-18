@@ -29,7 +29,7 @@ test.describe('Feature beacons', () => {
     await waitForFolderTreeReady(page);
 
     const pill = page.locator('.beacon-menu__pill');
-    await expect(pill).toHaveText('8 new');
+    await expect(pill).toHaveText('9 new');
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
 
     const composeDot = page.locator('.feature-beacons__dot[data-beacon="newMessage"]');
@@ -71,7 +71,7 @@ test.describe('Feature beacons', () => {
       await expect(composeDot).toHaveCount(0);
       // The dot retired with the card, so focus lands on the control itself.
       await expect(page.locator('.sidebar__compose')).toBeFocused();
-      await expect(pill).toHaveText('7 new');
+      await expect(pill).toHaveText('8 new');
       expect(await page.evaluate((key) => JSON.parse(window.localStorage.getItem(key)), PROGRESS_KEY))
         .toEqual({ seen: ['newMessage'], sessions: 1 });
       expect(await page.evaluate((key) => window.localStorage.getItem(key), WHATS_NEW_KEY)).toBeNull();
@@ -85,7 +85,7 @@ test.describe('Feature beacons', () => {
       await expect(contactsCard).toHaveAttribute('data-beacon-card-mode', 'alongside');
       await expect(contactsCard).not.toBeFocused();
       await expect(contactsDot).toHaveCount(0);
-      await expect(pill).toHaveText('6 new');
+      await expect(pill).toHaveText('7 new');
       await expect(page.locator('.feature-beacons__dot[data-beacon="manageIdentities"]')).toBeVisible();
       await page.mouse.click(600, 400);
       await expect(contactsCard).toHaveCount(0);
@@ -95,7 +95,7 @@ test.describe('Feature beacons', () => {
       // The pill lists the rest and reveals a staged one by opening the composer.
       await pill.click();
       const menu = page.getByRole('group', { name: 'New features' });
-      await expect(menu.locator('.beacon-menu__item')).toHaveCount(6);
+      await expect(menu.locator('.beacon-menu__item')).toHaveCount(7);
       await menu.getByRole('button', { name: /Send on your schedule/ }).click();
       const scheduleCard = page.getByRole('dialog', { name: 'Send on your schedule' });
       await expect(page.locator('.compose-dialog')).toBeVisible();

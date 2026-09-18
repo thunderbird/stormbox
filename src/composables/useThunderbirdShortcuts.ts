@@ -25,6 +25,7 @@ import {
   isComposingKeyEvent,
   isEditableTarget,
 } from '../utils/keyboard';
+import { sortTagDefinitions } from '../utils/message-tags';
 import { isScheduledMessage } from '../utils/scheduled-message';
 
 export interface UseThunderbirdShortcutsOptions {
@@ -47,6 +48,8 @@ export type MessageListNavigationCommand =
 export interface MessageListCommands {
   navigate: (command: MessageListNavigationCommand) => void;
   selectAll: () => void;
+  /** Open the tag menu over the checked rows, else the open message (`T`). */
+  openTagMenu?: () => void;
   /** Folder the registering list shows; a list without one matches any target. */
   folderId?: () => number | null;
   /** True for the primary column, the fallback when no list owns the target. */
@@ -220,13 +223,52 @@ export function useThunderbirdShortcuts({
     if (space.value !== 'mail') return;
     if (editable) return;
     if (!resolved) return;
-    const { action } = resolved;
+    // Keys pressed on an open tag menu's items belong to the menu (its
+    // find field is editable and already excluded; its items are not).
+    if (
+      event.target instanceof Element
+      && event.target.closest('[data-tag-picker-popover], details.tag-picker-dropdown[open]')
+    ) {
+      return;
+    }
+    const { action, binding } = resolved;
 
     switch (action) {
       case 'compose':
         event.preventDefault();
         composeStore.open();
         return;
+
+      // Tags (MK-4.2): a digit toggles the nth defined tag, `0` clears
+      // every tag, on the checked rows or the open message. Scheduled
+      // rows are filtered by the store like the star.
+      case 'toggleTag':
+      case 'clearTags': {
+        const targetIds = getTargetIds(mailStore);
+        if (targetIds.length === 0) return;
+        event.preventDefault();
+        const source = { sourceFolderId: sourceFolderForTargets(mailStore) };
+        if (action === 'clearTags') {
+          void mailStore.clearTagsMany(targetIds, source);
+          return;
+        }
+        const definition = sortTagDefinitions(settingsStore.get('messageTags'))[Number(binding.key) - 1];
+        if (!definition) return;
+        void mailStore.toggleTagMany(targetIds, definition.keyword, source);
+        return;
+      }
+
+      case 'openTagMenu': {
+        const targetIds = getTargetIds(mailStore);
+        if (targetIds.length === 0) return;
+        // The toolbar hides Tag over a scheduled selection; so does the key.
+        if (hasScheduledTarget(mailStore, targetIds)) return;
+        const commands = resolveMessageListCommands(mailStore);
+        if (!commands?.openTagMenu) return;
+        event.preventDefault();
+        commands.openTagMenu();
+        return;
+      }
 
       // The reply prefills read the parent's addresses from the cache, so
       // they settle a tick later. The handler stays synchronous — it has a

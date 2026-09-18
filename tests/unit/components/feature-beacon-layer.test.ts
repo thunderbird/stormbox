@@ -21,6 +21,7 @@ const COMPOSE = '.sidebar__compose';
 const CONTACTS = '.app-spaces [aria-label="Contacts"]';
 const MANAGE_FOLDERS = '.folder-tree__manage';
 const STARRED_FILTER = '.msg-list__filter--starred';
+const MANAGE_TAGS = '[data-tag-views] .folder-tree__manage';
 const SETTINGS_GEAR = '.app-spaces [data-settings-gear]';
 
 const RECTS = {
@@ -29,6 +30,11 @@ const RECTS = {
   },
   [CONTACTS]: {
     left: 8, top: 120, width: 40, height: 40,
+  },
+  // Before the folders gear: the stub takes an element's first matching
+  // selector, and the tags gear also wears .folder-tree__manage.
+  [MANAGE_TAGS]: {
+    left: 200, top: 420, width: 24, height: 24,
   },
   [MANAGE_FOLDERS]: {
     left: 200, top: 110, width: 28, height: 28,
@@ -59,6 +65,7 @@ const ALL_ANCHORS = `
   </nav>
   <button class="folder-tree__manage">Manage</button>
   <button class="msg-list__filter msg-list__filter--starred">Starred</button>
+  <div data-tag-views><button class="folder-tree__manage">Manage Tags</button></div>
 `;
 
 function mountLayer() {
@@ -97,7 +104,7 @@ describe('FeatureBeaconLayer', () => {
     const wrapper = mountLayer();
     await settle();
 
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages', 'keyboardShortcuts']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages', 'tagMessages', 'keyboardShortcuts']);
     const dot = wrapper.get('[data-beacon="newMessage"]');
     expect(dot.attributes('aria-label')).toBe('New: A new composer');
     expect(dot.attributes('aria-haspopup')).toBe('dialog');
@@ -184,7 +191,7 @@ describe('FeatureBeaconLayer', () => {
     await settle();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages', 'keyboardShortcuts']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages', 'tagMessages', 'keyboardShortcuts']);
     expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
       .toEqual({ seen: ['manageFolders'], sessions: 1 });
   });
@@ -395,7 +402,7 @@ describe('FeatureBeaconLayer', () => {
     mountAnchors(ALL_ANCHORS);
     const wrapper = mountLayer();
     const store = useFeatureBeaconsStore();
-    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders', 'starMessages', 'keyboardShortcuts'] as const) {
+    for (const id of ['newMessage', 'composeMinimize', 'composeSchedule', 'manageIdentities', 'manageFolders', 'starMessages', 'tagMessages', 'keyboardShortcuts'] as const) {
       store.markSeen(id);
     }
     await settle();

@@ -6,7 +6,9 @@
  * is emitted back to the owner.
  */
 import { computed } from 'vue';
-import { Paperclip, Star, Trash2 } from '@lucide/vue';
+import {
+  Paperclip, Star, Trash2,
+} from '@lucide/vue';
 
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import type { JmapViewSort } from '../constants/states';
@@ -18,7 +20,9 @@ import {
   rowTimestamp,
   type MessageRowLike,
 } from '../utils/message-row-presentation';
+import { resolveMessageTags, type MessageTagDefinition } from '../utils/message-tags';
 import { isScheduledMessage } from '../utils/scheduled-message';
+import MessageTagStack from './MessageTagStack.vue';
 
 const props = withDefaults(defineProps<{
   message: MessageRowLike & { id: number };
@@ -39,16 +43,28 @@ const props = withDefaults(defineProps<{
    */
   domIdPrefix?: string;
   /**
-   * Overlay star / archive / delete at the row's inline-end on hover. The
-   * star keeps its slot when the row is not hovered so a starred message
-   * shows its star in the same place; the summary reserves that slot and
-   * the date sits under archive and delete. Pointer-only: the buttons are
-   * not Tab stops. The single-column layout has no hover menu; it always
-   * shows the star (set or not) and never archive or delete.
+   * Overlay tag / star / archive / delete at the row's inline-end on
+   * hover. The star keeps its slot when the row is not hovered so a
+   * starred message shows its star in the same place; the summary
+   * reserves a slot for tag and star and the date sits under archive and
+   * delete. Pointer-only: the buttons are not Tab stops. The
+   * single-column layout has no hover menu; it always shows the star
+   * (set or not) and never tag, archive or delete.
    */
   hoverActions?: boolean;
   /** False where archiving is a no-op (the Archive folder): the overlay drops its Archive button. */
   archiveAction?: boolean;
+  /** False in a tag view, whose rows live in many folders: the overlay drops Delete. */
+  deleteAction?: boolean;
+  /** False where rows cannot be dragged to a folder (a tag view). */
+  draggable?: boolean;
+  /** True while this row's tag menu is open, for the Tag button's aria-expanded. */
+  tagMenuOpen?: boolean;
+  /**
+   * Tag definitions that color the row's tag stack (MK-6.5). A keyword
+   * without one draws as a neutral icon; names go in the stack's title.
+   */
+  tagDefinitions?: ReadonlyArray<MessageTagDefinition>;
 }>(), {
   focused: false,
   selected: false,
@@ -58,7 +74,11 @@ const props = withDefaults(defineProps<{
   selectable: true,
   hoverActions: false,
   archiveAction: true,
+  deleteAction: true,
+  draggable: true,
+  tagMenuOpen: false,
   domIdPrefix: 'msg-row-',
+  tagDefinitions: () => [],
 });
 
 const emit = defineEmits<{
@@ -67,6 +87,9 @@ const emit = defineEmits<{
   (e: 'dragstart', event: DragEvent): void;
   (e: 'dragend', event: DragEvent): void;
   (e: 'star'): void;
+  /** Open the tag menu for this row, anchored to the button that raised it. */
+  (e: 'tag', event: MouseEvent): void;
+  /** A chip was clicked: the owner filters the list to that tag. */
   (e: 'archive'): void;
   (e: 'delete'): void;
 }>();
@@ -75,6 +98,10 @@ const { senderAvatar, onAvatarError } = useSenderAvatars();
 
 const isUnread = computed(() => Number(props.message.is_seen) === 0);
 const isFlagged = computed(() => Number(props.message.is_flagged) === 1);
+const tags = computed(() => resolveMessageTags(props.message.keywords_json, props.tagDefinitions));
+const tagStackLabel = computed(() => (
+  tags.value.length === 0 ? 'Tag' : `Tags: ${tags.value.map((tag) => tag.name).join(', ')}`
+));
 const correspondent = computed(() => rowCorrespondent(props.message, props.showsRecipients));
 const avatar = computed(() => senderAvatar(correspondent.value));
 const label = computed(() => correspondentLabel(props.message, props.showsRecipients));
@@ -107,7 +134,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
       class="msg-list__item"
       :class="{ 'msg-list__item--hover-actions': hoverActions }"
       tabindex="-1"
-      :draggable="!isScheduledMessage(message)"
+      :draggable="draggable && !isScheduledMessage(message)"
       @click="emit('row-click', $event)"
       @dragstart="emit('dragstart', $event)"
       @dragend="emit('dragend', $event)"
@@ -150,6 +177,12 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
           <span class="msg-list__icons">
             <Star v-if="isFlagged && !hoverActions" :size="13" :stroke-width="2" class="msg-list__star" />
             <Paperclip v-if="Number(message.has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
+            <MessageTagStack
+              v-if="!hoverActions && tags.length > 0"
+              :tags="tags"
+              :title="tagStackLabel"
+              data-row-tags
+            />
           </span>
           <span class="msg-list__date">{{ dateText }}</span>
           <div
@@ -158,6 +191,23 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
             draggable="false"
             @click.stop
           >
+            <!-- The row's tag control (MK-6.5): the tag stack, shown at
+                 rest while the row carries tags and on hover otherwise;
+                 clicking opens the tag menu. -->
+            <button
+              type="button"
+              class="msg-list__action msg-list__action--tag"
+              :class="{ 'is-tagged': tags.length > 0 }"
+              tabindex="-1"
+              :title="tagStackLabel"
+              :aria-label="tagStackLabel"
+              aria-haspopup="dialog"
+              :aria-expanded="tagMenuOpen"
+              data-row-tags
+              @click="emit('tag', $event)"
+            >
+              <MessageTagStack :tags="tags" />
+            </button>
             <button
               type="button"
               class="msg-list__action msg-list__action--star"
@@ -182,6 +232,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               <span class="msg-list__action-icon--folder" aria-hidden="true" v-html="archiveIcon" />
             </button>
             <button
+              v-if="deleteAction"
               type="button"
               class="msg-list__action msg-list__action--danger"
               tabindex="-1"
@@ -251,13 +302,16 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   min-width: 0;
 }
 
-/* The action overlay is centred on the summary line, over its last two
-   columns: the star over the reserved 34px slot, archive and delete over
-   the 64px date (34 + 8 gap + 64 = 3 × 34 + 2 × 2). The preview line below
-   stays uncovered. Only a set star is visible at rest; hovering the row
-   shows all three on the row's own background. The single-column layout
-   (App.vue SINGLE_COLUMN_WIDTH) has no hover: the star is always visible
-   in its slot and archive and delete are not rendered. */
+/* The action overlay is centred on the summary line, over its last three
+   columns: star over its 34px slot, archive and delete over the 64px date
+   (34 + 8 + 64 = 106 ≥ 3 × 34 + 2 × 2), and the tag stack first, 2px
+   before the star like every other action. The overlay is anchored at its
+   end, so a wider stack grows leftward into the reserved 56px slot and the
+   8px gap after it. The preview line below stays uncovered. At rest only a set star and a tagged row's
+   stack are visible; hovering the row shows all four on the row's own
+   background. The single-column layout (App.vue SINGLE_COLUMN_WIDTH) has
+   no hover: the star and a tagged stack are always visible in their slots
+   and archive and delete are not rendered. */
 .msg-list__actions {
   position: absolute;
   inset-inline-end: 0;
@@ -284,8 +338,15 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   visibility: hidden;
   pointer-events: auto;
 }
-.msg-list__action--starred {
+.msg-list__action--starred,
+.msg-list__action--tag.is-tagged {
   visibility: visible;
+}
+/* Sized to its stack; 55px at most for three icons and "+N". */
+.msg-list__action--tag {
+  width: auto;
+  min-width: 34px;
+  padding: 0 6px;
 }
 @media (min-width: 640px) {
   /* Inherit down the chain so the overlay matches hover, focused and
@@ -307,7 +368,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   .msg-list__action--star {
     visibility: visible;
   }
-  .msg-list__action:not(.msg-list__action--star) {
+  .msg-list__action:not(.msg-list__action--star, .msg-list__action--tag) {
     display: none;
   }
 }
@@ -417,12 +478,12 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   align-items: baseline;
   column-gap: 8px;
 }
-/* Reserve the star's overlay slot and pin the date to the width archive
-   and delete cover (see .msg-list__actions). */
+/* Reserve the tag stack and star overlay slots and pin the date to the
+   width archive and delete cover (see .msg-list__actions). */
 .msg-list__item--hover-actions .msg-list__summary {
   position: relative;
-  grid-template-columns: clamp(86px, 28%, 200px) minmax(0, 1fr) auto 34px 64px;
-  grid-template-areas: "from subject icons star date";
+  grid-template-columns: clamp(86px, 28%, 200px) minmax(0, 1fr) auto 56px 34px 64px;
+  grid-template-areas: "from subject icons tag star date";
 }
 .msg-list__item--hover-actions .msg-list__date {
   text-align: end;
@@ -456,10 +517,12 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
 .msg-list__icons {
   grid-area: icons;
   display: inline-flex;
+  align-items: center;
   gap: 4px;
   color: var(--muted);
   min-width: 0;
 }
+
 .msg-list__star { color: #f5b700; }
 .msg-list__preview {
   margin: 4px 0 0;
@@ -488,13 +551,13 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
     "subject subject subject";
   row-gap: 2px;
 }
-/* Stacked rows keep the star slot on the sender line so the overlay never
-   sits on the wrapped subject. */
+/* Stacked rows keep the tag stack and star slots on the sender line so
+   the overlay never sits on the wrapped subject. */
 .msg-list--card .msg-list__item--hover-actions .msg-list__summary {
-  grid-template-columns: minmax(0, 1fr) auto 34px 64px;
+  grid-template-columns: minmax(0, 1fr) auto 56px 34px 64px;
   grid-template-areas:
-    "from icons star date"
-    "subject subject subject subject";
+    "from icons tag star date"
+    "subject subject subject subject subject";
 }
 .msg-list--card .msg-list__actions {
   top: 9px;

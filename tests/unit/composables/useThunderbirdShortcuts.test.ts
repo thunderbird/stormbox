@@ -22,7 +22,7 @@ import { useMailStore } from '../../../src/stores/mail-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 import type { ShortcutScheme } from '../../../src/constants/settings';
-import { shortcutHint } from '../../../src/constants/shortcuts';
+import { shortcutAria, shortcutHint } from '../../../src/constants/shortcuts';
 import {
   __setRepositoryForTests,
   __resetRepositoryForTests,
@@ -103,6 +103,7 @@ function mountHarness(options: {
     ? {
         navigate: vi.fn(),
         selectAll: vi.fn(),
+        openTagMenu: vi.fn(),
       }
     : options.messageListCommands;
   unregisterMessageListCommands?.();
@@ -626,6 +627,50 @@ describe('useThunderbirdShortcuts (thunderbird scheme)', () => {
     expect(toggleSpy).toHaveBeenCalledWith([1, 2], { sourceFolderId: null });
   });
 
+  it('digits toggle the nth tag in definition order and 0 clears every tag (MK-4.2)', async () => {
+    mountHarness();
+    useSettingsStore().settings = {
+      shortcutScheme: 'thunderbird',
+      messageTags: [
+        { keyword: 'work', name: 'Work', color: '#FF9900', order: 1 },
+        { keyword: 'todo', name: 'To Do', color: '#3333FF', order: 0 },
+      ],
+    };
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1), makeRow(2)];
+    mailStore.selectedIds = new Set([1, 2]);
+    const toggleSpy = vi.spyOn(mailStore, 'toggleTagMany').mockResolvedValue(2);
+    const clearSpy = vi.spyOn(mailStore, 'clearTagsMany').mockResolvedValue(2);
+
+    expect(fireKey('1').defaultPrevented).toBe(true);
+    expect(fireKey('2').defaultPrevented).toBe(true);
+    // No third tag: the key is consumed but nothing runs.
+    expect(fireKey('3').defaultPrevented).toBe(true);
+    expect(fireKey('0').defaultPrevented).toBe(true);
+    await Promise.resolve();
+
+    expect(toggleSpy.mock.calls).toEqual([
+      [[1, 2], 'todo', { sourceFolderId: null }],
+      [[1, 2], 'work', { sourceFolderId: null }],
+    ]);
+    expect(clearSpy).toHaveBeenCalledWith([1, 2], { sourceFolderId: null });
+  });
+
+  it('digits do nothing without a target, and T stays Thunderbird\u2019s next-unread-thread key', () => {
+    const { messageListCommands } = mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1)];
+    const toggleSpy = vi.spyOn(mailStore, 'toggleTagMany').mockResolvedValue(0);
+
+    expect(fireKey('1').defaultPrevented).toBe(false);
+    expect(toggleSpy).not.toHaveBeenCalled();
+
+    mailStore.selectedMessageId = 1;
+    expect(fireKey('t').defaultPrevented).toBe(false);
+    expect(messageListCommands?.openTagMenu).not.toHaveBeenCalled();
+    expect(shortcutHint('openTagMenu', 'thunderbird')).toBeNull();
+  });
+
   it('delegates P to previous-unread navigation', () => {
     const { messageListCommands } = mountHarness();
 
@@ -784,6 +829,37 @@ describe('useThunderbirdShortcuts (web scheme, the default)', () => {
     expect(fireKey('Home').defaultPrevented).toBe(false);
     expect(fireKey('End').defaultPrevented).toBe(false);
     expect(messageListCommands?.navigate).not.toHaveBeenCalled();
+  });
+
+  it('shows the tag digits as one range in both schemes while every digit is bound, with or without Shift', async () => {
+    for (const scheme of ['web', 'thunderbird'] as const) {
+      expect(shortcutHint('toggleTag', scheme)).toBe('1–9');
+      expect(shortcutHint('clearTags', scheme)).toBe('0');
+      expect(shortcutAria('toggleTag', scheme)).toBe('1 2 3 4 5 6 7 8 9');
+    }
+    expect(shortcutHint('openTagMenu', 'web')).toBe('T');
+
+    const { messageListCommands } = mountHarness();
+    const mailStore = useMailStore() as any;
+    mailStore.messages = [makeRow(1)];
+    mailStore.selectedMessageId = 1;
+    const toggleSpy = vi.spyOn(mailStore, 'toggleTagMany').mockResolvedValue(1);
+    fireKey('5');
+    // An AZERTY digit arrives with Shift held.
+    fireKey('2', { shiftKey: true });
+    await Promise.resolve();
+    expect(toggleSpy.mock.calls).toEqual([
+      [[1], '$label5', { sourceFolderId: null }],
+      [[1], '$label2', { sourceFolderId: null }],
+    ]);
+
+    expect(fireKey('t').defaultPrevented).toBe(true);
+    expect(messageListCommands?.openTagMenu).toHaveBeenCalledTimes(1);
+
+    // T stands down over a pending scheduled send, as the toolbar does.
+    mailStore.messages = [makeRow(1, { scheduled_undo_status: 'pending' })];
+    expect(fireKey('t').defaultPrevented).toBe(false);
+    expect(messageListCommands?.openTagMenu).toHaveBeenCalledTimes(1);
   });
 
   it('/ focuses Quick Filter outside text fields; Ctrl+K works everywhere', () => {

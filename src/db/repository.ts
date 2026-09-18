@@ -16,6 +16,7 @@ import type {
   ContactTrashLookup,
   IdentityRow,
   IdentityUpsertInput,
+  MessageRow,
 } from '../types/db';
 import type { ServerClockReferenceLike } from '../utils/schedule-time';
 import { assertSupportedBrowser } from './availability';
@@ -364,6 +365,28 @@ export class Repository {
       ids,
       excludeScheduled,
     });
+  }
+
+  /** Distinct (lowercase) keywords on the cached messages of these accounts, with counts. */
+  listMessageKeywords(
+    accountIds: number[],
+    { excludeKeywords = [] }: { excludeKeywords?: ReadonlyArray<string> } = {},
+  ): Promise<Array<{ keyword: string; count: number }>> {
+    return this.call(DB_RPC.MESSAGE_LIST_KEYWORDS, { accountIds, excludeKeywords: [...excludeKeywords] });
+  }
+
+  /** Cached messages carrying a keyword, newest first, across folders (a tag view). */
+  listMessagesForKeyword(params: {
+    accountIds: number[];
+    keyword: string;
+    offset?: number;
+    limit?: number;
+  }): Promise<Array<MessageRow & { source_folder_id: number | null }>> {
+    return this.call(DB_RPC.MESSAGE_LIST_FOR_KEYWORD, params);
+  }
+
+  countMessagesForKeyword(params: { accountIds: number[]; keyword: string }): Promise<number> {
+    return this.call(DB_RPC.MESSAGE_COUNT_FOR_KEYWORD, params);
   }
 
   replaceMessageKeywords(messageId, keywords, keywordsJson) {

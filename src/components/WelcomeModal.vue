@@ -48,12 +48,16 @@ const SCHEME_HINTS: Record<ShortcutScheme, string> = {
 };
 const schemeHint = computed(() => SCHEME_HINTS[shortcutScheme.value]);
 
+// `area` places a card in the three-column grid; one column stacks them in
+// this order.
 const SHORTCUT_GROUPS: ReadonlyArray<{
   title: string;
+  area: 'compose' | 'navigate' | 'tags' | 'actions';
   shortcuts: ReadonlyArray<{ action: ShortcutAction; label: string }>;
 }> = [
   {
     title: 'Find and compose',
+    area: 'compose',
     shortcuts: [
       { action: 'compose', label: 'New message' },
       { action: 'reply', label: 'Reply' },
@@ -64,6 +68,7 @@ const SHORTCUT_GROUPS: ReadonlyArray<{
   },
   {
     title: 'Navigate',
+    area: 'navigate',
     shortcuts: [
       { action: 'next', label: 'Next message' },
       { action: 'previous', label: 'Previous message' },
@@ -74,7 +79,17 @@ const SHORTCUT_GROUPS: ReadonlyArray<{
     ],
   },
   {
+    title: 'Tag actions',
+    area: 'tags',
+    shortcuts: [
+      { action: 'toggleTag', label: 'Toggle the nth tag' },
+      { action: 'clearTags', label: 'Remove all tags' },
+      { action: 'openTagMenu', label: 'Open the tag menu' },
+    ],
+  },
+  {
     title: 'Message actions',
+    area: 'actions',
     shortcuts: [
       { action: 'archive', label: 'Archive' },
       { action: 'delete', label: 'Delete' },
@@ -90,6 +105,7 @@ const SHORTCUT_GROUPS: ReadonlyArray<{
 // Actions without a binding in the active scheme are left out of their group.
 const shortcutGroups = computed(() => SHORTCUT_GROUPS.map((group) => ({
   title: group.title,
+  area: group.area,
   shortcuts: group.shortcuts.flatMap(({ action, label }) => {
     const keys = shortcutHint(action, shortcutScheme.value);
     return keys ? [{ keys, label }] : [];
@@ -193,6 +209,7 @@ onBeforeUnmount(() => {
               v-for="group in shortcutGroups"
               :key="group.title"
               class="welcome__shortcut-group"
+              :class="`welcome__shortcut-group--${group.area}`"
             >
               <h3>{{ group.title }}</h3>
               <dl>
@@ -412,8 +429,16 @@ onBeforeUnmount(() => {
 .welcome__shortcut-groups {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    "compose navigate actions"
+    "compose tags actions";
+  align-items: start;
   gap: 10px 12px;
 }
+.welcome__shortcut-group--compose { grid-area: compose; }
+.welcome__shortcut-group--navigate { grid-area: navigate; }
+.welcome__shortcut-group--tags { grid-area: tags; }
+.welcome__shortcut-group--actions { grid-area: actions; }
 
 .welcome__shortcut-group {
   min-width: 0;
@@ -522,6 +547,10 @@ kbd {
 
   .welcome__shortcut-groups {
     grid-template-columns: 1fr;
+    grid-template-areas: none;
+  }
+  .welcome__shortcut-group {
+    grid-area: auto;
   }
 
   .welcome__footer {

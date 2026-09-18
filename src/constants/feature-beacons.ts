@@ -7,6 +7,7 @@ import {
   Minus,
   PenLine,
   Star,
+  Tag,
   UsersRound,
 } from '@lucide/vue';
 
@@ -26,6 +27,7 @@ export type BeaconId =
   | 'manageIdentities'
   | 'manageFolders'
   | 'starMessages'
+  | 'tagMessages'
   | 'keyboardShortcuts';
 
 export type BeaconStage = 'composer' | 'contacts';
@@ -119,6 +121,15 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     title: 'Star a message',
     body: 'Hover a message and click the star, or press S to star a message, and then use the Starred filter to view them.',
     icon: Star,
+  },
+  {
+    // Like the star, the row's Tag button is hidden until hover; the dot
+    // sits on the sidebar's Tags heading, which is always on screen.
+    id: 'tagMessages',
+    anchor: SPOTLIGHT_TARGETS.manageTags,
+    title: 'Tag your messages',
+    body: 'Hover a message and click the tag, select several and tag them together, or press 1–9. Tags are keywords, so Thunderbird sees them too. Open a tag here to see everything carrying it, in any folder.',
+    icon: Tag,
   },
   {
     // Shortcuts have no control of their own; the gear leads to the scheme

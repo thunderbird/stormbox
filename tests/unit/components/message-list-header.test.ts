@@ -46,6 +46,7 @@ vi.mock('@tanstack/vue-virtual', () => ({
 import MessageColumns from '../../../src/components/MessageColumns.vue';
 import {
   splitBulkActions,
+  useBulkActionItems,
   type BulkActionItem,
 } from '../../../src/composables/useBulkActionItems';
 import { useThunderbirdShortcuts } from '../../../src/composables/useThunderbirdShortcuts';
@@ -144,7 +145,9 @@ function header(wrapper: ReturnType<typeof mountAtWidth>) {
 }
 
 function moreItems(wrapper: ReturnType<typeof mountAtWidth>) {
-  return wrapper.findAll('[role="menuitem"], [role="menuitemcheckbox"]').map((item) => item.text());
+  return wrapper
+    .findAll('.msg-list__more-menu [role="menuitem"], .msg-list__more-menu [role="menuitemcheckbox"]')
+    .map((item) => item.text());
 }
 
 beforeEach(() => {
@@ -384,7 +387,7 @@ describe('bulk row overflow', () => {
     expect(head.find('.msg-list__filters').exists()).toBe(false);
 
     expect(moreItems(wrapper)).toEqual([
-      'Archive', 'Mark as junk', 'Star', 'Mark as read', 'Mark as unread', 'Refresh', 'Add column',
+      'Archive', 'Mark as junk', 'Star', 'Tag…', 'Mark as read', 'Mark as unread', 'Refresh', 'Add column',
     ]);
     expect(wrapper.find('.msg-list__more-heading').text()).toBe('Inbox');
 
@@ -401,7 +404,7 @@ describe('bulk row overflow', () => {
     const inline = header(wrapper).findAll('.msg-list__bulk-actions .msg-list__bulk-action')
       .map((button) => button.attributes('aria-label'));
     expect(inline).toEqual(['Archive', 'Delete', 'Star', 'Clear selection']);
-    expect(moreItems(wrapper)).toEqual(['Mark as junk', 'Mark as read', 'Mark as unread', 'Refresh', 'Add column']);
+    expect(moreItems(wrapper)).toEqual(['Mark as junk', 'Tag…', 'Mark as read', 'Mark as unread', 'Refresh', 'Add column']);
   });
 
   it('shows every action inline when the width is unknown or wide', async () => {
@@ -412,7 +415,8 @@ describe('bulk row overflow', () => {
     const inline = header(wrapper).findAll('.msg-list__bulk-actions .msg-list__bulk-action')
       .map((button) => button.attributes('aria-label'));
     expect(inline).toEqual([
-      'Archive', 'Mark as junk', 'Delete', 'Star', 'Mark as read', 'Mark as unread', 'Clear selection',
+      'Archive', 'Mark as junk', 'Delete', 'Star', 'Tag selected messages', 'Mark as read', 'Mark as unread',
+      'Clear selection',
     ]);
     // Refresh and + still sit in the menu while rows are checked.
     expect(moreItems(wrapper)).toEqual(['Refresh', 'Add column']);
@@ -443,6 +447,25 @@ describe('bulk row overflow', () => {
   });
 });
 
+describe('useBulkActionItems in a tag view', () => {
+  it('keeps only the keyword actions when fileActions is off', () => {
+    const noop = () => {};
+    const items = useBulkActionItems({
+      folder: ref(null),
+      canWhitelist: ref(true),
+      whitelisting: ref(false),
+      anyStarred: ref(false),
+      anyScheduled: ref(false),
+      fileActions: ref(false),
+      handlers: {
+        archive: noop, junk: noop, delete: noop, cancelSend: noop, toggleStar: noop, tag: noop,
+        markRead: noop, markUnread: noop, whitelist: noop,
+      },
+    });
+    expect(items.value.map((item) => item.id)).toEqual(['toggle-star', 'tag', 'mark-read', 'mark-unread']);
+  });
+});
+
 describe('splitBulkActions', () => {
   function item(id: BulkActionItem['id'], overflowRank: number | null, slots = 1): BulkActionItem {
     return {
@@ -450,8 +473,8 @@ describe('splitBulkActions', () => {
     };
   }
   const items = [
-    item('whitelist', 5, 3), item('archive', 4), item('junk', 2), item('delete', null),
-    item('toggle-star', 3), item('mark-read', 1), item('mark-unread', 0),
+    item('whitelist', 6, 3), item('archive', 5), item('junk', 2), item('delete', null),
+    item('toggle-star', 4), item('tag', 3), item('mark-read', 1), item('mark-unread', 0),
   ];
 
   it('keeps every action inline when the capacity is unknown', () => {
@@ -461,9 +484,12 @@ describe('splitBulkActions', () => {
   it('always keeps the never-overflowing action and fills the rest by rank, in display order', () => {
     expect(splitBulkActions(items, 1).inline.map((i) => i.id)).toEqual(['delete']);
     expect(splitBulkActions(items, 3).inline.map((i) => i.id)).toEqual(['archive', 'delete', 'toggle-star']);
-    // "Not junk" needs three slots; with five it comes back ahead of the lower ranks.
+    // "Not junk" needs three slots; with four it comes back ahead of the lower ranks.
+    expect(splitBulkActions(items, 4).inline.map((i) => i.id)).toEqual(['whitelist', 'delete']);
     expect(splitBulkActions(items, 5).inline.map((i) => i.id)).toEqual(['whitelist', 'archive', 'delete']);
-    expect(splitBulkActions(items, 5).overflow.map((i) => i.id)).toEqual(['junk', 'toggle-star', 'mark-read', 'mark-unread']);
-    expect(splitBulkActions(items, 9).overflow).toEqual([]);
+    expect(splitBulkActions(items, 5).overflow.map((i) => i.id)).toEqual(['junk', 'toggle-star', 'tag', 'mark-read', 'mark-unread']);
+    // Tag returns after Star and before Junk.
+    expect(splitBulkActions(items, 7).inline.map((i) => i.id)).toEqual(['whitelist', 'archive', 'delete', 'toggle-star', 'tag']);
+    expect(splitBulkActions(items, 10).overflow).toEqual([]);
   });
 });

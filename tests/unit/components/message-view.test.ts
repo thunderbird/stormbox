@@ -166,10 +166,11 @@ describe('MessageView with a sparse messages array', () => {
       'Reply (R)',
       'Reply All (Shift+R)',
       'Forward (F)',
+      'Tag (T)',
     ]);
     expect(
       actions.map((button) => button.attributes('aria-label')),
-    ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward']);
+    ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward', 'Tag']);
 
     useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
     await nextTick();
@@ -177,12 +178,16 @@ describe('MessageView with a sparse messages array', () => {
       'Reply (Ctrl+R)',
       'Reply All (Ctrl+Shift+R)',
       'Forward (Ctrl+L)',
+      // The Thunderbird scheme leaves T alone (MK-4.2).
+      'Tag',
     ]);
     expect(actions.every((button) => button.text() === '')).toBe(true);
+    // The tag stack draws its own icons (MessageTagStack); the rest are icon buttons.
+    const iconActions = actions.slice(0, -1);
     // Every action must render exactly one inline icon (Lucide svg or
     // tb-themed svg). We do not pin its dimensions.
     expect(
-      actions.every((button) => button.find('.message-view__toolbar-icon').exists()),
+      iconActions.every((button) => button.find('.message-view__toolbar-icon').exists()),
     ).toBe(true);
   });
 
@@ -366,7 +371,50 @@ describe('MessageView with a sparse messages array', () => {
     await nextTick();
 
     const labels = wrapper.findAll('.message-view__metadata-row dt').map((dt: any) => dt.text());
+    // An untagged message has no Tags row; the toolbar's tag stack adds one.
     expect(labels).toEqual(['From', 'To', 'Subject', 'Date']);
+    const stack = wrapper.find('.message-view__header [data-tag-picker-trigger]');
+    expect(stack.attributes('aria-label')).toBe('Tag');
+    expect(stack.find('.tag-stack__icon--empty').exists()).toBe(true);
+  });
+
+  it('lists the message tags as removable chips, with the tag stack after Forward (MK-6.5)', async () => {
+    const authStore = useAuthStore();
+    authStore.accountId = 1;
+    __setRepositoryForTests(makeRepo());
+
+    const mailStore = useMailStore() as any;
+    await mailStore.attach();
+
+    mailStore.messages = [{
+      id: 42,
+      subject: 'Tagged',
+      from_text: 'sender@example.com',
+      received_at: 1_700_000_000_000,
+      keywords_json: '{"$seen":true,"$label2":true,"receipts":true}',
+    }];
+    mailStore.selectedMessageId = 42;
+
+    const wrapper = mount(MessageView);
+    await nextTick();
+
+    const chips = wrapper.findAll('[data-message-tags] .tag-chip');
+    expect(chips.map((chip: any) => chip.text())).toEqual(['Work', 'receipts']);
+    expect(chips[1].classes()).toContain('tag-chip--undefined');
+    // The tag control is the toolbar's last action, right after Forward.
+    const actions = wrapper.findAll('.message-view__header .message-view__action');
+    const stackIndex = actions.findIndex((action: any) => action.attributes('data-tag-picker-trigger') !== undefined);
+    expect(actions[stackIndex - 1].attributes('aria-label')).toBe('Forward');
+    const stack = actions[stackIndex];
+    expect(stack.attributes('aria-label')).toBe('Tags: Work, receipts');
+    expect(stack.attributes('aria-haspopup')).toBe('dialog');
+    expect(stack.findAll('.tag-stack__icon').map((icon: any) => icon.attributes('data-tag-keyword')))
+      .toEqual(['$label2', 'receipts']);
+    expect(wrapper.find('[data-message-tags] [data-tag-picker-trigger]').exists()).toBe(false);
+
+    const tagSpy = vi.spyOn(mailStore, 'setTagsMany').mockResolvedValue(1);
+    await chips[0].find('.tag-chip__remove').trigger('click');
+    expect(tagSpy).toHaveBeenCalledWith([42], { remove: ['$label2'] }, { sourceFolderId: mailStore.openMessageFolderId });
   });
 
   it('replies to the selected message from the toolbar', async () => {

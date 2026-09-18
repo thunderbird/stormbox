@@ -32,6 +32,11 @@ export type ShortcutAction =
   | 'archive'
   | 'toggleRead'
   | 'toggleStar'
+  /** Digits 1–9: toggle the nth tag in definition order (MK-4.2); the digit is `binding.key`. */
+  | 'toggleTag'
+  /** `0`: remove every tag from the target (MK-4.2). */
+  | 'clearTags'
+  | 'openTagMenu'
   | 'delete'
   | 'deleteForever'
   | 'selectAll'
@@ -54,9 +59,23 @@ export interface ShortcutBinding extends ShortcutSpec {
   hintPlatform?: 'mac' | 'other';
   /** Handled by the focused message list (`MessageList.handleKeyDown`), never globally. */
   listScoped?: boolean;
+  /** Text shown for the key in hints, for a binding that stands for a range. */
+  hintLabel?: string;
+  /** Left out of hints; another binding of the action stands for it. */
+  hiddenHint?: boolean;
 }
 
 export type ShortcutTable = Partial<Record<ShortcutAction, readonly ShortcutBinding[]>>;
+
+/**
+ * `1`–`9`, shown in hints as one range. Shift is ignored because some
+ * layouts (AZERTY) put the digits on the shifted row; Shift+digit on a
+ * US layout reports a symbol, so it cannot match by accident.
+ */
+const TAG_DIGIT_BINDINGS: readonly ShortcutBinding[] = [
+  { key: '1', hintLabel: '1–9', ignoreShift: true },
+  ...['2', '3', '4', '5', '6', '7', '8', '9'].map((key) => ({ key, hiddenHint: true, ignoreShift: true })),
+];
 
 const WEB_SHORTCUTS: ShortcutTable = {
   compose: [{ key: 'c' }],
@@ -67,6 +86,9 @@ const WEB_SHORTCUTS: ShortcutTable = {
   archive: [{ key: 'a' }],
   toggleRead: [{ key: 'm' }],
   toggleStar: [{ key: 's' }],
+  toggleTag: TAG_DIGIT_BINDINGS,
+  clearTags: [{ key: '0', ignoreShift: true }],
+  openTagMenu: [{ key: 't' }],
   delete: [
     { key: 'Delete', hintPlatform: 'other' },
     { key: 'Backspace', macOnly: true },
@@ -94,6 +116,11 @@ const THUNDERBIRD_SHORTCUTS: ShortcutTable = {
   archive: [{ key: 'a' }],
   toggleRead: [{ key: 'm' }],
   toggleStar: [{ key: 's' }],
+  toggleTag: TAG_DIGIT_BINDINGS,
+  clearTags: [{ key: '0', ignoreShift: true }],
+  // No openTagMenu: Thunderbird desktop binds T to "next unread thread",
+  // and this table reproduces the desktop client. The toolbar and digits
+  // cover tagging there.
   delete: [
     { key: 'Delete', hintPlatform: 'other' },
     { key: 'Backspace', hintPlatform: 'mac' },
@@ -168,7 +195,7 @@ function bindingHint(binding: ShortcutBinding): string {
   if (binding.mod) parts.push(shortcutModifierLabel());
   if (binding.shift && !binding.ignoreShift) parts.push('Shift');
   if (binding.alt) parts.push('Alt');
-  parts.push(keyHint(binding.key));
+  parts.push(binding.hintLabel ?? keyHint(binding.key));
   return parts.join('+');
 }
 
@@ -181,9 +208,14 @@ function bindingAria(binding: ShortcutBinding): string {
   return parts.join('+');
 }
 
-function visibleBindings(action: ShortcutAction, scheme: ShortcutScheme): ShortcutBinding[] {
+function visibleBindings(
+  action: ShortcutAction,
+  scheme: ShortcutScheme,
+  { includeHiddenHints = false } = {},
+): ShortcutBinding[] {
   const mac = isMacPlatform();
   return (SHORTCUT_SCHEMES[scheme][action] ?? []).filter((binding) => {
+    if (binding.hiddenHint && !includeHiddenHints) return false;
     if (binding.macOnly && !mac) return false;
     if (binding.hintPlatform === 'mac' && !mac) return false;
     if (binding.hintPlatform === 'other' && mac) return false;
@@ -201,9 +233,9 @@ export function shortcutHint(action: ShortcutAction, scheme: ShortcutScheme): st
   return bindings.map(bindingHint).join(' or ');
 }
 
-/** `aria-keyshortcuts` value for the action; null when the scheme has none. */
+/** `aria-keyshortcuts` value for the action, every key spelled out; null when the scheme has none. */
 export function shortcutAria(action: ShortcutAction, scheme: ShortcutScheme): string | null {
-  const bindings = visibleBindings(action, scheme);
+  const bindings = visibleBindings(action, scheme, { includeHiddenHints: true });
   if (bindings.length === 0) return null;
   return bindings.map(bindingAria).join(' ');
 }

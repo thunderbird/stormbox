@@ -350,9 +350,12 @@ describe('App mail layout', () => {
     expect(showMeButton(wrapper, 'Send on your schedule').attributes('disabled')).toBeUndefined();
     expect(wrapper.text()).toContain('Keyboard Shortcuts');
     expect(wrapper.findAll('.welcome__shortcut-group h3').map((heading) => heading.text()))
-      .toEqual(['Find and compose', 'Navigate', 'Message actions']);
+      .toEqual(['Find and compose', 'Navigate', 'Tag actions', 'Message actions']);
     expect(wrapper.text()).toContain('Ctrl+K');
-    expect(wrapper.findAll('.welcome__shortcut-group').at(2)!.findAll('dd').map((row) => row.text()))
+    // Tag actions sit under Navigate in the middle column.
+    expect(wrapper.get('.welcome__shortcut-group--tags').findAll('dd').map((row) => row.text()))
+      .toEqual(['Toggle the nth tag', 'Remove all tags', 'Open the tag menu']);
+    expect(wrapper.get('.welcome__shortcut-group--actions').findAll('dd').map((row) => row.text()))
       .toEqual(['Archive', 'Delete', 'Delete permanently', 'Mark read or unread', 'Star or unstar', 'Select all', 'Clear selection']);
     expect(wrapper.get('#welcome-scheme-label').text()).toBe('Style');
     const picker = wrapper.get('.welcome [role="radiogroup"]');
@@ -715,7 +718,7 @@ describe('App mail layout', () => {
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('9 new');
     expect(wrapper.findAll('.feature-beacons__dot').map((dot) => dot.attributes('data-beacon')))
       .toEqual(['newMessage', 'contacts', 'keyboardShortcuts']);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
@@ -731,7 +734,7 @@ describe('App mail layout', () => {
     await card.get('.feature-beacons__got-it').trigger('click');
     await settleBeacons();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
     expect(wrapper.find('[data-beacon="newMessage"]').exists()).toBe(false);
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
   });
@@ -748,7 +751,7 @@ describe('App mail layout', () => {
     // action that a menu could not.
     expect(wrapper.find('.beacon-menu [role="menu"]').exists()).toBe(false);
     expect(wrapper.get('.beacon-menu__popover').attributes('aria-label')).toBe('New features');
-    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(8);
+    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(9);
 
     await wrapper.get('.beacon-menu__dismiss').trigger('click');
     await settleBeacons();
@@ -960,7 +963,7 @@ describe('App mail layout', () => {
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(true);
     // Opening Settings used the gear, so only the shortcuts beacon retired.
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('7 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
     expect(useFeatureBeaconsStore().seen).toEqual(['keyboardShortcuts']);
     expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
     expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();

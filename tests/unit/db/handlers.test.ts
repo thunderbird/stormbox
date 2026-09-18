@@ -326,6 +326,56 @@ describe('thread + message + membership handlers', () => {
     expect(rows[1].remote_id).toBe('old');
   });
 
+  it('lists the distinct keywords on an account\u2019s cached messages with counts, most common first', async () => {
+    const account = await seedAccount();
+    const other = await seedAccount({
+      remoteAccountId: 'acct-other', primaryEmail: 'other@example.com', isPrimary: false,
+    });
+    const inbox = await seedFolder(account.id, { remoteId: 'inbox', name: 'Inbox', role: 'inbox' });
+    const otherInbox = await seedFolder(other.id, { remoteId: 'inbox-o', name: 'Inbox', role: 'inbox' });
+    await seedMessage(account.id, inbox.id, { remoteId: 'a', keywords: ['$seen', 'work'] });
+    await seedMessage(account.id, inbox.id, { remoteId: 'b', keywords: ['work', 'receipts'] });
+    await seedMessage(other.id, otherInbox.id, { remoteId: 'c', keywords: ['elsewhere'] });
+
+    expect(await h[DB_RPC.MESSAGE_LIST_KEYWORDS]({ accountIds: [account.id] })).toEqual([
+      { keyword: 'work', count: 2 },
+      { keyword: '$seen', count: 1 },
+      { keyword: 'receipts', count: 1 },
+    ]);
+    expect(await h[DB_RPC.MESSAGE_LIST_KEYWORDS]({ accountIds: [account.id, other.id] }))
+      .toContainEqual({ keyword: 'elsewhere', count: 1 });
+    expect(await h[DB_RPC.MESSAGE_LIST_KEYWORDS]({ accountIds: [] })).toEqual([]);
+  });
+
+  it('lists a keyword\u2019s messages across folders newest first, case-insensitively, with a source folder (MK-3.4)', async () => {
+    const account = await seedAccount();
+    const other = await seedAccount({
+      remoteAccountId: 'acct-other', primaryEmail: 'other@example.com', isPrimary: false,
+    });
+    const inbox = await seedFolder(account.id, { remoteId: 'inbox', name: 'Inbox', role: 'inbox' });
+    const archive = await seedFolder(account.id, { remoteId: 'archive', name: 'Archive', role: 'archive' });
+    const otherInbox = await seedFolder(other.id, { remoteId: 'inbox-o', name: 'Inbox', role: 'inbox' });
+    const t = Date.now();
+    const older = await seedMessage(account.id, inbox.id, { remoteId: 'older', receivedAt: t - 10_000, keywords: ['Work'] });
+    const newer = await seedMessage(account.id, archive.id, { remoteId: 'newer', receivedAt: t, keywords: ['work', '$seen'] });
+    await seedMessage(account.id, inbox.id, { remoteId: 'untagged', receivedAt: t - 5_000, keywords: ['$seen'] });
+    await seedMessage(other.id, otherInbox.id, { remoteId: 'elsewhere', receivedAt: t, keywords: ['work'] });
+
+    const rows = await h[DB_RPC.MESSAGE_LIST_FOR_KEYWORD]({ accountIds: [account.id], keyword: 'WORK' });
+    expect(rows.map((r) => [r.remote_id, r.source_folder_id])).toEqual([
+      ['newer', archive.id],
+      ['older', inbox.id],
+    ]);
+    expect(rows[0].id).toBe(newer.messageId);
+    expect(rows[1].id).toBe(older.messageId);
+    expect(await h[DB_RPC.MESSAGE_COUNT_FOR_KEYWORD]({ accountIds: [account.id], keyword: 'work' })).toBe(2);
+    expect(await h[DB_RPC.MESSAGE_LIST_FOR_KEYWORD]({
+      accountIds: [account.id], keyword: 'work', offset: 1, limit: 1,
+    })).toHaveLength(1);
+    expect(await h[DB_RPC.MESSAGE_LIST_FOR_KEYWORD]({ accountIds: [account.id], keyword: '' })).toEqual([]);
+    expect(await h[DB_RPC.MESSAGE_COUNT_FOR_KEYWORD]({ accountIds: [], keyword: 'work' })).toBe(0);
+  });
+
   it('reports no drift when there is no query view for the folder yet', async () => {
     // A folder we have never opened has no mailbox-window query view
     // row. Membership counts are still reported so the store can use

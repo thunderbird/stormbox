@@ -112,13 +112,13 @@ smaller change than a second cache, and it lets the primary column be
 One row at every column width and in every state; nothing wraps. Normal
 state, left to right: select-all, folder title or dropdown (flexible,
 truncating; absent on a sole column, where the filters take its place),
-Unread and Starred, total count, Refresh, `+` or `×`, More.
-Tiers by measured list width (`useMessageListHeader`): the count hides
-below 520px, the filters turn icon-only below 440px, Refresh and `+`/`×`
-move into the More menu below 340px. While rows are checked: select-all,
-the bulk actions that fit (Delete or Cancel send and Clear always;
-"Not junk" while it fits; the rest leave in the order Mark as unread,
-Mark as read, Junk, Star, Archive), "N selected", More (holding the
+Unread and Starred, total count, Refresh, `+` or `×`, More. Tiers by
+measured list width (`useMessageListHeader`): the count hides below
+520px, the filters turn icon-only below 440px, Refresh and `+`/`×` move
+into the More menu below 340px. While rows are checked:
+select-all, the bulk actions that fit (Delete or Cancel send and Clear
+always; "Not junk" while it fits; the rest leave in the order Mark as
+unread, Mark as read, Junk, Tag, Star, Archive), "N selected", More (holding the
 overflowed actions, Refresh and the column control under the folder's
 name). A column without a folder shows a disabled select-all, the dropdown,
 and its `×`. The list's grid track is the column's width so the nowrap
