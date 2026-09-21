@@ -48,6 +48,7 @@ export class StormboxPage {
   readonly settingsCloseButton: Locator;
   readonly systemThemeToggle: Locator;
   readonly showWelcomeButton: Locator;
+  readonly messageListHeader: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
   readonly inboxEmptyText: Locator;
@@ -124,6 +125,7 @@ export class StormboxPage {
     this.settingsCloseButton = this.settingsDialog.getByRole('button', { name: /^close settings$/i });
     this.systemThemeToggle = this.settingsDialog.locator('[data-system-theme-toggle]');
     this.showWelcomeButton = this.settingsDialog.getByRole('button', { name: /^show welcome$/i });
+    this.messageListHeader = page.locator('.msg-list__header');
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
     this.inboxEmptyText = page.getByText('Inbox is empty');
@@ -272,7 +274,7 @@ export class StormboxPage {
     });
     await this.assertAccountMenuItemsVisible();
     await expect(this.selectAllMessagesCheckbox).toBeVisible();
-    await expect(this.messageCount).toBeVisible();
+    await expect(this.messageListHeader).toBeVisible();
     await expect(this.unreadFilterButton).toBeVisible();
     await expect(this.messageRefreshButton).toBeVisible();
   }
@@ -335,6 +337,56 @@ export class StormboxPage {
       parentFolder,
       projectName,
     );
+  }
+
+  async delFoldersWithGivenPrefix(fNamePrefix: string, projectName = 'desktop') {
+    // search for all folders with the given prefix and delete them
+    const onAndroid = projectName.toLowerCase().includes('android');
+    await this.openManageFoldersDialog(projectName);
+    await this.manageFoldersSearchInput.fill(fNamePrefix);
+
+    // select them all
+    var folderCheckboxes = this.manageFoldersDialog.locator(
+      'input[data-folder-select]',
+    );
+
+    const folderCount = await folderCheckboxes.count();
+    console.log(`found ${folderCount} folders to delete`);
+
+    if (folderCount > 0) {
+      await expect(folderCheckboxes.first()).toBeVisible();
+
+      for (let index = 0; index < folderCount; index += 1) {
+        const checkbox = folderCheckboxes.nth(index);
+        const folderName = await checkbox.getAttribute('data-folder-select');
+        console.log(`Ensuring folder is selected for deletion: ${folderName}`);
+        await checkbox.check({ force: onAndroid });
+      }
+
+      // now we have all the folders selected to delete, so delete them
+      console.log(`bulk deleting ${folderCount} folders`);
+      await this.manageFoldersDeleteSelectedFoldersBtn.click({ force: onAndroid });
+      await this.manageFoldersDialogDeleteNFoldersConfirmBtn.click({ force: onAndroid });
+      // wait for the bulkbar to go away (folders deleted)
+      await expect(this.manageFoldersDialog.locator('[data-folder-bulkbar]')).toBeHidden({ timeout: 15_000 });
+      await this.closeManageFoldersDialog();
+
+      // now let's verify no folders with our prefix exist anymore
+      await this.openManageFoldersDialog(projectName);
+
+      await this.manageFoldersSearchInput.fill(fNamePrefix);
+      await expect(this.manageFoldersSearchInput).toHaveValue(fNamePrefix);
+
+      const remainingTestFolders = this.manageFoldersDialog.locator(
+        `input[data-folder-select^="${fNamePrefix}"]`,
+      );
+
+      await expect(remainingTestFolders).toHaveCount(0, {
+        timeout: 15_000,
+      });
+    }
+
+    await this.closeManageFoldersDialog();
   }
 
   private async exerciseQuickFilter() {

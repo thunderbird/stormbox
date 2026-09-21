@@ -2,7 +2,7 @@
   "name": "stormbox-browserstack-e2e",
   "version": "1.0.0",
   "private": true,
-  "description": "UI-only Playwright and BrowserStack tests for deployed Stormbox.",
+  "description": "Playwright and BrowserStack tests for deployed Stormbox.",
   "scripts": {
     "e2e:desktop:firefox:smoke": "playwright test --grep @stormbox-smoke-desktop --project=firefox --headed",
     "e2e:desktop:chrome:smoke": "playwright test --grep @stormbox-smoke-desktop --project=chromium --headed",
