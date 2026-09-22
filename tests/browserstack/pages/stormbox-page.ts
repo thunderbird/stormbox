@@ -281,7 +281,7 @@ export class StormboxPage {
 
   async openManageFoldersDialog(projectName:string = 'desktop') {
     // first check if the manage folders dialog is already open, if so exit
-    if (await this.manageFoldersDialog.isVisible().catch(() => true)) {
+    if (await this.manageFoldersDialog.isVisible().catch(() => false)) {
       return;
     }
 
