@@ -257,9 +257,9 @@ export class StormboxPage {
     await this.exerciseThemeToggle(projectName);
     await this.exerciseMessageListControls();
     await this.exerciseFolderListToggle(projectName);
-    await this.exerciseComposeDialog();
-    await this.exerciseFolderNavigation();
-    await this.exerciseManageFoldersDialog();
+    await this.exerciseComposeDialog(projectName);
+    await this.exerciseFolderNavigation(projectName);
+    await this.exerciseManageFoldersDialog(projectName);
     await this.exerciseContactsView(projectName);
     await this.exerciseWelcomeModal(projectName);
     await this.assertExternalLinkOpensInNewTab(this.reportBugButton, BUG_REPORT_URL_PATTERN, projectName);
@@ -438,9 +438,9 @@ export class StormboxPage {
     await this.hideFolderList();
   }
 
-  private async exerciseComposeDialog() {
+  private async exerciseComposeDialog(projectName: string) {
     if (await this.showFolderListButton.isVisible().catch(() => false)) {
-      await this.showFolderList();
+      await this.showFolderList(projectName);
     }
 
     await expect(this.newMessageButton).toBeVisible();
@@ -450,9 +450,9 @@ export class StormboxPage {
     await expect(this.composeDialog).not.toBeVisible();
   }
 
-  private async exerciseFolderNavigation() {
+  private async exerciseFolderNavigation(projectName: string) {
     if (await this.showFolderListButton.isVisible().catch(() => false)) {
-      await this.showFolderList();
+      await this.showFolderList(projectName);
     }
     await expect(this.mailboxesNav).toBeVisible();
 
