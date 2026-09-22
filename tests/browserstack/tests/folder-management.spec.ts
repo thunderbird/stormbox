@@ -207,17 +207,15 @@ test.describe('stormbox folder management', {
         page.locator('.folder-subs__name').getByText(fName, { exact: true })
       ).toBeVisible();
 
-      const starButton = page.getByRole('button', {
-        name: `Star folder ${fName}`,
-      });
+      const starButton = page.locator(`[data-folder-star="${fName}"]`);
 
       // the folder is new so shouldn't be starred yet
-      expect(await starButton.getAttribute('aria-pressed')).toBe('false');
+      await expect(starButton).toHaveAttribute('aria-pressed', 'false');
 
       // star it and verify
       console.log(`starring folder: ${fName}`);
       await starButton.click();
-      expect(await starButton.getAttribute('aria-pressed')).toBe('true');
+      await expect(starButton).toHaveAttribute('aria-pressed', 'true');
 
       // now close the manage folders dialog and then verify on folder panel our starred folder is first in the list
       // we look for the first folder after the 'Folders' heading so we don't get the system folders by mistate
@@ -228,12 +226,10 @@ test.describe('stormbox folder management', {
         await stormbox.showFolderList(testInfo.project.name);
       }
 
-      const firstFolder = page
-        .getByRole('heading', { name: 'Folders', exact: true })
-        .locator('xpath=..')
-        .locator('xpath=following-sibling::div[contains(@class, "folder-node")][1]');
-
-      await expect(firstFolder.locator('.folder-node__name')).toHaveText(fName);
+      // verify folder is now in favorites group/starred
+      await expect(
+        page.locator('.folder-node[data-tour="folder-favorites"]').filter({ hasText: fName }),
+      ).toBeVisible();
     });
 
     await test.step('move a folder', async () => {
