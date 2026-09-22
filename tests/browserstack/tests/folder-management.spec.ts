@@ -29,10 +29,8 @@ test.describe('stormbox folder management', {
       `Stormbox cannot run in this mobile browser. Missing: ${missing.join(', ')}.`,
     );
 
-    // on mobile we need to sign in each time (desktop uses auth.desktop and saves context)
-    if (mobile) {
-      await stormbox.signInIfNeeded(testInfo.project.name);
-    }
+    // ensure app is booted and signed in (on mobile we need to sign in each time, desktop uses auth.desktop and saves context)
+    await stormbox.signInIfNeeded(testInfo.project.name);
 
     // The BrowserStack-only JMAP client connects directly to the deployed
     // stage or production Thundermail account with its app password. Remove
