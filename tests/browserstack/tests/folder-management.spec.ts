@@ -61,6 +61,7 @@ test.describe('stormbox folder management', {
       await stormbox.addFolder(fName, 'Inbox', false, testInfo.project.name);
       // now we need to expand the Inbox folder to see the new subfolder
       await stormbox.manageFoldersExpandInboxBtn.click();
+      await expect(stormbox.manageFoldersExpandInboxBtn).toHaveAttribute('aria-expanded', 'true');
 
       await expect(
         page.locator('.folder-subs__name').getByText(fName, { exact: true })

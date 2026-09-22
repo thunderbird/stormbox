@@ -158,7 +158,7 @@ export class StormboxPage {
     this.manageFoldersNewFolderCreateBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Create' });
     this.manageFoldersNewFolderCancelBtn = this.manageFoldersNewFolderDialog.getByRole('button', { name: 'Cancel' });
     this.manageFoldersNewFolderNameExistsText = this.manageFoldersNewFolderDialog.getByText('A folder with that name already exists here.', { exact: true });
-    this.manageFoldersExpandInboxBtn = this.manageFoldersDialog.getByRole('button', { name: 'Expand inbox' });
+    this.manageFoldersExpandInboxBtn = this.manageFoldersDialog.locator('button[data-folder-toggle="Inbox"]');
     this.manageFoldersRenameNameInput = this.manageFoldersDialog.getByRole('textbox', { name: 'Name' })
     this.manageFoldersMoveParentDropdown = this.manageFoldersDialog.locator('[data-folder-move-select]');
     this.manageFoldersMoveRenameSaveBtn = this.manageFoldersDialog.getByRole('button', { name: 'Save' });
