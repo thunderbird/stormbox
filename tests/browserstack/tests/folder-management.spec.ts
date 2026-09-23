@@ -48,10 +48,8 @@ test.describe('stormbox folder management', {
       const fName: string = `${fNamePrefix}-A`;
       await stormbox.addFolder(fName, 'Top Level', false, testInfo.project.name);
 
-      await expect(
-        page.locator('.folder-subs__name').getByText(fName, { exact: true })
-      ).toBeVisible()
-
+      // now verify the new folder exists
+      await stormbox.expectFolderExists(fName, 'Top Level', testInfo.project.name);
       await stormbox.closeManageFoldersDialog();
     });
 
@@ -59,14 +57,9 @@ test.describe('stormbox folder management', {
       await stormbox.openManageFoldersDialog(testInfo.project.name);
       const fName:string = `${fNamePrefix}-SUB`;
       await stormbox.addFolder(fName, 'Inbox', false, testInfo.project.name);
-      // now we need to expand the Inbox folder to see the new subfolder
-      await stormbox.manageFoldersExpandInboxBtn.click();
-      await expect(stormbox.manageFoldersExpandInboxBtn).toHaveAttribute('aria-expanded', 'true');
 
-      await expect(
-        page.locator('.folder-subs__name').getByText(fName, { exact: true })
-      ).toBeVisible();
-
+      // now verify the new folder exists under the Inbox
+      await stormbox.expectFolderExists(fName, 'Inbox', testInfo.project.name);
       await stormbox.closeManageFoldersDialog();
     });
 
@@ -201,10 +194,7 @@ test.describe('stormbox folder management', {
       await stormbox.openManageFoldersDialog(testInfo.project.name);
       const fName: string = `${fNamePrefix}-STAR`;
       await stormbox.addFolder(fName, 'Top Level', false, testInfo.project.name);
-
-      await expect(
-        page.locator('.folder-subs__name').getByText(fName, { exact: true })
-      ).toBeVisible();
+      await stormbox.expectFolderExists(fName, 'Top Level', testInfo.project.name);
 
       const starButton = page.locator(`[data-folder-star="${fName}"]`);
 

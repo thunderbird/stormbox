@@ -389,6 +389,25 @@ export class StormboxPage {
     await this.closeManageFoldersDialog();
   }
 
+  async expectFolderExists(fName: string, fParent: string, projectName = 'desktop') {
+    // check if a folder with the given name exists by searching for it in the manage folders dialog
+    await this.openManageFoldersDialog(projectName);
+    await this.manageFoldersSearchInput.fill(fName);
+
+    const folderResult = this.manageFoldersDialog
+      .locator('.folder-subs__row')
+      .filter({
+        has: this.page.getByText(fName, { exact: true }),
+      });
+
+    await expect(folderResult.locator('.folder-subs__name')).toHaveText(fName);
+    await expect(folderResult).toBeVisible();
+
+    if (fParent.toLowerCase() != 'top level') {
+      await expect(folderResult.locator('.folder-subs__path')).toHaveText(fParent);
+    }
+  }
+
   private async exerciseQuickFilter() {
     await expect(this.quickFilter).toBeVisible();
     await this.quickFilter.fill(QUICK_FILTER_EXERCISE_TEXT);
@@ -473,7 +492,8 @@ export class StormboxPage {
 
     // verify default folders (we already expanded the folders list in openManageFoldersDialog)
     for (const folderName of FOLDER_NAMES_TO_EXERCISE) {
-      await expect(this.page.locator('.folder-subs__name', { hasText: folderName })).toBeVisible();
+      await expect(this.manageFoldersDialog.getByText(folderName, { exact: true }).first()).toBeVisible();
+      //await expect(this.page.locator('.folder-subs__name', { hasText: folderName })).toBeVisible();
     }
 
     // finished, close the manage folders dialog
