@@ -20,7 +20,13 @@ test.describe('stormbox folder management', {
   test.beforeEach(async ({ page }, testInfo) => {
     stormbox = new StormboxPage(page);
     mobile = testInfo.project.name.toLowerCase().includes('android');
-    await stormbox.navigate();
+
+    // The BrowserStack-only JMAP client connects directly to the deployed
+    // stage or production Thundermail account with its app password. Remove
+    // orphaned test folders before exercising the UI with a clean account.
+    console.log('deleting any folders leftover from previous test runs');
+    const deletedFolderCount = await deleteFoldersByPrefix('E2E-');
+    console.log(`deleted ${deletedFolderCount} folder(s) leftover from previous test runs`);
 
     // make sure browser has required dependencies; i.e. sharedworker is supported on Android Chrome 148+ only
     const missing = await stormbox.missingRequiredBrowserFeatures();
@@ -29,15 +35,9 @@ test.describe('stormbox folder management', {
       `Stormbox cannot run in this mobile browser. Missing: ${missing.join(', ')}.`,
     );
 
+    await stormbox.navigate();
     // ensure app is booted and signed in (on mobile we need to sign in each time, desktop uses auth.desktop and saves context)
     await stormbox.signInIfNeeded(testInfo.project.name);
-
-    // The BrowserStack-only JMAP client connects directly to the deployed
-    // stage or production Thundermail account with its app password. Remove
-    // orphaned test folders before exercising the UI with a clean account.
-    console.log('deleting any folders leftover from previous test runs');
-    const deletedFolderCount = await deleteFoldersByPrefix('E2E-');
-    console.log(`deleted ${deletedFolderCount} folder(s) leftover from previous test runs`);
   });
 
   test('add, rename, move, search, and delete folders', async ({ page }, testInfo) => {
@@ -61,6 +61,24 @@ test.describe('stormbox folder management', {
       // now verify the new folder exists under the Inbox
       await stormbox.expectFolderExists(fName, 'Inbox', testInfo.project.name);
       await stormbox.closeManageFoldersDialog();
+    });
+
+    await test.step('attempt to add duplicate folder', async () => {
+      await stormbox.openManageFoldersDialog(testInfo.project.name);
+      const fName: string = `${fNamePrefix}-duplicate-test`;
+      await stormbox.addFolder(fName, 'Top Level', false, testInfo.project.name);
+
+      // now verify the new folder exists
+      await stormbox.expectFolderExists(fName, 'Top Level', testInfo.project.name);
+      await stormbox.closeManageFoldersDialog();
+
+      // attempt to add folder with same name again, verify error
+      await stormbox.addFolder(fName, 'Top Level', true, testInfo.project.name);
+      await stormbox.closeManageFoldersDialog();
+
+      // there is a second 'toast' error message re: folder already exists (issue #145)
+      // this causes the next test to fail on android so dismiss that message here if it exists
+      await stormbox.closeToastMessage(`A folder named “${fName}” already exists here.`);
     });
 
     await test.step('add multiple subfolders (one level)', async () => {

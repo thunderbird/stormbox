@@ -51,7 +51,6 @@ export class StormboxPage {
   readonly messageListHeader: Locator;
   readonly selectAllMessagesCheckbox: Locator;
   readonly unreadFilterButton: Locator;
-  readonly inboxEmptyText: Locator;
   readonly messageCount: Locator;
   readonly messageRefreshButton: Locator;
   readonly loadingInboxMessage: Locator;
@@ -128,7 +127,6 @@ export class StormboxPage {
     this.messageListHeader = page.locator('.msg-list__header');
     this.selectAllMessagesCheckbox = page.locator('.msg-list__select-all input[type="checkbox"]');
     this.unreadFilterButton = page.getByRole('button', { name: /^unread$/i });
-    this.inboxEmptyText = page.getByText('Inbox is empty');
     this.messageCount = page.locator('.msg-list__count');
     this.messageRefreshButton = page.locator('.msg-list__refresh');
     this.loadingInboxMessage = page.locator('.msg-list__loader, .msg-list__placeholder')
@@ -405,6 +403,31 @@ export class StormboxPage {
 
     if (fParent.toLowerCase() != 'top level') {
       await expect(folderResult.locator('.folder-subs__path')).toHaveText(fParent);
+    }
+  }
+
+  async closeToastMessage(messageText: string) {
+    // if a 'toast' message (red message bar) appears at bottom of screen with the given text, close it
+    const duplicateFolderToast = this.page
+      .locator('.store-error-toast__item')
+      .filter({
+        has: this.page.getByText(
+          messageText,
+          { exact: true },
+        ),
+      });
+
+    const toastAppeared = await duplicateFolderToast
+      .waitFor({ state: 'visible', timeout: 2_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (toastAppeared) {
+      await duplicateFolderToast
+        .getByRole('button', { name: 'Dismiss', exact: true })
+        .click();
+
+      await expect(duplicateFolderToast).toBeHidden();
     }
   }
 
@@ -766,15 +789,6 @@ export class StormboxPage {
     try {
       await expect(this.accountMenuButton).toBeVisible({ timeout });
       await expect(this.quickFilter).toBeVisible({ timeout });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async isInboxEmptyTextVisible(timeout: number) {
-    try {
-      await expect(this.inboxEmptyText).toBeVisible({ timeout });
       return true;
     } catch {
       return false;
