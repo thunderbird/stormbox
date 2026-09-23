@@ -16,7 +16,7 @@ import { useMailStore } from './mail-store';
 
 export const MAX_MESSAGE_COLUMNS = 8;
 export const MESSAGE_COLUMN_MIN_WIDTH = 280;
-export const MESSAGE_COLUMN_MAX_WIDTH = 720;
+export const MESSAGE_COLUMN_MAX_WIDTH = 1920;
 export const MESSAGE_COLUMN_DEFAULT_WIDTH = 360;
 export const MESSAGE_COLUMN_RESIZER_WIDTH = 6;
 export const PRIMARY_COLUMN_ID = 'primary';

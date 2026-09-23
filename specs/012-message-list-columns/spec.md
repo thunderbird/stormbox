@@ -38,7 +38,7 @@ stable surfaces) remain controlling.
 - Every visible folder is pinned for push catch-up. A completed move
   repaints its source and destination columns from the local cache.
 - Column folders and widths persist per account by remote account and
-  mailbox identifiers. Widths clamp to 280–720px and shrink toward their
+  mailbox identifiers. Widths clamp to 280–1920px and shrink toward their
   minimum before the area scrolls.
 - At 639px or below, each column occupies one screen and the scrollbar is
   hidden; returning from the reading view restores the column from which
@@ -164,7 +164,7 @@ element with it, the list itself takes focus rather than the document body.
 - The primary column starts at the width the single list had before
   columns existed (`stormbox.mailColumnWidths.v1.messageList`) when the
   account has no stored layout yet.
-- Column widths are clamped to 280–720px. When the area is short of room
+- Column widths are clamped to 280–1920px. When the area is short of room
   the columns give way proportionally down to 280px before the area
   scrolls, so one column never overflows a narrow window; the last column
   stretches when the reading pane is hidden so a single column still
