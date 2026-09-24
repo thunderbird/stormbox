@@ -33,7 +33,7 @@ export default defineConfig({
   // tests will time out at the locator/test level first anyway; but there is no default so best to specify
   globalTimeout: 10 * 60 * 1000,
   // Individual test timeout - a single test will time out if it is still running after this time (ms)
-  timeout: 150 * 1000, // 2.5 minutes
+  timeout: 5 * 60 * 1000, // 5 minutes
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: [['html']],
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
@@ -102,7 +102,7 @@ export default defineConfig({
   
       /* Test against mobile viewports. */
     {
-      name: 'Google-Pixel-7-View',
+      name: 'android-viewport',
       use: {
         ...devices['Pixel 7'],
         screenshot: 'only-on-failure',

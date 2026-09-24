@@ -1,8 +1,8 @@
 # Stormbox BrowserStack E2E Tests
 
-This package contains UI-only Playwright tests for deployed Stormbox stage and production. These tests run against the public Stormbox web application on your local machine or in BrowserStack.
+This package contains Playwright tests for deployed Stormbox stage and production. Test actions and assertions run through the public Stormbox UI on your local machine or in BrowserStack. The folder-management suite also uses direct JMAP access from the Node test runner solely to remove test folders left by earlier interrupted runs.
 
-These tests are not for the local Stormbox stack. The local-stack integration tests live in `../e2e`; those tests use JMAP helpers, database reads, local stack setup, and cache assertions. Use this package when you want to verify the deployed UI only.
+These tests are not for the local Stormbox stack. The local-stack integration tests live in `../e2e` and retain their own JMAP helper, database reads, local stack setup, and cache assertions. The BrowserStack JMAP helper connects only to a deployed stage or production Thundermail account using that dedicated test account's app password.
 
 ## Setup
 
@@ -31,11 +31,14 @@ Fill in these values in `.env.browserstack`:
 ACCTS_OIDC_EMAIL="Thundermail username"
 ACCTS_OIDC_PWORD="Thundermail password"
 PRIMARY_THUNDERMAIL_EMAIL="primary Thundermail email address"
+THUNDERMAIL_JMAP_USERNAME="Thundermail JMAP username"
+THUNDERMAIL_JMAP_APP_PASSWORD="Thundermail app password created in TB Accounts"
+THUNDERMAIL_JMAP_URL="deployed Thundermail JMAP URL"
 BROWSERSTACK_USERNAME="browserstack account user name"
 BROWSERSTACK_ACCESS_KEY="corresponding browserstack access key"
 ```
 
-The `.env.browserstack` file contains credentials and must stay local.
+The `.env.browserstack` file contains credentials and must stay local. `ACCTS_OIDC_PWORD` signs into the Stormbox UI; `THUNDERMAIL_JMAP_APP_PASSWORD` is the separate app password used only for direct JMAP cleanup.
 
 ## UI Smoke Test Local Runs
 
@@ -45,7 +48,7 @@ These commands run the UI smoke test on your machine against the deployed `STORM
 npm run e2e:desktop:firefox:smoke
 npm run e2e:desktop:chrome:smoke
 npm run e2e:desktop:safari:smoke
-npm run e2e:mobile:google:pixel:viewport:smoke
+npm run e2e:mobile:android:viewport:smoke
 ```
 
 ## UI Smoke Test BrowserStack Runs
@@ -67,7 +70,7 @@ These commands run all of the UI E2E tests on your machine against the deployed 
 npm run e2e:desktop:firefox
 npm run e2e:desktop:chrome
 npm run e2e:desktop:safari
-npm run e2e:mobile:google:pixel:viewport
+npm run e2e:mobile:android:viewport
 ```
 
 ## Entire Suite BrowserStack Runs
@@ -81,4 +84,4 @@ npm run e2e:browserstack:desktop:safari
 npm run e2e:browserstack:mobile:android:chrome
 ```
 
-Desktop runs authenticate once in `tests/desktop/auth.desktop.ts` and save `test-results/.auth/user.json`. Android mobile runs sign in through the UI for each test because BrowserStack mobile contexts cannot use the saved desktop auth state.
+Desktop runs authenticate once in `tests/auth.desktop.ts` and save `test-results/.auth/user.json`. Android mobile runs sign in through the UI for each test because BrowserStack mobile contexts cannot use the saved desktop auth state.
