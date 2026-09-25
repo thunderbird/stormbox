@@ -22,6 +22,12 @@ on:
         required: true
       E2E_PRIMARY_THUNDERMAIL_EMAIL:
         required: true
+      E2E_THUNDERMAIL_JMAP_URL:
+        required: true
+      E2E_THUNDERMAIL_JMAP_USERNAME:
+        required: true
+      E2E_THUNDERMAIL_JMAP_APP_PASSWORD:
+        required: true
       BROWSERSTACK_USERNAME:
         required: true
       BROWSERSTACK_ACCESS_KEY:
@@ -41,6 +47,9 @@ jobs:
       ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
       ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
       PRIMARY_THUNDERMAIL_EMAIL: ${{ secrets.E2E_PRIMARY_THUNDERMAIL_EMAIL }}
+      THUNDERMAIL_JMAP_URL: ${{ secrets.E2E_THUNDERMAIL_JMAP_URL }}
+      THUNDERMAIL_JMAP_USERNAME: ${{ secrets.E2E_THUNDERMAIL_JMAP_USERNAME }}
+      THUNDERMAIL_JMAP_APP_PASSWORD: ${{ secrets.E2E_THUNDERMAIL_JMAP_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
