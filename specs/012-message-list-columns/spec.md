@@ -50,7 +50,9 @@ stable surfaces) remain controlling.
   the sender line rather than over the subject.
 - A column narrower than 480px lays its rows out as cards (R-10.4): the
   sender line carries the icons, tag stack, star and date, the subject
-  wraps to two lines below it, then one preview line.
+  wraps to two lines below it, then one preview line. Card rows are a
+  fixed 96px and single-line rows a fixed 64px; the virtualizer never
+  measures rows.
 
 ## State model
 

@@ -9,7 +9,7 @@ import type { CachedRow } from '../stores/mail-store-types';
 
 const CARD_LAYOUT_WIDTH = 480;
 const ROW_HEIGHT = 64;
-const CARD_ROW_HEIGHT = 112;
+const CARD_ROW_HEIGHT = 96;
 
 /**
  * Throttle for the scroll-driven fetch: a 100ms leading-edge guard so a
