@@ -48,6 +48,9 @@ stable surfaces) remain controlling.
   visible focus, and focus return. At the reading pane's 240px minimum all
   toolbar actions remain reachable, and compact rows reserve the star on
   the sender line rather than over the subject.
+- A column narrower than 480px lays its rows out as cards (R-10.4): the
+  sender line carries the icons, tag stack, star and date, the subject
+  wraps to two lines below it, then one preview line.
 
 ## State model
 
