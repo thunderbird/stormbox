@@ -118,7 +118,7 @@ afterEach(() => {
 });
 
 describe('MessageList row click viewing', () => {
-  it('uses card layout below 360px but not at 360px', async () => {
+  it('uses card layout below 480px but not at 480px', async () => {
     const mailStore = useMailStore();
     mailStore.folders = [makeFolder(1, { name: 'Inbox' })];
     mailStore.currentFolderId = 1;
@@ -128,7 +128,7 @@ describe('MessageList row click viewing', () => {
     const widthSpy = vi
       .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
       .mockImplementation(function clientWidth() {
-        return this.classList?.contains('msg-list') ? 359 : 0;
+        return this.classList?.contains('msg-list') ? 479 : 0;
       });
     const narrowWrapper = mount(MessageList);
     await nextTick();
@@ -136,7 +136,7 @@ describe('MessageList row click viewing', () => {
     narrowWrapper.unmount();
 
     widthSpy.mockImplementation(function clientWidth() {
-      return this.classList?.contains('msg-list') ? 360 : 0;
+      return this.classList?.contains('msg-list') ? 480 : 0;
     });
     const thresholdWrapper = mount(MessageList);
     await nextTick();

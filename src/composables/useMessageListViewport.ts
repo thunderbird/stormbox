@@ -7,7 +7,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual';
 import { useMailStore } from '../stores/mail-store';
 import type { CachedRow } from '../stores/mail-store-types';
 
-const CARD_LAYOUT_WIDTH = 360;
+const CARD_LAYOUT_WIDTH = 480;
 const ROW_HEIGHT = 64;
 const CARD_ROW_HEIGHT = 112;
 
@@ -39,7 +39,7 @@ export interface UseMessageListViewportInput {
 
 /**
  * The virtualised viewport of one list column: row virtualisation with
- * the card layout under 360px, the throttled window fetch and body
+ * the card layout under 480px, the throttled window fetch and body
  * prefetch, per-folder scroll memory, the cursor kept in view, and the
  * scroll reset when the primary column's folder is re-picked.
  */
