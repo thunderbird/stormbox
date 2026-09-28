@@ -178,9 +178,18 @@ export class StormboxPage {
   async navigate() {
     expect(STORMBOX_BASE_URL, 'STORMBOX_BASE_URL must be set').toBeTruthy();
 
+    // Onboarding done (specs/010 §3): seeded through the settings store's
+    // pre-sign-in pending patch, which the first settings pull applies.
     await this.page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
+      const key = 'stormbox.settings.pending.v1';
+      let pending: { anonymous?: Record<string, unknown> };
+      try {
+        pending = JSON.parse(window.localStorage.getItem(key) ?? '{}') ?? {};
+      } catch {
+        pending = {};
+      }
+      pending.anonymous = { ...(pending.anonymous ?? {}), onboarding: { beaconsSeenThrough: 1_000_000 } };
+      window.localStorage.setItem(key, JSON.stringify(pending));
     });
     try {
       await this.page.goto(STORMBOX_BASE_URL, {

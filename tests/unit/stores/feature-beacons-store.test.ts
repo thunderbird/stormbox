@@ -1,5 +1,12 @@
 // @vitest-environment happy-dom
 
+/**
+ * Beacon state is the synced `onboarding` setting (specs/010 §3): a
+ * high-water mark over beacon `seq`s plus out-of-order extras, null until
+ * Welcome is first dismissed. Legacy device keys seed it once and are
+ * deleted.
+ */
+
 import { createPinia, setActivePinia } from 'pinia';
 import {
   afterEach,
@@ -10,17 +17,35 @@ import {
   vi,
 } from 'vitest';
 
+vi.mock('../../../src/services/auth', () => ({
+  initOidc: async () => null,
+  getOidc: () => null,
+}));
+
 import {
+  beaconById,
   BEACON_IDS,
-  BEACON_SESSION_LIMIT,
-  FEATURE_BEACONS_STORAGE_KEY,
+  FEATURE_BEACONS,
+  LATEST_BEACON_SEQ,
 } from '../../../src/constants/feature-beacons';
 import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
-import { WHATS_NEW_STORAGE_KEY } from '../../../src/utils/onboarding-storage';
+import { useSettingsStore } from '../../../src/stores/settings-store';
+import type { OnboardingState } from '../../../src/utils/onboarding-state';
 
-function progress() {
-  const raw = window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY);
-  return raw == null ? null : JSON.parse(raw);
+const LEGACY_WELCOME = 'stormbox.welcomeModalDismissed.v1';
+const LEGACY_WHATS_NEW = 'stormbox.whatsNewSeen.2026-09-compose';
+const LEGACY_PROGRESS = 'stormbox.featureBeacons.2026-09-compose';
+
+/** The newest beacon, and the ids above a given mark, so appending a beacon needs no test edits. */
+const NEWEST = FEATURE_BEACONS.find((beacon) => beacon.seq === LATEST_BEACON_SEQ)!.id;
+const idsAbove = (seq: number) => FEATURE_BEACONS.filter((beacon) => beacon.seq > seq).map((beacon) => beacon.id);
+
+function seed(state: OnboardingState | null) {
+  useSettingsStore().settings = state == null ? {} : { onboarding: state };
+}
+
+function onboarding() {
+  return useSettingsStore().get('onboarding');
 }
 
 beforeEach(() => {
@@ -33,253 +58,187 @@ afterEach(() => {
 });
 
 describe('feature beacons store', () => {
-  it('arms with every beacon unseen, counts the session, and persists progress', () => {
+  it('shows nothing until Welcome has been dismissed', () => {
+    seed(null);
     const store = useFeatureBeaconsStore();
+    expect(store.welcomeDismissed).toBe(false);
+    store.arm();
     expect(store.enabled).toBe(false);
     expect(store.count).toBe(0);
+  });
 
+  it('arms with every beacon above the mark unseen', () => {
+    seed({ beaconsSeenThrough: 6 });
+    const store = useFeatureBeaconsStore();
     store.arm();
-
     expect(store.enabled).toBe(true);
-    expect(store.sessions).toBe(1);
-    expect(store.count).toBe(BEACON_IDS.length);
-    expect(store.unseen.map((beacon) => beacon.id)).toEqual(BEACON_IDS);
-    expect(progress()).toEqual({ seen: [], sessions: 1 });
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBeNull();
-  });
-
-  it('resumes stored progress and ignores unknown ids', () => {
-    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
-      seen: ['newMessage', 'bogus', 'newMessage'],
-      sessions: 2,
-    }));
-    const store = useFeatureBeaconsStore();
-
-    store.arm();
-
-    expect(store.sessions).toBe(3);
-    expect(store.seen).toEqual(['newMessage']);
-    expect(store.count).toBe(BEACON_IDS.length - 1);
-    expect(progress()).toEqual({ seen: ['newMessage'], sessions: 3 });
-  });
-
-  it('arms only once per page load', () => {
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    store.arm();
-    expect(store.sessions).toBe(1);
-  });
-
-  it(`finishes on session ${BEACON_SESSION_LIMIT + 1}: flag written, progress removed`, () => {
-    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
-      seen: [],
-      sessions: BEACON_SESSION_LIMIT,
-    }));
-    const store = useFeatureBeaconsStore();
-
-    store.arm();
-
-    expect(store.enabled).toBe(false);
-    expect(store.count).toBe(0);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBe('1');
-    expect(progress()).toBeNull();
-  });
-
-  it(`stays live through session ${BEACON_SESSION_LIMIT}`, () => {
-    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
-      seen: [],
-      sessions: BEACON_SESSION_LIMIT - 1,
-    }));
-    const store = useFeatureBeaconsStore();
-
-    store.arm();
-
-    expect(store.enabled).toBe(true);
-    expect(store.sessions).toBe(BEACON_SESSION_LIMIT);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBeNull();
-  });
-
-  it('marks a beacon seen and persists while its card stays open', () => {
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    store.open('manageFolders');
-    expect(store.openId).toBe('manageFolders');
-    expect(store.openBeacon?.id).toBe('manageFolders');
-
-    store.markSeen('manageFolders');
-
-    // The card is still readable; only the dot retires.
-    expect(store.openId).toBe('manageFolders');
-    expect(store.openBeacon?.id).toBe('manageFolders');
+    expect(store.unseen.map((beacon) => beacon.id)).toEqual(idsAbove(6));
     expect(store.isUnseen('manageFolders')).toBe(false);
-    expect(store.count).toBe(BEACON_IDS.length - 1);
-    expect(progress()).toEqual({ seen: ['manageFolders'], sessions: 1 });
-
-    // Repeats and unarmed calls are no-ops.
-    store.markSeen('manageFolders');
-    expect(progress()).toEqual({ seen: ['manageFolders'], sessions: 1 });
+    expect(store.isUnseen('starMessages')).toBe(true);
   });
 
-  it('finishes once every beacon has been seen', () => {
+  it('counts out-of-order entries as seen', () => {
+    seed({ beaconsSeenThrough: 0, beaconsSeenAlso: [2, 9] });
     const store = useFeatureBeaconsStore();
     store.arm();
+    expect(store.unseen.map((beacon) => beacon.seq))
+      .toEqual(FEATURE_BEACONS.map((beacon) => beacon.seq).filter((seq) => seq !== 2 && seq !== 9));
+  });
 
-    for (const id of BEACON_IDS) store.markSeen(id);
-
+  it('stays off when every beacon is seen, and never expires unseen ones', () => {
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+    const store = useFeatureBeaconsStore();
+    store.arm();
     expect(store.enabled).toBe(false);
-    expect(store.count).toBe(0);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBe('1');
-    expect(progress()).toBeNull();
-  });
 
-  it('finishes on Dismiss all', () => {
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    store.open('contacts');
-
-    store.dismissAll();
-
-    expect(store.enabled).toBe(false);
-    expect(store.openId).toBeNull();
-    expect(store.unseen).toEqual([]);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBe('1');
-    expect(progress()).toBeNull();
-  });
-
-  it('opens cards only while armed', () => {
-    const store = useFeatureBeaconsStore();
-    store.open('contacts');
-    expect(store.openId).toBeNull();
-
-    store.arm();
-    store.open('newMessage');
-    expect(store.openId).toBe('newMessage');
-    store.close();
-    expect(store.openId).toBeNull();
-
-    // A seen beacon's card can still be reopened from the control.
-    store.markSeen('contacts');
-    store.open('contacts');
-    expect(store.openId).toBe('contacts');
-  });
-
-  it('keeps the round alive while the last card is being read', () => {
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    const [last, ...rest] = [...BEACON_IDS].reverse();
-    for (const id of rest) store.markSeen(id);
-
-    // Pinned card: finishing writes the flag but waits for close().
-    store.open(last);
-    store.markSeen(last);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBe('1');
-    expect(progress()).toBeNull();
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ - 1 });
+    for (let session = 0; session < 20; session += 1) {
+      store.reset();
+      store.arm();
+    }
     expect(store.enabled).toBe(true);
-    expect(store.count).toBe(0);
-    store.close();
-    expect(store.enabled).toBe(false);
+    expect(store.unseen.map((beacon) => beacon.id)).toEqual([NEWEST]);
   });
 
-  it('keeps the round alive while an unpinned card is showing', () => {
+  it('marks seen by advancing the mark when possible and listing the rest', () => {
+    seed({ beaconsSeenThrough: 0 });
     const store = useFeatureBeaconsStore();
     store.arm();
+
+    store.markSeen('composeSchedule');
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 0, beaconsSeenAlso: [3] });
+    store.markSeen('newMessage');
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 1, beaconsSeenAlso: [3] });
+    // Filling the gap folds the listed entry into the mark.
+    store.markSeen('composeMinimize');
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 3 });
+    expect(store.count).toBe(BEACON_IDS.length - 3);
+  });
+
+  it('keeps the layer alive while the last card is read, then turns off', () => {
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ - 1 });
+    const store = useFeatureBeaconsStore();
+    store.arm();
+    store.open(NEWEST);
     store.setCardShowing(true);
-    for (const id of BEACON_IDS) store.markSeen(id);
+    store.markSeen(NEWEST);
 
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBe('1');
+    expect(onboarding()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
     expect(store.enabled).toBe(true);
+    expect(store.openBeacon?.id).toBe(NEWEST);
+    store.close();
     store.setCardShowing(false);
     expect(store.enabled).toBe(false);
   });
 
-  it('reset drops in-memory state but keeps stored progress; re-arming does not spend a session', () => {
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    store.markSeen('newMessage');
-    store.open('contacts');
-
-    store.reset();
-
-    expect(store.enabled).toBe(false);
-    expect(store.seen).toEqual([]);
-    expect(store.sessions).toBe(0);
-    expect(store.openId).toBeNull();
-    expect(progress()).toEqual({ seen: ['newMessage'], sessions: 1 });
-
-    // A reconnect within the same page load is the same session.
-    store.arm();
-    expect(store.sessions).toBe(1);
-    expect(store.seen).toEqual(['newMessage']);
-    expect(progress()).toEqual({ seen: ['newMessage'], sessions: 1 });
-  });
-
-  it('a flaky connection cannot burn through the session limit', () => {
-    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
-      seen: [],
-      sessions: BEACON_SESSION_LIMIT - 1,
-    }));
-    const store = useFeatureBeaconsStore();
-    for (let i = 0; i < BEACON_SESSION_LIMIT + 2; i += 1) {
-      store.arm();
-      store.reset();
-    }
-    store.arm();
-    expect(store.enabled).toBe(true);
-    expect(store.sessions).toBe(BEACON_SESSION_LIMIT);
-    expect(progress()).toEqual({ seen: [], sessions: BEACON_SESSION_LIMIT });
-  });
-
-  it('restart forgets a retired round and arms it again as session 1', () => {
-    window.localStorage.setItem(WHATS_NEW_STORAGE_KEY, '1');
-    const store = useFeatureBeaconsStore();
-    store.arm();
-    for (const id of BEACON_IDS) store.markSeen(id);
-    expect(store.enabled).toBe(false);
-
-    store.restart();
-
-    expect(store.enabled).toBe(true);
-    expect(store.sessions).toBe(1);
-    expect(store.seen).toEqual([]);
-    expect(store.count).toBe(BEACON_IDS.length);
-    expect(window.localStorage.getItem(WHATS_NEW_STORAGE_KEY)).toBeNull();
-    expect(progress()).toEqual({ seen: [], sessions: 1 });
-  });
-
-  it('restart mid-round drops seen beacons and the open card', () => {
-    window.localStorage.setItem(FEATURE_BEACONS_STORAGE_KEY, JSON.stringify({
-      seen: ['newMessage'],
-      sessions: BEACON_SESSION_LIMIT - 1,
-    }));
+  it('Dismiss all stores one number', () => {
+    seed({ beaconsSeenThrough: 2, beaconsSeenAlso: [5] });
     const store = useFeatureBeaconsStore();
     store.arm();
     store.open('contacts');
-
-    store.restart();
-
-    expect(store.openId).toBeNull();
-    expect(store.seen).toEqual([]);
-    expect(store.sessions).toBe(1);
-    expect(progress()).toEqual({ seen: [], sessions: 1 });
-  });
-
-  it('degrades to session-only state when storage is blocked', () => {
-    const blocked = () => {
-      throw new DOMException('blocked', 'SecurityError');
-    };
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(blocked);
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(blocked);
-    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(blocked);
-    const store = useFeatureBeaconsStore();
-
-    store.arm();
-    expect(store.enabled).toBe(true);
-    expect(store.count).toBe(BEACON_IDS.length);
-
-    store.markSeen('newMessage');
-    expect(store.count).toBe(BEACON_IDS.length - 1);
-
     store.dismissAll();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
     expect(store.enabled).toBe(false);
+    expect(store.openId).toBeNull();
+  });
+
+  it('first Welcome dismissal marks everything seen; a later one leaves progress alone', () => {
+    seed(null);
+    const store = useFeatureBeaconsStore();
+    store.dismissWelcome();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+
+    seed({ beaconsSeenThrough: 2 });
+    store.dismissWelcome();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 2 });
+  });
+
+  it('turns off when another device finishes the list', async () => {
+    seed({ beaconsSeenThrough: 0 });
+    const store = useFeatureBeaconsStore();
+    store.arm();
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+    await Promise.resolve();
+    expect(store.enabled).toBe(false);
+  });
+
+  it('opens cards only while armed', () => {
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+    const store = useFeatureBeaconsStore();
+    store.open('contacts');
+    expect(store.openBeacon).toBeNull();
+  });
+
+  it('restart marks every beacon unseen and shows them at once', () => {
+    seed({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+    const store = useFeatureBeaconsStore();
+    store.restart();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 0 });
+    expect(store.enabled).toBe(true);
+    expect(store.count).toBe(BEACON_IDS.length);
+  });
+
+  it('reset drops in-memory state only', () => {
+    seed({ beaconsSeenThrough: 3 });
+    const store = useFeatureBeaconsStore();
+    store.arm();
+    store.open('contacts');
+    store.reset();
+    expect(store.enabled).toBe(false);
+    expect(store.openId).toBeNull();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 3 });
+  });
+});
+
+describe('legacy device keys (OB-6.3)', () => {
+  it('a finished 2026-09-compose round covers every beacon it announced, leaving later ones unseen', () => {
+    seed(null);
+    window.localStorage.setItem(LEGACY_WELCOME, '1');
+    window.localStorage.setItem(LEGACY_WHATS_NEW, '1');
+    const store = useFeatureBeaconsStore();
+    store.adoptLegacyState();
+
+    expect(onboarding()).toEqual({ beaconsSeenThrough: beaconById('keyboardShortcuts').seq });
+    store.arm();
+    expect(store.unseen.map((beacon) => beacon.id)).toEqual(idsAbove(beaconById('keyboardShortcuts').seq));
+    for (const key of [LEGACY_WELCOME, LEGACY_WHATS_NEW, LEGACY_PROGRESS]) {
+      expect(window.localStorage.getItem(key)).toBeNull();
+    }
+  });
+
+  it('an unfinished round carries its seen beacons over, compacted', () => {
+    seed(null);
+    window.localStorage.setItem(LEGACY_WELCOME, '1');
+    window.localStorage.setItem(LEGACY_PROGRESS, JSON.stringify({
+      seen: ['composeMinimize', 'newMessage', 'starMessages', 'gone'], sessions: 3,
+    }));
+    useFeatureBeaconsStore().adoptLegacyState();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 2, beaconsSeenAlso: [7] });
+    expect(window.localStorage.getItem(LEGACY_PROGRESS)).toBeNull();
+  });
+
+  it('Welcome dismissed with no round started means nothing seen', () => {
+    seed(null);
+    window.localStorage.setItem(LEGACY_WELCOME, '1');
+    useFeatureBeaconsStore().adoptLegacyState();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 0 });
+  });
+
+  it('a new user has no legacy state and still gets Welcome', () => {
+    seed(null);
+    const store = useFeatureBeaconsStore();
+    store.adoptLegacyState();
+    expect(onboarding()).toBeNull();
+    expect(store.welcomeDismissed).toBe(false);
+  });
+
+  it('synced state wins over legacy keys, which are deleted anyway', () => {
+    seed({ beaconsSeenThrough: 4 });
+    window.localStorage.setItem(LEGACY_WELCOME, '1');
+    window.localStorage.setItem(LEGACY_WHATS_NEW, '1');
+    useFeatureBeaconsStore().adoptLegacyState();
+    expect(onboarding()).toEqual({ beaconsSeenThrough: 4 });
+    expect(window.localStorage.getItem(LEGACY_WELCOME)).toBeNull();
+    expect(window.localStorage.getItem(LEGACY_WHATS_NEW)).toBeNull();
   });
 });

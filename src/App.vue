@@ -34,12 +34,6 @@ import { useSettingsStore } from './stores/settings-store';
 import { AUTH_STATE } from './constants/states';
 import type { Palette, Theme } from './constants/settings';
 import { shortcutAria, shortcutHint } from './constants/shortcuts';
-import {
-  readOnboardingFlag,
-  WELCOME_MODAL_STORAGE_KEY,
-  WHATS_NEW_STORAGE_KEY,
-  writeOnboardingFlag,
-} from './utils/onboarding-storage';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
@@ -329,14 +323,23 @@ watch(() => columnsStore.columns.length, () => {
 });
 
 watch(() => authStore.status, (status) => {
-  if (status === AUTH_STATE.CONNECTED) {
-    maybeShowOnboardingModal();
-    return;
-  }
+  if (status === AUTH_STATE.CONNECTED) return;
   showWelcomeModal.value = false;
   beaconStore.reset();
   void spotlight.cancel();
 }, { immediate: true });
+
+// Onboarding reads the synced `onboarding` setting, so it waits until the
+// connected account's settings have been pulled (OB-6.1).
+watch(
+  () => authStore.status === AUTH_STATE.CONNECTED
+    && authStore.accountId != null
+    && settingsStore.readyAccountId === authStore.accountId,
+  (ready) => {
+    if (ready) maybeShowOnboardingModal();
+  },
+  { immediate: true },
+);
 
 function startCompose() {
   composeStore.open();
@@ -416,24 +419,22 @@ function toggleTheme() {
   });
 }
 
-// Welcome for a new user; feature beacons for a user who dismissed Welcome
-// before this announcement and has not finished the round.
+// Welcome for a new user; feature beacons for one who dismissed Welcome
+// and has beacons left unseen.
 function maybeShowOnboardingModal() {
-  if (!readOnboardingFlag(WELCOME_MODAL_STORAGE_KEY)) {
+  beaconStore.adoptLegacyState();
+  if (!beaconStore.welcomeDismissed) {
     showWelcomeModal.value = true;
     return;
   }
   showWelcomeModal.value = false;
-  if (!readOnboardingFlag(WHATS_NEW_STORAGE_KEY)) beaconStore.arm();
+  beaconStore.arm();
 }
 
 function dismissWelcomeModal() {
   showWelcomeModal.value = false;
   void spotlight.cancel();
-  writeOnboardingFlag(WELCOME_MODAL_STORAGE_KEY);
-  // Welcome covers every announced feature, so a new user never gets
-  // beacons; a user re-opening Welcome from Settings keeps theirs.
-  if (!beaconStore.enabled) writeOnboardingFlag(WHATS_NEW_STORAGE_KEY);
+  beaconStore.dismissWelcome();
 }
 
 function showWelcomeModalAgain() {
@@ -450,7 +451,19 @@ function showWelcomeModalAgain() {
 // Contacts) leaves the card closed rather than pinning it to nothing.
 async function revealBeacon(id: BeaconId): Promise<void> {
   const beacon = beaconById(id);
-  switch (beacon.stage) {
+  switch (beacon.surface) {
+    case 'spacesRail':
+      break;
+    case 'mailSidebar':
+      if (!await requestSpaceChange('mail')) return;
+      // The compact layouts may have hidden the folder list.
+      if (folderListHidden.value) toggleFolderList();
+      break;
+    case 'mailList':
+      if (!await requestSpaceChange('mail')) return;
+      // The single-column layout shows the list or the open message.
+      if (!displayedMessageList.value) mailStore.selectMessage(null);
+      break;
     case 'composer': {
       const expanded = composeStore.sessions.find(
         (session) => session.presentation === COMPOSE_PRESENTATION.EXPANDED,
@@ -467,24 +480,9 @@ async function revealBeacon(id: BeaconId): Promise<void> {
     case 'contacts':
       if (!await requestSpaceChange('contacts')) return;
       break;
-    case undefined:
-      // The spaces bar (Contacts, Settings gear) is always on screen. The
-      // Starred filter is in the message list header; the other unstaged
-      // controls are in the Mail sidebar, which the compact layouts may
-      // have hidden.
-      if (id !== 'contacts' && id !== 'keyboardShortcuts') {
-        if (!await requestSpaceChange('mail')) return;
-        if (id === 'starMessages') {
-          // The single-column layout shows the list or the open message.
-          if (!displayedMessageList.value) mailStore.selectMessage(null);
-        } else if (folderListHidden.value) {
-          toggleFolderList();
-        }
-      }
-      break;
     default: {
-      const exhaustive: never = beacon.stage;
-      throw new Error(`Unhandled beacon stage ${String(exhaustive)}`);
+      const exhaustive: never = beacon.surface;
+      throw new Error(`Unhandled beacon surface ${String(exhaustive)}`);
     }
   }
   beaconStore.open(id);

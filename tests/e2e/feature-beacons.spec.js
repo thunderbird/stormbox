@@ -7,29 +7,44 @@ import { waitForFolderTreeReady } from './helpers/ui.js';
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
-const WHATS_NEW_KEY = 'stormbox.whatsNewSeen.2026-09-compose';
-const PROGRESS_KEY = 'stormbox.featureBeacons.2026-09-compose';
+const LEGACY_KEYS = [
+  'stormbox.welcomeModalDismissed.v1',
+  'stormbox.whatsNewSeen.2026-09-compose',
+  'stormbox.featureBeacons.2026-09-compose',
+];
+/** Beacons in src/constants/feature-beacons.ts; the newest `seq`. */
+const BEACON_COUNT = 9;
+
+/** The synced `onboarding` setting, read from the local settings cache. */
+async function readOnboarding(page) {
+  return page.evaluate(async () => {
+    const [account] = await window.__repo.listAccounts();
+    return (await window.__repo.getSettings(account.id))?.doc?.settings?.onboarding ?? null;
+  });
+}
 
 /**
- * Feature beacons for a user who dismissed Welcome before this round: the
- * header pill counts every unseen beacon, a dot opens its card, Got it
- * retires that beacon, and Dismiss all ends the round for good.
+ * Feature beacons for a user who dismissed Welcome before any beacon
+ * shipped: the header pill counts every unseen beacon, a dot opens its
+ * card, Got it retires that beacon, and Dismiss all stores one number in
+ * the synced `onboarding` setting (specs/010 §3).
  */
 test.describe('Feature beacons', () => {
   test('pill, dot card, Got it, and Dismiss all', async ({ page }) => {
-    await loginViaOidc(page, { whatsNewSeen: false });
-    await waitForFolderTreeReady(page);
-    // The shared storageState carries the What's New flag; clear it and any
-    // stale progress so this session starts the round fresh.
-    await page.evaluate(([flagKey, progressKey]) => {
-      window.localStorage.removeItem(flagKey);
-      window.localStorage.removeItem(progressKey);
-    }, [WHATS_NEW_KEY, PROGRESS_KEY]);
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    // Pre-sync device keys are deleted once the synced setting takes over.
+    await page.addInitScript((keys) => {
+      if (window.sessionStorage.getItem('stormbox.e2e.legacySeeded')) return;
+      window.sessionStorage.setItem('stormbox.e2e.legacySeeded', '1');
+      for (const key of keys) window.localStorage.setItem(key, '1');
+    }, LEGACY_KEYS);
+    await loginViaOidc(page, { beaconsSeen: false });
     await waitForFolderTreeReady(page);
 
     const pill = page.locator('.beacon-menu__pill');
-    await expect(pill).toHaveText('9 new');
+    await expect(pill).toHaveText(`${BEACON_COUNT} new`);
+    expect(await readOnboarding(page)).toEqual({ beaconsSeenThrough: 0 });
+    expect(await page.evaluate((keys) => keys.map((key) => window.localStorage.getItem(key)), LEGACY_KEYS))
+      .toEqual([null, null, null]);
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
 
     const composeDot = page.locator('.feature-beacons__dot[data-beacon="newMessage"]');
@@ -71,10 +86,9 @@ test.describe('Feature beacons', () => {
       await expect(composeDot).toHaveCount(0);
       // The dot retired with the card, so focus lands on the control itself.
       await expect(page.locator('.sidebar__compose')).toBeFocused();
-      await expect(pill).toHaveText('8 new');
-      expect(await page.evaluate((key) => JSON.parse(window.localStorage.getItem(key)), PROGRESS_KEY))
-        .toEqual({ seen: ['newMessage'], sessions: 1 });
-      expect(await page.evaluate((key) => window.localStorage.getItem(key), WHATS_NEW_KEY)).toBeNull();
+      await expect(pill).toHaveText(`${BEACON_COUNT - 1} new`);
+      // newMessage is seq 1, so the mark advances.
+      await expect.poll(() => readOnboarding(page)).toEqual({ beaconsSeenThrough: 1 });
 
       // Using the control itself retires its beacon and shows the card once,
       // beside the control, while the control does its own thing.
@@ -85,7 +99,9 @@ test.describe('Feature beacons', () => {
       await expect(contactsCard).toHaveAttribute('data-beacon-card-mode', 'alongside');
       await expect(contactsCard).not.toBeFocused();
       await expect(contactsDot).toHaveCount(0);
-      await expect(pill).toHaveText('7 new');
+      await expect(pill).toHaveText(`${BEACON_COUNT - 2} new`);
+      // contacts is seq 4, seen above the mark.
+      await expect.poll(() => readOnboarding(page)).toEqual({ beaconsSeenThrough: 1, beaconsSeenAlso: [4] });
       await expect(page.locator('.feature-beacons__dot[data-beacon="manageIdentities"]')).toBeVisible();
       await page.mouse.click(600, 400);
       await expect(contactsCard).toHaveCount(0);
@@ -95,7 +111,7 @@ test.describe('Feature beacons', () => {
       // The pill lists the rest and reveals a staged one by opening the composer.
       await pill.click();
       const menu = page.getByRole('group', { name: 'New features' });
-      await expect(menu.locator('.beacon-menu__item')).toHaveCount(7);
+      await expect(menu.locator('.beacon-menu__item')).toHaveCount(BEACON_COUNT - 2);
       await menu.getByRole('button', { name: /Send on your schedule/ }).click();
       const scheduleCard = page.getByRole('dialog', { name: 'Send on your schedule' });
       await expect(page.locator('.compose-dialog')).toBeVisible();
@@ -132,9 +148,10 @@ test.describe('Feature beacons', () => {
     await menu.getByRole('button', { name: 'Dismiss all' }).click();
     await expect(pill).toHaveCount(0);
     await expect(page.locator('.feature-beacons__dot')).toHaveCount(0);
-    expect(await page.evaluate((key) => window.localStorage.getItem(key), WHATS_NEW_KEY)).toBe('1');
-    expect(await page.evaluate((key) => window.localStorage.getItem(key), PROGRESS_KEY)).toBeNull();
+    // Everything seen is one number.
+    await expect.poll(() => readOnboarding(page)).toEqual({ beaconsSeenThrough: BEACON_COUNT });
 
+    // A reload keeps it (the seed runs once per tab).
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForFolderTreeReady(page);
     await expect(pill).toHaveCount(0);

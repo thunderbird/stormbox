@@ -12,9 +12,15 @@ import {
 } from 'vitest';
 import { nextTick } from 'vue';
 
+vi.mock('../../../src/services/auth', () => ({
+  initOidc: async () => null,
+  getOidc: () => null,
+}));
+
 import FeatureBeaconLayer from '../../../src/components/FeatureBeaconLayer.vue';
-import { BEACON_TIMING, FEATURE_BEACONS_STORAGE_KEY } from '../../../src/constants/feature-beacons';
+import { BEACON_TIMING } from '../../../src/constants/feature-beacons';
 import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
+import { useSettingsStore } from '../../../src/stores/settings-store';
 import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-layout';
 
 const COMPOSE = '.sidebar__compose';
@@ -88,6 +94,8 @@ beforeEach(() => {
   setActivePinia(createPinia());
   window.localStorage.clear();
   layout = stubBeaconLayout(RECTS);
+  // Welcome dismissed before any beacon shipped: every beacon unseen.
+  useSettingsStore().settings = { onboarding: { beaconsSeenThrough: 0 } };
   useFeatureBeaconsStore().arm();
 });
 
@@ -104,7 +112,7 @@ describe('FeatureBeaconLayer', () => {
     const wrapper = mountLayer();
     await settle();
 
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages', 'tagMessages', 'keyboardShortcuts']);
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'manageFolders', 'starMessages', 'keyboardShortcuts', 'tagMessages']);
     const dot = wrapper.get('[data-beacon="newMessage"]');
     expect(dot.attributes('aria-label')).toBe('New: A new composer');
     expect(dot.attributes('aria-haspopup')).toBe('dialog');
@@ -191,9 +199,9 @@ describe('FeatureBeaconLayer', () => {
     await settle();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages', 'tagMessages', 'keyboardShortcuts']);
-    expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
-      .toEqual({ seen: ['manageFolders'], sessions: 1 });
+    expect(dots(wrapper)).toEqual(['newMessage', 'contacts', 'starMessages', 'keyboardShortcuts', 'tagMessages']);
+    // manageFolders is seq 6, seen above the mark.
+    expect(useSettingsStore().get('onboarding')).toEqual({ beaconsSeenThrough: 0, beaconsSeenAlso: [6] });
   });
 
   it('Escape closes a pinned card, keeps the dot, and returns focus to it', async () => {
@@ -215,8 +223,7 @@ describe('FeatureBeaconLayer', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
     expect(dots(wrapper)).toContain('contacts');
     expect(document.activeElement).toBe(dot.element);
-    expect(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY))
-      .toBe(JSON.stringify({ seen: [], sessions: 1 }));
+    expect(useSettingsStore().get('onboarding')).toEqual({ beaconsSeenThrough: 0 });
   });
 
   it('returns focus to the control when the dot retired before the card closed', async () => {

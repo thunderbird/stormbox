@@ -5,8 +5,8 @@ keywords that the user controls directly: the star (`$flagged`) and tags
 (Thunderbird-compatible user keywords). It refines
 the message-list requirements in `specs/001-mvp-scope/spec.md`, in
 particular R-2.8 (filters), R-3.6 (multi-select), R-3.17 (batched keyword
-mutations), and R-10.3 (the single-column layout), and it adds one beacon
-to the round described in `specs/010-onboarding/spec.md` (OB-4.1).
+mutations), and R-10.3 (the single-column layout), and it adds beacons
+described in `specs/010-onboarding/spec.md` (OB-4.1).
 
 The architectural invariants in `.specify/memory/constitution.md` remain
 controlling: the server is authoritative, protocol mutations enter the
@@ -121,8 +121,8 @@ one transaction by `replaceMessageKeywordsMany`.
 
 | ID / Status | Requirement |
 |:--|:--|
-| MK-5.1 🟩 Implemented | The starring feature shall be announced with one beacon, `starMessages`, in the current round (OB-4.1). Because the row star is hidden until hover, the dot sits on the always-visible `Starred` filter; revealing it from the pill switches to Mail and, in the single-column layout, closes the open message so the list header is on screen. The Welcome modal is unchanged. |
-| MK-5.2 🟩 Implemented | Tags shall be announced with one beacon, `tagMessages`, on the always-visible `Tags` filter, revealed the same way. The Welcome modal's shortcut list gains the tag rows (MK-4.2). |
+| MK-5.1 🟩 Implemented | The starring feature shall be announced with one beacon, `starMessages` (OB-4.1). Because the row star is hidden until hover, the dot sits on the always-visible `Starred` filter; revealing it from the pill switches to Mail and, in the single-column layout, closes the open message so the list header is on screen. The Welcome modal is unchanged. |
+| MK-5.2 🟩 Implemented | Tags shall be announced with one beacon, `tagMessages` (seq 9, OB-4.1), on the sidebar Tags heading's Manage Tags button, which is always on screen while the row's tag stack is not; revealing it from the pill returns to Mail and shows a hidden folder list. The Welcome modal lists the tag shortcuts in their own card (MK-4.2). |
 
 ### 6. Tags
 
@@ -266,10 +266,8 @@ one transaction by `replaceMessageKeywordsMany`.
   the More menu), wired in `MessageList.vue` and `MessageView.vue`.
 - Toolbar: `.msg-list__bulk-action--star` and the `tag` slot in
   `src/components/MessageBulkActions.vue`; `useBulkActionItems`.
-- Filters: `flaggedOnly`, `activeTagKeywords`, `toggleTagFilter`,
-  `filterToTag` in `src/composables/useMessageListFilters.ts`;
-  `.msg-list__filter--starred`, `.msg-list__filter--tags` (`[data-tag-filter]`)
-  in `src/components/MessageList.vue`.
+- Filters: `flaggedOnly` in `src/composables/useMessageListFilters.ts`;
+  `.msg-list__filter--starred` in `src/components/MessageList.vue`.
 - Tag views: `isTagViewId`, `tagViewIdFor`, `tagViewKeyword`, `loadTagView`,
   `tagCounts`, `tagViewCoverage`, `rejectTagViewSource` in
   `src/stores/mail-store.ts`; `message.listForKeyword` /

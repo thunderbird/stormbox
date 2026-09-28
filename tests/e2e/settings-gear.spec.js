@@ -20,10 +20,6 @@ test.describe('Settings gear in narrow layouts', () => {
   // 640px and 340px without knowing about the gear).
   test('the gear never widens the shell: in the rail from 640px, in the compact menu below', async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 852 });
-    await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-    });
     await loginViaOidc(page);
     await waitForInboxReady(page);
 

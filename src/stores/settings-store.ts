@@ -143,6 +143,12 @@ export const useSettingsStore = defineStore('settings', () => {
   const authStore = useAuthStore();
   const initialMirror = readMirror();
   const settings = ref<SettingsMap>(initialMirror.values);
+  /**
+   * The connected account whose settings have been pulled this session;
+   * null until then. Decisions that must see synced values (onboarding)
+   * wait for it.
+   */
+  const readyAccountId = ref<number | null>(null);
   let repo: Repository | null = null;
   let unsubscribe: (() => void) | null = null;
   let stopAccountWatch: WatchStopHandle | null = null;
@@ -166,6 +172,7 @@ export const useSettingsStore = defineStore('settings', () => {
       async ([newId, connected]) => {
         activeAccountId = newId;
         stateRevision += 1;
+        readyAccountId.value = null;
         if (newId == null) {
           settings.value = readMirror().values;
           return;
@@ -181,6 +188,8 @@ export const useSettingsStore = defineStore('settings', () => {
         } catch (error) {
           console.warn('[settings-store] account refresh failed', error);
         }
+        // A failed pull still settles: the local copy is what there is.
+        if (connected && activeAccountId === newId) readyAccountId.value = newId;
       },
       { immediate: true },
     );
@@ -194,10 +203,12 @@ export const useSettingsStore = defineStore('settings', () => {
     unsubscribe = null;
     repo = null;
     activeAccountId = null;
+    readyAccountId.value = null;
   }
 
   function $reset(): void {
     activeAccountId = null;
+    readyAccountId.value = null;
     stateRevision += 1;
     settings.value = readMirror().values;
   }
@@ -296,6 +307,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     settings,
+    readyAccountId,
     get,
     attach,
     detach,

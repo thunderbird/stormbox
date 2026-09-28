@@ -23,14 +23,40 @@ const APP_ORIGIN = new URL(
  * setup spec on its first run (no cached state) and as a fallback
  * when the cached SSO cookie has expired.
  *
- * Welcome is always marked dismissed. `whatsNewSeen: false` leaves the
- * What's New flag alone so a spec can clear it and get the feature beacons.
+ * Onboarding is seeded as done: Welcome dismissed and every beacon seen.
+ * `beaconsSeen: false` seeds Welcome dismissed with every beacon unseen,
+ * for the beacon spec. See seedOnboarding.
  */
-export async function loginViaOidc(page, { whatsNewSeen = true } = {}) {
-  await page.addInitScript((seen) => {
-    window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-    if (seen) window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-  }, whatsNewSeen);
+/**
+ * A high-water mark above any beacon that will ship, so "everything seen"
+ * never needs updating when beacons are added (specs/010 §3).
+ */
+export const ALL_BEACONS_SEEN = 1_000_000;
+
+/**
+ * Seeds the synced `onboarding` setting through the settings store's
+ * pre-sign-in pending patch, which the first settings pull applies to the
+ * account (specs/006 R-SET.14). It runs once per tab, so a reload keeps
+ * whatever the test did since.
+ */
+export async function seedOnboarding(page, { beaconsSeen = true } = {}) {
+  await page.addInitScript((through) => {
+    if (window.sessionStorage.getItem('stormbox.e2e.onboardingSeeded')) return;
+    window.sessionStorage.setItem('stormbox.e2e.onboardingSeeded', '1');
+    const key = 'stormbox.settings.pending.v1';
+    let pending = {};
+    try {
+      pending = JSON.parse(window.localStorage.getItem(key) ?? '{}') ?? {};
+    } catch {
+      pending = {};
+    }
+    pending.anonymous = { ...(pending.anonymous ?? {}), onboarding: { beaconsSeenThrough: through } };
+    window.localStorage.setItem(key, JSON.stringify(pending));
+  }, beaconsSeen ? ALL_BEACONS_SEEN : 0);
+}
+
+export async function loginViaOidc(page, { beaconsSeen = true } = {}) {
+  await seedOnboarding(page, { beaconsSeen });
   await page.goto('/');
   if (await isAppShellAlreadyVisible(page)) {
     return;

@@ -8,6 +8,7 @@ import {
   isMessageTagDefinitionList,
   type MessageTagDefinition,
 } from '../utils/message-tags';
+import { isOnboardingState, type OnboardingState } from '../utils/onboarding-state';
 import { detectTimeZone, isUsableTimeZone } from '../utils/schedule-time';
 
 export const THEME_VALUES = ['light', 'dark', 'system'] as const;
@@ -41,6 +42,12 @@ export interface Settings {
    * writer's whole list.
    */
   messageTags: MessageTagDefinition[];
+  /**
+   * Welcome and feature-beacon state (specs/010 §3); null until Welcome is
+   * first dismissed. One key: Welcome and beacon dismissals are always
+   * read and written together.
+   */
+  onboarding: OnboardingState | null;
 }
 
 export const SETTING_DEFAULTS: Readonly<Settings> = {
@@ -50,6 +57,7 @@ export const SETTING_DEFAULTS: Readonly<Settings> = {
   primaryIdentityRemoteId: null,
   timeZone: detectTimeZone(),
   messageTags: [...DEFAULT_MESSAGE_TAGS],
+  onboarding: null,
 };
 
 const SETTING_VALIDATORS: {
@@ -63,6 +71,7 @@ const SETTING_VALIDATORS: {
     value === null || (typeof value === 'string' && value.length > 0),
   timeZone: isUsableTimeZone,
   messageTags: isMessageTagDefinitionList,
+  onboarding: isOnboardingState,
 };
 
 export function resolveSetting<K extends keyof Settings>(key: K, value: unknown): Settings[K] {

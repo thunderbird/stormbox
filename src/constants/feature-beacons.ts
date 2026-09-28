@@ -14,10 +14,15 @@ import {
 import { SPOTLIGHT_TARGETS } from '../composables/featureSpotlightScripts';
 
 /**
- * Beacons announce this round's features to users who dismissed Welcome
- * before it shipped: a pulsing dot on each new control that opens a short
- * card. Staged beacons wait for their host (composer, Contacts space) to
- * mount; the header pill counts every unseen beacon, staged included.
+ * Beacons announce features to users who dismissed Welcome before they
+ * shipped: a pulsing dot on each new control that opens a short card.
+ * Staged beacons wait for their host (composer, Contacts space) to mount;
+ * the header pill counts every unseen beacon, staged included (OB-4.1).
+ *
+ * Each beacon carries a permanent `seq`, so dismissals are stored as a
+ * high-water mark (OB-3.2). Shipping a beacon appends one entry with the
+ * next `seq`; a `seq` is never changed or reused, including after its
+ * beacon is removed.
  */
 export type BeaconId =
   | 'newMessage'
@@ -27,28 +32,38 @@ export type BeaconId =
   | 'manageIdentities'
   | 'manageFolders'
   | 'starMessages'
-  | 'tagMessages'
-  | 'keyboardShortcuts';
+  | 'keyboardShortcuts'
+  | 'tagMessages';
 
-export type BeaconStage = 'composer' | 'contacts';
+/**
+ * Where a beacon's control lives, which decides how the pill brings it on
+ * screen (OB-5.3):
+ * - `spacesRail`: the always-visible spaces rail; nothing to reveal.
+ * - `mailSidebar`: the Mail folder list, shown if a compact layout hid it.
+ * - `mailList`: the Mail message list header, shown over an open message
+ *   in the single-column layout.
+ * - `composer`: inside the composer, which is restored or opened (staged).
+ * - `contacts`: inside the Contacts space, which is switched to (staged).
+ */
+export type BeaconSurface = 'spacesRail' | 'mailSidebar' | 'mailList' | 'composer' | 'contacts';
 
 export interface FeatureBeacon {
   id: BeaconId;
+  /** Permanent announcement order; see the file comment. */
+  seq: number;
   /** CSS selector of the control the dot sits on. */
   anchor: string;
   title: string;
   body: string;
   icon: Component;
-  /** Host that must be on screen before the dot can show. */
-  stage?: BeaconStage;
+  /** Where the control lives; see BeaconSurface. */
+  surface: BeaconSurface;
   /**
    * Where the dot sits on the anchor: its top-right corner (default), or
    * on its left edge at mid-height, in line with a row's label.
    */
   dot?: 'corner' | 'inline-start';
 }
-
-export const BEACON_SESSION_LIMIT = 5;
 
 export const BEACON_TIMING = {
   /** Hover or focus on a dot or its control before the card previews. */
@@ -63,12 +78,11 @@ export const BEACON_TIMING = {
   anchorGraceMs: 2000,
 } as const;
 
-// Dated with the What's New round it announces.
-export const FEATURE_BEACONS_STORAGE_KEY = 'stormbox.featureBeacons.2026-09-compose';
-
 export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
   {
     id: 'newMessage',
+    seq: 1,
+    surface: 'mailSidebar',
     anchor: '.sidebar__compose',
     title: 'A new composer',
     body: 'Work on several drafts at once, autocomplete recipients as pills, paste images and links, attach files, and schedule a send. Open a message to see the new controls.',
@@ -76,22 +90,26 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
   },
   {
     id: 'composeMinimize',
+    seq: 2,
+    surface: 'composer',
     anchor: SPOTLIGHT_TARGETS.composeMinimize,
     title: 'Minimize a draft',
     body: 'A minimized draft waits in the dock, named by its subject, while you read or reply to other mail.',
     icon: Minus,
-    stage: 'composer',
   },
   {
     id: 'composeSchedule',
+    seq: 3,
+    surface: 'composer',
     anchor: SPOTLIGHT_TARGETS.scheduleTrigger,
     title: 'Send on your schedule',
     body: 'Pick a delivery time next to Send. The message waits in Scheduled, where you can still cancel it.',
     icon: CalendarClock,
-    stage: 'composer',
   },
   {
     id: 'contacts',
+    seq: 4,
+    surface: 'spacesRail',
     anchor: SPOTLIGHT_TARGETS.contactsSpace,
     title: 'Contacts have their own space',
     body: 'Manage address books and drag contacts between them from the toolbar on the left.',
@@ -99,15 +117,18 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
   },
   {
     id: 'manageIdentities',
+    seq: 5,
+    surface: 'contacts',
     anchor: SPOTLIGHT_TARGETS.contactsIdentitiesButton,
     title: 'Manage identities',
     body: 'Set up each address you send from: display name, signature, Reply-To, and automatic Bcc.',
     icon: BookUser,
-    stage: 'contacts',
     dot: 'inline-start',
   },
   {
     id: 'manageFolders',
+    seq: 6,
+    surface: 'mailSidebar',
     anchor: SPOTLIGHT_TARGETS.manageFolders,
     title: 'Manage Folders',
     body: 'Create folders, choose which ones to show, and star favorites so they float to the top of the list.',
@@ -117,32 +138,44 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     // The row's own star is hidden until hover, so the dot sits on the
     // always-visible Starred filter instead.
     id: 'starMessages',
+    seq: 7,
+    surface: 'mailList',
     anchor: SPOTLIGHT_TARGETS.starredFilter,
     title: 'Star a message',
     body: 'Hover a message and click the star, or press S to star a message, and then use the Starred filter to view them.',
     icon: Star,
   },
   {
-    // Like the star, the row's Tag button is hidden until hover; the dot
-    // sits on the sidebar's Tags heading, which is always on screen.
-    id: 'tagMessages',
-    anchor: SPOTLIGHT_TARGETS.manageTags,
-    title: 'Tag your messages',
-    body: 'Hover a message and click the tag, select several and tag them together, or press 1–9. Tags are keywords, so Thunderbird sees them too. Open a tag here to see everything carrying it, in any folder.',
-    icon: Tag,
-  },
-  {
     // Shortcuts have no control of their own; the gear leads to the scheme
     // picker and, through Show welcome, the full list (OB-4.12).
     id: 'keyboardShortcuts',
+    seq: 8,
+    surface: 'spacesRail',
     anchor: SPOTLIGHT_TARGETS.settingsGear,
     title: 'Keyboard shortcuts',
     body: 'Move through mail, archive, star, and reply without leaving the keyboard. Choose Web or Thunderbird-style keys in Settings, and see the full list under Show welcome.',
     icon: Keyboard,
   },
+  {
+    // Like the star, the row's Tag button is hidden until hover; the dot
+    // sits on the sidebar's Tags heading, which is always on screen.
+    id: 'tagMessages',
+    seq: 9,
+    surface: 'mailSidebar',
+    anchor: SPOTLIGHT_TARGETS.manageTags,
+    title: 'Tag your messages',
+    body: 'Hover a message and click the tag, select several and tag them together, or press 1–9. Tags are keywords, so Thunderbird sees them too. Open a tag here to see everything carrying it, in any folder.',
+    icon: Tag,
+  },
 ];
 
 export const BEACON_IDS: readonly BeaconId[] = FEATURE_BEACONS.map((beacon) => beacon.id);
+
+/** The newest beacon's `seq`: dismissing Welcome or Dismiss all marks everything through it seen. */
+export const LATEST_BEACON_SEQ = Math.max(0, ...FEATURE_BEACONS.map((beacon) => beacon.seq));
+
+/** Every `seq` still in the list; a gap is a removed beacon and counts as seen. */
+export const LIVE_BEACON_SEQS: ReadonlySet<number> = new Set(FEATURE_BEACONS.map((beacon) => beacon.seq));
 
 export function beaconById(id: BeaconId): FeatureBeacon {
   const beacon = FEATURE_BEACONS.find((entry) => entry.id === id);

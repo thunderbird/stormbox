@@ -98,6 +98,8 @@ The current registry contains:
 | `shortcutScheme` | `web` | Keyboard shortcut table bound by `useThunderbirdShortcuts` and shown in the welcome and settings dialogs. `web` uses single keys that stay clear of browser shortcuts (`c`, `r`, `j`/`k`, `/`, `* then a`); `thunderbird` mirrors the desktop client (`Ctrl+N`, `Ctrl+R`, `f`/`b`, `Ctrl+A`, `Home`/`End`). Tables live in `src/constants/shortcuts.ts`. |
 | `primaryIdentityRemoteId` | `null` | Client-selected JMAP Identity used as the default From address. |
 | `timeZone` | detected IANA zone, else `UTC` | Wall-time zone shared by Send Later presets and the custom picker. |
+| `messageTags` | Thunderbird's five default tags | Tag definitions over JMAP keywords (specs/011 §6). |
+| `onboarding` | `null` | Welcome and feature-beacon state: `null` until Welcome is first dismissed, then `{ beaconsSeenThrough, beaconsSeenAlso? }` over beacon `seq`s (specs/010 §6). Replaced the device-local `stormbox.welcomeModalDismissed.v1`, `stormbox.whatsNewSeen.*` and `stormbox.featureBeacons.*` keys, which are migrated once and deleted. |
 
 `timeZone` accepts only values supported by the runtime's
 `Intl.DateTimeFormat`; invalid remote or browser-mirror values resolve to the

@@ -24,13 +24,15 @@ import { requestTagManager } from '../../../src/composables/useTagManagerRequest
 import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
+import { LATEST_BEACON_SEQ } from '../../../src/constants/feature-beacons';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
 } from '../../../src/composables/useRepository';
 
 function makeRepo() {
-  let settings: Record<string, unknown> = {};
+  // Onboarding done: Welcome dismissed and every beacon seen.
+  let settings: Record<string, unknown> = { onboarding: { beaconsSeenThrough: LATEST_BEACON_SEQ } };
   const doc = () => ({
     doc: {
       owner: 'stormbox', documentType: 'user-settings', version: 1, settings, updatedAt: {},
@@ -96,8 +98,6 @@ beforeEach(() => {
   setActivePinia(createPinia());
   __setRepositoryForTests(makeRepo());
   localStorage.clear();
-  localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-  localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
   vi.stubGlobal('matchMedia', vi.fn(() => ({
     matches: false,
