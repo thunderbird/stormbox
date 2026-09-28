@@ -25,9 +25,9 @@ import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-lay
 
 const COMPOSE = '.sidebar__compose';
 const CONTACTS = '.app-spaces [aria-label="Contacts"]';
-const MANAGE_FOLDERS = '.folder-tree__manage';
+const MANAGE_FOLDERS = '[data-manage-folders]';
 const STARRED_FILTER = '.msg-list__filter--starred';
-const MANAGE_TAGS = '[data-tag-views] .folder-tree__manage';
+const MANAGE_TAGS = '[data-manage-tags]';
 const SETTINGS_GEAR = '.app-spaces [data-settings-gear]';
 
 const RECTS = {
@@ -37,8 +37,6 @@ const RECTS = {
   [CONTACTS]: {
     left: 8, top: 120, width: 40, height: 40,
   },
-  // Before the folders gear: the stub takes an element's first matching
-  // selector, and the tags gear also wears .folder-tree__manage.
   [MANAGE_TAGS]: {
     left: 200, top: 420, width: 24, height: 24,
   },
@@ -69,9 +67,9 @@ const ALL_ANCHORS = `
     <button aria-label="Contacts">Contacts</button>
     <button aria-label="Settings" data-settings-gear>Settings</button>
   </nav>
-  <button class="folder-tree__manage">Manage</button>
+  <button class="folder-tree__manage" data-manage-folders>Manage</button>
   <button class="msg-list__filter msg-list__filter--starred">Starred</button>
-  <div data-tag-views><button class="folder-tree__manage">Manage Tags</button></div>
+  <div data-tag-views><button class="folder-tree__manage" data-manage-tags>Manage Tags</button></div>
 `;
 
 function mountLayer() {
@@ -140,7 +138,7 @@ describe('FeatureBeaconLayer', () => {
   it('skips anchors that are missing, zero-sized, or covered', async () => {
     mountAnchors(`
       <button class="sidebar__compose">New Message</button>
-      <button class="folder-tree__manage">Manage</button>
+      <button class="folder-tree__manage" data-manage-folders>Manage</button>
       <div class="compose-dialog"></div>
     `);
     layout.setRect(MANAGE_FOLDERS, null);
@@ -167,6 +165,7 @@ describe('FeatureBeaconLayer', () => {
 
     const manage = document.createElement('button');
     manage.className = 'folder-tree__manage';
+    manage.setAttribute('data-manage-folders', '');
     host.appendChild(manage);
     await settle();
     expect(dots(wrapper)).toEqual(['newMessage', 'manageFolders']);
