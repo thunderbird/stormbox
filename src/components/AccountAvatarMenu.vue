@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { LogOut, Settings } from '@lucide/vue';
+import {
+  ListFilter, LogOut, Settings,
+} from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store';
 import { ACCOUNTS_URL } from '../defines';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 
 const authStore = useAuthStore();
+const emit = defineEmits<{
+  (event: 'show-mail-rules'): void;
+}>();
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
 
@@ -26,6 +31,10 @@ function onLogout() {
   if (detailsEl.value) detailsEl.value.open = false;
   authStore.logout();
 }
+function onShowMailRules() {
+  if (detailsEl.value) detailsEl.value.open = false;
+  emit('show-mail-rules');
+}
 </script>
 
 <template>
@@ -42,6 +51,10 @@ function onLogout() {
         </span>
         <span class="account-menu__email">{{ identityLabel }}</span>
       </div>
+      <button class="account-menu__item" type="button" role="menuitem" @click="onShowMailRules">
+        <ListFilter :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <span>Mail Rules</span>
+      </button>
       <a class="account-menu__item" :href="ACCOUNTS_URL" role="menuitem">
         <Settings :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span>Account Settings</span>

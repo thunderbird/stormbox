@@ -655,6 +655,10 @@ export class Repository {
     return this.call(DB_RPC.SYNC_ENSURE_FOLDER_INDEX, { accountId, folderId, options });
   }
 
+  getMailRules(accountId) {
+    return this.call(DB_RPC.SYNC_GET_MAIL_RULES, { accountId });
+  }
+
   drainOutbox(accountId, limit = 25) {
     return this.call(DB_RPC.SYNC_DRAIN_OUTBOX, { accountId, limit });
   }
