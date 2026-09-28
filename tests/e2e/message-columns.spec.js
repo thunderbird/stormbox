@@ -304,9 +304,11 @@ test.describe('Message list columns e2e', () => {
       const inboxIds = await getEmailMailboxIds(jmap, inboxId);
       expect(inboxIds?.[inbox.id], 'the Inbox row must be untouched').toBe(true);
 
-      // Deleting the open message previews its neighbour, which mounts
-      // after a short preload delay; keep closing until no pane is left
-      // before switching layouts.
+      // Deleting the checked row previews its neighbour once the delete
+      // finalizes, which can trail the server state checked above; wait
+      // for that pane, then keep closing until no pane is left before
+      // switching layouts.
+      await expect(page.locator('.message-view')).toHaveCount(1, { timeout: 15_000 });
       await expect.poll(
         async () => {
           const back = page.locator('.message-view__action--back');

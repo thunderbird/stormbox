@@ -350,7 +350,7 @@ describe('FolderTree starred folders', () => {
     const wrapper = mount(FolderTree);
     await nextTick();
 
-    expect(wrapper.find('.folder-tree__manage').exists()).toBe(true);
+    expect(wrapper.find('[data-manage-folders]').exists()).toBe(true);
     expect(wrapper.findAll('.folder-node__star').length).toBeGreaterThan(0);
   });
 });
@@ -493,7 +493,7 @@ describe('FolderTree shared account sections', () => {
     await nextTick();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    await wrapper.find('.folder-tree__manage').trigger('click');
+    await wrapper.find('[data-manage-folders]').trigger('click');
     await nextTick();
 
     const dialog = wrapper.find('[role="dialog"]');

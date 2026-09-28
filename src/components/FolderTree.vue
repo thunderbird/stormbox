@@ -285,6 +285,7 @@ function manageTags() {
         <button
           type="button"
           class="folder-tree__manage"
+          data-manage-folders
           title="Manage Folders"
           aria-label="Manage Folders"
           @click="showSubscriptionsDialog = true"
@@ -334,6 +335,7 @@ function manageTags() {
         <button
           type="button"
           class="folder-tree__manage"
+          data-manage-tags
           title="Manage Tags"
           aria-label="Manage Tags"
           @click="manageTags"

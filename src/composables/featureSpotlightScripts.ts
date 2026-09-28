@@ -56,7 +56,7 @@ export const SPOTLIGHT_TARGETS = {
   contactsIdentitiesButton: '.contacts__identity-section button',
   contactsList: '.directory-list',
   contactsFirstRow: '.directory-list .contacts__row[data-index="0"]',
-  manageFolders: '.folder-tree__manage',
+  manageFolders: '[data-manage-folders]',
   folderManagerPanel: '.folder-subs__panel',
   folderManagerClose: '.folder-subs__close',
   folderFavorites: '[data-tour="folder-favorites"]',
@@ -64,7 +64,7 @@ export const SPOTLIGHT_TARGETS = {
   userFolders: '[data-tour="user-folders"]',
   folderTree: '.folder-tree',
   starredFilter: '.msg-list__filter--starred',
-  manageTags: '[data-tag-views] .folder-tree__manage',
+  manageTags: '[data-manage-tags]',
 } as const;
 
 const SCHEDULE_MENU_DISABLED_CLASS = 'app-dropdown--disabled';

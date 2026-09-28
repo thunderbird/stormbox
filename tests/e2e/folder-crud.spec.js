@@ -118,7 +118,7 @@ async function readCachedFolderByName(page, name) {
 }
 
 async function openManageDialog(page, searchText) {
-  await page.locator('.folder-tree__manage').click();
+  await page.locator('[data-manage-folders]').click();
   const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   if (searchText) {
@@ -142,7 +142,7 @@ test.describe('Folder create/rename/delete e2e', () => {
     await destroyServerMailboxByName(jmap, RENAMED_NAME);
 
     try {
-      await expect(page.locator('.folder-tree__manage')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('[data-manage-folders]')).toBeVisible({ timeout: 30_000 });
 
       // ---- create (via the manager's "New folder" button) --------------
       let dialog = await openManageDialog(page);

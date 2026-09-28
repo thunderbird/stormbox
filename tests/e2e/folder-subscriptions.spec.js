@@ -93,7 +93,7 @@ test.describe('Folder subscriptions e2e', () => {
       const sidebarNode = page.locator('.folder-node').filter({ hasText: TEST_FOLDER_NAME }).first();
       await expect(sidebarNode).toBeVisible({ timeout: 30_000 });
 
-      await page.locator('.folder-tree__manage').click();
+      await page.locator('[data-manage-folders]').click();
       const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Manage Folders' });
       await expect(dialog).toBeVisible({ timeout: 10_000 });
 

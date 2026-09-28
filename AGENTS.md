@@ -410,79 +410,59 @@ docker exec stormbox-compose curl -s http://127.0.0.1:8787/__status
 
 ## Reviewing a work package
 
-Each work package is implemented with tests, then reviewed by a *different*
-agent before moving on. Approved reviewers: Kimi-K3, Opus 5, or GPT 5.6 Sol
-— not Sonnet.
+Each work package is implemented with tests, then reviewed by a different
+agent before the next package starts.
 
-**OpenRouter and goose are for Kimi-K3 and nothing else.** Every other
-reviewer comes from a Cursor subagent, which costs no OpenRouter credit and
-does not depend on goose's stored key. Reaching for goose to run a GPT or
-Opus review is wrong even when it would work. goose needs
-`source ~/secrets.sh` first, because its own stored credential is stale:
+**Use different model families.** When more than one is available, run
+full reviews with substantially different model families (for example
+Anthropic, OpenAI and Moonshot models) rather than several models from
+the same one. Different families miss different things; a second review
+from the same family mostly repeats the first. The implementing model
+should not review its own work.
 
-```bash
-source ~/secrets.sh >/dev/null 2>&1
-goose run --no-session -q --provider openrouter --model moonshotai/kimi-k3 -t "…"
-```
+**Review through distinct lenses.** Give each reviewer one lens, or a
+short list of them, with the spec, the plan and the diff:
 
-Budget the Kimi runs. A review that resends both diffs plus spec.md and
-plan.md is roughly 61k input tokens *per turn* at $3/M, and an agentic loop
-resends context every turn, so a full review costs dollars rather than
-cents. Two of them died mid-run on the key's spend cap and reported it only
-as `warning: Please check your account with your provider to add more
-credits`, which reads like a transient failure and is not one. Check
-`https://openrouter.ai/api/v1/key` for `limit_remaining` before blaming
-anything else.
+- Spec conformance: every requirement in the package is met, cited by id,
+  and nothing belongs to another package.
+- Correctness: edge cases, error paths, races, offline and reconnect
+  behaviour, and multi-account or shared-folder cases.
+- Consistency: cache, UI and server agree after each mutation (see
+  "E2E coverage for cache + server mutations").
+- Tests: the tests pin the behaviour and would fail if it regressed.
+- Security and privacy: untrusted content, credentials, and data leaving
+  the device.
+- Maintainability: structure, naming, duplication, and comments that
+  follow the rules above.
+- UX/UI and accessibility (see below).
 
-`~/.config/goose/secrets.yaml` holds a **stale** OpenRouter key that no
-longer authenticates, and it does not matter: sourcing `~/secrets.sh` puts a
-working key in the environment and goose prefers that over its stored
-secret. Testing the file's value in isolation reports a revoked key and a
-broken goose, which is wrong — one reviewer went down exactly that path.
-Never print either value while checking; compare status codes.
+**UX/UI review needs a real browser.** Give this lens to a model with
+strong vision, such as Fable 5.1. It must drive the running app in an
+actual browser it can see and interact with, such as the Cursor IDE
+browser or an equivalent, and judge screenshots of real states: light and
+dark themes, narrow and wide layouts, keyboard focus, empty and overflow
+cases. E2E tests or scripted Playwright screenshots alone do not count as
+a UX review.
 
-**Give the reviewer a tree that cannot move.** Copy the worktree, or commit
-first and hand over the ref — do not point a reviewer at files still being
-edited. Reviewing the 004 recipient work, one reviewer's harness printed results that
-contradicted the code it had read minutes earlier, because a second
-reviewer's findings were being applied at the same time; it then spent its
-remaining effort diffing snapshots to work out what it was looking at.
-Findings against a moved file cannot be told apart from findings against a
-defect, so both the reviewer's time and the reader's trust are wasted.
+**Give the reviewer a tree that cannot move.** Commit first and hand over
+the ref, or hand over a copy. Findings against files that are still being
+edited cannot be told apart from findings against real defects.
 
-Reviews have repeatedly been right about substance, including one blocker
-where a phase written after the wrong step reopened the duplicate-delivery
-window, and one case where a claim of mine did not reproduce at all. Treat
-their findings as claims to verify, not as either gospel or noise.
+**Never let a reviewer write to your tree.** Reviews are read-only; say so
+explicitly in the prompt. A reviewer that applies its own fixes or tidies
+up with `git checkout` can destroy uncommitted work and change code under
+a test run that is in progress.
+
+**Treat findings as claims to verify**, not as gospel or noise. Reproduce
+each one before acting on it, and say which ones did not reproduce.
+
+**Run a second round when the first changes anything load-bearing.** Have
+a different family review the fixes; a fix can rest on a false
+assumption that only a fresh reader catches.
 
 **A work package builds what it owns and nothing another one owns.** No
-stand-in, no interim version, no "temporary" UI for a control a later
-package specifies — that work is thrown away by the package that was always
-going to do it properly, and it costs a second rewrite of every test that
-touched it. In spec 004 the recipients package built a warning line under
-the recipient field for unreadable fragments, which was the later pill
-control's job; it was removed rather than shipped. When a requirement in the
-current package seems to need part of a later one, the current package
-delivers the guarantee at the level it owns — a fragment that reaches the
-draft and a send that refuses, not a rendering of it — and the later package
-adds the presentation.
-
-Two rounds are worth the time when the first round changes anything
-load-bearing. Reviewing Phase 1's close-out, Kimi found that
-`transport.abort()` cancelled only what was in flight, so the next call of
-a multi-call operation was issued after teardown began; the fix (a latch)
-was then reviewed by GPT 5.6 Sol, which found that the latch's stated
-justification — "nothing uses the transport after `stop()`" — was false,
-because `_continueBootstrap()` runs detached and can reach
-`openWebSocket()`. Each round found a defect the other did not, and the
-second only existed because the first was acted on.
-
----
-
-**Never let a reviewer write to the tree you are working in.** Hand over a
-commit ref, or a copy. An agent asked to review WP4 read-only instead
-applied its own fixes to the worktree, then ran `git checkout -- .` to tidy
-up — which destroyed a round of uncommitted review fixes and silently
-corrupted a Playwright lane that was running at the time, leaving the two
-browsers executing different versions of the same spec. Commit before
-handing work to any reviewer, and state the prohibition explicitly.
+stand-in or interim version of a control that a later package specifies:
+it is thrown away when that package lands, along with every test written
+against it. When the current package seems to need part of a later one,
+deliver the guarantee at the level the current package owns and leave the
+presentation to the later package.
