@@ -35,7 +35,8 @@ import {
 } from '../../../src/composables/useRepository';
 import { TOUR_SUBJECT, TOUR_TYPING_MS_PER_CHAR } from '../../../src/composables/featureSpotlightScripts';
 import { SPOTLIGHT_TIMING } from '../../../src/composables/useFeatureSpotlight';
-import { FEATURE_BEACONS_STORAGE_KEY } from '../../../src/constants/feature-beacons';
+import { BEACON_IDS, LATEST_BEACON_SEQ } from '../../../src/constants/feature-beacons';
+import type { OnboardingState } from '../../../src/utils/onboarding-state';
 import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
 import type { ContactListRow } from '../../../src/types';
 import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-layout';
@@ -66,9 +67,23 @@ const BEACON_RECTS = {
   },
 };
 
-// A user who dismissed Welcome before this round and has not seen it.
+// The synced settings document the mocked repository serves: onboarding
+// state is part of it (specs/010 §3), so each test seeds it here.
+let seededSettings: Record<string, unknown> = {};
+let repoInstance: ReturnType<typeof makeRepo> | null = null;
+
+/** Null: Welcome never dismissed. */
+function seedOnboarding(state: OnboardingState | null) {
+  seededSettings = state == null ? {} : { onboarding: state };
+}
+
+function onboardingSetting() {
+  return useSettingsStore().get('onboarding');
+}
+
+// A user who dismissed Welcome before any beacon shipped.
 function seedExistingUser() {
-  window.localStorage?.removeItem(WHATS_NEW_KEY);
+  seedOnboarding({ beaconsSeenThrough: 0 });
   beaconLayout = stubBeaconLayout(BEACON_RECTS);
 }
 
@@ -114,7 +129,7 @@ function stubContactListLayout() {
 }
 
 function makeRepo() {
-  let settings: Record<string, unknown> = {};
+  let settings: Record<string, unknown> = { ...seededSettings };
   return {
     subscribe() { return () => {}; },
     async getSettings() {
@@ -253,8 +268,6 @@ function setWindowWidth(width: number, dispatchResize = false) {
   }
 }
 
-const WELCOME_KEY = 'stormbox.welcomeModalDismissed.v1';
-const WHATS_NEW_KEY = 'stormbox.whatsNewSeen.2026-09-compose';
 const FEATURE_TITLES = [
   'Compose with confidence',
   'Send on your schedule',
@@ -312,11 +325,17 @@ function stubReducedMotion(matches: boolean) {
 beforeEach(() => {
   repoContacts = [];
   setActivePinia(createPinia());
-  __setRepositoryForTests(makeRepo());
+  seedOnboarding({ beaconsSeenThrough: LATEST_BEACON_SEQ });
+  // The repository reads the seed when a test first touches it.
+  __setRepositoryForTests(new Proxy({}, {
+    get(_target, key) {
+      repoInstance ??= makeRepo();
+      return Reflect.get(repoInstance, key);
+    },
+  }) as ReturnType<typeof makeRepo>);
+  repoInstance = null;
   document.title = APP_TITLE;
   window.localStorage?.clear();
-  window.localStorage?.setItem('stormbox.welcomeModalDismissed.v1', '1');
-  window.localStorage?.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
   setWindowWidth(1280);
   const authStore = useAuthStore();
   authStore.status = AUTH_STATE.CONNECTED;
@@ -337,11 +356,10 @@ afterEach(() => {
 
 describe('App mail layout', () => {
   it('shows the welcome modal on first login and persists dismissal', async () => {
-    window.localStorage?.removeItem(WELCOME_KEY);
-    window.localStorage?.removeItem(WHATS_NEW_KEY);
+    seedOnboarding(null);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const dialog = wrapper.get('[role="dialog"]');
     expect(dialog.text()).toContain('Welcome to Thundermail');
@@ -366,7 +384,7 @@ describe('App mail layout', () => {
     await wrapper.get('.welcome').trigger('click');
     await nextTick();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
+    expect(onboardingSetting()).toBeNull();
 
     dialog.element.dispatchEvent(new KeyboardEvent('keydown', {
       bubbles: true,
@@ -376,19 +394,18 @@ describe('App mail layout', () => {
     await nextTick();
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
     // Welcome covers the announced features, so beacons never follow it.
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
     expect(wrapper.find('.beacon-menu').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(false);
   });
 
   it('drops the Keyboard Shortcuts section from Welcome in the single-column layout', async () => {
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
     setWindowWidth(600);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
     expect(wrapper.findAll('.feature-card h3')).toHaveLength(6);
@@ -404,24 +421,24 @@ describe('App mail layout', () => {
   });
 
   it('closes the welcome modal with Escape when no spotlight is running', async () => {
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     expect(wrapper.find('.welcome').exists()).toBe(true);
 
     pressEscape();
     await nextTick();
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
   });
 
   it('keeps global shortcuts inactive while the welcome modal is open', async () => {
-    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+    seedOnboarding(null);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const input = wrapper.get('.quick-filter__input').element as HTMLInputElement;
     const focusSpy = vi.spyOn(input, 'focus');
@@ -451,7 +468,7 @@ describe('App mail layout', () => {
   });
 
   it('switching the welcome picker changes the kbd hints and persists the scheme', async () => {
-    window.localStorage?.removeItem('stormbox.welcomeModalDismissed.v1');
+    seedOnboarding(null);
 
     const wrapper = mountApp();
     await flushPromises();
@@ -479,11 +496,11 @@ describe('App mail layout', () => {
 
   it('runs the compose spotlight on a tour-owned empty session and closes it afterwards', async () => {
     vi.useFakeTimers();
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
     const composeStore = useComposeStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     expect(composeStore.sessions).toHaveLength(0);
 
     await showMeButton(wrapper, 'Compose with confidence').trigger('click');
@@ -545,16 +562,16 @@ describe('App mail layout', () => {
     expect(wrapper.find('.welcome--spotlighting').exists()).toBe(false);
     expect(wrapper.find('[data-testid="spotlight-overlay"]').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
+    expect(onboardingSetting()).toBeNull();
   });
 
   it('cancels a running spotlight with Escape before closing the modal', async () => {
     vi.useFakeTimers();
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
     const composeStore = useComposeStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await showMeButton(wrapper, 'Smarter recipients').trigger('click');
     await flushPromises();
@@ -575,11 +592,11 @@ describe('App mail layout', () => {
 
   it('leaves a session the user typed into open after the compose spotlight', async () => {
     vi.useFakeTimers();
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
     const composeStore = useComposeStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await showMeButton(wrapper, 'Attachments and clipboard').trigger('click');
     await flushPromises();
@@ -599,11 +616,11 @@ describe('App mail layout', () => {
   // in its own session and hands the user's draft back afterwards.
   it('leaves an open draft untouched during the compose spotlight and re-expands it afterwards', async () => {
     vi.useFakeTimers();
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
     const composeStore = useComposeStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     const userSessionId = composeStore.open({ subject: 'Quarterly numbers' });
     expect(composeStore.activeSession?.id).toBe(userSessionId);
 
@@ -632,10 +649,10 @@ describe('App mail layout', () => {
   it('switches to Contacts for the contacts spotlight and restores the previous space', async () => {
     vi.useFakeTimers();
     restoreContactListLayout = stubContactListLayout();
-    window.localStorage?.removeItem(WELCOME_KEY);
+    seedOnboarding(null);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     const contactsButton = () => wrapper.get('.app-spaces [aria-label="Contacts"]');
     expect(contactsButton().attributes('aria-pressed')).toBe('false');
 
@@ -683,10 +700,10 @@ describe('App mail layout', () => {
     const restoreMatchMedia = stubReducedMotion(true);
     try {
       vi.useFakeTimers();
-      window.localStorage?.removeItem(WELCOME_KEY);
+      seedOnboarding(null);
 
       const wrapper = mountApp();
-      await nextTick();
+      await flushPromises();
       expect(wrapper.find('.welcome--reduced-motion').exists()).toBe(true);
 
       await showMeButton(wrapper, 'Organize your mail').trigger('click');
@@ -718,12 +735,10 @@ describe('App mail layout', () => {
 
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('9 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe(`${BEACON_IDS.length} new`);
     expect(wrapper.findAll('.feature-beacons__dot').map((dot) => dot.attributes('data-beacon')))
       .toEqual(['newMessage', 'contacts', 'keyboardShortcuts']);
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
-    expect(JSON.parse(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)!))
-      .toEqual({ seen: [], sessions: 1 });
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: 0 });
 
     await wrapper.get('[data-beacon="newMessage"]').trigger('click');
     await settleBeacons();
@@ -734,12 +749,13 @@ describe('App mail layout', () => {
     await card.get('.feature-beacons__got-it').trigger('click');
     await settleBeacons();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe(`${BEACON_IDS.length - 1} new`);
     expect(wrapper.find('[data-beacon="newMessage"]').exists()).toBe(false);
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
+    // newMessage is seq 1, so the mark advances rather than listing it.
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: 1 });
   });
 
-  it('Dismiss all finishes the round: flag written, pill and dots gone', async () => {
+  it('Dismiss all marks every beacon seen with one number: pill and dots gone', async () => {
     seedExistingUser();
 
     const wrapper = mountApp();
@@ -751,24 +767,23 @@ describe('App mail layout', () => {
     // action that a menu could not.
     expect(wrapper.find('.beacon-menu [role="menu"]').exists()).toBe(false);
     expect(wrapper.get('.beacon-menu__popover').attributes('aria-label')).toBe('New features');
-    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(9);
+    expect(wrapper.findAll('.beacon-menu__list .beacon-menu__item')).toHaveLength(BEACON_IDS.length);
 
     await wrapper.get('.beacon-menu__dismiss').trigger('click');
     await settleBeacons();
 
     expect(wrapper.find('.beacon-menu').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(false);
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
-    expect(window.localStorage.getItem(FEATURE_BEACONS_STORAGE_KEY)).toBeNull();
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
 
-    // A reload with the flag set shows nothing.
+    // A reload with everything seen shows nothing.
     const second = mountApp();
     await settleBeacons();
     expect(second.find('.beacon-menu').exists()).toBe(false);
     expect(second.find('[role="dialog"]').exists()).toBe(false);
   });
 
-  it('shows no onboarding UI once both keys are set', async () => {
+  it('shows no onboarding UI once every beacon is seen', async () => {
     const wrapper = mountApp();
     await settleBeacons();
 
@@ -963,15 +978,14 @@ describe('App mail layout', () => {
     expect(wrapper.find('.welcome').exists()).toBe(false);
     expect(wrapper.find('.feature-beacons').exists()).toBe(true);
     // Opening Settings used the gear, so only the shortcuts beacon retired.
-    expect(wrapper.get('.beacon-menu__pill').text()).toBe('8 new');
-    expect(useFeatureBeaconsStore().seen).toEqual(['keyboardShortcuts']);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBeNull();
+    expect(wrapper.get('.beacon-menu__pill').text()).toBe(`${BEACON_IDS.length - 1} new`);
+    // keyboardShortcuts (seq 8) was seen out of order, above the mark.
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: 0, beaconsSeenAlso: [8] });
   });
 
-  it('reopens Welcome from Settings without touching either key, and not from the account menu', async () => {
+  it('reopens Welcome from Settings without touching onboarding state, and not from the account menu', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
 
     (wrapper.get('.account-menu').element as HTMLDetailsElement).open = true;
@@ -987,8 +1001,7 @@ describe('App mail layout', () => {
     expect(document.body.querySelector('[data-settings-dialog]')).toBeNull();
     expect(wrapper.get('[role="dialog"]').text()).toContain('Welcome to Thundermail');
     expect(wrapper.find('.beacon-menu').exists()).toBe(false);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe('1');
-    expect(window.localStorage.getItem(WHATS_NEW_KEY)).toBe('1');
+    expect(onboardingSetting()).toEqual({ beaconsSeenThrough: LATEST_BEACON_SEQ });
   });
 
   it('filters messages from the shared header box in the Mail space', async () => {
@@ -996,7 +1009,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.quick-filter').exists()).toBe(true);
     expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell').element.firstElementChild);
@@ -1050,7 +1063,7 @@ describe('App mail layout', () => {
 
   it('clears the shared query whenever the active space changes', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('.quick-filter__input').setValue('mail term');
     expect(wrapper.get('.msg-list').attributes('data-filter')).toBe('mail term');
@@ -1160,7 +1173,7 @@ describe('App mail layout', () => {
     const mailStore = useMailStore();
     mailStore.selectedMessageId = 42;
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
@@ -1174,7 +1187,7 @@ describe('App mail layout', () => {
 
   it('describes the shared filter for the active space', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     const input = wrapper.get('.quick-filter__input');
 
     expect(input.attributes('placeholder')).toBe('Filter messages');
@@ -1200,7 +1213,7 @@ describe('App mail layout', () => {
 
   it('focuses and selects the quick filter with Ctrl+K', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('.quick-filter__input').setValue('alice');
     const input = wrapper.get('.quick-filter__input').element as HTMLInputElement;
@@ -1232,7 +1245,7 @@ describe('App mail layout', () => {
 
   it('renders the Mail brand with the Thundermail bolt glyph', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const brand = wrapper.get('.quick-filter__brand');
     expect(brand.get('.quick-filter__wordmark').text()).toBe('Mail');
@@ -1243,7 +1256,7 @@ describe('App mail layout', () => {
 
   it('opens an app drawer from the app switcher with Mail current and the other apps linked', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const drawer = wrapper.get('.quick-filter__actions .app-drawer');
     expect(drawer.get('.app-drawer__button').attributes('aria-label')).toBe('Open app drawer');
@@ -1403,7 +1416,7 @@ describe('App mail layout', () => {
 
   it('closes the app drawer when clicking outside it', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const drawer = wrapper.get('.app-drawer').element as HTMLDetailsElement;
     drawer.open = true;
@@ -1436,7 +1449,7 @@ describe('App mail layout', () => {
     authStore.username = 'alice@example.com';
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const avatarMenu = wrapper.get('.account-menu');
     expect(avatarMenu.get('.account-menu__button').attributes('aria-label')).toBe('Open account menu');
@@ -1456,7 +1469,7 @@ describe('App mail layout', () => {
 
   it('hides the message view and expands the message list when nothing is selected', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.message-view').exists()).toBe(false);
     expect(wrapper.find('.shell').classes()).toContain('shell--message-view-hidden');
@@ -1472,7 +1485,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.message-view').exists()).toBe(true);
     expect(wrapper.find('.shell').classes()).not.toContain('shell--message-view-hidden');
@@ -1496,7 +1509,7 @@ describe('App mail layout', () => {
 
   it('lets the spaces toolbar hide and restore the folder list', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('[aria-label="Hide folder list"]').trigger('click');
     await nextTick();
@@ -1652,7 +1665,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
 
     setWindowWidth(1023, true);
@@ -1675,7 +1688,7 @@ describe('App mail layout', () => {
     const mailStore = useMailStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     mailStore.selectedMessageId = 42;
     await nextTick();
@@ -1702,7 +1715,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
     expect(wrapper.find('.msg-list').exists()).toBe(true);
@@ -1724,7 +1737,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--message-list-hidden');
     expect(wrapper.find('.msg-list').exists()).toBe(false);
@@ -1737,7 +1750,7 @@ describe('App mail layout', () => {
     mailStore.selectedIds = new Set([7]);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--message-view-hidden');
     expect(wrapper.find('.shell').classes()).not.toContain('shell--message-list-hidden');
@@ -1749,7 +1762,7 @@ describe('App mail layout', () => {
     setWindowWidth(639);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
     expect(wrapper.find('.sidebar-slot').classes()).toContain('sidebar-slot--hidden');
@@ -1770,7 +1783,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
 
     await wrapper.get('[aria-label="Show folder list"]').trigger('click');
@@ -1792,7 +1805,7 @@ describe('App mail layout', () => {
     const mailStore = useMailStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     mailStore.selectedMessageId = 42;
     await nextTick();
@@ -1816,7 +1829,7 @@ describe('App mail layout', () => {
     const mailStore = useMailStore();
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     mailStore.selectedMessageId = 42;
     await nextTick();
@@ -1837,7 +1850,7 @@ describe('App mail layout', () => {
     setWindowWidth(1024);
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
     expect(wrapper.find('.sidebar').exists()).toBe(true);
@@ -1846,7 +1859,7 @@ describe('App mail layout', () => {
 
   it('resizes the folder column by dragging its border', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     const handle = wrapper.get('[aria-label="Resize folder list"]').element;
     handle.dispatchEvent(makePointerEvent('pointerdown', 200));
@@ -1866,7 +1879,7 @@ describe('App mail layout', () => {
 
   it('resizes and persists the folder column from its keyboard separator', async () => {
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     await wrapper.get('[aria-label="Resize folder list"]')
       .trigger('keydown', { key: 'ArrowRight', shiftKey: true });
@@ -1883,7 +1896,7 @@ describe('App mail layout', () => {
     mailStore.selectedMessageId = 42;
 
     const wrapper = mountApp();
-    await nextTick();
+    await flushPromises();
 
     // One column: its handle sits between it and the reading pane, and
     // the shell's columns-area width is that column plus the handle.

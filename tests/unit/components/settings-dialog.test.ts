@@ -13,7 +13,7 @@ vi.mock('../../../src/services/auth', () => ({
 }));
 
 import App from '../../../src/App.vue';
-import { BEACON_IDS } from '../../../src/constants/feature-beacons';
+import { BEACON_IDS, LATEST_BEACON_SEQ } from '../../../src/constants/feature-beacons';
 import { AUTH_STATE } from '../../../src/constants/states';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { useComposeStore } from '../../../src/stores/compose-store';
@@ -26,7 +26,8 @@ import {
 } from '../../../src/composables/useRepository';
 
 function makeRepo() {
-  let settings: Record<string, unknown> = {};
+  // Onboarding done: Welcome dismissed and every beacon seen.
+  let settings: Record<string, unknown> = { onboarding: { beaconsSeenThrough: LATEST_BEACON_SEQ } };
   const doc = () => ({
     doc: {
       owner: 'stormbox', documentType: 'user-settings', version: 1, settings, updatedAt: {},
@@ -89,8 +90,6 @@ beforeEach(() => {
   setActivePinia(createPinia());
   __setRepositoryForTests(makeRepo());
   localStorage.clear();
-  localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-  localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
   matchesLight = false;
   vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -185,7 +184,7 @@ describe('settings gear and dialog', () => {
     expect(panel.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('staff can restart a finished beacon round from Settings, which closes to show it', async () => {
+  it('staff can mark every beacon unseen again from Settings, which closes to show them', async () => {
     useAuthStore().recoveryEmail = 'boss@thunderbird.net';
     const wrapper = mountApp();
     await flushPromises();
@@ -206,9 +205,8 @@ describe('settings gear and dialog', () => {
 
     expect(dialog()).toBeNull();
     expect(beaconStore.enabled).toBe(true);
-    expect(beaconStore.sessions).toBe(1);
     expect(beaconStore.count).toBe(BEACON_IDS.length);
-    expect(localStorage.getItem('stormbox.whatsNewSeen.2026-09-compose')).toBeNull();
+    expect(useSettingsStore().get('onboarding')).toEqual({ beaconsSeenThrough: 0 });
     expect(wrapper.get('.beacon-menu').text()).toContain(`${BEACON_IDS.length} new`);
   });
 

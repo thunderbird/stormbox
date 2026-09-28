@@ -49,15 +49,20 @@ that mirror.
 | R-SET.13 🟩 Done | The browser may apply the last theme before authentication, but the boot mirror shall not seed a different authenticated account. |
 | R-SET.14 🟩 Done | Pre-authentication changes shall be tracked separately and account-safely, and the legacy `stormbox.theme.v1` value shall migrate without becoming an unmarked cross-account seed. |
 | R-SET.15 🟩 Done | The Send Later time zone shall use the same validated setting locally and across FileNode-capable devices; changing it shall not reinterpret already accepted absolute schedule targets. |
+| R-SET.16 🟩 Done | Keys shall be organized by merge unit: one key per concern that is edited independently, since a key is the unit of last-write-wins; a structured value only for data that is always read and written as a whole; no catch-all key holding unrelated values. Key names are camelCase and name their domain (`messageTags`, `onboarding`). |
+| R-SET.17 🟩 Done | The store shall expose the connected account whose settings have been pulled this session (`readyAccountId`), set once the pull completes or fails, so features that must not act on stale local values (onboarding, `specs/010-onboarding/spec.md` OB-6.1) can wait for it. |
 
 ## Current registry
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `theme` | `light \| dark \| system` | `system` | Color scheme; `system` follows the OS preference. |
+| `palette` | `bolt \| classic` | `classic` | Accent and surface palette applied on top of the color scheme (staff setting). |
+| `shortcutScheme` | `web \| thunderbird` | `web` | Keyboard shortcut table the mail UI binds. |
 | `primaryIdentityRemoteId` | `string \| null` | `null` | Client-selected JMAP Identity used as the default From address. |
 | `timeZone` | IANA time-zone string | detected IANA zone, else `UTC` | Wall-time zone used by Send Later presets and custom scheduling. |
 | `messageTags` | `Array<{ keyword, name, color, order }>` | Thunderbird's five default tags | Tag definitions over JMAP keywords (`specs/011-message-keywords/spec.md` §6). One key: two devices editing different tags at once resolve to the later writer's whole list. |
+| `onboarding` | `{ beaconsSeenThrough: number, beaconsSeenAlso?: number[] } \| null` | `null` | Welcome and feature-beacon state (`specs/010-onboarding/spec.md` §6). `null` until Welcome is first dismissed; then every beacon with `seq` ≤ `beaconsSeenThrough`, plus those listed in `beaconsSeenAlso`, is seen. One key: Welcome and beacon dismissals are always read and written together. |
 
 ## Non-goals
 

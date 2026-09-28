@@ -104,10 +104,6 @@ export const test = base.extend({
       ignoreHTTPSErrors: true,
     });
     const page = await ctx.newPage();
-    await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-    });
     // The console buffer lives on the page object so per-test
     // beforeEach can reset it without rewiring listeners.
     const consoleLines = [];

@@ -62,8 +62,6 @@ test.describe('Sidebar layout', () => {
   test('keeps the New Message button inside the folder-list header at minimum width', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 700 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -142,10 +140,6 @@ test.describe('Sidebar layout', () => {
 
   test('keeps the spaces rail bottom actions inside the dynamic viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 700 });
-    await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-    });
 
     await loginViaOidc(page);
     await waitForFolderTreeReady(page);
@@ -212,10 +206,6 @@ test.describe('Sidebar layout', () => {
 
   test('opens the address-book rail as a vertical drawer in Contacts below 640px', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
-    });
 
     await loginViaOidc(page);
     await waitForFolderTreeReady(page);
@@ -295,8 +285,6 @@ test.describe('Sidebar layout', () => {
   test('keeps the 640px boundary in a two-pane mail layout without clipping', async ({ page }) => {
     await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -352,8 +340,6 @@ test.describe('Sidebar layout', () => {
   test('lets the message view fill the single-column layout below 640px', async ({ page }) => {
     await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -410,8 +396,6 @@ test.describe('Sidebar layout', () => {
   test('keeps the message view from causing page overflow below 300px column width', async ({ page }) => {
     await page.setViewportSize({ width: 340, height: 852 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -510,8 +494,6 @@ test.describe('Sidebar layout', () => {
 
     await page.setViewportSize({ width: 639, height: 852 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
@@ -577,8 +559,6 @@ test.describe('Sidebar layout', () => {
 
     await page.setViewportSize({ width: 640, height: 852 });
     await page.addInitScript(() => {
-      window.localStorage.setItem('stormbox.welcomeModalDismissed.v1', '1');
-      window.localStorage.setItem('stormbox.whatsNewSeen.2026-09-compose', '1');
       window.localStorage.setItem(
         'stormbox.mailColumnWidths.v1',
         JSON.stringify({ folderList: 180, messageList: 360 }),
