@@ -40,12 +40,39 @@ The `$flagged` keyword (IMAP `\Flagged`). "Star" is the user-facing word;
 
 ### System keywords
 
-Keywords the client manages on the user's behalf and never shows as tags:
-`$seen`, `$flagged`, `$draft`, `$answered`, `$forwarded`, `$junk`,
-`$notjunk`, `$phishing`, `$recent`, `$mdnsent`, `$deleted`, `$has_cal`,
-the RFC 8621 §7 submission markers `$submitpending` and `$submitted`,
-and the RFC 9979 §3 flag-color bits `$mailflagbit0`–`$mailflagbit2`
-(`SYSTEM_KEYWORDS` in `src/utils/message-tags.ts`).
+Keywords the tag UI hides (`SYSTEM_KEYWORDS` in
+`src/utils/message-tags.ts`), in two tiers.
+
+**Reserved** keywords are ones the client reads or writes itself and are
+never tags, even with a definition (`RESERVED_KEYWORDS`): `$seen`,
+`$flagged` and the RFC 9979 §3 flag-color bits
+`$mailflagbit0`–`$mailflagbit2`, which qualify the star; `$draft`,
+`$answered`, `$forwarded`, `$junk`, `$notjunk`; and the remaining IMAP
+system flags `$recent` and `$deleted`.
+
+**Hidden** keywords are not shown until the user defines a tag with that
+exact keyword, after which it renders and toggles like any other tag.
+Until then nothing in the UI lists, suggests or counts them, including
+the tag manager's "keywords on your messages" list:
+
+- Every other keyword in the IANA "IMAP and JMAP Keywords" registry,
+  which Stalwart models as its built-in keywords: `$mdnsent`,
+  `$submitpending`, `$submitted`, `$phishing`, `$important` (RFC 8457),
+  and the rest of the RFC 9979 §3 set.
+- Status markers other clients and servers write to shared accounts:
+  the unprefixed junk-classifier keywords `junk`, `nonjunk`, `notjunk`,
+  `nojunk` and `junkrecorded` (Thunderbird, Roundcube, Claws, Apple
+  Mail) and Gmail's `$notphishing`; Evolution's `$has_cal` and
+  `$has_note`; KMail's `$attachment`, `$encrypted`, `$error`,
+  `$ignored`, `$invitation`, `$queued`, `$replied`, `$sent`, `$signed`,
+  `$todo` and `$watched`; Bulwark's `$pinned`; `$readreceipt` and
+  `$notdelivered`; and Cyrus's `$restored`, `$snoozed` and
+  `$sievefailed`.
+
+A derived keyword (MK-6.3) keeps a leading `$` and avoids only the
+reserved keywords, so naming a tag `NonJunk` or `$todo` defines `nonjunk`
+or `$todo`, and naming one `$seen` defines `$seen2`. A stored definition over a
+reserved keyword is kept in the setting but never offered as a tag.
 
 ### Tag
 
@@ -130,9 +157,9 @@ one transaction by `replaceMessageKeywordsMany`.
 |:--|:--|
 | MK-6.1 🟩 Implemented | Stormbox shall ship the five Thunderbird default tags with Thunderbird's keywords and colors: `$label1` Important `#FF0000`, `$label2` Work `#FF9900`, `$label3` Personal `#009900`, `$label4` To Do `#3333FF`, `$label5` Later `#993399`. |
 | MK-6.2 🟩 Implemented | Tag definitions (`keyword`, `name`, `color`, `order`) shall live in universal settings (`specs/006-user-settings/spec.md`) under one `messageTags` key so they follow the user across devices. One key means last-write-wins at list granularity: two devices editing different tags at once resolve to the later writer. Accepted for simplicity. The list is capped at 64 definitions: Stalwart's per-account keyword cache holds 99 distinct custom keywords, and room is left for keywords other clients set. |
-| MK-6.3 🟩 Implemented | Display names shall accept all languages, spaces, punctuation and emoji, trimmed and limited to 100 Unicode code points; blank names, controls, line breaks and lone surrogates are rejected with visible validation, never silently truncated. A new keyword shall be derived once: remove leading `$`, lowercase, encode unsafe characters and `=` as lowercase UTF-8 `=xx` escapes, cap at 128 ASCII bytes (Stalwart's limit), and disambiguate against existing and system keywords with a numeric suffix. A name consisting only of `$` uses `tag` as its base. Keywords are immutable once created; renaming changes only the display name. New tags take the next unused color from the fixed palette. |
+| MK-6.3 🟩 Implemented | Display names shall accept all languages, spaces, punctuation and emoji, trimmed and limited to 100 Unicode code points; blank names, controls, line breaks and lone surrogates are rejected with visible validation, never silently truncated. A new keyword shall be derived once, as Thunderbird's `nsMsgTagService::AddTag` does: keep a leading `$`, lowercase ASCII letters only, encode spaces, `=`, `()[]{}%*"\<>;&` and every non-ASCII character as lowercase `=xx` escapes of the name's own UTF-8 bytes, cap at 128 ASCII bytes (Stalwart's limit), and disambiguate against existing and reserved keywords with a numeric suffix. Keywords are immutable once created; renaming changes only the display name. New tags take the next unused color from the fixed palette. |
 | MK-6.4 🟩 Implemented | Deleting a tag definition shall remove the definition only. Messages carrying the keyword keep it and render it as an undefined tag named from the keyword; stripping the keyword from messages is a separate, explicit action. The tag manager lists the keywords found on cached messages that no definition names (`message.listKeywords`), each adoptable as a tag with its keyword kept as-is, so tags set by another client or a Sieve script can be given a name and color. |
-| MK-6.5 🟩 Implemented | Any non-system keyword on a message shall be visible in the row and in the message view, using its definition when one exists and a neutral rendering named from the keyword otherwise, so tags set in Nextcloud Mail or Thunderbird custom tags are never invisible. A row shows them as Thunderbird's cards-view tag stack (`thread-card-tags`): up to three overlapping tag icons in the tags' colors, defined tags first in definition order, later icons drawn over earlier ones, then `+N`; the stack's label names every tag. The stack is the row's tag control — the first item of the hover overlay, visible at rest while the row is tagged and as a hollow tag icon on hover otherwise — and clicking it opens the tag menu. The message view shows named chips. System keywords include the RFC 8621 set, `$submitpending`/`$submitted`, and the RFC 9979 flag-color bits `$mailflagbit0–2`, which qualify the star rather than tag the message. |
+| MK-6.5 🟩 Implemented | Any non-system keyword on a message shall be visible in the row and in the message view, using its definition when one exists and a neutral rendering named from the keyword otherwise, so tags set in Nextcloud Mail or Thunderbird custom tags are never invisible. A row shows them as Thunderbird's cards-view tag stack (`thread-card-tags`): up to three overlapping tag icons in the tags' colors, defined tags first in definition order, later icons drawn over earlier ones, then `+N`; the stack's label names every tag. The stack is the row's tag control — the first item of the hover overlay, visible at rest while the row is tagged and as a hollow tag icon on hover otherwise — and clicking it opens the tag menu. The message view shows named chips. Hidden system keywords (see "System keywords" above) render only once a definition names them, and reserved ones never do, whatever their case. |
 | MK-6.6 🟩 Implemented | Tags shall be set and cleared through `setKeywordsMany`, from one tag menu reached three ways: the row's tag stack (a popover, since a virtualized row cannot host a `<details>`), a Tag action in the multi-select toolbar (a dropdown; overflowing into More opens the same popover), and the open message's tag stack in the reading toolbar after Forward (the header lists its tags as removable chips), which is also how a single message is tagged below the hover breakpoint. The menu offers Remove All Tags (while any target carries one), every defined tag as a tri-state checkbox over the targets (checked, mixed, unchecked; toggling adds unless every target has it), the targets' keywords without a definition under Other keywords, and Manage Tags…, which opens the tag manager (MK-6.7), where new tags are defined. It opens with focus on its first item; while it has focus, 1–9 toggle the tag with that digit, 0 removes every tag, as in the list (MK-4.2), and T closes it. It is as tall as its contents, scrolling only when the viewport cannot fit it above or below its anchor. Actions apply at once and keep the menu open. The message list has no tag filter; the sidebar's tag views (MK-3.4) list a tag's messages. |
 | MK-6.7 🟩 Implemented | Tags shall be managed in their own modal, the tag manager, reached from the sidebar's Tags heading and from every tag menu's Manage tags…; the Settings dialog does not host it. It lists the definitions in order with color (native color input), name (committed on blur or Enter), the immutable keyword, the digit that toggles it, move up/down and delete, under a New Tag form at the top that previews the derived keyword; focus opens in that form's name field. Definitions stay in the `messageTags` setting (specs/006). |
 
@@ -238,7 +265,10 @@ one transaction by `replaceMessageKeywordsMany`.
 - Per-folder or per-account tag definitions; tags are per user.
 - Reproducing Thunderbird's legacy modified-UTF-7 keyword encoding;
   new keywords use lowercase UTF-8 hex escapes as described in MK-6.3.
-- `$important` handling beyond rendering it as an ordinary tag.
+- Presenting `$important` as an importance marker; it is a hidden system
+  keyword unless the user defines a tag over it.
+- Aliasing Evolution's `$labelimportant`…`$labellater` onto the default
+  `$label1`–`$label5` tags.
 - Stripping a deleted tag's keyword from the messages that carry it.
 - Managing the Sieve scripts that could set tags on delivery (RFC 5232
   `imap4flags`; Stalwart exposes them over RFC 9661). Keywords a script

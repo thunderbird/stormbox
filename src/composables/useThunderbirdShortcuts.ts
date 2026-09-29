@@ -25,7 +25,7 @@ import {
   isComposingKeyEvent,
   isEditableTarget,
 } from '../utils/keyboard';
-import { sortTagDefinitions } from '../utils/message-tags';
+import { visibleTagDefinitions } from '../utils/message-tags';
 import { isScheduledMessage } from '../utils/scheduled-message';
 
 export interface UseThunderbirdShortcutsOptions {
@@ -252,7 +252,7 @@ export function useThunderbirdShortcuts({
           void mailStore.clearTagsMany(targetIds, source);
           return;
         }
-        const definition = sortTagDefinitions(settingsStore.get('messageTags'))[Number(binding.key) - 1];
+        const definition = visibleTagDefinitions(settingsStore.get('messageTags'))[Number(binding.key) - 1];
         if (!definition) return;
         void mailStore.toggleTagMany(targetIds, definition.keyword, source);
         return;

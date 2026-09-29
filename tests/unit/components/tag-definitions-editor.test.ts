@@ -217,6 +217,8 @@ describe('TagDefinitionsEditor', () => {
   it('offers keywords found on messages that no tag names, and adopts one as-is', async () => {
     keywordsOnMessages = [
       { keyword: '$seen', count: 40 },
+      { keyword: 'NonJunk', count: 30 },
+      { keyword: '$muted', count: 20 },
       { keyword: '$label2', count: 3 },
       { keyword: 'receipts', count: 2 },
       { keyword: 'Newsletter', count: 1 },
@@ -234,5 +236,15 @@ describe('TagDefinitionsEditor', () => {
       keyword: 'newsletter', name: 'Newsletter', order: 5,
     });
     expect(discovered.findAll('.tag-editor__keyword').map((code) => code.text())).toEqual(['receipts']);
+  });
+
+  it('defines a hidden system keyword only when the typed name spells it exactly', async () => {
+    const wrapper = await mountSection();
+    await wrapper.find('[data-tag-editor-name]').setValue('$Todo');
+    expect(wrapper.find('#tag-editor-new-keyword').text()).toBe('Keyword $todo');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(useSettingsStore().get('messageTags').at(-1)).toMatchObject({ keyword: '$todo', name: '$Todo' });
+    expect(tagKeywords(wrapper).at(-1)).toBe('$todo');
   });
 });

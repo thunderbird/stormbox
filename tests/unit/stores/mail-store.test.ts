@@ -1415,6 +1415,33 @@ describe('tags (setTagsMany over setKeywordsMany)', () => {
     });
   });
 
+  it('treats a hidden system keyword as a tag once a definition names it', async () => {
+    const { mailStore, inserts } = await seed([
+      makeRow(1, { keywords_json: '{"NonJunk":true,"$seen":true}' }),
+      makeRow(2, { keywords_json: '{"$seen":true}' }),
+    ]);
+
+    expect(await mailStore.setTagsMany([2], { add: ['nonjunk'] })).toBe(0);
+    expect(await mailStore.clearTagsMany([1])).toBe(0);
+    expect(inserts).toHaveLength(0);
+
+    const settingsStore = useSettingsStore();
+    await settingsStore.update({
+      messageTags: [
+        ...settingsStore.get('messageTags'),
+        { keyword: 'nonjunk', name: 'Not junk', color: '#009900', order: 5 },
+        { keyword: '$seen', name: 'Read', color: '#FF0000', order: 6 },
+      ],
+    });
+
+    await mailStore.toggleTagMany([1], 'nonjunk');
+    const toggled = JSON.parse(inserts[0].requestJson);
+    expect(toggled).toMatchObject({ messageIds: [1], add: [] });
+    expect(new Set(toggled.remove)).toEqual(new Set(['nonjunk', 'NonJunk']));
+    expect(await mailStore.setTagsMany([2], { add: ['nonjunk', '$seen'] })).toBe(1);
+    expect(JSON.parse(inserts[1].requestJson)).toMatchObject({ messageIds: [2], add: ['nonjunk'] });
+  });
+
   it('toggleTagMany removes the tag only when every target carries it', async () => {
     const { mailStore, inserts } = await seed([
       makeRow(1, { keywords_json: '{"work":true}' }),

@@ -4,13 +4,13 @@ import { useSettingsStore } from '../stores/settings-store';
 import {
   deriveTagKeyword,
   MAX_TAG_DEFINITIONS,
+  isReservedKeyword,
   isValidKeyword,
-  isSystemKeyword,
   nextTagColor,
   normalizeKeyword,
   resolveMessageTags,
-  sortTagDefinitions,
   tagNameError,
+  visibleTagDefinitions,
   type MessageTagDefinition,
   type ResolvedTag,
 } from '../utils/message-tags';
@@ -24,7 +24,7 @@ export function useMessageTags() {
   const settingsStore = useSettingsStore();
 
   const definitions = computed<MessageTagDefinition[]>(() => (
-    sortTagDefinitions(settingsStore.get('messageTags'))
+    visibleTagDefinitions(settingsStore.get('messageTags'))
   ));
 
   const canCreate = computed(() => definitions.value.length < MAX_TAG_DEFINITIONS);
@@ -68,7 +68,7 @@ export function useMessageTags() {
     color: string = nextTagColor(definitions.value),
   ): Promise<MessageTagDefinition | null> {
     const normalized = normalizeKeyword(keyword);
-    if (!canCreate.value || !isValidKeyword(normalized) || isSystemKeyword(normalized)) return null;
+    if (!canCreate.value || !isValidKeyword(normalized) || isReservedKeyword(normalized)) return null;
     if (definitions.value.some((d) => normalizeKeyword(d.keyword) === normalized)) return null;
     const error = tagNameError(name);
     if (error) throw new Error(error);

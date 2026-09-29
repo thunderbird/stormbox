@@ -5,7 +5,9 @@ import {
   DEFAULT_MESSAGE_TAGS,
   deriveTagKeyword,
   isMessageTagDefinitionList,
+  isReservedKeyword,
   isSystemKeyword,
+  isTagKeyword,
   isValidKeyword,
   MAX_KEYWORD_LENGTH,
   MAX_TAG_DEFINITIONS,
@@ -16,6 +18,8 @@ import {
   sortTagDefinitions,
   tagKeywordsOf,
   tagNameError,
+  tagPresenceIndex,
+  visibleTagDefinitions,
 } from '../../../src/utils/message-tags';
 
 describe('randomTagColor', () => {
@@ -70,13 +74,29 @@ describe('deriveTagKeyword (MK-6.3)', () => {
     expect(deriveTagKeyword('=e6')).toBe('=3de6');
   });
 
-  it('never yields a registered-looking or system keyword, in either spelling', () => {
-    expect(deriveTagKeyword('$seen')).toBe('seen2');
-    expect(deriveTagKeyword('flagged')).toBe('flagged2');
-    expect(deriveTagKeyword('$$Work')).toBe('work');
-    expect(deriveTagKeyword('$')).toBe('tag');
+  it('lowercases only ASCII and escapes } as Thunderbird does', () => {
+    expect(deriveTagKeyword('CAFÉ')).toBe('caf=c3=89');
+    expect(deriveTagKeyword('Ωmega')).toBe('=ce=a9mega');
+    expect(deriveTagKeyword('İstanbul')).toBe('=c4=b0stanbul');
+    expect(deriveTagKeyword('a}b')).toBe('a=7db');
+  });
+
+  it('keeps a leading $, as Thunderbird does, but never yields a reserved keyword', () => {
+    expect(deriveTagKeyword('$seen')).toBe('$seen2');
+    expect(deriveTagKeyword('$Flagged')).toBe('$flagged2');
+    expect(deriveTagKeyword('Seen')).toBe('seen');
+    expect(deriveTagKeyword('$$Work')).toBe('$$work');
+    expect(deriveTagKeyword('$')).toBe('$');
     expect(deriveTagKeyword('   ')).toBeNull();
     expect(deriveTagKeyword('   ', ['seen'])).toBeNull();
+  });
+
+  it('yields a hidden system keyword when the name spells it', () => {
+    expect(deriveTagKeyword('NonJunk')).toBe('nonjunk');
+    expect(deriveTagKeyword('Junk')).toBe('junk');
+    expect(deriveTagKeyword(' $Todo ')).toBe('$todo');
+    expect(deriveTagKeyword('$has_note')).toBe('$has_note');
+    expect(deriveTagKeyword('$todo', ['$TODO'])).toBe('$todo2');
   });
 
   it('disambiguates against existing keywords case-insensitively', () => {
@@ -128,11 +148,69 @@ describe('tagKeywordsOf', () => {
     expect(tagKeywordsOf(null)).toEqual([]);
   });
 
-  it('treats the flag-color and submission keywords as system keywords', () => {
-    expect(isSystemKeyword('$MailFlagBit0')).toBe(true);
-    expect(isSystemKeyword('$submitpending')).toBe(true);
-    expect(isSystemKeyword('$important')).toBe(false);
-    expect(tagKeywordsOf('{"$mailflagbit1":true,"$important":true}')).toEqual(['$important']);
+  it('treats every IANA-registered keyword as a system keyword', () => {
+    const registered = [
+      '$MDNSent', '$Forwarded', '$SubmitPending', '$Submitted', '$Junk', '$NotJunk', '$Phishing',
+      '$Important', '$draft', '$seen', '$flagged', '$answered', '$recent', '$autosent',
+      '$canunsubscribe', '$followed', '$hasattachment', '$hasmemo', '$hasnoattachment', '$imported',
+      '$istrusted', '$MailFlagBit0', '$MailFlagBit1', '$MailFlagBit2', '$maskedemail', '$memo',
+      '$muted', '$new', '$notify', '$unsubscribed',
+    ];
+    for (const keyword of registered) expect(isSystemKeyword(keyword)).toBe(true);
+    expect(tagKeywordsOf(JSON.stringify(Object.fromEntries(registered.map((k) => [k, true]))))).toEqual([]);
+  });
+
+  it('treats the unprefixed junk-classifier keywords as system keywords', () => {
+    expect(tagKeywordsOf('{"NonJunk":true,"Junk":true,"NotJunk":true,"receipts":true}')).toEqual(['receipts']);
+  });
+
+  it('treats status markers written by other clients and servers as system keywords', () => {
+    const markers = [
+      'NoJunk', 'JunkRecorded', '$NotPhishing', '$has_cal', '$has_note', '$ATTACHMENT', '$ENCRYPTED',
+      '$ERROR', '$IGNORED', '$INVITATION', '$QUEUED', '$REPLIED', '$SENT', '$SIGNED', '$TODO',
+      '$WATCHED', '$pinned', '$readreceipt', '$notdelivered', '$restored', '$snoozed', '$SieveFailed',
+    ];
+    for (const keyword of markers) expect(isSystemKeyword(keyword)).toBe(true);
+    expect(tagKeywordsOf(JSON.stringify(Object.fromEntries([...markers, 'receipts'].map((k) => [k, true])))))
+      .toEqual(['receipts']);
+  });
+
+  it('keeps label keywords and lookalikes of system keywords as tags', () => {
+    expect(tagKeywordsOf('{"$label1":true,"$labelwork":true,"$label:q3":true,"important":true,"seen":true,"junkmail":true,"sent":true}'))
+      .toEqual(['$label1', '$labelwork', '$label:q3', 'important', 'seen', 'junkmail', 'sent']);
+  });
+});
+
+describe('tags defined over system keywords', () => {
+  const definitions = [
+    { keyword: 'work', name: 'Work', color: '#FF9900', order: 3 },
+    { keyword: 'nonjunk', name: 'Not junk', color: '#009900', order: 0 },
+    { keyword: '$Todo', name: 'To Do', color: '#3333FF', order: 1 },
+    { keyword: '$seen', name: 'Read', color: '#FF0000', order: 2 },
+  ];
+
+  it('shows a hidden keyword once a definition names it, but never a reserved one', () => {
+    const json = '{"NonJunk":true,"$TODO":true,"$seen":true,"$muted":true,"work":true}';
+    expect(tagKeywordsOf(json)).toEqual(['work']);
+    expect(tagKeywordsOf(json, definitions)).toEqual(['nonjunk', '$todo', 'work']);
+    expect(resolveMessageTags(json, definitions).map((tag) => [tag.keyword, tag.name])).toEqual([
+      ['nonjunk', 'Not junk'], ['$todo', 'To Do'], ['work', 'Work'],
+    ]);
+    expect(tagPresenceIndex([{ keywords_json: json }], definitions).presence('$Todo')).toBe('all');
+  });
+
+  it('applies the same rule to single keywords', () => {
+    expect(isReservedKeyword('$Seen')).toBe(true);
+    expect(isReservedKeyword('nonjunk')).toBe(false);
+    expect(isTagKeyword('receipts')).toBe(true);
+    expect(isTagKeyword('nonjunk')).toBe(false);
+    expect(isTagKeyword('NonJunk', definitions)).toBe(true);
+    expect(isTagKeyword('$seen', definitions)).toBe(false);
+  });
+
+  it('offers every definition except those over reserved keywords, in order', () => {
+    expect(isMessageTagDefinitionList(definitions)).toBe(true);
+    expect(visibleTagDefinitions(definitions).map((d) => d.keyword)).toEqual(['nonjunk', '$Todo', 'work']);
   });
 });
 

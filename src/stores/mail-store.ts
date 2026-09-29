@@ -41,7 +41,7 @@ import type { MessageAddress } from '../utils/reply';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isScheduledMessage } from '../utils/scheduled-message';
 import {
-  isSystemKeyword,
+  isTagKeyword,
   normalizeKeyword,
   resolveTag,
   tagKeywordsOf,
@@ -2072,9 +2072,10 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Add and remove tag keywords (specs/011 §6). System keywords are not
-   * tags and are dropped from the patch; scheduled rows are skipped and
-   * the account comes from the source folder, as for the star.
+   * Add and remove tag keywords (specs/011 §6). Keywords that are not
+   * tags under the current definitions are dropped from the patch;
+   * scheduled rows are skipped and the account comes from the source
+   * folder, as for the star.
    */
   async function setTagsMany(
     ids: number[],
@@ -2083,8 +2084,9 @@ export const useMailStore = defineStore('mail', () => {
   ): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     if (authStore.accountId == null) return 0;
-    const add = (patch.add ?? []).filter((keyword) => !isSystemKeyword(keyword));
-    const remove = (patch.remove ?? []).filter((keyword) => !isSystemKeyword(keyword));
+    const definitions = settingsStore.get('messageTags');
+    const add = (patch.add ?? []).filter((keyword) => isTagKeyword(keyword, definitions));
+    const remove = (patch.remove ?? []).filter((keyword) => isTagKeyword(keyword, definitions));
     if (add.length === 0 && remove.length === 0) return 0;
     const source = resolveSourceFolder(options.sourceFolderId);
     const mutable = await filterMutableMessageIds(
@@ -2108,8 +2110,9 @@ export const useMailStore = defineStore('mail', () => {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
     const normalized = normalizeKeyword(keyword);
+    const definitions = settingsStore.get('messageTags');
     const everyTagged = normalizeMessageIds(ids).every((id) =>
-      tagKeywordsOf(rowFor(id)?.keywords_json).includes(normalized));
+      tagKeywordsOf(rowFor(id)?.keywords_json, definitions).includes(normalized));
     return setTagsMany(ids, everyTagged ? { remove: [normalized] } : { add: [normalized] }, options);
   }
 
@@ -2117,9 +2120,10 @@ export const useMailStore = defineStore('mail', () => {
   async function clearTagsMany(ids: number[], options: BulkSourceOptions = {}): Promise<number> {
     if (!Array.isArray(ids) || ids.length === 0) return 0;
     const rowFor = loadedRowLookup(options.rows, options.sourceFolderId);
+    const definitions = settingsStore.get('messageTags');
     const remove = new Set<string>();
     for (const id of normalizeMessageIds(ids)) {
-      for (const keyword of tagKeywordsOf(rowFor(id)?.keywords_json)) remove.add(keyword);
+      for (const keyword of tagKeywordsOf(rowFor(id)?.keywords_json, definitions)) remove.add(keyword);
     }
     if (remove.size === 0) return 0;
     return setTagsMany(ids, { remove: [...remove] }, options);
