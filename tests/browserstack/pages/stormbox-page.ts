@@ -229,6 +229,9 @@ export class StormboxPage {
     await this.signInToThunderbirdAccount(projectName);
     await this.waitForAppUi();
     await this.waitForInboxToFinishLoading();
+    if (await this.welcomeDialog.isVisible()) {
+      await this.dismissWelcomeModal();
+    }
   }
 
   async assertDesktopUiVisible() {
@@ -741,6 +744,10 @@ export class StormboxPage {
     await this.showWelcomeButton.click();
     await expect(this.settingsDialog).not.toBeVisible();
     await expect(this.welcomeDialog).toBeVisible();
+    await this.dismissWelcomeModal();
+  }
+
+  private async dismissWelcomeModal() {
     await this.getStartedButton.click();
     await expect(this.welcomeDialog).not.toBeVisible();
   }
