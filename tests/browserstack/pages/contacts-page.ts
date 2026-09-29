@@ -144,7 +144,7 @@ export class ContactsPage {
     }, isoDate);
   }
 
-  /** Assert the saved UI session before changing any Contacts data. */
+  /** Check the signed-in OIDC email before opening Contacts. */
   async open(): Promise<void> {
     expect(ACCTS_OIDC_EMAIL, 'ACCTS_OIDC_EMAIL must identify the BrowserStack UI account')
       .toBeTruthy();
@@ -164,6 +164,8 @@ export class ContactsPage {
 
   /** Android replaces the list with a detail pane; desktop keeps both visible. */
   private async openList(): Promise<void> {
+    // Android's rail drawer covers the detail Back button until it is closed.
+    await this.closeRailOnPhone();
     const back = this.page.locator(
       '.contact-detail__header button[aria-label="Back"], '
       + '.address-book-detail__header button[aria-label="Back"], '
@@ -207,7 +209,7 @@ export class ContactsPage {
       .toHaveAttribute('aria-busy', 'false');
   }
 
-  async selectAllContacts(): Promise<void> {
+  async displayAllContacts(): Promise<void> {
     await this.selectRailBook('All contacts');
   }
 
@@ -219,17 +221,42 @@ export class ContactsPage {
     await this.selectRailBook(name);
   }
 
-  /** Require both the OIDC user and a JMAP identity in the browser account. */
-  async assertContactAccount(): Promise<void> {
+  /** Check that the Primary identity has the configured address. */
+  async assertExpectedPrimaryMailIdentityVisible(): Promise<void> {
     const expectedEmail = PRIMARY_THUNDERMAIL_EMAIL.trim();
-    expect(expectedEmail, 'PRIMARY_THUNDERMAIL_EMAIL must identify the BrowserStack JMAP account')
+    expect(expectedEmail, 'PRIMARY_THUNDERMAIL_EMAIL must contain the expected primary identity')
       .toBeTruthy();
     await this.selectRailBook('Identities');
     await this.filter(expectedEmail);
-    await expect(this.page.locator('.contacts__row .email')
-      .getByText(expectedEmail, { exact: true })).toBeVisible();
+    const listbox = this.page.getByRole('listbox', { name: 'Identities', exact: true });
+    const rows = listbox.locator('.contacts__row');
+    const primaryIdentityRow = rows.filter({
+      has: this.page.locator('.directory-list__primary-badge')
+        .getByText('Primary', { exact: true }),
+    });
+    // Duplicate addresses can place the Primary identity outside the virtualized rows.
+    await listbox.evaluate((element) => { element.scrollTop = 0; });
+    await expect(rows.first()).toHaveAttribute('data-index', '0');
+    const totalRows = Number(await rows.first().getAttribute('aria-setsize'));
+    const rowHeight = await rows.first().evaluate((element) => element.getBoundingClientRect().height);
+    while (await primaryIdentityRow.count() === 0) {
+      const lastIndex = Number(await rows.last().getAttribute('data-index'));
+      if (lastIndex >= totalRows - 1) {
+        throw new Error(`No Primary identity appears for ${expectedEmail}`);
+      }
+      // Move at least one measured row even when the Android keyboard shortens the viewport.
+      await listbox.evaluate((element, minimumStep) => {
+        element.scrollTop += Math.max(minimumStep, Math.floor(element.clientHeight / 2));
+      }, Math.ceil(rowHeight) + 1);
+      await expect.poll(async () => Number(await rows.last().getAttribute('data-index')))
+        .toBeGreaterThan(lastIndex);
+    }
+    await expect(primaryIdentityRow).toHaveCount(1);
+    await expect(primaryIdentityRow).toBeVisible();
+    await expect(primaryIdentityRow.locator('.directory-list__row-content .email'))
+      .toHaveText(expectedEmail);
     await this.filter('');
-    await this.selectAllContacts();
+    await this.displayAllContacts();
   }
 
   /** New contacts inherit the currently selected address book. */
@@ -461,7 +488,7 @@ export class ContactsPage {
     await this.tap(this.confirmationDialog.getByRole('button', { name: 'Delete address book' }));
   }
 
-  /** Permanently remove matching Trash entries left by interrupted runs. */
+  /** Use Webmail UI to permanently remove matching Trash entries left by previously interrupted runs. */
   async purgeTestTrash(): Promise<void> {
     await this.selectTrash();
     await this.filter(CONTACT_PREFIX);
@@ -486,7 +513,7 @@ export class ContactsPage {
   async cleanUpThroughUi(): Promise<void> {
     expect(ACCTS_OIDC_EMAIL, 'ACCTS_OIDC_EMAIL must identify the BrowserStack UI account')
       .toBeTruthy();
-    await expect(this.stormbox.accountMenuIdentity).toHaveText(ACCTS_OIDC_EMAIL);
+
     if (await this.confirmationDialog.isVisible()) {
       await this.tap(this.confirmationDialog.getByRole('button', { name: 'Cancel' }));
     }
@@ -495,13 +522,16 @@ export class ContactsPage {
     } else if (await this.bookForm.isVisible()) {
       await this.tap(this.bookForm.getByRole('button', { name: 'Cancel' }));
     }
+
     await this.open();
-    await this.assertContactAccount();
+    await this.assertExpectedPrimaryMailIdentityVisible();
     await this.filter(CONTACT_PREFIX);
+
     const rows = this.page.locator('.contacts__row').filter({
       has: this.page.locator('.directory-list__row-content .name')
         .filter({ hasText: /^E2E-Contact/ }),
     });
+
     while (await rows.count() > 0) {
       const name = await rows.first().locator('.name').textContent();
       await this.tap(rows.first());
@@ -510,9 +540,10 @@ export class ContactsPage {
       await this.openList();
     }
     await this.purgeTestTrash();
-
     await this.openRail();
+
     const books = await this.page.locator('.contacts-rail__name').allTextContents();
+
     for (const name of books.filter((value) => value.startsWith(BOOK_PREFIX))) {
       await this.selectBook(name);
       await expect(
