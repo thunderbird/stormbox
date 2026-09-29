@@ -126,8 +126,11 @@ export class ContactsPage {
     } else {
       await expect(this.stormbox.quickFilter).toHaveClass(/quick-filter__input--empty/);
     }
-    await expect(this.page.locator('.directory-list__viewport'))
-      .toHaveAttribute('aria-busy', 'false');
+    // Android unmounts the list while showing a detail pane.
+    if (await this.list.isVisible()) {
+      await expect(this.page.locator('.directory-list__viewport'))
+        .toHaveAttribute('aria-busy', 'false');
+    }
   }
 
   private async formattedDate(isoDate: string): Promise<string> {
@@ -154,7 +157,7 @@ export class ContactsPage {
 
   async reloadAndOpen(): Promise<void> {
     await this.page.reload();
-    // Android signs in on each fresh context; desktop reuses the prepared auth state.
+    // Android has no prepared storage state, so check sign-in after reloading.
     await this.stormbox.signInIfNeeded(this.projectName);
     await this.open();
   }
