@@ -143,6 +143,16 @@ describe('TagPickerPanel', () => {
     expect(wrapper.find('[data-tag-keyword="$seen"]').exists()).toBe(false);
   });
 
+  it('checks a tag defined over a hidden system keyword and leaves undefined ones out', () => {
+    const wrapper = mount(TagPickerPanel, {
+      props: {
+        definitions: [{ keyword: 'nonjunk', name: 'Not junk', color: '#009900', order: 0 }],
+        targets: [row(1, '{"NonJunk":true,"$muted":true}')],
+      },
+    });
+    expect(checked(wrapper)).toEqual({ nonjunk: 'true' });
+  });
+
   it('Manage Tags… emits manage, and an empty menu says no tags are defined', async () => {
     const wrapper = mount(TagPickerPanel, { props: { definitions, targets: [row(1, '{}')] } });
     await wrapper.find('[data-tag-picker-manage]').trigger('click');
@@ -221,7 +231,7 @@ describe('MessageListRow tag chips (MK-6.5)', () => {
     expect(stack.attributes('title')).toBe('Tags: Important, Work, Personal, receipts');
 
     expect(mountRow('{"$label2":true}').find('.tag-stack__more').exists()).toBe(false);
-    const untagged = mountRow('{"$seen":true}').find('.msg-list__action--tag');
+    const untagged = mountRow('{"$seen":true,"NonJunk":true,"$notjunk":true,"$muted":true}').find('.msg-list__action--tag');
     expect(untagged.classes()).not.toContain('is-tagged');
     expect(untagged.find('.tag-stack__icon--empty').exists()).toBe(true);
   });

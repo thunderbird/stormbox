@@ -146,9 +146,11 @@ spelling in the outbox row's `remove`, since Stalwart stores custom
 keywords verbatim and matches them case-sensitively.
 
 Tags are the same path with a system-keyword guard: `setTagsMany`
-drops `$seen`, `$flagged` and the other client-managed keywords
-(`SYSTEM_KEYWORDS` in `src/utils/message-tags.ts`) from the patch, then
-applies the scheduled-row filter and calls `setKeywordsMany`.
+drops every keyword `isTagKeyword` rejects from the patch — the
+reserved keywords (`$seen`, `$flagged`, `$junk`, … in
+`RESERVED_KEYWORDS`) always, and the other `SYSTEM_KEYWORDS` unless a
+tag definition names them — then applies the scheduled-row filter and
+calls `setKeywordsMany`.
 `toggleTagMany` (add unless every target already carries the tag) and
 `clearTagsMany` (remove every tag keyword the targets carry) back the
 digit shortcuts. Tag definitions — name, color, order per keyword — are

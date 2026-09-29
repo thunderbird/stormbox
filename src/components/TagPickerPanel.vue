@@ -59,7 +59,7 @@ interface PickerRow {
 }
 
 /** Every target parsed once; presences for all rows come from this. */
-const presenceIndex = computed(() => tagPresenceIndex(props.targets));
+const presenceIndex = computed(() => tagPresenceIndex(props.targets, props.definitions));
 
 const definedRows = computed<PickerRow[]>(() => props.definitions.map((definition, index) => {
   const keyword = normalizeKeyword(definition.keyword);

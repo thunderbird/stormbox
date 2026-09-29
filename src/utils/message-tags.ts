@@ -18,29 +18,88 @@ export interface MessageTagDefinition {
 }
 
 /**
- * Keywords the client manages on the user's behalf and never shows as
- * tags: the RFC 8621 §4.1.1 set, the IMAP flags with no JMAP meaning,
- * the RFC 8621 §7 submission markers, and the RFC 9979 §3 flag-color
- * bits, which qualify `$flagged` rather than tag the message.
+ * Keywords the client reads or writes itself — read, star and its
+ * RFC 9979 §3 color bits, draft, replied, forwarded, junk — and the
+ * remaining IMAP system flags. Never tags, even with a definition.
  */
-export const SYSTEM_KEYWORDS: ReadonlySet<string> = new Set([
+export const RESERVED_KEYWORDS: ReadonlySet<string> = new Set([
   '$seen',
   '$flagged',
+  '$mailflagbit0',
+  '$mailflagbit1',
+  '$mailflagbit2',
   '$draft',
   '$answered',
   '$forwarded',
   '$junk',
   '$notjunk',
-  '$phishing',
   '$recent',
-  '$mdnsent',
   '$deleted',
-  '$has_cal',
+]);
+
+/**
+ * Keywords hidden from the tag UI: the reserved set, every other keyword
+ * in the IANA "IMAP and JMAP Keywords" registry (which Stalwart models
+ * as its built-in keywords), and the status markers other clients and
+ * servers write to shared accounts. Snappymail's `ignoredKeywords` and
+ * Claws Mail's reserved tags hide the same client markers. Outside the
+ * reserved set, a keyword the user defines a tag over is a tag.
+ */
+export const SYSTEM_KEYWORDS: ReadonlySet<string> = new Set([
+  ...RESERVED_KEYWORDS,
+  // RFC 3503, RFC 5550
+  '$mdnsent',
   '$submitpending',
   '$submitted',
-  '$mailflagbit0',
-  '$mailflagbit1',
-  '$mailflagbit2',
+  // IANA registrations without an RFC, and RFC 8457
+  '$phishing',
+  '$important',
+  // RFC 9979 §3
+  '$autosent',
+  '$canunsubscribe',
+  '$followed',
+  '$hasattachment',
+  '$hasmemo',
+  '$hasnoattachment',
+  '$imported',
+  '$istrusted',
+  '$maskedemail',
+  '$memo',
+  '$muted',
+  '$new',
+  '$notify',
+  '$unsubscribed',
+  // Junk and phishing classifiers: Thunderbird, Roundcube, Claws, Apple Mail, Gmail
+  'junk',
+  'nonjunk',
+  'notjunk',
+  'nojunk',
+  'junkrecorded',
+  '$notphishing',
+  // Evolution
+  '$has_cal',
+  '$has_note',
+  // KMail
+  '$attachment',
+  '$encrypted',
+  '$error',
+  '$ignored',
+  '$invitation',
+  '$queued',
+  '$replied',
+  '$sent',
+  '$signed',
+  '$todo',
+  '$watched',
+  // Bulwark
+  '$pinned',
+  // Delivery and receipt state
+  '$readreceipt',
+  '$notdelivered',
+  // Cyrus: backup restore, JMAP snooze, failed Sieve delivery
+  '$restored',
+  '$snoozed',
+  '$sievefailed',
 ]);
 
 /** Thunderbird's default tags: keywords, names and colors (MK-6.1). */
@@ -109,31 +168,46 @@ export function isSystemKeyword(keyword: string): boolean {
   return SYSTEM_KEYWORDS.has(normalizeKeyword(keyword));
 }
 
+export function isReservedKeyword(keyword: string): boolean {
+  return RESERVED_KEYWORDS.has(normalizeKeyword(keyword));
+}
+
+/** Tests a lowercase keyword: outside the system set, or defined and not reserved. */
+function tagKeywordTest(definitions: ReadonlyArray<MessageTagDefinition>): (keyword: string) => boolean {
+  const defined = new Set(definitions.map((d) => normalizeKeyword(d.keyword)));
+  return (keyword) => !SYSTEM_KEYWORDS.has(keyword) || (defined.has(keyword) && !RESERVED_KEYWORDS.has(keyword));
+}
+
+/** Whether `keyword` is shown and applied as a tag under `definitions`. */
+export function isTagKeyword(
+  keyword: string,
+  definitions: ReadonlyArray<MessageTagDefinition> = [],
+): boolean {
+  return tagKeywordTest(definitions)(normalizeKeyword(keyword));
+}
+
 /**
  * MK-6.3: UTF-8 hex escapes keep Unicode names independent of ASCII
  * keyword restrictions. '=' escapes itself; lowercase hex survives
- * case-insensitive keyword comparison (Thunderbird bug 650623).
+ * case-insensitive keyword comparison (Thunderbird bug 650623). As in
+ * Thunderbird's `nsMsgTagService::AddTag`, only ASCII is lowercased and
+ * non-ASCII is escaped from the name's own bytes, so both clients derive
+ * the same keyword from the same name.
  */
 export function deriveTagKeyword(name: string, existing: Iterable<string> = []): string | null {
   if (tagNameError(name)) return null;
   let base = '';
   const chunks: string[] = [];
-  for (const ch of name.trim().replace(/^\$+/, '').toLowerCase()) {
-    const encoded = isKeywordChar(ch) && !'=[]{<>;&'.includes(ch)
-      ? ch
+  for (const ch of name.trim()) {
+    const encoded = isKeywordChar(ch) && !'=[]{}<>;&'.includes(ch)
+      ? ch.toLowerCase()
       : Array.from(new TextEncoder().encode(ch), (byte) => `=${byte.toString(16).padStart(2, '0')}`).join('');
     if (base.length + encoded.length > MAX_KEYWORD_LENGTH) break;
     base += encoded;
     chunks.push(encoded);
   }
-  if (base.length === 0) base = 'tag';
-  // System keywords are taken in both spellings, so a tag named "$seen"
-  // or "seen" cannot shadow one.
-  const taken = new Set<string>();
-  for (const keyword of SYSTEM_KEYWORDS) {
-    taken.add(keyword);
-    taken.add(keyword.replace(/^\$+/, ''));
-  }
+  // A tag never owns a reserved keyword: one named "$seen" gets "$seen2".
+  const taken = new Set<string>(RESERVED_KEYWORDS);
   for (const keyword of existing) taken.add(normalizeKeyword(keyword));
   if (!taken.has(base)) return base;
   for (let n = 2; ; n += 1) {
@@ -148,10 +222,14 @@ export function deriveTagKeyword(name: string, existing: Iterable<string> = []):
 
 /**
  * The tag keywords present on a message, lowercased and deduplicated,
- * in the order the server listed them. Tolerates a malformed
- * `keywords_json`.
+ * in the order the server listed them. A system keyword counts only
+ * when `definitions` names it and it is not reserved. Tolerates a
+ * malformed `keywords_json`.
  */
-export function tagKeywordsOf(keywordsJson: string | null | undefined): string[] {
+export function tagKeywordsOf(
+  keywordsJson: string | null | undefined,
+  definitions: ReadonlyArray<MessageTagDefinition> = [],
+): string[] {
   if (!keywordsJson) return [];
   let parsed: unknown;
   try {
@@ -160,12 +238,13 @@ export function tagKeywordsOf(keywordsJson: string | null | undefined): string[]
     return [];
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const isTag = tagKeywordTest(definitions);
   const out: string[] = [];
   const seen = new Set<string>();
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (value !== true) continue;
     const keyword = normalizeKeyword(key);
-    if (SYSTEM_KEYWORDS.has(keyword) || seen.has(keyword)) continue;
+    if (!isTag(keyword) || seen.has(keyword)) continue;
     seen.add(keyword);
     out.push(keyword);
   }
@@ -178,6 +257,16 @@ export function sortTagDefinitions(
   return [...definitions].sort(
     (a, b) => a.order - b.order || a.name.localeCompare(b.name) || a.keyword.localeCompare(b.keyword),
   );
+}
+
+/**
+ * The definitions the UI offers, in display order. A stored definition
+ * over a reserved keyword is valid setting data but is never a tag.
+ */
+export function visibleTagDefinitions(
+  definitions: ReadonlyArray<MessageTagDefinition>,
+): MessageTagDefinition[] {
+  return sortTagDefinitions(definitions.filter((definition) => !isReservedKeyword(definition.keyword)));
 }
 
 export interface ResolvedTag {
@@ -212,7 +301,7 @@ export function resolveMessageTags(
   keywordsJson: string | null | undefined,
   definitions: ReadonlyArray<MessageTagDefinition>,
 ): ResolvedTag[] {
-  const present = new Set(tagKeywordsOf(keywordsJson));
+  const present = new Set(tagKeywordsOf(keywordsJson, definitions));
   if (present.size === 0) return [];
   const out: ResolvedTag[] = [];
   for (const definition of sortTagDefinitions(definitions)) {
@@ -258,8 +347,9 @@ export type TagPresence = 'all' | 'some' | 'none';
 export function tagPresence(
   rows: ReadonlyArray<{ keywords_json?: string | null } | null | undefined>,
   keyword: string,
+  definitions: ReadonlyArray<MessageTagDefinition> = [],
 ): TagPresence {
-  return tagPresenceIndex(rows).presence(keyword);
+  return tagPresenceIndex(rows, definitions).presence(keyword);
 }
 
 function presenceOf(inspected: number, carrying: number): TagPresence {
@@ -274,13 +364,14 @@ function presenceOf(inspected: number, carrying: number): TagPresence {
  */
 export function tagPresenceIndex(
   rows: ReadonlyArray<{ keywords_json?: string | null } | null | undefined>,
+  definitions: ReadonlyArray<MessageTagDefinition> = [],
 ): { inspected: number; presence: (keyword: string) => TagPresence; keywords: string[] } {
   const counts = new Map<string, number>();
   let inspected = 0;
   for (const row of rows) {
     if (row == null) continue;
     inspected += 1;
-    for (const keyword of tagKeywordsOf(row.keywords_json)) {
+    for (const keyword of tagKeywordsOf(row.keywords_json, definitions)) {
       counts.set(keyword, (counts.get(keyword) ?? 0) + 1);
     }
   }
