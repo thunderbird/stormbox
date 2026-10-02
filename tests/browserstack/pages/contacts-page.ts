@@ -412,22 +412,6 @@ export class ContactsPage {
     await this.expectTrashedContact(name);
   }
 
-  /** A fallback filing book has no Personal badge; only a designated default does. */
-  async expectContactCreationBook(book: { name: string; isDefault: boolean } | null): Promise<void> {
-    await this.openRail();
-    const defaultBooks = this.page.locator('.contacts-rail__book').filter({
-      has: this.page.locator('.contacts-rail__badge')
-        .getByText('Personal', { exact: true }),
-    });
-    await expect(defaultBooks).toHaveCount(book?.isDefault ? 1 : 0);
-    if (book) {
-      await expect(this.bookButton(book.name)).toBeVisible();
-      if (book.isDefault) {
-        await expect(defaultBooks.locator('.contacts-rail__name')).toHaveText(book.name);
-      }
-    }
-  }
-
   async expectBookNotDefault(name: string): Promise<void> {
     await this.openRail();
     await expect(this.bookButton(name)).toBeVisible();

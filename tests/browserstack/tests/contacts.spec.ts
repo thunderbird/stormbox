@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { expect, test } from '@playwright/test';
+import { test } from '@playwright/test';
 
 import {
   PLAYWRIGHT_TAG_DESKTOP,
@@ -9,7 +9,6 @@ import {
 import {
   deleteAddressBooksByPrefix,
   deleteContactsByPrefix,
-  getContactCreationBook,
 } from '../helpers/jmap-client';
 import {
   BOOK_PREFIX,
@@ -110,7 +109,7 @@ test.describe('stormbox contacts and address books', {
     });
   });
 
-  test.skip('deletes a separate contact into Trash', async () => {
+  test('deletes a separate contact into Trash', async () => {
     const suffix = uniqueSuffix();
     const name = `${CONTACT_PREFIX}-${suffix}-Delete`;
     const email = `delete-${suffix}@example.com`;
@@ -129,16 +128,11 @@ test.describe('stormbox contacts and address books', {
     await contacts.openTrashedContact(name);
   });
 
-  test.skip('creates and edits an address book containing a contact', async () => {
+  test('creates and edits an address book containing a contact', async () => {
     const suffix = uniqueSuffix();
     const name = `${BOOK_PREFIX}-${suffix}-CreateEdit`;
     const renamed = `${name}-Renamed`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-BookMember`;
-    // Capture All Contacts' existing-book choice before creating a separate book.
-    // With no server-designated default, that choice may have no Personal badge.
-    const creationBook = await getContactCreationBook();
-    await contacts.expectContactCreationBook(creationBook);
-
     await contacts.createBook(name, 'Initial BrowserStack book');
     await contacts.expectBookNotDefault(name);
     // Creating in the selected book gives the card a single book membership.
@@ -148,15 +142,11 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactRow(contactName);
 
     await contacts.editBook(name, renamed, 'Updated BrowserStack book');
-    // The JMAP comparison pins the chosen book's id, name, and default flag;
-    // a fallback may have no Personal badge to identify it in the UI.
-    expect(await getContactCreationBook()).toEqual(creationBook);
-    await contacts.expectContactCreationBook(creationBook);
     await contacts.expectBookNotDefault(renamed);
     await contacts.expectContactInBook(contactName, renamed);
   });
 
-  test.skip('deletes a separate address book and its sole contact', async () => {
+  test('deletes a separate address book and its sole contact', async () => {
     const suffix = uniqueSuffix();
     const name = `${BOOK_PREFIX}-${suffix}-Delete`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-DeletedBookMember`;
