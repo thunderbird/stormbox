@@ -364,7 +364,7 @@ async function listAddressBooks(client: JmapContactsClient): Promise<JmapAddress
   return list as JmapAddressBook[];
 }
 
-/** Match the All Contacts filing target when RFC 9610 supplies no default. */
+/** All Contacts can file into an unbadged fallback when JMAP marks no default. */
 export async function getContactCreationBook(): Promise<JmapAddressBook | null> {
   const books = await listAddressBooks(await connectContactsJmap());
   const defaults = books.filter((book) => book.isDefault);

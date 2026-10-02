@@ -35,9 +35,8 @@ test.describe('stormbox contacts and address books', {
     const stormbox = new StormboxPage(page);
     contacts = new ContactsPage(page, stormbox, testInfo.project.name);
 
-    // Connects to the Webmail's corresponding Thundermail/mailstrom account to clean-up any
-    // contacts and address books that happen to have been leftover from previous test runs;
-    // The shared JMAP account is swept before each case; BrowserStack lanes must not overlap.
+    // Clear leftovers from interrupted runs before each case. Sweep cards before books;
+    // BrowserStack lanes sharing this account must not run at the same time.
     await deleteContactsByPrefix(CONTACT_PREFIX);
     await deleteAddressBooksByPrefix(BOOK_PREFIX);
 
@@ -53,9 +52,7 @@ test.describe('stormbox contacts and address books', {
     await contacts.open();
     await contacts.assertExpectedPrimaryMailIdentityVisible();
 
-    // JMAP was used above to clean out any previously leftover contacts; deleted contacts have
-    // separate Trash records that the JMAP card sweep above does not remove; so now remove the
-    // cleaned-up/deleted contacts from the trash using the Webmail UI itself
+    // The JMAP card sweep leaves recoverable Contacts Trash entries behind.
     await contacts.purgeTestTrash();
     await contacts.displayAllContacts();
   });
@@ -137,6 +134,8 @@ test.describe('stormbox contacts and address books', {
     const name = `${BOOK_PREFIX}-${suffix}-CreateEdit`;
     const renamed = `${name}-Renamed`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-BookMember`;
+    // All Contacts files new cards in the server default, or the first regular book
+    // if none is designated. Editing a separate book must preserve that target.
     const creationBook = await getContactCreationBook();
     await contacts.expectContactCreationBook(creationBook);
 
@@ -149,6 +148,8 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactRow(contactName);
 
     await contacts.editBook(name, renamed, 'Updated BrowserStack book');
+    // Compare the JMAP id as well as the name and default flag: a fallback book
+    // is still the filing target even though it has no Personal badge.
     expect(await getContactCreationBook()).toEqual(creationBook);
     await contacts.expectContactCreationBook(creationBook);
     await contacts.expectBookNotDefault(renamed);
