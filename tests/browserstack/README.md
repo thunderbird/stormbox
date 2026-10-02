@@ -1,6 +1,6 @@
 # Stormbox BrowserStack E2E Tests
 
-This package contains Playwright tests for deployed Stormbox stage and production. Test actions and UI assertions run through the public Stormbox UI on your local machine or in BrowserStack. The folder-management and Contacts suites use direct JMAP access from the Node test runner to remove test data left by earlier interrupted runs. The Contacts address-book case also reads the server's default book before and after editing.
+This package contains Playwright tests for deployed Stormbox stage and production. Test actions and UI assertions run through the public Stormbox UI on your local machine or in BrowserStack. The folder-management and Contacts suites use direct JMAP access from the Node test runner to remove test data left by earlier interrupted runs. The Contacts address-book case also checks the server's chosen book for new contacts before and after editing.
 
 These tests are not for the local Stormbox stack. The local-stack integration tests live in `../e2e` and retain their own JMAP helper, database reads, local stack setup, and cache assertions. The BrowserStack JMAP helper connects only to a deployed stage or production Thundermail account using that dedicated test account's app password.
 

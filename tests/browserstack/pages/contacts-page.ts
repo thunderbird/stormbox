@@ -412,15 +412,18 @@ export class ContactsPage {
     await this.expectTrashedContact(name);
   }
 
-  async expectDefaultBook(name: string | null): Promise<void> {
+  async expectContactCreationBook(book: { name: string; isDefault: boolean } | null): Promise<void> {
     await this.openRail();
     const defaultBooks = this.page.locator('.contacts-rail__book').filter({
       has: this.page.locator('.contacts-rail__badge')
         .getByText('Personal', { exact: true }),
     });
-    await expect(defaultBooks).toHaveCount(name === null ? 0 : 1);
-    if (name !== null) {
-      await expect(defaultBooks.locator('.contacts-rail__name')).toHaveText(name);
+    await expect(defaultBooks).toHaveCount(book?.isDefault ? 1 : 0);
+    if (book) {
+      await expect(this.bookButton(book.name)).toBeVisible();
+      if (book.isDefault) {
+        await expect(defaultBooks.locator('.contacts-rail__name')).toHaveText(book.name);
+      }
     }
   }
 

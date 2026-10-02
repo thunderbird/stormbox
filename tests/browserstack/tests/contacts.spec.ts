@@ -9,7 +9,7 @@ import {
 import {
   deleteAddressBooksByPrefix,
   deleteContactsByPrefix,
-  getDefaultAddressBook,
+  getContactCreationBook,
 } from '../helpers/jmap-client';
 import {
   BOOK_PREFIX,
@@ -137,8 +137,8 @@ test.describe('stormbox contacts and address books', {
     const name = `${BOOK_PREFIX}-${suffix}-CreateEdit`;
     const renamed = `${name}-Renamed`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-BookMember`;
-    const defaultBook = await getDefaultAddressBook();
-    await contacts.expectDefaultBook(defaultBook?.name ?? null);
+    const creationBook = await getContactCreationBook();
+    await contacts.expectContactCreationBook(creationBook);
 
     await contacts.createBook(name, 'Initial BrowserStack book');
     await contacts.expectBookNotDefault(name);
@@ -149,8 +149,8 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactRow(contactName);
 
     await contacts.editBook(name, renamed, 'Updated BrowserStack book');
-    expect(await getDefaultAddressBook()).toEqual(defaultBook);
-    await contacts.expectDefaultBook(defaultBook?.name ?? null);
+    expect(await getContactCreationBook()).toEqual(creationBook);
+    await contacts.expectContactCreationBook(creationBook);
     await contacts.expectBookNotDefault(renamed);
     await contacts.expectContactInBook(contactName, renamed);
   });

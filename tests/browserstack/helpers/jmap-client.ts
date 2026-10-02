@@ -8,8 +8,8 @@
  * normal TB Accounts password remains reserved for signing into Stormbox in
  * the browser.
  *
- * Keep this helper limited to test-data maintenance. BrowserStack test
- * actions and assertions should continue to exercise the Stormbox UI.
+ * Keep this helper limited to test-data maintenance and read-only account
+ * metadata checks. BrowserStack UI flows run through Stormbox.
  */
 
 import {
@@ -364,14 +364,17 @@ async function listAddressBooks(client: JmapContactsClient): Promise<JmapAddress
   return list as JmapAddressBook[];
 }
 
-/** Read the server-designated default; RFC 9610 allows an account with none. */
-export async function getDefaultAddressBook(): Promise<{ id: string; name: string } | null> {
+/** Match the All Contacts filing target when RFC 9610 supplies no default. */
+export async function getContactCreationBook(): Promise<JmapAddressBook | null> {
   const books = await listAddressBooks(await connectContactsJmap());
   const defaults = books.filter((book) => book.isDefault);
   if (defaults.length > 1) {
     throw new Error('The JMAP account has more than one default address book');
   }
-  return defaults[0] ? { id: defaults[0].id, name: defaults[0].name } : null;
+  return defaults[0]
+    ?? books.find((book) => book.name.trim().toLocaleLowerCase() !== 'trusted senders')
+    ?? books[0]
+    ?? null;
 }
 
 /** Refuse books containing other cards; never destroy their contents implicitly. */
