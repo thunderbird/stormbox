@@ -23,7 +23,9 @@ import {
 const CORE_CAPABILITY = 'urn:ietf:params:jmap:core';
 const MAIL_CAPABILITY = 'urn:ietf:params:jmap:mail';
 const SUBMISSION_CAPABILITY = 'urn:ietf:params:jmap:submission';
+const CONTACTS_CAPABILITY = 'urn:ietf:params:jmap:contacts';
 const REQUEST_TIMEOUT_MS = 30_000;
+const CONTACT_PAGE_SIZE = 200;
 
 type JmapMethodCall = [string, Record<string, unknown>, string];
 type JmapMethodResponse = [string, Record<string, unknown>, string];
@@ -39,9 +41,14 @@ interface JmapSession {
 
 interface JmapClient {
   accountId: string;
+  contactsAccountId?: string;
   apiUrl: string;
   authHeader: string;
   identityAccountId: string;
+}
+
+interface JmapContactsClient extends JmapClient {
+  contactsAccountId: string;
 }
 
 interface JmapMailbox {
@@ -208,12 +215,190 @@ async function connectJmap(): Promise<JmapClient> {
 
   const client: JmapClient = {
     accountId,
+    contactsAccountId: session.primaryAccounts?.[CONTACTS_CAPABILITY],
     apiUrl,
     authHeader,
     identityAccountId: session.primaryAccounts?.[SUBMISSION_CAPABILITY] ?? accountId,
   };
   await verifyExpectedIdentity(client);
   return client;
+}
+
+async function connectContactsJmap(): Promise<JmapContactsClient> {
+  const client = await connectJmap();
+  if (!client.contactsAccountId || client.contactsAccountId !== client.accountId
+    || client.identityAccountId !== client.accountId) {
+    throw new Error('JMAP primary contacts, mail, and identity accounts differ; refusing cleanup');
+  }
+  return client as JmapContactsClient;
+}
+
+interface JmapContactCard {
+  id: string;
+  name?: { full?: string } | null;
+}
+
+interface JmapAddressBook {
+  id: string;
+  name: string;
+  isDefault: boolean;
+}
+
+/** Page the complete card inventory and reject an inconsistent query snapshot. */
+async function listContactCardIds(client: JmapContactsClient, filter?: Record<string, unknown>): Promise<string[]> {
+  const ids: string[] = [];
+  let queryState: string | null = null;
+  let total: number | null = null;
+
+  while (total == null || ids.length < total) {
+    const payload = await jmapRequest(client, [[
+      'ContactCard/query',
+      {
+        accountId: client.contactsAccountId,
+        ...(filter ? { filter } : {}),
+        position: ids.length,
+        limit: CONTACT_PAGE_SIZE,
+        calculateTotal: true,
+      },
+      'contactCards',
+    ]], [CORE_CAPABILITY, CONTACTS_CAPABILITY]);
+    const result = responseFor(payload, 'ContactCard/query');
+    if (typeof result.queryState !== 'string' || !result.queryState
+      || !Number.isSafeInteger(result.total) || Number(result.total) < 0
+      || result.position !== ids.length || !Array.isArray(result.ids)
+      || result.ids.length > CONTACT_PAGE_SIZE
+      || result.ids.some((id) => typeof id !== 'string')) {
+      throw new Error('ContactCard/query did not return a complete inventory page');
+    }
+    if (queryState !== null && (queryState !== result.queryState || total !== result.total)) {
+      throw new Error('ContactCard/query changed while paging; refusing cleanup');
+    }
+    queryState = result.queryState;
+    total = Number(result.total);
+    if (result.ids.length === 0 && ids.length < total) {
+      throw new Error('ContactCard/query stopped before the complete inventory was read');
+    }
+    ids.push(...result.ids as string[]);
+  }
+
+  if (ids.length !== total || new Set(ids).size !== ids.length) {
+    throw new Error('ContactCard/query returned an incomplete or duplicate inventory');
+  }
+  return ids;
+}
+
+async function listContactCards(client: JmapContactsClient): Promise<JmapContactCard[]> {
+  const ids = await listContactCardIds(client);
+  const cards: JmapContactCard[] = [];
+  for (let offset = 0; offset < ids.length; offset += CONTACT_PAGE_SIZE) {
+    const pageIds = ids.slice(offset, offset + CONTACT_PAGE_SIZE);
+    const payload = await jmapRequest(client, [[
+      'ContactCard/get',
+      { accountId: client.contactsAccountId, ids: pageIds, properties: ['id', 'name'] },
+      'contactCardDetails',
+    ]], [CORE_CAPABILITY, CONTACTS_CAPABILITY]);
+    const result = responseFor(payload, 'ContactCard/get');
+    if (!Array.isArray(result.list) || result.list.length !== pageIds.length
+      || (Array.isArray(result.notFound) && result.notFound.length > 0)) {
+      throw new Error('ContactCard/get did not return every queried card');
+    }
+    for (const card of result.list) {
+      if (typeof card !== 'object' || card == null
+        || typeof card.id !== 'string'
+        || (card.name != null && (typeof card.name !== 'object'
+          || (card.name.full != null && typeof card.name.full !== 'string')))) {
+        throw new Error('ContactCard/get returned a malformed card');
+      }
+      cards.push(card as JmapContactCard);
+    }
+  }
+  const expected = new Set(ids);
+  if (cards.length !== ids.length || cards.some((card) => !expected.delete(card.id))
+    || expected.size !== 0) {
+    throw new Error('ContactCard/get returned a mismatched card inventory');
+  }
+  return cards;
+}
+
+/** Remove only named test cards, before test address books are inspected. */
+export async function deleteContactsByPrefix(prefix: string): Promise<number> {
+  if (prefix !== 'E2E-Contact') {
+    throw new Error('Contact cleanup requires the E2E-Contact prefix');
+  }
+  const client = await connectContactsJmap();
+  const matching = (await listContactCards(client))
+    .filter((card) => card.name?.full?.startsWith(prefix));
+  for (let offset = 0; offset < matching.length; offset += CONTACT_PAGE_SIZE) {
+    const ids = matching.slice(offset, offset + CONTACT_PAGE_SIZE).map((card) => card.id);
+    const payload = await jmapRequest(client, [[
+      'ContactCard/set',
+      { accountId: client.contactsAccountId, destroy: ids },
+      'deleteContactCards',
+    ]], [CORE_CAPABILITY, CONTACTS_CAPABILITY]);
+    const result = responseFor(payload, 'ContactCard/set');
+    const destroyed = new Set(Array.isArray(result.destroyed) ? result.destroyed : []);
+    if (result.notDestroyed && Object.keys(result.notDestroyed).length > 0
+      || ids.some((id) => !destroyed.has(id))) {
+      throw new Error(`Could not delete test contacts: ${JSON.stringify(result.notDestroyed ?? {})}`);
+    }
+  }
+  if ((await listContactCards(client)).some((card) => card.name?.full?.startsWith(prefix))) {
+    throw new Error('JMAP cleanup left matching contacts');
+  }
+  return matching.length;
+}
+
+async function listAddressBooks(client: JmapContactsClient): Promise<JmapAddressBook[]> {
+  const payload = await jmapRequest(client, [[
+    'AddressBook/get',
+    { accountId: client.contactsAccountId, ids: null, properties: ['id', 'name', 'isDefault'] },
+    'addressBooks',
+  ]], [CORE_CAPABILITY, CONTACTS_CAPABILITY]);
+  const list = responseFor(payload, 'AddressBook/get').list;
+  if (!Array.isArray(list) || list.some((book) =>
+    typeof book !== 'object' || book == null
+    || typeof book.id !== 'string' || typeof book.name !== 'string'
+    || typeof book.isDefault !== 'boolean')) {
+    throw new Error('AddressBook/get did not return valid address books');
+  }
+  return list as JmapAddressBook[];
+}
+
+/** Refuse books containing other cards; never destroy their contents implicitly. */
+export async function deleteAddressBooksByPrefix(prefix: string): Promise<number> {
+  if (prefix !== 'E2E-AddressBook') {
+    throw new Error('Address book cleanup requires the E2E-AddressBook prefix');
+  }
+  const client = await connectContactsJmap();
+  const matching = (await listAddressBooks(client))
+    .filter((book) => book.name.startsWith(prefix));
+  for (const book of matching) {
+    if (book.isDefault) {
+      throw new Error(`Refusing to delete default address book "${book.name}"`);
+    }
+    const cardIds = await listContactCardIds(client, { inAddressBook: book.id });
+    if (cardIds.length > 0) {
+      throw new Error(`Refusing to delete test address book "${book.name}" containing unmatched cards`);
+    }
+    const payload = await jmapRequest(client, [[
+      'AddressBook/set',
+      {
+        accountId: client.contactsAccountId,
+        destroy: [book.id],
+        onDestroyRemoveContents: false,
+      },
+      'deleteAddressBook',
+    ]], [CORE_CAPABILITY, CONTACTS_CAPABILITY]);
+    const result = responseFor(payload, 'AddressBook/set');
+    if (result.notDestroyed && Object.keys(result.notDestroyed).length > 0
+      || !Array.isArray(result.destroyed) || !result.destroyed.includes(book.id)) {
+      throw new Error(`Could not delete test address book "${book.name}": ${JSON.stringify(result.notDestroyed ?? {})}`);
+    }
+  }
+  if ((await listAddressBooks(client)).some((book) => book.name.startsWith(prefix))) {
+    throw new Error('JMAP cleanup left matching address books');
+  }
+  return matching.length;
 }
 
 /** Fetch the complete mailbox tree needed to delete children before parents. */
