@@ -109,7 +109,7 @@ test.describe('stormbox contacts and address books', {
     });
   });
 
-  test('deletes a separate contact into Trash', async () => {
+  test('deletes a contact', async () => {
     const suffix = uniqueSuffix();
     const name = `${CONTACT_PREFIX}-${suffix}-Delete`;
     const email = `delete-${suffix}@example.com`;
@@ -146,7 +146,7 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactInBook(contactName, renamed);
   });
 
-  test('deletes a separate address book and its sole contact', async () => {
+  test('deletes an address book and its sole contact', async () => {
     const suffix = uniqueSuffix();
     const name = `${BOOK_PREFIX}-${suffix}-Delete`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-DeletedBookMember`;
