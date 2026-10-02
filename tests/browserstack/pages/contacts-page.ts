@@ -54,6 +54,7 @@ export class ContactsPage {
   readonly rail: Locator;
   readonly list: Locator;
   readonly listHeading: Locator;
+  readonly listNotice: Locator;
   readonly contactForm: Locator;
   readonly contactDetails: Locator;
   readonly bookForm: Locator;
@@ -70,6 +71,7 @@ export class ContactsPage {
     this.rail = page.getByRole('navigation', { name: 'Address books' });
     this.list = page.locator('.directory-shell__list');
     this.listHeading = page.locator('.directory-list__header h2');
+    this.listNotice = page.locator('.directory-list__notice');
     this.contactForm = page.locator('.contact-detail__editor');
     this.contactDetails = page.locator('.contact-detail__body');
     this.bookForm = page.locator('.address-book-detail__editor');
@@ -397,6 +399,8 @@ export class ContactsPage {
 
   async deleteOpenContact(): Promise<void> {
     await this.tap(this.page.locator('.contact-detail').getByRole('button', { name: 'Delete' }));
+    // The row disappears optimistically; the notice follows the completed delete mutation.
+    await expect(this.listNotice).toHaveText('1 contact deleted.', { timeout: 60_000 });
   }
 
   async expectTrashedContact(name: string): Promise<void> {
@@ -497,13 +501,15 @@ export class ContactsPage {
         .filter({ hasText: /^E2E-Contact/ }),
     });
     while (await rows.count() > 0) {
-      const name = await rows.first().locator('.name').textContent();
-      await this.tap(rows.first());
+      const name = (await rows.first().locator('.name').textContent())?.trim();
+      expect(name, 'Trash cleanup requires a named test contact').toBeTruthy();
+      await this.openTrashedContact(name!);
       await this.tap(this.page.locator('.trash-detail')
         .getByRole('button', { name: 'Delete Forever' }));
       await this.tap(this.confirmationDialog
         .getByRole('button', { name: 'Delete forever' }));
-      await expect(this.contactRow(name ?? '')).toHaveCount(0);
+      await expect(this.listNotice).toHaveText('1 contact deleted forever.', { timeout: 60_000 });
+      await expect(this.contactRow(name!)).toHaveCount(0);
       await this.openList();
     }
     await this.filter('');
@@ -533,10 +539,11 @@ export class ContactsPage {
     });
 
     while (await rows.count() > 0) {
-      const name = await rows.first().locator('.name').textContent();
-      await this.tap(rows.first());
+      const name = (await rows.first().locator('.name').textContent())?.trim();
+      expect(name, 'Contact cleanup requires a named test contact').toBeTruthy();
+      await this.openContact(name!);
       await this.deleteOpenContact();
-      await this.expectContactAbsent(name ?? '');
+      await this.expectContactAbsent(name!);
       await this.openList();
     }
     await this.purgeTestTrash();
