@@ -541,10 +541,15 @@ export class ContactsPage {
     while (await rows.count() > 0) {
       const name = (await rows.first().locator('.name').textContent())?.trim();
       expect(name, 'Contact cleanup requires a named test contact').toBeTruthy();
+      // Keep one matching row so Android returns to the list after deletion.
+      // With another match, the next detail replaces the list and hides its notice.
+      await this.filter(name!);
+      await expect(this.contactRow(name!)).toHaveCount(1);
       await this.openContact(name!);
       await this.deleteOpenContact();
       await this.expectContactAbsent(name!);
       await this.openList();
+      await this.filter(CONTACT_PREFIX);
     }
     await this.purgeTestTrash();
     await this.openRail();
