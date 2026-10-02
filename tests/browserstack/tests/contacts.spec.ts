@@ -134,8 +134,8 @@ test.describe('stormbox contacts and address books', {
     const name = `${BOOK_PREFIX}-${suffix}-CreateEdit`;
     const renamed = `${name}-Renamed`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-BookMember`;
-    // All Contacts files new cards in the server default, or the first regular book
-    // if none is designated. Editing a separate book must preserve that target.
+    // Capture All Contacts' existing-book choice before creating a separate book.
+    // With no server-designated default, that choice may have no Personal badge.
     const creationBook = await getContactCreationBook();
     await contacts.expectContactCreationBook(creationBook);
 
@@ -148,8 +148,8 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactRow(contactName);
 
     await contacts.editBook(name, renamed, 'Updated BrowserStack book');
-    // Compare the JMAP id as well as the name and default flag: a fallback book
-    // is still the filing target even though it has no Personal badge.
+    // The JMAP comparison pins the chosen book's id, name, and default flag;
+    // a fallback may have no Personal badge to identify it in the UI.
     expect(await getContactCreationBook()).toEqual(creationBook);
     await contacts.expectContactCreationBook(creationBook);
     await contacts.expectBookNotDefault(renamed);
