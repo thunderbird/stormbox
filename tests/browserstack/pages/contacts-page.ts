@@ -412,23 +412,22 @@ export class ContactsPage {
     await this.expectTrashedContact(name);
   }
 
-  async defaultBookName(): Promise<string> {
+  async expectDefaultBook(name: string | null): Promise<void> {
     await this.openRail();
-    const name = (await this.page.locator('.contacts-rail__book')
-      .filter({ has: this.page.locator('.contacts-rail__badge') })
-      .locator('.contacts-rail__name').textContent())?.trim();
-    expect(name, 'The account must have a default address book').toBeTruthy();
-    return name!;
-  }
-
-  async expectDefaultBook(name: string): Promise<void> {
-    await this.openRail();
-    await expect(this.bookButton(name)).toContainText('Personal');
+    const defaultBooks = this.page.locator('.contacts-rail__book').filter({
+      has: this.page.locator('.contacts-rail__badge')
+        .getByText('Personal', { exact: true }),
+    });
+    await expect(defaultBooks).toHaveCount(name === null ? 0 : 1);
+    if (name !== null) {
+      await expect(defaultBooks.locator('.contacts-rail__name')).toHaveText(name);
+    }
   }
 
   async expectBookNotDefault(name: string): Promise<void> {
     await this.openRail();
-    await expect(this.bookButton(name)).not.toContainText('Personal');
+    await expect(this.bookButton(name)).toBeVisible();
+    await expect(this.bookButton(name).locator('.contacts-rail__badge')).toHaveCount(0);
   }
 
   async expectBookAbsent(name: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 
 import {
   PLAYWRIGHT_TAG_DESKTOP,
@@ -9,6 +9,7 @@ import {
 import {
   deleteAddressBooksByPrefix,
   deleteContactsByPrefix,
+  getDefaultAddressBook,
 } from '../helpers/jmap-client';
 import {
   BOOK_PREFIX,
@@ -136,7 +137,8 @@ test.describe('stormbox contacts and address books', {
     const name = `${BOOK_PREFIX}-${suffix}-CreateEdit`;
     const renamed = `${name}-Renamed`;
     const contactName = `${CONTACT_PREFIX}-${suffix}-BookMember`;
-    const defaultName = await contacts.defaultBookName();
+    const defaultBook = await getDefaultAddressBook();
+    await contacts.expectDefaultBook(defaultBook?.name ?? null);
 
     await contacts.createBook(name, 'Initial BrowserStack book');
     await contacts.expectBookNotDefault(name);
@@ -147,7 +149,8 @@ test.describe('stormbox contacts and address books', {
     await contacts.expectContactRow(contactName);
 
     await contacts.editBook(name, renamed, 'Updated BrowserStack book');
-    await contacts.expectDefaultBook(defaultName);
+    expect(await getDefaultAddressBook()).toEqual(defaultBook);
+    await contacts.expectDefaultBook(defaultBook?.name ?? null);
     await contacts.expectBookNotDefault(renamed);
     await contacts.expectContactInBook(contactName, renamed);
   });

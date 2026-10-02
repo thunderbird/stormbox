@@ -364,6 +364,16 @@ async function listAddressBooks(client: JmapContactsClient): Promise<JmapAddress
   return list as JmapAddressBook[];
 }
 
+/** Read the server-designated default; RFC 9610 allows an account with none. */
+export async function getDefaultAddressBook(): Promise<{ id: string; name: string } | null> {
+  const books = await listAddressBooks(await connectContactsJmap());
+  const defaults = books.filter((book) => book.isDefault);
+  if (defaults.length > 1) {
+    throw new Error('The JMAP account has more than one default address book');
+  }
+  return defaults[0] ? { id: defaults[0].id, name: defaults[0].name } : null;
+}
+
 /** Refuse books containing other cards; never destroy their contents implicitly. */
 export async function deleteAddressBooksByPrefix(prefix: string): Promise<number> {
   if (prefix !== 'E2E-AddressBook') {
