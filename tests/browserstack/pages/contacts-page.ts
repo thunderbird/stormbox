@@ -452,6 +452,9 @@ export class ContactsPage {
   }
 
   async expectContactInBook(name: string, book: string): Promise<void> {
+    // Changing books clears the row selected behind the address-book detail pane.
+    // Returning also proves the contact remains listed in the renamed book.
+    await this.displayAllContacts();
     await this.selectBook(book);
     await this.expectContactRow(name);
     await this.openContact(name);
