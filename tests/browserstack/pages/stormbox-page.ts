@@ -217,7 +217,17 @@ export class StormboxPage {
   }
 
   async signInIfNeeded(projectName = 'desktop') {
-    if (await this.isAppUiVisible(TIMEOUT_10_SECONDS)) {
+    const onAndroid = projectName.toLowerCase().includes('android');
+    if (onAndroid) {
+      // Android may show the login gate or a restored app session after navigation.
+      await this.accountMenuButton.or(this.signInButton).first()
+        .waitFor({ state: 'visible', timeout: TIMEOUT_30_SECONDS });
+    }
+    const appReady = onAndroid
+      ? await this.accountMenuButton.isVisible()
+      : await this.isAppUiVisible(TIMEOUT_10_SECONDS);
+    if (appReady) {
+      if (onAndroid) await this.waitForAppUi();
       await this.waitForInboxToFinishLoading();
       return;
     }
@@ -232,6 +242,12 @@ export class StormboxPage {
     if (await this.welcomeDialog.isVisible()) {
       await this.dismissWelcomeModal();
     }
+  }
+
+  /** A reload in the same browser context should restore its signed-in session. */
+  async waitForSignedInApp(): Promise<void> {
+    await this.waitForAppUi();
+    await this.waitForInboxToFinishLoading();
   }
 
   async assertDesktopUiVisible() {
@@ -852,9 +868,17 @@ export class StormboxPage {
   }
 
   private async submitThunderbirdAccountSignIn(projectName: string) {
-    await this.page.getByRole('button', { name: /^sign in$/i }).click({
-      force: projectName.toLowerCase().includes('android'),
-    });
+    const button = this.page.getByRole('button', { name: /^sign in$/i });
+    if (projectName.toLowerCase().includes('android')) {
+      // The keyboard can cover the submit button after filling the password.
+      await this.page.evaluate(() => {
+        const focused = document.activeElement;
+        if (focused instanceof HTMLInputElement) focused.blur();
+      });
+      await button.scrollIntoViewIfNeeded();
+    }
+    await button.click();
+    await expect(button).toBeHidden({ timeout: TIMEOUT_60_SECONDS });
   }
 
 }
