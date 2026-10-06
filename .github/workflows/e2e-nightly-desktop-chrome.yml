@@ -1,8 +1,8 @@
 name: e2e-desktop-nightly-chrome
 
 concurrency:
-  group: e2e-desktop-nightly-chrome
-  cancel-in-progress: true
+  group: e2e-browserstack-production-account
+  cancel-in-progress: false
 
 on:
   schedule:
