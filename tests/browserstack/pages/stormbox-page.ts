@@ -234,9 +234,42 @@ export class StormboxPage {
     }
     if (entry === 'error') throw new Error(`OIDC startup failed: ${await loginError.textContent()}`);
     if (entry === 'manual') {
-      await this.signInButton.click({
-        force: projectName.toLowerCase().includes('android'),
-      });
+      let clickError: unknown;
+      try {
+        // A restored session can show the manual sign-in button briefly, then
+        // open Webmail before Playwright clicks it. Bound the click so we can
+        // check which page appeared instead of waiting on a vanished button.
+        await this.signInButton.click({
+          force: projectName.toLowerCase().includes('android'),
+          timeout: TIMEOUT_2_SECONDS,
+        });
+      } catch (error) {
+        clickError = error;
+      }
+      let destination: 'app' | 'oidc' | 'error';
+      // A failed click is harmless only if sign-in has progressed to Webmail
+      // or the Accounts form. Otherwise report the original click failure.
+      const timeout = clickError ? TIMEOUT_10_SECONDS : TIMEOUT_30_SECONDS;
+      try {
+        destination = await Promise.race([
+          this.accountMenuButton.waitFor({ state: 'visible', timeout })
+            .then(() => 'app' as const),
+          this.oidcUsernameInput.waitFor({ state: 'visible', timeout })
+            .then(() => 'oidc' as const),
+          loginError.waitFor({ state: 'visible', timeout })
+            .then(() => 'error' as const),
+        ]);
+      } catch (error) {
+        throw clickError ?? error;
+      }
+      if (destination === 'error') {
+        throw new Error(`OIDC startup failed: ${await loginError.textContent()}`);
+      }
+    }
+    if (await this.accountMenuButton.isVisible()) {
+      await this.waitForAppUi();
+      await this.waitForInboxToFinishLoading();
+      return;
     }
     await this.signInToThunderbirdAccount(projectName);
     await this.waitForAppUi();
@@ -330,6 +363,8 @@ export class StormboxPage {
   async addFolder(fName: string, parentFolder: string, duplicate:boolean, projectName:string = 'desktop') {
     console.log(`creating folder: '${fName}' in '${parentFolder}'`);
     await this.openManageFoldersDialog(projectName);
+    // The previous create's modal must be removed before another folder can start.
+    await expect(this.page.locator('.folder-create')).toHaveCount(0, { timeout: 30_000 });
     await this.manageFoldersAddTopLevelBtn.scrollIntoViewIfNeeded();
     await this.manageFoldersAddTopLevelBtn.click();
     await expect(this.manageFoldersNewFolderDialog).toBeVisible();
@@ -351,8 +386,9 @@ export class StormboxPage {
     if (duplicate) {
       await expect(this.manageFoldersNewFolderNameExistsText).toBeVisible();
       await this.manageFoldersNewFolderCancelBtn.click({ force: projectName.toLowerCase().includes('android')});
+      await expect(this.page.locator('.folder-create')).toHaveCount(0);
     } else {
-      await expect(this.manageFoldersNewFolderDialog).not.toBeVisible();
+      await expect(this.page.locator('.folder-create')).toHaveCount(0, { timeout: 30_000 });
     }
   }
 
@@ -714,16 +750,22 @@ export class StormboxPage {
   }
 
   private async ensureManualThemeMode(projectName: string) {
-    // turn off 'follow system theme' setting so that the switch mode button appears
-    await this.openSettingsDialog(projectName);
-    await expect(this.systemThemeToggle).toBeVisible();
+    // The account settings can settle after the shell; require the manual theme action.
+    const themeAction = this.page.locator('.theme-toggle');
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await this.openSettingsDialog(projectName);
+      await expect(this.systemThemeToggle).toBeVisible();
 
-    if (await this.isSystemThemeEnabled()) {
-      await this.systemThemeToggle.click();
-      await expect(this.systemThemeToggle).toHaveAttribute('aria-checked', 'false');
+      if (await this.isSystemThemeEnabled()) {
+        await this.systemThemeToggle.click();
+        await expect(this.systemThemeToggle).toHaveAttribute('aria-checked', 'false');
+      }
+
+      await this.closeSettingsDialog();
+      if (await themeAction.waitFor({ state: 'attached', timeout: 3_000 })
+        .then(() => true, () => false)) return;
     }
-
-    await this.closeSettingsDialog();
+    await expect(themeAction).toBeAttached();
   }
 
   private async openSettingsDialog(projectName: string) {
@@ -857,9 +899,17 @@ export class StormboxPage {
   }
 
   private async submitThunderbirdAccountSignIn(projectName: string) {
-    await this.page.getByRole('button', { name: /^sign in$/i }).click({
-      force: projectName.toLowerCase().includes('android'),
-    });
+    const button = this.page.getByRole('button', { name: /^sign in$/i });
+    if (projectName.toLowerCase().includes('android')) {
+      // The keyboard can cover the submit button after filling the password.
+      await this.page.evaluate(() => {
+        const focused = document.activeElement;
+        if (focused instanceof HTMLInputElement) focused.blur();
+      });
+      await button.scrollIntoViewIfNeeded();
+    }
+    await button.click();
+    await expect(button).toBeHidden({ timeout: TIMEOUT_60_SECONDS });
   }
 
 }
