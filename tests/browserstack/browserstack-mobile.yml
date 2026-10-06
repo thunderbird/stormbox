@@ -86,3 +86,5 @@ browserstack.maskCommands: sendType, sendPress, setHTTPCredentials, setStorageSt
 # Test Observability is an intelligent test reporting & debugging product. It collects data using the SDK. Read more about what data is collected at https://www.browserstack.com/docs/test-observability/references/terms-and-conditions
 # Visit observability.browserstack.com to see your test reports and insights. To disable test observability, specify `testObservability: false` in the key below.
 testObservability: false
+# default is 90 seconds; some tests need longer when waiting for contact delete etc.
+idleTimeout: 300
