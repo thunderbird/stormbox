@@ -18,13 +18,15 @@ If you add something here, prefer:
 
 ## Running
 
-Everything in here runs inside the dev container against the local
-stack. The host's dev server must already be running on `localhost:3000`
-(use `PLAYWRIGHT_REUSE=1` so Playwright does not try to start its own).
+Everything in here runs inside the dev container. The specs that log
+in (`delete-latency`, `indexer-speed`) need the local stack and
+`LOCAL_STACK=1`. Under `LOCAL_STACK=1` Playwright reuses a vite already
+running on `localhost:3000` (opt out with `PLAYWRIGHT_NO_REUSE=1`) and
+only runs the Firefox project unless `INCLUDE_CHROMIUM=1` is set.
 
 ```bash
 docker exec -u node -w /workspace \
-  -e LOCAL_STACK=1 -e PLAYWRIGHT_REUSE=1 \
+  -e LOCAL_STACK=1 -e INCLUDE_CHROMIUM=1 \
   thundermail-dev \
   npx playwright test --config research/playwright.config.js
 ```
@@ -65,19 +67,23 @@ polls every 50–100 ms and overstates by that much).
 Baseline at time of authoring (Chromium, local Stalwart):
 cold ~380 ms, warm ~900–1300 ms.
 
+After the switch to `IDBBatchAtomicVFS` (2026-05-20): Firefox cold
+~180 ms / warm ~190 ms; Chromium cold ~190 ms, warm 1.5–2.4 s.
+
 ### `vfs-bench.spec.js` + `vfs-bench/`
 
 Head-to-head SQLite VFS comparison run in a DedicatedWorker:
 
-- `opfsAnyContext` — current production VFS (async build, OPFS, no
+- `idbBatchAtomic` — production VFS since 2026-05-20 (async build,
+  IndexedDB-backed, `lockPolicy: 'exclusive'`, works in SharedWorker,
+  no `-journal`/`-wal` file: atomic batch writes via IndexedDB
+  transactions instead)
+- `opfsAnyContext` — previous production VFS (async build, OPFS, no
   WAL, works in SharedWorker)
 - `accessHandlePool` — sync build + `locking_mode=exclusive` +
   `journal_mode=WAL`, OPFS (DedicatedWorker only, single connection)
 - `opfsCoopSync` — sync build, multi-handle, OPFS, no WAL
   (DedicatedWorker only)
-- `idbBatchAtomic` — async build, IndexedDB-backed (no OPFS), works
-  in SharedWorker, no `-journal`/`-wal` file (atomic batch writes
-  via IndexedDB transactions instead)
 
 Three scenarios per VFS:
 
@@ -86,22 +92,84 @@ Three scenarios per VFS:
   pacing)
 - `saturated` — 100 inserts per tx with no pause (worst case)
 
-Each scenario runs for `VFS_BENCH_DURATION` ms (default 8000) and
-reports foreground p50/p95/p99 latency plus background rows/sec.
+The foreground workload is one delete-shaped transaction (SELECT,
+two DELETEs, two UPDATEs) every `VFS_BENCH_FG_INTERVAL` ms (default
+50), serialized with the background writes through one FIFO lock like
+the production Engine. Each scenario runs for `VFS_BENCH_DURATION` ms
+(default 8000) and reports foreground p50/p95/p99/max latency plus
+background rows/sec.
 
-Headline result at time of authoring (foreground p50, ms):
+The bench needs no local stack. Run it without `LOCAL_STACK` so both
+browser projects exist and keep one worker so cases do not contend
+with each other. `PLAYWRIGHT_NO_REUSE=1` makes Playwright start its
+own vite; drop it if one is already serving `localhost:3000`.
 
-| VFS | Chromium solo | Firefox solo | Chromium indexer | Firefox indexer |
+```bash
+docker exec -u node -w /workspace -e PLAYWRIGHT_NO_REUSE=1 \
+  thundermail-dev \
+  npx playwright test --config research/playwright.config.js \
+  research/vfs-bench.spec.js --workers=1 --repeat-each=3 --reporter=list
+```
+
+#### Results, 2026-10-07
+
+Median of 3 runs per case. Chromium 148.0.7778.96 (headless shell),
+Firefox 150.0.2, Playwright 1.60.0, `@journeyapps/wa-sqlite` 1.7.0,
+EC2 m8i-flex.2xlarge (8 vCPU Xeon 6975P-C) with other dev containers
+running. Run-to-run spread was within 10 ms on p50 and 8% on
+throughput.
+
+Foreground latency in ms, background rows/sec from the `saturated`
+scenario:
+
+Chromium:
+
+| VFS | solo p50 / p99 | indexer p50 / p95 / p99 | saturated p50 / p95 / p99 | bg rows/s |
 |---|--:|--:|--:|--:|
-| opfsAnyContext (current) | 43 | 129 | 74 | 220 |
-| accessHandlePool + WAL | 12 | 9 | 24 | 28 |
-| opfsCoopSync | 26 | 19 | 47 | 35 |
-| idbBatchAtomic | 8 | 16 | 15 | 36 |
+| idbBatchAtomic (production) | 5 / 9 | 10 / 16 / 20 | 72 / 135 / 158 | 2188 |
+| opfsAnyContext | 33 / 44 | 57 / 92 / 125 | 141 / 219 / 230 | 963 |
+| accessHandlePool + WAL | 8 / 13 | 27 / 48 / 57 | 114 / 221 / 287 | 2038 |
+| opfsCoopSync | 19 / 24 | 33 / 53 / 57 | 84 / 146 / 153 | 1438 |
 
-Two paths off `OPFSAnyContextVFS`: `idbBatchAtomic` (drop-in,
-SharedWorker-safe, 5-8× improvement on every realistic scenario)
-or `accessHandlePool` + WAL (DedicatedWorker migration, 3-14×
-improvement, biggest win on Firefox).
+Firefox:
+
+| VFS | solo p50 / p99 | indexer p50 / p95 / p99 | saturated p50 / p95 / p99 | bg rows/s |
+|---|--:|--:|--:|--:|
+| idbBatchAtomic (production) | 11 / 15 | 27 / 46 / 66 | 81 / 146 / 177 | 1288 |
+| opfsAnyContext | 113 / 121 | 183 / 261 / 264 | 258 / 287 / 295 | 338 |
+| accessHandlePool + WAL | 6 / 10 | 23 / 38 / 42 | 84 / 165 / 176 | 1700 |
+| opfsCoopSync | 14 / 17 | 28 / 43 / 46 | 77 / 136 / 144 | 1400 |
+
+The `indexer` scenario's background rate is capped by its pacing at
+400 rows/s, so only `saturated` measures write throughput. Under
+`indexer` every VFS except `opfsAnyContext` (325 Chromium, 213
+Firefox) kept up at 350–388 rows/s.
+
+On Chromium `idbBatchAtomic` has the lowest p50 and p95 and the
+highest throughput in every scenario. On Firefox it is about 2×
+slower than `accessHandlePool` + WAL on the solo floor (11 vs 6 ms),
+level with the two OPFS sync VFSes on indexer p50 but with a longer
+p99 tail (66 vs 42–46 ms), and the slowest of those three on
+saturated throughput (1288 vs 1400–1700 rows/s). On Firefox
+`opfsAnyContext` is 3× slower than the other VFSes when saturated and
+8–19× slower on the solo floor.
+
+#### Original run, 2026-05-20
+
+Single run per case, browser versions not recorded. Foreground p50
+in ms, background rows/sec from `saturated`:
+
+| VFS | Chromium solo / indexer / saturated | Chromium bg rows/s | Firefox solo / indexer / saturated | Firefox bg rows/s |
+|---|--:|--:|--:|--:|
+| idbBatchAtomic | 8 / 15 / 69 | 1863 | 16 / 36 / 100 | 988 |
+| opfsAnyContext | 43 / 74 / 115 | 625 | 129 / 220 / 300 | 288 |
+| accessHandlePool + WAL | 12 / 24 / 125 | 1550 | 9 / 28 / 96 | 1313 |
+| opfsCoopSync | 26 / 47 / 100 | 1113 | 19 / 35 / 81 | 1150 |
+
+This run motivated the move off `OPFSAnyContextVFS`: `idbBatchAtomic`
+was a drop-in, SharedWorker-safe 5–8× improvement on the solo and
+indexer scenarios, against 3–14× for `accessHandlePool` + WAL, which
+would have required a DedicatedWorker migration.
 
 ### `indexer-speed.spec.js`
 
