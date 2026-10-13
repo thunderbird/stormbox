@@ -232,7 +232,7 @@ export class ContactsPage {
     await this.tap(button);
   }
 
-  private async formattedDate(isoDate: string): Promise<string> {
+  private formattedDate(isoDate: string): Promise<string> {
     // Read the browser's locale; UTC noon keeps the calendar day stable.
     return this.page.evaluate((iso) => {
       const [year, month, day] = iso.split('-').map(Number);
