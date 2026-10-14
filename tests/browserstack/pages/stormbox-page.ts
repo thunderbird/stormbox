@@ -107,7 +107,7 @@ export class StormboxPage {
     this.mailSpaceButton = page.getByRole('button', { name: /^mail$/i });
     this.contactsSpaceButton = page.getByRole('button', { name: /^contacts$/i });
     this.showAddressBookListButton = page.getByRole('button', { name: /^show address book list$/i });
-    this.messagesArea = page.getByRole('region', { name: /^messages$/i });
+    this.messagesArea = page.getByRole('region', { name: /^.+ messages, column 1$/i, });
     this.hideFolderListButton = page.getByRole('button', { name: /^hide folder list$/i });
     this.showFolderListButton = page.getByRole('button', { name: /^show folder list$/i });
     this.reportBugButton = this.headerAction('link', /report a bug/i);
