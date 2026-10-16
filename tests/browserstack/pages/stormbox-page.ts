@@ -234,7 +234,7 @@ export class StormboxPage {
     }
   }
 
-  async assertDesktopUiVisible() {
+  async assertDesktopUiVisible(projectName = 'desktop') {
     await this.waitForAppUi();
     await expect(this.thundermailMenu).toBeVisible();
     await expect(this.compactMenuButton).not.toBeVisible();
@@ -244,7 +244,7 @@ export class StormboxPage {
     await expect(this.mailSpaceButton).toBeVisible();
     await expect(this.contactsSpaceButton).toBeVisible();
     await expect(this.messagesArea).toBeVisible();
-    await this.assertCommonAuthenticatedUiVisible('desktop');
+    await this.assertCommonAuthenticatedUiVisible(projectName);
 
     // on desktop the mail folders are visible by default (and the hide folders button visible)
     await expect(this.hideFolderListButton).toBeVisible();
@@ -253,6 +253,10 @@ export class StormboxPage {
 
   async assertMobileUiVisible(projectName = 'mobile') {
     await this.waitForAppUi();
+    if (await this.isWideLayout()) {
+      await this.assertDesktopUiVisible(projectName);
+      return;
+    }
     await expect(this.compactMenuButton).toBeVisible();
     await expect(this.thundermailMenu).not.toBeVisible();
     await expect(this.quickFilter).toBeVisible();
@@ -482,7 +486,7 @@ export class StormboxPage {
   }
 
   private async exerciseFolderListToggle(projectName: string) {
-    if (this.isDesktopProject(projectName)) {
+    if (await this.isWideLayout()) {
       await this.hideFolderList();
       await this.showFolderList();
       return;
@@ -540,10 +544,10 @@ export class StormboxPage {
     await this.contactsSpaceButton.click();
     await expect(this.allContactsHeading).toBeVisible();
 
-    // Android's single-column layout keeps New Contact in the hidden address-book sidebar.
-    if (projectName.toLowerCase().includes('android')) {
+    // Below 640px, New Contact is in the collapsed address-book sidebar.
+    if (!await this.isWideLayout()) {
       await expect(this.showAddressBookListButton).toBeVisible();
-      await this.showAddressBookListButton.click({ force: true });
+      await this.showAddressBookListButton.click({ force: projectName.toLowerCase().includes('android') });
     }
 
     await expect(this.addContactButton).toBeVisible();
@@ -583,8 +587,8 @@ export class StormboxPage {
     await expect(this.loadingMessageList).not.toBeVisible({ timeout: TIMEOUT_60_SECONDS });
   }
 
-  private isDesktopProject(projectName: string) {
-    return !/(android|mobile)/i.test(projectName);
+  private isWideLayout() {
+    return this.page.evaluate(() => !window.matchMedia('(max-width: 639px)').matches);
   }
 
   private escapeRegExp(value: string) {
@@ -672,7 +676,7 @@ export class StormboxPage {
   }
 
   private async openHeaderActions(projectName: string) {
-    if (this.isDesktopProject(projectName)) return;
+    if (await this.isWideLayout()) return;
     await expect(this.compactMenuButton).toBeVisible();
     if (await this.isDetailsOpen(this.compactMenu)) return;
     await this.compactMenuButton.click();
@@ -680,7 +684,7 @@ export class StormboxPage {
   }
 
   private async closeHeaderActions(projectName: string) {
-    if (this.isDesktopProject(projectName)) return;
+    if (await this.isWideLayout()) return;
     await this.closeDetails(this.compactMenu);
   }
 
@@ -715,7 +719,7 @@ export class StormboxPage {
       return;
     }
 
-    if (this.isDesktopProject(projectName)) {
+    if (await this.isWideLayout()) {
       await expect(this.settingsGearButton).toBeVisible();
       await this.settingsGearButton.click();
     } else {
@@ -753,7 +757,7 @@ export class StormboxPage {
   }
 
   private async assertThundermailMenuItemsVisible(projectName: string) {
-    if (this.isDesktopProject(projectName)) {
+    if (await this.isWideLayout()) {
       await expect(this.thundermailMenuButton).toBeVisible();
       await this.thundermailMenuButton.click();
       await expect(this.appointmentMenuItem).toBeVisible();
