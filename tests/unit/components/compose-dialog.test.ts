@@ -18,6 +18,7 @@ import ComposeManager from '../../../src/components/ComposeManager.vue';
 import RichTextEditor from '../../../src/components/RichTextEditor.vue';
 import ScheduleSendDialog from '../../../src/components/ScheduleSendDialog.vue';
 import StoreErrorToast from '../../../src/components/StoreErrorToast.vue';
+import { SPOTLIGHT_TARGETS } from '../../../src/composables/featureSpotlightScripts';
 import {
   __resetRepositoryForTests,
   __setRepositoryForTests,
@@ -115,6 +116,54 @@ afterEach(() => {
 });
 
 describe('ComposeDialog rich text integration', () => {
+  it('maximizes and restores without replacing the editor or changing its selection or draft', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose('<p>Original body</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    editor.focus();
+    const text = editor.querySelector('p')!.firstChild!;
+    const range = document.createRange();
+    range.setStart(text, 4);
+    range.collapse(true);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const before = JSON.stringify(composeStore.draft);
+    const touchSession = vi.spyOn(composeStore, 'touchSession');
+
+    for (const action of ['Maximize', 'Restore']) {
+      const button = wrapper.get(`[aria-label="${action} composer"]`);
+      expect(button.attributes('title')).toBe(`${action} composer`);
+      const pointerDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+      button.element.dispatchEvent(pointerDown);
+      expect(pointerDown.defaultPrevented).toBe(true);
+      await button.trigger('click');
+      expect(wrapper.get('.compose-dialog').classes('compose-dialog--maximized'))
+        .toBe(action === 'Maximize');
+      expect(wrapper.get('.editor').element).toBe(editor);
+      expect(document.activeElement).toBe(editor);
+      expect(selection.anchorNode).toBe(text);
+      expect(selection.anchorOffset).toBe(4);
+      expect(JSON.stringify(composeStore.draft)).toBe(before);
+    }
+    expect(touchSession).not.toHaveBeenCalled();
+  });
+
+  it('retains the maximized size when minimizing and restoring from the dock', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const firstId = composeStore.activeSessionId!;
+    await wrapper.setProps({ sessionId: firstId });
+    const editor = wrapper.get('.editor').element;
+    await wrapper.get('[aria-label="Maximize composer"]').trigger('click');
+    await wrapper.get(SPOTLIGHT_TARGETS.composeMinimize).trigger('click');
+    await nextTick();
+    expect(wrapper.get('.compose-dialog').isVisible()).toBe(false);
+    composeStore.restore(firstId);
+    await nextTick();
+    expect(wrapper.get('.compose-dialog').isVisible()).toBe(true);
+    expect(wrapper.get('[aria-label="Restore composer"]').attributes('title')).toBe('Restore composer');
+    expect(wrapper.get('.editor').element).toBe(editor);
+  });
+
   it('mounts the editor after opening and syncs paired body values', async () => {
     const composeStore = useComposeStore();
     composeStore.identities = [{

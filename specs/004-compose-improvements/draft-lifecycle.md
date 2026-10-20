@@ -16,7 +16,7 @@ remain controlling.
 
 | Area | 🟩 Done | 🟨 Partial | 🟧 Planned |
 |:--|--:|--:|--:|
-| CD-1 Compose sessions and presentation | 8 | — | — |
+| CD-1 Compose sessions and presentation | 9 | — | — |
 | CD-2 Seed-relative dirtiness | 7 | — | — |
 | CD-3 Autosave scheduling | 8 | — | — |
 | CD-4 Durable JMAP revisions | 12 | — | — |
@@ -71,6 +71,7 @@ gets a new one.
 | CD-1.6 🟩 Done | A docked bar shall identify the session by subject, falling back to its first recipient and then “New message”. It shall expose Restore and Close with accessible names. |
 | CD-1.7 🟩 Done | Close and discard shall be unavailable while the session is sending. A sending session leaves the screen at activation and is represented only by the send toast until the send settles (CS-1.16); it cannot be restored or minimized in that time, and its content and send controls stay inert (CS-1.15). A session that docked because its send failed while another composer was expanded shall show “Send failed” with a marker alongside the CD-1.6 label. |
 | CD-1.8 🟩 Done | Global mail shortcuts shall be suppressed only while an expanded composer owns the interaction. A minimized session shall not prevent normal mail-list shortcuts. |
+| CD-1.9 🟩 Done | A four-arrow Maximize/Restore control shall toggle an open composer between its normal modal size and the app viewport without remounting the editor or changing draft content, focus, selection, or undo history. Each session shall retain its size when minimized to the dock and reopened. The control shall expose its current action through its accessible name and tooltip. It shall not open a separate window or enable window dragging or drag resizing. The minimize, maximize/restore, and close controls shall use consistent icon sizes, stroke weights, and control dimensions. |
 
 ## CD-2 — Seed-relative dirtiness
 
