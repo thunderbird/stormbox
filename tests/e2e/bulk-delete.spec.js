@@ -57,7 +57,9 @@ test.describe('Bulk delete e2e', () => {
       `Delete e2e bulk ${stamp} c`,
     ];
     const createdIds = [];
+    const initialViewport = page.viewportSize();
     try {
+      await page.setViewportSize({ width: 1100, height: 800 });
       for (const subject of subjects) {
         const id = await createEmailInMailbox(jmap, {
           mailboxId: inbox.id,
@@ -71,6 +73,13 @@ test.describe('Bulk delete e2e', () => {
         await expectRowSoon(page, subject);
       }
 
+      await page.locator('.msg-list__item').filter({ hasText: subjects[0] })
+        .locator('.msg-list__content').click();
+      await expect(page.locator('.message-view__article')).toBeVisible();
+      await expect(page.locator('.msg-list')).toHaveClass(/msg-list--card/);
+      const listHeader = await page.locator('.selectable-list-header').elementHandle();
+      const listScroller = await page.locator('.msg-list__scroller').elementHandle();
+
       for (const subject of subjects) {
         const row = page.locator('.msg-list__items > li')
           .filter({ hasText: subject })
@@ -79,6 +88,7 @@ test.describe('Bulk delete e2e', () => {
       }
       await expect(page.locator('.msg-list__count'))
         .toHaveText(/^3 selected/, { timeout: 5_000 });
+      await expect(page.locator('.msg-list')).not.toHaveClass(/msg-list--card/);
 
       await page.locator('.msg-list__bulk-actions [title="Delete"]').click();
 
@@ -88,6 +98,26 @@ test.describe('Bulk delete e2e', () => {
           { timeout: 30_000, message: `deleted bulk row "${subject}" should disappear from Inbox` },
         ).toBe(0);
       }
+
+      await expect(page.locator('.message-view__article')).toBeVisible();
+      await expect(page.locator('.msg-list')).toHaveClass(/msg-list--card/);
+      await expect(page.locator('.msg-list__items > li.is-focused')).toHaveCount(1);
+      expect(await listHeader.evaluate((element) => element.isConnected)).toBe(true);
+      expect(await listScroller.evaluate((element) => element.isConnected)).toBe(true);
+
+      // LOCAL_STACK uses Vue's dev build, whose component state exposes the rendered virtual items.
+      // Its render tree excludes orphan DOM nodes left behind by duplicate keys.
+      await expect.poll(() => page.locator('.msg-list').evaluate((list) => {
+        let component = list.__vueParentComponent;
+        while (component && !component.setupState?.virtualItems) component = component.parent;
+        const expected = component?.setupState.virtualItems;
+        const actual = [...list.querySelectorAll('.msg-list__items > li')];
+        if (!expected?.length || actual.length !== expected.length) return false;
+        const ids = actual.map((row) => row.id).filter(Boolean);
+        return new Set(ids).size === ids.length
+          && actual.every((row, index) => Number(row.dataset.index) === expected[index].index);
+      }), { message: 'one DOM row per virtual item after bulk deletion' }).toBe(true);
+      expect(consoleLinesFor(page).filter((line) => /duplicate keys/i.test(line))).toEqual([]);
 
       const inboxCache = await readViewCacheForFolderRole(page, 'inbox');
       expect(inboxCache, 'local Inbox cache should be reachable via window.__repo').not.toBeNull();
@@ -126,6 +156,7 @@ test.describe('Bulk delete e2e', () => {
       for (const id of createdIds) {
         await cleanupEmail(jmap, id, trash.id);
       }
+      if (initialViewport) await page.setViewportSize(initialViewport);
     }
   });
 });

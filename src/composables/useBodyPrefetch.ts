@@ -82,7 +82,7 @@ export function useBodyPrefetch(deps: BodyPrefetchDeps) {
    * (undefined slots) silently — the next ensureLoaded round trip
    * will fill them and the next scroll-pause will pick them up.
    */
-  function enqueueVisibleBodyPrefetch(start: number, end: number, rows: CachedRow[]) {
+  function enqueueVisibleBodyPrefetch(start: number, end: number, rows: readonly CachedRow[]) {
     const repo = deps.getRepo();
     const accountId = deps.getAccountId();
     if (!repo || accountId == null) return;

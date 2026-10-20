@@ -254,11 +254,16 @@ test.describe('Message list columns e2e', () => {
     const stamp = Date.now();
     const inboxSubject = `${SUBJECT_PREFIX} ${stamp} stays`;
     const archiveSubject = `${SUBJECT_PREFIX} ${stamp} archived`;
+    const neighborSubject = `${SUBJECT_PREFIX} ${stamp} neighbor`;
     let inboxId = null;
     let archiveId = null;
+    let neighborId = null;
     try {
       inboxId = await createEmailInMailbox(jmap, {
         mailboxId: inbox.id, fromEmail: selfEmail(), subject: inboxSubject, keywords: { $seen: true },
+      });
+      neighborId = await createEmailInMailbox(jmap, {
+        mailboxId: archive.id, fromEmail: selfEmail(), subject: neighborSubject, keywords: { $seen: true },
       });
       archiveId = await createEmailInMailbox(jmap, {
         mailboxId: archive.id, fromEmail: selfEmail(), subject: archiveSubject, keywords: { $seen: true },
@@ -272,6 +277,7 @@ test.describe('Message list columns e2e', () => {
       await second.locator('.msg-list__scroller').evaluate((el) => { el.scrollTop = 0; });
       const archivedRow = rowIn(second, archiveSubject);
       await expect(archivedRow).toBeVisible({ timeout: 30_000 });
+      await expect(rowIn(second, neighborSubject)).toBeVisible();
 
       // Opening a row from column 2 shows it in the reading pane while
       // column 1 and the folder list stay on Inbox; only that row is open.
@@ -359,6 +365,7 @@ test.describe('Message list columns e2e', () => {
       await removeExtraColumns(page).catch(() => {});
       if (inboxId) await cleanupEmail(jmap, inboxId, trash.id);
       if (archiveId) await cleanupEmail(jmap, archiveId, trash.id);
+      if (neighborId) await cleanupEmail(jmap, neighborId, trash.id);
     }
   });
 });

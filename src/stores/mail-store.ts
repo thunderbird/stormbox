@@ -156,13 +156,9 @@ export const useMailStore = defineStore('mail', () => {
    */
   const folderStates = shallowReactive(new Map<number, FolderCache>());
   /** View of the primary column while it has no folder; never written to in production. */
-  const noFolderView = reactive<FolderView>({ messages: [], total: 0, isLoading: false });
+  const noFolderView = createFolderView();
   /** Shared read-only view for a folder that has no cache yet. */
-  const unboundFolderView: FolderView = Object.freeze({
-    messages: Object.freeze([]) as unknown as CachedRow[],
-    total: 0,
-    isLoading: false,
-  });
+  const unboundFolderView: FolderView = Object.freeze(createFolderView());
   /**
    * Folders currently displayed by a list column, ref-counted. Together
    * with `currentFolderId` these are the folders whose painted pages are
@@ -177,13 +173,24 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /** Rows a folder's column currently paints (sparse: unfetched positions are undefined). */
-  function rowsForFolder(folderId: number | null | undefined): CachedRow[] {
+  function rowsForFolder(folderId: number | null | undefined): readonly CachedRow[] {
     return folderView(folderId).messages;
   }
 
+  function createFolderView(total = 0): FolderView {
+    return shallowReactive({
+      snapshot: Object.freeze({ messages: Object.freeze([]) as readonly CachedRow[], total }),
+      get messages() { return this.snapshot.messages; },
+      get total() { return this.snapshot.total; },
+      isLoading: false,
+    });
+  }
+
   function publishView(state: FolderCache) {
-    state.view.messages = state.rows.slice();
-    state.view.total = state.total;
+    state.view.snapshot = Object.freeze({
+      messages: Object.freeze(state.rows.slice()),
+      total: state.total,
+    });
   }
 
   /** Whether `state` is still the live cache for its folder (not replaced by a reset). */
@@ -195,11 +202,14 @@ export const useMailStore = defineStore('mail', () => {
   // fetched are `undefined`, so the virtualiser renders skeleton
   // placeholders for them and the scrollbar reflects the true total.
   // Writable so callers (and tests) can seed the primary view directly.
-  const messages = computed<CachedRow[]>({
+  const messages = computed<readonly CachedRow[]>({
     get: () => folderView(currentFolderId.value).messages,
     set: (rows) => {
       if (currentFolderId.value == null) {
-        noFolderView.messages = rows;
+        noFolderView.snapshot = Object.freeze({
+          messages: Object.freeze(rows.slice()),
+          total: noFolderView.total,
+        });
         return;
       }
       const state = ensureFolderState(currentFolderId.value);
@@ -211,7 +221,7 @@ export const useMailStore = defineStore('mail', () => {
     get: () => folderView(currentFolderId.value).total,
     set: (total) => {
       if (currentFolderId.value == null) {
-        noFolderView.total = total;
+        noFolderView.snapshot = Object.freeze({ messages: noFolderView.messages, total });
         return;
       }
       const state = ensureFolderState(currentFolderId.value);
@@ -657,8 +667,7 @@ export const useMailStore = defineStore('mail', () => {
     folders.value = [];
     accounts.value = [];
     currentFolderId.value = null;
-    noFolderView.messages = [];
-    noFolderView.total = 0;
+    noFolderView.snapshot = unboundFolderView.snapshot;
     noFolderView.isLoading = false;
     openMessageRef.value = { id: null, folderId: null };
     focusedRef.value = { id: null, folderId: null };
@@ -971,8 +980,7 @@ export const useMailStore = defineStore('mail', () => {
     clearInteractionForFolder(previous);
     clearInteractionForFolder(folderId);
     if (folderId == null) {
-      noFolderView.messages = [];
-      noFolderView.total = 0;
+      noFolderView.snapshot = unboundFolderView.snapshot;
       noFolderView.isLoading = false;
       return;
     }
@@ -1029,7 +1037,7 @@ export const useMailStore = defineStore('mail', () => {
       scrollTop: 0,
       pageInflight: null,
       requestedRange: null,
-      view: reactive<FolderView>({ messages: [], total, isLoading: false }),
+      view: createFolderView(total),
     };
     folderStates.set(id, state);
     return state;
@@ -1279,7 +1287,6 @@ export const useMailStore = defineStore('mail', () => {
     staleFolderIds.delete(state.folderId);
     if (Number.isFinite(result?.total)) {
       state.total = Number(result.total);
-      state.view.total = state.total;
     }
     const rows = await repo.listMessagesForView({
       accountId: accountIdForFolder(state.folderId),
@@ -1289,7 +1296,8 @@ export const useMailStore = defineStore('mail', () => {
       limit,
     });
     if (!isLiveState(state)) return;
-    if (rows.length > 0) _splice(state, offset, rows);
+    if (rows.length > 0) _splice(state, offset, rows, { publish: false });
+    publishView(state);
     // Always mark the requested range as covered up to the
     // server's authoritative end. If the server reported fewer
     // rows than `limit` because we're near the tail of a small
@@ -1435,7 +1443,6 @@ export const useMailStore = defineStore('mail', () => {
         const newTotal = Number(progress.total);
         if (newTotal !== state.total) {
           state.total = newTotal;
-          state.view.total = newTotal;
         }
       }
       if (progress?.stale) {
@@ -1629,7 +1636,7 @@ export const useMailStore = defineStore('mail', () => {
     folderId?: number | null;
   } = {}): Promise<number> {
     const state = folderId == null ? null : folderStates.get(Number(folderId)) ?? null;
-    let rows: CachedRow[] = rowsForFolder(folderId);
+    let rows: readonly CachedRow[] = rowsForFolder(folderId);
 
     if (repo && authStore.accountId != null && state) {
       const limit = Math.max(
@@ -1706,11 +1713,12 @@ export const useMailStore = defineStore('mail', () => {
         const newTotal = Number(progress.total);
         if (newTotal !== state.total) {
           state.total = newTotal;
-          state.view.total = state.total;
         }
       }
       if (state.paintedRanges.length > 0) {
         await refreshLoadedPages();
+      } else {
+        publishView(state);
       }
     } catch (err) {
       console.warn('[mail-store] reconcileSelectedFolderViewState failed', err);
@@ -2557,7 +2565,7 @@ export const useMailStore = defineStore('mail', () => {
    */
   function nextPreviewIdAfterRemoval(
     ids: number | number[],
-    rows: CachedRow[],
+    rows: readonly CachedRow[],
     folderId: number | null,
   ): number | null | undefined {
     const removed = new Set(normalizeMessageIds(ids));
@@ -3219,7 +3227,6 @@ export const useMailStore = defineStore('mail', () => {
     }
     if (Number.isFinite(anchorResult?.total)) {
       state.total = Number(anchorResult.total);
-      state.view.total = state.total;
     }
 
     const position = Number(anchorResult?.position);
@@ -3228,6 +3235,7 @@ export const useMailStore = defineStore('mail', () => {
       : Math.max(0, snapshot.index);
     await ensureLoaded(offset, offset + 1, state.folderId);
     if (!isLiveState(state)) return;
+    publishView(state);
 
     if (selectRefreshSelectionIfLoaded(state, snapshot)) return;
     clearRefreshSelectionIfUnchanged(snapshot);
@@ -3308,8 +3316,9 @@ export const useMailStore = defineStore('mail', () => {
       if (!isLiveState(state)) return;
       if (Number.isFinite(result?.total)) {
         state.total = Number(result.total);
-        state.view.total = state.total;
       }
+      // The reset left no old rows; keep the rebuilt extent visible if its first read fails.
+      publishView(state);
       // The manual refresh is the user's explicit recovery path; let
       // the next folder open re-check for drift with a clean slate.
       state.driftRebuildAttempted = false;
