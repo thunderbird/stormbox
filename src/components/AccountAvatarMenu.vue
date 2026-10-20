@@ -62,7 +62,7 @@ function onSettings() {
       </a>
       <a class="account-menu__item" :href="SUPPORT_URL" role="menuitem">
         <span class="account-menu__support-icon" aria-hidden="true" v-html="supportIcon" />
-        <span>Support</span>
+        <span>Contact Support</span>
       </a>
       <button class="account-menu__item" type="button" role="menuitem" @click="onLogout">
         <LogOut :size="16" :stroke-width="1.75" aria-hidden="true" />
