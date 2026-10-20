@@ -8,6 +8,7 @@ import {
   watch,
 } from 'vue';
 import DOMPurify from 'dompurify';
+import { useElementSize } from '@vueuse/core';
 import {
   ArrowLeft,
   Clock,
@@ -64,6 +65,7 @@ const MIN_EMAIL_LAYOUT_WIDTH = 400;
 const props = withDefaults(defineProps<{ maximized?: boolean }>(), { maximized: false });
 const emit = defineEmits<{ toggleMaximized: [] }>();
 const messageViewEl = ref<HTMLElement | null>(null);
+const { height: messageViewHeight } = useElementSize(messageViewEl, undefined, { box: 'border-box' });
 const bodyScrollEl = ref<HTMLElement | null>(null);
 watch(() => props.maximized, async (maximized) => {
   if (!maximized) return;
@@ -770,6 +772,7 @@ function closeMessageView() {
   <section
     ref="messageViewEl"
     class="message-view"
+    :style="{ '--message-view-height': messageViewHeight > 0 ? `${messageViewHeight}px` : undefined }"
     aria-label="Message detail"
     tabindex="-1"
     @keydown="onReadingKeyDown"

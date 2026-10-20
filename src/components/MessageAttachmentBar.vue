@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue';
+import { useElementSize } from '@vueuse/core';
 import {
   Download,
   Eye,
@@ -14,9 +16,19 @@ import {
 } from '../utils/attachment-presentation';
 import AppIconButton from './AppIconButton.vue';
 
-defineProps<{
+const props = defineProps<{
   rows: MessageAttachmentRow[];
 }>();
+
+const headingEl = ref<HTMLElement | null>(null);
+const listEl = ref<HTMLElement | null>(null);
+const firstRowEl = ref<HTMLElement | null>(null);
+const { height: headingHeight } = useElementSize(headingEl, undefined, { box: 'border-box' });
+const { height: firstRowHeight } = useElementSize(firstRowEl, undefined, { box: 'border-box' });
+
+watch([() => props.rows[0]?.key, listEl], () => {
+  firstRowEl.value = (listEl.value?.firstElementChild as HTMLElement | null) ?? null;
+}, { flush: 'post' });
 
 const emit = defineEmits<{
   preview: [key: string];
@@ -95,11 +107,19 @@ function retryLabel(row: MessageAttachmentRow): string {
   <section
     v-if="rows.length"
     class="message-attachment-bar"
+    :style="{
+      '--attachment-heading-height': `${headingHeight}px`,
+      '--attachment-first-row-height': `${firstRowHeight}px`,
+    }"
     aria-label="Attachments"
   >
-    <h3>Attachments <span aria-hidden="true">({{ rows.length }})</span></h3>
-    <ul class="message-attachment-bar__list">
-      <li v-for="row in rows" :key="row.key" class="message-attachment-row">
+    <h3 ref="headingEl">Attachments <span aria-hidden="true">({{ rows.length }})</span></h3>
+    <ul ref="listEl" class="message-attachment-bar__list">
+      <li
+        v-for="row in rows"
+        :key="row.key"
+        class="message-attachment-row"
+      >
         <Paperclip
           :size="15"
           :stroke-width="1.75"
@@ -202,11 +222,15 @@ function retryLabel(row: MessageAttachmentRow): string {
 
 <style scoped>
 .message-attachment-bar {
+  --attachment-list-padding: 8px;
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
   min-width: 0;
-  max-height: min(40vh, 220px);
+  max-height: max(
+    calc(var(--message-view-height, var(--app-viewport-height)) * 0.2),
+    calc(var(--attachment-heading-height) + var(--attachment-first-row-height) + var(--attachment-list-padding) + 1px)
+  );
   overflow: hidden;
   border-top: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 96%, var(--panel2));
@@ -222,9 +246,10 @@ function retryLabel(row: MessageAttachmentRow): string {
 }
 
 .message-attachment-bar__list {
+  flex: 0 1 auto;
   min-height: 0;
   margin: 0;
-  padding: 0 8px 8px;
+  padding: 0 8px var(--attachment-list-padding);
   overflow-y: auto;
   list-style: none;
 }
