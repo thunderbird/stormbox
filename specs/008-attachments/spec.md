@@ -25,7 +25,7 @@ only, JMAP Core upload/download (RFC 8620 §§6.1–6.2) and Mail body parts
 
 | # | Area | 🟩 Done | 🟨 Partial | 🟧 Planned |
 |---|---|--:|--:|--:|
-| 1 | Received presentation and layout | 8 | — | — |
+| 1 | Received presentation and layout | 9 | — | — |
 | 2 | MIME classification and CID rules | 4 | — | — |
 | 3 | Ephemeral blob transfer | 3 | — | 4 |
 | 4 | Compose attachments | 10 | — | — |
@@ -73,6 +73,7 @@ writing a `pending_mutations` row.
 | AT-1.6 🟩 Done | Plain-text attachments shall preview only on explicit user request. Preview output shall be escaped, capped at 256 KiB, and rendered through text nodes or a `<pre>` block on the host page; it shall never use `v-html`, the message iframe, or unsanitized HTML. Text preview reads shall stream and cap bytes so a mislabeled or huge file is not fully buffered merely to preview. |
 | AT-1.7 🟩 Done | PDF attachments shall open on explicit request in the browser's native PDF viewer in a separate tab. The tab shall receive authenticated blob data over a one-use same-origin channel and shall not retain an opener reference to Stormbox. SVG, HTML, XML, archive, executable, and other active or binary formats shall be download-only. They shall not auto-preview in the reading pane or iframe. |
 | AT-1.8 🟩 Done | Download shall fetch bytes through the authenticated worker using the owning message account id, sanitize the untrusted filename for browser save, trigger a file save in the browser, and revoke any transient object URL after use. Stale download completions shall be ignored after the user selects a different message. |
+| AT-1.9 🟩 Done | When all attachments do not fit within AT-1.3, the list shall default expanded and provide a labeled, keyboard-operable Collapse/Expand disclosure. Collapse shall retain one complete row and hide the remaining rows from sight, keyboard navigation, and assistive technology while preserving their state. Expand shall restore the internally scrollable list within the same height budget. The disclosure shall be included in heading measurement and omitted when all attachments fit. Message or attachment-membership changes shall reset expanded state and scroll position; size and content changes shall update disclosure availability without replacing persistent controls. |
 
 ## AT-2 — MIME classification and CID rules
 
