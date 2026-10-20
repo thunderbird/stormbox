@@ -668,6 +668,117 @@ describe('RichTextEditor toolbar', () => {
     expect(font.element.open).toBe(false);
   });
 
+  it('checks Normal for inherited size and keeps the font default as a separate choice', async () => {
+    const wrapper = await mountEditor();
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    editor.style.fontSize = '14px';
+    selectEditorText(editor, 0, 0);
+    await nextTick();
+    const sizeMenu = wrapper.get('[role="menu"][aria-label="Font size"]');
+    const sizeChoices = sizeMenu.findAll('[role="menuitemradio"]');
+
+    expect(sizeChoices.map((choice) => choice.text())).toEqual(['Small', 'Normal', 'Large', 'Huge']);
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Normal');
+    expect(sizeMenu.get('[aria-checked="true"]').find('svg.lucide-check').exists()).toBe(true);
+    expect(wrapper.get('summary[aria-label="Font size"]').text()).toBe('Normal');
+    expect(wrapper.get('[role="menu"][aria-label="Font family"] [aria-checked="true"]').text())
+      .toBe('Default');
+    expect(wrapper.get('[role="menu"][aria-label="Font family"] [aria-checked="true"]')
+      .find('svg.lucide-check').exists()).toBe(true);
+  });
+
+  it('tracks explicit and inherited sizes across caret and text selections', async () => {
+    const wrapper = await mountEditor(
+      '<p><span style="font-size:18px">large</span>'
+      + '<span style="font-size:18px"><b> words</b></span> normal</p>',
+    );
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    editor.style.fontSize = '14px';
+    const large = editor.querySelector('span')!.firstChild!;
+    const words = editor.querySelector('b')!.firstChild!;
+    const normal = editor.querySelector('p')!.lastChild!;
+    const sizeMenu = wrapper.get('[role="menu"][aria-label="Font size"]');
+
+    editor.focus();
+    selectBetween(large, 2, large, 2);
+    await nextTick();
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Large');
+
+    selectBetween(large, 0, words, 6);
+    await nextTick();
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Large');
+
+    selectBetween(large, 0, normal, 7);
+    await nextTick();
+    expect(sizeMenu.find('[aria-checked="true"]').exists()).toBe(false);
+    expect(wrapper.get('summary[aria-label="Font size"]').text()).toBe('Size');
+
+    selectBetween(normal, 2, normal, 2);
+    await nextTick();
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Normal');
+  });
+
+  it('applies Normal and previews each font in the regular and overflow menus', async () => {
+    const wrapper = await mountEditor('<p><span style="font-size:24px">hello</span> world</p>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    selectEditorText(editor);
+    const normalChoice = wrapper.get('[role="menu"][aria-label="Font size"]')
+      .findAll('[role="menuitemradio"]').find((choice) => choice.text() === 'Normal')!;
+
+    await normalChoice.trigger('mousedown');
+    await normalChoice.trigger('click');
+    expect(latestUpdate(wrapper)?.html).toMatch(/font-size:\s*14px/i);
+    expect(wrapper.get('[role="menu"][aria-label="Font size"] [aria-checked="true"]').text())
+      .toBe('Normal');
+
+    const fontFamilies = ['Arial, sans-serif', 'Georgia, serif', '"Courier New", monospace',
+      'Verdana, sans-serif', '"Times New Roman", serif'];
+    const previewFamilies = (choices: ReturnType<typeof wrapper.findAll>) => choices
+      .slice(1).map((choice) => (choice.findAll('span').at(-1)!.element as HTMLElement).style.fontFamily);
+    expect(previewFamilies(wrapper.get('[role="menu"][aria-label="Font family"]')
+      .findAll('[role="menuitemradio"]'))).toEqual(fontFamilies);
+
+    const toolbar = wrapper.get('.compose-toolbar').element;
+    Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 100 });
+    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
+      group.getBoundingClientRect = () => ({ width: 100 } as DOMRect);
+    });
+    (wrapper.get('.toolbar-more').element as any).getBoundingClientRect = () =>
+      ({ width: 70 } as DOMRect);
+    window.dispatchEvent(new Event('resize'));
+    await nextTick();
+    await nextTick();
+
+    const fontMenu = wrapper.get('[role="group"][aria-label="Font formatting"]');
+    const overflowFonts = fontMenu.findAll('[aria-label^="Font:"]');
+    expect(previewFamilies(overflowFonts)).toEqual(fontFamilies);
+    expect(fontMenu.find('[aria-label="Size: Default"]').exists()).toBe(false);
+    expect(fontMenu.get('[aria-label="Size: Normal"]').attributes('aria-checked')).toBe('true');
+    expect(fontMenu.get('[aria-label="Size: Normal"]').find('svg.lucide-check').exists()).toBe(true);
+  });
+
+  it('ignores text that a size selection only touches at its boundary', async () => {
+    const wrapper = await mountEditor(
+      '<p>normal<span style="font-size:18px">large</span> normal</p>',
+    );
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    editor.style.fontSize = '14px';
+    const paragraph = editor.querySelector('p')!;
+    const before = paragraph.firstChild!;
+    const large = paragraph.querySelector('span')!.firstChild!;
+    const after = paragraph.lastChild!;
+    const sizeMenu = wrapper.get('[role="menu"][aria-label="Font size"]');
+
+    editor.focus();
+    selectBetween(before, 6, large, 5);
+    await nextTick();
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Large');
+
+    selectBetween(large, 0, after, 0);
+    await nextTick();
+    expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Large');
+  });
+
   it('uses the shared dropdown structure for toolbar menus', async () => {
     const wrapper = await mountEditor();
     const toolbarDropdowns = wrapper.get('.compose-toolbar').findAll('details');
