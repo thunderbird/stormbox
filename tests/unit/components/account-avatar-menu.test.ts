@@ -21,3 +21,18 @@ it('links Support in the avatar menu directly to the contact page', () => {
   expect(link?.get('[aria-hidden="true"]').find('svg').exists()).toBe(true);
   wrapper.unmount();
 });
+
+it('opens app settings and restores the menu trigger as the focus-return target', async () => {
+  const wrapper = mount(AccountAvatarMenu, { attachTo: document.body });
+  const menu = wrapper.get('details').element as HTMLDetailsElement;
+  menu.open = true;
+  const settings = wrapper.findAll('button[role="menuitem"]')
+    .find((item) => item.text() === 'Settings')!;
+  await settings.trigger('click');
+  expect(wrapper.emitted('openSettings')).toEqual([[]]);
+  expect(menu.open).toBe(false);
+  expect(document.activeElement).toBe(wrapper.get('summary').element);
+  expect(wrapper.findAll('a[role="menuitem"]').map((item) => item.text()))
+    .toContain('Account Settings');
+  wrapper.unmount();
+});

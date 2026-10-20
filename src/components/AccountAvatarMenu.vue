@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
-import { LogOut, Settings } from '@lucide/vue';
+import { CircleUserRound, LogOut, Settings } from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store';
 import { ACCOUNTS_URL, SUPPORT_URL } from '../defines';
@@ -9,6 +9,7 @@ import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
 import supportIcon from '../assets/icons/tb-support.svg?raw';
 
 const authStore = useAuthStore();
+const emit = defineEmits<{ openSettings: [] }>();
 
 const detailsEl = ref<HTMLDetailsElement | null>(null);
 
@@ -27,6 +28,14 @@ function onLogout() {
   if (detailsEl.value) detailsEl.value.open = false;
   authStore.logout();
 }
+
+function onSettings() {
+  if (detailsEl.value) {
+    detailsEl.value.open = false;
+    detailsEl.value.querySelector('summary')?.focus({ preventScroll: true });
+  }
+  emit('openSettings');
+}
 </script>
 
 <template>
@@ -43,8 +52,12 @@ function onLogout() {
         </span>
         <span class="account-menu__email">{{ identityLabel }}</span>
       </div>
-      <a class="account-menu__item" :href="ACCOUNTS_URL" role="menuitem">
+      <button class="account-menu__item" type="button" role="menuitem" @click="onSettings">
         <Settings :size="16" :stroke-width="1.75" aria-hidden="true" />
+        <span>Settings</span>
+      </button>
+      <a class="account-menu__item" :href="ACCOUNTS_URL" role="menuitem">
+        <CircleUserRound :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span>Account Settings</span>
       </a>
       <a class="account-menu__item" :href="SUPPORT_URL" role="menuitem">
