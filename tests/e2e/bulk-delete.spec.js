@@ -74,7 +74,7 @@ test.describe('Bulk delete e2e', () => {
       }
 
       await page.locator('.msg-list__item').filter({ hasText: subjects[0] })
-        .locator('.msg-list__content').click();
+        .locator('.msg-list__open').click();
       await expect(page.locator('.message-view__article')).toBeVisible();
       await expect(page.locator('.msg-list')).toHaveClass(/msg-list--card/);
       const listHeader = await page.locator('.selectable-list-header').elementHandle();

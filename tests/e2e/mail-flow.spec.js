@@ -139,7 +139,7 @@ test.describe('Local stack mail flow e2e', () => {
     // Opening a deterministically different row keeps the two opens
     // independent regardless of the received-time tiebreak.
     await page.locator('.msg-list__item').filter({ hasText: subjects[1] }).first()
-      .locator('.msg-list__content').click();
+      .locator('.msg-list__open').click();
 
     await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
 
@@ -192,7 +192,7 @@ test.describe('Local stack mail flow e2e', () => {
       .filter({ hasText: subjects[0] })
       .first();
     if ((await targetClick.count()) > 0) {
-      await targetClick.locator('.msg-list__content').click();
+      await targetClick.locator('.msg-list__open').click();
       await expect(page.locator('.message-view__title h2')).toBeVisible({ timeout: 30_000 });
       await expect.poll(
         async () => {
@@ -276,7 +276,7 @@ test.describe('Local stack mail flow e2e', () => {
       const secondRow = page.locator('.msg-list__item')
         .filter({ hasText: subjects[1] })
         .first();
-      await secondRow.locator('.msg-list__content').click();
+      await secondRow.locator('.msg-list__open').click();
       await expect(page.locator('.message-view__title h2')).toHaveText(subjects[1], { timeout: 5_000 });
       await expect.poll(
         async () => {

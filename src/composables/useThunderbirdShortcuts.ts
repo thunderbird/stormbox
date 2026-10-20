@@ -207,6 +207,12 @@ export function useThunderbirdShortcuts({
       return;
     }
 
+    // Row controls own activation and focus movement before document shortcuts.
+    if (event.target instanceof Element
+      && event.target.closest('[data-message-control]')
+      && ['Enter', ' ', 'Spacebar', 'Escape', 'F2', 'ArrowUp', 'ArrowDown',
+        'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+
     const scheme = settingsStore.get('shortcutScheme');
     const editable = isEditableTarget(event.target);
     const resolved = resolveShortcut(event, scheme);

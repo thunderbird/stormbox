@@ -43,11 +43,19 @@ stable surfaces) remain controlling.
 - At 639px or below, each column occupies one screen and the scrollbar is
   hidden; returning from the reading view restores the column from which
   the message was opened.
-- Columns have distinct region labels and prefix row and listbox DOM IDs.
+- Columns have distinct region labels and prefix row and grid DOM IDs.
   Folder and More menus expose keyboard navigation, labelled groups,
   visible focus, and focus return. At the reading pane's 240px minimum all
   toolbar actions remain reachable, and compact rows reserve the star on
   the sender line rather than over the subject.
+- Message lists expose a multi-select layout grid with indexed rows and
+  independently named native preview buttons, checkboxes and row actions.
+  Up/Down, Home/End and selection shortcuts navigate the list; Right or F2
+  enters the current row's controls. Left/Right and Home/End move between
+  those controls, Enter/Space activate them, and Escape returns to list
+  navigation without clearing selection. Tab leaves the grid. Keyboard
+  focus makes row controls visible and returns to the Tag trigger when
+  its popup closes; pointer activation retains its list-focus behavior.
 - A column narrower than 480px lays its rows out as cards (R-10.4): the
   sender line carries the icons, tag stack, star and date, the subject
   wraps to two lines below it, then one preview line. Card rows are a

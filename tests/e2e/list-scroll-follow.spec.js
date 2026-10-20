@@ -241,3 +241,31 @@ test.describe('Keyboard navigation keeps the focused row in view', () => {
     }
   });
 });
+
+test('row controls enter a visible row after manual scrolling', async ({ page }) => {
+  await loginViaOidc(page);
+  await waitForShellReady(page);
+  await page.waitForFunction(() => !!window.__repo);
+  const archive = await ensureArchiveMailbox(await connectJmap());
+  await page.getByRole('button', { name: new RegExp(`^${escapeRegExp(archive.name)}\\s*\\d`) }).first().click();
+  const grid = page.getByRole('grid', { name: 'Messages', exact: true });
+  await expect(grid.locator('[role="row"]').first()).toBeVisible();
+  await grid.evaluate((element) => { element.scrollTop = 64 * 40; });
+  await expect.poll(() => grid.evaluate((element) => {
+    const first = element.querySelector('[role="row"]');
+    return Number(first?.getAttribute('data-index') ?? 0);
+  })).toBeGreaterThan(0);
+  await grid.focus();
+  await page.keyboard.press('F2');
+  await expect.poll(() => grid.evaluate((element) => {
+    const active = document.activeElement;
+    if (!active || !element.contains(active) || !active.matches('[data-message-control]')) return false;
+    const bounds = element.getBoundingClientRect();
+    const focus = active.getBoundingClientRect();
+    return focus.top >= bounds.top && focus.bottom <= bounds.bottom;
+  }), { message: 'the focused row control must be inside the visible viewport' }).toBe(true);
+  const focusedRowId = await page.evaluate(() => document.activeElement.closest('[role="row"]').id);
+  await expect(grid).toHaveAttribute('aria-activedescendant', focusedRowId);
+  await page.keyboard.press('Escape');
+  await expect(grid).toBeFocused();
+});

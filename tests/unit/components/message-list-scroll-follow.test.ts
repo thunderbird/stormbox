@@ -101,7 +101,7 @@ function mountList({
   mailStore.totalForFolder = rows.length;
   return {
     mailStore,
-    wrapper: mount(MessageList, { props: { quickFilterQuery } }),
+    wrapper: mount(MessageList, { props: { quickFilterQuery }, attachTo: document.body }),
   };
 }
 
@@ -290,12 +290,12 @@ describe('MessageList scroll follows the selected message (issue #31)', () => {
     wrapper.unmount();
   });
 
-  it('exposes the cursor row via aria-activedescendant on the listbox', async () => {
+  it('exposes the cursor row via aria-activedescendant on the grid', async () => {
     const { mailStore, wrapper } = mountList();
     await nextTick();
 
     const scroller = wrapper.find('.msg-list__scroller');
-    expect(scroller.attributes('role')).toBe('listbox');
+    expect(scroller.attributes('role')).toBe('grid');
     expect(scroller.attributes('aria-activedescendant')).toBeUndefined();
 
     mailStore.selectMessage(17);
@@ -304,7 +304,163 @@ describe('MessageList scroll follows the selected message (issue #31)', () => {
     expect(scroller.attributes('aria-activedescendant')).toBe('msg-row-17');
     const optionRow = wrapper.find('#msg-row-17');
     expect(optionRow.exists()).toBe(true);
-    expect(optionRow.attributes('role')).toBe('option');
+    expect(optionRow.attributes('role')).toBe('row');
+    wrapper.unmount();
+  });
+});
+
+
+describe('Message grid controls (issue #156)', () => {
+  it('exposes named sibling controls in indexed selectable rows', async () => {
+    const { wrapper } = mountList();
+    await nextTick();
+    const grid = wrapper.find('[role="grid"]');
+    expect(grid.attributes('aria-multiselectable')).toBe('true');
+    expect(grid.attributes('aria-rowcount')).toBe('30');
+    const row = grid.find('[role="row"]');
+    expect(row.attributes('aria-rowindex')).toBe('1');
+    expect(row.attributes('aria-selected')).toBe('false');
+    expect(row.find('[role="gridcell"]').exists()).toBe(true);
+    expect(row.find('input').attributes('aria-label')).toBe('Select message: Subject 1, Sender 1');
+    expect(row.find('.msg-list__open').attributes('aria-label')).toBe('Open message: Subject 1, Sender 1');
+    expect(row.find('.msg-list__open input, .msg-list__open button, [role="option"]').exists()).toBe(false);
+    expect(row.findAll('[data-message-control]').every((c) => c.attributes('tabindex') === '-1')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('keeps native control keys local in both shortcut schemes and returns focus without clearing selection', async () => {
+    const { mailStore, wrapper } = mountList();
+    const shortcuts = mountShortcutBroker();
+    await nextTick();
+    const grid = wrapper.find('.msg-list__scroller');
+    mailStore.selectMessage(2);
+    await nextTick();
+    for (const scheme of ['web', 'thunderbird'] as const) {
+      useSettingsStore().settings = { shortcutScheme: scheme };
+      (grid.element as HTMLElement).focus();
+      await grid.trigger('keydown', { key: 'F2' });
+      const checkbox = wrapper.find('#msg-row-2 input');
+      expect(document.activeElement).toBe(checkbox.element);
+      await checkbox.trigger('keydown', { key: 'Enter' });
+      expect(mailStore.selectedIds.has(2)).toBe(true);
+      expect(mailStore.selectedMessageId).toBe(2);
+      await checkbox.trigger('keydown', { key: 'Escape' });
+      expect(document.activeElement).toBe(grid.element);
+      expect(mailStore.selectedIds.has(2)).toBe(true);
+      await grid.trigger('keydown', { key: 'Escape' });
+      expect(mailStore.selectedIds.size).toBe(0);
+    }
+    shortcuts.unmount();
+    wrapper.unmount();
+  });
+
+  it('moves across controls, preserves range selection, and navigates from the control row', async () => {
+    const { mailStore, wrapper } = mountList();
+    await nextTick();
+    const grid = wrapper.find('.msg-list__scroller');
+    await wrapper.find('#msg-row-3 input').trigger('click');
+    await wrapper.find('#msg-row-5 input').trigger('click', { shiftKey: true });
+    expect([...mailStore.selectedIds]).toEqual([3, 4, 5]);
+    expect(mailStore.selectedMessageId).toBeNull();
+    await wrapper.find('#msg-row-3 input').trigger('keydown', { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(wrapper.find('#msg-row-3 .msg-list__open').element);
+    await wrapper.find('#msg-row-3 .msg-list__open').trigger('keydown', { key: 'ArrowDown', shiftKey: true });
+    expect(document.activeElement).toBe(grid.element);
+    expect(mailStore.focusedMessageId).toBe(4);
+    expect(mailStore.selectedMessageId).toBeNull();
+    expect([...mailStore.selectedIds]).toEqual([3, 4]);
+    wrapper.unmount();
+  });
+
+  it('opens and closes the preview from the native button and restores grid navigation', async () => {
+    const { mailStore, wrapper } = mountList();
+    await nextTick();
+    const open = wrapper.find('#msg-row-2 .msg-list__open');
+    await open.trigger('click');
+    expect(mailStore.selectedMessageId).toBe(2);
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
+    await wrapper.find('[role="grid"]').trigger('keydown', { key: ' ' });
+    expect([...mailStore.selectedIds]).toEqual([2]);
+    await open.trigger('click');
+    expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.selectedMessageId).toBe(2);
+    await open.trigger('click');
+    expect(mailStore.selectedMessageId).toBeNull();
+    wrapper.unmount();
+  });
+
+  it('omits active descendants that have been recycled outside the virtual window', async () => {
+    const { mailStore, wrapper } = mountList();
+    await nextTick();
+    mailStore.selectMessage(2);
+    await nextTick();
+    virtualizerWindow.start = 20;
+    virtualizerWindow.count = 5;
+    mailStore.messages = [...mailStore.messages];
+    await nextTick();
+    expect(wrapper.find('#msg-row-2').exists()).toBe(false);
+    expect(wrapper.find('[role="grid"]').attributes('aria-activedescendant')).toBeUndefined();
+    wrapper.unmount();
+  });
+});
+
+describe('Message grid input modes', () => {
+  it('returns pointer control clicks to the grid so Escape clears selection', async () => {
+    const { mailStore, wrapper } = mountList();
+    await nextTick();
+    const checkbox = wrapper.find('#msg-row-2 input');
+    (checkbox.element as HTMLInputElement).focus();
+    await checkbox.trigger('click', { detail: 1 });
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
+    expect(mailStore.selectedIds.has(2)).toBe(true);
+    await wrapper.find('[role="grid"]').trigger('keydown', { key: 'Escape' });
+    expect(mailStore.selectedIds.size).toBe(0);
+    wrapper.unmount();
+  });
+
+  it('keeps select-all available inside row controls and leaves browser navigation chords alone', async () => {
+    const { mailStore, wrapper } = mountList();
+    await nextTick();
+    const grid = wrapper.find('[role="grid"]');
+    await grid.trigger('keydown', { key: 'F2' });
+    const checkbox = wrapper.find('#msg-row-1 input');
+    await checkbox.trigger('keydown', { key: 'a', ctrlKey: true });
+    expect(mailStore.selectedIds.size).toBe(30);
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true,
+    });
+    checkbox.element.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(checkbox.element);
+    wrapper.unmount();
+  });
+
+  it('returns pointer context menus and row drags to list navigation', async () => {
+    const { wrapper } = mountList();
+    await nextTick();
+    const open = wrapper.find('#msg-row-2 .msg-list__open');
+    (open.element as HTMLButtonElement).focus();
+    await open.trigger('contextmenu', { button: 0 });
+    expect(document.activeElement).toBe(open.element);
+    await open.trigger('contextmenu', { button: 2 });
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
+    (open.element as HTMLButtonElement).focus();
+    await wrapper.find('#msg-row-2 .msg-list__item').trigger('dragstart', {
+      dataTransfer: { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: 'none' },
+    });
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
+    wrapper.unmount();
+  });
+
+  it('announces message status as well as sender and subject', async () => {
+    const { wrapper } = mountList({ rows: [makeRow(1, {
+      is_seen: 0, is_flagged: 1, has_attachment: 1, keywords_json: '{"$label2":true}',
+    })] });
+    await nextTick();
+    const label = wrapper.find('[role="row"]').attributes('aria-label');
+    for (const state of ['Sender 1', 'Subject 1', 'Unread', 'Starred', 'Has attachments', 'Tags: Work']) {
+      expect(label).toContain(state);
+    }
     wrapper.unmount();
   });
 });

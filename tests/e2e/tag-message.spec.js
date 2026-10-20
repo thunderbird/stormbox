@@ -252,7 +252,7 @@ test.describe('Tag message e2e', () => {
       ]));
       await screenshot('09-adopted');
       await page.getByRole('button', { name: 'Close tags', exact: true }).click();
-      await rowFor(page, subject).locator('.msg-list__subject').click();
+      await rowFor(page, subject).locator('.msg-list__open').click();
       await page.locator(`[data-message-tags] [data-tag-keyword="${keyword}"] .tag-chip__remove`).click();
       await waitForPendingMutations(page);
       await expect.poll(() => readTagKeywords(page, [remoteId])).toEqual({ [remoteId]: [] });
@@ -419,7 +419,7 @@ test.describe('Tag message e2e', () => {
       // selection. Earlier writes are drained before each step so their
       // StateChange refresh cannot overwrite the optimistic change.
       await waitForPendingMutations(page);
-      await rowFor(page, subjects.hover).locator('.msg-list__subject').click();
+      await rowFor(page, subjects.hover).locator('.msg-list__open').click();
       const viewChips = page.locator('[data-message-tags] .tag-chip');
       await expect(viewChips).toHaveText(['Work']);
       await viewChips.first().locator('.tag-chip__remove').click();

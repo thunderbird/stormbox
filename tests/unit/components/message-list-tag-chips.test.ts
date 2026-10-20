@@ -163,5 +163,34 @@ describe('MessageList row tag chips', () => {
     await nextTick();
     expect(document.querySelector('[data-tag-picker-popover]')).toBeNull();
     expect(tagButton.attributes('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(tagButton.element);
+
+    await tagButton.trigger('click', { detail: 1 });
+    await nextTick();
+    await nextTick();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
+  });
+});
+
+describe('MessageList tag popup focus when a row disappears', () => {
+  it('returns to the grid when its keyboard trigger has been removed', async () => {
+    const { wrapper, mailStore } = mountList([makeRow(1), makeRow(2)]);
+    await nextTick();
+    const trigger = wrapper.find('.msg-list__action--tag');
+    vi.spyOn(trigger.element, 'getClientRects').mockReturnValue([{}] as any);
+    vi.spyOn(trigger.element, 'getBoundingClientRect').mockReturnValue({
+      top: 40, left: 500, width: 34, height: 28,
+    } as DOMRect);
+    await trigger.trigger('click');
+    await nextTick();
+    await nextTick();
+    mailStore.messages = [makeRow(2)];
+    await nextTick();
+    expect(trigger.element.isConnected).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await nextTick();
+    expect(document.activeElement).toBe(wrapper.find('[role="grid"]').element);
   });
 });

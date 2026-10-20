@@ -98,7 +98,7 @@ const regionLabel = computed(() => (
     : `Column ${props.columnIndex}, no folder chosen`
 ));
 const rowDomIdPrefix = computed(() => (props.listId ? `msg-row-${props.listId}-` : 'msg-row-'));
-const listboxId = computed(() => (props.listId ? `msg-listbox-${props.listId}` : 'msg-listbox'));
+const gridId = computed(() => (props.listId ? `msg-listbox-${props.listId}` : 'msg-listbox'));
 
 // Every column binds its folder's cached window; the store keeps the
 // bound folders fresh on broadcasts and asks the sync layer to keep
@@ -220,11 +220,80 @@ const {
   drop: (ids, sourceFolderId) => mailStore.moveMessages(ids, folderId.value!, { sourceFolderId }),
 });
 
-function handleKeyDown(event) {
+function rowControls(row: Element): HTMLElement[] {
+  return [...row.querySelectorAll<HTMLElement>('[data-message-control]')]
+    .filter((control) => getComputedStyle(control).display !== 'none'
+      && getComputedStyle(control).visibility !== 'hidden')
+    .sort((a, b) => Number(b.matches('input')) - Number(a.matches('input')));
+}
+
+function onControlPointerInteraction(event: MouseEvent) {
+  if ((event.type === 'contextmenu' ? event.button === 2 : event.detail > 0) && event.target instanceof Element
+    && event.target.closest('[data-message-control], .msg-list__check')) {
+    scrollEl.value?.focus({ preventScroll: true });
+  }
+}
+
+function handleKeyDown(event: KeyboardEvent) {
   if (event.defaultPrevented) return;
   if ((event.metaKey || event.ctrlKey) && (event.key === 'a' || event.key === 'A')) {
     event.preventDefault();
     selectAllForCurrentFilter();
+    return;
+  }
+  if (event.altKey || event.metaKey || event.ctrlKey) return;
+  const control = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('[data-message-control]')
+    : null;
+  const row = control?.closest<HTMLElement>('[role="row"]');
+  if (control && row) {
+    if (event.key === 'Tab') {
+      scrollEl.value?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === 'Escape' || event.key === 'F2') {
+      event.preventDefault();
+      setFocused(Number(row.dataset.index));
+      scrollEl.value?.focus({ preventScroll: true });
+      return;
+    }
+    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const controls = rowControls(row);
+      const index = controls.indexOf(control);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? controls.length - 1
+        : index + (event.key === 'ArrowRight' ? 1 : -1);
+      controls[Math.max(0, Math.min(controls.length - 1, next))]?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === 'Enter' && control instanceof HTMLInputElement) {
+      event.preventDefault();
+      control.dispatchEvent(new MouseEvent('click', {
+        bubbles: true, shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+      }));
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    setFocused(Number(row.dataset.index));
+    scrollEl.value?.focus({ preventScroll: true });
+  } else if (event.key === 'F2' || event.key === 'ArrowRight' || event.key === 'Enter') {
+    const rows = Array.from(scrollEl.value?.querySelectorAll<HTMLElement>('[role="row"]') ?? []);
+    const viewport = scrollEl.value?.getBoundingClientRect();
+    const inViewport = (row: HTMLElement) => {
+      const bounds = row.getBoundingClientRect();
+      return viewport != null && bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+    };
+    const cursorRow = activeRowDomId.value ? document.getElementById(activeRowDomId.value) : null;
+    const activeRow = cursorRow && inViewport(cursorRow) ? cursorRow
+      : rows.find(inViewport) ?? cursorRow ?? rows[0];
+    if (!activeRow) return;
+    event.preventDefault();
+    setFocused(Number(activeRow.dataset.index));
+    if (event.key === 'Enter') {
+      activeRow.querySelector<HTMLButtonElement>('.msg-list__open')?.click();
+    } else {
+      rowControls(activeRow)[0]?.focus();
+    }
     return;
   }
   // Widget-scoped so the page keeps Home/End when the list is not focused.
@@ -322,13 +391,13 @@ const {
   focusedMessageId,
 });
 
-// aria-activedescendant target for the scroller's listbox role. The
-// cursor row is always scrolled into view, so its <li id> is rendered
-// and the reference resolves; undefined clears it when nothing is
-// focused.
-const activeRowDomId = computed(() => (focusedMessageId.value == null
-  ? undefined
-  : `${rowDomIdPrefix.value}${focusedMessageId.value}`));
+// Virtual rows outside the rendered window cannot be active descendants.
+const activeRowDomId = computed(() => {
+  const id = focusedMessageId.value;
+  return id != null && virtualItems.value.some((item) => visibleMessages.value[item.index]?.id === id)
+    ? `${rowDomIdPrefix.value}${id}`
+    : undefined;
+});
 
 let unregisterMessageListCommands: (() => void) | null = null;
 
@@ -354,6 +423,7 @@ onBeforeUnmount(() => {
  * anchored multi-select model as checkbox clicks.
  */
 function onRowClick(index, event) {
+  scrollEl.value?.focus({ preventScroll: true });
   if (event.shiftKey || event.ctrlKey || event.metaKey) {
     event.preventDefault();
     handleCheckboxClick(index, event, firstVisibleIndex());
@@ -383,6 +453,7 @@ function firstVisibleIndex() {
 }
 
 function onRowDragStart(message, event) {
+  scrollEl.value?.focus({ preventScroll: true });
   startMessageDrag(event, {
     messageId: message?.id,
     selectedIds: selectedIds.value,
@@ -578,7 +649,7 @@ function openRowTagPicker(message: CachedRow & { id: number }, event: MouseEvent
     targets: [message],
     anchor,
     trigger,
-    returnFocus: scrollEl.value,
+    returnFocus: event.detail === 0 ? trigger : scrollEl.value,
   };
 }
 
@@ -599,6 +670,10 @@ function openBulkTagPicker() {
 }
 
 function closeTagPopover() {
+  // The trigger must receive focus before its menu-open visibility is removed.
+  const target = tagPopover.value?.returnFocus;
+  const fallback = scrollEl.value ?? msgListEl.value?.querySelector<HTMLElement>('input, button');
+  (target?.isConnected ? target : fallback)?.focus({ preventScroll: true });
   tagPopover.value = null;
 }
 
@@ -1007,17 +1082,29 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       <template v-if="showsTagViewCoverage">{{ tagViewNote }}</template>
     </p>
 
+    <span :id="`${gridId}-instructions`" hidden>
+      Use Up and Down arrows to navigate messages, Space to select, and Enter to toggle the message preview.
+      Press Right Arrow or F2 for message controls, then Left and Right arrows to move between them.
+      Escape returns to message navigation. Tab leaves the message list.
+    </span>
     <div
       v-if="rowCount > 0"
-      :id="listboxId"
+      :id="gridId"
       ref="scrollEl"
       class="msg-list__scroller"
       tabindex="0"
-      role="listbox"
+      role="grid"
+      aria-multiselectable="true"
+      :aria-rowcount="rowCount"
+      :aria-busy="isLoading"
+      aria-colcount="1"
+      :aria-describedby="`${gridId}-instructions`"
       aria-label="Messages"
       :aria-activedescendant="activeRowDomId"
       @scroll="onScroll"
       @keydown="handleKeyDown"
+      @click.capture="onControlPointerInteraction"
+      @contextmenu.capture="onControlPointerInteraction"
     >
       <div
         v-if="isLoading && messages.length === 0"
@@ -1036,6 +1123,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             :size="v.size"
             :dom-id-prefix="rowDomIdPrefix"
             :focused="openMessageId === visibleMessages[v.index].id"
+            :cursor="focusedMessageId === visibleMessages[v.index].id"
             :selected="isSelected(visibleMessages[v.index].id)"
             :dragging="isDraggingMessage(visibleMessages[v.index].id)"
             :shows-recipients="listShowsRecipients"
@@ -1058,6 +1146,8 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             v-else
             :data-index="v.index"
             :data-placeholder="true"
+            role="presentation"
+            aria-hidden="true"
             class="msg-list__item--placeholder"
             :style="{
               position: 'absolute',
@@ -1265,6 +1355,10 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   contain: strict;
   will-change: scroll-position;
   outline: none;
+}
+.msg-list__scroller:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .msg-list__loader {
   position: absolute;

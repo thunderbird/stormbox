@@ -162,7 +162,7 @@ export async function focusMessageList(page) {
 export async function openMessageBySubject(page, subject) {
   const row = page.locator('.msg-list__item').filter({ hasText: subject }).first();
   await expect(row).toBeVisible({ timeout: WAIT_MS });
-  await row.locator('.msg-list__content').click();
+  await row.locator('.msg-list__open').click();
   await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: WAIT_MS });
   // Wait for the body to actually render (iframe for HTML or .text
   // fallback). Tests that immediately press a shortcut like Reply

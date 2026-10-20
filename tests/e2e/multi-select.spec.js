@@ -87,7 +87,7 @@ test.describe('multi-select (Fastmail model)', () => {
     const realCount = await realRows.count();
     expect(realCount).toBeGreaterThan(3);
 
-    await realRows.nth(0).locator('.msg-list__content').click();
+    await realRows.nth(0).locator('.msg-list__open').click();
     const afterRowClick = await pollDiagnostics(
       page,
       (d) => d.rightPaneMode === 'article' && d.focusedIndexes.length === 1 && d.focusedIndexes[0] === 0,
@@ -144,7 +144,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterClear.itemsRendered).toBeGreaterThan(0);
     expect(afterClear.scrollerHeight).toBeGreaterThan(200);
 
-    await realRows.nth(0).locator('.msg-list__content').click();
+    await realRows.nth(0).locator('.msg-list__open').click();
     const afterClose = await pollDiagnostics(
       page,
       (d) => d.rightPaneMode === 'unknown',
@@ -156,7 +156,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterClose.checkboxesChecked).toBe(0);
     expect(afterClose.shellMessageViewHidden).toBe(true);
 
-    await realRows.nth(0).locator('.msg-list__content').click();
+    await realRows.nth(0).locator('.msg-list__open').click();
     const afterReopen = await pollDiagnostics(
       page,
       (d) => d.rightPaneMode === 'article',
@@ -179,7 +179,7 @@ test.describe('multi-select (Fastmail model)', () => {
     const realRows = page.locator('.msg-list__items > li:not([data-placeholder="true"])');
 
     await realRows.nth(1).locator('.msg-list__check input').click();
-    await realRows.nth(4).locator('.msg-list__content').click({ modifiers: ['Shift'] });
+    await realRows.nth(4).locator('.msg-list__open').click({ modifiers: ['Shift'] });
     const afterShiftBodyClick = await pollDiagnostics(
       page,
       (d) => d.bulkActionsVisible && /\b4 selected\b/.test(d.headerCount),
@@ -188,7 +188,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterShiftBodyClick.selectedIndexes).toEqual([1, 2, 3, 4]);
     expect(afterShiftBodyClick.focusedIndexes).toEqual([]);
 
-    await realRows.nth(2).locator('.msg-list__content').click({ modifiers: ['Control'] });
+    await realRows.nth(2).locator('.msg-list__open').click({ modifiers: ['Control'] });
     const afterControlBodyClick = await pollDiagnostics(
       page,
       (d) => d.bulkActionsVisible && /\b3 selected\b/.test(d.headerCount),
@@ -197,7 +197,7 @@ test.describe('multi-select (Fastmail model)', () => {
     expect(afterControlBodyClick.selectedIndexes).toEqual([1, 3, 4]);
     expect(afterControlBodyClick.focusedIndexes).toEqual([]);
 
-    await realRows.nth(5).locator('.msg-list__content').click();
+    await realRows.nth(5).locator('.msg-list__open').click();
     const afterPlainBodyClick = await pollDiagnostics(
       page,
       (d) => d.rightPaneMode === 'article' && d.focusedIndexes[0] === 5,
