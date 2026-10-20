@@ -5,7 +5,9 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
+  ExternalLink,
   Eye,
+  EyeOff,
   LoaderCircle,
   Paperclip,
   RefreshCw,
@@ -125,8 +127,8 @@ function pendingLabel(row: MessageAttachmentRow): string {
 }
 
 function previewLabel(row: MessageAttachmentRow): string {
-  if (row.previewKind === 'pdf-browser') return `Open ${filename(row)}`;
-  return `${row.showPreview ? 'Hide preview of' : 'Preview'} ${filename(row)}`;
+  if (row.previewKind === 'pdf-browser') return `Open PDF ${filename(row)} in a new tab`;
+  return `${row.showPreview ? 'Hide' : 'Show'} preview of ${filename(row)}`;
 }
 
 function pdfViewerHref(row: MessageAttachmentRow): string {
@@ -243,11 +245,14 @@ function retryLabel(row: MessageAttachmentRow): string {
               class="message-attachment-row__spinner"
               :size="16"
               :stroke-width="1.75"
+              aria-hidden="true"
             />
-            <Eye v-else :size="16" :stroke-width="1.75" />
+            <ExternalLink v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Open PDF
           </a>
           <AppIconButton
             v-else-if="row.previewKind !== 'download-only' && !row.rasterUnavailable"
+            class="message-attachment-row__preview-action"
             :disabled="row.pending !== null"
             :title="previewLabel(row)"
             :aria-label="previewLabel(row)"
@@ -258,8 +263,11 @@ function retryLabel(row: MessageAttachmentRow): string {
               class="message-attachment-row__spinner"
               :size="16"
               :stroke-width="1.75"
+              aria-hidden="true"
             />
-            <Eye v-else :size="16" :stroke-width="1.75" />
+            <EyeOff v-else-if="row.showPreview" :size="16" :stroke-width="1.75" aria-hidden="true" />
+            <Eye v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+            <span>{{ row.showPreview ? 'Hide preview' : 'Show preview' }}</span>
           </AppIconButton>
           <AppIconButton
             :disabled="row.pending !== null || !row.part.blob_id"
@@ -304,6 +312,8 @@ function retryLabel(row: MessageAttachmentRow): string {
   overflow: hidden;
   border-top: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 96%, var(--panel2));
+  container-name: message-attachments;
+  container-type: inline-size;
 }
 
 .message-attachment-bar:focus-visible {
@@ -393,14 +403,17 @@ function retryLabel(row: MessageAttachmentRow): string {
 }
 
 .message-attachment-row__pdf-link {
-  display: inline-grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  place-items: center;
+  display: inline-flex;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
   border-radius: 8px;
   color: var(--muted);
+  font-size: 12px;
   text-decoration: none;
+  white-space: nowrap;
 }
 
 .message-attachment-row__pdf-link:hover {
@@ -463,6 +476,29 @@ function retryLabel(row: MessageAttachmentRow): string {
   width: 30px;
   height: 30px;
   flex-basis: 30px;
+}
+
+.message-attachment-row__actions :deep(.message-attachment-row__preview-action) {
+  display: inline-flex;
+  width: auto;
+  flex-basis: auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@container message-attachments (max-width: 419px) {
+  .message-attachment-row:has(.message-attachment-row__preview-action, .message-attachment-row__pdf-link) {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 4px;
+  }
+
+  .message-attachment-row:has(.message-attachment-row__preview-action, .message-attachment-row__pdf-link) > .message-attachment-row__actions {
+    grid-column: 2;
+    flex-wrap: wrap;
+  }
 }
 
 .message-attachment-row__spinner {
