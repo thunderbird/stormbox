@@ -952,6 +952,7 @@ function closeMessageView() {
         />
       </div>
       <MessageAttachmentBar
+        :context-key="selectedMessageId"
         :rows="attachmentRows"
         @preview="previewAttachment"
         @download="downloadAttachment"

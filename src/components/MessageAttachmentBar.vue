@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { useElementSize } from '@vueuse/core';
+import { computed, ref, shallowRef, useId, watch } from 'vue';
+import { useElementSize, useResizeObserver } from '@vueuse/core';
 import {
+  ChevronDown,
+  ChevronUp,
   Download,
   Eye,
   LoaderCircle,
@@ -17,18 +19,64 @@ import {
 import AppIconButton from './AppIconButton.vue';
 
 const props = defineProps<{
+  contextKey?: string | number | null;
   rows: MessageAttachmentRow[];
 }>();
 
+const listId = `attachment-list-${useId()}`;
+const barEl = ref<HTMLElement | null>(null);
 const headingEl = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 const firstRowEl = ref<HTMLElement | null>(null);
+const toggleEl = ref<HTMLButtonElement | null>(null);
+const rowElements = shallowRef<HTMLElement[]>([]);
+const expanded = ref(true);
+const hasOverflow = ref(false);
 const { height: headingHeight } = useElementSize(headingEl, undefined, { box: 'border-box' });
 const { height: firstRowHeight } = useElementSize(firstRowEl, undefined, { box: 'border-box' });
 
-watch([() => props.rows[0]?.key, listEl], () => {
-  firstRowEl.value = (listEl.value?.firstElementChild as HTMLElement | null) ?? null;
+watch([
+  () => props.contextKey,
+  () => JSON.stringify(props.rows.map(row => row.key)),
+  listEl,
+], () => {
+  rowElements.value = Array.from(listEl.value?.children ?? []) as HTMLElement[];
+  firstRowEl.value = rowElements.value[0] ?? null;
+  expanded.value = true;
+  if (listEl.value) listEl.value.scrollTop = 0;
+  updateOverflow();
 }, { flush: 'post' });
+
+const resizeTargets = computed(() => [
+  barEl.value?.parentElement,
+  listEl.value,
+  ...rowElements.value,
+]);
+useResizeObserver(resizeTargets, updateOverflow, { box: 'border-box' });
+watch([headingHeight, firstRowHeight], updateOverflow, { flush: 'post' });
+
+function updateOverflow(): void {
+  const bar = barEl.value;
+  const list = listEl.value;
+  if (!bar || !list) return;
+  const styles = getComputedStyle(bar);
+  const listBudget = Number.parseFloat(styles.maxHeight)
+    - headingHeight.value - Number.parseFloat(styles.borderTopWidth || '0');
+  hasOverflow.value = props.rows.length > 1 && list.scrollHeight > listBudget + 1;
+  if (hasOverflow.value) return;
+  expanded.value = true;
+  if (document.activeElement === toggleEl.value) {
+    const target = firstRowEl.value?.querySelector<HTMLElement>('button:not(:disabled), a:not([aria-disabled="true"])')
+      ?? bar;
+    target.focus({ preventScroll: true });
+  }
+}
+
+function toggleExpanded(): void {
+  toggleEl.value?.focus({ preventScroll: true });
+  expanded.value = !expanded.value;
+  if (listEl.value) listEl.value.scrollTop = 0;
+}
 
 const emit = defineEmits<{
   preview: [key: string];
@@ -106,19 +154,41 @@ function retryLabel(row: MessageAttachmentRow): string {
 <template>
   <section
     v-if="rows.length"
+    ref="barEl"
     class="message-attachment-bar"
+    :class="{ 'message-attachment-bar--collapsed': !expanded }"
     :style="{
       '--attachment-heading-height': `${headingHeight}px`,
       '--attachment-first-row-height': `${firstRowHeight}px`,
     }"
     aria-label="Attachments"
+    tabindex="-1"
   >
-    <h3 ref="headingEl">Attachments <span aria-hidden="true">({{ rows.length }})</span></h3>
-    <ul ref="listEl" class="message-attachment-bar__list">
+    <div ref="headingEl" class="message-attachment-bar__heading">
+      <h3>Attachments <span aria-hidden="true">({{ rows.length }})</span></h3>
+      <button
+        v-show="hasOverflow"
+        ref="toggleEl"
+        class="message-attachment-bar__toggle"
+        type="button"
+        :aria-expanded="expanded"
+        :aria-controls="listId"
+        :aria-label="`${expanded ? 'Collapse' : 'Expand'} attachment list`"
+        @click="toggleExpanded"
+      >
+        <ChevronUp v-if="expanded" :size="14" :stroke-width="1.75" aria-hidden="true" />
+        <ChevronDown v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
+        {{ expanded ? 'Collapse' : 'Expand' }}
+      </button>
+    </div>
+    <ul :id="listId" ref="listEl" class="message-attachment-bar__list">
       <li
-        v-for="row in rows"
+        v-for="(row, index) in rows"
         :key="row.key"
         class="message-attachment-row"
+        :class="{ 'message-attachment-row--collapsed': !expanded && index > 0 }"
+        :inert="!expanded && index > 0"
+        :aria-hidden="!expanded && index > 0 ? true : undefined"
       >
         <Paperclip
           :size="15"
@@ -236,13 +306,53 @@ function retryLabel(row: MessageAttachmentRow): string {
   background: color-mix(in srgb, var(--panel) 96%, var(--panel2));
 }
 
-.message-attachment-bar h3 {
+.message-attachment-bar:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.message-attachment-bar__heading {
+  display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding-right: var(--message-content-trailing-inset);
+}
+
+.message-attachment-bar h3 {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
-  padding: 9px var(--message-content-trailing-inset) 5px var(--message-content-inset);
+  padding: 9px 0 5px var(--message-content-inset);
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+.message-attachment-bar__toggle {
+  display: inline-flex;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.message-attachment-bar__toggle:hover {
+  background: var(--control-hover-bg);
+  color: var(--text);
+}
+
+.message-attachment-bar__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .message-attachment-bar__list {
@@ -252,6 +362,16 @@ function retryLabel(row: MessageAttachmentRow): string {
   padding: 0 8px var(--attachment-list-padding);
   overflow-y: auto;
   list-style: none;
+}
+
+.message-attachment-bar--collapsed .message-attachment-bar__list {
+  max-height: calc(var(--attachment-first-row-height) + var(--attachment-list-padding));
+  overflow-y: hidden;
+}
+
+.message-attachment-row--collapsed {
+  /* AT-1.9: retain full-list geometry while collapsed rows are inert. */
+  visibility: hidden;
 }
 
 .message-attachment-row {
