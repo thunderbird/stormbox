@@ -1206,7 +1206,7 @@ function closeMessageView() {
    * itself instead of rewriting the email's internal layout. The iframe
    * document owns the canvas color so simple HTML can follow the app
    * theme while styled emails keep their own design. */
-  padding: 0;
+  padding: 18px 0 0;
   flex: 0 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
@@ -1233,7 +1233,7 @@ function closeMessageView() {
 }
 .message-view__text {
   margin: 0;
-  padding: 18px 22px 18px var(--message-content-inset);
+  padding: 0 22px 18px var(--message-content-inset);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
   line-height: 1.55;
@@ -1268,7 +1268,7 @@ function closeMessageView() {
 .message-view__text :deep(blockquote.pt-quote--l5) {
   border-inline-start-color: rgb(233, 185, 110); /* Chocolate 1 */
 }
-.message-view__placeholder { margin: 0; padding: 18px 22px; color: var(--muted); }
+.message-view__placeholder { margin: 0; padding: 0 22px 18px; color: var(--muted); }
 
 @media (max-width: 639px) {
   .message-view__article {
