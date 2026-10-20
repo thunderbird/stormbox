@@ -1483,6 +1483,48 @@ describe('ComposeDialog opening focus', () => {
 });
 
 describe('ComposeDialog accessibility', () => {
+  it('keeps every header label associated with its own control across docked drafts', async () => {
+    const composeStore = useComposeStore();
+    composeStore.identities = [{ id: 1, email: 'sender@example.com' } as any];
+    const recipients = {
+      cc: [{ email: 'copy@example.com' }],
+      bcc: [{ email: 'blind@example.com' }],
+    };
+    const firstId = composeStore.open({ subject: 'First draft', ...recipients });
+    composeStore.open({ subject: 'Second draft', ...recipients });
+    const wrapper = mount(ComposeManager, { attachTo: document.body });
+    mountedWrappers.push(wrapper);
+    await nextTick();
+
+    for (const restoreFirst of [false, true]) {
+      if (restoreFirst) {
+        composeStore.restore(firstId);
+        await nextTick();
+      }
+      const dialogs = wrapper.findAll('.compose-dialog');
+      expect(dialogs).toHaveLength(2);
+      const referencedIds: string[] = [];
+      for (const dialog of dialogs) {
+        const fromId = dialog.get('.from-picker__summary').attributes('aria-labelledby');
+        const fromLabel = document.getElementById(fromId!);
+        expect(fromLabel?.textContent).toBe('From');
+        expect(dialog.element.contains(fromLabel)).toBe(true);
+        referencedIds.push(fromId!);
+
+        const labels = dialog.findAll('.row > label[for]');
+        expect(labels.map((label) => label.text())).toEqual(['To', 'Cc', 'Bcc', 'Subject']);
+        for (const label of labels) {
+          const inputId = label.attributes('for');
+          const input = document.getElementById(inputId!);
+          expect(input?.tagName).toBe('INPUT');
+          expect(dialog.element.contains(input)).toBe(true);
+          referencedIds.push(inputId!);
+        }
+      }
+      expect(new Set(referencedIds).size).toBe(referencedIds.length);
+    }
+  });
+
   it('names the dialog, subject, and message body', async () => {
     const { wrapper } = await mountOpenCompose();
     const dialog = wrapper.get('[role="dialog"]');
