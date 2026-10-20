@@ -409,7 +409,7 @@ test.describe('Attachment browser coverage', () => {
       expect(Math.abs(shortLayout.barTop - shortLayout.bodyBottom)).toBeLessThan(2);
       expect(shortLayout.articleBottom - shortLayout.barBottom).toBeGreaterThan(40);
 
-      await textRow.getByRole('button', { name: 'Preview notes.txt' }).click();
+      await textRow.getByRole('button', { name: 'Show preview of notes.txt' }).click();
       const textPreview = page.getByRole('region', { name: 'Preview of notes.txt' });
       await expect(textPreview).toBeVisible();
       await expect(textPreview.getByText('Preview truncated at 256 KiB.', { exact: true }))
@@ -422,7 +422,8 @@ test.describe('Attachment browser coverage', () => {
       expect(textMetrics.length).toBe(TEXT_PREVIEW_LIMIT);
       expect(textMetrics.scrollHeight).toBeGreaterThan(textMetrics.clientHeight);
 
-      await expect(zipRow.getByRole('button', { name: /^Preview / })).toHaveCount(0);
+      await expect(zipRow.getByRole('button', { name: /^(Show|Hide) preview / })).toHaveCount(0);
+      await expect(zipRow.getByRole('link', { name: /^Open PDF / })).toHaveCount(0);
       const downloadPromise = page.waitForEvent('download');
       await zipRow.getByRole('button', { name: /^Download / }).click();
       const download = await downloadPromise;

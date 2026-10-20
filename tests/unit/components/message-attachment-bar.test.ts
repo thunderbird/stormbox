@@ -91,6 +91,94 @@ async function overflowBar() {
 }
 
 describe('MessageAttachmentBar', () => {
+  it.each(['text-on-demand', 'raster-auto'] as const)(
+    'shows distinct preview actions for %s without replacing the focused control',
+    async previewKind => {
+      const row = attachmentRow();
+      row.previewKind = previewKind;
+      row.part.name = 'notes.txt';
+      const wrapper = mount(MessageAttachmentBar, { props: { rows: [row] }, attachTo: document.body });
+      mounted.push(wrapper);
+      const control = wrapper.get('button[aria-label="Show preview of notes.txt"]');
+      expect(control.text()).toBe('Show preview');
+      expect(control.find('.lucide-eye').exists()).toBe(true);
+      expect(control.find('.lucide-eye-off').exists()).toBe(false);
+      (control.element as HTMLButtonElement).focus();
+      await control.trigger('click');
+      expect(wrapper.emitted('preview')).toEqual([[row.key]]);
+
+      row.showPreview = true;
+      await nextTick();
+      const hide = wrapper.get('button[aria-label="Hide preview of notes.txt"]');
+      expect(hide.element).toBe(control.element);
+      expect(hide.text()).toBe('Hide preview');
+      expect(hide.find('.lucide-eye-off').exists()).toBe(true);
+      expect(hide.find('.lucide-eye').exists()).toBe(false);
+      expect(document.activeElement).toBe(control.element);
+      await hide.trigger('click');
+      expect(wrapper.emitted('preview')).toEqual([[row.key], [row.key]]);
+    },
+  );
+
+  it('labels PDF opening as a separate-tab action and preserves disabled link behavior', async () => {
+    const row = attachmentRow();
+    row.part.name = '\u202ereport.pdf';
+    row.pdfViewerToken = 'token/#?';
+    row.showPreview = true;
+    const wrapper = mount(MessageAttachmentBar, { props: { rows: [row] } });
+    mounted.push(wrapper);
+    const link = wrapper.get('a[aria-label="Open PDF report.pdf in a new tab"]');
+    expect(link.text()).toBe('Open PDF');
+    expect(link.find('.lucide-external-link').exists()).toBe(true);
+    expect(link.find('.lucide-eye-off').exists()).toBe(false);
+    expect(link.attributes('href')).toBe('/pdf-viewer.html#token%2F%23%3F');
+    expect(link.attributes('target')).toBe('_blank');
+    expect(link.attributes('rel')).toBe('noopener noreferrer');
+    expect(link.attributes('aria-disabled')).toBe('false');
+
+    row.pending = 'preview';
+    await nextTick();
+    expect(link.text()).toBe('Open PDF');
+    expect(link.attributes('aria-disabled')).toBe('true');
+    expect(link.attributes('tabindex')).toBe('-1');
+    expect(link.find('.lucide-loader-circle').exists()).toBe(true);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.element.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(wrapper.emitted('preview')).toBeUndefined();
+  });
+
+  it('keeps visible preview labels during pending and retry states without offering unsupported previews', async () => {
+    const row = attachmentRow();
+    row.previewKind = 'text-on-demand';
+    row.part.name = 'notes.txt';
+    row.pending = 'preview';
+    const unsupported = attachmentRow(2);
+    unsupported.previewKind = 'download-only';
+    const unavailable = attachmentRow(3);
+    unavailable.previewKind = 'raster-auto';
+    unavailable.rasterUnavailable = true;
+    const wrapper = mount(MessageAttachmentBar, { props: { rows: [row, unsupported, unavailable] } });
+    mounted.push(wrapper);
+    const preview = wrapper.get('button[aria-label="Show preview of notes.txt"]');
+    expect(preview.text()).toBe('Show preview');
+    expect(preview.attributes('disabled')).toBeDefined();
+    expect(preview.find('.lucide-loader-circle').exists()).toBe(true);
+    expect(wrapper.findAll('.message-attachment-row__preview-action')).toHaveLength(1);
+
+    row.pending = null;
+    row.failedAction = 'preview';
+    row.error = 'Preview failed. Try again or download the file.';
+    await nextTick();
+    expect(preview.attributes('disabled')).toBeUndefined();
+    expect(preview.text()).toBe('Show preview');
+    expect(preview.find('.lucide-eye').exists()).toBe(true);
+    await wrapper.get('button[aria-label="Retry preview for notes.txt"]').trigger('click');
+    await wrapper.findAll('li')[1]!.get('button[aria-label="Download report.pdf"]').trigger('click');
+    expect(wrapper.emitted('retry')).toEqual([[row.key]]);
+    expect(wrapper.emitted('download')).toEqual([[unsupported.key]]);
+  });
+
   it('keeps one live status node through progress and exposes terminal errors', async () => {
     const row = attachmentRow();
     const wrapper = mount(MessageAttachmentBar, {

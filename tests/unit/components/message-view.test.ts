@@ -1298,7 +1298,7 @@ describe('MessageView HTML body rendering', () => {
     const wrapper = mount(MessageView);
     await nextTick();
 
-    const open = wrapper.get('[aria-label="Open report.pdf"]');
+    const open = wrapper.get('[aria-label="Open PDF report.pdf in a new tab"]');
     expect(open.element.tagName).toBe('A');
     expect(open.attributes('href')).toMatch(/^\/pdf-viewer\.html#[0-9a-f-]{36}$/u);
     expect(open.attributes('target')).toBe('_blank');
@@ -1409,6 +1409,22 @@ describe('MessageView HTML body rendering', () => {
     expect(previews.findAll('figure figcaption').map((caption) => caption.text()))
       .toEqual(['first.png', 'second.png']);
     expect(wrapper.findAll('.message-attachment-row')).toHaveLength(2);
+    const firstRow = wrapper.findAll('.message-attachment-row')[0]!;
+    const firstRowElement = firstRow.element;
+    const firstControl = firstRow.get('button[aria-label="Hide preview of first.png"]').element;
+    await previews.find('figure').get('button[aria-label="Hide preview of first.png"]').trigger('click');
+    await nextTick();
+    expect(previews.findAll('figure figcaption').map((caption) => caption.text())).toEqual(['second.png']);
+    expect(firstRow.get('button[aria-label="Show preview of first.png"]').text()).toBe('Show preview');
+    expect(firstRow.get('button[aria-label="Show preview of first.png"]').element).toBe(firstControl);
+    expect(wrapper.findAll('.message-attachment-row')[0]!.element).toBe(firstRowElement);
+
+    await firstRow.get('button[aria-label="Show preview of first.png"]').trigger('click');
+    await flushPromises();
+    expect(previews.findAll('figure figcaption').map((caption) => caption.text()))
+      .toEqual(['first.png', 'second.png']);
+    expect(firstRow.get('button[aria-label="Hide preview of first.png"]').text()).toBe('Hide preview');
+    expect(wrapper.findAll('.message-attachment-row')).toHaveLength(2);
     expect(createUrl).toHaveBeenCalledTimes(2);
 
     wrapper.unmount();
@@ -1441,7 +1457,10 @@ describe('MessageView HTML body rendering', () => {
     await nextTick();
     expect(wrapper.find('.message-attachment-preview--text').exists()).toBe(false);
 
-    await wrapper.find('[aria-label="Preview notes.txt"]').trigger('click');
+    const row = wrapper.get('.message-attachment-row');
+    const rowElement = row.element;
+    const control = row.get('button[aria-label="Show preview of notes.txt"]');
+    await control.trigger('click');
     await flushPromises();
     await nextTick();
 
@@ -1453,6 +1472,20 @@ describe('MessageView HTML body rendering', () => {
     expect(preview.find('pre').text()).toBe('<img src=x onerror=alert(1)>');
     expect(preview.find('pre img').exists()).toBe(false);
     expect(preview.text()).toContain('Preview truncated at 256 KiB.');
+    expect(row.get('button[aria-label="Hide preview of notes.txt"]').element).toBe(control.element);
+
+    await row.get('button[aria-label="Hide preview of notes.txt"]').trigger('click');
+    expect(wrapper.find('.message-attachment-preview--text').exists()).toBe(false);
+    expect(row.get('button[aria-label="Show preview of notes.txt"]').text()).toBe('Show preview');
+
+    await row.get('button[aria-label="Show preview of notes.txt"]').trigger('click');
+    await flushPromises();
+    await wrapper.get('.message-attachment-preview--text')
+      .get('button[aria-label="Hide preview of notes.txt"]').trigger('click');
+    expect(wrapper.find('.message-attachment-preview--text').exists()).toBe(false);
+    expect(wrapper.get('.message-attachment-row').element).toBe(rowElement);
+    expect(row.get('button[aria-label="Show preview of notes.txt"]').element).toBe(control.element);
+    expect(calls).toHaveLength(1);
 
     wrapper.unmount();
   });
@@ -1486,7 +1519,7 @@ describe('MessageView HTML body rendering', () => {
     const wrapper = mount(MessageView, { attachTo: document.body });
     await nextTick();
 
-    await wrapper.get('[aria-label="Preview notes.txt"]').trigger('click');
+    await wrapper.get('[aria-label="Show preview of notes.txt"]').trigger('click');
     await flushPromises();
 
     mailStore.messages = [];
@@ -1535,7 +1568,7 @@ describe('MessageView HTML body rendering', () => {
     const wrapper = mount(MessageView, { attachTo: document.body });
     await nextTick();
 
-    await wrapper.find('[aria-label="Preview notes.txt"]').trigger('click');
+    await wrapper.find('[aria-label="Show preview of notes.txt"]').trigger('click');
     await nextTick();
     expect(wrapper.find('[role="status"]').text()).toContain('Preparing preview');
 
