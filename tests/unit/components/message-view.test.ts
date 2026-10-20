@@ -513,6 +513,28 @@ describe('MessageView with a sparse messages array', () => {
 });
 
 describe('MessageView HTML body rendering', () => {
+  function compactHeaderMedia(initial: boolean) {
+    const query = '(max-width: 639px)';
+    const matchMedia = window.matchMedia.bind(window);
+    const media = matchMedia(query);
+    let matches = initial;
+    Object.defineProperty(media, 'matches', { configurable: true, get: () => matches });
+    vi.spyOn(window, 'matchMedia').mockImplementation((value) => value === query ? media : matchMedia(value));
+    return async (next: boolean) => {
+      matches = next;
+      const event = new Event('change');
+      Object.defineProperty(event, 'matches', { value: next });
+      media.dispatchEvent(event);
+      await flushPromises();
+    };
+  }
+
+  function visibleMetadata(wrapper: ReturnType<typeof mount>) {
+    return wrapper.findAll('.message-view__metadata-row')
+      .filter((row) => row.isVisible())
+      .map((row) => [row.find('dt').text(), row.find('dd').text()]);
+  }
+
   function makeSelectedMessage(messageBody, repoOverrides: Record<string, any> = {}) {
     const authStore = useAuthStore();
     authStore.accountId = 1;
@@ -533,6 +555,136 @@ describe('MessageView HTML body rendering', () => {
       return mailStore;
     });
   }
+
+  it('starts the compact header with sender and subject and an associated disclosure', async () => {
+    compactHeaderMedia(true);
+    const store = await makeSelectedMessage({ text: 'Body', html: '', attachments: [] });
+    store.messages[0].from_text = 'Newsletter Person <newsletter@example.com>';
+    store.messages[0].to_text = 'Reader <reader@example.com>';
+    store.selectedMessageAddresses = [
+      { kind: 'cc', position: 0, name: 'Copy', email: 'copy@example.com' },
+      { kind: 'bcc', position: 0, name: null, email: 'private@example.com' },
+    ];
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+
+    expect(visibleMetadata(wrapper)).toEqual([
+      ['From', 'Newsletter Person'],
+      ['Subject', 'Wide marketing email'],
+    ]);
+    const button = wrapper.find('.message-view__details-toggle');
+    expect(button.isVisible()).toBe(true);
+    expect(button.attributes('aria-expanded')).toBe('false');
+    expect(button.attributes('aria-label')).toBe('Show message details');
+    expect(button.attributes('aria-controls')).toBe(wrapper.find('.message-view__metadata').attributes('id'));
+    wrapper.unmount();
+  });
+
+  it.each([
+    ['sender@example.com', 'sender@example.com'],
+    [null, '(no sender)'],
+  ])('uses %s as the compact sender fallback', async (from, expected) => {
+    compactHeaderMedia(true);
+    const store = await makeSelectedMessage({ text: 'Body', html: '', attachments: [] });
+    store.messages[0].from_text = from;
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    expect(visibleMetadata(wrapper)[0]).toEqual(['From', expected]);
+    wrapper.unmount();
+  });
+
+  it('expands full metadata and collapses it without replacing the reader or moving its body', async () => {
+    compactHeaderMedia(true);
+    const store = await makeSelectedMessage({ text: '', html: '<p>Body</p>', attachments: [] });
+    store.messages[0].from_text = 'Newsletter Person <newsletter@example.com>';
+    store.messages[0].to_text = 'Reader <reader@example.com>';
+    store.selectedMessageAddresses = [
+      { kind: 'cc', position: 0, name: 'Copy', email: 'copy@example.com' },
+      { kind: 'bcc', position: 0, name: null, email: 'private@example.com' },
+    ];
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    const root = wrapper.element;
+    const body = wrapper.find('.message-view__body').element;
+    const frame = wrapper.find('iframe').element;
+    const metadata = wrapper.find('.message-view__metadata').element;
+    body.scrollTop = 37;
+
+    await wrapper.find('.message-view__details-toggle').trigger('click');
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date']);
+    expect(visibleMetadata(wrapper)[0]).toEqual(['From', 'Newsletter Person <newsletter@example.com>']);
+    expect(wrapper.find('.message-view__details-toggle').attributes('aria-expanded')).toBe('true');
+    expect(wrapper.find('.message-view__details-toggle').attributes('aria-label')).toBe('Hide message details');
+    metadata.scrollTop = 80;
+    await wrapper.find('.message-view__details-toggle').trigger('click');
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'Subject']);
+    expect(metadata.scrollTop).toBe(0);
+    expect(wrapper.element).toBe(root);
+    expect(wrapper.find('.message-view__body').element).toBe(body);
+    expect(wrapper.find('iframe').element).toBe(frame);
+    expect(body.scrollTop).toBe(37);
+    wrapper.unmount();
+  });
+
+  it('resets the mobile disclosure and metadata scroll for another message', async () => {
+    compactHeaderMedia(true);
+    const store = await makeSelectedMessage({ text: 'Body', html: '', attachments: [] });
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    await wrapper.find('.message-view__details-toggle').trigger('click');
+    const metadata = wrapper.find('.message-view__metadata').element;
+    metadata.scrollTop = 80;
+    store.messages = [{ ...store.messages[0], id: 8, subject: 'Next message' }];
+    store.selectedMessageId = 8;
+    await nextTick();
+    expect(wrapper.find('.message-view__details-toggle').attributes('aria-expanded')).toBe('false');
+    expect(metadata.scrollTop).toBe(0);
+    expect(visibleMetadata(wrapper)).toContainEqual(['Subject', 'Next message']);
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'Subject']);
+    wrapper.unmount();
+  });
+
+  it('shows full desktop metadata and preserves complete wrapped subjects across responsive changes', async () => {
+    const resize = compactHeaderMedia(false);
+    const store = await makeSelectedMessage({ text: 'Body', html: '', attachments: [] });
+    const subject = 'UnbrokenSubject'.repeat(30);
+    store.messages[0].subject = subject;
+    store.messages[0].from_text = 'Newsletter Person <newsletter@example.com>';
+    store.messages[0].to_text = 'Reader <reader@example.com>';
+    const wrapper = mount(MessageView, { attachTo: document.body });
+    await flushPromises();
+    const body = wrapper.find('.message-view__body').element;
+    expect(wrapper.find('.message-view__details-toggle').isVisible()).toBe(false);
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'To', 'Subject', 'Date']);
+    expect(visibleMetadata(wrapper)[0][1]).toContain('<newsletter@example.com>');
+
+    await resize(true);
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'Subject']);
+    expect(wrapper.find('.message-view__title h2').text()).toBe(subject);
+    expect(wrapper.find('.message-view__metadata').attributes('tabindex')).toBe('0');
+    await resize(false);
+    expect(visibleMetadata(wrapper).map(([label]) => label)).toEqual(['From', 'To', 'Subject', 'Date']);
+    expect(wrapper.find('.message-view__title h2').text()).toBe(subject);
+    expect(wrapper.find('.message-view__body').element).toBe(body);
+    wrapper.unmount();
+  });
+
+  it.each(['.message-view__details-toggle', '.message-view__metadata'])(
+    'keeps keyboard focus in the reader when %s stops being focusable on desktop',
+    async (selector) => {
+      const resize = compactHeaderMedia(true);
+      await makeSelectedMessage({ text: 'Body', html: '', attachments: [] });
+      const wrapper = mount(MessageView, { attachTo: document.body });
+      await flushPromises();
+      const body = wrapper.find('.message-view__body').element as HTMLElement;
+      const compactControl = wrapper.find(selector).element as HTMLElement;
+      compactControl.focus();
+      expect(document.activeElement).toBe(compactControl);
+      await resize(false);
+      expect(document.activeElement).toBe(body);
+      wrapper.unmount();
+    },
+  );
 
   it('renders HTML bodies inside a sandboxed iframe via srcdoc, not inline', async () => {
     // Marketing emails ship inline <style> blocks plus <script> stubs.

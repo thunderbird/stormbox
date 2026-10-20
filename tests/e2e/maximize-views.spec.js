@@ -75,7 +75,7 @@ for (const html of [false, true]) {
   const inbox = mailboxByRole(mailboxes, 'inbox');
   const trash = mailboxByRole(mailboxes, 'trash');
   if (!inbox || !trash) throw new Error('Test requires Inbox and Trash mailboxes');
-  const subject = `Maximize views e2e ${Date.now()}`;
+  const subject = `Maximize views e2e ${html ? 'HTML' : 'wrapped subject uses available reader space'} ${Date.now()}`;
   let createdId = null;
   try {
     const paragraphs = Array.from({ length: 220 }, (_, index) =>
@@ -170,11 +170,24 @@ for (const html of [false, true]) {
       await page.keyboard.press('Escape');
       await expect(view.getByRole('button', { name: 'Maximize message view' })).toBeVisible();
     }
-    for (const viewport of [{ width: 800, height: 650 }, { width: 390, height: 700 }]) {
+    for (const viewport of [{ width: 800, height: 650 }, { width: 390, height: 700 }, { width: 320, height: 420 }]) {
       await page.setViewportSize(viewport);
       const controls = view.locator('.message-view__header button');
       for (const control of await controls.all()) {
         await expect(control).toBeInViewport();
+      }
+      if (viewport.width === 320) {
+        await expect(view.getByRole('button', { name: 'Show message details' })).toBeVisible();
+        if (!html) {
+          await expect.poll(() => view.evaluate((element) =>
+            element.querySelector('.message-view__details').getBoundingClientRect().height
+              - element.clientHeight * 0.25)).toBeGreaterThan(1);
+        }
+        await expect.poll(() => view.locator('.message-view__metadata').evaluate((element) =>
+          element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+        await expect.poll(() => body.evaluate((element) =>
+          element.clientHeight - Number.parseFloat(getComputedStyle(element).paddingTop)))
+          .toBeGreaterThan(20);
       }
       if (html && viewport.width === 800) {
         await body.evaluate((element) => { element.scrollTop = element.scrollHeight * 0.5; });
