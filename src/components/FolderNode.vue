@@ -243,8 +243,8 @@ export default { name: 'FolderNode' };
   position: absolute;
   left: -4px;
   bottom: -3px;
-  color: #f9ab00;
-  fill: currentColor;
+  color: var(--folder-icon-color);
+  fill: #facc15;
   /* Halo so the star reads over the icon on hover/active rows. */
   filter: drop-shadow(0 0 1.5px var(--panel));
 }

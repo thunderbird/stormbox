@@ -104,7 +104,10 @@ defineSlots<{
 }
 .msg-list__bulk-action--starred,
 .msg-list__bulk-action--starred:hover {
-  color: var(--warn-fg);
+  color: var(--folder-icon-color);
+}
+.msg-list__bulk-action--starred > svg {
+  fill: #facc15;
 }
 /* "Not junk" is the contextual, Junk-only primary action; a filled
    accent button set apart from the icon buttons, matching the same
