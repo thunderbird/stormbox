@@ -350,7 +350,7 @@ describe('keyboard focus after a row removal', () => {
     const active = document.activeElement as HTMLElement;
     expect(active).not.toBe(document.body);
     expect(wrapper.find('.msg-list').element.contains(active)).toBe(true);
-    expect(active.getAttribute('role')).toBe('listbox');
+    expect(active.getAttribute('role')).toBe('grid');
   });
 
   it('leaves focus alone when it was outside the list', async () => {

@@ -215,7 +215,7 @@ test.describe('Compose paste image e2e', () => {
       // then paints that data: URL is the engine's job, not ours.
       const row = page.locator('.msg-list__item').filter({ hasText: subject }).first();
       await expect(row).toBeVisible({ timeout: 30_000 });
-      await row.locator('.msg-list__content').click();
+      await row.locator('.msg-list__open').click();
       await expect(page.locator('.message-view__title h2')).toHaveText(subject, { timeout: 30_000 });
       await expect(page.locator('iframe.message-view__html-frame')).toBeVisible({ timeout: 30_000 });
 

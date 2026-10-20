@@ -30,6 +30,7 @@ const props = withDefaults(defineProps<{
   start: number;
   size: number;
   focused?: boolean;
+  cursor?: boolean;
   selected?: boolean;
   dragging?: boolean;
   showsRecipients?: boolean;
@@ -47,7 +48,7 @@ const props = withDefaults(defineProps<{
    * hover. The star keeps its slot when the row is not hovered so a
    * starred message shows its star in the same place; the summary
    * reserves a slot for tag and star and the date sits under archive and
-   * delete. Pointer-only: the buttons are not Tab stops. The
+   * delete. The grid manages keyboard focus for these buttons. The
    * single-column layout has no hover menu; it always shows the star
    * (set or not) and never tag, archive or delete.
    */
@@ -67,6 +68,7 @@ const props = withDefaults(defineProps<{
   tagDefinitions?: ReadonlyArray<MessageTagDefinition>;
 }>(), {
   focused: false,
+  cursor: false,
   selected: false,
   dragging: false,
   showsRecipients: false,
@@ -106,16 +108,28 @@ const correspondent = computed(() => rowCorrespondent(props.message, props.shows
 const avatar = computed(() => senderAvatar(correspondent.value));
 const label = computed(() => correspondentLabel(props.message, props.showsRecipients));
 const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort)));
+const rowLabel = computed(() => [
+  label.value,
+  props.message.subject || '(no subject)',
+  dateText.value,
+  isUnread.value ? 'Unread' : '',
+  isFlagged.value ? 'Starred' : '',
+  Number(props.message.has_attachment) === 1 ? 'Has attachments' : '',
+  tags.value.length > 0 ? tagStackLabel.value : '',
+].filter(Boolean).join(', '));
 </script>
 
 <template>
   <li
     :id="`${domIdPrefix}${message.id}`"
     :data-index="index"
-    role="option"
+    role="row"
+    :aria-rowindex="index + 1"
+    :aria-label="rowLabel"
     :aria-selected="selected"
     :class="{
       'is-focused': focused,
+      'is-cursor': cursor,
       'is-selected': selected,
       'is-dragging': dragging,
       'is-unread': isUnread,
@@ -132,17 +146,27 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   >
     <div
       class="msg-list__item"
-      :class="{ 'msg-list__item--hover-actions': hoverActions }"
-      tabindex="-1"
+      :class="{ 'msg-list__item--hover-actions': hoverActions, 'has-tag-menu': tagMenuOpen }"
+      role="gridcell"
       :draggable="draggable && !isScheduledMessage(message)"
       @click="emit('row-click', $event)"
       @dragstart="emit('dragstart', $event)"
       @dragend="emit('dragend', $event)"
     >
+      <button
+        type="button"
+        class="msg-list__open"
+        data-message-control
+        tabindex="-1"
+        :aria-label="`Open message: ${message.subject || '(no subject)'}, ${label}`"
+      />
       <div class="msg-list__state">
         <label v-if="selectable" class="msg-list__check" draggable="false" @click.stop>
           <input
             type="checkbox"
+            data-message-control
+            tabindex="-1"
+            :aria-label="`Select message: ${message.subject || '(no subject)'}, ${label}`"
             :checked="selected"
             @click="emit('checkbox-click', $event)"
           />
@@ -150,7 +174,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
         <span
           v-if="isUnread"
           class="msg-list__unread-dot"
-          aria-label="Unread"
+          aria-hidden="true"
         />
       </div>
       <div
@@ -199,6 +223,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               class="msg-list__action msg-list__action--tag"
               :class="{ 'is-tagged': tags.length > 0 }"
               tabindex="-1"
+              data-message-control
               :title="tagStackLabel"
               :aria-label="tagStackLabel"
               aria-haspopup="dialog"
@@ -213,6 +238,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               class="msg-list__action msg-list__action--star"
               :class="{ 'msg-list__action--starred': isFlagged }"
               tabindex="-1"
+              data-message-control
               :title="isFlagged ? 'Unstar' : 'Star'"
               :aria-label="isFlagged ? 'Unstar' : 'Star'"
               :aria-pressed="isFlagged"
@@ -225,6 +251,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               type="button"
               class="msg-list__action"
               tabindex="-1"
+              data-message-control
               title="Archive"
               aria-label="Archive"
               @click="emit('archive')"
@@ -236,6 +263,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
               type="button"
               class="msg-list__action msg-list__action--danger"
               tabindex="-1"
+              data-message-control
               title="Delete"
               aria-label="Delete"
               @click="emit('delete')"
@@ -297,9 +325,54 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   user-select: none;
   -webkit-user-select: none;
 }
-.msg-list__item:hover { background: var(--rowHover); }
+.msg-list__item:hover,
+.msg-list__item:focus-within,
+.msg-list__item.has-tag-menu { background: var(--rowHover); }
+.msg-list__scroller:focus-visible .is-cursor .msg-list__item {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.msg-list__open {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.msg-list__state,
+.msg-list__avatar,
+.msg-list__content {
+  pointer-events: none;
+}
+.msg-list__check,
+.msg-list__content [data-row-tags] {
+  pointer-events: auto;
+}
 .msg-list__content {
   min-width: 0;
+}
+.msg-list__open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.msg-list__action:focus-visible,
+.msg-list__check input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.msg-list__item.has-tag-menu .msg-list__action--tag,
+.msg-list__item:focus-within .msg-list__action--tag {
+  visibility: visible;
+}
+.msg-list__item:focus-within .msg-list__check {
+  opacity: 1;
+}
+.msg-list__item:focus-within .msg-list__unread-dot {
+  opacity: 0;
 }
 
 /* The action overlay is centred on the summary line, over its last three
@@ -323,6 +396,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   pointer-events: none;
 }
 .msg-list__action {
+  position: relative;
   display: inline-grid;
   place-items: center;
   width: 34px;
@@ -351,11 +425,18 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
 @media (min-width: 640px) {
   /* Inherit down the chain so the overlay matches hover, focused and
      selected row fills alike. */
+  .msg-list__item--hover-actions.has-tag-menu .msg-list__content,
+  .msg-list__item--hover-actions.has-tag-menu .msg-list__summary,
+  .msg-list__item--hover-actions.has-tag-menu .msg-list__actions,
+  .msg-list__item--hover-actions:focus-within .msg-list__content,
+  .msg-list__item--hover-actions:focus-within .msg-list__summary,
+  .msg-list__item--hover-actions:focus-within .msg-list__actions,
   .msg-list__item--hover-actions:hover .msg-list__content,
   .msg-list__item--hover-actions:hover .msg-list__summary,
   .msg-list__item--hover-actions:hover .msg-list__actions {
     background: inherit;
   }
+  .msg-list__item--hover-actions:focus-within .msg-list__action,
   .msg-list__item--hover-actions:hover .msg-list__action {
     visibility: visible;
   }
@@ -561,6 +642,17 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
 }
 .msg-list--card .msg-list__actions {
   top: 9px;
+}
+.msg-list--card .msg-list__action:focus-visible {
+  outline: none;
+}
+.msg-list--card .msg-list__action:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
 }
 .msg-list--card .msg-list__from,
 .msg-list--card .msg-list__subject {

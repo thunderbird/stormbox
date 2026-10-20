@@ -135,7 +135,7 @@ test.describe('Tag view e2e', () => {
         await expect(inboxRow.locator(`.msg-list__action[title="${title}"]`)).toBeVisible();
       }
       await expect(inboxRow.locator('.msg-list__item')).toHaveAttribute('draggable', 'false');
-      await inboxRow.locator('.msg-list__subject').click();
+      await inboxRow.locator('.msg-list__open').click();
       for (const label of ['Archive', 'Delete', 'Mark as junk']) {
         await expect(page.locator(`.message-view__action[aria-label="${label}"]`)).toBeVisible();
       }
@@ -180,7 +180,7 @@ test.describe('Tag view e2e', () => {
             for (const subject of subjects) {
               const title = page.locator('.message-view__title h2');
               if (await title.count() === 0 || await title.textContent() !== subject) {
-                await rowFor(page, subject).locator('.msg-list__subject').click();
+                await rowFor(page, subject).locator('.msg-list__open').click();
               }
               await expect(title).toHaveText(subject);
               await page.locator(`.message-view__action[aria-label="${label}"]`).click();
