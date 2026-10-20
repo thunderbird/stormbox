@@ -17,9 +17,15 @@ export type CachedRow = MessageRow | undefined;
  * query-view total; `isLoading` is true while the folder has no painted
  * page yet or is being rebuilt.
  */
+export interface FolderViewSnapshot {
+  readonly messages: readonly CachedRow[];
+  readonly total: number;
+}
+
 export interface FolderView {
-  messages: CachedRow[];
-  total: number;
+  snapshot: FolderViewSnapshot;
+  readonly messages: readonly CachedRow[];
+  readonly total: number;
   isLoading: boolean;
 }
 

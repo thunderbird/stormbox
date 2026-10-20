@@ -110,7 +110,7 @@ watch(folderId, (id, _previous, onCleanup) => {
 }, { immediate: true });
 
 const view = computed(() => mailStore.folderView(folderId.value));
-const messages = computed<CachedRow[]>(() => view.value.messages);
+const messages = computed(() => view.value.snapshot.messages);
 const isLoading = computed(() => view.value.isLoading);
 const listSort = computed(() => mailStore.sortForFolder(folderId.value));
 
@@ -176,7 +176,7 @@ const {
 // there until ensureLoaded() pulls the matching page. Dense filters
 // use their materialized row count.
 const folderRowCount = computed(() => Math.max(
-  view.value.total ?? 0,
+  view.value.snapshot.total,
   messages.value.length,
 ));
 const rowCount = computed(() => (denseLocalFilterActive.value ? visibleMessages.value.length : folderRowCount.value));

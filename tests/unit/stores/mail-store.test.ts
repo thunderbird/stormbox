@@ -2605,6 +2605,31 @@ describe('moveMessages', () => {
 });
 
 describe('refresh button (nuke and rebuild)', () => {
+  it('keeps the rebuilt folder extent visible when the first cache read fails', async () => {
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 3 })],
+      views: { 1: { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 } },
+    });
+    await flush();
+    expect(mailStore.selectedMessageId).toBeNull();
+    repo.ensureFolderWindow = async () => ({ total: 2, fetched: 2 });
+    repo.listMessagesForView = vi.fn().mockRejectedValue(new Error('cache read failed'));
+    const loggedError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await mailStore.refresh();
+      await flush();
+
+      expect(mailStore.messages).toEqual([]);
+      expect(mailStore.totalForFolder).toBe(2);
+      expect(mailStore.error).toBe('cache read failed');
+      expect(mailStore.isLoading).toBe(false);
+      expect(loggedError).toHaveBeenCalled();
+    } finally {
+      loggedError.mockRestore();
+    }
+  });
+
   it('wipes the local view, re-syncs from the server, and shows the spinner while running', async () => {
     // Simulate a desynced cache: locally we believe there are 3 rows
     // but the server actually has 1. After refresh, the local view
@@ -2768,6 +2793,38 @@ describe('refresh button (nuke and rebuild)', () => {
 });
 
 describe('refreshLoadedPages after a remote shrink', () => {
+  it('publishes the changed total together with the refreshed rows', async () => {
+    const view = { rows: [makeRow(1), makeRow(2), makeRow(3)], total: 3 };
+    const { mailStore, repo } = await setupStore({
+      folders: [makeFolder(1, { total_emails: 3 })],
+      views: { 1: view },
+    });
+    await flush();
+    const originalRows = mailStore.messages;
+    const originalSnapshot = mailStore.folderView(1).snapshot;
+    expect(Object.isFrozen(originalSnapshot)).toBe(true);
+    expect(Object.isFrozen(originalRows)).toBe(true);
+    let resolveRows!: (rows: ReturnType<typeof makeRow>[]) => void;
+    repo.listMessagesForView = vi.fn(() => new Promise((resolve) => { resolveRows = resolve; }));
+    view.rows = [makeRow(3)];
+    view.total = 1;
+    repo.triggerBroadcast(['messages']);
+    await flush();
+
+    expect(repo.listMessagesForView).toHaveBeenCalled();
+    expect(mailStore.folderView(1).snapshot).toBe(originalSnapshot);
+    expect(mailStore.messages).toBe(originalRows);
+    expect(mailStore.totalForFolder).toBe(3);
+
+    resolveRows(view.rows);
+    await flush();
+    expect(mailStore.messages.map((row) => row?.id)).toEqual([3]);
+    expect(mailStore.totalForFolder).toBe(1);
+    expect(mailStore.folderView(1).snapshot).not.toBe(originalSnapshot);
+    expect(originalSnapshot.total).toBe(3);
+    expect(originalRows.map((row) => row?.id)).toEqual([1, 2, 3]);
+  });
+
   it('drops trailing placeholder rows when query_views.total shrinks', async () => {
     // Start with a folder that the cache says has 3 rows and the
     // server agrees on. After the initial paint the user is on the

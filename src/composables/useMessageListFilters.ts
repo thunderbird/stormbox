@@ -6,7 +6,7 @@ import { messageMatchesQuickFilter, normalizeFilterText } from '../utils/quick-f
 
 export interface UseMessageListFiltersInput {
   /** The folder's positional window (sparse: unfetched positions are undefined). */
-  messages: Ref<CachedRow[]>;
+  messages: Ref<readonly CachedRow[]>;
   quickFilterQuery: Ref<string>;
   /** The open message when it belongs to this list; kept visible while a filter hides it. */
   openMessageId: Ref<number | null>;

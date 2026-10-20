@@ -28,7 +28,7 @@ export interface UseMessageListViewportInput {
   folderId: Ref<number | null>;
   primary: Ref<boolean>;
   /** Rows the list paints (the window, or the filtered rows). */
-  visibleMessages: Ref<CachedRow[]>;
+  visibleMessages: Ref<readonly CachedRow[]>;
   /** Virtualizer count: the folder total, or the filtered row count. */
   rowCount: Ref<number>;
   /** True while a dense filter owns the row set; positional fetches pause. */
@@ -52,13 +52,17 @@ export function useMessageListViewport(input: UseMessageListViewportInput) {
   let listResizeObserver: ResizeObserver | null = null;
 
   const virtualizer = useVirtualizer(
-    computed(() => ({
-      count: input.rowCount.value,
-      getScrollElement: () => scrollEl.value,
-      estimateSize: () => (cardLayout.value ? CARD_ROW_HEIGHT : ROW_HEIGHT),
-      overscan: 8,
-      getItemKey: (i: number) => input.visibleMessages.value[i]?.id ?? `_ph_${i}`,
-    })),
+    computed(() => {
+      const rows = input.visibleMessages.value;
+      return {
+        count: input.rowCount.value,
+        getScrollElement: () => scrollEl.value,
+        estimateSize: () => (cardLayout.value ? CARD_ROW_HEIGHT : ROW_HEIGHT),
+        overscan: 8,
+        // TanStack caches keys lazily; each callback belongs to one row snapshot.
+        getItemKey: (i: number) => rows[i]?.id ?? `_ph_${i}`,
+      };
+    }),
   );
 
   const totalSize = computed(() => virtualizer.value.getTotalSize());
