@@ -736,7 +736,7 @@ function unwatchSystemTheme() {
           @open-settings="showSettingsDialog = true"
         />
         <FeatureBeaconMenu @reveal="revealBeacon" />
-        <AccountAvatarMenu />
+        <AccountAvatarMenu @open-settings="showSettingsDialog = true" />
       </div>
     </header>
 
