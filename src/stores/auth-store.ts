@@ -11,7 +11,7 @@ import type { Oidc } from 'oidc-spa/core';
 import { computed, ref } from 'vue';
 
 import { initOidc, getOidc } from '../services/auth';
-import { currentHref, replaceLocation } from '../services/navigation';
+import { currentHref, reloadLocation, replaceLocation } from '../services/navigation';
 import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL, STAFF_APP_URL } from '../defines';
 import { AUTH_STATE } from '../constants/states';
 import type { AuthState } from '../constants/states';
@@ -38,6 +38,34 @@ type ConnectAuth = BasicAuth | BearerAuth;
 const TOKEN_RENEWAL_WINDOW_MS = 25_000;
 const TOKEN_RENEWAL_RETRY_MS = 5_000;
 const MIN_TOKEN_RENEWAL_DELAY_MS = 1_000;
+const OIDC_REDIRECT_PENDING_KEY = 'stormbox.oidcRedirectPending';
+const OIDC_SIGN_IN_INCOMPLETE = 'Sign-in did not complete. Try again to return to sign in.';
+
+function appPasswordRequested(): boolean {
+  if (new URLSearchParams(globalThis.location?.search ?? '').has('app-password')) return true;
+  try {
+    return globalThis.localStorage?.getItem('stormbox.appPassword') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function oidcRedirectPending(): boolean {
+  try {
+    return globalThis.sessionStorage?.getItem(OIDC_REDIRECT_PENDING_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setOidcRedirectPending(pending: boolean): void {
+  try {
+    if (pending) globalThis.sessionStorage?.setItem(OIDC_REDIRECT_PENDING_KEY, '1');
+    else globalThis.sessionStorage?.removeItem(OIDC_REDIRECT_PENDING_KEY);
+  } catch {
+    // Storage can be unavailable in a restricted browser session.
+  }
+}
 
 function bearerAuth(tokens: OidcTokenSnapshot): BearerAuth {
   return {
@@ -70,6 +98,7 @@ function parseServerUrl(): { origin: string; hostname: string } {
 
 export const useAuthStore = defineStore('auth', () => {
   const status = ref<AuthState>(AUTH_STATE.IDLE);
+  const appPasswordMode = ref(appPasswordRequested());
   const accountId = ref<number | null>(null);
   const username = ref<string | null>(null);
   /** OIDC ID-token `email` claim; null for password sign-in. */
@@ -137,24 +166,46 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /**
-   * Run the OIDC bootstrap and, if the user already has a session, kick
-   * off a connect right away. Safe to call once on app boot.
+   * Select the explicit password flow or connect through OIDC once on boot.
    */
   async function initialize(): Promise<void> {
     if (status.value !== AUTH_STATE.IDLE) {
       return;
     }
-    status.value = AUTH_STATE.OIDC_LOADING;
-    try {
-      const oidc = await initOidc();
+    if (appPasswordMode.value) {
+      setOidcRedirectPending(false);
       status.value = AUTH_STATE.OIDC_READY;
-      if (oidc?.isUserLoggedIn) {
-        await connectViaOidc();
-      }
-    } catch (err: any) {
-      status.value = AUTH_STATE.FAILED;
-      error.value = err?.message ?? String(err);
+      return;
     }
+    status.value = AUTH_STATE.OIDC_LOADING;
+    let oidc: Awaited<ReturnType<typeof initOidc>>;
+    try {
+      oidc = await initOidc();
+    } catch (err) {
+      reportOidcInitializationError(err);
+      return;
+    }
+    if (oidc && !oidc.isUserLoggedIn && oidc.initializationError) {
+      reportOidcInitializationError(oidc.initializationError);
+      return;
+    }
+    if (!oidc?.isUserLoggedIn && oidcRedirectPending()) {
+      status.value = AUTH_STATE.FAILED;
+      error.value = OIDC_SIGN_IN_INCOMPLETE;
+      return;
+    }
+    status.value = AUTH_STATE.OIDC_READY;
+    await connectViaOidc();
+  }
+
+  function reportOidcInitializationError(err: unknown): void {
+    console.error('Could not initialize OIDC sign-in', err);
+    const serviceUnavailable = typeof err === 'object' && err != null
+      && 'isAuthServerLikelyDown' in err && err.isAuthServerLikelyDown;
+    status.value = AUTH_STATE.FAILED;
+    error.value = serviceUnavailable
+      ? 'The sign-in service is unavailable. Please try again later.'
+      : 'Sign-in could not be initialized. Please try again later.';
   }
 
   /**
@@ -177,6 +228,20 @@ export const useAuthStore = defineStore('auth', () => {
    * them to the IdP; on return, initialize() will pick the session up.
    */
   async function connectViaOidc(): Promise<boolean> {
+    if (status.value === AUTH_STATE.CONNECTING) return false;
+    status.value = AUTH_STATE.CONNECTING;
+    error.value = null;
+    try {
+      return await _connectViaOidc();
+    } catch (err: any) {
+      stopTokenSync();
+      status.value = AUTH_STATE.FAILED;
+      error.value = err?.message ?? String(err);
+      return false;
+    }
+  }
+
+  async function _connectViaOidc(): Promise<boolean> {
     const oidc = getOidc();
     if (!oidc) {
       error.value = 'OIDC is not available on this server.';
@@ -184,9 +249,15 @@ export const useAuthStore = defineStore('auth', () => {
       return false;
     }
     if (!oidc.isUserLoggedIn) {
+      if (oidc.initializationError) {
+        reportOidcInitializationError(oidc.initializationError);
+        return false;
+      }
+      setOidcRedirectPending(true);
       await oidc.login();
-      return false;
+      throw new Error(OIDC_SIGN_IN_INCOMPLETE);
     }
+    setOidcRedirectPending(false);
     const generation = startTokenSync(oidc);
     let tokens: Oidc.Tokens;
     try {
@@ -245,6 +316,23 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
     return true;
+  }
+
+  function cancelOidcLogin(): void {
+    if (status.value !== AUTH_STATE.CONNECTING || getOidc()?.isUserLoggedIn) return;
+    status.value = AUTH_STATE.FAILED;
+    error.value = OIDC_SIGN_IN_INCOMPLETE;
+  }
+
+  async function retryOidc(): Promise<void> {
+    if (status.value !== AUTH_STATE.FAILED) return;
+    setOidcRedirectPending(false);
+    const oidc = getOidc();
+    if (!oidc || (!oidc.isUserLoggedIn && oidc.initializationError)) {
+      reloadLocation();
+      return;
+    }
+    await connectViaOidc();
   }
 
   function stopTokenSync(): void {
@@ -465,6 +553,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     status,
+    appPasswordMode,
     accountId,
     username,
     email,
@@ -484,6 +573,8 @@ export const useAuthStore = defineStore('auth', () => {
     initialize,
     connectWithPassword,
     connectViaOidc,
+    cancelOidcLogin,
+    retryOidc,
     $reset,
     logout,
   };

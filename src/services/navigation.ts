@@ -11,3 +11,8 @@ export function currentHref(): string {
 export function replaceLocation(url: string): void {
   globalThis.location?.replace(url);
 }
+
+/** Restart browser initialization after an explicit retry. */
+export function reloadLocation(): void {
+  globalThis.location?.reload();
+}

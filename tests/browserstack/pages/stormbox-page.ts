@@ -19,6 +19,7 @@ export class StormboxPage {
   readonly page: Page;
   readonly shell: Locator;
   readonly signInButton: Locator;
+  readonly oidcUsernameInput: Locator;
   readonly thundermailMenu: Locator;
   readonly thundermailMenuButton: Locator;
   readonly compactMenu: Locator;
@@ -90,7 +91,10 @@ export class StormboxPage {
   constructor(page: Page) {
     this.page = page;
     this.shell = page.locator('.shell');
-    this.signInButton = page.locator('.login-card__signin');
+    this.signInButton = page.locator('.login-card__signin:enabled');
+    this.oidcUsernameInput = page.locator(
+      '[data-testid="username-input"], input#username, input[name="username"], input[name="email"], input[type="email"]',
+    ).first();
     // Desktop keeps the app drawer and the action buttons in the bar; below
     // 640px they collapse into the compact menu's menuitems. Role locators
     // skip hidden elements, so each resolves to the one copy the current
@@ -217,15 +221,23 @@ export class StormboxPage {
   }
 
   async signInIfNeeded(projectName = 'desktop') {
-    if (await this.isAppUiVisible(TIMEOUT_10_SECONDS)) {
+    const loginError = this.page.locator('.login-card__error');
+    const entry = await Promise.race([
+      this.accountMenuButton.waitFor({ state: 'visible', timeout: TIMEOUT_30_SECONDS }).then(() => 'app'),
+      this.oidcUsernameInput.waitFor({ state: 'visible', timeout: TIMEOUT_30_SECONDS }).then(() => 'oidc'),
+      this.signInButton.waitFor({ state: 'visible', timeout: TIMEOUT_30_SECONDS }).then(() => 'manual'),
+      loginError.waitFor({ state: 'visible', timeout: TIMEOUT_30_SECONDS }).then(() => 'error'),
+    ]);
+    if (entry === 'app') {
       await this.waitForInboxToFinishLoading();
       return;
     }
-
-    await expect(this.signInButton).toBeEnabled({ timeout: TIMEOUT_30_SECONDS });
-    await this.signInButton.click({
-      force: projectName.toLowerCase().includes('android'),
-    });
+    if (entry === 'error') throw new Error(`OIDC startup failed: ${await loginError.textContent()}`);
+    if (entry === 'manual') {
+      await this.signInButton.click({
+        force: projectName.toLowerCase().includes('android'),
+      });
+    }
     await this.signInToThunderbirdAccount(projectName);
     await this.waitForAppUi();
     await this.waitForInboxToFinishLoading();
@@ -801,16 +813,6 @@ export class StormboxPage {
     await expect(this.loadingInboxMessage).not.toBeVisible({ timeout: TIMEOUT_60_SECONDS });
   }
 
-  private async isAppUiVisible(timeout: number) {
-    try {
-      await expect(this.accountMenuButton).toBeVisible({ timeout });
-      await expect(this.quickFilter).toBeVisible({ timeout });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   // BrowserStack can time out the goto event even after the login gate or app UI has rendered.
   private async didBrowserStackTimeoutAfterPageRendered(error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -824,7 +826,8 @@ export class StormboxPage {
   private async isLoginGateOrAppUiVisible(timeout: number) {
     try {
       await Promise.race([
-        this.signInButton.waitFor({ state: 'visible', timeout }),
+        this.page.locator('.login-gate').waitFor({ state: 'visible', timeout }),
+        this.oidcUsernameInput.waitFor({ state: 'visible', timeout }),
         this.accountMenuButton.waitFor({ state: 'visible', timeout }),
       ]);
       return true;
@@ -837,9 +840,7 @@ export class StormboxPage {
     expect(ACCTS_OIDC_EMAIL, 'ACCTS_OIDC_EMAIL must be set').toBeTruthy();
     expect(ACCTS_OIDC_PWORD, 'ACCTS_OIDC_PWORD must be set').toBeTruthy();
 
-    const username = this.page.locator(
-      '[data-testid="username-input"], input#username, input[name="username"], input[name="email"], input[type="email"]',
-    ).first();
+    const username = this.oidcUsernameInput;
     const password = this.page.locator(
       '[data-testid="password-input"], input#password, input[name="password"], input[type="password"]',
     ).first();

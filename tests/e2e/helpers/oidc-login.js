@@ -11,7 +11,7 @@ const APP_ORIGIN = new URL(
 ).origin;
 
 /**
- * Sign in via OIDC ("Sign in with Thunderbird" → Keycloak tbpro theme).
+ * Sign in through automatic OIDC redirection or the manual entry point.
  *
  * Fast path: if the browser context already has a valid oidc-spa
  * session (typically because the project loaded a shared
@@ -58,42 +58,27 @@ export async function seedOnboarding(page, { beaconsSeen = true } = {}) {
 export async function loginViaOidc(page, { beaconsSeen = true } = {}) {
   await seedOnboarding(page, { beaconsSeen });
   await page.goto('/');
-  if (await isAppShellAlreadyVisible(page)) {
-    return;
-  }
-  await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
-  // We're on the LoginGate, but storageState carried OIDC tokens
-  // so oidc-spa is most likely doing a SILENT REFRESH against
-  // Keycloak (the access token is short-lived, refresh token is
-  // long-lived). During silent refresh:
-  //   - the LoginGate is rendered with the Sign-in button DISABLED,
-  //   - if refresh succeeds, the app transitions straight to .shell
-  //     without the button ever being clicked,
-  //   - if refresh fails (rare), the button enables and the user
-  //     is expected to click it manually.
-  // So we race "shell appeared" against "button became enabled"
-  // and continue with whichever wins. Only the rare failure case
-  // hits the form-fill flow below.
-  // The LoginGate button is labelled just "Sign In"; scope by class so we
-  // never race against the Keycloak page's own "Sign In" button.
-  const signInBtn = page.locator('.login-card__signin');
-  const shellLocator = page.locator('.shell');
-  const winner = await Promise.race([
-    shellLocator.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'shell'),
-    expect(signInBtn).toBeEnabled({ timeout: 30_000 }).then(() => 'button'),
+  const shell = page.locator('.shell');
+  const usernameField = page.locator('input#username, input[name="username"]').first();
+  // Supports deployed versions with a manual OIDC entry point.
+  const manualSignIn = page.locator('.login-card__signin:enabled');
+  const loginError = page.locator('.login-card__error');
+  const outcome = await Promise.race([
+    shell.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'shell'),
+    usernameField.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'identity-provider'),
+    manualSignIn.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'manual'),
+    loginError.waitFor({ state: 'visible', timeout: 30_000 }).then(() => 'error'),
   ]).catch((err) => {
-    throw new Error(`OIDC LoginGate stuck: neither .shell nor enabled "Sign in" button appeared within 30 s (${err?.message ?? err})`);
+    throw new Error(`OIDC startup did not reach mail or sign-in within 30 s (${err?.message ?? err})`);
   });
-  if (winner === 'shell') {
-    // Silent refresh succeeded; nothing more to do.
-    return;
+  if (outcome === 'shell') return;
+  if (outcome === 'error') {
+    throw new Error(`OIDC startup failed: ${(await loginError.textContent())?.trim()}`);
   }
-  // Refresh failed (or storageState is genuinely stale) — fall
-  // through to form fill.
-  await signInBtn.click();
-
-  // Keycloak login is proxied at /realms/tbpro on the Vite origin.
-  await page.waitForURL(/\/realms\/tbpro/, { timeout: 15_000 });
+  if (outcome === 'manual') {
+    await manualSignIn.click();
+    await page.waitForURL(/\/realms\/tbpro/, { timeout: 15_000 });
+  }
 
   if (/\/realms\/tbpro/.test(page.url())) {
     const username = page.locator('input#username, input[name="username"]').first();
@@ -105,7 +90,6 @@ export async function loginViaOidc(page, { beaconsSeen = true } = {}) {
     await page.waitForURL((url) => url.origin === APP_ORIGIN, { timeout: 20_000 });
   }
 
-  const loginError = page.locator('.login-card__error');
   await expect(page.locator('.shell')).toBeVisible({ timeout: 30_000 }).catch(async (err) => {
     const message = (await loginError.textContent().catch(() => null))?.trim();
     if (message) {
@@ -119,24 +103,4 @@ export async function loginViaOidc(page, { beaconsSeen = true } = {}) {
     }
     throw err;
   });
-}
-
-async function isAppShellAlreadyVisible(page) {
-  // Generous timeout: when storageState is valid (the common case
-  // every test should hit), the shell paints in under 1 s on warm
-  // Stalwart but can take 2-4 s under suite load when many fresh
-  // BrowserContexts have just torn down. Earlier 1.5 s was tight
-  // enough that some tests fell through to the OIDC slow path
-  // unnecessarily, then hit a 30 s wait for a button that would
-  // never enable because storageState was actually valid. Note:
-  // expect.toBeVisible resolves the moment the element appears, so
-  // a generous timeout doesn't slow the warm path — it only widens
-  // the window where we accept a slightly delayed paint as "still
-  // valid storageState" rather than "OIDC is broken".
-  try {
-    await expect(page.locator('.shell')).toBeVisible({ timeout: 4_000 });
-    return true;
-  } catch {
-    return false;
-  }
 }
