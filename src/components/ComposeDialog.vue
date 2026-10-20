@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
   ChevronDown,
+  Minus,
   Paperclip,
   RotateCw,
   Save,
@@ -44,6 +45,7 @@ import {
 import AppButton from './AppButton.vue';
 import AppDropdown from './AppDropdown.vue';
 import AppIconButton from './AppIconButton.vue';
+import MaximizeButton from './MaximizeButton.vue';
 import RecipientInput from './RecipientInput.vue';
 import RichTextEditor from './RichTextEditor.vue';
 import ScheduleSendDialog from './ScheduleSendDialog.vue';
@@ -74,6 +76,7 @@ const attachmentBusy = computed(() =>
 const fromIdentity = computed(() => composeStore.identityForSession(session.value));
 const isExpanded = computed(() =>
   session.value?.presentation === COMPOSE_PRESENTATION.EXPANDED);
+const isMaximized = ref(false);
 
 function fieldId(field: RecipientField): string {
   return isExpanded.value ? `compose-${field}` : `compose-${session.value?.id}-${field}`;
@@ -595,7 +598,10 @@ function identityInitials(id: IdentityRow): string {
       v-show="isExpanded"
       ref="dialogEl"
       class="compose-dialog"
-      :class="{ 'compose-dialog--expanded': isExpanded }"
+      :class="{
+        'compose-dialog--expanded': isExpanded,
+        'compose-dialog--maximized': isMaximized,
+      }"
       role="dialog"
       aria-modal="true"
       :aria-labelledby="dialogTitleId"
@@ -607,21 +613,27 @@ function identityInitials(id: IdentityRow): string {
       <header>
         <h2 :id="dialogTitleId">{{ draft.subject || 'New Message' }}</h2>
         <div class="compose-dialog__window-actions">
-          <button
-            type="button"
-            class="icon icon--minimize"
+          <AppIconButton
+            class="icon--minimize"
             :disabled="session.isSaving || session.isDiscarding"
             title="Minimize"
             aria-label="Minimize"
             @click="composeStore.minimize(session.id)"
-          >−</button>
+          >
+            <Minus :size="18" :stroke-width="1.65" aria-hidden="true" />
+          </AppIconButton>
+          <MaximizeButton
+            :maximized="isMaximized"
+            surface="composer"
+            @toggle="isMaximized = !isMaximized"
+          />
           <AppDropdown
             class="compose-close-menu"
             :disabled="scheduleBusy || session.isDiscarding"
           >
             <summary
               ref="closeMenuTriggerEl"
-              class="icon compose-close-menu__trigger"
+              class="compose-close-menu__trigger"
               role="button"
               aria-haspopup="menu"
               :title="isScheduling
@@ -633,7 +645,9 @@ function identityInitials(id: IdentityRow): string {
                 : undefined"
               :tabindex="scheduleBusy || session.isDiscarding ? -1 : undefined"
               @click="activateCloseTrigger"
-            >×</summary>
+            >
+              <X :size="18" :stroke-width="1.65" aria-hidden="true" />
+            </summary>
             <div
               class="app-dropdown__menu compose-close-menu__menu"
               role="menu"
@@ -1065,10 +1079,17 @@ function identityInitials(id: IdentityRow): string {
   padding: 16px;
   gap: 8px;
 }
+.compose-dialog--maximized .compose-dialog__card {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+}
 .compose-dialog__card header {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
 }
 .compose-dialog__body {
   display: contents;
@@ -1079,20 +1100,30 @@ function identityInitials(id: IdentityRow): string {
   align-items: center;
   gap: 4px;
 }
-.icon {
-  background: transparent;
-  border: 0;
-  font-size: 24px;
-  cursor: pointer;
+.compose-dialog__window-actions .app-icon-button,
+.compose-close-menu__trigger {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   color: inherit;
 }
-.icon--minimize {
-  font-size: 20px;
-}
 .compose-close-menu__trigger {
-  display: grid;
+  display: inline-grid;
   place-items: center;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
   list-style: none;
+}
+.compose-close-menu__trigger:hover:not([aria-disabled="true"]) {
+  background: var(--control-hover-bg);
+}
+.compose-close-menu__trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .compose-close-menu__trigger::-webkit-details-marker {
   display: none;
