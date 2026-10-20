@@ -132,10 +132,14 @@ defineExpose({ focusTrigger });
   content: none;
 }
 .msg-list__more-trigger:hover,
-.msg-list__more-trigger:focus-visible {
-  background: var(--rowHover);
+.msg-list__more-trigger:focus-visible,
+.msg-list__more[open] > .msg-list__more-trigger {
+  background: var(--control-hover-bg);
   color: var(--text);
-  outline: none;
+}
+.msg-list__more-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 /* Anchored to the row's end so it opens inside the column at any width. */
 .msg-list__more-menu {

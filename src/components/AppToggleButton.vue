@@ -38,9 +38,13 @@ withDefaults(
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.app-toggle-button:hover {
-  background: var(--rowHover);
+.app-toggle-button:hover:where(:not(.is-active):not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
+}
+.app-toggle-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .app-toggle-button.is-active {
   background: var(--accent);

@@ -120,6 +120,8 @@
   /* Form controls (inputs, pickers, toggle buttons) and dialog edges take
      the ramp's border token, a step above the --border hairline. */
   --control-border: var(--colour-neutral-border);
+  --control-hover-bg: color-mix(in srgb, var(--text) 16%, transparent);
+  --control-hover-border: color-mix(in srgb, var(--text) 38%, transparent);
   /* Cards inset on a panel (feature cards, shortcut groups) use the same weight. */
   --card-border: var(--control-border);
   color-scheme: dark light;
@@ -396,7 +398,7 @@ html .dp--theme-dark {
 }
 
 .theme-toggle:hover {
-  background: var(--panel2);
+  background: var(--control-hover-bg);
 }
 
 /* Global button styles */

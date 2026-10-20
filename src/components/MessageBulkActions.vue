@@ -86,21 +86,25 @@ defineSlots<{
   font: inherit;
   flex-shrink: 0;
 }
-.msg-list__bulk-action:hover {
-  background: var(--rowHover);
+.msg-list__bulk-action:hover:where(:not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
+}
+.msg-list__bulk-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .msg-list__bulk-action > svg {
   fill: none;
   stroke: currentColor;
 }
-.msg-list__bulk-action--danger:hover {
-  background: rgba(255, 107, 107, 0.12);
-  color: #ff6b6b;
+.msg-list__bulk-action--danger:hover:where(:not(:disabled)) {
+  background: var(--error-bg);
+  color: var(--error-fg);
 }
 .msg-list__bulk-action--starred,
 .msg-list__bulk-action--starred:hover {
-  color: #f5b700;
+  color: var(--warn-fg);
 }
 /* "Not junk" is the contextual, Junk-only primary action; a filled
    accent button set apart from the icon buttons, matching the same

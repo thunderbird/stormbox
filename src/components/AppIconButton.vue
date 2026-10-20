@@ -35,14 +35,14 @@ withDefaults(
   font: inherit;
 }
 
-.app-icon-button:hover {
-  background: var(--rowHover);
+.app-icon-button:hover:where(:not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
 }
 
-.app-icon-button--danger:hover {
-  background: rgba(255, 107, 107, 0.12);
-  color: #ff6b6b;
+.app-icon-button--danger:hover:where(:not(:disabled)) {
+  background: var(--error-bg);
+  color: var(--error-fg);
 }
 
 .app-icon-button:focus-visible {

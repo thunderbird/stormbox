@@ -372,17 +372,17 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
     display: none;
   }
 }
-.msg-list__action:hover {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+.msg-list__action:hover:where(:not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
 }
 .msg-list__action--starred,
 .msg-list__action--starred:hover {
-  color: #f5b700;
+  color: var(--warn-fg);
 }
-.msg-list__action--danger:hover {
-  background: rgba(255, 107, 107, 0.12);
-  color: #ff6b6b;
+.msg-list__action--danger:hover:where(:not(:disabled)) {
+  background: var(--error-bg);
+  color: var(--error-fg);
 }
 .msg-list__action-icon--folder {
   display: block;
@@ -523,7 +523,7 @@ const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort))
   min-width: 0;
 }
 
-.msg-list__star { color: #f5b700; }
+.msg-list__star { color: var(--warn-fg); }
 .msg-list__preview {
   margin: 4px 0 0;
   font-size: 12px;

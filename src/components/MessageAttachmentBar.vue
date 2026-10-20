@@ -259,7 +259,7 @@ function retryLabel(row: MessageAttachmentRow): string {
 }
 
 .message-attachment-row__pdf-link:hover {
-  background: var(--rowHover);
+  background: var(--control-hover-bg);
   color: var(--text);
 }
 
