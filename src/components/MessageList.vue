@@ -1165,9 +1165,12 @@ defineExpose({ focusColumnControl, focusFolderPicker });
 }
 .msg-list__column-control:hover,
 .msg-list__column-control:focus-visible {
-  background: var(--rowHover);
+  background: var(--control-hover-bg);
   color: var(--text);
-  outline: none;
+}
+.msg-list__column-control:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .msg-list__column-control:disabled {
   cursor: default;
@@ -1210,8 +1213,8 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   white-space: nowrap;
   box-shadow: none;
 }
-.msg-list__filter:hover {
-  background: var(--rowHover);
+.msg-list__filter:hover:where(:not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
   border-color: color-mix(in srgb, var(--border) 70%, var(--text));
 }
@@ -1238,9 +1241,14 @@ defineExpose({ focusColumnControl, focusFolderPicker });
   cursor: pointer;
   flex-shrink: 0;
 }
-.msg-list__refresh:hover {
-  background: var(--rowHover);
+.msg-list__refresh:hover:where(:not(:disabled)) {
+  background: var(--control-hover-bg);
   color: var(--text);
+}
+.msg-list__filter:focus-visible,
+.msg-list__refresh:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .is-spinning {
   animation: msg-spin 1.2s linear infinite;

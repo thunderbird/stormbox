@@ -1062,9 +1062,13 @@ body.spotlighting .folder-subs {
 .quick-filter__action:focus-visible,
 .quick-filter__action.theme-toggle:hover,
 .quick-filter__action.theme-toggle:focus-visible {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
-  outline: none;
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
+}
+.quick-filter__action:focus-visible,
+.quick-filter__action.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .quick-filter__search {
   position: relative;
@@ -1139,10 +1143,13 @@ body.spotlighting .folder-subs {
 }
 .quick-filter__clear:hover,
 .quick-filter__clear:focus-visible {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
   color: var(--text);
-  outline: none;
+}
+.quick-filter__clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 639px) {

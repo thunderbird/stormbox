@@ -119,8 +119,8 @@ function onOpenSettings() {
   display: none;
 }
 .top-nav-menu[open] .top-nav-menu__button {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
 }
 
 /* The button sits beside the avatar at the right edge of the bar, so the

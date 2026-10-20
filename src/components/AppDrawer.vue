@@ -59,8 +59,8 @@ function close() {
   display: none;
 }
 .app-drawer[open] .app-drawer__button {
-  background: var(--rowHover);
-  border-color: var(--border-soft);
+  background: var(--control-hover-bg);
+  border-color: var(--control-hover-border);
 }
 
 .app-drawer__popover {

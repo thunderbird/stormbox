@@ -117,14 +117,14 @@ defineExpose({ focusTrigger });
   border-radius: 8px;
   color: var(--muted);
 }
-.tag-picker-dropdown__trigger:hover,
+.tag-picker-dropdown:not(.app-dropdown--disabled) > .tag-picker-dropdown__trigger:hover,
 .tag-picker-dropdown[open] > .tag-picker-dropdown__trigger {
-  background: var(--rowHover);
+  background: var(--control-hover-bg);
   color: var(--text);
 }
 .tag-picker-dropdown__trigger:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 /* Content height, capped only by the viewport below the toolbar. */
 .tag-picker-dropdown__menu {

@@ -1064,8 +1064,9 @@ function closeMessageView() {
 /* View option, not a mail action — sits at the trailing edge. */
 .message-view__action--view-mode { margin-left: auto; }
 .message-view__action--view-mode[aria-pressed="true"] {
-  background: var(--rowHover);
+  background: var(--control-hover-bg);
   color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--control-hover-border);
 }
 .message-view__toolbar-icon {
   width: 18px;

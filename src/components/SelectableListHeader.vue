@@ -185,8 +185,12 @@ watchPostEffect(() => {
 
 .selectable-list-header__clear:hover,
 .selectable-list-header__clear:focus-visible {
-  background: var(--rowHover, #f0f1f6);
+  background: var(--control-hover-bg);
   color: var(--text, #1a1d24);
-  outline: none;
+}
+
+.selectable-list-header__clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 </style>
