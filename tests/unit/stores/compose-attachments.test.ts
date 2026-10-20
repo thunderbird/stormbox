@@ -627,6 +627,96 @@ describe('compose attachment races and send gating', () => {
     await expect(composeStore.saveAndClose(sessionId)).resolves.toBe(false);
 
     expect(composeStore.sessionById(sessionId)?.confirmedRevision).not.toBeNull();
-    expect(composeStore.sessionById(sessionId)?.error).toContain('not reached the draft');
+    expect(composeStore.sessionById(sessionId)?.error).toContain('not finished uploading');
+    expect(composeStore.sessionById(sessionId)?.saveError).toBeNull();
+  });
+});
+
+describe('compose attachment progress through the draft save', () => {
+  it('reports an uploaded attachment as uploading until a confirmed draft holds it', async () => {
+    const upload = deferred<any>();
+    const save = deferred<any>();
+    const { composeStore, repo } = await attachmentStore({
+      uploadComposeAttachment: vi.fn(() => upload.promise),
+    });
+    const runMutation = repo.runMutation;
+    repo.runMutation = vi.fn(async (...args: [number, number]) => {
+      await save.promise;
+      return runMutation(...args);
+    });
+    const sessionId = composeStore.open({ subject: 'Progress' });
+    await composeStore.addAttachments([new File(['a'], 'report.bin')], 'picker', sessionId);
+    const attachment = composeStore.sessionById(sessionId)!.attachments[0];
+
+    attachment.progress = 50;
+    expect(composeStore.attachmentProgress(attachment, sessionId))
+      .toEqual({ state: 'uploading', progress: 45 });
+
+    upload.resolve({ accountId: 'remote-1', blobId: 'upload-report', type: '', size: 1 });
+    await settle();
+    expect(attachment.status).toBe('ready');
+    expect(composeStore.attachmentProgress(attachment, sessionId))
+      .toEqual({ state: 'uploading', progress: 90 });
+
+    save.resolve(undefined);
+    await settle();
+    expect(attachment.canonicalBlobId).toBe('canonical-upload-report');
+    expect(composeStore.attachmentProgress(attachment, sessionId)).toEqual({ state: 'attached' });
+  });
+
+  it('saves a finished upload while recipient text is uncommitted, leaving the text unsaved', async () => {
+    const { composeStore, repo } = await attachmentStore();
+    const sessionId = composeStore.open({ subject: 'Typing' });
+    composeStore.setPendingRecipientText('to', 'half@exa', sessionId);
+
+    await composeStore.addAttachments([new File(['a'], 'report.bin')], 'picker', sessionId);
+    await settle();
+
+    const session = composeStore.sessionById(sessionId)!;
+    expect(repo.insertPendingMutation).toHaveBeenCalledTimes(1);
+    const request = JSON.parse(repo.insertPendingMutation.mock.calls[0][0].requestJson);
+    expect(request.to).toEqual([]);
+    expect(request.attachments).toEqual([
+      expect.objectContaining({ blob_id: 'upload-report.bin' }),
+    ]);
+    expect(session.attachments[0].canonicalBlobId).toBe('canonical-upload-report.bin');
+    expect(session.pendingRecipientText.to).toBe('half@exa');
+    expect(session.recipientEntriesByField.to).toEqual([]);
+    expect(composeStore.isSessionDirty(sessionId)).toBe(true);
+  });
+
+  it('does not report a draft save failure while an attachment is still uploading', async () => {
+    const upload = deferred<any>();
+    const { composeStore } = await attachmentStore({
+      uploadComposeAttachment: vi.fn(() => upload.promise),
+    });
+    const sessionId = composeStore.open({ subject: 'Text first' });
+    await composeStore.addAttachments([new File(['a'], 'pending.txt')], 'picker', sessionId);
+
+    await expect(composeStore.saveDraft(sessionId)).resolves.toBe(true);
+
+    expect(composeStore.sessionById(sessionId)?.saveError).toBeNull();
+  });
+
+  it('shows a failed draft save on the attachment and retries the save from it', async () => {
+    const { composeStore, repo } = await attachmentStore({
+      retryPendingDraftMutation: vi.fn(async () => {}),
+    });
+    repo.runMutation.mockImplementationOnce(async () => ({
+      attempted: 1, succeeded: 0, failed: 1,
+    }) as any);
+    const sessionId = composeStore.open({ subject: 'Retry' });
+    await composeStore.addAttachments([new File(['a'], 'report.bin')], 'picker', sessionId);
+    await settle();
+    const attachment = composeStore.sessionById(sessionId)!.attachments[0];
+
+    expect(composeStore.attachmentProgress(attachment, sessionId))
+      .toEqual({ state: 'failed', error: 'Could not save it to the draft.' });
+
+    await expect(composeStore.retryAttachment(attachment.clientId, sessionId)).resolves.toBe(true);
+
+    expect((repo as any).retryPendingDraftMutation).toHaveBeenCalledTimes(1);
+    expect(repo.uploadComposeAttachment).toHaveBeenCalledTimes(1);
+    expect(composeStore.attachmentProgress(attachment, sessionId)).toEqual({ state: 'attached' });
   });
 });
