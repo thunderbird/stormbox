@@ -179,11 +179,13 @@ watch(activeSpotlight, (id) => {
 }, { immediate: true });
 // With 'system' the OS decides, so a manual light/dark button would fight it.
 const showThemeToggle = computed(() => theme.value !== 'system');
+const messageViewMaximized = ref(false);
 // Modal dialogs own the keyboard: a single-letter mail shortcut must not
 // archive or delete the selection behind them, or move focus out of them.
 // An open beacon card counts as one.
 const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED
+  && (!messageViewMaximized.value || composeStore.isExpanded)
   && !showWelcomeModal.value
   && !showSettingsDialog.value
   && !showTagManager.value
@@ -203,6 +205,12 @@ const showMessageView = computed(() =>
 const displayedMessageView = ref(
   showMessageView.value && !(space.value === 'mail' && windowWidth.value < COMPACT_READING_WIDTH),
 );
+watch(() => mailStore.selectedMessageId, () => {
+  messageViewMaximized.value = false;
+});
+watch(displayedMessageView, (visible) => {
+  if (!visible) messageViewMaximized.value = false;
+});
 const singleColumnLayout = computed(() => windowWidth.value < SINGLE_COLUMN_WIDTH);
 const shouldUseSingleMailColumn = computed(() =>
   space.value === 'mail'
@@ -650,6 +658,7 @@ function unwatchSystemTheme() {
     :class="{
       'shell--message-view-hidden': space === 'mail' && !displayedMessageView,
       'shell--message-list-hidden': space === 'mail' && !displayedMessageList,
+      'shell--message-view-maximized': messageViewMaximized,
       'shell--folder-list-hidden': folderListHidden,
       'shell--contacts': space === 'contacts',
       'shell--column-resizing': activeResizePane !== null,
@@ -657,7 +666,7 @@ function unwatchSystemTheme() {
     }"
     :style="shellStyle"
   >
-    <header class="quick-filter">
+    <header class="quick-filter" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
       <div class="quick-filter__brand">
         <span class="quick-filter__glyph" aria-hidden="true" v-html="mailGlyph" />
         <span class="quick-filter__wordmark">Mail</span>
@@ -741,6 +750,8 @@ function unwatchSystemTheme() {
     </header>
 
     <AppSpaces
+      :inert="messageViewMaximized"
+      :aria-hidden="messageViewMaximized"
       :active="space"
       :unread-count="inboxUnread"
       :folder-list-hidden="folderListHidden"
@@ -753,8 +764,8 @@ function unwatchSystemTheme() {
     <div
       class="sidebar-slot"
       :class="{ 'sidebar-slot--hidden': folderListHidden }"
-      :aria-hidden="folderListHidden"
-      :inert="folderListHidden"
+      :aria-hidden="folderListHidden || messageViewMaximized"
+      :inert="folderListHidden || messageViewMaximized"
     >
       <aside v-if="space === 'mail'" class="sidebar">
         <header class="sidebar__header">
@@ -795,8 +806,9 @@ function unwatchSystemTheme() {
       :aria-valuemin="MIN_COLUMN_WIDTHS.folderList"
       :aria-valuemax="maxFolderListWidth()"
       :aria-valuenow="folderListWidth"
-      :aria-hidden="folderListHidden"
-      :tabindex="folderListHidden ? -1 : 0"
+      :aria-hidden="folderListHidden || messageViewMaximized"
+      :inert="messageViewMaximized"
+      :tabindex="folderListHidden || messageViewMaximized ? -1 : 0"
       @pointerdown="startColumnResize('folderList', $event)"
       @keydown="onResizeHandleKeydown('folderList', $event)"
     />
@@ -804,10 +816,16 @@ function unwatchSystemTheme() {
     <template v-if="space === 'mail'">
       <MessageColumns
         v-if="displayedMessageList"
+        :inert="messageViewMaximized"
+        :aria-hidden="messageViewMaximized"
         :quick-filter-query="quickFilterQuery"
         :reading-pane-visible="displayedMessageView"
       />
-      <MessageView v-if="displayedMessageView" />
+      <MessageView
+        v-if="displayedMessageView"
+        :maximized="messageViewMaximized"
+        @toggle-maximized="messageViewMaximized = !messageViewMaximized"
+      />
     </template>
     <ContactsView
       v-else-if="space === 'contacts'"
@@ -983,6 +1001,22 @@ body.spotlighting .folder-subs {
 }
 .shell > .message-view {
   grid-column: 5;
+}
+.shell--message-view-maximized > .message-view {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  width: 100%;
+  height: var(--app-viewport-height);
+}
+.shell--message-view-maximized > :is(
+  .quick-filter,
+  .app-spaces,
+  .sidebar-slot,
+  .column-resizer,
+  .msg-columns
+) {
+  visibility: hidden;
 }
 .shell--message-list-hidden > .message-view {
   grid-column: 4 / -1;

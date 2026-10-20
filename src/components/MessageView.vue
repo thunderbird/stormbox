@@ -46,6 +46,7 @@ import forwardIcon from '../assets/icons/tb-forward.svg?raw';
 import replyIcon from '../assets/icons/tb-reply.svg?raw';
 import replyAllIcon from '../assets/icons/tb-reply-all.svg?raw';
 import AppIconButton from './AppIconButton.vue';
+import MaximizeButton from './MaximizeButton.vue';
 import MessageAttachmentBar from './MessageAttachmentBar.vue';
 import MessageAttachmentPreviews from './MessageAttachmentPreviews.vue';
 import MessageTagChip from './MessageTagChip.vue';
@@ -60,13 +61,68 @@ import TagPickerPopover, { type PopoverAnchor } from './TagPickerPopover.vue';
 // even when scrollWidth would technically not overflow.
 const MIN_EMAIL_LAYOUT_WIDTH = 400;
 
+const props = withDefaults(defineProps<{ maximized?: boolean }>(), { maximized: false });
+const emit = defineEmits<{ toggleMaximized: [] }>();
+const messageViewEl = ref<HTMLElement | null>(null);
+const bodyScrollEl = ref<HTMLElement | null>(null);
+watch(() => props.maximized, async (maximized) => {
+  if (!maximized) return;
+  await nextTick();
+  if (!messageViewEl.value?.contains(document.activeElement)) {
+    messageViewEl.value?.focus({ preventScroll: true });
+  }
+});
+
+let sizeChange = 0;
+let fitIframe: (() => void) | null = null;
+async function toggleMaximized() {
+  const messageId = mailStore.selectedMessageId;
+  const bodyEl = bodyScrollEl.value;
+  const scrollRange = bodyEl ? bodyEl.scrollHeight - bodyEl.clientHeight : 0;
+  const progress = scrollRange > 0 && bodyEl ? bodyEl.scrollTop / scrollRange : 0;
+  const frame = iframeRef.value as HTMLIFrameElement | null;
+  const frameDoc = frame?.contentDocument;
+  const bodyTop = bodyEl?.getBoundingClientRect().top ?? 0;
+  const frameTop = frame?.getBoundingClientRect().top ?? 0;
+  const bodyBottom = bodyEl?.getBoundingClientRect().bottom ?? 0;
+  const anchor = [...(frameDoc?.body.querySelectorAll('*') ?? [])].find((element) => {
+    if (element.childElementCount) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom + frameTop > bodyTop && rect.top + frameTop < bodyBottom;
+  });
+  const anchorOffset = anchor ? frameTop + anchor.getBoundingClientRect().top - bodyTop : 0;
+  const change = ++sizeChange;
+  emit('toggleMaximized');
+  await nextTick();
+  fitIframe?.();
+  await nextTick();
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    if (change === sizeChange && messageId === mailStore.selectedMessageId && bodyEl?.isConnected) {
+      if (anchor?.isConnected && frame?.isConnected) {
+        bodyEl.scrollTop += frame.getBoundingClientRect().top + anchor.getBoundingClientRect().top
+          - bodyEl.getBoundingClientRect().top - anchorOffset;
+      } else {
+        bodyEl.scrollTop = progress * (bodyEl.scrollHeight - bodyEl.clientHeight);
+      }
+    }
+  }));
+}
+
 const mailStore = useMailStore();
 const composeStore = useComposeStore();
 const settingsStore = useSettingsStore();
 const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
 /** Toolbar title with the key the active scheme binds, e.g. `Reply (R)`. */
 function actionTitle(label: string, action: ShortcutAction): string {
-  return titleWithShortcut(label, action, shortcutScheme.value);
+  return props.maximized ? label : titleWithShortcut(label, action, shortcutScheme.value);
+}
+
+function onReadingKeyDown(event: KeyboardEvent) {
+  if (!props.maximized || event.key !== 'Escape' || event.defaultPrevented
+    || composeStore.isExpanded || tagMenuAnchor.value
+    || messageViewEl.value?.querySelector('[role="dialog"], details[open]')) return;
+  event.preventDefault();
+  void toggleMaximized();
 }
 
 const htmlShellRef = ref(null);
@@ -360,6 +416,7 @@ function updateEffectiveColorScheme() {
 }
 
 function teardownResizeObserver() {
+  fitIframe = null;
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -433,6 +490,7 @@ function onIframeLoad() {
   });
 
   const onIframeKeyDown = (event: KeyboardEvent) => {
+    onReadingKeyDown(event);
     invokeThunderbirdShortcut(event);
   };
   doc.addEventListener('keydown', onIframeKeyDown, true);
@@ -472,9 +530,17 @@ function onIframeLoad() {
       bodyEl.scrollWidth,
       1,
     );
+    const bodyStyle = doc.defaultView?.getComputedStyle(bodyEl);
+    const rootStyle = doc.defaultView?.getComputedStyle(docEl);
+    const bottomSpace = [
+      bodyStyle?.marginBottom,
+      rootStyle?.paddingBottom,
+      rootStyle?.borderBottomWidth,
+      rootStyle?.marginBottom,
+    ].reduce((total, value) => total + Math.max(0, Number.parseFloat(value ?? '') || 0), 0);
+    const bodyTop = Math.max(0, bodyEl.getBoundingClientRect().top + (doc.defaultView?.scrollY ?? 0));
     const contentHeight = Math.max(
-      docEl.scrollHeight,
-      bodyEl.scrollHeight,
+      bodyTop + Math.max(bodyEl.offsetHeight, bodyEl.scrollHeight) + bottomSpace,
       initialIframeHeight(),
     );
     // Clamp the effective content width: even if the document reflowed
@@ -489,6 +555,7 @@ function onIframeLoad() {
       iframeHeight.value = nextHeight;
     }
   };
+  fitIframe = applyFit;
 
   // MDN guidance for ResizeObserver feedback safety: defer the
   // callback to a rAF and skip re-entrant scheduling.
@@ -700,7 +767,13 @@ function closeMessageView() {
 </script>
 
 <template>
-  <section class="message-view" aria-label="Message detail">
+  <section
+    ref="messageViewEl"
+    class="message-view"
+    aria-label="Message detail"
+    tabindex="-1"
+    @keydown="onReadingKeyDown"
+  >
     <div v-if="!message" class="message-view__empty">
       <p>Select a message to read it.</p>
     </div>
@@ -771,6 +844,7 @@ function closeMessageView() {
           @clear="clearMessageTags"
           @manage="manageTags"
         />
+        <div class="message-view__view-actions">
         <AppIconButton
           v-if="canForceLightBody"
           class="message-view__action message-view__action--view-mode"
@@ -782,6 +856,13 @@ function closeMessageView() {
           <Moon v-if="forceLightBody" :size="16" :stroke-width="1.75" />
           <Sun v-else :size="16" :stroke-width="1.75" />
         </AppIconButton>
+        <MaximizeButton
+          class="message-view__action message-view__action--maximize"
+          :maximized="maximized"
+          surface="message view"
+          @toggle="toggleMaximized"
+        />
+        </div>
       </header>
       <div v-if="hasScheduledBanner" class="message-view__scheduled" role="status">
         <Clock :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -841,7 +922,7 @@ function closeMessageView() {
           </div>
         </dl>
       </section>
-      <div class="message-view__body">
+      <div ref="bodyScrollEl" class="message-view__body" tabindex="0" aria-label="Message body">
         <div
           v-if="iframeSrcDoc"
           ref="htmlShellRef"
@@ -912,6 +993,7 @@ function closeMessageView() {
 }
 .message-view__header {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 auto;
   gap: 6px;
   align-items: center;
@@ -1062,7 +1144,11 @@ function closeMessageView() {
 }
 .message-view__action--back { margin-right: 12px; }
 /* View option, not a mail action — sits at the trailing edge. */
-.message-view__action--view-mode { margin-left: auto; }
+.message-view__view-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
 .message-view__action--view-mode[aria-pressed="true"] {
   background: var(--control-hover-bg);
   color: var(--text);
