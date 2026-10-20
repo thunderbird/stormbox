@@ -13,9 +13,9 @@ import AccountAvatarMenu from '../../../src/components/AccountAvatarMenu.vue';
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => vi.restoreAllMocks());
 
-it('links Support in the avatar menu directly to the contact page', () => {
+it('links Contact Support in the avatar menu directly to the contact page', () => {
   const wrapper = mount(AccountAvatarMenu);
-  const link = wrapper.findAll('a[role="menuitem"]').find((item) => item.text() === 'Support');
+  const link = wrapper.findAll('a[role="menuitem"]').find((item) => item.text() === 'Contact Support');
   expect(link).toBeDefined();
   expect(link?.attributes('href')).toBe('https://accounts.tb.pro/contact');
   expect(link?.get('[aria-hidden="true"]').find('svg').exists()).toBe(true);
