@@ -523,8 +523,8 @@ export const useMailStore = defineStore('mail', () => {
   // by a negative id so columns, selection, the cursor and the open
   // message bind to it unchanged; folderById answers with a synthetic row
   // named after the tag. Rows keep their real folder in source_folder_id.
-  // Filing actions (archive, junk, delete, move, drag) are not offered in
-  // a tag view; keyword actions are.
+  // Archive, junk and delete file by account; generic moves and drags
+  // require a real source folder (MK-3.4).
 
   function isTagViewId(folderId: number | string | null | undefined): boolean {
     const id = Number(folderId);
@@ -580,7 +580,7 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return;
     if (typeof repo.listMessageKeywords !== 'function') return;
     try {
-      const entries = await repo.listMessageKeywords([authStore.accountId]);
+      const entries = await repo.listMessageKeywords([authStore.accountId], { forTagView: true });
       tagCounts.value = new Map(entries.map(({ keyword, count }) => [normalizeKeyword(keyword), count]));
     } catch (err) {
       console.warn('[mail-store] refreshTagCounts failed', err);
@@ -650,7 +650,7 @@ export const useMailStore = defineStore('mail', () => {
     return { shown: TAG_VIEW_LIMIT, total };
   });
 
-  /** Filing from a tag view is refused: the rows live in many folders. */
+  /** Generic folder transfers require a real source folder. */
   function rejectTagViewSource(sourceFolderId: number | null | undefined, verb: string): boolean {
     if (!isTagViewId(sourceFolderId)) return false;
     error.value = `Open the message's folder to ${verb} it.`;
@@ -1426,11 +1426,14 @@ export const useMailStore = defineStore('mail', () => {
    */
   async function _refreshLoadedPagesFor(state: FolderCache) {
     if (!repo || !isLiveState(state)) return;
+    const beforeRows = state.rows.slice();
     if (isTagViewId(state.folderId)) {
+      if (state.pageInflight) await state.pageInflight;
+      if (!isLiveState(state)) return;
       await loadTagView(state);
+      if (isLiveState(state)) reconcileViewRemoval(state, beforeRows);
       return;
     }
-    const beforeRows = state.rows.slice();
 
     try {
       const progress = await repo.queryViewProgress({
@@ -1496,6 +1499,25 @@ export const useMailStore = defineStore('mail', () => {
     }
     publishView(state);
 
+    reconcileViewRemoval(state, beforeRows);
+
+    // If the view grew (new mail extended state.total beyond the
+    // last painted position) load the new tail through the same
+    // ensureLoaded path so the message at the head is visible
+    // without waiting for the MessageList virtualizer to notice
+    // the rowCount change and re-pump.
+    if (state.total > 0 && isLiveState(state)) {
+      const lastPainted = state.paintedRanges.reduce(
+        (acc, r) => Math.max(acc, r.end),
+        0,
+      );
+      if (lastPainted < state.total) {
+        await ensureLoaded(0, Math.min(state.total, PAGE_SIZE), state.folderId);
+      }
+    }
+  }
+
+  function reconcileViewRemoval(state: FolderCache, beforeRows: CachedRow[]) {
     const removedIds = removedMessageIds(beforeRows, state.rows);
     const nextPreviewId = nextPreviewIdAfterRemoval(removedIds, beforeRows, state.folderId);
 
@@ -1520,21 +1542,6 @@ export const useMailStore = defineStore('mail', () => {
     }
 
     applyPreviewAfterRemoval(nextPreviewId, state.folderId);
-
-    // If the view grew (new mail extended state.total beyond the
-    // last painted position) load the new tail through the same
-    // ensureLoaded path so the message at the head is visible
-    // without waiting for the MessageList virtualizer to notice
-    // the rowCount change and re-pump.
-    if (state.total > 0 && isLiveState(state)) {
-      const lastPainted = state.paintedRanges.reduce(
-        (acc, r) => Math.max(acc, r.end),
-        0,
-      );
-      if (lastPainted < state.total) {
-        await ensureLoaded(0, Math.min(state.total, PAGE_SIZE), state.folderId);
-      }
-    }
   }
 
   // Persist the user's scroll position so navigating away and back
@@ -1615,7 +1622,10 @@ export const useMailStore = defineStore('mail', () => {
   }
 
   /**
-   * Select every row in the open folder's canonical query view.
+   * Select every row in the open mailbox or loaded tag view.
+   *
+   * Tag views use their loaded keyword rows; their synthetic IDs have
+   * no mailbox query view (MK-3.4).
    *
    * Reads from `query_view_items` (via listMessagesForView) so the
    * selection set matches what All Mail can actually render. When the
@@ -1638,7 +1648,7 @@ export const useMailStore = defineStore('mail', () => {
     const state = folderId == null ? null : folderStates.get(Number(folderId)) ?? null;
     let rows: readonly CachedRow[] = rowsForFolder(folderId);
 
-    if (repo && authStore.accountId != null && state) {
+    if (repo && authStore.accountId != null && state && !isTagViewId(state.folderId)) {
       const limit = Math.max(
         Number(state.total) || 0,
         state.rows.length,
@@ -2137,10 +2147,104 @@ export const useMailStore = defineStore('mail', () => {
     return setTagsMany(ids, { remove: [...remove] }, options);
   }
 
+  async function fileTagMessages(
+    ids: number[],
+    role: 'trash' | 'archive' | 'junk',
+    options: BulkSourceOptions,
+  ): Promise<MoveResult> {
+    const messageIds = normalizeMessageIds(ids);
+    if (!repo || authStore.accountId == null || messageIds.length === 0) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
+    const accountId = authStore.accountId;
+    const actionRepo = repo;
+    const sourceId = options.sourceFolderId ?? currentFolderId.value;
+    const sourceState = sourceId == null ? null : folderStates.get(sourceId);
+    const destination = folders.value.find((folder) => (
+      folder.account_id === accountId && folder.role === role
+    ));
+    if (!destination) {
+      error.value = `No ${role} folder is configured for this account.`;
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    if (!folderCapabilities(destination, authStore.accountId).mayAddItems) {
+      error.value = `You do not have permission to move messages to this account’s ${destination.name} folder.`;
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    const mutable = await filterMutableMessageIds(messageIds, destination.account_id);
+    if (mutable.blockedScheduled) {
+      error.value = 'Scheduled messages can’t be filed. Cancel the send instead.';
+      return { succeeded: 0, failed: messageIds.length, skipped: 0 };
+    }
+    if (authStore.accountId !== accountId || repo !== actionRepo) {
+      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    }
+    const liveIds = mutable.ids;
+    if (liveIds.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    const beforeRows = [...(sourceState?.rows ?? [])];
+    if (role === 'junk') {
+      await setKeywordsMany(liveIds, { add: ['$junk'], remove: ['$notjunk'] }, options);
+    }
+    const finalize = async (succeeded: number[]) => {
+      if (succeeded.length === 0 || authStore.accountId !== accountId || repo !== actionRepo) return;
+      const nextPreviewId = role === 'junk' ? undefined
+        : nextPreviewIdAfterRemoval(succeeded, beforeRows, sourceId);
+      if (role !== 'junk' && sourceState && isLiveState(sourceState)) {
+        spliceMessagesOut(sourceState, succeeded);
+      }
+      if (selection.value.folderId === sourceId) {
+        const next = new Set(selection.value.ids);
+        for (const id of succeeded) next.delete(id);
+        setSelection(sourceId, next);
+      }
+      if (role !== 'junk' && openMessageRef.value.folderId === sourceId
+        && succeeded.includes(Number(openMessageRef.value.id))) {
+        clearSelectionFor(succeeded);
+      }
+      applyPreviewAfterRemoval(nextPreviewId, sourceId);
+      if (role !== 'junk' && focusedRef.value.folderId === sourceId
+        && succeeded.includes(Number(focusedRef.value.id))) {
+        focusedRef.value = { id: null, folderId: null };
+      }
+      await refreshFolders();
+      await refreshLoadedPages();
+    };
+    let succeeded: number[];
+    try {
+      succeeded = await runBulkMutation({
+        liveIds,
+        kind: 'move',
+        label: `Moving messages to ${destination.name}`,
+        buildMutation: (chunkIds) => ({
+          accountId: destination.account_id,
+          mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
+          targetMessageId: chunkIds.length === 1 ? chunkIds[0] : null,
+          requestJson: JSON.stringify({
+            messageIds: chunkIds,
+            addFolderIds: [destination.id],
+            replaceExisting: true,
+          }),
+        }),
+        failureAction: 'move',
+      });
+    } catch (err: any) {
+      await finalize(normalizeMessageIds(err?.succeededIds ?? []));
+      throw err;
+    }
+    await finalize(succeeded);
+    if (role === 'junk' && succeeded.length > 0
+      && authStore.accountId === accountId && repo === actionRepo) {
+      setNotice(succeeded.length === 1
+        ? 'Marked as junk'
+        : `Marked ${succeeded.length} messages as junk`);
+    }
+    return { succeeded: succeeded.length, failed: 0, skipped: messageIds.length - liveIds.length };
+  }
+
   async function archiveMessages(ids: number[], options: Pick<BulkSourceOptions, 'sourceFolderId'> = {}) {
     const messageIds = normalizeMessageIds(ids);
-    if (rejectTagViewSource(options.sourceFolderId ?? currentFolderId.value, 'archive')) {
-      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    if (isTagViewId(options.sourceFolderId ?? currentFolderId.value)) {
+      return fileTagMessages(messageIds, 'archive', options);
     }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
@@ -2169,8 +2273,8 @@ export const useMailStore = defineStore('mail', () => {
     if (!repo || authStore.accountId == null) return { succeeded: 0, failed: 0, skipped: 0 };
     const messageIds = normalizeMessageIds(ids);
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
-    if (rejectTagViewSource(options.sourceFolderId ?? currentFolderId.value, 'mark as junk')) {
-      return { succeeded: 0, failed: 0, skipped: messageIds.length };
+    if (isTagViewId(options.sourceFolderId ?? currentFolderId.value)) {
+      return fileTagMessages(messageIds, 'junk', options);
     }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
@@ -2393,6 +2497,9 @@ export const useMailStore = defineStore('mail', () => {
     { permanent = false, sourceFolderId }: { permanent?: boolean } & Pick<BulkSourceOptions, 'sourceFolderId'> = {},
   ) {
     if (!repo || authStore.accountId == null) return;
+    if (isTagViewId(sourceFolderId ?? currentFolderId.value) && !permanent) {
+      return fileTagMessages(ids, 'trash', { sourceFolderId });
+    }
     if (rejectTagViewSource(sourceFolderId ?? currentFolderId.value, 'delete')) return;
     if (!Array.isArray(ids) || ids.length === 0) return;
     const source = resolveSourceFolder(sourceFolderId);

@@ -3,8 +3,11 @@ import {
   createEmailInMailbox,
   destroyEmails,
   getEmailKeywords,
+  getEmailMailboxIds,
+  jmapRequest,
   listMailboxes,
   mailboxByRole,
+  pickResponse,
   sweepOrphanTestMessages,
 } from './helpers/jmap-client.js';
 import {
@@ -14,23 +17,8 @@ import {
   resetSharedSession,
   test,
 } from './helpers/shared-session.js';
-import {
-  localStackEnabled,
-  selfEmail,
-  skipLocalStackMessage,
-} from './helpers/stack-env.js';
-import {
-  expectRowSoon,
-  waitForPendingMutations,
-} from './helpers/ui.js';
-
-/**
- * Tag views (specs/011-message-keywords, MK-3.4): the sidebar's Tags
- * section opens a local cross-folder view of one keyword. Mail tagged in
- * two folders shows up together, a message loses its row when the tag is
- * removed there, filing actions are not offered, and the sidebar count
- * follows the cache. The keyword write is asserted on the server as well.
- */
+import { localStackEnabled, selfEmail, skipLocalStackMessage } from './helpers/stack-env.js';
+import { expectRowSoon, waitForPendingMutations } from './helpers/ui.js';
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
@@ -39,12 +27,10 @@ const PERSONAL = '$label3';
 
 async function readTagView(page, keyword) {
   return page.evaluate(async (kw) => {
-    if (!globalThis.__repo) return null;
     const accounts = await globalThis.__repo.listAccounts();
-    const account = accounts?.[0];
-    if (!account) return null;
+    const account = accounts.find((row) => row.is_primary) ?? accounts[0];
     const rows = await globalThis.__repo.listMessagesForKeyword({
-      accountIds: [account.id], keyword: kw, offset: 0, limit: 500,
+      accountIds: [account.id], keyword: kw, offset: 0, limit: 2000,
     });
     return rows.map((r) => ({ remoteId: r.remote_id, sourceFolderId: r.source_folder_id }));
   }, keyword);
@@ -54,6 +40,41 @@ function rowFor(page, subject) {
   return page.locator('.msg-list__items > li').filter({ hasText: subject }).first();
 }
 
+function tagNode(page, keyword = PERSONAL) {
+  return page.locator(`[data-tag-view="${keyword}"]`);
+}
+
+async function openFolder(page, folder) {
+  await page.locator('.folder-node').filter({ hasText: folder.name }).first()
+    .locator('.folder-node__button').click();
+  await expect(page.locator('.msg-list')).toHaveAttribute('aria-label', `${folder.name} messages, column 1`);
+}
+
+async function openTag(page, keyword = PERSONAL) {
+  await tagNode(page, keyword).locator('button').click();
+  await expect(page.locator('.msg-list')).toHaveAttribute('aria-label', /(?:Personal|Starred) messages/);
+}
+
+async function createFixture(jmap, folder, subject, keywords = {}) {
+  return createEmailInMailbox(jmap, {
+    mailboxId: folder.id, fromEmail: selfEmail(), subject, bodyText: 'tag view fixture',
+    keywords: { $seen: true, [PERSONAL]: true, ...keywords },
+  });
+}
+
+async function expectCachedMembership(page, remoteId, folderIds) {
+  await expect.poll(() => page.evaluate(async ({ id }) => {
+    const rows = await globalThis.__repo.call('db.query', {
+      sql: `SELECT f.remote_id FROM folder_messages fm
+            JOIN messages m ON m.id = fm.message_id
+            JOIN folders f ON f.id = fm.folder_id
+            WHERE m.remote_id = ? ORDER BY f.remote_id`,
+      params: [id],
+    });
+    return rows.map((row) => row.remote_id);
+  }, { id: remoteId })).toEqual([].concat(folderIds).sort());
+}
+
 test.describe('Tag view e2e', () => {
   test.beforeEach(async ({ sharedPage }) => {
     await resetSharedSession(sharedPage);
@@ -61,101 +82,161 @@ test.describe('Tag view e2e', () => {
     await sweepOrphanTestMessages(jmap, { subjectPrefix: SUBJECT_PREFIX });
   });
 
-  test('a tag view gathers tagged mail from two folders and follows tag changes', async ({ sharedPage: page }, testInfo) => {
+  test('tag and Starred views exclude Trash and Archive, including multiple memberships', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
+    const sent = mailboxByRole(mailboxes, 'sent');
     const archive = mailboxByRole(mailboxes, 'archive');
-    if (!inbox || !archive) {
-      throw new Error(`Test requires Inbox and Archive; saw ${mailboxes.map((m) => `${m.name}:${m.role}`).join(', ')}`);
-    }
-
-    const fromEmail = selfEmail();
+    const trash = mailboxByRole(mailboxes, 'trash');
     const stamp = Date.now();
-    const subjects = {
-      inbox: `${SUBJECT_PREFIX} ${stamp} in inbox`,
-      archived: `${SUBJECT_PREFIX} ${stamp} in archive`,
-      plain: `${SUBJECT_PREFIX} ${stamp} untagged`,
-    };
+    const subjects = Object.fromEntries(['inbox', 'sent', 'archive', 'trash', 'multiple']
+      .map((key) => [key, `${SUBJECT_PREFIX} ${stamp} ${key}`]));
     const ids = {};
     try {
-      ids.inbox = await createEmailInMailbox(jmap, {
-        mailboxId: inbox.id, fromEmail, subject: subjects.inbox, bodyText: 'tag view fixture',
-        keywords: { $seen: true, [PERSONAL]: true },
-      });
-      ids.archived = await createEmailInMailbox(jmap, {
-        mailboxId: archive.id, fromEmail, subject: subjects.archived, bodyText: 'tag view fixture',
-        keywords: { $seen: true, [PERSONAL]: true },
-      });
-      ids.plain = await createEmailInMailbox(jmap, {
-        mailboxId: inbox.id, fromEmail, subject: subjects.plain, bodyText: 'tag view fixture',
-        keywords: { $seen: true },
-      });
-      await expectRowSoon(page, subjects.inbox);
-      await expectRowSoon(page, subjects.plain);
+      for (const [name, folder] of Object.entries({ inbox, sent, archive, trash, multiple: inbox })) {
+        ids[name] = await createFixture(jmap, folder, subjects[name], { $flagged: true });
+      }
+      const response = await jmapRequest(jmap, [['Email/set', {
+        accountId: jmap.accountId,
+        update: { [ids.multiple]: { mailboxIds: { [inbox.id]: true, [archive.id]: true } } },
+      }, 'multi']]);
+      expect(pickResponse(response, 'Email/set')?.updated).toHaveProperty(ids.multiple);
+      for (const [name, folder] of Object.entries({ inbox, sent, archive, trash })) {
+        await openFolder(page, folder);
+        await expectRowSoon(page, subjects[name]);
+      }
+      await expectCachedMembership(page, ids.multiple, [inbox.id, archive.id]);
+      for (const keyword of [PERSONAL, '$flagged']) {
+        await openTag(page, keyword);
+        await expect(rowFor(page, subjects.inbox)).toBeVisible();
+        await expect(rowFor(page, subjects.sent)).toBeVisible();
+        for (const name of ['archive', 'trash', 'multiple']) {
+          await expect(rowFor(page, subjects[name])).toHaveCount(0);
+        }
+        await expect.poll(async () => (await readTagView(page, keyword))
+          .map((row) => row.remoteId).filter((id) => Object.values(ids).includes(id)).sort())
+          .toEqual([ids.inbox, ids.sent].sort());
+        const count = (await readTagView(page, keyword)).length;
+        await expect(tagNode(page, keyword).locator('.tag-view-node__count')).toHaveText(String(count));
+      }
+      await openTag(page);
+      const header = await page.locator('.selectable-list-header').elementHandle();
+      await page.locator('.msg-list__select-all input').click();
+      await expect(rowFor(page, subjects.inbox)).toHaveClass(/is-selected/);
+      await expect(rowFor(page, subjects.sent)).toHaveClass(/is-selected/);
+      expect(await header.evaluate((element) => element.isConnected)).toBe(true);
+      await page.locator('.msg-list__select-all input').click();
+      await expect(rowFor(page, subjects.inbox)).not.toHaveClass(/is-selected/);
 
-      // The Archive copy must be in the cache for the view to list it;
-      // opening the folder indexes it.
-      await page.locator('.folder-node', { hasText: 'Archive' }).first().locator('.folder-node__button').click();
-      await expectRowSoon(page, subjects.archived);
-
-      // Sidebar Tags section: Personal counts both tagged rows.
-      const personalRow = page.locator(`[data-tag-view="${PERSONAL}"]`);
-      await expect(personalRow).toBeVisible();
-      await expect.poll(async () => (await personalRow.locator('.tag-view-node__count').textContent().catch(() => '0'))?.trim())
-        .toBe('2');
-      await personalRow.locator('button').click();
-
-      await expect(page.locator('.msg-list')).toHaveAttribute('aria-label', /Personal messages/);
-      await expect(rowFor(page, subjects.inbox)).toBeVisible();
-      await expect(rowFor(page, subjects.archived)).toBeVisible();
-      await expect(rowFor(page, subjects.plain)).toHaveCount(0);
-      await expect(page.locator('.msg-list__count')).toHaveText('2 messages');
-
-      // Filing is not offered in a tag view; tagging and starring are.
       const inboxRow = rowFor(page, subjects.inbox);
       await inboxRow.hover();
-      await expect(inboxRow.locator('.msg-list__action--tag')).toBeVisible();
-      await expect(inboxRow.locator('.msg-list__action--star')).toBeVisible();
-      await expect(inboxRow.locator('.msg-list__action[title="Archive"]')).toHaveCount(0);
-      await expect(inboxRow.locator('.msg-list__action[title="Delete"]')).toHaveCount(0);
+      for (const title of ['Archive', 'Delete']) {
+        await expect(inboxRow.locator(`.msg-list__action[title="${title}"]`)).toBeVisible();
+      }
       await expect(inboxRow.locator('.msg-list__item')).toHaveAttribute('draggable', 'false');
-
-      const cached = await readTagView(page, PERSONAL);
-      expect(cached.map((r) => r.remoteId).sort()).toEqual([ids.archived, ids.inbox].sort());
-      expect(cached.every((r) => r.sourceFolderId != null)).toBe(true);
-
-      // Remove the tag from the open message: its row leaves the view and
-      // the sidebar count drops, then the server agrees. Earlier writes are
-      // drained first so their StateChange refresh cannot overwrite the
-      // optimistic removal.
-      await waitForPendingMutations(page);
       await inboxRow.locator('.msg-list__subject').click();
-      await expect(page.locator('.message-view__action[aria-label="Archive"]')).toHaveCount(0);
-      await expect(page.locator('.message-view__action[aria-label="Delete"]')).toHaveCount(0);
-      const viewChips = page.locator('[data-message-tags] .tag-chip');
-      await expect(viewChips).toHaveText(['Personal']);
-      await viewChips.first().locator('.tag-chip__remove').click();
-
-      await expect(rowFor(page, subjects.inbox)).toHaveCount(0);
-      await expect(rowFor(page, subjects.archived)).toBeVisible();
-      // The header count hides while the reading pane narrows the column; count rows.
-      await expect(page.locator('.msg-list__items > li')).toHaveCount(1);
-      await expect(personalRow.locator('.tag-view-node__count')).toHaveText('1');
-
+      for (const label of ['Archive', 'Delete', 'Mark as junk']) {
+        await expect(page.locator(`.message-view__action[aria-label="${label}"]`)).toBeVisible();
+      }
       await waitForPendingMutations(page);
-      expect((await readTagView(page, PERSONAL)).map((r) => r.remoteId)).toEqual([ids.archived]);
-      await expect.poll(async () => {
-        const keywords = await getEmailKeywords(jmap, ids.inbox);
-        return keywords?.[PERSONAL] === true ? 'present' : 'absent';
-      }, { timeout: 30_000 }).toBe('absent');
-      await expect.poll(async () => {
-        const keywords = await getEmailKeywords(jmap, ids.archived);
-        return keywords?.[PERSONAL] === true ? 'present' : 'absent';
-      }, { timeout: 30_000 }).toBe('present');
+      await page.locator('[data-message-tags] .tag-chip').filter({ hasText: 'Personal' })
+        .locator('.tag-chip__remove').click();
+      await expect(rowFor(page, subjects.inbox)).toHaveCount(0);
+      await expect(rowFor(page, subjects.sent)).toBeVisible();
+      await waitForPendingMutations(page);
+      await expect.poll(async () => (await getEmailKeywords(jmap, ids.inbox))?.[PERSONAL] ?? false).toBe(false);
+      expect((await readTagView(page, PERSONAL)).some((row) => row.remoteId === ids.inbox)).toBe(false);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
       await destroyEmails(jmap, Object.values(ids));
     }
   });
+
+  for (const surface of ['bulk', 'reading pane']) {
+    for (const [role, label] of [['archive', 'Archive'], ['trash', 'Delete'], ['junk', 'Mark as junk']]) {
+      test(`${surface} files tagged messages from different folders into ${role}`, async ({ sharedPage: page }, testInfo) => {
+        const jmap = await connectJmap();
+        const mailboxes = await listMailboxes(jmap);
+        const sourceFolders = ['inbox', 'sent'].map((source) => mailboxByRole(mailboxes, source));
+        const destination = mailboxByRole(mailboxes, role);
+        const subjects = sourceFolders.map((folder, i) => `${SUBJECT_PREFIX} ${Date.now()} ${surface} ${role} ${i}`);
+        const ids = [];
+        try {
+          for (const [i, folder] of sourceFolders.entries()) {
+            ids.push(await createFixture(jmap, folder, subjects[i], { $notjunk: true }));
+          }
+          for (const [i, folder] of sourceFolders.entries()) {
+            await openFolder(page, folder);
+            await expectRowSoon(page, subjects[i]);
+          }
+          await openTag(page);
+          for (const subject of subjects) await expect(rowFor(page, subject)).toBeVisible();
+          const initialCount = (await readTagView(page, PERSONAL)).length;
+          if (surface === 'bulk') {
+            for (const subject of subjects) await rowFor(page, subject).locator('.msg-list__check input').click();
+            await page.locator(`.msg-list__bulk-actions [aria-label="${label}"]`).click();
+          } else {
+            for (const subject of subjects) {
+              const title = page.locator('.message-view__title h2');
+              if (await title.count() === 0 || await title.textContent() !== subject) {
+                await rowFor(page, subject).locator('.msg-list__subject').click();
+              }
+              await expect(title).toHaveText(subject);
+              await page.locator(`.message-view__action[aria-label="${label}"]`).click();
+              await waitForPendingMutations(page);
+              await expect.poll(async () => Object.keys(await getEmailMailboxIds(jmap, ids[subjects.indexOf(subject)]) ?? {}))
+                .toEqual([destination.id]);
+              if (role !== 'junk') await expect(rowFor(page, subject)).toHaveCount(0);
+            }
+          }
+          await waitForPendingMutations(page);
+          for (const [i, id] of ids.entries()) {
+            await expect.poll(async () => Object.keys(await getEmailMailboxIds(jmap, id) ?? {}))
+              .toEqual([destination.id]);
+            await expectCachedMembership(page, id, destination.id);
+            await expect.poll(() => page.evaluate(async ({ remoteId, tag }) => {
+              const [row] = await globalThis.__repo.call('db.query', {
+                sql: 'SELECT keywords_json, is_junk FROM messages WHERE remote_id = ?',
+                params: [remoteId],
+              });
+              if (!row) return null;
+              const keywords = JSON.parse(row.keywords_json ?? '{}');
+              return {
+                tagged: keywords[tag] === true,
+                junk: keywords.$junk === true,
+                notJunk: keywords.$notjunk === true,
+                isJunk: Number(row.is_junk) === 1,
+              };
+            }, { remoteId: id, tag: PERSONAL })).toEqual({
+              tagged: true,
+              junk: role === 'junk',
+              notJunk: role !== 'junk',
+              isJunk: role === 'junk',
+            });
+            const keywords = await getEmailKeywords(jmap, id);
+            expect(keywords[PERSONAL]).toBe(true);
+            if (role === 'junk') {
+              expect(keywords.$junk).toBe(true);
+              expect(keywords.$notjunk ?? false).toBe(false);
+              await expect(rowFor(page, subjects[i])).toBeVisible();
+            } else {
+              await expect(rowFor(page, subjects[i])).toHaveCount(0);
+            }
+          }
+          const expectedCount = role === 'junk' ? initialCount : initialCount - ids.length;
+          await expect.poll(async () => (await readTagView(page, PERSONAL)).length).toBe(expectedCount);
+          if (expectedCount > 0) {
+            await expect(tagNode(page).locator('.tag-view-node__count')).toHaveText(String(expectedCount));
+          } else {
+            await expect(tagNode(page).locator('.tag-view-node__count')).toHaveCount(0);
+          }
+          await expect(page.locator('.msg-list__check input:checked')).toHaveCount(0);
+        } finally {
+          await attachConsoleTail(testInfo, consoleLinesFor(page));
+          await destroyEmails(jmap, ids);
+        }
+      });
+    }
+  }
 });

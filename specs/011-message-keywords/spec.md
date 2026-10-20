@@ -135,7 +135,7 @@ one transaction by `replaceMessageKeywordsMany`.
 | MK-3.1 🟩 Implemented | The message list header shall offer a `Starred` text toggle immediately after `Unread` (R-2.8). It is a dense local filter over the open folder's canonical query view: it never issues a JMAP query and never reads a broader projection than All. Toggling it on clears the previewed message and expands the cached view into memory so the count covers the whole folder. |
 | MK-3.2 🟩 Implemented | Unread and Starred may be active together and combine as AND. Select-all under either or both selects only the rows that pass every active filter. The empty state shall name the active filters (`No starred messages in …`, `No unread starred messages in …`). |
 | MK-3.3 🟩 Implemented | A row that stops matching (for example, unstarred under the Starred filter) shall stay in the list while it is previewed or checkbox-selected, and leave once that preview or selection is cleared, as R-2.8 requires. |
-| MK-3.4 🟩 Implemented | A cross-folder view per tag (every message of the signed-in account carrying the keyword, regardless of folder) and an account-wide `Starred` view are local smart views: a `message_keywords JOIN messages` read over the cache (`message.listForKeyword`, the "Smart folder: arbitrary keyword" query in `docs/architecture/sqlite-storage.md`), never a server `Email/query`. A view is addressed like a folder by a negative id (`tagViewIdFor`), so columns, selection, the cursor and the open message bind to it unchanged; it is loaded whole (at most 2000 rows, newest first) and re-read on every `MESSAGES` broadcast. The sidebar's `Tags` section lists `Starred` and every defined tag with its cached count; picking one opens the view and dropping messages on one adds the tag (stars them, for `Starred`). A note under the header states what the view cannot show: how much of the account the indexer has covered while that is incomplete, so a partial index is not read as an empty tag; that only the newest 2000 of a larger count are listed; and, where shared folders are mounted, that they are not included. Filing — archive, junk, delete, move, drag — is not offered in a tag view, since its rows live in many folders; keyword actions and reply are. |
+| MK-3.4 🟩 Implemented | A cross-folder view per tag (every message of the signed-in account carrying the keyword, excluding any message with a Trash or Archive membership) and an account-wide `Starred` view are local smart views: a `message_keywords JOIN messages` read over the cache (`message.listForKeyword`, the "Smart folder: arbitrary keyword" query in `docs/architecture/sqlite-storage.md`), never a server `Email/query`. A view is addressed like a folder by a negative id (`tagViewIdFor`), so columns, selection, the cursor and the open message bind to it unchanged; it is loaded whole (at most 2000 rows, newest first) and re-read on every `MESSAGES` broadcast. The sidebar's `Tags` section lists `Starred` and every defined tag with its cached count; picking one opens the view and dropping messages on one adds the tag (stars them, for `Starred`). A note under the header states what the view cannot show: how much of the account the indexer has covered while that is incomplete, so a partial index is not read as an empty tag; that only the newest 2000 of a larger count are listed; and, where shared folders are mounted, that they are not included. Archive, Junk, and Delete are available in the multi-select toolbar and reading pane; rows also offer Archive and Delete. Each action files the selected messages exclusively into the owning account’s corresponding role folder, retaining their keywords; Delete always moves to Trash. Junk also adds `$junk` and removes `$notjunk`, and junk messages remain eligible for tag views. These are batched message operations, independent of which source folders contain the messages. Successful Archive and Delete actions remove the rows and update tag counts; failed messages remain available for retry. Generic Move and drag transfers still require a folder view. Keyword actions and reply remain available. The same exclusions apply to Starred and sidebar counts, while the tag manager can discover keywords in all folders. |
 
 ### 4. Keyboard
 
@@ -236,18 +236,19 @@ one transaction by `replaceMessageKeywordsMany`.
   `tag-manager-dialog.test.ts` (own modal, focus, dismissal, shortcuts
   held), `tests/unit/db/handlers.test.ts` (`message.listKeywords`).
 - Tag views, unit: `tests/unit/stores/mail-store.test.ts` "tag views"
-  (ids, synthetic folder, loading and broadcast reload, refused filing,
-  counts and coverage), `tests/unit/db/handlers.test.ts`
+  (ids, synthetic folder, loading and broadcast reload, account-based
+  filing, partial failures, selection and preview advancement, counts
+  and coverage), `tests/unit/db/handlers.test.ts`
   (`message.listForKeyword` / `countForKeyword`),
   `tests/unit/components/folder-tree.test.ts` "Tags section" (rows,
-  pick, drop-to-tag), `message-list-header.test.ts` (bulk actions without
-  filing).
-- Tag views, browser: `tests/e2e/tag-view.spec.js` tags mail in Inbox and
-  Archive on the server, opens the Personal view from the sidebar, asserts
-  both rows, the absence of filing controls, the cache's
-  `listMessagesForKeyword`, removes the tag from the open message and
-  asserts the row leaves, the sidebar count drops and the server agrees,
-  in Chromium and Firefox.
+  pick, drop-to-tag), `message-list-header.test.ts` (filing actions).
+- Tag views, browser: `tests/e2e/tag-view.spec.js` verifies that Personal
+  and Starred exclude Trash and Archive, including messages also in
+  Inbox, and that rows, cached results and sidebar counts agree. It
+  files Inbox and Sent messages through the bulk toolbar and reading
+  pane into Archive, Trash and Junk, asserting server and cache
+  memberships, retained tags, junk keywords and row visibility. It also
+  checks select-all and tag removal, in Chromium and Firefox.
 - Tags, browser (Verified Consistency): `tests/e2e/tag-message.spec.js`
   seeds mail on the server, tags from the row menu, bulk-tags two rows
   from the toolbar menu, presses `2`, removes a tag from the open
@@ -302,8 +303,8 @@ one transaction by `replaceMessageKeywordsMany`.
   `tagCounts`, `tagViewCoverage`, `rejectTagViewSource` in
   `src/stores/mail-store.ts`; `message.listForKeyword` /
   `message.countForKeyword` in `src/db/handlers.ts`; the sidebar section in
-  `src/components/FolderTree.vue` with `TagViewNode.vue`; `fileActions` in
-  `useBulkActionItems`, `deleteAction` / `draggable` on `MessageListRow.vue`.
+  `src/components/FolderTree.vue` with `TagViewNode.vue`; account-based filing in `mail-store.ts` and
+  `draggable` on `MessageListRow.vue`.
 - Tag manager: `src/components/tags/TagManagerDialog.vue` with
   `TagDefinitionsEditor.vue`; `message.listKeywords` in
   `src/db/handlers.ts`; the sidebar heading and "Manage tags…" reach it

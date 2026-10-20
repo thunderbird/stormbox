@@ -353,7 +353,7 @@ describe('thread + message + membership handlers', () => {
       remoteAccountId: 'acct-other', primaryEmail: 'other@example.com', isPrimary: false,
     });
     const inbox = await seedFolder(account.id, { remoteId: 'inbox', name: 'Inbox', role: 'inbox' });
-    const archive = await seedFolder(account.id, { remoteId: 'archive', name: 'Archive', role: 'archive' });
+    const archive = await seedFolder(account.id, { remoteId: 'ordinary', name: 'Ordinary', role: null });
     const otherInbox = await seedFolder(other.id, { remoteId: 'inbox-o', name: 'Inbox', role: 'inbox' });
     const t = Date.now();
     const older = await seedMessage(account.id, inbox.id, { remoteId: 'older', receivedAt: t - 10_000, keywords: ['Work'] });
@@ -374,6 +374,32 @@ describe('thread + message + membership handlers', () => {
     })).toHaveLength(1);
     expect(await h[DB_RPC.MESSAGE_LIST_FOR_KEYWORD]({ accountIds: [account.id], keyword: '' })).toEqual([]);
     expect(await h[DB_RPC.MESSAGE_COUNT_FOR_KEYWORD]({ accountIds: [], keyword: 'work' })).toBe(0);
+  });
+
+  it('excludes any Trash or Archive membership from tag rows and counts, but keeps Junk', async () => {
+    const account = await seedAccount();
+    const inbox = await seedFolder(account.id);
+    const archive = await seedFolder(account.id, { remoteId: 'archive', role: 'archive' });
+    const trash = await seedFolder(account.id, { remoteId: 'trash', role: 'trash' });
+    const junk = await seedFolder(account.id, { remoteId: 'junk', role: 'junk' });
+    const excluded = await seedMessage(account.id, inbox.id, { remoteId: 'multi', keywords: ['work', '$flagged'] });
+    await h[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [{ messageId: excluded.messageId, memberships: [
+        { folderId: inbox.id }, { folderId: archive.id },
+      ] }],
+    });
+    await seedMessage(account.id, trash.id, { remoteId: 'trashed', keywords: ['work', '$flagged'] });
+    await seedMessage(account.id, junk.id, { remoteId: 'junked', keywords: ['work', '$flagged'] });
+    for (const keyword of ['work', '$flagged']) {
+      expect((await h[DB_RPC.MESSAGE_LIST_FOR_KEYWORD]({ accountIds: [account.id], keyword }))
+        .map((row) => row.remote_id)).toEqual(['junked']);
+      expect(await h[DB_RPC.MESSAGE_COUNT_FOR_KEYWORD]({ accountIds: [account.id], keyword })).toBe(1);
+    }
+    expect(await h[DB_RPC.MESSAGE_LIST_KEYWORDS]({ accountIds: [account.id], forTagView: true }))
+      .toEqual([{ keyword: '$flagged', count: 1 }, { keyword: 'work', count: 1 }]);
+    expect(await h[DB_RPC.MESSAGE_LIST_KEYWORDS]({ accountIds: [account.id] }))
+      .toContainEqual({ keyword: 'work', count: 3 });
   });
 
   it('reports no drift when there is no query view for the folder yet', async () => {

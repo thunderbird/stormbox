@@ -370,9 +370,9 @@ export class Repository {
   /** Distinct (lowercase) keywords on the cached messages of these accounts, with counts. */
   listMessageKeywords(
     accountIds: number[],
-    { excludeKeywords = [] }: { excludeKeywords?: ReadonlyArray<string> } = {},
+    { excludeKeywords = [], forTagView = false }: { excludeKeywords?: ReadonlyArray<string>; forTagView?: boolean } = {},
   ): Promise<Array<{ keyword: string; count: number }>> {
-    return this.call(DB_RPC.MESSAGE_LIST_KEYWORDS, { accountIds, excludeKeywords: [...excludeKeywords] });
+    return this.call(DB_RPC.MESSAGE_LIST_KEYWORDS, { accountIds, excludeKeywords: [...excludeKeywords], forTagView });
   }
 
   /** Cached messages carrying a keyword, newest first, across folders (a tag view). */

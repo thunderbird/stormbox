@@ -528,6 +528,69 @@ describe('drainOutbox', () => {
       .toEqual(['Email/set']);
   });
 
+  it.each(['mb-archive', '7'])('files a cross-folder batch exclusively in %s', async (remoteId) => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId, name: 'Archive', role: 'archive' }],
+    });
+    const destination = await engine.get('SELECT id FROM folders WHERE remote_id = ?', [remoteId]);
+    const seed = new MockTransport();
+    seed.handle('Email/query', () => ({ ids: ['e-1', 'e-2'], total: 2, queryState: 'qs2' }));
+    seed.handle('Email/get', () => ({ list: [emailFixture('e-1'), emailFixture('e-2')], state: 's2' }));
+    await syncFolderWindow({ transport: seed, account, handlers, folder: inbox });
+    const second = await engine.get("SELECT id FROM messages WHERE remote_id = 'e-2'");
+    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [{ messageId: second.id, memberships: [{ folderId: destination.id }] }],
+    });
+    const transport = new MockTransport();
+    const setCalls = [];
+    transport.handle('Email/set', (params) => {
+      setCalls.push(params);
+      return { updated: { 'e-1': null, 'e-2': null } };
+    });
+    const result = await processMutationRow({
+      transport, account, handlers,
+      row: { mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS, request_json: JSON.stringify({
+        messageIds: [messageId, second.id], addFolderIds: [destination.id], replaceExisting: true,
+      }) },
+    });
+    expect(result.ok).toBe(true);
+    expect(setCalls).toEqual([{ accountId: 'acct-1', update: {
+      'e-1': { mailboxIds: { [remoteId]: true } },
+      'e-2': { mailboxIds: { [remoteId]: true } },
+    } }]);
+    expect(await engine.all('SELECT message_id, folder_id FROM folder_messages ORDER BY message_id'))
+      .toEqual([{ message_id: messageId, folder_id: destination.id }, { message_id: second.id, folder_id: destination.id }]);
+  });
+
+  it.each([false, true])('only accepts a refused exclusive move when the destination matches (already moved: %s)', async (moved) => {
+    await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
+      accountId: account.id,
+      folders: [{ remoteId: 'mb-archive', name: 'Archive', role: 'archive' }],
+    });
+    const destination = await engine.get("SELECT id FROM folders WHERE remote_id = 'mb-archive'");
+    const transport = new MockTransport();
+    transport.handle('Email/set', () => ({ notUpdated: { 'e-1': { type: 'forbidden' } } }));
+    transport.handle('Email/get', () => ({ list: [{ ...emailFixture('e-1'),
+      mailboxIds: moved ? { 'mb-archive': true } : { 'mb-inbox': true, 'mb-archive': true },
+    }] }));
+    const result = await processMutationRow({
+      transport, account, handlers,
+      row: { mutation_type: MUTATION_TYPES.MOVE_TO_FOLDERS, request_json: JSON.stringify({
+        messageIds: [messageId], addFolderIds: [destination.id], replaceExisting: true,
+      }) },
+    });
+    expect(result.ok).toBe(moved);
+    expect(result.result?.succeededIds ?? []).toEqual(moved ? [messageId] : []);
+    const cachedInbox = await handlers[DB_RPC.MESSAGE_LIST_FOR_VIEW]({
+      accountId: account.id, folderId: inbox.id, sort: 'received', offset: 0, limit: 10,
+    });
+    expect(cachedInbox.map((row) => row.remote_id)).toEqual(moved ? [] : ['e-1']);
+    const inboxWindow = await engine.get('SELECT total FROM query_views WHERE folder_id = ?', [inbox.id]);
+    expect(inboxWindow.total).toBe(moved ? 0 : 1);
+  });
+
   it('preserves unrelated memberships when a numeric mailbox id requires replacement', async () => {
     await handlers[DB_RPC.FOLDER_UPSERT_MANY]({
       accountId: account.id,

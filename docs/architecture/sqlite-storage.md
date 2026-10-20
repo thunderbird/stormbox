@@ -763,13 +763,15 @@ the tag views (`MESSAGE_LIST_FOR_KEYWORD` / `MESSAGE_COUNT_FOR_KEYWORD`,
 specs/011 MK-3.4): a `message_keywords JOIN messages` read matching the
 keyword with `LOWER()` — the cache keeps the server's spelling, which
 other clients may write in any case — scoped to the signed-in account,
-newest first,
+excluding messages with any Trash or Archive membership, newest first,
 each row carrying one `source_folder_id` from `folder_messages`. It is a
 local smart view rather than a mailbox window — it has no server
 positions — so it pages by `LIMIT/OFFSET`, which the constitution's rule
 against `OFFSET` over membership tables does not cover. The mail store
 loads a view whole (at most 2000 rows) and re-reads it on every
-`MESSAGES` broadcast.
+`MESSAGES` broadcast. Sidebar counts use the same exclusion predicate via
+`MESSAGE_LIST_KEYWORDS` with `forTagView`; keyword discovery in the tag manager
+continues to include all folders.
 
 ### Recipient autocomplete
 

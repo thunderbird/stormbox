@@ -57,6 +57,15 @@ import {
 } from './batch-helpers';
 import { DB_RPC, TABLE_FAMILIES } from './protocol';
 
+// MK-3.4: any Trash or Archive membership excludes a message from tag views.
+const TAG_VIEW_ELIGIBLE_SQL = `NOT EXISTS (
+  SELECT 1 FROM folder_messages excluded_membership
+  JOIN folders excluded_folder ON excluded_folder.id = excluded_membership.folder_id
+  WHERE excluded_membership.message_id = m.id
+    AND excluded_folder.account_id = m.account_id
+    AND excluded_folder.role IN ('trash', 'archive')
+)`;
+
 function identityRowFromDatabase(row: any) {
   if (!row) return null;
   return {
@@ -2665,7 +2674,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      * are left out at the query. Feeds the sidebar's tag counts and the
      * tag settings' "keywords on your messages" list (MK-6.4).
      */
-    [DB_RPC.MESSAGE_LIST_KEYWORDS]: async ({ accountIds, excludeKeywords = [] }) => {
+    [DB_RPC.MESSAGE_LIST_KEYWORDS]: async ({ accountIds, excludeKeywords = [], forTagView = false }) => {
       const numeric = (Array.isArray(accountIds) ? accountIds : [])
         .map(Number)
         .filter((id) => Number.isFinite(id));
@@ -2682,6 +2691,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
            FROM message_keywords mk
            JOIN messages m ON m.id = mk.message_id
           WHERE m.account_id IN (${placeholders}) ${exclusion}
+            ${forTagView ? `AND ${TAG_VIEW_ELIGIBLE_SQL}` : ''}
           GROUP BY LOWER(mk.keyword)
           ORDER BY count DESC, keyword ASC`,
         [...numeric, ...excluded],
@@ -2691,7 +2701,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
     /**
      * A tag view (specs/011 MK-3.4): every cached message of `accountIds`
-     * carrying `keyword`, newest first, regardless of folder. A local
+     * carrying `keyword`, newest first, outside Trash and Archive. A local
      * smart view over the cache, not a mailbox window, so it pages by
      * offset. Each row names one folder it lives in as `source_folder_id`
      * so callers can resolve account and transfer rules.
@@ -2712,6 +2722,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
            FROM message_keywords mk
            JOIN messages m ON m.id = mk.message_id
           WHERE LOWER(mk.keyword) = ? AND m.account_id IN (${placeholders})
+            AND ${TAG_VIEW_ELIGIBLE_SQL}
           ORDER BY m.received_at DESC, m.id DESC
           LIMIT ? OFFSET ?`,
         [keyword.toLowerCase(), ...numeric, Number(limit), Number(offset)],
@@ -2728,7 +2739,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         `SELECT COUNT(*) AS count
            FROM message_keywords mk
            JOIN messages m ON m.id = mk.message_id
-          WHERE LOWER(mk.keyword) = ? AND m.account_id IN (${placeholders})`,
+          WHERE LOWER(mk.keyword) = ? AND m.account_id IN (${placeholders})
+            AND ${TAG_VIEW_ELIGIBLE_SQL}`,
         [keyword.toLowerCase(), ...numeric],
       );
       return Number(row?.count ?? 0);
@@ -3156,7 +3168,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     },
 
     [DB_RPC.OUTBOX_APPLY_MOVE_BATCH]: async ({
-      accountId, messageIds = [], addFolderIds = [], removeFolderIds = [],
+      accountId, messageIds = [], addFolderIds = [], removeFolderIds = [], replaceExisting = false,
     }) => {
       const msgIds = numericUnique(messageIds);
       if (msgIds.length === 0) return batchResult(0);
@@ -3184,6 +3196,14 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
             WHERE account_id = ? AND message_id IN (${livePlaceholders})`,
           [accountId, ...liveIds],
         );
+        if (replaceExisting) {
+          const destinations = new Set(addList);
+          for (const row of membershipRows) {
+            const folderId = Number(row.folder_id);
+            if (!destinations.has(folderId)) removeSet.add(folderId);
+          }
+          removeList.splice(0, removeList.length, ...removeSet);
+        }
         const membershipsByMessage = new Map();
         for (const row of membershipRows) {
           const id = Number(row.message_id);
