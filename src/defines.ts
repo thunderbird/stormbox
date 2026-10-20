@@ -80,6 +80,8 @@ export const BUG_REPORT_URL = "https://github.com/thunderbird/stormbox/issues";
 
 export const FEEDBACK_URL = "https://ideas.tb.pro/";
 
+export const SUPPORT_URL = "https://accounts.tb.pro/contact";
+
 export const JMAP_SERVER_URL =
   import.meta.env.VITE_JMAP_SERVER_URL || defaultJmapServerUrl();
 
