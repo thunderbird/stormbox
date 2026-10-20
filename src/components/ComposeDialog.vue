@@ -611,7 +611,7 @@ function identityInitials(id: IdentityRow): string {
     >
     <div class="compose-dialog__card">
       <header>
-        <h2 :id="dialogTitleId">{{ draft.subject || 'New Message' }}</h2>
+        <h2 :id="dialogTitleId" :title="draft.subject || 'New Message'">{{ draft.subject || 'New Message' }}</h2>
         <div class="compose-dialog__window-actions">
           <AppIconButton
             class="icon--minimize"
@@ -1063,6 +1063,7 @@ function identityInitials(id: IdentityRow): string {
   inset: 0;
   background: rgba(13, 22, 42, 0.4);
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   z-index: 50;
 }
@@ -1090,14 +1091,23 @@ function identityInitials(id: IdentityRow): string {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
 }
 .compose-dialog__body {
   display: contents;
 }
-.compose-dialog__card header h2 { margin: 0; font-size: 16px; }
+.compose-dialog__card header h2 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+}
 .compose-dialog__window-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 4px;
 }
 .compose-dialog__window-actions .app-icon-button,
