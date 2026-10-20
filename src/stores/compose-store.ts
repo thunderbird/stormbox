@@ -88,9 +88,21 @@ type PendingDiscardIntent = 'discard-all' | 'keep-confirmed';
 export const RECIPIENT_FIELDS: readonly RecipientField[] = ['to', 'cc', 'bcc'];
 export const INVALID_RECIPIENT_MESSAGE =
   'Fix invalid recipients before saving or sending this message.';
-export const UNCHECKPOINTED_ATTACHMENT_MESSAGE =
-  'Some attachments have not reached the draft. Wait for uploads to finish, '
-  + 'then retry or remove failed attachments.';
+export const UNFINISHED_ATTACHMENT_MESSAGE =
+  'Some attachments have not finished uploading. Wait for them to finish, '
+  + 'or retry or remove the ones that failed.';
+/** Share of an attachment's progress bar covered by the byte upload; the draft save fills the rest. */
+const ATTACHMENT_UPLOAD_PROGRESS_SHARE = 90;
+
+/**
+ * What an attachment row shows. An attachment is finished only once a
+ * confirmed draft holds it (AT-4.3), so a completed byte upload still
+ * reads as uploading until that save lands.
+ */
+export type ComposeAttachmentProgress =
+  | { state: 'uploading'; progress: number }
+  | { state: 'failed'; error: string }
+  | { state: 'attached' };
 
 export type { ComposeAttachment, ComposeAttachmentSource, ComposeAttachmentStatus };
 
@@ -261,6 +273,10 @@ function assertNever(value: never): never {
 
 function assertNeverOpenOrigin(value: never): never {
   throw new Error(`Unhandled compose open origin: ${String(value)}`);
+}
+
+function assertNeverAttachmentStatus(value: never): never {
+  throw new Error(`Unhandled attachment status: ${String(value)}`);
 }
 
 export function isExpandedPresentation(presentation: ComposePresentation): boolean {
@@ -599,7 +615,7 @@ export const useComposeStore = defineStore('compose', () => {
     accountId: () => authStore.accountId,
     repo: () => repo,
     touchSession,
-    saveDraft,
+    saveDraft: (sessionId) => saveDraft(sessionId, { forAttachment: true }),
     unblockAutosave: (sessionId) => {
       runtimeFor(sessionId).blocked = false;
     },
@@ -607,7 +623,6 @@ export const useComposeStore = defineStore('compose', () => {
   const {
     isAttachmentBusy,
     addAttachments,
-    retryAttachment,
     cancelAttachment,
     removeAttachment,
   } = attachmentController;
@@ -1218,6 +1233,7 @@ export const useComposeStore = defineStore('compose', () => {
   function canonicalSessionJson(
     session: ComposeSession,
     attachmentClientIds: ReadonlySet<string> | null = null,
+    { pendingRecipients = true } = {},
   ): string {
     const identity = identityForSession(session);
     const recipients = (field: RecipientField) => ({
@@ -1225,7 +1241,7 @@ export const useComposeStore = defineStore('compose', () => {
         'email' in entry
           ? { email: entry.email, name: entry.name ?? '' }
           : { invalid: true, text: entry.text }),
-      pending: session.pendingRecipientText[field],
+      pending: pendingRecipients ? session.pendingRecipientText[field] : '',
     });
     return JSON.stringify({
       identity: session.unresolvedFrom?.email
@@ -1266,8 +1282,13 @@ export const useComposeStore = defineStore('compose', () => {
     );
   }
 
+  /** The session as a draft save writes it: ready attachments, committed recipients only. */
   function canonicalReadySessionJson(session: ComposeSession): string {
-    return canonicalSessionJson(session, readyAttachmentClientIds(session));
+    return canonicalSessionJson(
+      session,
+      readyAttachmentClientIds(session),
+      { pendingRecipients: false },
+    );
   }
 
   function isSessionSaveableDirty(sessionId: string): boolean {
@@ -1944,11 +1965,7 @@ export const useComposeStore = defineStore('compose', () => {
       }
     }
     current.seedJson = checkpointJson;
-    current.saveError = hasInvalidRecipientPills(current)
-      ? INVALID_RECIPIENT_MESSAGE
-      : current.attachments.some((attachment) => !attachment.canonicalBlobId)
-        ? UNCHECKPOINTED_ATTACHMENT_MESSAGE
-        : null;
+    current.saveError = hasInvalidRecipientPills(current) ? INVALID_RECIPIENT_MESSAGE : null;
     current.failedSaveMutationId = null;
     current.failedSaveSeedJson = null;
     current.failedSaveRequest = null;
@@ -1958,6 +1975,7 @@ export const useComposeStore = defineStore('compose', () => {
   async function retryFailedDraftSave(
     session: ComposeSession,
     runtime: ReturnType<typeof runtimeFor>,
+    forAttachment: boolean,
   ): Promise<boolean> {
     if (!repo
         || authStore.accountId == null
@@ -2001,7 +2019,7 @@ export const useComposeStore = defineStore('compose', () => {
       return false;
     }
     if (isSessionSaveableDirty(session.id)) {
-      return saveDraft(session.id, { explicit: true });
+      return saveDraft(session.id, { explicit: true, forAttachment });
     }
     return true;
   }
@@ -2066,9 +2084,14 @@ export const useComposeStore = defineStore('compose', () => {
     return { ok: true, mutationId, parked: false };
   }
 
+  /**
+   * `forAttachment` saves on behalf of an attachment, which is unfinished
+   * until a draft holds it (AT-4.8): it neither waits for nor commits
+   * recipient text the user is still typing.
+   */
   async function saveDraft(
     sessionId: string | null = activeSessionId.value,
-    { explicit = false } = {},
+    { explicit = false, forAttachment = false } = {},
   ): Promise<boolean> {
     const session = sessionById(sessionId);
     if (!session) return false;
@@ -2077,10 +2100,12 @@ export const useComposeStore = defineStore('compose', () => {
       return false;
     }
     if (runtime.blocked) {
-      return explicit ? retryFailedDraftSave(session, runtime) : false;
+      return explicit ? retryFailedDraftSave(session, runtime, forAttachment) : false;
     }
-    if (explicit) commitPendingRecipientText(session);
-    else if (hasPendingRecipientText(session)) return false;
+    if (!forAttachment) {
+      if (explicit) commitPendingRecipientText(session);
+      else if (hasPendingRecipientText(session)) return false;
+    }
     clearAutosaveTimer(session.id);
     if (runtime.inFlight) {
       runtime.queued = true;
@@ -2088,7 +2113,7 @@ export const useComposeStore = defineStore('compose', () => {
       if (!prior && explicit) return false;
       const current = sessionById(session.id);
       if (!current || !isSessionSaveableDirty(session.id)) return prior;
-      return saveDraft(session.id, { explicit });
+      return saveDraft(session.id, { explicit, forAttachment });
     }
     const needsInitialExplicitSave = explicit
       && !session.confirmedRevision
@@ -2161,23 +2186,60 @@ export const useComposeStore = defineStore('compose', () => {
     if (!saved) return false;
     const current = sessionById(session.id);
     if (current?.attachments.some((attachment) => !attachment.canonicalBlobId)) {
-      if (hasInvalidRecipientPills(current)) {
-        current.saveError = INVALID_RECIPIENT_MESSAGE;
-        current.error = `${INVALID_RECIPIENT_MESSAGE} ${UNCHECKPOINTED_ATTACHMENT_MESSAGE}`;
-      } else {
-        current.saveError = UNCHECKPOINTED_ATTACHMENT_MESSAGE;
-        current.error = UNCHECKPOINTED_ATTACHMENT_MESSAGE;
-      }
+      current.error = hasInvalidRecipientPills(current)
+        ? `${INVALID_RECIPIENT_MESSAGE} ${UNFINISHED_ATTACHMENT_MESSAGE}`
+        : UNFINISHED_ATTACHMENT_MESSAGE;
       return false;
     }
     return close(session.id);
   }
 
-  function uncheckpointedAttachmentCount(
+  function unfinishedAttachmentCount(
     sessionId: string | null = activeSessionId.value,
   ): number {
     const session = sessionById(sessionId);
     return session?.attachments.filter((attachment) => !attachment.canonicalBlobId).length ?? 0;
+  }
+
+  function attachmentProgress(
+    attachment: ComposeAttachment,
+    sessionId: string | null = activeSessionId.value,
+  ): ComposeAttachmentProgress {
+    switch (attachment.status) {
+      case 'uploading':
+        return {
+          state: 'uploading',
+          progress: Math.round(attachment.progress * ATTACHMENT_UPLOAD_PROGRESS_SHARE / 100),
+        };
+      case 'failed':
+        return { state: 'failed', error: attachment.error ?? 'Upload failed.' };
+      case 'ready': {
+        if (attachment.canonicalBlobId) return { state: 'attached' };
+        const session = sessionById(sessionId);
+        const saveFailed = !!session
+          && !session.isSaving
+          && session.saveError != null
+          && session.saveError !== INVALID_RECIPIENT_MESSAGE;
+        return saveFailed
+          ? { state: 'failed', error: 'Could not save it to the draft.' }
+          : { state: 'uploading', progress: ATTACHMENT_UPLOAD_PROGRESS_SHARE };
+      }
+      default:
+        return assertNeverAttachmentStatus(attachment.status);
+    }
+  }
+
+  /** Re-uploads a failed transfer, or retries the draft save an uploaded attachment is waiting on. */
+  function retryAttachment(
+    clientId: string,
+    sessionId: string | null = activeSessionId.value,
+  ): Promise<boolean> {
+    const session = sessionById(sessionId);
+    const attachment = session?.attachments.find((candidate) => candidate.clientId === clientId);
+    if (session && attachment?.status === 'ready' && !attachment.canonicalBlobId) {
+      return saveDraft(session.id, { explicit: true, forAttachment: true });
+    }
+    return attachmentController.retryAttachment(clientId, sessionId);
   }
 
   function requestClose(sessionId: string | null = activeSessionId.value): boolean {
@@ -3045,7 +3107,8 @@ export const useComposeStore = defineStore('compose', () => {
     dismissSendFailureNotice,
     isSessionDirty,
     isSessionMeaningfullyNonEmpty,
-    uncheckpointedAttachmentCount,
+    unfinishedAttachmentCount,
+    attachmentProgress,
     isAttachmentBusy,
     setBodyContent,
     updateTrackedOrigins,

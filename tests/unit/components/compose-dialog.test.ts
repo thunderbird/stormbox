@@ -601,8 +601,9 @@ describe('ComposeDialog attachment controls', () => {
     const remove = vi.spyOn(composeStore, 'removeAttachment').mockReturnValue(true);
     await nextTick();
 
+    // Bytes fill the first 90% of the bar; the draft save fills the rest.
     expect(wrapper.get('progress').attributes('aria-label'))
-      .toBe('Uploading uploading.txt: 40%');
+      .toBe('Uploading uploading.txt: 36%');
     expect(wrapper.text()).toContain('uploading.txt');
     expect(wrapper.text()).toContain('3 B');
     expect(wrapper.text()).toContain('Upload failed: offline');
@@ -659,7 +660,40 @@ describe('ComposeDialog attachment controls', () => {
     );
   });
 
-  it('explains uncheckpointed attachments in the close prompt', async () => {
+  it('keeps an uploaded attachment in progress until the draft holds it', async () => {
+    const { wrapper, composeStore } = await mountOpenCompose();
+    const session = composeStore.activeSession!;
+    session.isSaving = true;
+    session.attachments.push({
+      clientId: 'uploaded',
+      name: 'report.pdf',
+      type: 'application/pdf',
+      size: 2048,
+      source: 'picker',
+      status: 'ready',
+      uploadBlobId: 'uploaded-blob',
+      canonicalBlobId: null,
+      partId: null,
+      error: null,
+      progress: 100,
+    });
+    await nextTick();
+
+    const row = wrapper.get('.compose-attachment');
+    expect(row.get('progress').attributes('value')).toBe('90');
+    expect(row.get('progress').attributes('aria-label')).toBe('Uploading report.pdf: 90%');
+    expect(row.text()).not.toContain('Ready');
+    expect(row.find('[aria-label="Cancel upload of report.pdf"]').exists()).toBe(false);
+
+    session.attachments[0].canonicalBlobId = 'canonical-blob';
+    session.isSaving = false;
+    await nextTick();
+
+    expect(row.find('progress').exists()).toBe(false);
+    expect(row.get('.compose-attachment__meta').text()).toBe('2 KB');
+  });
+
+  it('explains unfinished attachments in the close prompt', async () => {
     const { wrapper, composeStore } = await mountOpenCompose('');
     const session = composeStore.activeSession!;
     session.attachments.push({
@@ -679,7 +713,7 @@ describe('ComposeDialog attachment controls', () => {
     await nextTick();
 
     expect(wrapper.get('#compose-close-description').text())
-      .toContain('attachments have not reached the draft');
+      .toContain('attachments have not finished uploading');
   });
 });
 

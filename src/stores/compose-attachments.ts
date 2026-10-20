@@ -53,6 +53,7 @@ export interface ComposeAttachmentControllerDeps {
   accountId(): number | null;
   repo(): Pick<Repository, 'getAttachmentLimits' | 'uploadComposeAttachment'> | null;
   touchSession(sessionId: string): void;
+  /** Saves the draft that makes a just-uploaded attachment finished (AT-4.8). */
   saveDraft(sessionId: string): Promise<unknown>;
   /** Lifts the autosave block once no attachment holds it any more. */
   unblockAutosave(sessionId: string): void;

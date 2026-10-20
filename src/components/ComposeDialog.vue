@@ -63,9 +63,12 @@ const draft = computed(() => session.value?.draft ?? composeStore.draft);
 const sessionStatus = computed(() => session.value?.status ?? COMPOSE_STATE.IDLE);
 const sessionError = computed(() => session.value?.error ?? null);
 const isSending = computed(() => sessionStatus.value === COMPOSE_STATE.SENDING);
-const attachments = computed(() => session.value?.attachments ?? []);
-const uncheckpointedAttachmentCount = computed(() =>
-  session.value ? composeStore.uncheckpointedAttachmentCount(session.value.id) : 0);
+const attachments = computed(() => (session.value?.attachments ?? []).map((attachment) => ({
+  attachment,
+  progress: composeStore.attachmentProgress(attachment, session.value?.id ?? null),
+})));
+const unfinishedAttachmentCount = computed(() =>
+  session.value ? composeStore.unfinishedAttachmentCount(session.value.id) : 0);
 const attachmentBusy = computed(() =>
   session.value ? composeStore.isAttachmentBusy(session.value.id) : false);
 const fromIdentity = computed(() => composeStore.identityForSession(session.value));
@@ -781,7 +784,7 @@ function identityInitials(id: IdentityRow): string {
         aria-label="Attachments"
       >
         <article
-          v-for="attachment in attachments"
+          v-for="{ attachment, progress } in attachments"
           :key="attachment.clientId"
           class="compose-attachment"
         >
@@ -791,29 +794,28 @@ function identityInitials(id: IdentityRow): string {
             </strong>
             <span class="compose-attachment__meta">
               {{ attachmentSize(attachment.size) }}
-              <template v-if="attachment.status === 'ready'"> · Ready</template>
-              <template v-else-if="attachment.status === 'failed'"> · Upload failed</template>
+              <template v-if="progress.state === 'failed'"> · Upload failed</template>
             </span>
             <div
-              v-if="attachment.status === 'uploading'"
+              v-if="progress.state === 'uploading'"
               class="compose-attachment__progress"
             >
               <progress
-                :value="attachment.progress"
+                :value="progress.progress"
                 max="100"
-                :aria-label="`Uploading ${attachmentDisplayName(attachment.name)}: ${attachment.progress}%`"
+                :aria-label="`Uploading ${attachmentDisplayName(attachment.name)}: ${progress.progress}%`"
               />
-              <span>{{ attachment.progress }}%</span>
+              <span>{{ progress.progress }}%</span>
             </div>
             <span
-              v-if="attachment.error"
+              v-if="progress.state === 'failed'"
               class="compose-attachment__error"
               role="status"
-            >{{ attachment.error }}</span>
+            >{{ progress.error }}</span>
           </div>
           <div class="compose-attachment__actions">
             <AppIconButton
-              v-if="attachment.status === 'failed'"
+              v-if="progress.state === 'failed'"
               class="compose-attachment__action"
               :aria-label="`Retry ${attachmentDisplayName(attachment.name)}`"
               :title="`Retry ${attachmentDisplayName(attachment.name)}`"
@@ -841,16 +843,6 @@ function identityInitials(id: IdentityRow): string {
           </div>
         </article>
       </section>
-
-      <p
-        v-if="uncheckpointedAttachmentCount > 0"
-        class="compose-attachment-warning"
-        role="status"
-      >
-        {{ uncheckpointedAttachmentCount === 1
-          ? '1 attachment has not reached the draft yet.'
-          : `${uncheckpointedAttachmentCount} attachments have not reached the draft yet.` }}
-      </p>
 
       <footer>
         <input
@@ -1026,8 +1018,8 @@ function identityInitials(id: IdentityRow): string {
             id="compose-close-title"
           >Save this draft?</h3>
           <p id="compose-close-description">
-            {{ uncheckpointedAttachmentCount > 0
-              ? 'Some attachments have not reached the draft. Keep this window open to finish '
+            {{ unfinishedAttachmentCount > 0
+              ? 'Some attachments have not finished uploading. Keep this window open to finish '
                 + 'or retry them, or close without saving those attachments.'
               : 'Save your latest changes before closing this compose window.' }}
           </p>
@@ -1269,15 +1261,13 @@ function identityInitials(id: IdentityRow): string {
 }
 .compose-attachment__meta,
 .compose-attachment__error,
-.compose-attachment__progress,
-.compose-attachment-warning {
+.compose-attachment__progress {
   font-size: var(--txt-small, 0.75rem);
 }
 .compose-attachment__meta {
   color: var(--colour-ti-secondary, var(--muted, #6b7280));
 }
-.compose-attachment__error,
-.compose-attachment-warning {
+.compose-attachment__error {
   color: var(--colour-ti-warning, #8a4b00);
 }
 .compose-attachment__progress {
@@ -1303,9 +1293,6 @@ function identityInitials(id: IdentityRow): string {
 }
 .compose-attachment__action:hover {
   border-color: var(--accent, #0060df);
-}
-.compose-attachment-warning {
-  margin: 0;
 }
 footer {
   display: flex;

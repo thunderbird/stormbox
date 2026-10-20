@@ -522,22 +522,16 @@ test.describe('Attachment browser coverage', () => {
       for (const file of PICKER_FILES) {
         await expect(composeAttachments.getByText(file.name, { exact: true })).toBeVisible();
       }
-      const initialStatuses = await composeAttachments.locator('.compose-attachment')
-        .evaluateAll((rows) => rows.map((row) => row.textContent ?? ''));
-      expect(initialStatuses).toHaveLength(2);
-      expect(initialStatuses.every((status) => /(?:\d+%|Ready)/.test(status))).toBe(true);
+      await expect(composeAttachments.locator('.compose-attachment__error')).toHaveCount(0);
 
       await pasteMixedClipboardFiles(page);
       await expect(editor.locator('img[src^="data:image/png;base64,"]')).toHaveCount(1);
       await expect(composeAttachments.locator('.compose-attachment')).toHaveCount(3);
       await expect(composeAttachments.getByText(PASTED_FILE.name, { exact: true })).toBeVisible();
-      await expect.poll(
-        async () => composeAttachments.locator('.compose-attachment__meta').allTextContents(),
-        {
-          timeout: 30_000,
-          message: 'all regular attachments should finish uploading',
-        },
-      ).toEqual(REGULAR_COMPOSE_FILES.map((file) => expect.stringContaining('Ready')));
+      // A row stays in progress until the draft holds it (AT-4.3), so once no
+      // progress bar remains every attachment must be in Drafts already.
+      await expect(composeAttachments.locator('progress')).toHaveCount(0, { timeout: 30_000 });
+      await expect(composeAttachments.locator('.compose-attachment__error')).toHaveCount(0);
 
       let draftEmail = null;
       await expect.poll(async () => {
@@ -555,8 +549,6 @@ test.describe('Attachment browser coverage', () => {
       expect(
         draftEmail.attachments.filter((part) => part.disposition === 'inline'),
       ).toHaveLength(1);
-      await expect(composer.getByText(/attachments? (?:has|have) not reached the draft yet/))
-        .toHaveCount(0);
 
       await composer.getByRole('button', { name: 'Minimize' }).click();
       await expect(page.locator('.compose-dock__title')).toHaveText(subject);
