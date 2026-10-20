@@ -23,6 +23,8 @@ const APP_ORIGIN = new URL(
  * setup spec on its first run (no cached state) and as a fallback
  * when the cached SSO cookie has expired.
  *
+ * Set `navigateToApp: false` to complete a pending login on the IdP page.
+ *
  * Onboarding is seeded as done: Welcome dismissed and every beacon seen.
  * `beaconsSeen: false` seeds Welcome dismissed with every beacon unseen,
  * for the beacon spec. See seedOnboarding.
@@ -55,9 +57,9 @@ export async function seedOnboarding(page, { beaconsSeen = true } = {}) {
   }, beaconsSeen ? ALL_BEACONS_SEEN : 0);
 }
 
-export async function loginViaOidc(page, { beaconsSeen = true } = {}) {
+export async function loginViaOidc(page, { beaconsSeen = true, navigateToApp = true } = {}) {
   await seedOnboarding(page, { beaconsSeen });
-  await page.goto('/');
+  if (navigateToApp) await page.goto('/');
   const shell = page.locator('.shell');
   const usernameField = page.locator('input#username, input[name="username"]').first();
   // Supports deployed versions with a manual OIDC entry point.

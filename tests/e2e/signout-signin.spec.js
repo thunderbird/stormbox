@@ -48,11 +48,12 @@ test.describe('Sign out + sign in regression', () => {
     // engines, so target by aria-label instead.
     await page.getByLabel('Open account menu').click();
     await page.getByRole('menuitem', { name: /log out/i }).click();
-    await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible({ timeout: 15_000 });
+    await expect(page).toHaveURL(/\/realms\/tbpro\/protocol\/openid-connect\/auth\?/, { timeout: 15_000 });
+    await expect(page.locator('input#username, input[name="username"]').first()).toBeVisible({ timeout: 10_000 });
 
     ensureLoadedFailures.length = 0;
 
-    await loginViaOidc(page);
+    await loginViaOidc(page, { navigateToApp: false });
     await waitForFolderTreeReady(page);
 
     if (ensureLoadedFailures.length > 0) {
