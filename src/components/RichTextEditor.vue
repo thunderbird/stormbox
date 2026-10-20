@@ -105,6 +105,7 @@ const linkEditorHasLink = ref(false);
 const linkUrl = ref('');
 const linkError = ref<string | null>(null);
 const toolbarEl = ref<HTMLElement | null>(null);
+const normalFontSize = '14px';
 const toolbarState = ref({
   bold: false,
   italic: false,
@@ -120,7 +121,7 @@ const toolbarState = ref({
   canUndo: false,
   canRedo: false,
   fontFamily: '',
-  fontSize: '',
+  fontSize: normalFontSize as string | null,
   textColor: '#e5e7eb',
   highlightColor: '#fef3c7',
   direction: 'ltr',
@@ -186,14 +187,11 @@ const fontOptions = [
 ];
 const fontSizeOptions = [
   { label: 'Small', value: '12px' },
-  { label: 'Normal', value: '14px' },
+  { label: 'Normal', value: normalFontSize },
   { label: 'Large', value: '18px' },
   { label: 'Huge', value: '24px' },
 ];
-// The menus offer "Default" as a choice; the buttons name themselves
-// while nothing is chosen, so the two dropdowns stay distinguishable.
 const fontFamilyChoices = [{ label: 'Default', value: '' }, ...fontOptions];
-const fontSizeChoices = [{ label: 'Default', value: '' }, ...fontSizeOptions];
 const alignmentOptions = [
   { label: 'Align left', value: 'left', icon: TextAlignStart },
   { label: 'Align center', value: 'center', icon: TextAlignCenter },
@@ -437,6 +435,33 @@ function normalizeFontFamily(value: string | undefined) {
   })?.value || '';
 }
 
+function selectedFontSize(range: Range | null): string | null {
+  if (!range) return null;
+
+  const sizeForNode = (node: Node) => {
+    const element = node instanceof Element ? node : node.parentElement;
+    return element ? getComputedStyle(element).fontSize || normalFontSize : normalFontSize;
+  };
+  const common = range.commonAncestorContainer;
+  if (range.collapsed || common instanceof Text) return sizeForNode(range.startContainer);
+
+  const walker = document.createTreeWalker(common, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+  let selectedSize: string | null = null;
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    if (!(node instanceof Text) && node.nodeName !== 'BR' && node.nodeName !== 'IMG') continue;
+    if (!range.intersectsNode(node)) continue;
+    if (node instanceof Text && (!node.length
+      || (node === range.startContainer && range.startOffset === node.length)
+      || (node === range.endContainer && range.endOffset === 0))) continue;
+
+    const size = sizeForNode(node);
+    if (selectedSize !== null && selectedSize !== size) return null;
+    selectedSize = size;
+  }
+  return selectedSize;
+}
+
 function pathHasFormat(path: string, tag: string) {
   return new RegExp(`(?:^|>)${tag}(?:$|[.#\\[])`).test(path)
     || new RegExp(`(?:^|>)${tag}(?:>|$)`).test(path);
@@ -475,7 +500,7 @@ function updateToolbarState(pathOverride: string | null = null) {
     orderedList: /(?:^|>)OL/.test(path),
     quote: /(?:^|>)BLOCKQUOTE/.test(path),
     fontFamily: normalizeFontFamily(fontInfo.fontFamily),
-    fontSize: fontInfo.fontSize || '',
+    fontSize: selectedFontSize(range),
     textColor: normalizeColor(fontInfo.color, toolbarState.value.textColor || defaultTextColor),
     highlightColor: normalizeColor(
       fontInfo.backgroundColor,
@@ -1312,7 +1337,7 @@ defineExpose({
             aria-label="Font size"
           >
             <button
-              v-for="size in fontSizeChoices"
+              v-for="size in fontSizeOptions"
               :key="size.value"
               type="button"
               class="app-dropdown__item toolbar-menu-button"
@@ -1486,7 +1511,7 @@ defineExpose({
               aria-hidden="true"
             >Size</span>
             <button
-              v-for="size in fontSizeChoices"
+              v-for="size in fontSizeOptions"
               :key="`size-${size.value}`"
               type="button"
               class="app-dropdown__item toolbar-menu-button"
