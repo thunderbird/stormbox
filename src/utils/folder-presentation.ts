@@ -57,10 +57,8 @@ export const DEFAULT_FOLDER_BY_NAME: Record<string, NamedFolderPresentation> = {
   feeds: { icon: rssFolderIcon, color: '#f97316' },
 };
 
-// Goldenrod tone matches the default folder icon colour in
-// Thunderbird Desktop so user-created folders read as Thunderbird
-// folders rather than greyed-out.
-export const DEFAULT_FOLDER_COLOR = '#e4b85c';
+// FM-2.9: Generic folders retain a contrasting yellow tone in both themes.
+export const DEFAULT_FOLDER_COLOR = 'var(--folder-icon-color)';
 
 export interface FolderPresentationInput {
   name?: string | null;
@@ -76,7 +74,7 @@ export function defaultFolderKey(name: string | null | undefined): string {
  * Resolve the visual {icon, color} pair for a folder. Role wins; the
  * named-folder map is a fallback for user-named special folders that
  * the server hasn't tagged with a JMAP role; everything else gets
- * the generic folder icon and the goldenrod tone.
+ * the generic folder icon and the theme-aware amber tone.
  */
 export function folderPresentation(folder: FolderPresentationInput): NamedFolderPresentation {
   const role = folder.role ?? null;
