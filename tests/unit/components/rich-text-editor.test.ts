@@ -70,6 +70,32 @@ async function mountEditor(
   return wrapper;
 }
 
+async function overflowToolbar(wrapper: ReturnType<typeof mount>) {
+  const toolbar = wrapper.get('.compose-toolbar').element;
+  Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 100 });
+  toolbar.querySelectorAll('[data-toolbar-group]').forEach((group) => {
+    group.getBoundingClientRect = () => ({ width: 100 } as DOMRect);
+  });
+  wrapper.get('.toolbar-more').element.getBoundingClientRect = () =>
+    ({ width: 70 } as DOMRect);
+  window.dispatchEvent(new Event('resize'));
+  await nextTick();
+  await nextTick();
+}
+
+function moreMenuItem(wrapper: ReturnType<typeof mount>, label: string) {
+  const item = wrapper.get('.toolbar-more .toolbar-more__menu').findAll('button')
+    .find((button) => button.text() === label);
+  expect(item, `More menu item ${label}`).toBeDefined();
+  return item!;
+}
+
+function applyBrowserDirectionStyles() {
+  const directionStyle = document.createElement('style');
+  directionStyle.textContent = '[dir="rtl"] { direction: rtl } [dir="ltr"] { direction: ltr }';
+  document.body.appendChild(directionStyle);
+}
+
 function latestUpdate(wrapper: ReturnType<typeof mount>): EditorContent | null {
   const updates = wrapper.emitted('update') ?? [];
   return (updates.at(-1)?.[0] as EditorContent | undefined) ?? null;
@@ -738,16 +764,7 @@ describe('RichTextEditor toolbar', () => {
     expect(previewFamilies(wrapper.get('[role="menu"][aria-label="Font family"]')
       .findAll('[role="menuitemradio"]'))).toEqual(fontFamilies);
 
-    const toolbar = wrapper.get('.compose-toolbar').element;
-    Object.defineProperty(toolbar, 'clientWidth', { configurable: true, value: 100 });
-    toolbar.querySelectorAll('[data-toolbar-group]').forEach((group: any) => {
-      group.getBoundingClientRect = () => ({ width: 100 } as DOMRect);
-    });
-    (wrapper.get('.toolbar-more').element as any).getBoundingClientRect = () =>
-      ({ width: 70 } as DOMRect);
-    window.dispatchEvent(new Event('resize'));
-    await nextTick();
-    await nextTick();
+    await overflowToolbar(wrapper);
 
     const fontMenu = wrapper.get('[role="group"][aria-label="Font formatting"]');
     const overflowFonts = fontMenu.findAll('[aria-label^="Font:"]');
@@ -777,6 +794,132 @@ describe('RichTextEditor toolbar', () => {
     selectBetween(large, 0, after, 0);
     await nextTick();
     expect(sizeMenu.get('[aria-checked="true"]').text()).toBe('Large');
+  });
+
+  it.each([
+    ['Subscript', '<p><sub>hello</sub> world</p>'],
+    ['Superscript', '<p><sup>hello</sup> world</p>'],
+    ['Code', '<pre>hello</pre>'],
+  ])('checks the %s More-menu toggle with its current selection', async (label, html) => {
+    const wrapper = await mountEditor(html);
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    selectEditorText(editor);
+    await nextTick();
+    const item = moreMenuItem(wrapper, label);
+
+    expect(item.attributes('role')).toBe('menuitemcheckbox');
+    expect(item.attributes('aria-checked')).toBe('true');
+    expect(item.find('svg.lucide-check').exists()).toBe(true);
+    expect(item.classes()).not.toContain('active');
+
+    await item.trigger('mousedown');
+    await item.trigger('click');
+    expect(item.attributes('aria-checked')).toBe('false');
+    expect(item.find('svg.lucide-check').exists()).toBe(false);
+    expect(item.classes()).not.toContain('active');
+
+    await item.trigger('mousedown');
+    await item.trigger('click');
+    expect(item.attributes('aria-checked')).toBe('true');
+    expect(item.find('svg.lucide-check').exists()).toBe(true);
+  });
+
+  it('keeps alignment and direction checks aligned with caret, mixed selection and commands', async () => {
+    applyBrowserDirectionStyles();
+    const wrapper = await mountEditor(
+      '<p>first</p><p dir="rtl" style="text-align:center">second</p>',
+    );
+    await overflowToolbar(wrapper);
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    const [first, second] = [...editor.querySelectorAll('p')].map((p) => p.firstChild!);
+    editor.focus();
+    selectBetween(first, 2, first, 2);
+    await nextTick();
+
+    expect(moreMenuItem(wrapper, 'Align left').attributes('aria-checked')).toBe('true');
+    expect(moreMenuItem(wrapper, 'Left-to-right').attributes('aria-checked')).toBe('true');
+
+    selectBetween(second, 2, second, 2);
+    await nextTick();
+    expect(moreMenuItem(wrapper, 'Align center').attributes('aria-checked')).toBe('true');
+    expect(moreMenuItem(wrapper, 'Right-to-left').attributes('aria-checked')).toBe('true');
+
+    selectBetween(first, 0, second, 6);
+    await nextTick();
+    const alignment = wrapper.get('[role="group"][aria-label="Alignment"]');
+    expect(alignment.find('[aria-checked="true"]').exists()).toBe(false);
+    expect(moreMenuItem(wrapper, 'Left-to-right').attributes('aria-checked')).toBe('false');
+    expect(moreMenuItem(wrapper, 'Right-to-left').attributes('aria-checked')).toBe('false');
+
+    const ltr = moreMenuItem(wrapper, 'Left-to-right');
+    await ltr.trigger('mousedown');
+    await ltr.trigger('click');
+    expect(ltr.attributes('role')).toBe('menuitemradio');
+    expect(ltr.attributes('aria-checked')).toBe('true');
+    expect(ltr.find('svg.lucide-check').exists()).toBe(true);
+    expect([...editor.querySelectorAll('p')].every((p) => p.dir === 'ltr')).toBe(true);
+
+    const right = moreMenuItem(wrapper, 'Align right');
+    await right.trigger('mousedown');
+    await right.trigger('click');
+    expect(right.attributes('role')).toBe('menuitemradio');
+    expect(right.attributes('aria-checked')).toBe('true');
+    expect(right.find('svg.lucide-check').exists()).toBe(true);
+    expect([...editor.querySelectorAll('p')].every((p) => p.style.textAlign === 'right')).toBe(true);
+    expect(wrapper.find('.toolbar-more__menu .active').exists()).toBe(false);
+  });
+
+  it.each([
+    ['<p dir="rtl">first</p>', 'Align right', 'Right-to-left'],
+    ['<blockquote dir="rtl"><p>first</p></blockquote>', 'Align right', 'Right-to-left'],
+    ['<p>first</p><p style="text-align:center">second</p>', null, 'Left-to-right'],
+    ['<p>first</p><p dir="rtl" style="text-align:left">second</p>', 'Align left', null],
+  ])('computes independent alignment and direction checks for %s', async (html, alignment, direction) => {
+    applyBrowserDirectionStyles();
+    const wrapper = await mountEditor(html!);
+    await overflowToolbar(wrapper);
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    const paragraphs = [...editor.querySelectorAll('p')];
+    const first = firstTextNode(paragraphs[0]!)!;
+    const last = firstTextNode(paragraphs.at(-1)!)!;
+    editor.focus();
+    selectBetween(first, 0, last, last.length);
+    await nextTick();
+
+    const checkedAlignment = wrapper.get('[role="group"][aria-label="Alignment"]')
+      .findAll('[aria-checked="true"]').map((item) => item.text());
+    expect(checkedAlignment).toEqual(alignment ? [alignment] : []);
+    for (const label of ['Left-to-right', 'Right-to-left']) {
+      expect(moreMenuItem(wrapper, label).attributes('aria-checked')).toBe(String(label === direction));
+    }
+  });
+
+  it('checks list selections across items and leaves command-only entries unchecked', async () => {
+    const wrapper = await mountEditor('<ul><li>first</li><li>second</li></ul>');
+    await overflowToolbar(wrapper);
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    const [first, second] = [...editor.querySelectorAll('li')].map((li) => li.firstChild!);
+    editor.focus();
+    selectBetween(first, 0, second, 6);
+    await nextTick();
+    const bulleted = moreMenuItem(wrapper, 'Bulleted list');
+
+    expect(bulleted.attributes('role')).toBe('menuitemcheckbox');
+    expect(bulleted.attributes('aria-checked')).toBe('true');
+    expect(bulleted.find('svg.lucide-check').exists()).toBe(true);
+    expect(moreMenuItem(wrapper, 'Numbered list').attributes('aria-checked')).toBe('false');
+    for (const label of ['Insert image', 'Link', 'Quote', 'Unquote', 'Clear formatting', 'Undo', 'Redo']) {
+      const command = moreMenuItem(wrapper, label);
+      expect(command.attributes('role')).toBe('menuitem');
+      expect(command.attributes('aria-checked')).toBeUndefined();
+      expect(command.find('svg.lucide-check').exists()).toBe(false);
+    }
+
+    await bulleted.trigger('mousedown');
+    await bulleted.trigger('click');
+    expect(bulleted.attributes('aria-checked')).toBe('false');
+    expect(bulleted.find('svg.lucide-check').exists()).toBe(false);
+    expect(latestUpdate(wrapper)?.html).not.toMatch(/<ul\b/i);
   });
 
   it('uses the shared dropdown structure for toolbar menus', async () => {

@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } fro
 import {
   Bold,
   Check,
-  Code,
   Highlighter,
   Image as ImageIcon,
   Italic,
@@ -14,8 +13,6 @@ import {
   Redo2,
   RemoveFormatting,
   Strikethrough,
-  Subscript,
-  Superscript,
   TextAlignCenter,
   TextAlignEnd,
   TextAlignJustify,
@@ -124,7 +121,8 @@ const toolbarState = ref({
   fontSize: normalFontSize as string | null,
   textColor: '#e5e7eb',
   highlightColor: '#fef3c7',
-  direction: 'ltr',
+  alignment: 'left' as string | null,
+  direction: 'ltr' as string | null,
 });
 
 const defaultTextColor = '#e5e7eb';
@@ -474,6 +472,28 @@ function stateForFormat(tag: string, path: string, range: Range | null) {
   return !!range && !!squire?.hasFormat(tag, null, range);
 }
 
+function selectedBlockFormatting(range: Range | null) {
+  let alignment: string | null = null;
+  let direction: string | null = null;
+  let seenBlock = false;
+  if (range) squire?.forEachBlock((block) => {
+    const style = getComputedStyle(block);
+    const blockDirection = style.direction === 'rtl' ? 'rtl' : 'ltr';
+    const textAlign = style.textAlign.replace(/^-(?:moz|webkit)-/, '');
+    let blockAlignment = textAlign;
+    if (!textAlign || textAlign === 'start' || textAlign === 'auto') {
+      blockAlignment = blockDirection === 'rtl' ? 'right' : 'left';
+    } else if (textAlign === 'end') {
+      blockAlignment = blockDirection === 'rtl' ? 'left' : 'right';
+    }
+    alignment = !seenBlock || alignment === blockAlignment ? blockAlignment : null;
+    direction = !seenBlock || direction === blockDirection ? blockDirection : null;
+    seenBlock = true;
+    return alignment === null && direction === null;
+  }, false, range);
+  return { alignment, direction };
+}
+
 function updateToolbarState(pathOverride: string | null = null) {
   if (!squire) return;
 
@@ -486,6 +506,7 @@ function updateToolbarState(pathOverride: string | null = null) {
 
   const path = pathOverride ?? squire.getPath();
   const fontInfo = range ? squire.getFontInfo(range) : {};
+  const blockFormatting = selectedBlockFormatting(range);
   toolbarState.value = {
     ...toolbarState.value,
     bold: stateForFormat('B', path, range),
@@ -496,8 +517,8 @@ function updateToolbarState(pathOverride: string | null = null) {
     superscript: stateForFormat('SUP', path, range),
     code: stateForFormat('CODE', path, range) || stateForFormat('PRE', path, range),
     link: stateForFormat('A', path, range),
-    unorderedList: /(?:^|>)UL/.test(path),
-    orderedList: /(?:^|>)OL/.test(path),
+    unorderedList: stateForFormat('UL', path, range),
+    orderedList: stateForFormat('OL', path, range),
     quote: /(?:^|>)BLOCKQUOTE/.test(path),
     fontFamily: normalizeFontFamily(fontInfo.fontFamily),
     fontSize: selectedFontSize(range),
@@ -506,7 +527,7 @@ function updateToolbarState(pathOverride: string | null = null) {
       fontInfo.backgroundColor,
       toolbarState.value.highlightColor || defaultHighlightColor,
     ),
-    direction: /\[dir=rtl\]/.test(path) ? 'rtl' : 'ltr',
+    ...blockFormatting,
   };
 }
 
@@ -638,9 +659,7 @@ function ensureEditorBlocks() {
 
 function toggleList(type: 'UL' | 'OL') {
   runEditorCommand((editor) => {
-    const path = editor.getPath();
-    const inList = new RegExp(`(?:^|>)${type}`).test(path);
-    if (inList) {
+    if (editor.hasFormat(type)) {
       editor.removeList();
     } else if (type === 'UL') {
       editor.makeUnorderedList();
@@ -1566,7 +1585,6 @@ defineExpose({
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.link }"
               role="menuitem"
               aria-label="Insert or remove link"
               :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
@@ -1588,29 +1606,30 @@ defineExpose({
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.unorderedList }"
-              role="menuitem"
+              role="menuitemcheckbox"
+              :aria-checked="toolbarState.unorderedList"
               @mousedown.prevent
               @click="toggleList('UL')"
             >
-              <List :size="15" />
+              <Check v-if="toolbarState.unorderedList" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Bulleted list</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.orderedList }"
-              role="menuitem"
+              role="menuitemcheckbox"
+              :aria-checked="toolbarState.orderedList"
               @mousedown.prevent
               @click="toggleList('OL')"
             >
-              <ListOrdered :size="15" />
+              <Check v-if="toolbarState.orderedList" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Numbered list</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.quote }"
               role="menuitem"
               @mousedown.prevent
               @click="adjustQuote(1)"
@@ -1641,11 +1660,13 @@ defineExpose({
               :key="alignment.value"
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              role="menuitem"
+              role="menuitemradio"
+              :aria-checked="toolbarState.alignment === alignment.value"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.setTextAlignment(alignment.value))"
             >
-              <component :is="alignment.icon" :size="15" />
+              <Check v-if="toolbarState.alignment === alignment.value" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>{{ alignment.label }}</span>
             </button>
           </div>
@@ -1654,56 +1675,61 @@ defineExpose({
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.direction === 'ltr' }"
-              role="menuitem"
+              role="menuitemradio"
+              :aria-checked="toolbarState.direction === 'ltr'"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.setTextDirection('ltr'))"
             >
-              <span>LTR</span>
+              <Check v-if="toolbarState.direction === 'ltr'" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Left-to-right</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.direction === 'rtl' }"
-              role="menuitem"
+              role="menuitemradio"
+              :aria-checked="toolbarState.direction === 'rtl'"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.setTextDirection('rtl'))"
             >
-              <span>RTL</span>
+              <Check v-if="toolbarState.direction === 'rtl'" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Right-to-left</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.subscript }"
-              role="menuitem"
+              role="menuitemcheckbox"
+              :aria-checked="toolbarState.subscript"
               @mousedown.prevent
               @click="toggleFormat('SUB', { tag: 'SUP' })"
             >
-              <Subscript :size="15" />
+              <Check v-if="toolbarState.subscript" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Subscript</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.superscript }"
-              role="menuitem"
+              role="menuitemcheckbox"
+              :aria-checked="toolbarState.superscript"
               @mousedown.prevent
               @click="toggleFormat('SUP', { tag: 'SUB' })"
             >
-              <Superscript :size="15" />
+              <Check v-if="toolbarState.superscript" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Superscript</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
-              :class="{ active: toolbarState.code }"
-              role="menuitem"
+              role="menuitemcheckbox"
+              :aria-checked="toolbarState.code"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.toggleCode())"
             >
-              <Code :size="15" />
+              <Check v-if="toolbarState.code" :size="15" aria-hidden="true" />
+              <span v-else aria-hidden="true" />
               <span>Code</span>
             </button>
             <button
@@ -1988,9 +2014,6 @@ defineExpose({
 }
 .toolbar-menu-button {
   font-size: 12px;
-}
-.toolbar-menu-button.active {
-  background: rgba(127, 127, 127, 0.18);
 }
 .toolbar-menu-button:disabled {
   cursor: not-allowed;
