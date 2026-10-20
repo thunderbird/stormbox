@@ -90,6 +90,10 @@ defineSlots<{
   background: var(--rowHover);
   color: var(--text);
 }
+.msg-list__bulk-action > svg {
+  fill: none;
+  stroke: currentColor;
+}
 .msg-list__bulk-action--danger:hover {
   background: rgba(255, 107, 107, 0.12);
   color: #ff6b6b;
