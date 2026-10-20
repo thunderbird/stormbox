@@ -27,22 +27,18 @@ test('login gate renders and the SharedWorker SQLite boots', async ({ page }) =>
     }
   });
 
-  // The app-password entry point is hidden by default; opt in via the
-  // ?app-password URL flag (see LoginGate.vue).
+  // Explicit password mode bypasses OIDC initialization.
   await page.goto('/?app-password');
 
   await expect(page.getByRole('heading', { name: 'Thundermail' })).toBeVisible();
   await expect(
     page.getByText('Webmail is in early alpha and subject to frequent changes and instability'),
   ).toBeVisible();
-  await expect(page.locator('.login-card__signin')).toBeVisible();
+  await expect(page.locator('.login-card__signin')).toHaveCount(0);
 
-  // Reveal the app-password form, then submit bogus credentials. This is
-  // the path that drives a real RPC into the SharedWorker.
-  await page.getByRole('button', { name: /use app password instead/i }).click();
+  // Submitting the credential form drives a real RPC into the SharedWorker.
   await page.getByLabel('Username').fill('bogus');
   await page.getByLabel('App password').fill('bogus');
-  // Scope to the form: the OIDC "Sign In" button is also on the page.
   await page.locator('.login-card__password button[type="submit"]').click();
 
   // The status leaves the idle "Not connected." state. Either

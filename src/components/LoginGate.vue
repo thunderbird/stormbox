@@ -1,89 +1,55 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useOnline } from '@vueuse/core';
 import { Loader2 } from '@lucide/vue';
 import { NoticeWarningIcon } from '@thunderbirdops/services-ui';
 import AppButton from './AppButton.vue';
 
 import { useAuthStore } from '../stores/auth-store';
-import { getOidc } from '../services/auth';
 import { AUTH_STATE } from '../constants/states';
 import { hasAutoLoginFlag, withoutAutoLoginFlag } from '../utils/staff-redirect';
 import ThundermailLogo from './ThundermailLogo.vue';
 
 const authStore = useAuthStore();
-
-// A staff redirect from the production origin lands here with the
-// auto-login flag. The flag is dropped from the URL first so a reload or
-// a failed sign-in cannot loop, then the shared Keycloak SSO session
-// completes the sign-in without a click. An already-live OIDC session
-// is connected by initialize(), so only the flag is dropped.
-let autoLoginHandled = false;
-watch(() => authStore.status, (status) => {
-  if (autoLoginHandled || status !== AUTH_STATE.OIDC_READY) return;
-  if (typeof window === 'undefined' || !hasAutoLoginFlag(window.location.search)) return;
-  autoLoginHandled = true;
-  window.history.replaceState(
-    window.history.state,
-    '',
-    withoutAutoLoginFlag(window.location.href),
-  );
-  if (getOidc()?.isUserLoggedIn) return;
-  void authStore.connectViaOidc();
-}, { immediate: true });
-
-const showPasswordForm = ref(false);
 const username = ref('');
 const password = ref('');
+const isOnline = useOnline();
 
-// App-password sign-in stays available but is no longer surfaced by
-// default. It opts in via ?app-password in the URL or a persisted
-// localStorage flag, so power users / non-OIDC setups can still reach it.
-const appPasswordEnabled = computed(() => {
-  if (typeof window === 'undefined') return false;
-  try {
-    if (new URLSearchParams(window.location.search).has('app-password')) return true;
-    return window.localStorage?.getItem('stormbox.appPassword') === '1';
-  } catch {
-    return false;
-  }
-});
+if (typeof window !== 'undefined' && hasAutoLoginFlag(window.location.search)) {
+  window.history.replaceState(window.history.state, '', withoutAutoLoginFlag(window.location.href));
+}
 
 const isBusy = computed(() =>
   authStore.status === AUTH_STATE.OIDC_LOADING
   || authStore.status === AUTH_STATE.CONNECTING,
 );
-
 const isFailed = computed(() => authStore.status === AUTH_STATE.FAILED);
-
 const statusLabel = computed(() => {
+  if (!isOnline.value && !isFailed.value) return 'You are offline. Waiting for a connection…';
   switch (authStore.status) {
     case AUTH_STATE.OIDC_LOADING: return 'Initialising…';
-    case AUTH_STATE.CONNECTING:   return 'Connecting…';
-    case AUTH_STATE.FAILED:       return 'Failed.';
-    default:                      return 'Not connected.';
+    case AUTH_STATE.CONNECTING: return 'Connecting…';
+    case AUTH_STATE.FAILED: return 'Could not connect.';
+    default: return 'Connecting to your account…';
   }
 });
 
-async function signInWithThunderbird() {
-  await authStore.connectViaOidc();
-}
-
-async function submitPassword(event) {
+async function submitPassword(event: SubmitEvent) {
   event.preventDefault();
-  await authStore.connectWithPassword({
-    username: username.value,
-    password: password.value,
-  });
+  await authStore.connectWithPassword({ username: username.value, password: password.value });
 }
 
-function togglePassword() {
-  showPasswordForm.value = !showPasswordForm.value;
+function onPageShow(event: PageTransitionEvent) {
+  if (event.persisted && !authStore.appPasswordMode) authStore.cancelOidcLogin();
 }
+
+onMounted(() => window.addEventListener('pageshow', onPageShow));
+onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
 </script>
 
 <template>
   <div class="login-gate">
-    <div class="login-stack">
+    <div v-if="authStore.appPasswordMode" class="login-stack">
       <p class="login-warning" role="note">
         <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
         <span>Webmail is in early alpha and subject to frequent changes and instability</span>
@@ -92,73 +58,49 @@ function togglePassword() {
       <div class="login-card">
         <ThundermailLogo :size="56" class="login-card__logo" />
         <h1 class="login-card__title">Thundermail</h1>
-        <p class="login-card__subtitle">Sign in with your Thundermail account.</p>
+        <p class="login-card__subtitle">Sign in with your app password.</p>
 
-        <div v-if="isBusy" class="login-card__busy" role="status" aria-live="polite">
-          <Loader2 :size="32" :stroke-width="2" class="login-card__spinner" />
+        <form class="login-card__password" @submit="submitPassword">
+          <label>
+            <span>Username</span>
+            <input
+              v-model="username"
+              type="text"
+              autocomplete="username"
+              :disabled="isBusy"
+              required
+            />
+          </label>
+          <label>
+            <span>App password</span>
+            <input
+              v-model="password"
+              type="password"
+              autocomplete="current-password"
+              :disabled="isBusy"
+              required
+            />
+          </label>
+          <AppButton form-action="submit" :disabled="isBusy">
+            Sign in
+          </AppButton>
+        </form>
+        <div v-if="isBusy || isFailed" class="login-card__busy" role="status" aria-live="polite">
+          <Loader2 v-if="isBusy" :size="32" :stroke-width="2" class="login-card__spinner" aria-hidden="true" />
           <p class="login-card__status">{{ statusLabel }}</p>
         </div>
-
-        <template v-else>
-          <AppButton
-            size="default"
-            class="login-card__signin"
-            :disabled="!authStore.isOidcReady"
-            @click="signInWithThunderbird"
-          >
-            Sign In
-          </AppButton>
-
-          <!-- App-password sign-in is hidden by default now that OIDC is
-               the norm, but the flow is fully intact. Reveal the entry
-               point with ?app-password in the URL or by setting
-               localStorage['stormbox.appPassword']='1'. -->
-          <button
-            v-if="!showPasswordForm && appPasswordEnabled"
-            class="login-card__link"
-            type="button"
-            @click="togglePassword"
-          >
-            Use app password instead
-          </button>
-
-          <form v-if="showPasswordForm" class="login-card__password" @submit="submitPassword">
-            <label>
-              <span>Username</span>
-              <input
-                v-model="username"
-                type="text"
-                autocomplete="username"
-                required
-              />
-            </label>
-            <label>
-              <span>App password</span>
-              <input
-                v-model="password"
-                type="password"
-                autocomplete="current-password"
-                required
-              />
-            </label>
-            <div class="login-card__password-actions">
-              <AppButton form-action="submit">
-                Sign in
-              </AppButton>
-              <button
-                class="login-card__link"
-                type="button"
-                @click="togglePassword"
-              >
-                Back
-              </button>
-            </div>
-          </form>
-
-          <p v-if="isFailed" class="login-card__status">{{ statusLabel }}</p>
-          <p v-if="authStore.error" class="login-card__error">{{ authStore.error }}</p>
-        </template>
+        <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
       </div>
+    </div>
+    <div v-else class="login-progress">
+      <div class="login-card__busy" role="status" aria-live="polite">
+        <Loader2 v-if="!isFailed" :size="32" :stroke-width="2" class="login-card__spinner" aria-hidden="true" />
+        <p class="login-card__status">{{ statusLabel }}</p>
+      </div>
+      <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
+      <AppButton v-if="isFailed" class="login-card__retry" @click="authStore.retryOidc">
+        Try again
+      </AppButton>
     </div>
   </div>
 </template>
@@ -180,6 +122,14 @@ function togglePassword() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.login-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 360px;
 }
 
 /* Our own warning banner; only the warning glyph comes from services-ui.
@@ -256,27 +206,6 @@ html.dark .login-card {
   font-size: 13px;
 }
 
-/* Sign in uses our AppButton at services-ui's default height, centered
-   with a comfortable min-width rather than stretched across the card. */
-.login-card__signin {
-  align-self: center;
-  min-width: 160px;
-}
-
-.login-card__link {
-  appearance: none;
-  background: transparent;
-  color: var(--muted);
-  border: 0;
-  padding: 6px 0 0;
-  font-size: 12px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-  align-self: center;
-}
-.login-card__link:hover:not(:disabled) { color: var(--text); }
-
 .login-card__password {
   display: flex;
   flex-direction: column;
@@ -302,13 +231,6 @@ html.dark .login-card {
   outline: none;
 }
 .login-card__password input:focus { border-color: var(--accent); }
-.login-card__password-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 .login-card__busy {
   display: flex;
   flex-direction: column;
@@ -334,19 +256,9 @@ html.dark .login-card {
 .login-card__error {
   margin: 6px 0 0;
   text-align: center;
-  color: #ff6b6b;
+  color: var(--error-fg);
   font-size: 12px;
   white-space: pre-wrap;
 }
 
-@media (max-width: 360px) {
-  .login-card__password-actions {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .login-card__password-actions .login-card__link {
-    align-self: center;
-  }
-}
 </style>

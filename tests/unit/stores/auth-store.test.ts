@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
 import {
-  describe, it, expect, beforeEach, vi,
+  afterEach, describe, it, expect, beforeEach, vi,
 } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
 const authService = vi.hoisted(() => ({
-  initOidc: vi.fn(async () => null),
+  initOidc: vi.fn(async () => null as any),
   getOidc: vi.fn(() => null as any),
 }));
 
@@ -19,6 +19,7 @@ vi.mock('../../../src/services/auth', () => authService);
 const navigation = vi.hoisted(() => ({
   currentHref: vi.fn(() => 'https://webmail.thundermail.com/'),
   replaceLocation: vi.fn(),
+  reloadLocation: vi.fn(),
 }));
 vi.mock('../../../src/services/navigation', () => navigation);
 
@@ -68,13 +69,173 @@ beforeEach(() => {
   navigation.currentHref.mockReset();
   navigation.currentHref.mockReturnValue('https://webmail.thundermail.com/');
   navigation.replaceLocation.mockReset();
+  navigation.reloadLocation.mockReset();
   authService.initOidc.mockReset();
   authService.initOidc.mockResolvedValue(null);
   authService.getOidc.mockReset();
   authService.getOidc.mockReturnValue(null);
+  window.history.replaceState(null, '', '/');
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('auth-store', () => {
+  it('redirects an unauthenticated OIDC startup once and shows a connection state', async () => {
+    const oidc = { isUserLoggedIn: false, login: vi.fn(() => new Promise(() => {})) };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    void authStore.initialize();
+    await vi.waitFor(() => expect(oidc.login).toHaveBeenCalledOnce());
+    expect(authStore.status).toBe(AUTH_STATE.CONNECTING);
+    expect(sessionStorage.getItem('stormbox.oidcRedirectPending')).toBe('1');
+    await authStore.initialize();
+    await authStore.connectViaOidc();
+    expect(oidc.login).toHaveBeenCalledOnce();
+  });
+
+  it.each(['query', 'persisted'])('gives %s app-password selection precedence over OIDC', async (mode) => {
+    if (mode === 'query') window.history.replaceState(null, '', '/?app-password&auto-login=1');
+    else localStorage.setItem('stormbox.appPassword', '1');
+    const repo = makeRepo();
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+
+    await authStore.initialize();
+    expect(authStore.appPasswordMode).toBe(true);
+    expect(authService.initOidc).not.toHaveBeenCalled();
+    expect(authStore.status).toBe(AUTH_STATE.OIDC_READY);
+    await expect(authStore.connectWithPassword({ username: 'tester', password: 'secret' })).resolves.toBe(true);
+    expect(repo.startSyncAccount).toHaveBeenCalledWith(expect.objectContaining({
+      auth: { kind: 'basic', username: 'tester', password: 'secret' },
+    }));
+  });
+
+  it('connects an authenticated startup and clears the redirect guard', async () => {
+    sessionStorage.setItem('stormbox.oidcRedirectPending', '1');
+    const oidc = {
+      isUserLoggedIn: true,
+      getTokens: vi.fn().mockResolvedValue(oidcTokens('initial-token', 1_000)),
+      subscribeToTokensChange: vi.fn(() => ({ unsubscribeFromTokensChange: vi.fn() })),
+    };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    __setRepositoryForTests(makeRepo());
+    const authStore = useAuthStore();
+    try {
+      await authStore.initialize();
+      expect(authStore.status).toBe(AUTH_STATE.CONNECTED);
+      expect(sessionStorage.getItem('stormbox.oidcRedirectPending')).toBeNull();
+    } finally {
+      authStore.$reset();
+    }
+  });
+
+  it('requires an explicit retry after an unauthenticated return', async () => {
+    sessionStorage.setItem('stormbox.oidcRedirectPending', '1');
+    const oidc = { isUserLoggedIn: false, login: vi.fn(() => new Promise(() => {})) };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    await authStore.initialize();
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.error).toMatch(/sign-in did not complete/i);
+    expect(oidc.login).not.toHaveBeenCalled();
+    await authStore.initialize();
+    expect(oidc.login).not.toHaveBeenCalled();
+
+    void authStore.retryOidc();
+    await vi.waitFor(() => expect(oidc.login).toHaveBeenCalledOnce());
+    expect(authStore.status).toBe(AUTH_STATE.CONNECTING);
+  });
+
+  it('reports library initialization errors and reloads only for an explicit retry', async () => {
+    const diagnostics = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sessionStorage.setItem('stormbox.oidcRedirectPending', '1');
+    const oidc = {
+      isUserLoggedIn: false,
+      initializationError: Object.assign(new Error('Developer diagnostics with issuer and client IDs'), {
+        isAuthServerLikelyDown: true,
+      }),
+      login: vi.fn(),
+    };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    await authStore.initialize();
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.error).toBe('The sign-in service is unavailable. Please try again later.');
+    expect(diagnostics).toHaveBeenCalledWith('Could not initialize OIDC sign-in', oidc.initializationError);
+    expect(oidc.login).not.toHaveBeenCalled();
+    expect(navigation.reloadLocation).not.toHaveBeenCalled();
+    await authStore.retryOidc();
+    expect(navigation.reloadLocation).toHaveBeenCalledOnce();
+    expect(sessionStorage.getItem('stormbox.oidcRedirectPending')).toBeNull();
+  });
+
+  it('reports a bootstrap rejection with an explicit reload retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    authService.initOidc.mockRejectedValue(new Error('Discovery failed'));
+    const authStore = useAuthStore();
+
+    await authStore.initialize();
+    expect(authStore.error).toBe('Sign-in could not be initialized. Please try again later.');
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    await authStore.retryOidc();
+    expect(navigation.reloadLocation).toHaveBeenCalledOnce();
+  });
+
+  it('reports redirect failures without automatically retrying them', async () => {
+    const oidc = { isUserLoggedIn: false, login: vi.fn().mockRejectedValue(new Error('Redirect failed')) };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    await authStore.initialize();
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.error).toBe('Redirect failed');
+    expect(oidc.login).toHaveBeenCalledOnce();
+    await authStore.initialize();
+    expect(oidc.login).toHaveBeenCalledOnce();
+  });
+
+  it('restores a retry state when the login page is left through browser Back', async () => {
+    const oidc = { isUserLoggedIn: false, login: vi.fn(() => new Promise(() => {})) };
+    authService.initOidc.mockResolvedValue(oidc);
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    void authStore.initialize();
+    await vi.waitFor(() => expect(oidc.login).toHaveBeenCalledOnce());
+    authStore.cancelOidcLogin();
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.error).toMatch(/sign-in did not complete/i);
+    void authStore.retryOidc();
+    await vi.waitFor(() => expect(oidc.login).toHaveBeenCalledTimes(2));
+    expect(authStore.status).toBe(AUTH_STATE.CONNECTING);
+  });
+
+  it('turns a token-read failure into a retryable auth failure', async () => {
+    const unsubscribeFromTokensChange = vi.fn();
+    const oidc = {
+      isUserLoggedIn: true,
+      getTokens: vi.fn().mockRejectedValue(new Error('Token unavailable')),
+      subscribeToTokensChange: vi.fn(() => ({ unsubscribeFromTokensChange })),
+    };
+    authService.getOidc.mockReturnValue(oidc);
+    const authStore = useAuthStore();
+
+    await expect(authStore.connectViaOidc()).resolves.toBe(false);
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.error).toBe('Token unavailable');
+    expect(unsubscribeFromTokensChange).toHaveBeenCalledOnce();
+  });
+
   it('forwards rotated OIDC access tokens to the active JMAP worker', async () => {
     let publishTokens: ((tokens: any) => void) | null = null;
     const unsubscribeFromTokensChange = vi.fn();

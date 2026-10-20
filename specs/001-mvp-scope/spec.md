@@ -46,8 +46,8 @@ capability.
 
 | ID / Status | Requirement |
 |:--|:--|
-| R-1.1 🟩 Done | The system shall let the user sign in with Keycloak OIDC. |
-| R-1.2 🟩 Done | The system shall let self-hosters sign in with username and password. |
+| R-1.1 🟩 Done | The system shall sign in with Keycloak OIDC automatically: unauthenticated startup shall go directly to the identity provider, and an authenticated session shall connect directly to mail. A transient connection status and a useful error with explicit retry shall replace a separate sign-in screen. A failed or abandoned authentication return shall not automatically repeat the redirect. |
+| R-1.2 🟩 Done | The system shall let self-hosters sign in with username and app password. Explicit app-password selection through the query parameter or persisted preference shall open the credential form directly and take precedence over automatic OIDC sign-in, including an existing OIDC session. |
 | R-1.3 🟩 Done | When an OIDC session is already valid on app load, the system shall reconnect without prompting the user. While connected, OIDC access-token rotations shall be propagated in memory to the active sync transport; bearer credentials shall not be persisted in application SQLite. |
 | R-1.4 🟩 Done | When the user signs out, the system shall stop sync and clear in-memory account state. |
 | R-1.5 🟧 Planned | When a session expires, the system shall surface a recoverable session-expired state and not silently use stale credentials. |
