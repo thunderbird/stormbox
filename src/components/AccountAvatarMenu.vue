@@ -4,8 +4,9 @@ import { onClickOutside } from '@vueuse/core';
 import { LogOut, Settings } from '@lucide/vue';
 
 import { useAuthStore } from '../stores/auth-store';
-import { ACCOUNTS_URL } from '../defines';
+import { ACCOUNTS_URL, SUPPORT_URL } from '../defines';
 import { senderAvatarStyle, senderInitials } from '../utils/sender-avatar';
+import supportIcon from '../assets/icons/tb-support.svg?raw';
 
 const authStore = useAuthStore();
 
@@ -45,6 +46,10 @@ function onLogout() {
       <a class="account-menu__item" :href="ACCOUNTS_URL" role="menuitem">
         <Settings :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span>Account Settings</span>
+      </a>
+      <a class="account-menu__item" :href="SUPPORT_URL" role="menuitem">
+        <span class="account-menu__support-icon" aria-hidden="true" v-html="supportIcon" />
+        <span>Support</span>
       </a>
       <button class="account-menu__item" type="button" role="menuitem" @click="onLogout">
         <LogOut :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -166,5 +171,16 @@ function onLogout() {
 .account-menu__item svg {
   flex-shrink: 0;
   color: var(--muted);
+}
+.account-menu__support-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+.account-menu__support-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
 }
 </style>
