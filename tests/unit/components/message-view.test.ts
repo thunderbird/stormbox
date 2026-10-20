@@ -167,10 +167,11 @@ describe('MessageView with a sparse messages array', () => {
       'Reply All (Shift+R)',
       'Forward (F)',
       'Tag (T)',
+      'Maximize message view',
     ]);
     expect(
       actions.map((button) => button.attributes('aria-label')),
-    ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward', 'Tag']);
+    ).toEqual(['Back', 'Archive', 'Mark as junk', 'Delete', 'Reply', 'Reply All', 'Forward', 'Tag', 'Maximize message view']);
 
     useSettingsStore().settings = { shortcutScheme: 'thunderbird' };
     await nextTick();
@@ -180,14 +181,15 @@ describe('MessageView with a sparse messages array', () => {
       'Forward (Ctrl+L)',
       // The Thunderbird scheme leaves T alone (MK-4.2).
       'Tag',
+      'Maximize message view',
     ]);
     expect(actions.every((button) => button.text() === '')).toBe(true);
     // The tag stack draws its own icons (MessageTagStack); the rest are icon buttons.
-    const iconActions = actions.slice(0, -1);
+    const iconActions = actions.filter((button) => button.attributes('aria-label') !== 'Tag');
     // Every action must render exactly one inline icon (Lucide svg or
     // tb-themed svg). We do not pin its dimensions.
     expect(
-      iconActions.every((button) => button.find('.message-view__toolbar-icon').exists()),
+      iconActions.every((button) => button.find('svg').exists()),
     ).toBe(true);
   });
 
@@ -909,7 +911,12 @@ describe('MessageView HTML body rendering', () => {
     wrapper.unmount();
   });
 
-  it('zooms a wide iframe document down to the visible message width instead of clipping it', async () => {
+  it.each([
+    { margin: 0, rootInset: 0, rootBorder: 0, scrollY: 0, expectedHeight: 400 },
+    { margin: 40, rootInset: 0, rootBorder: 0, scrollY: 0, expectedHeight: 440 },
+    { margin: 40, rootInset: 0, rootBorder: 0, scrollY: 100, expectedHeight: 440 },
+    { margin: 0, rootInset: 40, rootBorder: 2, scrollY: 0, expectedHeight: 442 },
+  ])('fits wide iframe content with $margin px body margins and $rootInset px root insets', async ({ margin, rootInset, rootBorder, scrollY, expectedHeight }) => {
     // Fit-to-width is applied via CSS `zoom` on the iframe's own
     // documentElement (the approach Gmail's mobile web viewer uses).
     // We deliberately avoid `transform: scale` on the host iframe
@@ -937,6 +944,11 @@ describe('MessageView HTML body rendering', () => {
     const iframe = wrapper.find('iframe.message-view__html-frame').element as HTMLIFrameElement;
     const doc = iframe.contentDocument;
     expect(doc).toBeTruthy();
+    doc!.body.style.margin = `${margin}px`;
+    Object.defineProperty(doc!.defaultView, 'scrollY', { configurable: true, value: scrollY });
+    doc!.documentElement.style.padding = `${rootInset}px 0`;
+    doc!.documentElement.style.border = `${rootBorder}px solid transparent`;
+    vi.spyOn(doc!.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, margin + rootInset + rootBorder - scrollY, 640, 800));
 
     Object.defineProperty(doc!.documentElement, 'scrollWidth', {
       configurable: true,
@@ -944,7 +956,7 @@ describe('MessageView HTML body rendering', () => {
     });
     Object.defineProperty(doc!.documentElement, 'scrollHeight', {
       configurable: true,
-      value: 800,
+      value: 8000,
     });
     Object.defineProperty(doc!.body, 'scrollWidth', {
       configurable: true,
@@ -960,7 +972,7 @@ describe('MessageView HTML body rendering', () => {
 
     expect(doc!.documentElement.style.zoom).toBe('0.5');
     const iframeStyle = iframe.getAttribute('style') ?? '';
-    expect(iframeStyle).toContain('height: 400px');
+    expect(iframeStyle).toContain(`height: ${expectedHeight}px`);
     expect(iframeStyle).not.toContain('transform');
     expect(iframeStyle).not.toMatch(/\bwidth:\s*640px/);
     expect(shell.getAttribute('style') ?? '').not.toMatch(/\bheight:/);
