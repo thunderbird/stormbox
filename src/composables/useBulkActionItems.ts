@@ -66,11 +66,6 @@ export interface UseBulkActionItemsInput {
   anyStarred: Ref<boolean>;
   /** Whether any selected row is a pending scheduled send. */
   anyScheduled: Ref<boolean>;
-  /**
-   * False in a tag view, whose rows live in many folders: archive, junk
-   * and delete are left out and only keyword actions remain.
-   */
-  fileActions?: Ref<boolean>;
   handlers: BulkActionHandlers;
 }
 
@@ -88,9 +83,8 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
   return computed<BulkActionItem[]>(() => {
     const role = input.folder.value?.role;
     const scheduled = input.anyScheduled.value;
-    const files = input.fileActions?.value ?? true;
     const items: BulkActionItem[] = [];
-    if (files && input.canWhitelist.value) {
+    if (input.canWhitelist.value) {
       items.push({
         id: 'whitelist',
         label: 'Not junk',
@@ -104,7 +98,7 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         run: input.handlers.whitelist,
       });
     }
-    if (files && !scheduled && role !== 'archive') {
+    if (!scheduled && role !== 'archive') {
       items.push({
         id: 'archive',
         label: 'Archive',
@@ -118,7 +112,7 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         run: input.handlers.archive,
       });
     }
-    if (files && !scheduled && role !== 'junk') {
+    if (!scheduled && role !== 'junk') {
       items.push({
         id: 'junk',
         label: 'Mark as junk',
@@ -144,7 +138,7 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
         overflowRank: null,
         run: input.handlers.cancelSend,
       });
-    } else if (files) {
+    } else {
       items.push({
         id: 'delete',
         label: 'Delete',

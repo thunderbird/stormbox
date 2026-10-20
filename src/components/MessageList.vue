@@ -398,10 +398,7 @@ function isDraggingMessage(messageId) {
 const listShowsRecipients = computed(() => folderShowsRecipients(folder.value));
 // Archiving from Archive is a no-op; the row overlay and the bulk toolbar leave it out.
 const isArchiveFolder = computed(() => folder.value?.role === 'archive');
-// A tag view (MK-3.4) lists one keyword across folders: rows are not
-// filed, moved or dragged from it; keyword actions still apply.
 const isTagView = computed(() => mailStore.isTagViewId(folderId.value));
-const fileActions = computed(() => !isTagView.value);
 /** Share of the account the indexer has covered; a tag view lists what is indexed. */
 const tagViewCoverage = computed(() => (
   isTagView.value ? mailStore.tagViewCoverage : null
@@ -752,7 +749,6 @@ const bulkActionItems = useBulkActionItems({
   whitelisting: bulkWhitelisting,
   anyStarred: anySelectedStarred,
   anyScheduled: anySelectedScheduled,
-  fileActions,
   handlers: {
     archive: bulkArchive,
     junk: bulkJunk,
@@ -1045,9 +1041,8 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             :shows-recipients="listShowsRecipients"
             :sort="listSort"
             :hover-actions="rowHoverActions(visibleMessages[v.index])"
-            :archive-action="fileActions && !isArchiveFolder"
-            :delete-action="fileActions"
-            :draggable="fileActions"
+            :archive-action="!isArchiveFolder"
+            :draggable="!isTagView"
             :tag-definitions="tagDefinitions"
             :tag-menu-open="tagMenuRowId === visibleMessages[v.index].id"
             @row-click="onRowClick(v.index, $event)"

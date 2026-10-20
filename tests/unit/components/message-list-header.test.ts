@@ -448,21 +448,20 @@ describe('bulk row overflow', () => {
 });
 
 describe('useBulkActionItems in a tag view', () => {
-  it('keeps only the keyword actions when fileActions is off', () => {
+  it('includes filing actions alongside keyword actions', () => {
     const noop = () => {};
     const items = useBulkActionItems({
       folder: ref(null),
-      canWhitelist: ref(true),
+      canWhitelist: ref(false),
       whitelisting: ref(false),
       anyStarred: ref(false),
       anyScheduled: ref(false),
-      fileActions: ref(false),
       handlers: {
         archive: noop, junk: noop, delete: noop, cancelSend: noop, toggleStar: noop, tag: noop,
         markRead: noop, markUnread: noop, whitelist: noop,
       },
     });
-    expect(items.value.map((item) => item.id)).toEqual(['toggle-star', 'tag', 'mark-read', 'mark-unread']);
+    expect(items.value.map((item) => item.id)).toEqual(['archive', 'junk', 'delete', 'toggle-star', 'tag', 'mark-read', 'mark-unread']);
   });
 });
 

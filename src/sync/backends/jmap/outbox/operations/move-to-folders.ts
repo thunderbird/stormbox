@@ -13,6 +13,7 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
   if (messageIds.length === 0) {
     return { ok: false, error: { type: 'unknownMessage' } };
   }
+  const replaceExisting = request.replaceExisting === true;
   const addLocalIds = (request.addFolderIds ?? []).map(Number).filter(Number.isFinite);
   const removeLocalIds = (request.removeFolderIds ?? []).map(Number).filter(Number.isFinite);
   const folderContexts = await resolveFolderContexts(
@@ -45,7 +46,13 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
     }
     const addRemote = addLocalIds.map((id) => folderContexts.get(id)!.remote_id);
     const removeRemote = removeLocalIds.map((id) => folderContexts.get(id)!.remote_id);
-    const requiresFullReplacement = hasNumericMailboxId([...addRemote, ...removeRemote]);
+    const reachedDestination = (email) => {
+      if (!email) return false;
+      if (!replaceExisting) return !removeRemote.some((id) => email.mailboxIds?.[id] === true);
+      const memberships = Object.keys(email.mailboxIds ?? {}).filter((id) => email.mailboxIds[id] === true);
+      return memberships.length === addRemote.length && addRemote.every((id) => memberships.includes(id));
+    };
+    const requiresFullReplacement = !replaceExisting && hasNumericMailboxId([...addRemote, ...removeRemote]);
     const patch: Record<string, boolean | null> = {};
     for (const id of addRemote) patch[`mailboxIds/${id}`] = true;
     for (const id of removeRemote) patch[`mailboxIds/${id}`] = null;
@@ -58,7 +65,11 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
         string,
         Record<string, boolean | null> | { mailboxIds: Record<string, true> }
       >;
-      if (requiresFullReplacement) {
+      if (replaceExisting) {
+        update = Object.fromEntries(chunk.map((message) => [message.remoteId, {
+          mailboxIds: Object.fromEntries(addRemote.map((id) => [id, true as const])),
+        }]));
+      } else if (requiresFullReplacement) {
         let getRaw;
         try {
           getRaw = await callJmap(transport, {
@@ -107,11 +118,9 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
               messageId: message.localId,
               remoteId: message.remoteId,
               removeRemoteFolderIds: removeRemote,
+              removeOtherMemberships: replaceExisting,
             });
-            const moved = reconciled.gone || (
-              reconciled.email
-              && !removeRemote.some((id) => reconciled.email.mailboxIds?.[id] === true)
-            );
+            const moved = reconciled.gone || reachedDestination(reconciled.email);
             if (moved) succeededIds.push(message.localId);
             else errors[String(message.localId)] = { type: 'notFound' };
             continue;
@@ -165,6 +174,7 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
           messageIds: confirmed.map((message) => message.localId),
           addFolderIds: addLocalIds,
           removeFolderIds: removeLocalIds,
+          replaceExisting,
         });
         succeededIds.push(...confirmed.map((message) => message.localId));
       }
@@ -184,11 +194,9 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
           messageId: message.localId,
           remoteId: message.remoteId,
           removeRemoteFolderIds: removeRemote,
+          removeOtherMemberships: replaceExisting,
         });
-        const moved = reconciled.gone || (
-          reconciled.email
-          && !removeRemote.some((id) => reconciled.email.mailboxIds?.[id] === true)
-        );
+        const moved = reconciled.gone || reachedDestination(reconciled.email);
         if (moved) succeededIds.push(message.localId);
         else errors[String(message.localId)] = { type: 'notUpdated', detail: failure };
       }

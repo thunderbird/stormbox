@@ -55,7 +55,7 @@ function collectMessageIds(row, request) {
  */
 async function reconcileMessageFromServer({
   transport, account, handlers, messageId, remoteId,
-  removeRemoteFolderIds = [], useWebSocket = false,
+  removeRemoteFolderIds = [], removeOtherMemberships = false, useWebSocket = false,
 }) {
   let payload;
   try {
@@ -91,13 +91,23 @@ async function reconcileMessageFromServer({
   }
 
   const email = list[0];
+  const removedFolders = new Set<string>(removeRemoteFolderIds);
+  if (removeOtherMemberships) {
+    const memberships = await handlers[DB_RPC.QUERY]({
+      sql: `SELECT f.remote_id FROM folder_messages fm
+              JOIN folders f ON f.id = fm.folder_id
+             WHERE fm.account_id = ? AND fm.message_id = ?`,
+      params: [account.id, messageId],
+    });
+    for (const folder of memberships) removedFolders.add(folder.remote_id);
+  }
   await persistEmails({ account, emails: [email], handlers });
 
   // Even though persistEmails fixed folder_messages, query_view_items
   // still references this remote_id in any view whose folder is no
   // longer in the email's mailboxIds. Drop those entries explicitly so
   // the user does not keep seeing the message in those folders.
-  for (const remoteFolderId of removeRemoteFolderIds) {
+  for (const remoteFolderId of removedFolders) {
     if (email.mailboxIds?.[remoteFolderId] === true) continue;
     const rows = await handlers[DB_RPC.QUERY]({
       sql: 'SELECT id FROM folders WHERE account_id = ? AND remote_id = ?',

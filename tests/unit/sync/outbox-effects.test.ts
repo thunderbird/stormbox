@@ -211,6 +211,24 @@ describe('OUTBOX_APPLY_MOVE_BATCH', () => {
     })).toMatchObject([{ remote_id: 'e-1', view_position: 0 }]);
   });
 
+  it('replaces all cached memberships and preserves an existing destination membership without double counting', async () => {
+    await seedTrashView([]);
+    await handlers[DB_RPC.FOLDER_MEMBERSHIP_REPLACE_MANY]({
+      accountId: account.id,
+      replacements: [{ messageId, memberships: [{ folderId: inbox.id }, { folderId: trash.id }] }],
+    });
+    await engine.run('UPDATE folders SET total_emails = 1, unread_emails = 1 WHERE id IN (?, ?)', [inbox.id, trash.id]);
+    await handlers[DB_RPC.OUTBOX_APPLY_MOVE_BATCH]({
+      accountId: account.id, messageIds: [messageId], addFolderIds: [trash.id], replaceExisting: true,
+    });
+    expect(await loadFolderMemberships(messageId)).toEqual([{ folder_id: trash.id }]);
+    expect(await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [inbox.id]))
+      .toEqual({ total_emails: 0, unread_emails: 0 });
+    expect(await engine.get('SELECT total_emails, unread_emails FROM folders WHERE id = ?', [trash.id]))
+      .toEqual({ total_emails: 1, unread_emails: 1 });
+    expect(await loadViewItems((await loadInboxView()).id)).toEqual([]);
+  });
+
   it('places a moved row at its sorted position inside the destination view\'s cached prefix', async () => {
     // Trash holds a newer and an older message than the one moving in.
     await seedTrashView([['t-new', 2], ['t-old', -2]]);
