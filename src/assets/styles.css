@@ -108,6 +108,8 @@
      jumping to the over-bright #263054 tried earlier. */
   --rowHover: #1e2438;
   --rowActive: #222c50;
+  --folder-icon-color: #fee78a;
+  --folder-icon-fill: color-mix(in srgb, #ffd166 20%, transparent);
   /* Warning banner (default = dark theme): light amber on a translucent
      amber wash; ~13:1 over the dark page. WCAG AA. */
   --warn-bg: rgba(255, 193, 7, 0.1);
@@ -144,6 +146,8 @@ html.dark,
   --accent: #4f8cff;
   --rowHover: #1e2438;
   --rowActive: #222c50;
+  --folder-icon-color: #fee78a;
+  --folder-icon-fill: color-mix(in srgb, #ffd166 20%, transparent);
   --warn-bg: rgba(255, 193, 7, 0.1);
   --warn-fg: #ffd166;
   --warn-border: rgba(255, 193, 7, 0.38);
@@ -171,6 +175,8 @@ html.light,
   --accent: #1373d9;
   --rowHover: #eef2ff; /* soft accent-tint for hover */
   --rowActive: #e0e9ff; /* slightly stronger for selected */
+  --folder-icon-color: #947400;
+  --folder-icon-fill: #ffeb99;
   /* Amber-on-pale-yellow is unreadable in light mode (issue #46); deep amber
      text on a solid pale-amber field. #664700 on #fdf4d0 ≈ 7.7:1. WCAG AAA. */
   --warn-bg: #fdf4d0;
@@ -198,6 +204,8 @@ html.light,
     --accent: #1373d9;
     --rowHover: #eef2ff;
     --rowActive: #e0e9ff;
+    --folder-icon-color: #947400;
+    --folder-icon-fill: #ffeb99;
     --warn-bg: #fdf4d0;
     --warn-fg: #664700;
     --warn-border: #e7c34d;
