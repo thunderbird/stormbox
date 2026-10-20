@@ -30,7 +30,7 @@ capability.
 | # | Capability | 🟩 Done | 🟨 Partial | 🟧 Planned | Outstanding work |
 |---|---|---|---|---|---|
 | 1 | Sign in and session lifecycle | 4 | — | 1 | Session-expired UX |
-| 2 | Read mail | 10 | 2 | 1 | Conversation UI, full mail search, browser navigation |
+| 2 | Read mail | 11 | 2 | 1 | Conversation UI, full mail search, browser navigation |
 | 3 | Triage | 15 | 1 | 1 | Bulk-operation dispatch contract; undo/redo queue |
 | 4 | Compose and send | 10 | — | — | — |
 | 5 | Contacts | 9 | 1 | — | Accepted unknown-address-book sync residue |
@@ -38,7 +38,7 @@ capability.
 | 7 | Account storage usage | 2 | — | — | — |
 | 8 | Application chrome and cross-product navigation | 8 | — | — | — |
 | 9 | Browser notifications | — | — | 4 | Whole section is a draft |
-| 10 | Responsive mail layout contracts | 12 | — | — | — |
+| 10 | Responsive mail layout contracts | 13 | — | — | — |
 
 ## Capabilities
 
@@ -181,6 +181,7 @@ capability.
 | R-10.10 🟩 Done | In single-column mode, the spaces navigation shall move from the left rail to a bottom bar. The sidebar toggle shall remain anchored at the bottom-left in both spaces and shall open the active space's sidebar as an overlay, while the Mail and Contacts actions shall be centered in the bottom bar. |
 | R-10.11 🟩 Done | The message-view HTML iframe shall fit each email body to the available reading-column width by setting CSS `zoom` on the iframe documentElement. The fit ratio shall be computed as the reading-column width divided by the larger of the email body's measured content width and a 400 px minimum layout width; when that ratio is at least 1 the iframe shall render at zoom 1. Width measurement shall use the iframe document's current viewport so reflowable content does not trigger gratuitous zoom-down, and the iframe element's rendered height shall scale by the same ratio so HTML emails never force horizontal overflow of the reading column. The iframe document itself shall never own a scrollbar (horizontal or vertical); the message view body is the sole scroll container for the open message. |
 | R-10.12 🟩 Done | In the single-mail-column layout (R-10.3), the message-view header toolbar, metadata block, plain-text body, and HTML iframe gutter shall use a minimal 5 px outer inset rather than the wider desktop insets so HTML email content has the maximum readable width. In the same layout, the per-row selection checkbox in the message list shall remain visible without requiring hover, since touch users have no hover affordance to surface it. |
+| R-10.13 🟩 Done | In the single-mail-column layout (R-10.3), the message metadata shall initially show only sender and subject. A labeled, keyboard-operable Show details/Hide details disclosure shall reveal the full addresses, recipients, date, and tags without replacing the body or iframe. Long values shall wrap as in R-10.5. Sender and subject shall use the available header space; metadata shall scroll only when needed to keep the disclosure and body reachable on short screens. Selecting another message shall reset the compact header to its collapsed state. At wider viewport sizes the complete metadata shall remain visible. |
 
 ## Deferred to Future
 

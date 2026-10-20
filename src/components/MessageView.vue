@@ -5,12 +5,14 @@ import {
   onMounted,
   onUnmounted,
   ref,
+  useId,
   watch,
 } from 'vue';
 import DOMPurify from 'dompurify';
-import { useElementSize } from '@vueuse/core';
+import { useElementSize, useMediaQuery } from '@vueuse/core';
 import {
   ArrowLeft,
+  ChevronDown,
   Clock,
   Moon,
   Sun,
@@ -40,6 +42,7 @@ import { adaptHtmlForDarkMode } from '../utils/dark-email';
 import { formatAddressList } from '../utils/address-parse';
 import { titleWithShortcut, type ShortcutAction } from '../constants/shortcuts';
 import { plaintextToHtml } from '../utils/plaintext-html';
+import { shortFrom } from '../utils/sender-avatar';
 import { isScheduledMessage } from '../utils/scheduled-message';
 import archiveIcon from '../assets/icons/tb-folder-archive.svg?raw';
 import junkIcon from '../assets/icons/tb-folder-spam.svg?raw';
@@ -66,6 +69,12 @@ const props = withDefaults(defineProps<{ maximized?: boolean }>(), { maximized: 
 const emit = defineEmits<{ toggleMaximized: [] }>();
 const messageViewEl = ref<HTMLElement | null>(null);
 const { height: messageViewHeight } = useElementSize(messageViewEl, undefined, { box: 'border-box' });
+const toolbarEl = ref<HTMLElement | null>(null);
+const scheduledBannerEl = ref<HTMLElement | null>(null);
+const attachmentBarEl = ref<HTMLElement | null>(null);
+const { height: toolbarHeight } = useElementSize(toolbarEl, undefined, { box: 'border-box' });
+const { height: scheduledBannerHeight } = useElementSize(scheduledBannerEl, undefined, { box: 'border-box' });
+const { height: attachmentBarHeight } = useElementSize(attachmentBarEl, undefined, { box: 'border-box' });
 const bodyScrollEl = ref<HTMLElement | null>(null);
 watch(() => props.maximized, async (maximized) => {
   if (!maximized) return;
@@ -174,6 +183,30 @@ const textHtml = computed(() => {
 // opened in, so a message read from any list column shows here.
 const message = computed(() => mailStore.openMessage ?? null);
 const selectedMessageId = computed(() => mailStore.selectedMessageId);
+const compactHeader = useMediaQuery('(max-width: 639px)');
+const headerExpanded = ref(false);
+const metadataExpanded = computed(() => !compactHeader.value || headerExpanded.value);
+const metadataId = useId();
+const metadataEl = ref<HTMLDListElement | null>(null);
+watch(compactHeader, (compact) => {
+  if (compact) return;
+  const active = document.activeElement;
+  if (active === metadataEl.value || active === messageViewEl.value?.querySelector('.message-view__details-toggle')) {
+    bodyScrollEl.value?.focus({ preventScroll: true });
+  }
+});
+const senderText = computed(() => metadataExpanded.value
+  ? message.value?.from_text || '(no sender)'
+  : shortFrom(message.value?.from_text));
+const headerDetailsLabel = computed(() => headerExpanded.value ? 'Hide message details' : 'Show message details');
+watch(selectedMessageId, () => {
+  headerExpanded.value = false;
+  if (metadataEl.value) metadataEl.value.scrollTop = 0;
+});
+function toggleHeaderDetails() {
+  headerExpanded.value = !headerExpanded.value;
+  if (metadataEl.value) metadataEl.value.scrollTop = 0;
+}
 /** Folder the open message was opened from; folder-specific actions act on it. */
 const messageSource = computed(() => ({ sourceFolderId: mailStore.openMessageFolderId }));
 const messageAccountId = computed(() => message.value?.account_id ?? null);
@@ -246,6 +279,9 @@ const {
   resolvedCidPartIds,
   cidResolutionSettled,
 });
+watch([attachmentRows, messageViewEl], () => {
+  attachmentBarEl.value = messageViewEl.value?.querySelector<HTMLElement>('.message-attachment-bar') ?? null;
+}, { flush: 'post' });
 
 /**
  * The message's Cc and Bcc recipients, so the audience is visible before
@@ -772,7 +808,12 @@ function closeMessageView() {
   <section
     ref="messageViewEl"
     class="message-view"
-    :style="{ '--message-view-height': messageViewHeight > 0 ? `${messageViewHeight}px` : undefined }"
+    :style="{
+      '--message-view-height': messageViewHeight > 0 ? `${messageViewHeight}px` : undefined,
+      '--message-toolbar-height': `${toolbarHeight}px`,
+      '--message-banner-height': `${scheduledBannerHeight}px`,
+      '--message-attachment-bar-height': `${attachmentBarHeight}px`,
+    }"
     aria-label="Message detail"
     tabindex="-1"
     @keydown="onReadingKeyDown"
@@ -781,7 +822,7 @@ function closeMessageView() {
       <p>Select a message to read it.</p>
     </div>
     <article v-else class="message-view__article">
-      <header class="message-view__header">
+      <header ref="toolbarEl" class="message-view__header">
         <AppIconButton class="message-view__action message-view__action--back" @click="closeMessageView" title="Back" aria-label="Back">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </AppIconButton>
@@ -867,7 +908,7 @@ function closeMessageView() {
         />
         </div>
       </header>
-      <div v-if="hasScheduledBanner" class="message-view__scheduled" role="status">
+      <div v-if="hasScheduledBanner" ref="scheduledBannerEl" class="message-view__scheduled" role="status">
         <Clock :size="16" :stroke-width="1.75" aria-hidden="true" />
         <span class="message-view__scheduled-text">{{ scheduledBannerText }}</span>
         <button
@@ -880,21 +921,38 @@ function closeMessageView() {
           {{ cancelingScheduled ? 'Canceling…' : 'Cancel send' }}
         </button>
       </div>
-      <section class="message-view__details" aria-label="Message header">
-        <dl class="message-view__metadata">
+      <section class="message-view__details" :class="{ 'message-view__details--expanded': headerExpanded }" aria-label="Message header">
+        <AppIconButton
+          v-show="compactHeader"
+          class="message-view__details-toggle"
+          :aria-expanded="headerExpanded"
+          :aria-controls="metadataId"
+          :aria-label="headerDetailsLabel"
+          :title="headerDetailsLabel"
+          @click="toggleHeaderDetails"
+        >
+          <ChevronDown :size="18" :stroke-width="1.75" aria-hidden="true" />
+        </AppIconButton>
+        <dl
+          :id="metadataId"
+          ref="metadataEl"
+          class="message-view__metadata"
+          :tabindex="compactHeader ? 0 : undefined"
+          :aria-label="compactHeader ? 'Message details' : undefined"
+        >
           <div class="message-view__metadata-row">
             <dt>From</dt>
-            <dd>{{ message.from_text || '(no sender)' }}</dd>
+            <dd>{{ senderText }}</dd>
           </div>
-          <div v-if="message.to_text" class="message-view__metadata-row">
+          <div v-if="message.to_text" v-show="metadataExpanded" class="message-view__metadata-row">
             <dt>To</dt>
             <dd>{{ message.to_text }}</dd>
           </div>
-          <div v-if="ccText" class="message-view__metadata-row">
+          <div v-if="ccText" v-show="metadataExpanded" class="message-view__metadata-row">
             <dt>Cc</dt>
             <dd>{{ ccText }}</dd>
           </div>
-          <div v-if="bccText" class="message-view__metadata-row">
+          <div v-if="bccText" v-show="metadataExpanded" class="message-view__metadata-row">
             <dt>Bcc</dt>
             <dd>{{ bccText }}</dd>
           </div>
@@ -902,7 +960,7 @@ function closeMessageView() {
             <dt>Subject</dt>
             <dd><h2>{{ message.subject || '(no subject)' }}</h2></dd>
           </div>
-          <div class="message-view__metadata-row">
+          <div v-show="metadataExpanded" class="message-view__metadata-row">
             <dt>{{ hasScheduledBanner ? 'Send at' : 'Date' }}</dt>
             <dd class="message-view__date">
               {{ fmtDate(hasScheduledBanner ? (message.sent_at ?? message.received_at) : message.received_at) }}
@@ -910,6 +968,7 @@ function closeMessageView() {
           </div>
           <div
             v-if="messageTags.length > 0"
+            v-show="metadataExpanded"
             class="message-view__metadata-row message-view__tags-row"
           >
             <dt>Tags</dt>
@@ -1027,6 +1086,14 @@ function closeMessageView() {
   padding: 12px var(--message-content-trailing-inset) 12px var(--message-content-inset);
   border-bottom: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel) 92%, var(--panel2));
+}
+.message-view__details-toggle {
+  position: absolute;
+  top: 4px;
+  right: var(--message-content-trailing-inset);
+}
+.message-view__details-toggle[aria-expanded="true"] :deep(svg) {
+  transform: rotate(180deg);
 }
 /* Send Later status strip, rendered above the normal metadata header. */
 .message-view__scheduled {
@@ -1277,6 +1344,39 @@ function closeMessageView() {
     --message-content-trailing-inset: 5px;
     --message-html-edge-inset: 5px;
     --message-toolbar-edge-inset: 5px;
+    --message-body-min-height: min(48px, calc(var(--message-view-height, var(--app-viewport-height, 100vh)) * 0.15));
+  }
+  .message-view__details {
+    --message-details-height: calc(
+      var(--message-view-height, var(--app-viewport-height, 100vh))
+      - var(--message-toolbar-height, 0px) - var(--message-banner-height, 0px)
+      - var(--message-attachment-bar-height, 0px) - var(--message-body-min-height)
+    );
+    position: relative;
+    display: flex;
+    flex: 0 0 auto;
+    min-height: 42px;
+    max-height: max(42px, var(--message-details-height));
+    padding-block: 6px;
+    padding-right: calc(var(--message-content-trailing-inset) + 38px);
+  }
+  .message-view__details--expanded {
+    max-height: max(42px, min(
+      calc(var(--message-view-height, var(--app-viewport-height, 100vh)) * 0.25),
+      var(--message-details-height)
+    ));
+  }
+  .message-view__metadata {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .message-view__metadata:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .message-view__body {
+    min-height: var(--message-body-min-height);
   }
 }
 </style>
