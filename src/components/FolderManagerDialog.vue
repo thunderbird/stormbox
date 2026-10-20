@@ -1790,10 +1790,10 @@ onBeforeUnmount(() => {
 /* Starred state: filled gold star, matching the 'important' role tone.
    Unstarred stays the muted outline like its sibling icon buttons. */
 .folder-subs__star.is-starred {
-  color: #f9ab00;
+  color: var(--folder-icon-color);
 }
 .folder-subs__star.is-starred svg {
-  fill: currentColor;
+  fill: #facc15;
 }
 /* services-ui's stock switch is 40x24px — settings-page scale. Shrink
    it to fit these dense rows. The checked translate must match the new

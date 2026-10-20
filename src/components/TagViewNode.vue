@@ -112,8 +112,8 @@ const style = computed(() => (
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 15%, transparent);
 }
 .tag-view-node__star {
-  color: #f9ab00;
-  fill: currentColor;
+  color: var(--folder-icon-color);
+  fill: #facc15;
 }
 .tag-view-node__name {
   flex: 1;

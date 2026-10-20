@@ -244,7 +244,7 @@ const rowLabel = computed(() => [
               :aria-pressed="isFlagged"
               @click="emit('star')"
             >
-              <Star :size="17" :stroke-width="1.75" :fill="isFlagged ? 'currentColor' : 'none'" />
+              <Star :size="17" :stroke-width="1.75" :fill="isFlagged ? '#facc15' : 'none'" />
             </button>
             <button
               v-if="archiveAction"
@@ -459,7 +459,7 @@ const rowLabel = computed(() => [
 }
 .msg-list__action--starred,
 .msg-list__action--starred:hover {
-  color: var(--warn-fg);
+  color: var(--folder-icon-color);
 }
 .msg-list__action--danger:hover:where(:not(:disabled)) {
   background: var(--error-bg);
@@ -604,7 +604,10 @@ const rowLabel = computed(() => [
   min-width: 0;
 }
 
-.msg-list__star { color: var(--warn-fg); }
+.msg-list__star {
+  color: var(--folder-icon-color);
+  fill: #facc15;
+}
 .msg-list__preview {
   margin: 4px 0 0;
   font-size: 12px;
