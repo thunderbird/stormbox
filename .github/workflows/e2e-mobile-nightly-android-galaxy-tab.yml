@@ -1,0 +1,33 @@
+name: e2e-mobile-nightly-android-galaxy
+
+concurrency:
+  group: e2e-mobile-nightly-android-galaxy
+  cancel-in-progress: true
+
+on:
+  schedule:
+    # run every day at 6am UTC
+    - cron:  '0 6 * * *'
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read    # This is required for actions/checkout
+
+jobs:
+  mobile-nightly-android:
+    uses: ./.github/workflows/e2e-nightly-common.yml
+    with:
+      job_name: prod-mobile-nightly-android-galaxy
+      browserstack_build_name: 'Nightly Webmail E2E Tests (Android Chrome): BUILD_INFO'
+      test_step_name: Prod E2E Tests on Android Chrome
+      npm_script: --project=android-galaxy-tab
+    secrets:
+      E2E_ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
+      E2E_ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
+      E2E_PRIMARY_THUNDERMAIL_EMAIL: ${{ secrets.E2E_PRIMARY_THUNDERMAIL_EMAIL }}
+      E2E_THUNDERMAIL_JMAP_URL: ${{ secrets.E2E_THUNDERMAIL_JMAP_URL }}
+      E2E_THUNDERMAIL_JMAP_USERNAME: ${{ secrets.E2E_THUNDERMAIL_JMAP_USERNAME }}
+      E2E_THUNDERMAIL_JMAP_APP_PASSWORD: ${{ secrets.E2E_THUNDERMAIL_JMAP_APP_PASSWORD }}
+      BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+      BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
