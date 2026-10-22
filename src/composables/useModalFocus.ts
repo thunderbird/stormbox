@@ -8,6 +8,12 @@ import {
   type WatchStopHandle,
 } from 'vue';
 
+const activeModals = new Set<object>();
+
+export function hasActiveModal(): boolean {
+  return activeModals.size > 0;
+}
+
 interface UseModalFocusOptions {
   active?: Readonly<Ref<boolean>>;
   containTab?: boolean;
@@ -37,6 +43,7 @@ export function useModalFocus(
   surface: Readonly<Ref<HTMLElement | null>>,
   options: UseModalFocusOptions = {},
 ): void {
+  const modalToken = {};
   let returnFocus: HTMLElement | null = null;
   let initialReturnFocus: HTMLElement | null = null;
   let listeningSurface: HTMLElement | null = null;
@@ -96,6 +103,7 @@ export function useModalFocus(
     generation += 1;
     trap?.deactivate();
     trap = null;
+    activeModals.delete(modalToken);
     if (activated) restore();
     activated = false;
   }
@@ -115,6 +123,7 @@ export function useModalFocus(
           return;
         }
         activated = true;
+        if (options.containTab) activeModals.add(modalToken);
         returnFocus = document.activeElement instanceof HTMLElement
           ? document.activeElement : null;
         if (returnFocus !== document.body) initialReturnFocus ??= returnFocus;

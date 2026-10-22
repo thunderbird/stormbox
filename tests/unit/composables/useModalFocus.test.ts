@@ -15,7 +15,7 @@ import {
   vi,
 } from 'vitest';
 
-import { useModalFocus } from '../../../src/composables/useModalFocus';
+import { hasActiveModal, useModalFocus } from '../../../src/composables/useModalFocus';
 
 enableAutoUnmount(afterEach);
 afterEach(() => { document.body.innerHTML = ''; });
@@ -102,12 +102,14 @@ describe('useModalFocus', () => {
     expect(opener.hasAttribute('inert')).toBe(true);
     second.unmount();
     await nextTick();
+    expect(hasActiveModal()).toBe(true);
     expect(first.element.closest('[inert]')).toBeNull();
     expect(document.activeElement).toBe(firstButton);
     expect(opener.hasAttribute('inert')).toBe(true);
     first.unmount();
     await nextTick();
     expect(opener.hasAttribute('inert')).toBe(false);
+    expect(hasActiveModal()).toBe(false);
     expect(document.activeElement).toBe(opener);
   });
 

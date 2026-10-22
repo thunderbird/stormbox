@@ -14,6 +14,8 @@ import {
   type Ref,
 } from 'vue';
 
+import { hasActiveModal } from './useModalFocus';
+
 import {
   resolveShortcut,
   type ShortcutAction,
@@ -207,7 +209,7 @@ export function useThunderbirdShortcuts({
       return;
     }
 
-    if (document.activeElement?.closest('[aria-modal="true"]')) return;
+    if (hasActiveModal() || document.activeElement?.closest('[aria-modal="true"]')) return;
 
     // Row controls own activation and focus movement before document shortcuts.
     if (event.target instanceof Element
