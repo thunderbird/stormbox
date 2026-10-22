@@ -179,7 +179,7 @@ const rowLabel = computed(() => [
       </div>
       <div
         class="msg-list__avatar"
-        :style="avatar.style"
+        :style="avatar.imageUrl ? undefined : avatar.style"
         aria-hidden="true"
       >
         <img
@@ -192,7 +192,7 @@ const rowLabel = computed(() => [
           referrerpolicy="no-referrer"
           @error="onAvatarError(correspondent)"
         />
-        <span>{{ avatar.initials }}</span>
+        <span v-else>{{ avatar.initials }}</span>
       </div>
       <div class="msg-list__content">
         <div class="msg-list__summary">
