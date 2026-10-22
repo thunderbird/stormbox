@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils';
 import { nextTick } from 'vue';
 
 import RichTextEditor from '../../../src/components/RichTextEditor.vue';
+import { editSafeDraftHtml } from '../../../src/utils/compose-html';
 import { dispatchScriptedPaste } from '../../../src/utils/scripted-paste';
 
 interface EditorContent {
@@ -106,6 +107,17 @@ function latestOriginStates(wrapper: ReturnType<typeof mount>): OriginState[] {
   return (updates.at(-1)?.[0] as OriginState[] | undefined) ?? [];
 }
 
+function expectCompactBlocks(root: ParentNode, count: number) {
+  const blocks = root.querySelectorAll<HTMLElement>('ul,ol,blockquote');
+  expect(blocks).toHaveLength(count);
+  for (const block of blocks) {
+    expect(block.style.marginTop).toBe('0px');
+    expect(block.style.marginBottom).toBe('0px');
+    expect(block.style.paddingTop).toBe('0px');
+    expect(block.style.paddingBottom).toBe('0px');
+  }
+}
+
 async function pasteImageIntoEditor(
   editor: HTMLElement,
   wrapper: ReturnType<typeof mount>,
@@ -165,6 +177,53 @@ afterEach(() => {
 });
 
 describe('RichTextEditor content contract', () => {
+  it.each([
+    ['Bulleted list', 'ul'],
+    ['Numbered list', 'ol'],
+    ['Quote', 'blockquote'],
+  ])('keeps %s compact in the editor and serialized HTML', async (label, tag) => {
+    const wrapper = await mountEditor('<div>hello world</div>');
+    const editor = wrapper.get('.editor').element as HTMLElement;
+    selectEditorText(editor);
+    const button = wrapper.get(`button[title="${label}"]`);
+    await button.trigger('mousedown');
+    await button.trigger('click');
+    expect(editor.querySelector(tag)).not.toBeNull();
+    expectCompactBlocks(editor, 1);
+
+    const content = (wrapper.vm as any).getContent() as EditorContent;
+    const output = document.createElement('template');
+    output.innerHTML = editSafeDraftHtml(content.html);
+    expectCompactBlocks(output.content, 1);
+    expect(content.text).toBe('hello world');
+  });
+
+  it('keeps nested lists and quotes compact across draft reopening', async () => {
+    const wrapper = await mountEditor(
+      '<div>Before</div><ul><li>One<ol><li>Nested</li></ol></li></ul>'
+      + '<blockquote><div>Quoted</div><ul><li>Quoted item</li></ul></blockquote><div>After</div>',
+    );
+    expectCompactBlocks(wrapper.get('.editor').element, 4);
+    const saved = (wrapper.vm as any).getContent() as EditorContent;
+    (wrapper.vm as any).setContent(editSafeDraftHtml(saved.html));
+    expectCompactBlocks(wrapper.get('.editor').element, 4);
+    expect((wrapper.vm as any).getContent().text).toBe(saved.text);
+  });
+
+  it('preserves explicit spacing in quoted HTML without marking the quote as edited', async () => {
+    const wrapper = await mountEditor(
+      '<div data-stormbox-origin="quoted" data-stormbox-quoted-content>'
+      + '<blockquote style="margin-top: 12px; padding-bottom: 8px"><div>Quoted</div></blockquote></div>',
+    );
+    const quote = wrapper.get('blockquote').element as HTMLElement;
+    expect(quote.style.marginTop).toBe('12px');
+    expect(quote.style.paddingBottom).toBe('8px');
+    expect(quote.style.marginBottom).toBe('0px');
+    expect(quote.style.paddingTop).toBe('0px');
+    expect((wrapper.vm as any).getContent().html).not.toContain('data-stormbox-origin-touched');
+    expect(wrapper.emitted('update')).toBeUndefined();
+  });
+
   it('sanitizes initial HTML without emitting an update', async () => {
     const wrapper = await mountEditor(
       '<p onclick="window.bad = true">Safe<script>window.bad = true</script></p>',

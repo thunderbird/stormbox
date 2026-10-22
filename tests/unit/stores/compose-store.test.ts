@@ -95,6 +95,29 @@ beforeEach(() => {
 });
 
 describe('compose-store reply and forward prefills', () => {
+  it.each([
+    COMPOSE_OPEN_ORIGIN.NEW,
+    COMPOSE_OPEN_ORIGIN.SERVER_DRAFT,
+    COMPOSE_OPEN_ORIGIN.FORWARD,
+    COMPOSE_OPEN_ORIGIN.REPLY,
+  ])('keeps untouched %s body spacing consistent with the editor', (origin) => {
+    const store = useComposeStore();
+    store.open({ htmlBody: '<ul><li>First</li></ul><blockquote><div>Quoted</div></blockquote>' }, { origin });
+    for (const html of [store.activeSession!.draft.htmlBody, store.activeSession!.editorHtmlBody]) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      const blocks = template.content.querySelectorAll<HTMLElement>('ul,blockquote');
+      expect(blocks).toHaveLength(2);
+      for (const block of blocks) {
+        expect(block.style.marginTop).toBe('0px');
+        expect(block.style.marginBottom).toBe('0px');
+        expect(block.style.paddingTop).toBe('0px');
+        expect(block.style.paddingBottom).toBe('0px');
+      }
+    }
+    expect(store.isSessionDirty()).toBe(false);
+  });
+
   it('prepares a reply addressed to the original sender with quoted content', async () => {
     const { composeStore } = await storeWithParentAddresses();
 
@@ -108,7 +131,7 @@ describe('compose-store reply and forward prefills', () => {
     expect(composeStore.draft.cc).toEqual([]);
     expect(composeStore.draft.subject).toBe('Re: Project update');
     expect(composeStore.draft.htmlBody).toContain('From: Alice &lt;alice@example.com&gt;');
-    expect(composeStore.draft.htmlBody).toContain('<blockquote type="cite"><p>Hello from Alice</p></blockquote>');
+    expect(composeStore.draft.htmlBody).toMatch(/<blockquote type="cite"[^>]*><p>Hello from Alice<\/p><\/blockquote>/);
     expect(composeStore.draft.textBody).toContain('> Hello from Alice');
   });
 
@@ -309,7 +332,7 @@ describe('compose-store reply and forward prefills', () => {
     expect(composeStore.draft.cc).toEqual([]);
     expect(composeStore.draft.inReplyTo).toEqual([]);
     expect(composeStore.draft.subject).toBe('Fwd: Project update');
-    expect(composeStore.draft.htmlBody).toContain('<blockquote type="cite"><p>Forward this</p></blockquote>');
+    expect(composeStore.draft.htmlBody).toMatch(/<blockquote type="cite"[^>]*><p>Forward this<\/p><\/blockquote>/);
     expect(composeStore.draft.textBody).toContain('> Forward this');
   });
 });

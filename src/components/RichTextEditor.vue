@@ -31,6 +31,7 @@ import {
   type TrackedOriginState,
 } from '../utils/compose-provenance';
 import {
+  COMPACT_BLOCK_STYLE,
   richTextPlainText,
   sanitizeRichTextToDOMFragment,
 } from '../utils/rich-text';
@@ -67,6 +68,10 @@ const PICKABLE_IMAGE_TYPES = new Set([
   'image/webp',
 ]);
 const PICKABLE_IMAGE_ACCEPT = [...PICKABLE_IMAGE_TYPES].join(',');
+
+function sanitizeEditorHtml(html: string): DocumentFragment {
+  return sanitizeRichTextToDOMFragment(html, { compactBlocks: true });
+}
 
 const props = withDefaults(
   defineProps<{
@@ -1105,7 +1110,12 @@ function initEditor(html: string) {
   }
   destroyEditor();
   squire = new Squire(editorEl.value, {
-    sanitizeToDOMFragment: sanitizeRichTextToDOMFragment,
+    sanitizeToDOMFragment: sanitizeEditorHtml,
+    tagAttributes: {
+      ul: { style: COMPACT_BLOCK_STYLE },
+      ol: { style: COMPACT_BLOCK_STYLE },
+      blockquote: { style: COMPACT_BLOCK_STYLE },
+    },
   });
   squire.setHTML(html || '<p><br></p>');
   resetTrackedOriginBaselines();
@@ -1158,7 +1168,7 @@ function updateTrackedContent(
   const currentOrigin = trackedOriginElements().find(
     (element) => element.getAttribute(TRACKED_ORIGIN_ATTRIBUTE) === originId,
   );
-  const incoming = sanitizeRichTextToDOMFragment(html);
+  const incoming = sanitizeEditorHtml(html);
   const nextOrigin = Array.from(
     incoming.querySelectorAll<HTMLElement>(`[${TRACKED_ORIGIN_ATTRIBUTE}]`),
   ).find((element) => element.getAttribute(TRACKED_ORIGIN_ATTRIBUTE) === originId);
@@ -2053,8 +2063,8 @@ defineExpose({
   height: auto;
 }
 .editor :deep(blockquote) {
-  margin: 1ex 0;
-  padding: 0.4ex 1ex;
+  margin: 0;
+  padding: 0 1ex;
   border-inline-start: 2px solid rgb(114, 159, 207);
 }
 .editor :deep([data-stormbox-quoted-content]) {

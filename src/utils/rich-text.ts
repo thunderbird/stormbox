@@ -5,6 +5,12 @@ export interface RichTextContent {
   text: string;
 }
 
+export const COMPACT_BLOCK_STYLE = 'margin-top: 0; margin-bottom: 0; padding-top: 0; padding-bottom: 0;';
+
+interface RichTextSanitizeOptions {
+  compactBlocks?: boolean;
+}
+
 const SANITIZE_OPTIONS = {
   ADD_DATA_URI_TAGS: ['img'] as string[],
   ALLOW_UNKNOWN_PROTOCOLS: true,
@@ -14,16 +20,26 @@ const SANITIZE_OPTIONS = {
   WHOLE_DOCUMENT: false,
 } as const;
 
-export function sanitizeRichTextToDOMFragment(html: string): DocumentFragment {
+export function sanitizeRichTextToDOMFragment(
+  html: string,
+  { compactBlocks = false }: RichTextSanitizeOptions = {},
+): DocumentFragment {
   const fragment = DOMPurify.sanitize(html, SANITIZE_OPTIONS);
-  return fragment
+  const imported = fragment
     ? document.importNode(fragment, true) as DocumentFragment
     : document.createDocumentFragment();
+  if (compactBlocks) {
+    for (const block of imported.querySelectorAll<HTMLElement>('ul,ol,blockquote')) {
+      // Inline defaults travel with drafts and sent HTML; authored styles take precedence.
+      block.style.cssText = COMPACT_BLOCK_STYLE + block.style.cssText;
+    }
+  }
+  return imported;
 }
 
-export function sanitizeRichTextHtml(html: string): string {
+export function sanitizeRichTextHtml(html: string, options?: RichTextSanitizeOptions): string {
   const container = document.createElement('div');
-  container.append(sanitizeRichTextToDOMFragment(html));
+  container.append(sanitizeRichTextToDOMFragment(html, options));
   return container.innerHTML;
 }
 

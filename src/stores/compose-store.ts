@@ -388,7 +388,7 @@ function identitySignature(identity: IdentityRow | null): IdentitySignatureDefau
   const text = identity.text_signature ?? '';
   const storedHtml = stripInternalProvenanceHtml(identity.html_signature ?? '');
   const sourceHtml = storedHtml.trim() ? storedHtml : textSignatureToHtml(text);
-  const html = sanitizeRichTextHtml(sourceHtml);
+  const html = sanitizeRichTextHtml(sourceHtml, { compactBlocks: true });
   return html.trim() || text ? { html, text } : null;
 }
 
@@ -407,7 +407,7 @@ function originAllowsIdentityDefaults(origin: ComposeOpenOrigin): boolean {
 }
 
 function editorHtmlForOpen(html: string, origin: ComposeOpenOrigin): string {
-  const clean = stripInternalProvenanceHtml(html);
+  const clean = stripInternalProvenanceHtml(sanitizeRichTextHtml(html, { compactBlocks: true }));
   switch (origin) {
     case COMPOSE_OPEN_ORIGIN.NEW:
     case COMPOSE_OPEN_ORIGIN.SERVER_DRAFT:
