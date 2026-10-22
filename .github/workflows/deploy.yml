@@ -28,6 +28,45 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  e2e-changes:
+    name: Detect E2E changes
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.e2e == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Detect relevant changes
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
+          filters: |
+            e2e:
+              - 'src/**'
+              - 'public/**'
+              - 'tests/e2e/**'
+              - 'tests/integration/**'
+              - 'tests/fixtures/**'
+              - 'scripts/**'
+              - 'infra/**'
+              - '.devcontainer/**'
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - 'thunderbird-accounts'
+              - 'thunderbird-accounts/**'
+              - '*.{html,json,js,ts,mjs,cjs}'
+              - '.node-version'
+              - '.npmrc'
+              - '.env*'
+              - '.gitmodules'
+
   unit-test:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -74,33 +113,58 @@ jobs:
       - name: Run vue-tsc
         run: npm run typecheck
 
+  # Required checks must finish even when no tested paths changed or detection failed.
   e2e-test:
     name: E2E tests (${{ matrix.browser }})
     runs-on: ubuntu-latest
-    if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
+    needs: [e2e-changes]
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.target != 'prod')
     strategy:
       fail-fast: false
       matrix:
         browser: [chromium, firefox]
     steps:
+      - name: Validate change detection
+        env:
+          DETECTION_RESULT: ${{ needs.e2e-changes.result }}
+          RUN_E2E: ${{ needs.e2e-changes.outputs.run }}
+        run: |
+          if [ "$DETECTION_RESULT" != "success" ]; then
+            echo "E2E change detection did not succeed: $DETECTION_RESULT"
+            exit 1
+          fi
+          case "$RUN_E2E" in
+            true|false) ;;
+            *) echo "Missing E2E change detection result"; exit 1 ;;
+          esac
+
+      - name: No E2E-relevant changes
+        if: needs.e2e-changes.outputs.run == 'false'
+        run: echo "E2E tests are not needed for these changed paths."
+
       - name: Checkout
+        if: needs.e2e-changes.outputs.run == 'true'
         uses: actions/checkout@v6.0.2
         with:
           submodules: recursive
 
       - name: Setup Node
+        if: needs.e2e-changes.outputs.run == 'true'
         uses: actions/setup-node@v6.4.0
         with:
           node-version-file: .node-version
           cache: "npm"
 
       - name: Install dependencies
+        if: needs.e2e-changes.outputs.run == 'true'
         run: npm ci
 
       - name: Install Playwright browsers
+        if: needs.e2e-changes.outputs.run == 'true'
         run: npx playwright install --with-deps ${{ matrix.browser }}
 
       - name: Prepare local e2e stack config
+        if: needs.e2e-changes.outputs.run == 'true'
         run: |
           mkdir -p thunderbird-accounts/mail/etc
           cp thunderbird-accounts/config.toml.example thunderbird-accounts/mail/etc/config.toml
@@ -108,6 +172,7 @@ jobs:
           npm run --prefix thunderbird-accounts build-theme
 
       - name: Start local e2e stack
+        if: needs.e2e-changes.outputs.run == 'true'
         run: >-
           docker compose -f thunderbird-accounts/docker-compose.yml up
           --build -d
@@ -116,6 +181,7 @@ jobs:
           stalwart
 
       - name: Wait for local e2e stack
+        if: needs.e2e-changes.outputs.run == 'true'
         run: |
           set -euo pipefail
 
@@ -145,15 +211,19 @@ jobs:
           done
 
       - name: Configure local e2e stack
+        if: needs.e2e-changes.outputs.run == 'true'
         run: npm run stack:configure
 
       - name: Run live backend integration tests
+        if: needs.e2e-changes.outputs.run == 'true'
         run: npm run test:integration
 
       - name: Start JMAP WebSocket proxy
+        if: needs.e2e-changes.outputs.run == 'true'
         run: npm run stack:ws-proxy >/tmp/stormbox-ws-proxy.log 2>&1 &
 
       - name: Wait for JMAP WebSocket proxy
+        if: needs.e2e-changes.outputs.run == 'true'
         run: |
           set -euo pipefail
 
@@ -175,6 +245,7 @@ jobs:
       # LOCAL_STACK=1 runs the live Keycloak/Stalwart specs instead of the
       # smoke-only lane.
       - name: Run Playwright local-stack tests
+        if: needs.e2e-changes.outputs.run == 'true'
         env:
           PLAYWRIGHT_NO_REUSE: "1"
           INCLUDE_CHROMIUM: "1"
@@ -182,13 +253,13 @@ jobs:
         run: npm run test:e2e:local -- --project=${{ matrix.browser }}
 
       - name: Dump local e2e stack logs
-        if: failure()
+        if: failure() && needs.e2e-changes.outputs.run == 'true'
         run: |
           docker compose -f thunderbird-accounts/docker-compose.yml ps
           docker compose -f thunderbird-accounts/docker-compose.yml logs --tail=200 kcpostgres keycloak stalwart
 
       - name: Upload Playwright report
-        if: failure()
+        if: failure() && needs.e2e-changes.outputs.run == 'true'
         uses: actions/upload-artifact@v7.0.1
         with:
           name: playwright-report-${{ matrix.browser }}
