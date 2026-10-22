@@ -166,6 +166,13 @@ test('dock restore and close prompt keep working across composer activations', a
     await expect(composer).toBeVisible();
     await firstDock().locator('.compose-dock__restore').click({ timeout: 3000 });
     await expect(composer.locator('#compose-subject')).toHaveValue('Focus first edited');
+    await expect.poll(() => composer.evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.evaluate(async (sessionIds) => {
+      const { useComposeStore } = await import('/src/stores/compose-store.ts');
+      const store = useComposeStore();
+      sessionIds.slice().reverse().forEach(id => store.close(id));
+    }, ids);
+    await expect(opener).toBeFocused();
   } finally {
     await page.evaluate(async (sessionIds) => {
       const { useComposeStore } = await import('/src/stores/compose-store.ts');
@@ -201,6 +208,6 @@ test('closing a folder parent menu keeps mail shortcuts inactive', async ({ shar
     await page.keyboard.press('c');
     await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
   } finally {
-    await manager.getByRole('button', { name: 'Close', exact: true }).click();
+    await manager.getByRole('button', { name: 'Close manage folders', exact: true }).click();
   }
 });

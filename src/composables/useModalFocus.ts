@@ -38,6 +38,7 @@ export function useModalFocus(
   options: UseModalFocusOptions = {},
 ): void {
   let returnFocus: HTMLElement | null = null;
+  let initialReturnFocus: HTMLElement | null = null;
   let listeningSurface: HTMLElement | null = null;
   let trap: FocusTrap | null = null;
   let stopWatching: WatchStopHandle | null = null;
@@ -82,7 +83,7 @@ export function useModalFocus(
       if (options.restoreTo && !target) return;
       const summary = target?.closest('details:not([open])')
         ?.querySelector<HTMLElement>(':scope > summary');
-      for (const candidate of [target, summary, options.restoreFallback?.()]) {
+      for (const candidate of [target, summary, options.restoreFallback?.(), initialReturnFocus]) {
         if (!candidate?.isConnected || candidate === document.body
           || candidate.closest('[inert]')) continue;
         focusModalSurface(candidate);
@@ -116,6 +117,7 @@ export function useModalFocus(
         activated = true;
         returnFocus = document.activeElement instanceof HTMLElement
           ? document.activeElement : null;
+        if (returnFocus !== document.body) initialReturnFocus ??= returnFocus;
         const activationGeneration = ++generation;
         await nextTick();
         if (generation !== activationGeneration) return;
@@ -135,6 +137,8 @@ export function useModalFocus(
         }
         if (options.focusOnActivate !== false) {
           focusModalSurface(options.initialFocus?.value ?? element);
+        } else if (!container.contains(document.activeElement)) {
+          focusModalSurface(container);
         }
       },
       { flush: 'post', immediate: true },
