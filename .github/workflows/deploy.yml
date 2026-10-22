@@ -36,17 +36,17 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      run: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.e2e == 'true' }}
+      # Deployment runs must validate their own commit, regardless of earlier run results.
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.e2e == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
 
       - name: Detect relevant changes
         id: filter
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
-          base: ${{ github.event_name == 'push' && github.ref || '' }}
           filters: |
             e2e:
               - 'src/**'
