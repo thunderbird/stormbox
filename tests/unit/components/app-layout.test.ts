@@ -38,7 +38,7 @@ import { SPOTLIGHT_TIMING } from '../../../src/composables/useFeatureSpotlight';
 import { BEACON_IDS, LATEST_BEACON_SEQ } from '../../../src/constants/feature-beacons';
 import type { OnboardingState } from '../../../src/utils/onboarding-state';
 import { useFeatureBeaconsStore } from '../../../src/stores/feature-beacons-store';
-import type { ContactListRow } from '../../../src/types';
+import type { AccountRow, ContactListRow, FolderRow } from '../../../src/types';
 import { stubBeaconLayout, type BeaconLayoutStub } from '../_fixtures/beacon-layout';
 
 // Pointer travel and press precede a step's `prepare`; settle follows it.
@@ -130,6 +130,23 @@ function stubContactListLayout() {
 
 function makeRepo() {
   let settings: Record<string, unknown> = { ...seededSettings };
+  const account: AccountRow = {
+    id: 1, display_name: 'Layout account', primary_email: 'layout@example.org',
+    server_origin: 'https://mail.example.org', remote_account_id: 'layout-account',
+    server_kind: 'jmap', is_primary: 1, is_personal: 1,
+    created_at: 0, updated_at: 0, last_opened_at: null,
+    quota_used_bytes: null, quota_hard_limit_bytes: null, quota_updated_at: null,
+  };
+  const folders: FolderRow[] = [
+    { id: 10, name: 'Inbox', role: 'inbox' as const },
+    { id: 20, name: 'Drafts', role: 'drafts' as const },
+  ].map((folder) => ({
+    ...folder, account_id: account.id, remote_id: `layout-folder-${folder.id}`,
+    parent_id: null, sort_order: 0, total_emails: 0, unread_emails: 0,
+    total_threads: 0, unread_threads: 0, may_read_items: 1, may_add_items: 1,
+    may_remove_items: 1, rights_json: null, raw_json: null, is_subscribed: 1,
+    is_starred: 0, is_deleted: 0, updated_at: 0,
+  }));
   return {
     subscribe() { return () => {}; },
     async getSettings() {
@@ -156,14 +173,19 @@ function makeRepo() {
         },
       };
     },
-    async listAccounts() { return []; },
-    async listFolders() { return []; },
+    listAccounts: vi.fn(async () => [{ ...account }]),
+    listFolders: vi.fn(async (accountId: number) => folders
+      .filter((folder) => folder.account_id === accountId)
+      .map((folder) => ({ ...folder }))),
     async listMessagesForView() { return []; },
-    async queryViewProgress() { return { total: 0, covered: 0, percent: 0 }; },
+    async queryViewProgress() { return { total: 0, covered: 0, percent: 100 }; },
+    checkFolderViewConsistency: vi.fn(async () => ({
+      queryViewExists: true, queryViewTotal: 0, membershipTotal: 0, membershipUnread: 0,
+    })),
     async ensureFolderWindow() { return { total: 0, fetched: 0 }; },
     async ensureMessageBodies() { return { fetched: 0 }; },
     async getMessageBodyForDisplay() { return null; },
-    async ensureFolderTree() { return { count: 0 }; },
+    async ensureFolderTree() { return { count: folders.length }; },
     async listAddressbooks() { return []; },
     async listContacts() { return repoContacts; },
     async getContact(_accountId, contactId) {
@@ -322,7 +344,12 @@ function stubReducedMotion(matches: boolean) {
   };
 }
 
+let consoleError: ReturnType<typeof vi.spyOn>;
+let consoleWarn: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
+  consoleError = vi.spyOn(console, 'error');
+  consoleWarn = vi.spyOn(console, 'warn');
   repoContacts = [];
   setActivePinia(createPinia());
   seedOnboarding({ beaconsSeenThrough: LATEST_BEACON_SEQ });
@@ -352,9 +379,36 @@ afterEach(() => {
   beaconLayout = null;
   vi.useRealTimers();
   __resetRepositoryForTests();
+  const folderErrors = [...consoleError.mock.calls, ...consoleWarn.mock.calls]
+    .filter(([message]) => typeof message === 'string' && /^\[mail-store\].*failed/.test(message));
+  consoleError.mockRestore();
+  consoleWarn.mockRestore();
+  expect(folderErrors).toEqual([]);
 });
 
 describe('App mail layout', () => {
+  it('attaches the mail store, loads account folders, and selects the primary Inbox', async () => {
+    mountApp();
+    await flushPromises();
+    await nextTick();
+
+    const mailStore = useMailStore();
+    expect(repoInstance!.listAccounts).toHaveBeenCalled();
+    expect(repoInstance!.listFolders).toHaveBeenCalledWith(1);
+    expect(repoInstance!.checkFolderViewConsistency).toHaveBeenCalledWith({
+      accountId: 1, folderId: 10, sort: 'received',
+    });
+    expect(mailStore.accounts).toEqual([expect.objectContaining({
+      id: 1, is_primary: 1, primary_email: 'layout@example.org',
+    })]);
+    expect(mailStore.folders).toEqual([
+      expect.objectContaining({ id: 10, account_id: 1, name: 'Inbox', role: 'inbox', index_percent: 100 }),
+      expect.objectContaining({ id: 20, account_id: 1, name: 'Drafts', role: 'drafts', index_percent: 100 }),
+    ]);
+    expect(mailStore.currentFolderId).toBe(10);
+    expect(mailStore.error).toBeNull();
+  });
+
   it('shows the welcome modal on first login and persists dismissal', async () => {
     seedOnboarding(null);
 
@@ -1006,10 +1060,11 @@ describe('App mail layout', () => {
 
   it('filters messages from the shared header box in the Mail space', async () => {
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     expect(wrapper.find('.quick-filter').exists()).toBe(true);
     expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell').element.firstElementChild);
@@ -1171,9 +1226,11 @@ describe('App mail layout', () => {
 
   it('does not change mail selection when the Contacts filter query changes', async () => {
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     await wrapper.get('[aria-label="Contacts"]').trigger('click');
     await nextTick();
@@ -1482,10 +1539,11 @@ describe('App mail layout', () => {
 
   it('shows the message view for a viewed message but hides it during bulk selection', async () => {
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     expect(wrapper.find('.message-view').exists()).toBe(true);
     expect(wrapper.find('.shell').classes()).not.toContain('shell--message-view-hidden');
@@ -1662,10 +1720,11 @@ describe('App mail layout', () => {
   it('auto-hides the folder list below 1024px when a message is selected', async () => {
     vi.useFakeTimers();
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
     expect(wrapper.find('.shell').classes()).not.toContain('shell--folder-list-hidden');
 
     setWindowWidth(1023, true);
@@ -1712,10 +1771,11 @@ describe('App mail layout', () => {
     vi.useFakeTimers();
     setWindowWidth(640);
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
     expect(wrapper.find('.msg-list').exists()).toBe(true);
@@ -1734,10 +1794,11 @@ describe('App mail layout', () => {
     vi.useFakeTimers();
     setWindowWidth(639);
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--message-list-hidden');
     expect(wrapper.find('.msg-list').exists()).toBe(false);
@@ -1747,10 +1808,11 @@ describe('App mail layout', () => {
   it('keeps the message list visible for bulk selection in single-column layout', async () => {
     setWindowWidth(639);
     const mailStore = useMailStore();
-    mailStore.selectedIds = new Set([7]);
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedIds = new Set([7]);
+    await nextTick();
 
     expect(wrapper.find('.shell').classes()).toContain('shell--message-view-hidden');
     expect(wrapper.find('.shell').classes()).not.toContain('shell--message-list-hidden');
@@ -1780,10 +1842,11 @@ describe('App mail layout', () => {
   it('lets the toggle button change only the current folder-list state', async () => {
     setWindowWidth(900);
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
     expect(wrapper.find('.shell').classes()).toContain('shell--folder-list-hidden');
 
     await wrapper.get('[aria-label="Show folder list"]').trigger('click');
@@ -1893,10 +1956,11 @@ describe('App mail layout', () => {
 
   it('resizes the message list column by dragging the message-view border', async () => {
     const mailStore = useMailStore();
-    mailStore.selectedMessageId = 42;
-
     const wrapper = mountApp();
     await flushPromises();
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
 
     // One column: its handle sits between it and the reading pane, and
     // the shell's columns-area width is that column plus the handle.
