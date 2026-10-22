@@ -19,6 +19,21 @@ import { test, expect } from '@playwright/test';
 // authenticated storageState the LOCAL_STACK projects preload.
 test.use({ storageState: { cookies: [], origins: [] } });
 
+test('shows the browser requirements when SharedWorker is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(globalThis, 'SharedWorker', { configurable: true, value: undefined });
+  });
+  await page.goto('/?app-password');
+  await page.getByLabel('Username').fill('bogus');
+  await page.getByLabel('App password').fill('bogus');
+  await page.locator('.login-card__password button[type="submit"]').click();
+
+  await expect(page.locator('.login-card__error')).toContainText(
+    'Stormbox cannot run in this browser. Missing: SharedWorker.',
+  );
+  await expect(page.locator('.login-card__error')).toContainText('Use Chrome');
+});
+
 test('login gate renders and the SharedWorker SQLite boots', async ({ page }) => {
   const consoleErrors = [];
   page.on('console', (msg) => {

@@ -7,6 +7,7 @@
  */
 
 import DbSharedWorker from '../db/shared-worker.ts?sharedworker';
+import { assertSupportedBrowser } from '../db/availability';
 import { SHARED_WORKER_NAME } from '../db/protocol';
 import { createRepository } from '../db/repository';
 
@@ -15,6 +16,7 @@ let repoPromise = null;
 export function getRepositoryAsync() {
   if (!repoPromise) {
     repoPromise = (async () => {
+      assertSupportedBrowser();
       const repo = await createRepository({
         worker: new DbSharedWorker({ name: SHARED_WORKER_NAME }),
       });
