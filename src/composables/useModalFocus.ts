@@ -13,9 +13,11 @@ interface UseModalFocusOptions {
   containTab?: boolean;
   focusOnActivate?: boolean;
   initialFocus?: Readonly<Ref<HTMLElement | null>>;
+  isolate?: boolean;
   onDefault?: () => void | Promise<void>;
   resolveContainer?: () => HTMLElement | null;
   restoreFocus?: boolean;
+  restoreFallback?: () => HTMLElement | null;
   /**
    * Resolves where focus returns on deactivation, replacing the element
    * that was focused at activation. Called at restore time; null skips.
@@ -77,7 +79,15 @@ export function useModalFocus(
     void nextTick(() => {
       if (generation !== restoredGeneration) return;
       const target = options.restoreTo ? options.restoreTo() : saved;
-      if (target?.isConnected && !target.closest('[inert]')) focusModalSurface(target);
+      if (options.restoreTo && !target) return;
+      const summary = target?.closest('details:not([open])')
+        ?.querySelector<HTMLElement>(':scope > summary');
+      for (const candidate of [target, summary, options.restoreFallback?.()]) {
+        if (!candidate?.isConnected || candidate === document.body
+          || candidate.closest('[inert]')) continue;
+        focusModalSurface(candidate);
+        if (document.activeElement === candidate) break;
+      }
     });
   }
 
@@ -118,7 +128,7 @@ export function useModalFocus(
             escapeDeactivates: false,
             allowOutsideClick: true,
             returnFocusOnDeactivate: false,
-            isolateSubtrees: element.getAttribute('aria-modal') === 'true',
+            isolateSubtrees: options.isolate ?? element.getAttribute('aria-modal') === 'true',
           });
           trap.activate();
           initializing = false;

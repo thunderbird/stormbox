@@ -69,7 +69,6 @@ test('settings and welcome keep their controls inside the active modal', async (
   await expectTabContained(page, welcome, 20);
   await page.keyboard.press('Escape');
   await expect(welcome).toBeHidden();
-  await opener.focus();
   await expect(opener).toBeFocused();
 });
 
@@ -126,5 +125,82 @@ test('modal Tab order includes textareas and skips hidden and inert descendants'
     await expect(dialog).toBeFocused();
   } finally {
     await page.keyboard.press('Escape');
+  }
+});
+
+
+test('dock restore and close prompt keep working across composer activations', async ({ sharedPage: page }) => {
+  const opener = page.locator('[data-settings-gear]');
+  await opener.focus();
+  const ids = await page.evaluate(async () => {
+    const { useComposeStore, COMPOSE_OPEN_ORIGIN } = await import('/src/stores/compose-store.ts');
+    const store = useComposeStore();
+    const first = store.open({ subject: 'Focus first' }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
+    store.holdAutosave(first);
+    return [first];
+  });
+  const composer = page.locator('.compose-dialog--expanded');
+  const firstDock = () => page.locator(`.compose-dock__item[data-session-id="${ids[0]}"]`);
+  try {
+    await composer.getByRole('button', { name: 'Minimize', exact: true }).click();
+    await firstDock().locator('.compose-dock__restore').click();
+    await composer.getByRole('button', { name: 'Minimize', exact: true }).click();
+    await expect(firstDock().locator('.compose-dock__restore')).toBeFocused();
+
+    await firstDock().locator('.compose-dock__restore').click();
+    await composer.locator('#compose-subject').fill('Focus first edited');
+    await composer.getByRole('button', { name: 'Minimize', exact: true }).click();
+    await firstDock().locator('.compose-dock__close').click();
+    const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
+    await expect(prompt).toBeVisible();
+    await prompt.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(composer.getByRole('button', { name: 'Close options' })).toBeFocused();
+    await composer.getByRole('button', { name: 'Minimize', exact: true }).click();
+    ids.push(await page.evaluate(async () => {
+      const { useComposeStore, COMPOSE_OPEN_ORIGIN } = await import('/src/stores/compose-store.ts');
+      const store = useComposeStore();
+      const id = store.open({ subject: 'Focus second' }, { origin: COMPOSE_OPEN_ORIGIN.SERVER_DRAFT });
+      store.holdAutosave(id);
+      return id;
+    }));
+    await expect(composer).toBeVisible();
+    await firstDock().locator('.compose-dock__restore').click({ timeout: 3000 });
+    await expect(composer.locator('#compose-subject')).toHaveValue('Focus first edited');
+  } finally {
+    await page.evaluate(async (sessionIds) => {
+      const { useComposeStore } = await import('/src/stores/compose-store.ts');
+      sessionIds.forEach(id => useComposeStore().close(id));
+    }, ids);
+  }
+});
+
+test('mobile settings returns focus to its menu trigger', async ({ sharedPage: page }) => {
+  await page.setViewportSize({ width: 375, height: 800 });
+  try {
+    const trigger = page.locator('.top-nav-menu__button');
+    await trigger.click();
+    await page.locator('[data-settings-menuitem]').click();
+    await expect(page.locator('[data-settings-dialog]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(trigger).toBeFocused();
+  } finally {
+    await page.setViewportSize({ width: 1280, height: 900 });
+  }
+});
+
+test('closing a folder parent menu keeps mail shortcuts inactive', async ({ sharedPage: page }) => {
+  await page.locator('[data-manage-folders]').click();
+  const manager = page.getByRole('dialog', { name: 'Manage Folders', exact: true });
+  try {
+    await manager.locator('[data-folder-edit]:enabled').first().click();
+    const parents = manager.locator('[data-folder-move-select]');
+    await parents.locator('summary').click();
+    const option = parents.locator('[data-folder-move-option]').first();
+    await option.focus();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('c');
+    await expect(page.locator('.compose-dialog--expanded')).toHaveCount(0);
+  } finally {
+    await manager.getByRole('button', { name: 'Close', exact: true }).click();
   }
 });

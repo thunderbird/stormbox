@@ -123,6 +123,11 @@ const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
 useModalFocus(dialogEl, {
   active: isExpanded,
   containTab: true,
+  // The dock, send notices and feature beacons remain usable above the composer (CD-1.4, CS-1.16).
+  isolate: false,
+  restoreFallback: () => document.querySelector<HTMLElement>(
+    `.compose-dock__item[data-session-id="${session.value?.id}"] .compose-dock__restore`,
+  ),
   focusOnActivate: false,
   resolveContainer: () => (
     closePromptOpen.value ? closePromptEl.value : dialogEl.value
@@ -130,6 +135,7 @@ useModalFocus(dialogEl, {
 });
 useModalFocus(closePromptEl, {
   active: closePromptOpen,
+  restoreFallback: () => closeMenuTriggerEl.value ?? dialogEl.value,
   onDefault: saveClosePrompt,
 });
 const closeMenuTriggerEl = ref<HTMLElement | null>(null);

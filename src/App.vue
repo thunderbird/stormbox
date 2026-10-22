@@ -446,8 +446,10 @@ function dismissWelcomeModal() {
   beaconStore.dismissWelcome();
 }
 
-function showWelcomeModalAgain() {
+async function showWelcomeModalAgain() {
   showSettingsDialog.value = false;
+  // Restore the Settings opener before Welcome captures its return target.
+  await nextTick();
   if (authStore.status === AUTH_STATE.CONNECTED) {
     beaconStore.close();
     showWelcomeModal.value = true;

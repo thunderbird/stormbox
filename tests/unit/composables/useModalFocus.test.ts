@@ -131,4 +131,26 @@ describe('useModalFocus', () => {
     expect(document.activeElement).toBe(opener);
     expect(opener.hasAttribute('inert')).toBe(false);
   });
+
+  it('uses a live fallback when the opener was removed', async () => {
+    const opener = document.createElement('button');
+    const fallback = document.createElement('button');
+    document.body.append(opener, fallback);
+    opener.focus();
+    const Harness = defineComponent({
+      setup() {
+        const surface = ref<HTMLElement | null>(null);
+        useModalFocus(surface, { restoreFallback: () => fallback });
+        return () => h('section', { ref: surface, tabindex: -1 });
+      },
+    });
+    const wrapper = mount(Harness, { attachTo: document.body });
+    await nextTick();
+    await nextTick();
+    opener.remove();
+    wrapper.unmount();
+    await nextTick();
+    expect(document.activeElement).toBe(fallback);
+  });
+
 });
