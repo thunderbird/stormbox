@@ -27,7 +27,7 @@ const props = defineProps<{
 }>();
 
 const overlayEl = ref<HTMLElement | null>(null);
-useModalFocus(overlayEl, { active: toRef(props, 'active') });
+useModalFocus(overlayEl, { active: toRef(props, 'active'), containTab: true });
 
 const subText = computed(() => {
   const { total } = props;

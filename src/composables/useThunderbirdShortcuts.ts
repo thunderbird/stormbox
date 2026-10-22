@@ -207,6 +207,8 @@ export function useThunderbirdShortcuts({
       return;
     }
 
+    if (document.activeElement?.closest('[aria-modal="true"]')) return;
+
     // Row controls own activation and focus movement before document shortcuts.
     if (event.target instanceof Element
       && event.target.closest('[data-message-control]')

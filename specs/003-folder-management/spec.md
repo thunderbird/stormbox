@@ -170,7 +170,7 @@ A **favorite** is a client-local Stormbox priority pin stored as
 | FM-4.7 🟩 Implemented | Search shall match folder names across collapsed branches, flatten matching rows, and show each result's ancestor path. While searching, disclosure controls shall be omitted because collapse state does not filter the result set. |
 | FM-4.8 🟩 Implemented | Unsubscribed folder names shall be muted/greyed in addition to showing an off switch. A collapsed ancestor shall not show a ghost star merely because a descendant is a favorite. |
 | FM-4.9 🟩 Implemented | Pressing Escape shall close the innermost active layer first: the create dialog handles itself; then an inline editor or per-row confirmation closes; then a bulk confirmation closes; only then does the manager close. An Escape event owned by an active input-method composition shall close no layer, and an IME-owned Enter shall not save an inline rename. Backdrop activation shall close the manager. |
-| FM-4.10 🟨 Partial | The dialog shall expose modal semantics, labels, tooltips, disclosure state, and keyboard-accessible non-drag alternatives. A complete focus trap and an automated accessibility audit are not yet implemented. |
+| FM-4.10 🟨 Partial | The dialog shall expose modal semantics, labels, tooltips, disclosure state, and keyboard-accessible non-drag alternatives. Tab and Shift+Tab shall remain in the active modal; underlying controls shall be inert, and closing a nested dialog shall restore focus to its live opener. A complete automated accessibility audit is not yet implemented. |
 
 ### 5. Manager row layout and visual rules
 

@@ -1,3 +1,4 @@
+import { createFocusTrap, type FocusTrap } from 'focus-trap';
 import {
   nextTick,
   onBeforeUnmount,
@@ -11,7 +12,6 @@ interface UseModalFocusOptions {
   active?: Readonly<Ref<boolean>>;
   containTab?: boolean;
   focusOnActivate?: boolean;
-  focusableSelector?: string;
   initialFocus?: Readonly<Ref<HTMLElement | null>>;
   onDefault?: () => void | Promise<void>;
   resolveContainer?: () => HTMLElement | null;
@@ -22,15 +22,6 @@ interface UseModalFocusOptions {
    */
   restoreTo?: () => HTMLElement | null;
 }
-
-const DEFAULT_FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'summary',
-  '[contenteditable="true"]',
-  '[href]',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 export function focusModalSurface(element: HTMLElement | null): void {
   element?.focus({ preventScroll: true });
@@ -46,65 +37,16 @@ export function useModalFocus(
 ): void {
   let returnFocus: HTMLElement | null = null;
   let listeningSurface: HTMLElement | null = null;
-  let stopWatchingSurface: WatchStopHandle | null = null;
+  let trap: FocusTrap | null = null;
   let stopWatching: WatchStopHandle | null = null;
-
-  // A closed <details> hides its content, not its own <summary>.
-  function inClosedDetails(element: HTMLElement): boolean {
-    const from = element.parentElement instanceof HTMLDetailsElement
-      && element.tagName === 'SUMMARY'
-      ? element.parentElement.parentElement
-      : element;
-    return Boolean(from?.closest('details:not([open])'));
-  }
-
-  function focusableElements(container: HTMLElement): HTMLElement[] {
-    return [...container.querySelectorAll<HTMLElement>(
-      options.focusableSelector ?? DEFAULT_FOCUSABLE_SELECTOR,
-    )].filter((element) => {
-      if (element.getAttribute('tabindex') === '-1') return false;
-      if (inClosedDetails(element)) return false;
-      if (element.closest('[hidden], [aria-hidden="true"]')) return false;
-      if (element.getAttribute('aria-disabled') === 'true') return false;
-      const style = window.getComputedStyle(element);
-      return style.display !== 'none' && style.visibility !== 'hidden';
-    });
-  }
-
-  function containTab(event: KeyboardEvent): void {
-    if (
-      !options.containTab
-      || event.defaultPrevented
-      || event.key !== 'Tab'
-      || options.active?.value === false
-    ) {
-      return;
-    }
-    const container = options.resolveContainer?.() ?? listeningSurface;
-    if (!container) return;
-    const focusable = focusableElements(container);
-    if (focusable.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || !focusable.includes(active)) {
-      event.preventDefault();
-      (event.shiftKey ? last : first).focus();
-    } else if (event.shiftKey && active === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
+  let generation = 0;
+  let activated = false;
 
   function invokeDefault(event: KeyboardEvent): void {
     if (
       !options.onDefault
+      || options.active?.value === false
+      || trap?.paused
       || event.defaultPrevented
       || event.isComposing
       || event.key !== 'Enter'
@@ -123,55 +65,75 @@ export function useModalFocus(
 
   function listenToSurface(element: HTMLElement | null): void {
     listeningSurface?.removeEventListener('keydown', invokeDefault);
-    listeningSurface?.removeEventListener('keydown', containTab, true);
     listeningSurface = element;
     listeningSurface?.addEventListener('keydown', invokeDefault);
-    listeningSurface?.addEventListener('keydown', containTab, true);
-  }
-
-  async function activate(): Promise<void> {
-    if (options.focusOnActivate === false) return;
-    returnFocus = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-    await nextTick();
-    focusModalSurface(options.initialFocus?.value ?? surface.value);
   }
 
   function restore(): void {
     const saved = returnFocus;
     returnFocus = null;
-    if (options.focusOnActivate === false || options.restoreFocus === false) return;
+    if (options.restoreFocus === false) return;
+    const restoredGeneration = generation;
     void nextTick(() => {
+      if (generation !== restoredGeneration) return;
       const target = options.restoreTo ? options.restoreTo() : saved;
-      if (target?.isConnected) focusModalSurface(target);
+      if (target?.isConnected && !target.closest('[inert]')) focusModalSurface(target);
     });
   }
 
+  function deactivate(): void {
+    generation += 1;
+    trap?.deactivate();
+    trap = null;
+    if (activated) restore();
+    activated = false;
+  }
+
   onMounted(() => {
-    stopWatchingSurface = watch(
-      surface,
-      listenToSurface,
-      { flush: 'post', immediate: true },
-    );
-    if (!options.active) {
-      void activate();
-      return;
-    }
     stopWatching = watch(
-      options.active,
-      (active) => {
-        if (active) void activate();
-        else restore();
+      () => [surface.value, options.active?.value !== false,
+        options.resolveContainer?.() ?? surface.value] as const,
+      async ([element, active, container]) => {
+        listenToSurface(element);
+        if (!element || !container || !active) {
+          deactivate();
+          return;
+        }
+        if (activated) {
+          trap?.updateContainerElements(container);
+          return;
+        }
+        activated = true;
+        returnFocus = document.activeElement instanceof HTMLElement
+          ? document.activeElement : null;
+        const activationGeneration = ++generation;
+        await nextTick();
+        if (generation !== activationGeneration) return;
+        if (options.containTab) {
+          let initializing = true;
+          trap = createFocusTrap(container, {
+            initialFocus: () => initializing ? false : (options.resolveContainer?.() ?? element),
+            delayInitialFocus: false,
+            fallbackFocus: () => options.resolveContainer?.() ?? element,
+            escapeDeactivates: false,
+            allowOutsideClick: true,
+            returnFocusOnDeactivate: false,
+            isolateSubtrees: element.getAttribute('aria-modal') === 'true',
+          });
+          trap.activate();
+          initializing = false;
+        }
+        if (options.focusOnActivate !== false) {
+          focusModalSurface(options.initialFocus?.value ?? element);
+        }
       },
       { flush: 'post', immediate: true },
     );
   });
 
   onBeforeUnmount(() => {
-    stopWatchingSurface?.();
     stopWatching?.();
     listenToSurface(null);
-    restore();
+    deactivate();
   });
 }

@@ -48,13 +48,6 @@ const settingsStore = useSettingsStore();
 const dialogEl = ref<HTMLElement | null>(null);
 useModalFocus(dialogEl, {
   containTab: true,
-  focusableSelector: [
-    'button:not([disabled])',
-    'input:not([disabled])',
-    'summary:not([aria-disabled="true"])',
-    '[href]',
-    '[tabindex]:not([tabindex="-1"])',
-  ].join(','),
   onDefault: submit,
   restoreFocus: false,
 });
@@ -317,7 +310,7 @@ onBeforeUnmount(() => {
           :time-config="timeConfig"
           :clearable="false"
           :disabled="busy"
-          :teleport="true"
+          :teleport="false"
           timezone="UTC"
           @update:model-value="updatePickerValue"
           @open="onPickerOpen"

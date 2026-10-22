@@ -186,6 +186,7 @@ const messageViewMaximized = ref(false);
 const shortcutsEnabled = computed(() =>
   authStore.status === AUTH_STATE.CONNECTED
   && (!messageViewMaximized.value || composeStore.isExpanded)
+  && !mailStore.bulkOperation.active
   && !showWelcomeModal.value
   && !showSettingsDialog.value
   && !showTagManager.value

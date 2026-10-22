@@ -121,6 +121,7 @@ const schedulePresets = ref<SchedulePresetResolution[]>(
 let scheduleActionGeneration = 0;
 const closePromptOpen = computed(() => Boolean(session.value?.closePromptOpen));
 useModalFocus(dialogEl, {
+  active: isExpanded,
   containTab: true,
   focusOnActivate: false,
   resolveContainer: () => (
