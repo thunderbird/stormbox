@@ -6,15 +6,12 @@ import {
 } from '@vuepic/vue-datepicker';
 import {
   computed,
-  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
 } from 'vue';
 
 import { useModalFocus } from '../composables/useModalFocus';
-import { useSettingsStore } from '../stores/settings-store';
-import { closeContainingDropdown } from '../utils/dropdown';
 import {
   detectTimeZone,
   instantToWallTime,
@@ -22,12 +19,10 @@ import {
   pickerValueToWallTime,
   resolveCustomSchedule,
   scheduleClockWindowFromReference,
-  searchTimeZoneOptions,
   type ServerClockReferenceLike,
   wallTimeToPickerValue,
 } from '../utils/schedule-time';
 import AppButton from './AppButton.vue';
-import AppDropdown from './AppDropdown.vue';
 
 const props = defineProps<{
   busy: boolean;
@@ -44,7 +39,6 @@ const emit = defineEmits<{
   select: [targetAt: string, timeZone: string];
 }>();
 
-const settingsStore = useSettingsStore();
 const dialogEl = ref<HTMLElement | null>(null);
 useModalFocus(dialogEl, {
   containTab: true,
@@ -52,21 +46,21 @@ useModalFocus(dialogEl, {
   restoreFocus: false,
 });
 
-const selectedTimeZone = ref(
+const selectedTimeZone = computed(() =>
   isUsableTimeZone(props.timeZone) ? props.timeZone : detectTimeZone(),
 );
-const zoneSearch = ref('');
 const localError = ref<string | null>(null);
-const pickerPopupOpen = ref(false);
 const internalPickerValue = ref<InternalModelValue>(null);
 const internalInvalidMessage = ref<string | null>(null);
 const currentTimeMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
+const pickerConfig = { closeOnAutoApply: false };
 const timeConfig = {
   enableTimePicker: true,
   enableSeconds: false,
   is24: false,
   minutesIncrement: 1,
+  timePickerInline: true,
 };
 
 function pickerValueAt(instantMs: number): string | null {
@@ -99,8 +93,9 @@ const maxPickerDate = computed(() => {
   );
   return pickerValueAt(clock.lowerMs + props.maxDelayedSend * 1_000);
 });
+const selectedValue = computed(() => internalPickerValue.value ?? pickerValue.value);
 const customResolution = computed(() => {
-  const wallTime = pickerValueToWallTime(pickerValue.value);
+  const wallTime = pickerValueToWallTime(selectedValue.value);
   if (!wallTime) {
     return {
       ok: false as const,
@@ -115,76 +110,30 @@ const customResolution = computed(() => {
     serverClockReference: props.serverClockReference,
     localNowMs: currentTimeMs.value,
   });
-});
-const provisionalResolution = computed(() => {
-  if (!pickerPopupOpen.value || internalPickerValue.value == null) return null;
-  const wallTime = pickerValueToWallTime(internalPickerValue.value);
-  if (!wallTime) {
-    return {
-      ok: false as const,
-      reason: 'invalidWallTime' as const,
-      message: 'Choose a valid date and time.',
-    };
-  }
-  return resolveCustomSchedule({
-    wallTime,
-    timeZone: selectedTimeZone.value,
-    maxDelayedSend: props.maxDelayedSend,
-    serverClockReference: props.serverClockReference,
-    localNowMs: currentTimeMs.value,
-  });
-});
-const activeResolution = computed(() => {
-  if (pickerPopupOpen.value && internalPickerValue.value != null) {
-    return provisionalResolution.value ?? customResolution.value;
-  }
-  return customResolution.value;
 });
 const displayedError = computed(() => {
   if (localError.value) return localError.value;
   if (props.error) return props.error;
   if (internalInvalidMessage.value) return internalInvalidMessage.value;
-  const resolution = pickerPopupOpen.value && internalPickerValue.value != null
-    ? provisionalResolution.value
-    : customResolution.value;
+  const resolution = customResolution.value;
   if (resolution && !resolution.ok && 'message' in resolution) {
     return resolution.message;
   }
   return null;
 });
 const showResolvedStatus = computed(() =>
-  !displayedError.value && activeResolution.value.ok);
+  !displayedError.value && customResolution.value.ok);
 const resolvedStatus = computed(() =>
-  (activeResolution.value.ok ? activeResolution.value : null));
-const zoneOptions = computed(() => searchTimeZoneOptions({
-  search: zoneSearch.value,
-  currentTimeZone: selectedTimeZone.value,
-  limit: 100,
-}));
-
+  (customResolution.value.ok ? customResolution.value : null));
 function close(): void {
   if (!props.busy) emit('close');
 }
 
-async function chooseTimeZone(timeZone: string, event: Event): Promise<void> {
-  closeContainingDropdown(event);
-  if (!isUsableTimeZone(timeZone)) return;
-  selectedTimeZone.value = timeZone;
-  zoneSearch.value = '';
-  localError.value = null;
-  emit('clear-error');
-  try {
-    await settingsStore.update({ timeZone });
-  } catch {
-    localError.value = 'The time zone could not be synced. Try again.';
-  }
-}
-
 function submit(): void {
-  if (props.busy) return;
+  if (props.busy || internalInvalidMessage.value) return;
   currentTimeMs.value = Date.now();
   localError.value = null;
-  const wallTime = pickerValueToWallTime(pickerValue.value);
+  const wallTime = pickerValueToWallTime(selectedValue.value);
   if (!wallTime) {
     localError.value = 'Choose a valid date and time.';
     return;
@@ -205,7 +154,6 @@ function submit(): void {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
-    if (pickerPopupOpen.value) return;
     event.preventDefault();
     event.stopPropagation();
     close();
@@ -214,26 +162,20 @@ function onKeydown(event: KeyboardEvent): void {
 
 function updatePickerValue(value: ModelValue): void {
   pickerValue.value = value;
+  internalPickerValue.value = null;
   localError.value = null;
   internalInvalidMessage.value = null;
   emit('clear-error');
-  void nextTick();
-}
-
-function onPickerOpen(): void {
-  pickerPopupOpen.value = true;
-  internalInvalidMessage.value = null;
-}
-
-function onPickerClosed(): void {
-  pickerPopupOpen.value = false;
-  internalPickerValue.value = null;
-  internalInvalidMessage.value = null;
 }
 
 function onInternalModelChange(value: InternalModelValue): void {
+  // Inline time controls can re-emit the same wall time after a parent render.
+  if (value instanceof Date && internalPickerValue.value instanceof Date
+    && Object.is(value.getTime(), internalPickerValue.value.getTime())) return;
   internalPickerValue.value = value;
   internalInvalidMessage.value = null;
+  localError.value = null;
+  emit('clear-error');
 }
 
 function onInvalidDate(date: Date): void {
@@ -298,75 +240,23 @@ onBeforeUnmount(() => {
           >×</button>
         </header>
 
-        <label class="schedule-dialog__label" :for="`schedule-date-${sessionId}`">
-          Send date and time
-        </label>
         <VueDatePicker
           class="schedule-dialog__picker"
           :model-value="pickerValue"
-          :input-id="`schedule-date-${sessionId}`"
           :min-date="minPickerDate"
           :max-date="maxPickerDate"
           :time-config="timeConfig"
-          :clearable="false"
           :disabled="busy"
-          :teleport="false"
+          inline
+          auto-apply
+          :config="pickerConfig"
+          model-type="iso"
           timezone="UTC"
           @update:model-value="updatePickerValue"
-          @open="onPickerOpen"
-          @closed="onPickerClosed"
           @internal-model-change="onInternalModelChange"
           @invalid-date="onInvalidDate"
           @invalid-select="onInvalidSelect"
         />
-
-        <div class="schedule-dialog__zone-field">
-          <span class="schedule-dialog__label">Time zone</span>
-          <AppDropdown class="schedule-dialog__zone-dropdown" :disabled="busy">
-            <summary
-              class="app-dropdown__summary schedule-dialog__zone-summary"
-              aria-haspopup="listbox"
-              :aria-label="`Time zone: ${selectedTimeZone}`"
-            >
-              {{ selectedTimeZone }}
-            </summary>
-            <div
-              class="app-dropdown__menu schedule-dialog__zone-menu"
-            >
-              <input
-                v-model="zoneSearch"
-                class="schedule-dialog__zone-search"
-                type="search"
-                role="combobox"
-                aria-label="Search time zones"
-                :aria-controls="`schedule-time-zone-options-${sessionId}`"
-                aria-expanded="true"
-                autocomplete="off"
-              />
-              <div
-                :id="`schedule-time-zone-options-${sessionId}`"
-                class="schedule-dialog__zone-options"
-                role="listbox"
-                aria-label="IANA time zones"
-              >
-                <button
-                  v-for="option in zoneOptions"
-                  :key="option.id"
-                  type="button"
-                  class="app-dropdown__item schedule-dialog__zone-option"
-                  role="option"
-                  :aria-selected="option.id === selectedTimeZone"
-                  @click="chooseTimeZone(option.id, $event)"
-                >
-                  {{ option.label }}
-                </button>
-                <p v-if="zoneOptions.length === 0" class="schedule-dialog__zone-empty">
-                  No matching IANA time zone
-                </p>
-              </div>
-            </div>
-          </AppDropdown>
-        </div>
 
         <p
           v-if="displayedError"
@@ -390,7 +280,7 @@ onBeforeUnmount(() => {
           </AppButton>
           <AppButton
             class="schedule-dialog__submit"
-            :disabled="busy || !activeResolution.ok"
+            :disabled="busy || !customResolution.ok || !!internalInvalidMessage"
             @click="submit"
           >
             {{ busy ? 'Setting…' : 'Set send time' }}
@@ -415,7 +305,9 @@ onBeforeUnmount(() => {
 
 .schedule-dialog {
   display: grid;
-  width: min(520px, 100%);
+  width: min(400px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   gap: 12px;
   padding: 20px;
   border: 1px solid var(--modal-border);
@@ -438,8 +330,7 @@ onBeforeUnmount(() => {
 .schedule-dialog h3,
 .schedule-dialog header p,
 .schedule-dialog__resolved,
-.schedule-dialog__error,
-.schedule-dialog__zone-empty {
+.schedule-dialog__error {
   margin: 0;
 }
 
@@ -448,8 +339,7 @@ onBeforeUnmount(() => {
 }
 
 .schedule-dialog header p,
-.schedule-dialog__resolved,
-.schedule-dialog__zone-empty {
+.schedule-dialog__resolved {
   color: var(--muted, #6b7388);
   font-size: 13px;
 }
@@ -472,82 +362,9 @@ onBeforeUnmount(() => {
   outline: 2px solid var(--accent, #0060df);
 }
 
-.schedule-dialog__label {
-  color: var(--colour-ti-secondary, var(--text, #111827));
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .schedule-dialog__picker {
   min-width: 0;
-}
-
-.schedule-dialog__picker :deep(.dp__input) {
-  border-color: var(--border, #d6d9e2);
-  background: var(--panel, #fff);
-  color: var(--text, #111827);
-}
-
-.schedule-dialog__zone-field {
-  display: grid;
-  gap: 5px;
-}
-
-.schedule-dialog__zone-summary {
-  display: flex;
-  min-height: 34px;
-  align-items: center;
-  padding: 0 10px;
-  border: 1px solid var(--control-border, #d6d9e2);
-  border-radius: 6px;
-  background: var(--panel, #fff);
-}
-
-.schedule-dialog__zone-summary::after {
-  margin-left: auto;
-}
-
-.schedule-dialog__zone-summary:focus:not(:focus-visible) {
-  outline: none;
-}
-
-.schedule-dialog__zone-summary:focus-visible {
-  border-color: var(--accent, #0060df);
-  outline: none;
-}
-
-.schedule-dialog__zone-menu {
-  right: 0;
-  min-width: 100%;
-}
-
-.schedule-dialog__zone-search {
-  width: 100%;
-  min-height: 34px;
-  padding: 6px 8px;
-  border: 1px solid var(--control-border, #d6d9e2);
-  border-radius: 6px;
-  background: var(--surface, #fff);
-  color: inherit;
-  font: inherit;
-}
-
-.schedule-dialog__zone-options {
-  display: grid;
-  max-height: 190px;
-  overflow-y: auto;
-}
-
-.schedule-dialog__zone-option {
-  grid-template-columns: 1fr;
-}
-
-.schedule-dialog__zone-option[aria-selected='true'] {
-  font-weight: 600;
-}
-
-.schedule-dialog__zone-empty {
-  padding: 8px;
+  justify-content: center;
 }
 
 .schedule-dialog__error {

@@ -100,6 +100,7 @@ test('modal Tab order includes textareas and skips hidden and inert descendants'
   const dialog = page.locator('[data-settings-dialog]');
   await dialog.evaluate((el) => {
     const fields = document.createElement('div');
+    fields.dataset.focusFixtures = '';
     fields.innerHTML = '<button data-focus-first>First</button>'
       + '<div hidden><button>Hidden</button></div>'
       + '<div inert><button>Inert</button></div>'
@@ -112,7 +113,7 @@ test('modal Tab order includes textareas and skips hidden and inert descendants'
   try {
     await dialog.locator('[data-focus-first]').focus();
     await page.keyboard.press('Tab');
-    await expect(dialog.locator('summary')).toBeFocused();
+    await expect(dialog.locator('[data-focus-fixtures] summary')).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(dialog.getByRole('textbox', { name: 'Modal text' })).toBeFocused();
     await page.keyboard.press('Tab');

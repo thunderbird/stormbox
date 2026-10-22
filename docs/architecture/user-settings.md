@@ -103,7 +103,7 @@ The current registry contains:
 
 `timeZone` accepts only values supported by the runtime's
 `Intl.DateTimeFormat`; invalid remote or browser-mirror values resolve to the
-detected default. Changing it through the custom schedule dialog uses the
+detected default. Changing it through the Settings time-zone picker uses the
 normal settings patch/outbox path, so a FileNode-capable account converges
 across devices and a non-FileNode account remains device-local. Scheduled
 mutations store an absolute target instant, so a later setting change does not

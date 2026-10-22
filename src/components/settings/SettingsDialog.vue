@@ -17,6 +17,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useSettingsStore } from '../../stores/settings-store';
 import { isComposingKeyEvent } from '../../utils/keyboard';
 import ShortcutSchemePicker from './ShortcutSchemePicker.vue';
+import TimeZonePicker from './TimeZonePicker.vue';
 
 const StaffSettingsSection = defineAsyncComponent(
   () => import('./StaffSettingsSection.vue'),
@@ -128,6 +129,14 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
+          <div class="settings-dialog__row settings-dialog__row--stacked">
+            <div class="settings-dialog__row-text">
+              <span class="settings-dialog__row-title">Time zone</span>
+              <span class="settings-dialog__row-hint">Used for scheduled messages.</span>
+            </div>
+            <TimeZonePicker />
+          </div>
+
           <div class="settings-dialog__row">
             <div class="settings-dialog__row-text">
               <span class="settings-dialog__row-title">Welcome &amp; shortcuts</span>
@@ -177,6 +186,7 @@ onBeforeUnmount(() => {
   color: var(--text);
   box-shadow: var(--modal-shadow);
 }
+.settings-dialog__row.settings-dialog__row--stacked { flex-direction: column; align-items: stretch; }
 .settings-dialog__header {
   display: flex;
   align-items: center;

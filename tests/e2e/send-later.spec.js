@@ -338,14 +338,8 @@ test.describe('Send Later', () => {
       const scheduleDialog = page.getByRole('dialog', { name: 'Choose a date and time' });
       await expect(scheduleDialog).toBeVisible();
       await expect(scheduleDialog.getByRole('status')).toContainText(/Sends /);
-      await scheduleDialog.getByRole('combobox', { name: 'Datepicker input' }).click();
-      const datePickerPopup = page.getByRole('dialog', { name: 'Datepicker menu' });
-      await expect(datePickerPopup).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(datePickerPopup).toBeHidden();
-      await expect(scheduleDialog).toBeVisible();
-      await expect(composer).toBeVisible();
-
+      await expect(scheduleDialog.getByRole('grid')).toBeVisible();
+      await expect(scheduleDialog.getByRole('combobox', { name: 'Datepicker input' })).toHaveCount(0);
       await page.keyboard.press('Escape');
       await expect(scheduleDialog).toBeHidden();
       await expect(composer).toBeVisible();

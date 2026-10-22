@@ -68,9 +68,11 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   browser's valid IANA time zone, falling back to `UTC` when detection does not
   produce a usable IANA identifier.
 - **SL-2.2 — Synced selection.** Presets and the custom dialog shall use the
-  same `timeZone` setting. Choosing another zone in the custom dialog shall
+  same `timeZone` setting. Choosing another zone in Settings shall
   persist it through the settings store and FileNode synchronization when that
   account supports FileNode; without FileNode it shall remain device-local.
+  The custom dialog shall open directly to an inline date/time picker, with
+  a single Cancel / Set send time action row and no time-zone chooser.
 - **SL-2.3 — Change propagation.** A time-zone change shall immediately
   re-resolve the current custom wall time and shall affect subsequently opened
   preset menus and custom dialogs. It shall not change an already accepted

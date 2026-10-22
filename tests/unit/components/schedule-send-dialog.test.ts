@@ -1,200 +1,91 @@
 // @vitest-environment happy-dom
-
-import {
-  afterEach, beforeEach, describe, expect, it, vi,
-} from 'vitest';
-import { flushPromises, mount } from '@vue/test-utils';
-import { createPinia, setActivePinia } from 'pinia';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, h, nextTick } from 'vue';
-
-vi.mock('../../../src/services/auth', () => ({
-  initOidc: async () => null,
-  getOidc: () => null,
-}));
-
 import { VueDatePicker } from '@vuepic/vue-datepicker';
-
 import ScheduleSendDialog from '../../../src/components/ScheduleSendDialog.vue';
-import { useSettingsStore } from '../../../src/stores/settings-store';
 
 const PickerStub = defineComponent({
   name: 'VueDatePicker',
-  props: {
-    modelValue: { type: null, default: null },
-    minDate: { type: null, default: null },
-    maxDate: { type: null, default: null },
-  },
-  emits: [
-    'update:model-value',
-    'open',
-    'closed',
-    'internal-model-change',
-    'invalid-date',
-    'invalid-select',
-  ],
-  setup(_props, { emit }) {
-    return () => h('div', {
-      class: 'picker-stub',
-      onClick: () => emit('open'),
-    });
-  },
+  props: ['modelValue', 'minDate', 'maxDate', 'inline', 'autoApply', 'timeConfig'],
+  emits: ['update:model-value', 'internal-model-change', 'invalid-date', 'invalid-select'],
+  setup() { return () => h('div', { class: 'picker-stub' }); },
 });
+enableAutoUnmount(afterEach);
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-const mountedWrappers: Array<{ unmount: () => void }> = [];
-
-function mountScheduleDialog(
-  clock = { value: Date.parse('2026-03-01T12:00:00Z') },
-) {
+function mountDialog(clock = { value: Date.parse('2026-03-01T12:00:00Z') }) {
   vi.spyOn(Date, 'now').mockImplementation(() => clock.value);
-  useSettingsStore().settings = { timeZone: 'America/New_York' };
-  const wrapper = mount(ScheduleSendDialog, {
+  return mount(ScheduleSendDialog, {
     attachTo: document.body,
     props: {
-      busy: false,
-      maxDelayedSend: 30 * 24 * 60 * 60,
-      serverClockReference: null,
-      sessionId: 'session-1',
-      timeZone: 'America/New_York',
+      busy: false, maxDelayedSend: 30 * 24 * 60 * 60,
+      serverClockReference: null, sessionId: 'session-1', timeZone: 'America/New_York',
     },
-    global: {
-      stubs: { teleport: true, VueDatePicker: PickerStub },
-    },
+    global: { stubs: { teleport: true, VueDatePicker: PickerStub } },
   });
-  mountedWrappers.push(wrapper);
-  return wrapper;
 }
-
-async function emitPickerEvent(
-  wrapper: ReturnType<typeof mountScheduleDialog>,
-  event: 'open' | 'closed' | 'internal-model-change' | 'invalid-date' | 'invalid-select',
-  payload?: unknown,
-) {
-  const picker = wrapper.findComponent(VueDatePicker);
-  if (payload === undefined) {
-    await picker.vm.$emit(event);
-  } else {
-    await picker.vm.$emit(event, payload);
-  }
+async function change(wrapper: ReturnType<typeof mountDialog>, event: string, value: unknown) {
+  wrapper.findComponent(VueDatePicker).vm.$emit(event, value);
   await flushPromises();
-  await nextTick();
 }
 
-beforeEach(() => {
-  setActivePinia(createPinia());
-});
-
-afterEach(() => {
-  for (const wrapper of mountedWrappers.splice(0)) wrapper.unmount();
-  document.body.innerHTML = '';
-  vi.restoreAllMocks();
-  vi.useRealTimers();
-});
-
-describe('ScheduleSendDialog picker validation', () => {
-  it('advances picker bounds while the dialog remains open', async () => {
+describe('ScheduleSendDialog', () => {
+  it('opens the calendar and time controls inline with one confirmation', () => {
+    const wrapper = mountDialog();
+    const picker = wrapper.findComponent(VueDatePicker);
+    expect(picker.props('inline')).not.toBeUndefined();
+    expect(picker.props('autoApply')).not.toBeUndefined();
+    expect(picker.props('timeConfig').timePickerInline).toBe(true);
+    expect(wrapper.find('[aria-label="Search time zones"]').exists()).toBe(false);
+    expect(wrapper.get('.schedule-dialog__submit').text()).toBe('Set send time');
+  });
+  it('advances picker bounds while open', async () => {
     vi.useFakeTimers();
     const clock = { value: Date.parse('2026-03-01T12:00:00Z') };
-    const wrapper = mountScheduleDialog(clock);
-    const picker = wrapper.findComponent(VueDatePicker);
-    expect(picker.props('minDate')).toBe('2026-03-01T07:00:00.000Z');
-
-    clock.value = Date.parse('2026-03-01T13:00:00Z');
-    expect(vi.getTimerCount()).toBeGreaterThan(1);
+    const wrapper = mountDialog(clock);
+    expect(wrapper.findComponent(VueDatePicker).props('minDate')).toBe('2026-03-01T07:00:00.000Z');
+    clock.value += 3_600_000;
     await vi.advanceTimersByTimeAsync(30_000);
     await nextTick();
-
-    expect(wrapper.findComponent(VueDatePicker).props('minDate'))
-      .toBe('2026-03-01T08:00:00.000Z');
+    expect(wrapper.findComponent(VueDatePicker).props('minDate')).toBe('2026-03-01T08:00:00.000Z');
   });
-
-  it('shows provisional past-time validation from internal picker changes', async () => {
-    const wrapper = mountScheduleDialog();
-
-    await emitPickerEvent(wrapper, 'open');
-    await emitPickerEvent(wrapper, 'internal-model-change', '2026-02-28T12:00:00.000Z');
-
-    expect(wrapper.get('.schedule-dialog__error').attributes('role')).toBe('alert');
-    expect(wrapper.get('.schedule-dialog__error').text())
-      .toBe('Choose a scheduled time in the future.');
-    expect(wrapper.find('.schedule-dialog__resolved').exists()).toBe(false);
+  it('rejects an invalid internal value instead of confirming the previous selection', async () => {
+    const wrapper = mountDialog();
+    await change(wrapper, 'internal-model-change', new Date('2026-02-28T12:00:00Z'));
+    expect(wrapper.get('[role="alert"]').text()).toBe('Choose a scheduled time in the future.');
+    expect(wrapper.get('.schedule-dialog__submit').attributes('disabled')).toBeDefined();
+    await wrapper.get('.schedule-dialog').trigger('keydown', { key: 'Enter' });
+    expect(wrapper.emitted('select')).toBeUndefined();
   });
-
-  it('clears provisional validation when the internal picker value becomes valid', async () => {
-    const wrapper = mountScheduleDialog();
-
-    await emitPickerEvent(wrapper, 'open');
-    await emitPickerEvent(wrapper, 'internal-model-change', '2026-03-05T09:30:00.000Z');
-
-    expect(wrapper.find('.schedule-dialog__error').exists()).toBe(false);
-    expect(wrapper.get('.schedule-dialog__resolved').text()).toMatch(/^Sends /);
+  it('confirms the visible internal selection without an inner Apply action', async () => {
+    const wrapper = mountDialog();
+    await change(wrapper, 'internal-model-change', new Date('2026-03-05T09:30:00Z'));
+    await wrapper.get('.schedule-dialog__submit').trigger('click');
+    expect(wrapper.emitted('select')).toEqual([['2026-03-05T14:30:00.000Z', 'America/New_York']]);
   });
-
-  it('clears provisional validation when the picker popup closes', async () => {
-    const wrapper = mountScheduleDialog();
-
-    await emitPickerEvent(wrapper, 'open');
-    await emitPickerEvent(wrapper, 'internal-model-change', '2026-02-28T12:00:00.000Z');
-    await emitPickerEvent(wrapper, 'closed');
-
-    expect(wrapper.find('.schedule-dialog__error').exists()).toBe(false);
-    expect(wrapper.get('.schedule-dialog__resolved').text()).toMatch(/^Sends /);
+  it('re-resolves the same wall time when the setting changes', async () => {
+    const wrapper = mountDialog();
+    await change(wrapper, 'update:model-value', '2026-03-05T09:30:00.000Z');
+    await wrapper.setProps({ timeZone: 'Asia/Tokyo' });
+    await wrapper.get('.schedule-dialog__submit').trigger('click');
+    expect(wrapper.emitted('select')).toEqual([['2026-03-05T00:30:00.000Z', 'Asia/Tokyo']]);
   });
-
-  it('shows invalid-date feedback without mutating the committed picker value', async () => {
-    const wrapper = mountScheduleDialog();
-    const committed = wrapper.findComponent(VueDatePicker).props('modelValue');
-
-    await emitPickerEvent(wrapper, 'open');
-    await emitPickerEvent(wrapper, 'invalid-date', new Date('2026-02-28T12:00:00.000Z'));
-
-    expect(wrapper.get('.schedule-dialog__error').text())
-      .toBe('Choose a scheduled time in the future.');
-    expect(wrapper.find('.schedule-dialog__resolved').exists()).toBe(false);
-    expect(wrapper.findComponent(VueDatePicker).props('modelValue')).toBe(committed);
-
-    await emitPickerEvent(wrapper, 'closed');
-
-    expect(wrapper.find('.schedule-dialog__error').exists()).toBe(false);
-    expect(wrapper.findComponent(VueDatePicker).props('modelValue')).toBe(committed);
+  it('clears rejected-date feedback on a valid selection', async () => {
+    const wrapper = mountDialog();
+    await change(wrapper, 'invalid-date', new Date('2026-02-28T12:00:00Z'));
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    await change(wrapper, 'update:model-value', '2026-03-05T09:30:00.000Z');
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.get('[role="status"]').text()).toMatch(/^Sends /);
   });
-
-  it('stands down dialog Escape while the date picker popup is open', async () => {
-    const wrapper = mountScheduleDialog();
-
-    await emitPickerEvent(wrapper, 'open');
+  it('Escape closes the inline picker, while busy prevents closing and confirmation', async () => {
+    const wrapper = mountDialog();
+    await wrapper.setProps({ busy: true });
     await wrapper.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
-    await nextTick();
-
-    expect(wrapper.find('.schedule-dialog').exists()).toBe(true);
-
-    await emitPickerEvent(wrapper, 'closed');
+    expect(wrapper.emitted('close')).toBeUndefined();
+    await wrapper.setProps({ busy: false });
     await wrapper.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
-    await flushPromises();
-
     expect(wrapper.emitted('close')).toHaveLength(1);
-  });
-
-  it('contains Tab while leaving picker Escape handling local', async () => {
-    const wrapper = mountScheduleDialog();
-    await nextTick();
-    const close = wrapper.get('.schedule-dialog__close').element as HTMLButtonElement;
-    const submit = wrapper.get('.schedule-dialog__submit').element as HTMLButtonElement;
-
-    submit.focus();
-    submit.dispatchEvent(new KeyboardEvent('keydown', {
-      bubbles: true,
-      cancelable: true,
-      key: 'Tab',
-    }));
-    expect(document.activeElement).toBe(close);
-
-    close.focus();
-    close.dispatchEvent(new KeyboardEvent('keydown', {
-      bubbles: true,
-      cancelable: true,
-      key: 'Tab',
-      shiftKey: true,
-    }));
-    expect(document.activeElement).toBe(submit);
   });
 });

@@ -1299,29 +1299,14 @@ describe('ComposeDialog scheduled send control', () => {
     await flushPromises();
   });
 
-  it('shows and persists a searched valid IANA time zone only when selected', async () => {
+  it('uses the Settings time zone and follows changes while the custom picker is open', async () => {
     const { wrapper } = await mountSchedulableCompose();
-    const update = vi.spyOn(useSettingsStore(), 'update').mockResolvedValue();
     const dialog = await openCustomDialog(wrapper);
-
-    expect(dialog.get('.schedule-dialog').text()).toContain(
-      'Current time zone: America/New_York',
-    );
-    const search = dialog.get('[aria-label="Search time zones"]');
-    await search.setValue('Not/AZone');
-    expect(dialog.text()).toContain('No matching IANA time zone');
-    expect(update).not.toHaveBeenCalled();
-
-    await search.setValue('tokyo');
-    const tokyo = dialog.findAll('[role="option"]')
-      .find((option) => option.text() === 'Asia/Tokyo')!;
-    await tokyo.trigger('click');
-    await flushPromises();
-
-    expect(update).toHaveBeenCalledWith({ timeZone: 'Asia/Tokyo' });
-    expect(dialog.get('.schedule-dialog').text()).toContain(
-      'Current time zone: Asia/Tokyo',
-    );
+    expect(dialog.get('.schedule-dialog').text()).toContain('Current time zone: America/New_York');
+    expect(dialog.find('[aria-label="Search time zones"]').exists()).toBe(false);
+    useSettingsStore().settings = { timeZone: 'Asia/Tokyo' };
+    await nextTick();
+    expect(dialog.get('.schedule-dialog').text()).toContain('Current time zone: Asia/Tokyo');
   });
 
   it('models picker values as neutral wall-time coordinates', async () => {
@@ -1418,7 +1403,7 @@ describe('ComposeDialog scheduled send control', () => {
   it('closes the custom dialog on Escape without closing the composer', async () => {
     const { composeStore, wrapper } = await mountSchedulableCompose();
     const dialog = await openCustomDialog(wrapper);
-    expect(document.activeElement).toBe(dialog.get('.schedule-dialog').element);
+    expect(dialog.get('.schedule-dialog').element.contains(document.activeElement)).toBe(true);
 
     await dialog.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
     await flushPromises();
