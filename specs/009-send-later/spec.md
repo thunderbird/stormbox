@@ -286,8 +286,9 @@ durable outbox, and user-visible success follows a durable local checkpoint.
   `menuitem` buttons with disabled state conveyed to assistive technology.
 - **SL-8.2 — Custom-dialog semantics.** The custom picker shall be an
   `aria-modal` labeled dialog, announce resolved or invalid time state, trap
-  Tab focus, close on Escape when not busy, and expose searchable IANA zones
-  with combobox/listbox semantics.
+  Tab focus, and dismiss an active picker overlay before closing on Escape
+  when not busy. Settings shall expose searchable, labeled IANA time-zone
+  choices.
 - **SL-8.3 — Scheduled banner semantics.** The scheduled banner shall be a
   `status` region, and `Cancel send` shall expose disabled/busy state while
   its durable mutation runs.

@@ -83,6 +83,16 @@ describe('time zone discovery', () => {
       label: 'UTC',
     });
   });
+
+  it('keeps the current zone and UTC ahead of the unfiltered result limit', () => {
+    expect(searchTimeZoneOptions({ currentTimeZone: 'Asia/Tokyo', limit: 2 }))
+      .toEqual([
+        { id: 'Asia/Tokyo', label: 'Asia/Tokyo' },
+        { id: 'UTC', label: 'UTC' },
+      ]);
+    expect(searchTimeZoneOptions({ currentTimeZone: 'Asia/Tokyo', search: 'new york' }))
+      .toEqual([{ id: 'America/New_York', label: 'America/New York' }]);
+  });
 });
 
 describe('wall time conversion', () => {

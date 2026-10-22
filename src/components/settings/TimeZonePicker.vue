@@ -35,7 +35,7 @@ async function select(zone: string, event: Event): Promise<void> {
   try {
     await settingsStore.update({ timeZone: zone });
   } catch {
-    error.value = 'The time zone could not be saved. Try again.';
+    error.value = 'Time zone changed on this device. It could not be synced. Try again.';
   } finally {
     saving.value = false;
   }
@@ -58,6 +58,7 @@ async function select(zone: string, event: Event): Promise<void> {
           class="time-zone-picker__search"
           type="search"
           aria-label="Search time zones"
+          placeholder="Search all time zones"
           autocomplete="off"
         />
         <div class="time-zone-picker__options" role="group" aria-label="IANA time zones">

@@ -208,13 +208,15 @@ export function searchTimeZoneOptions({
   if (isUsableTimeZone(currentTimeZone)) zones.add(currentTimeZone);
   for (const zone of supportedTimeZones()) zones.add(zone);
   const needle = search.trim().toLocaleLowerCase();
+  const priority = new Map<string, number>(needle ? [] : [[currentTimeZone, 0], ['UTC', 1]]);
   return [...zones]
     .filter((zone) => {
       if (!needle) return true;
       const searchable = `${zone} ${zone.replaceAll('_', ' ').replaceAll('/', ' ')}`;
       return searchable.toLocaleLowerCase().includes(needle);
     })
-    .sort((left, right) => left.localeCompare(right))
+    .sort((left, right) => (priority.get(left) ?? 2) - (priority.get(right) ?? 2)
+      || left.localeCompare(right))
     .slice(0, boundedLimit)
     .map((zone) => ({ id: zone, label: zone.replaceAll('_', ' ') }));
 }

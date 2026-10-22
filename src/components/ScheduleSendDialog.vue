@@ -6,6 +6,7 @@ import {
 } from '@vuepic/vue-datepicker';
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -54,7 +55,8 @@ const internalPickerValue = ref<InternalModelValue>(null);
 const internalInvalidMessage = ref<string | null>(null);
 const currentTimeMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
-const pickerConfig = { closeOnAutoApply: false };
+const overlayOpeners = new Map<string, HTMLElement>();
+const pickerConfig = { closeOnAutoApply: false, onInternalKeydown: onPickerKeydown };
 const timeConfig = {
   enableTimePicker: true,
   enableSeconds: false,
@@ -153,10 +155,52 @@ function submit(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
+  if (event.key === 'Escape' && !event.defaultPrevented) {
     event.preventDefault();
     event.stopPropagation();
+    const overlay = dialogEl.value?.querySelector<HTMLElement>('[role="listbox"]');
+    if (overlay) {
+      // Inline overlays also receive Escape when focus has moved outside them.
+      if (!overlay.contains(event.target as Node)) {
+        overlay.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, cancelable: true,
+        }));
+      }
+      return;
+    }
     close();
+  }
+}
+
+function onPickerKeydown(event: KeyboardEvent): false | void {
+  if (event.key === 'Escape') {
+    onKeydown(event);
+    return false;
+  }
+}
+
+async function onOverlayToggle({ open, overlay }: { open: boolean; overlay: string }): Promise<void> {
+  if (open) {
+    if (document.activeElement instanceof HTMLElement) {
+      overlayOpeners.set(overlay, document.activeElement);
+    }
+    await nextTick();
+    const listbox = dialogEl.value?.querySelector<HTMLElement>('[role="listbox"]');
+    const target = listbox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]:not([aria-disabled="true"])')
+      ?? listbox?.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])');
+    target?.focus({ preventScroll: true });
+  } else {
+    const opener = overlayOpeners.get(overlay);
+    overlayOpeners.delete(overlay);
+    await nextTick();
+    // The picker's arrow navigation restores focus over two animation frames.
+    await nextTick();
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    if (overlayOpeners.size === 0 && opener?.isConnected && dialogEl.value?.contains(opener)) {
+      opener.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -221,7 +265,7 @@ onBeforeUnmount(() => {
         :aria-labelledby="`schedule-dialog-title-${sessionId}`"
         :aria-describedby="`schedule-dialog-zone-${sessionId}`"
         tabindex="-1"
-        @keydown.capture="onKeydown"
+        @keydown="onKeydown"
       >
         <header>
           <div>
@@ -249,7 +293,10 @@ onBeforeUnmount(() => {
           :disabled="busy"
           inline
           auto-apply
+          arrow-navigation
+          prevent-min-max-navigation
           :config="pickerConfig"
+          @overlay-toggle="onOverlayToggle"
           model-type="iso"
           timezone="UTC"
           @update:model-value="updatePickerValue"
@@ -365,6 +412,40 @@ onBeforeUnmount(() => {
 .schedule-dialog__picker {
   min-width: 0;
   justify-content: center;
+}
+
+.schedule-dialog__picker :deep(.dp--inc-dec-button-inline) {
+  min-width: 28px;
+  height: 28px;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.schedule-dialog__picker :deep(.dp--tp-inline-btn-bar) {
+  display: none;
+}
+
+.schedule-dialog__picker :deep(.dp--inc-dec-button-inline::after) {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+.schedule-dialog__picker :deep(.dp--tp-inline-btn-bottom::after) {
+  transform: rotate(135deg);
+}
+
+.schedule-dialog__picker :deep(.dp--inc-dec-button-inline:hover) {
+  background: var(--rowHover);
+}
+
+.schedule-dialog__picker :deep(.dp--inc-dec-button-inline:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .schedule-dialog__error {

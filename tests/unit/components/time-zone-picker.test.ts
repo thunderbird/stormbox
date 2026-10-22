@@ -4,11 +4,22 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 vi.mock('../../../src/services/auth', () => ({ initOidc: async () => null, getOidc: () => null }));
 import TimeZonePicker from '../../../src/components/settings/TimeZonePicker.vue';
+import { __resetRepositoryForTests, __setRepositoryForTests } from '../../../src/composables/useRepository';
+import { AUTH_STATE } from '../../../src/constants/states';
+import { useAuthStore } from '../../../src/stores/auth-store';
 import { useSettingsStore } from '../../../src/stores/settings-store';
 
 enableAutoUnmount(afterEach);
-beforeEach(() => { setActivePinia(createPinia()); localStorage.clear(); });
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  setActivePinia(createPinia());
+  localStorage.clear();
+  __resetRepositoryForTests();
+});
+afterEach(() => {
+  useSettingsStore().detach();
+  vi.restoreAllMocks();
+  __resetRepositoryForTests();
+});
 
 describe('TimeZonePicker', () => {
   it('searches without saving and persists only a chosen valid IANA zone', async () => {
@@ -26,17 +37,32 @@ describe('TimeZonePicker', () => {
     expect(wrapper.get('summary').text()).toBe('Asia/Tokyo');
     expect(document.activeElement).toBe(wrapper.get('summary').element);
   });
-  it('keeps a failed save visible and permits retrying the selected zone', async () => {
+  it('explains that a failed sync keeps the zone locally and permits retrying', async () => {
+    const applySettingsPatch = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ doc: { settings: { timeZone: 'Asia/Tokyo' } } });
+    __setRepositoryForTests({
+      subscribe: vi.fn(() => () => {}),
+      ensureSettings: vi.fn(async () => {}),
+      getSettings: vi.fn(async () => ({ doc: { settings: { timeZone: 'UTC' } } })),
+      applySettingsPatch,
+    });
+    const auth = useAuthStore();
+    auth.accountId = 1;
+    auth.status = AUTH_STATE.CONNECTED;
     const store = useSettingsStore();
-    const update = vi.spyOn(store, 'update').mockRejectedValueOnce(new Error('offline'));
+    await store.attach();
+    await flushPromises();
     const wrapper = mount(TimeZonePicker);
     await wrapper.get('input').setValue('tokyo');
     await wrapper.get('button').trigger('click');
     await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toContain('could not be saved');
+    expect(wrapper.get('summary').text()).toBe('Asia/Tokyo');
+    expect(JSON.parse(localStorage.getItem('stormbox.settings.v1')!).timeZone).toBe('Asia/Tokyo');
+    expect(wrapper.get('[role="alert"]').text()).toContain('Time zone changed on this device');
     await wrapper.get('button').trigger('click');
     await flushPromises();
-    expect(update).toHaveBeenCalledTimes(2);
+    expect(applySettingsPatch).toHaveBeenCalledTimes(2);
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 });
