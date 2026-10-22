@@ -56,6 +56,7 @@ const internalInvalidMessage = ref<string | null>(null);
 const currentTimeMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
 const overlayOpeners = new Map<string, HTMLElement>();
+let pendingPickerFocus: HTMLElement | null = null;
 const pickerConfig = { closeOnAutoApply: false, onInternalKeydown: onPickerKeydown };
 const timeConfig = {
   enableTimePicker: true,
@@ -181,27 +182,48 @@ function onPickerKeydown(event: KeyboardEvent): false | void {
 
 async function onOverlayToggle({ open, overlay }: { open: boolean; overlay: string }): Promise<void> {
   if (open) {
+    for (const activeOverlay of dialogEl.value?.querySelectorAll('[role="listbox"]') ?? []) {
+      activeOverlay.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, cancelable: true,
+      }));
+    }
+    pendingPickerFocus = null;
     if (document.activeElement instanceof HTMLElement) {
       overlayOpeners.set(overlay, document.activeElement);
     }
     await nextTick();
+    if (!overlayOpeners.has(overlay)) return;
     const listbox = dialogEl.value?.querySelector<HTMLElement>('[role="listbox"]');
     const target = listbox?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]:not([aria-disabled="true"])')
       ?? listbox?.querySelector<HTMLElement>('[role="option"]:not([aria-disabled="true"])');
     target?.focus({ preventScroll: true });
   } else {
     const opener = overlayOpeners.get(overlay);
+    if (!opener) return;
     overlayOpeners.delete(overlay);
+    pendingPickerFocus = overlayOpeners.size === 0 ? opener ?? null : null;
     await nextTick();
-    // The picker's arrow navigation restores focus over two animation frames.
-    await nextTick();
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
-    if (overlayOpeners.size === 0 && opener?.isConnected && dialogEl.value?.contains(opener)) {
-      opener.focus({ preventScroll: true });
-    }
+    restorePickerFocus();
   }
+}
+
+function onPickerFocusIn(): void {
+  requestAnimationFrame(restorePickerFocus);
+}
+
+function clearPendingPickerFocus(): void {
+  pendingPickerFocus = null;
+}
+
+function restorePickerFocus(): void {
+  const opener = pendingPickerFocus;
+  if (!opener) return;
+  if (!opener.isConnected || !dialogEl.value?.contains(opener)) {
+    pendingPickerFocus = null;
+    return;
+  }
+  // Preserve the opener through deferred picker focus until the next user interaction.
+  if (document.activeElement !== opener) opener.focus({ preventScroll: true });
 }
 
 function updatePickerValue(value: ModelValue): void {
@@ -243,6 +265,7 @@ function onInvalidSelect(): void {
 }
 
 onMounted(() => {
+  pendingPickerFocus = dialogEl.value;
   clockTimer = setInterval(() => {
     currentTimeMs.value = Date.now();
   }, 30_000);
@@ -266,6 +289,9 @@ onBeforeUnmount(() => {
         :aria-describedby="`schedule-dialog-zone-${sessionId}`"
         tabindex="-1"
         @keydown="onKeydown"
+        @keydown.capture="clearPendingPickerFocus"
+        @pointerdown.capture="clearPendingPickerFocus"
+        @focusin="onPickerFocusIn"
       >
         <header>
           <div>

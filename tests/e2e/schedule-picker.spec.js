@@ -71,10 +71,13 @@ async function openCustomPicker(page) {
   await composer.getByRole('menuitem').filter({ hasText: 'Choose a date and time' }).click();
   const dialog = page.getByRole('dialog', { name: 'Choose a date and time' });
   await expect(dialog.getByRole('grid')).toBeVisible();
+  await settlePickerFocus(page);
+  await expect(dialog).toBeFocused();
   return { composer, trigger, dialog };
 }
 
 async function moveCalendarFocus(page, dialog) {
+  await page.keyboard.press('Tab');
   const ids = await dialog.evaluate((el) => {
     for (const row of el.querySelectorAll('[role="row"]')) {
       const cells = [...row.querySelectorAll('[role="gridcell"][id]')];
@@ -97,6 +100,10 @@ async function moveCalendarFocus(page, dialog) {
 
 async function settlePickerOverlay(page, overlay) {
   await expect(overlay).toHaveCount(0);
+  await settlePickerFocus(page);
+}
+
+async function settlePickerFocus(page) {
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
@@ -205,9 +212,30 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
       await expect(dialog.getByRole('status')).toHaveText(selectedTime);
       await expect(opener).toBeFocused();
     }
+    await monthOpener.click();
+    const hourOpener = dialog.getByRole('button', { name: /Open hours overlay$/ });
+    await hourOpener.focus();
+    await page.keyboard.press('Enter');
+    await expect(monthOpener).toHaveAttribute('aria-expanded', 'false');
+    await expect(dialog.getByRole('listbox')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await settlePickerOverlay(page, dialog.getByRole('listbox'));
+    await expect(hourOpener).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(trigger).toBeFocused();
+  } finally {
+    await closeHeldCompose(page, sessionId);
+  }
+});
+
+test('the custom picker opens with dialog focus so Enter confirms the selected time', async ({ sharedPage: page }) => {
+  const sessionId = await createHeldCompose(page);
+  try {
+    const { dialog, trigger } = await openCustomPicker(page);
+    await page.keyboard.press('Enter');
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toHaveAttribute('title', /^Custom — /);
   } finally {
     await closeHeldCompose(page, sessionId);
   }

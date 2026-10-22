@@ -8,7 +8,7 @@ import ScheduleSendDialog from '../../../src/components/ScheduleSendDialog.vue';
 const PickerStub = defineComponent({
   name: 'VueDatePicker',
   props: ['modelValue', 'minDate', 'maxDate', 'inline', 'autoApply', 'timeConfig'],
-  emits: ['update:model-value', 'internal-model-change', 'invalid-date', 'invalid-select'],
+  emits: ['update:model-value', 'internal-model-change', 'invalid-date', 'invalid-select', 'overlay-toggle'],
   setup() { return () => h('div', { class: 'picker-stub' }); },
 });
 enableAutoUnmount(afterEach);
@@ -87,5 +87,34 @@ describe('ScheduleSendDialog', () => {
     await wrapper.setProps({ busy: false });
     await wrapper.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
     expect(wrapper.emitted('close')).toHaveLength(1);
+  });
+  it('preserves overlay return focus through deferred updates until the next user action', async () => {
+    const wrapper = mountDialog();
+    const picker = wrapper.findComponent(VueDatePicker);
+    const opener = wrapper.get<HTMLButtonElement>('.schedule-dialog__submit');
+    const cancel = wrapper.get<HTMLButtonElement>('.schedule-dialog__actions button');
+
+    async function dismissOverlay() {
+      await opener.trigger('pointerdown');
+      opener.element.focus();
+      picker.vm.$emit('overlay-toggle', { open: true, overlay: 'month' });
+      await nextTick();
+      picker.vm.$emit('overlay-toggle', { open: false, overlay: 'month' });
+      await nextTick();
+    }
+
+    await dismissOverlay();
+    cancel.element.focus();
+    await vi.waitFor(() => expect(document.activeElement).toBe(opener.element));
+    await cancel.trigger('keydown', { key: 'Tab' });
+    cancel.element.focus();
+    expect(document.activeElement).toBe(cancel.element);
+
+    await dismissOverlay();
+    cancel.element.focus();
+    await vi.waitFor(() => expect(document.activeElement).toBe(opener.element));
+    await cancel.trigger('pointerdown');
+    cancel.element.focus();
+    expect(document.activeElement).toBe(cancel.element);
   });
 });
