@@ -45,6 +45,22 @@ afterEach(() => {
 });
 
 describe('useRecipientSuggestions', () => {
+  it('coalesces same-turn inputs without a typing-pause delay', async () => {
+    const query = vi.fn(async () => CONTACTS);
+    const harness = makeHarness({ query, debounceMs: 0 });
+
+    harness.text.value = 'b';
+    harness.scheduleQuery();
+    harness.text.value = 'bo';
+    harness.scheduleQuery();
+    expect(query).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(query).toHaveBeenCalledExactlyOnceWith('bo', 10, []);
+    expect(harness.suggestions.value).toEqual(CONTACTS);
+    harness.scope.stop();
+  });
+
   it('debounces a query until typing pauses', async () => {
     const query = vi.fn(async () => CONTACTS);
     const harness = makeHarness({ query });
@@ -101,6 +117,64 @@ describe('useRecipientSuggestions', () => {
     expect(harness.activeIndex.value).toBe(0);
     expect(harness.isPanelOpen.value).toBe(true);
     harness.scope.stop();
+  });
+
+  it('discards an answer as soon as newer input is scheduled', async () => {
+    let answer!: (value: AutocompleteCandidate[]) => void;
+    const query = vi.fn(() => new Promise<AutocompleteCandidate[]>((resolve) => {
+      answer = resolve;
+    }));
+    const harness = makeHarness({ query });
+
+    harness.text.value = 'bo';
+    harness.scheduleQuery();
+    await vi.advanceTimersByTimeAsync(40);
+    harness.text.value = 'bobbie';
+    harness.scheduleQuery();
+    answer([CONTACTS[0]]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(harness.suggestions.value).toEqual([]);
+    expect(harness.isPanelOpen.value).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(40);
+    answer([CONTACTS[1]]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.suggestions.value).toEqual([CONTACTS[1]]);
+    harness.scope.stop();
+  });
+
+  it('cancels the scheduled lookup when explicitly queried', async () => {
+    const query = vi.fn(async () => CONTACTS);
+    const harness = makeHarness({ query });
+
+    harness.text.value = 'bo';
+    harness.scheduleQuery();
+    await harness.runQuery('bo');
+    await vi.runAllTimersAsync();
+
+    expect(query).toHaveBeenCalledExactlyOnceWith('bo', 10, []);
+    harness.scope.stop();
+  });
+
+  it('ignores an in-flight answer after disposal', async () => {
+    let answer!: (value: AutocompleteCandidate[]) => void;
+    const harness = makeHarness({
+      query: () => new Promise<AutocompleteCandidate[]>((resolve) => {
+        answer = resolve;
+      }),
+    });
+
+    harness.text.value = 'bo';
+    harness.scheduleQuery();
+    await vi.runAllTimersAsync();
+    harness.scope.stop();
+    answer(CONTACTS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(harness.isPanelOpen.value).toBe(false);
+    expect(harness.suggestions.value).toEqual([]);
   });
 
   it('cancels the pending debounce when its scope is disposed', async () => {

@@ -82,9 +82,7 @@ export function useRecipientSuggestions({
     return count === 1 ? '1 suggestion' : `${count} suggestions`;
   });
 
-  onScopeDispose(() => {
-    if (debounceTimer) clearTimeout(debounceTimer);
-  });
+  onScopeDispose(closeList);
 
   /**
    * Stop wanting a list, whatever the reason — dismissed, committed, or left.
@@ -131,6 +129,7 @@ export function useRecipientSuggestions({
     const browseAll = getBrowseAll();
     if (!browseAll) return false;
     if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = null;
     const token = (queryToken += 1);
     const { value: found, answered } = await ask(() => browseAll(), []);
     if (token !== queryToken) return false;
@@ -146,6 +145,8 @@ export function useRecipientSuggestions({
   }
 
   async function runQuery(prefix: string): Promise<void> {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = null;
     const query = getQuery();
     const token = (queryToken += 1);
     const excluded = [...takenEmails.value];
@@ -173,6 +174,8 @@ export function useRecipientSuggestions({
 
   function scheduleQuery(): void {
     if (debounceTimer) clearTimeout(debounceTimer);
+    // CS-3.10: an answer becomes stale on input, before the next query starts.
+    queryToken += 1;
     const prefix = text.value.trim();
     if (!hasQueryPrefix(prefix)) {
       // Nothing typed is not a query with no answers. Invalidating the token

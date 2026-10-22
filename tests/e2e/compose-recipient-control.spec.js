@@ -166,6 +166,90 @@ test.describe('Recipient control', () => {
     await resetSharedSession(sharedPage);
   });
 
+  test('renders local suggestions within 100 ms of input at p95', async ({ sharedPage: page }, testInfo) => {
+    test.setTimeout(180_000);
+    const seeded = await seedFindableContact(page, 'Quicktype');
+    try {
+      // CS-3.14 measures a ready cache, after initial mail indexing settles.
+      await expect.poll(() => page.evaluate(async () => {
+        const repo = globalThis.__repo;
+        const accounts = await repo.listAccounts();
+        const incomplete = [];
+        for (const account of accounts) {
+          const folders = await repo.listFolders(account.id);
+          for (const folder of folders) {
+            if (!folder.total_emails || (!account.is_primary && !folder.is_subscribed)) continue;
+            const progress = await repo.queryViewProgress({
+              accountId: account.id,
+              folderId: folder.id,
+              sort: folder.role === 'scheduled'
+                ? 'scheduled'
+                : (['sent', 'drafts'].includes(folder.role) ? 'sent' : 'received'),
+            });
+            if (progress.covered < (progress.total || folder.total_emails)) {
+              incomplete.push(folder.name);
+            }
+          }
+        }
+        return incomplete;
+      }), { timeout: 120_000, intervals: [500], message: 'initial mail indexing should finish' })
+        .toEqual([]);
+      await openCompose(page);
+      const field = recipientInput(page, 'To');
+      const samples = [];
+      for (let index = 0; index < 20; index += 1) {
+        const prefix = index % 2 === 0 ? seeded.term[0] : seeded.term.slice(0, 5 + index % 5);
+        await field.fill('');
+        await expect(field).toHaveAttribute('aria-expanded', 'false');
+        await field.evaluate((input, email) => {
+          // Measure in the page: Playwright polling would inflate the latency.
+          window.__recipientLatency = new Promise((resolve, reject) => {
+            input.addEventListener('input', () => {
+              const started = performance.now();
+              const panel = input.closest('.recipient-input');
+              const timeout = setTimeout(() => {
+                observer.disconnect();
+                reject(new Error(`The seeded suggestion did not render for ${input.value}: ${panel.textContent}`));
+              }, 5_000);
+              const observer = new MutationObserver(() => {
+                const match = [...panel.querySelectorAll('[role="option"] .ac-email')]
+                  .some((element) => email === null || element.textContent.trim() === email);
+                if (!match || input.getAttribute('aria-expanded') !== 'true') return;
+                observer.disconnect();
+                clearTimeout(timeout);
+                const domMs = performance.now() - started;
+                // The second frame gives the browser a paint opportunity.
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+                  domMs,
+                  frameMs: performance.now() - started,
+                })));
+              });
+              observer.observe(panel, { childList: true, subtree: true, attributes: true });
+            }, { capture: true, once: true });
+          });
+        }, prefix.length === 1 ? null : seeded.email);
+        await page.keyboard.insertText(prefix);
+        samples.push({ prefix, ...await page.evaluate(() => window.__recipientLatency) });
+      }
+      const p95 = samples.map((sample) => sample.frameMs).sort((a, b) => a - b)[18];
+      console.log(`[autocomplete] ${testInfo.project.name} input-to-frame p95 ${p95.toFixed(1)}ms`);
+      await testInfo.attach('autocomplete-latency.json', {
+        body: JSON.stringify({ samples, p95 }, null, 2),
+        contentType: 'application/json',
+      });
+      expect(p95, 'CS-3.14: input-to-frame latency includes scheduling, worker RPC, and rendering')
+        .toBeLessThan(100);
+
+      await field.fill('');
+      await field.pressSequentially(seeded.term, { delay: 20 });
+      await expect(page.locator('#compose-to-listbox [role="option"]', { hasText: seeded.email }))
+        .toBeVisible();
+    } finally {
+      await closeCompose(page);
+      await forgetContact(page, seeded);
+    }
+  });
+
   test('addresses a message from the keyboard alone', async ({ sharedPage: page }) => {
     try {
       await openCompose(page);
