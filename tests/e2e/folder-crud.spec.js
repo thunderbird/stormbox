@@ -174,8 +174,10 @@ test.describe('Folder create/rename/delete e2e', () => {
       await dialog.locator('[data-folder-new]').click();
       await createDialog.locator('[data-folder-create-name]').fill(CREATE_NAME);
       await createDialog.locator('[data-folder-create-submit]').click();
-      await expect(createDialog.locator('.folder-create__error'))
+      await expect(createDialog.getByRole('alert'))
         .toHaveText('A folder with that name already exists here.');
+      await expect(createDialog.locator('[data-folder-create-name]'))
+        .toHaveAccessibleDescription('A folder with that name already exists here.');
       await expect(page.locator('.store-error-toast__message')).toHaveCount(0);
       await createDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
       await expect(createDialog).toBeHidden();

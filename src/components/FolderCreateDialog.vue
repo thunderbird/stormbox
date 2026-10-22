@@ -170,6 +170,7 @@ onBeforeUnmount(() => {
             type="text"
             class="folder-create__input"
             placeholder="Folder name"
+            :aria-describedby="failure ? 'folder-create-error' : undefined"
             data-folder-create-name
           />
         </label>
@@ -201,7 +202,9 @@ onBeforeUnmount(() => {
             </div>
           </AppDropdown>
         </div>
-        <p v-if="failure" class="folder-create__error">{{ failure }}</p>
+        <p v-if="failure" id="folder-create-error" class="folder-create__error" role="alert">
+          {{ failure }}
+        </p>
         <div class="folder-create__actions">
           <button
             type="button"

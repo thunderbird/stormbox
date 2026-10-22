@@ -121,7 +121,10 @@ describe('FolderCreateDialog', () => {
     await nextTick();
 
     expect(wrapper.emitted('close')).toBeFalsy();
-    expect(wrapper.text()).toContain('already exists');
+    const alert = wrapper.get('[role="alert"]');
+    expect(alert.text()).toContain('already exists');
+    expect(wrapper.get('[data-folder-create-name]').attributes('aria-describedby'))
+      .toBe(alert.attributes('id'));
   });
 
   it('disables the submit button until a name is entered', async () => {
