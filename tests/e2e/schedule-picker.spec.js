@@ -126,7 +126,9 @@ test('Settings time zone persists in the cache and server and drives the inline 
   try {
     await changeTimeZone(page, zone);
     await expect.poll(async () => (await localSettings(page))?.doc?.settings?.timeZone).toBe(zone);
-    await expect.poll(() => remoteTimeZone(page, jmap), { timeout: 30_000 }).toBe(zone);
+    await expect(async () => {
+      expect(await remoteTimeZone(page, jmap)).toBe(zone);
+    }).toPass({ timeout: 30_000 });
     await page.reload();
     await page.locator('[data-settings-gear]').click();
     await expect(page.locator('[data-time-zone-picker] summary')).toHaveText(zone);
@@ -169,7 +171,9 @@ test('Settings time zone persists in the cache and server and drives the inline 
     const closeSettings = page.getByRole('button', { name: 'Close settings' });
     if (await closeSettings.isVisible()) await closeSettings.click();
     await changeTimeZone(page, originalZone);
-    await expect.poll(() => remoteTimeZone(page, jmap), { timeout: 30_000 }).toBe(originalZone);
+    await expect(async () => {
+      expect(await remoteTimeZone(page, jmap)).toBe(originalZone);
+    }).toPass({ timeout: 30_000 });
   }
 });
 
@@ -219,6 +223,7 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
       await expect(cancel).toBeFocused();
     }
     await monthOpener.click();
+    await settlePickerFocus(page);
     const hourOpener = dialog.getByRole('button', { name: /Open hours overlay$/ });
     await hourOpener.focus();
     await page.keyboard.press('Enter');
