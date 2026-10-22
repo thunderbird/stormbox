@@ -295,6 +295,7 @@ onBeforeUnmount(() => {
           auto-apply
           arrow-navigation
           prevent-min-max-navigation
+          :transitions="false"
           :config="pickerConfig"
           @overlay-toggle="onOverlayToggle"
           model-type="iso"

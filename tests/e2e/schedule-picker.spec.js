@@ -74,6 +74,34 @@ async function openCustomPicker(page) {
   return { composer, trigger, dialog };
 }
 
+async function moveCalendarFocus(page, dialog) {
+  const ids = await dialog.evaluate((el) => {
+    for (const row of el.querySelectorAll('[role="row"]')) {
+      const cells = [...row.querySelectorAll('[role="gridcell"][id]')];
+      for (let index = 0; index < cells.length - 1; index += 1) {
+        const [first, second] = cells.slice(index, index + 2);
+        if (first.getAttribute('aria-disabled') !== 'true'
+          && second.getAttribute('aria-disabled') !== 'true'
+          && second.getAttribute('aria-selected') !== 'true') return [first.id, second.id];
+      }
+    }
+    return null;
+  });
+  expect(ids).not.toBeNull();
+  await dialog.locator(`[id="${ids[0]}"]`).focus();
+  await page.keyboard.press('ArrowRight');
+  const target = dialog.locator(`[id="${ids[1]}"]`);
+  await expect(target).toBeFocused();
+  return target;
+}
+
+async function settlePickerOverlay(page, overlay) {
+  await expect(overlay).toHaveCount(0);
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+}
+
 test.beforeEach(async ({ sharedPage: page }) => {
   await resetSharedSession(page);
 });
@@ -141,7 +169,29 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
   const sessionId = await createHeldCompose(page);
   try {
     const { dialog, trigger } = await openCustomPicker(page);
+    await moveCalendarFocus(page, dialog);
+    await page.keyboard.press('Enter');
     const selectedTime = await dialog.getByRole('status').innerText();
+    const monthOpener = dialog.getByRole('button', { name: /Open months overlay$/ });
+    await monthOpener.click();
+    const monthOverlay = dialog.getByRole('listbox');
+    const monthMove = await monthOverlay.evaluate((el) => {
+      const enabled = [...el.querySelectorAll('[role="option"]:not([aria-disabled="true"])')];
+      const target = enabled.at(-1);
+      const previous = target.previousElementSibling;
+      const source = previous ?? target.nextElementSibling;
+      return {
+        source: source.getAttribute('aria-label'),
+        target: target.getAttribute('aria-label'),
+        key: previous ? 'ArrowRight' : 'ArrowLeft',
+      };
+    });
+    await monthOverlay.getByRole('option', { name: monthMove.source, exact: true }).focus();
+    await page.keyboard.press(monthMove.key);
+    await expect(monthOverlay.getByRole('option', { name: monthMove.target, exact: true })).toBeFocused();
+    await page.keyboard.press('Enter');
+    await settlePickerOverlay(page, monthOverlay);
+    await expect(monthOpener).toBeFocused();
     for (const section of ['months', 'years', 'hours', 'minutes']) {
       const opener = dialog.getByRole('button', { name: new RegExp(`Open ${section} overlay$`) });
       await opener.click();
@@ -150,7 +200,7 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
       await expect(overlay.locator('[role="option"]:focus')).toHaveCount(1);
       if (section === 'minutes') await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
       await page.keyboard.press('Escape');
-      await expect(overlay).toBeHidden();
+      await settlePickerOverlay(page, overlay);
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole('status')).toHaveText(selectedTime);
       await expect(opener).toBeFocused();
@@ -167,23 +217,7 @@ test('calendar arrow keys move focus to the day that Enter selects', async ({ sh
   const sessionId = await createHeldCompose(page);
   try {
     const { dialog } = await openCustomPicker(page);
-    const ids = await dialog.evaluate((el) => {
-      for (const row of el.querySelectorAll('[role="row"]')) {
-        const cells = [...row.querySelectorAll('[role="gridcell"][id]')];
-        for (let index = 0; index < cells.length - 1; index += 1) {
-          const [first, second] = cells.slice(index, index + 2);
-          if (first.getAttribute('aria-disabled') !== 'true'
-            && second.getAttribute('aria-disabled') !== 'true'
-            && second.getAttribute('aria-selected') !== 'true') return [first.id, second.id];
-        }
-      }
-      return null;
-    });
-    expect(ids).not.toBeNull();
-    await dialog.locator(`[id="${ids[0]}"]`).focus();
-    await page.keyboard.press('ArrowRight');
-    const target = dialog.locator(`[id="${ids[1]}"]`);
-    await expect(target).toBeFocused();
+    const target = await moveCalendarFocus(page, dialog);
     await page.keyboard.press('Enter');
     await expect(target).toHaveAttribute('aria-selected', 'true');
     await expect(dialog).toBeVisible();
