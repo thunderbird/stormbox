@@ -170,6 +170,22 @@ test.describe('Folder create/rename/delete e2e', () => {
       expect(serverCreated).toBeTruthy();
       expect(cachedCreated.remote_id).toBe(serverCreated.id);
 
+      dialog = await openManageDialog(page);
+      await dialog.locator('[data-folder-new]').click();
+      await createDialog.locator('[data-folder-create-name]').fill(CREATE_NAME);
+      await createDialog.locator('[data-folder-create-submit]').click();
+      await expect(createDialog.locator('.folder-create__error'))
+        .toHaveText('A folder with that name already exists here.');
+      await expect(page.locator('.store-error-toast__message')).toHaveCount(0);
+      await createDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(createDialog).toBeHidden();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(page.locator('.store-error-toast__message')).toHaveCount(0);
+      expect((await readCachedFolderByName(page, CREATE_NAME)).remote_id).toBe(serverCreated.id);
+      expect((await listServerMailboxes(jmap)).filter((folder) => folder.name === CREATE_NAME))
+        .toHaveLength(1);
+
       // ---- rename ----------------------------------------------------
       dialog = await openManageDialog(page, CREATE_NAME);
       await dialog.locator(`[data-folder-edit="${CREATE_NAME}"]`).click();

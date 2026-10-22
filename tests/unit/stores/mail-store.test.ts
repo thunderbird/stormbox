@@ -3522,8 +3522,9 @@ describe('folder create/rename/delete actions', () => {
     expect(mailStore.folderCreatePending).toBe(false);
   });
 
-  it('createFolder rejects a duplicate sibling name without queueing', async () => {
+  it.each([null, 'A connection error.'])('createFolder rejects a duplicate without queueing or replacing the global error (%s)', async (existingError) => {
     const { mailStore, repo } = await setupCrudStore();
+    mailStore.error = existingError;
     let inserts = 0;
     repo.insertPendingMutation = async () => {
       inserts += 1;
@@ -3535,7 +3536,7 @@ describe('folder create/rename/delete actions', () => {
     const result = await mailStore.createFolder({ name: 'alpha', parentFolderId: 10 });
     expect(result).toEqual({ ok: false, reason: 'duplicateName' });
     expect(inserts).toBe(0);
-    expect(mailStore.error).toContain('already exists');
+    expect(mailStore.error).toBe(existingError);
   });
 
   it('updateFolder refuses system folders and parent loops client-side', async () => {

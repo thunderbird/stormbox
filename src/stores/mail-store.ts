@@ -3694,7 +3694,6 @@ export const useMailStore = defineStore('mail', () => {
     }
     const targetAccountId = parent?.account_id ?? authStore.accountId;
     if (targetAccountId != null && siblingNameTaken(targetAccountId, parent?.id ?? null, trimmed)) {
-      error.value = `A folder named “${trimmed}” already exists here.`;
       return { ok: false, reason: 'duplicateName' };
     }
     folderCreatePending.value = true;
