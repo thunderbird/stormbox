@@ -88,11 +88,22 @@ describe('ScheduleSendDialog', () => {
     await wrapper.get('.schedule-dialog').trigger('keydown', { key: 'Escape' });
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
-  it('preserves overlay return focus through deferred updates until the next user action', async () => {
+  it('limits overlay focus restoration to the deferred picker update', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
     const wrapper = mountDialog();
     const picker = wrapper.findComponent(VueDatePicker);
     const opener = wrapper.get<HTMLButtonElement>('.schedule-dialog__submit');
     const cancel = wrapper.get<HTMLButtonElement>('.schedule-dialog__actions button');
+
+    async function nextFrame() {
+      const callbacks = frames.splice(0);
+      callbacks.forEach((callback) => callback(performance.now()));
+      await nextTick();
+    }
 
     async function dismissOverlay() {
       await opener.trigger('pointerdown');
@@ -105,16 +116,27 @@ describe('ScheduleSendDialog', () => {
 
     await dismissOverlay();
     cancel.element.focus();
-    await vi.waitFor(() => expect(document.activeElement).toBe(opener.element));
+    await nextFrame();
+    expect(document.activeElement).toBe(opener.element);
+    await nextFrame();
+    await nextFrame();
+    cancel.element.focus();
+    await nextFrame();
+    expect(document.activeElement).toBe(cancel.element);
+
+    await dismissOverlay();
     await cancel.trigger('keydown', { key: 'Tab' });
     cancel.element.focus();
+    await nextFrame();
     expect(document.activeElement).toBe(cancel.element);
 
     await dismissOverlay();
     cancel.element.focus();
-    await vi.waitFor(() => expect(document.activeElement).toBe(opener.element));
+    await nextFrame();
+    expect(document.activeElement).toBe(opener.element);
     await cancel.trigger('pointerdown');
     cancel.element.focus();
+    await nextFrame();
     expect(document.activeElement).toBe(cancel.element);
   });
 });

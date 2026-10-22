@@ -77,7 +77,6 @@ async function openCustomPicker(page) {
 }
 
 async function moveCalendarFocus(page, dialog) {
-  await page.keyboard.press('Tab');
   const ids = await dialog.evaluate((el) => {
     for (const row of el.querySelectorAll('[role="row"]')) {
       const cells = [...row.querySelectorAll('[role="gridcell"][id]')];
@@ -92,6 +91,8 @@ async function moveCalendarFocus(page, dialog) {
   });
   expect(ids).not.toBeNull();
   await dialog.locator(`[id="${ids[0]}"]`).focus();
+  await settlePickerFocus(page);
+  await expect(dialog.locator(`[id="${ids[0]}"]`)).toBeFocused();
   await page.keyboard.press('ArrowRight');
   const target = dialog.locator(`[id="${ids[1]}"]`);
   await expect(target).toBeFocused();
@@ -105,7 +106,7 @@ async function settlePickerOverlay(page, overlay) {
 
 async function settlePickerFocus(page) {
   await page.evaluate(() => new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   }));
 }
 
@@ -211,6 +212,10 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole('status')).toHaveText(selectedTime);
       await expect(opener).toBeFocused();
+      const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+      await cancel.focus();
+      await settlePickerFocus(page);
+      await expect(cancel).toBeFocused();
     }
     await monthOpener.click();
     const hourOpener = dialog.getByRole('button', { name: /Open hours overlay$/ });

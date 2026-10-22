@@ -57,6 +57,7 @@ const currentTimeMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
 const overlayOpeners = new Map<string, HTMLElement>();
 let pendingPickerFocus: HTMLElement | null = null;
+let pickerFocusGeneration = 0;
 const pickerConfig = { closeOnAutoApply: false, onInternalKeydown: onPickerKeydown };
 const timeConfig = {
   enableTimePicker: true,
@@ -187,7 +188,7 @@ async function onOverlayToggle({ open, overlay }: { open: boolean; overlay: stri
         key: 'Escape', bubbles: true, cancelable: true,
       }));
     }
-    pendingPickerFocus = null;
+    clearPendingPickerFocus();
     if (document.activeElement instanceof HTMLElement) {
       overlayOpeners.set(overlay, document.activeElement);
     }
@@ -201,7 +202,7 @@ async function onOverlayToggle({ open, overlay }: { open: boolean; overlay: stri
     const opener = overlayOpeners.get(overlay);
     if (!opener) return;
     overlayOpeners.delete(overlay);
-    pendingPickerFocus = overlayOpeners.size === 0 ? opener ?? null : null;
+    void preservePickerFocus(overlayOpeners.size === 0 ? opener : null);
     await nextTick();
     restorePickerFocus();
   }
@@ -212,7 +213,23 @@ function onPickerFocusIn(): void {
 }
 
 function clearPendingPickerFocus(): void {
+  pickerFocusGeneration += 1;
   pendingPickerFocus = null;
+}
+
+async function preservePickerFocus(target: HTMLElement | null): Promise<void> {
+  clearPendingPickerFocus();
+  pendingPickerFocus = target;
+  if (!target) return;
+  const generation = pickerFocusGeneration;
+  await nextTick();
+  // VueDatePicker queues arrow-navigation focus across two animation frames.
+  for (let frame = 0; frame < 3; frame += 1) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (generation !== pickerFocusGeneration) return;
+  }
+  restorePickerFocus();
+  clearPendingPickerFocus();
 }
 
 function restorePickerFocus(): void {
@@ -222,7 +239,6 @@ function restorePickerFocus(): void {
     pendingPickerFocus = null;
     return;
   }
-  // Preserve the opener through deferred picker focus until the next user interaction.
   if (document.activeElement !== opener) opener.focus({ preventScroll: true });
 }
 
@@ -265,13 +281,14 @@ function onInvalidSelect(): void {
 }
 
 onMounted(() => {
-  pendingPickerFocus = dialogEl.value;
+  void preservePickerFocus(dialogEl.value);
   clockTimer = setInterval(() => {
     currentTimeMs.value = Date.now();
   }, 30_000);
 });
 
 onBeforeUnmount(() => {
+  clearPendingPickerFocus();
   if (clockTimer != null) clearInterval(clockTimer);
   clockTimer = null;
 });
