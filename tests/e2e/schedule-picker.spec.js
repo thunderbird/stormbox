@@ -183,6 +183,7 @@ test('Escape dismisses the active picker overlay before closing the schedule dia
     const monthOpener = dialog.getByRole('button', { name: /Open months overlay$/ });
     await monthOpener.click();
     const monthOverlay = dialog.getByRole('listbox');
+    await settlePickerFocus(page);
     const monthMove = await monthOverlay.evaluate((el) => {
       const enabled = [...el.querySelectorAll('[role="option"]:not([aria-disabled="true"])')];
       const target = enabled.at(-1);
