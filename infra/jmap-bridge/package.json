@@ -9,6 +9,10 @@
     "tail": "wrangler tail",
     "types": "wrangler types"
   },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici": "7.29.1"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
     "typescript": "^5.5.0",
