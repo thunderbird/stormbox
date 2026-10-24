@@ -33,7 +33,7 @@ function mountControl(options: {
       label: 'To',
       inputId: 'compose-to',
       entries: options.entries ?? [],
-      debounceMs: options.debounceMs ?? 0,
+      ...(options.debounceMs !== undefined ? { debounceMs: options.debounceMs } : {}),
       ...(options.query ? { query: options.query } : {}),
       ...(options.browseAll ? { browseAll: options.browseAll } : {}),
       ...(options.taken ? { taken: options.taken } : {}),
@@ -598,6 +598,22 @@ describe('RecipientInput suggestions', () => {
 
     expect(query).toHaveBeenCalledWith('b', 10, []);
     expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+  });
+
+  it('shows local results on the next task with the production default', async () => {
+    vi.useFakeTimers();
+    const query = vi.fn(async () => CONTACTS);
+    const wrapper = mountControl({ query });
+    try {
+      await type(wrapper, 'b');
+      expect(query).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(query).toHaveBeenCalledExactlyOnceWith('b', 10, []);
+      expect(options(wrapper)).toEqual(['bob@example.com', 'bobbie@example.com']);
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('discards an answer that is no longer the question', async () => {

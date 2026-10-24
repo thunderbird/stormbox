@@ -49,13 +49,13 @@ const props = withDefaults(defineProps<{
   browseAll?: () => Promise<AutocompleteCandidate[]>;
   /** Addresses already committed elsewhere, which are not offered again. */
   taken?: readonly string[];
-  /** How long to wait after a keystroke before querying. */
+  /** Optional delay; zero coalesces inputs in the same event-loop turn. */
   debounceMs?: number;
 }>(), {
   query: undefined,
   browseAll: undefined,
   taken: () => [],
-  debounceMs: 120,
+  debounceMs: 0,
 });
 
 const emit = defineEmits<{
