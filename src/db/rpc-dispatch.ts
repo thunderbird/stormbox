@@ -23,6 +23,7 @@ export const RPC_CANCEL = 'rpc.cancel';
 export const RPC_PROGRESS = 'rpc.progress';
 export const TABLES_TOUCHED = 'tables.touched';
 export const WORKER_LOG = 'worker.log';
+export const WORKER_RESTARTED = 'worker.restarted';
 
 export const RPC_PROGRESS_INTERVAL_MS = 250;
 

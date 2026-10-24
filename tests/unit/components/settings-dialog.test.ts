@@ -36,6 +36,9 @@ function makeRepo() {
   });
   return {
     subscribe() { return () => {}; },
+    async getWorkerStatus() { return { instanceId: 'worker-1', startedAt: 0, uptimeMs: 1000 }; },
+    getMessageContentTimings() { return { count: 0, lastMs: null, pending: 0 }; },
+    async restartWorker() {},
     async getSettings() { return doc(); },
     async applySettingsPatch(_accountId, patch) { settings = { ...settings, ...patch }; return doc(); },
     async listAccounts() { return []; },
@@ -250,7 +253,7 @@ describe('settings gear and dialog', () => {
       .toEqual(['system-theme', 'hr', 'h3', 'palette']);
     const titles = Array.from(panel.querySelectorAll('[data-staff-settings] .settings-dialog__row-title'))
       .map((el) => el.textContent);
-    expect(titles).toEqual(['Bolt colors', 'Feature beacons']);
+    expect(titles).toEqual(['Bolt colors', 'Feature beacons', 'Shared worker']);
   });
 
   it('the Bolt colors switch persists the palette and flags <html>', async () => {

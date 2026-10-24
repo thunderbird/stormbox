@@ -58,12 +58,13 @@ interface MutableAuth {
  * sweep instead.
  */
 export function makeSyncRpcHandlers({
-  handlers, fetch, WebSocketImpl, outboxNotifier,
+  handlers, fetch, WebSocketImpl, outboxNotifier, registerShutdown,
 }: {
   handlers?: any;
   fetch?: typeof globalThis.fetch;
   WebSocketImpl?: typeof globalThis.WebSocket;
   outboxNotifier?: any;
+  registerShutdown?: (stop: () => Promise<void>) => void;
 } = {}) {
   if (!handlers) {
     throw new Error('makeSyncRpcHandlers requires the repository handler map');
@@ -81,6 +82,20 @@ export function makeSyncRpcHandlers({
   const backends = new Map();
   const authByBackend = new WeakMap<JmapBackend, MutableAuth>();
   const bearerStarts = new Map<string, Promise<void>>();
+
+  registerShutdown?.(async () => {
+    const results = await Promise.allSettled([...new Set(backends.values())].map(async (backend) => {
+      try {
+        // Give submitted mutations a chance to finish before aborting transport.
+        await backend.outboxRunner?.stop();
+      } finally {
+        await backend.stop();
+      }
+    }));
+    backends.clear();
+    const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+    if (errors.length) throw new AggregateError(errors, 'Worker sync shutdown failed.');
+  });
 
   if (outboxNotifier) {
     outboxNotifier.dispatch = (accountId, _mutationId) => {

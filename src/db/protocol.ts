@@ -46,8 +46,15 @@ export const SHARED_WORKER_NAME = 'stormbox-db';
 
 export const BROADCAST_CHANNEL = 'stormbox.tables-touched';
 
+export interface WorkerStatus {
+  instanceId: string;
+  uptimeMs: number;
+}
+
 export const DB_RPC = Object.freeze({
   HEALTHCHECK: 'db.healthcheck',
+  WORKER_STATUS: 'worker.status',
+  WORKER_RESTART: 'worker.restart',
   EXEC: 'db.exec',
   QUERY: 'db.query',
   TRANSACTION: 'db.transaction',

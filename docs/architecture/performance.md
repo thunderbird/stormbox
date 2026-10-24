@@ -29,6 +29,30 @@ leader-elected `DedicatedWorker` fallback for browsers that do not ship
 SharedWorker (e.g. Android Chrome); that fallback is not implemented.
 Missing SharedWorker fails boot.
 
+## Staff worker diagnostics
+
+Staff settings shows the worker's monotonic uptime and a
+five-second status RPC round trip. Status runs outside the SQLite queue, so
+its timing measures worker scheduling and message delivery rather than a
+database query. The message-content RPC separately records its full
+request-to-reply duration in `Repository`, including cache reads, server
+fetches, compose recovery reads, and delivery back to the tab. Only the last twenty durations are
+retained, without message identifiers or content.
+
+Manual reset blocks new work and gives cleanup up to five seconds to finish
+account startup, stop sync and outbox runners, drain accepted RPC and storage
+work, and close SQLite. Cleanup failure or timeout still closes the worker.
+The worker then notifies connected
+tabs and calls `self.close()`; those tabs reload and open a new worker.
+The cache is not cleared. Reset can interrupt pending mutations; it makes no
+guarantee about their completion. Unsaved tab state is lost on reload, which
+the staff control calls out. This is a manual recovery action for a responsive
+but degraded worker, not a watchdog for a blocked worker event loop.
+
+The lifecycle follows the [HTML worker model](https://html.spec.whatwg.org/multipage/workers.html#the-worker's-lifetime).
+When cleanup completes, closing the database releases the VFS's exclusive lock before a new worker
+opens it; see the [wa-sqlite locking discussion](https://github.com/rhashimoto/wa-sqlite/discussions/55).
+
 ## Storage backend
 
 The SQLite database is backed by IndexedDB through wa-sqlite's

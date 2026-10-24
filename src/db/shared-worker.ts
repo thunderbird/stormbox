@@ -13,14 +13,26 @@ import { makeHandlers } from './handlers';
 import {
   makeBroadcaster,
   serveRpcPort,
+  WORKER_RESTARTED,
 } from './rpc-dispatch';
 import { BROADCAST_CHANNEL } from './protocol';
 import { attachWorkerLogger, wlog } from './worker-log';
+import { createWorkerLifecycle } from './worker-lifecycle';
 import { makeSyncRpcHandlers } from '../sync/sync-host';
 
 const channel = new BroadcastChannel(BROADCAST_CHANNEL);
 const broadcaster = makeBroadcaster(channel);
 attachWorkerLogger(channel);
+
+const lifecycle = createWorkerLifecycle({
+  restart: () => {
+    try {
+      channel.postMessage({ type: WORKER_RESTARTED });
+    } finally {
+      self.close();
+    }
+  },
+});
 
 self.addEventListener('error', (event) => {
   wlog.error('shared-worker', 'uncaught error', event.message ?? event.error);
@@ -47,15 +59,20 @@ function getHandlers() {
     // on the next backend.start, so dropping a pre-start notify is
     // safe.
     const outboxNotifier: { dispatch: (accountId?: number, mutationId?: number) => void } = { dispatch: () => {} };
-    const repoHandlers = makeHandlers(engine, broadcaster, {
+    const repoHandlers = lifecycle.storageHandlers(makeHandlers(engine, broadcaster, {
       onMutationInserted: ({ accountId, mutationId }) =>
         outboxNotifier.dispatch(accountId, mutationId),
-    });
+    }));
+    let stopSync: () => Promise<void> = async () => {};
     const syncHandlers = makeSyncRpcHandlers({
       handlers: repoHandlers,
       outboxNotifier,
+      registerShutdown: (stop) => { stopSync = stop; },
     });
-    return { ...repoHandlers, ...syncHandlers };
+    return lifecycle.requestHandlers({ ...repoHandlers, ...syncHandlers }, {
+      stopSync: () => stopSync(),
+      closeStorage: () => engine.close(),
+    });
   })();
   return handlersPromise;
 }
