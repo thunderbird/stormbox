@@ -5,6 +5,8 @@ import { makeHandlers } from '../../../src/db/handlers';
 import { DB_RPC } from '../../../src/db/protocol';
 import { makeSyncRpcHandlers } from '../../../src/sync/sync-host';
 import { JMAP_CAPS } from '../../../src/sync/backends/jmap/transport';
+import { JmapBackend } from '../../../src/sync/backends/jmap/backend';
+import { OutboxRunner } from '../../../src/sync/backends/jmap/outbox-runner';
 import { FakeWebSocket } from './_fake-ws';
 import { resolveResultRefs } from './_mock-transport';
 
@@ -163,6 +165,87 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await engine.close();
+});
+
+describe('worker shutdown', () => {
+  it('awaits the outbox stop before stopping the backend transport', async () => {
+    let shutdown!: () => Promise<void>;
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers,
+      fetch: makeFetch() as any,
+      WebSocketImpl: FakeWebSocket as any,
+      registerShutdown: (stop) => { shutdown = stop; },
+    });
+    await syncHandlers[DB_RPC.SYNC_START_ACCOUNT]({
+      sessionUrl: 'https://mail.example.com/.well-known/jmap',
+      serverOrigin: 'https://mail.example.com',
+      auth: { kind: 'basic', username: 'tester', password: 'secret' },
+      useWebSocket: false,
+    });
+    let finishStop!: () => void;
+    const waiting = new Promise<void>((resolve) => { finishStop = resolve; });
+    const originalStop = OutboxRunner.prototype.stop;
+    const runnerStop = vi.spyOn(OutboxRunner.prototype, 'stop').mockImplementationOnce(async function () {
+      await waiting;
+      await originalStop.call(this);
+    });
+    const backendStop = vi.spyOn(JmapBackend.prototype, 'stop');
+    try {
+      const stopping = shutdown();
+      expect(runnerStop).toHaveBeenCalledOnce();
+      expect(backendStop).not.toHaveBeenCalled();
+      finishStop();
+      await stopping;
+      expect(backendStop).toHaveBeenCalledOnce();
+      expect(runnerStop.mock.invocationCallOrder[0]).toBeLessThan(backendStop.mock.invocationCallOrder[0]);
+      await shutdown();
+      expect(backendStop).toHaveBeenCalledOnce();
+    } finally {
+      runnerStop.mockRestore();
+      backendStop.mockRestore();
+    }
+  });
+
+  it('settles every backend before reporting a shutdown failure', async () => {
+    let shutdown!: () => Promise<void>;
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers, fetch: makeFetch() as any, WebSocketImpl: FakeWebSocket as any,
+      registerShutdown: (stop) => { shutdown = stop; },
+    });
+    for (const serverOrigin of ['https://one.example.com', 'https://two.example.com']) {
+      await syncHandlers[DB_RPC.SYNC_START_ACCOUNT]({
+        sessionUrl: `${serverOrigin}/.well-known/jmap`, serverOrigin,
+        auth: { kind: 'basic', username: 'tester', password: 'secret' }, useWebSocket: false,
+      });
+    }
+    let finishStop!: () => void;
+    const waiting = new Promise<void>((resolve) => { finishStop = resolve; });
+    const originalStop = JmapBackend.prototype.stop;
+    const backendStop = vi.spyOn(JmapBackend.prototype, 'stop')
+      .mockImplementationOnce(async function () {
+        await originalStop.call(this);
+        throw new Error('First backend failed');
+      })
+      .mockImplementationOnce(async function () {
+        await waiting;
+        await originalStop.call(this);
+      });
+    try {
+      let settled = false;
+      const stopping = shutdown().catch((error) => { settled = true; return error; });
+      await vi.waitFor(() => expect(backendStop).toHaveBeenCalledTimes(2));
+      expect(settled).toBe(false);
+      finishStop();
+      const error = await stopping;
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.errors[0].message).toBe('First backend failed');
+      await shutdown();
+      expect(backendStop).toHaveBeenCalledTimes(2);
+    } finally {
+      finishStop();
+      backendStop.mockRestore();
+    }
+  });
 });
 
 describe('SYNC_START_ACCOUNT', () => {
