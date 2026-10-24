@@ -257,7 +257,7 @@ onBeforeUnmount(() => {
 .settings-dialog__error {
   margin: 0;
   font-size: 12px;
-  color: #d93025;
+  color: var(--error-fg);
 }
 .settings-dialog__hint {
   margin: 0;

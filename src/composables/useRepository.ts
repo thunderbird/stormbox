@@ -17,6 +17,7 @@ export function getRepositoryAsync() {
     repoPromise = (async () => {
       const repo = await createRepository({
         worker: new DbSharedWorker({ name: SHARED_WORKER_NAME }),
+        onWorkerRestart: () => window.location.reload(),
       });
       // Expose on window in dev/test builds so Playwright (and you in
       // devtools) can poke at the repository directly. No-op in

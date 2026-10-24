@@ -3,13 +3,15 @@
  * Staff-only rows of the settings dialog: a "Bolt colors" palette switch,
  * a "Refresh beacons" button that restarts the current announcement round
  * (OB-3.7), and a feature-code textbox that turns on a registered feature
- * flag for the signed-in account (`feature-flags-store`).
+ * flag for the signed-in account (`feature-flags-store`), plus shared-worker
+ * status and reset controls.
  */
 import { computed, ref, watch } from 'vue';
 
 import { useFeatureBeaconsStore } from '../../stores/feature-beacons-store';
 import { featureForCode, useFeatureFlagsStore } from '../../stores/feature-flags-store';
 import { useSettingsStore } from '../../stores/settings-store';
+import SharedWorkerStatus from './SharedWorkerStatus.vue';
 
 const emit = defineEmits<{
   close: [];
@@ -82,6 +84,8 @@ function submitCode() {
         Refresh beacons
       </button>
     </div>
+
+    <SharedWorkerStatus />
 
     <form class="settings-dialog__section settings-dialog__section--flush" @submit.prevent="submitCode">
       <label class="settings-dialog__field">

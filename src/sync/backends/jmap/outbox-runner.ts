@@ -356,6 +356,16 @@ export class OutboxRunner {
       params: [this._now(), this._accountId, mutationId],
     });
 
+    // stop() may finish while the row lookup or backoff update is awaiting SQL.
+    if (this._stopped) {
+      return {
+        attempted: 1,
+        succeeded: 0,
+        failed: 1,
+        errorType: this._stoppedError(row.mutation_type).type,
+      };
+    }
+
     const outcomePromise = new Promise<{ ok: boolean; error?: any; result?: any }>((resolve) => {
       const list = this._awaiters.get(mutationId) ?? [];
       // The type rides along so stop() can answer without a database
@@ -466,9 +476,7 @@ export class OutboxRunner {
         // send it could have been anywhere from queued to already
         // delivered. Telling the user it failed invites the second press
         // that delivers twice.
-        const error = this._unsafeToReplayTypes.has(mutationType)
-          ? { type: 'outcomeUnknown', terminal: true, reason: 'stopped' }
-          : { type: 'stopped' };
+        const error = this._stoppedError(mutationType);
         try {
           resolve({ ok: false, error });
         } catch {
@@ -482,6 +490,12 @@ export class OutboxRunner {
   }
 
   // ----- internals -----------------------------------------------------
+
+  _stoppedError(mutationType) {
+    return this._unsafeToReplayTypes.has(mutationType)
+      ? { type: 'outcomeUnknown', terminal: true, reason: 'stopped' }
+      : { type: 'stopped' };
+  }
 
   _emitProgress(mutationId: number, progress: MutationProgress) {
     const listeners = this._progressListeners.get(mutationId);

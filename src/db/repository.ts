@@ -25,6 +25,7 @@ import {
   DB_RPC,
   SHARED_WORKER_NAME,
   type MutationProgress,
+  type WorkerStatus,
 } from './protocol';
 import {
   RPC_CANCEL,
@@ -33,6 +34,7 @@ import {
   RPC_RESPONSE,
   TABLES_TOUCHED,
   WORKER_LOG,
+  WORKER_RESTARTED,
 } from './rpc-dispatch';
 
 export interface BlobTransferProgress {
@@ -72,6 +74,15 @@ interface CallOptions {
   onProgress?: (progress: any) => void;
 }
 
+export interface MessageContentTimings {
+  count: number;
+  lastMs: number | null;
+  averageMs: number | null;
+  slowestMs: number | null;
+  pending: number;
+  oldestPendingMs: number | null;
+}
+
 /**
  * @typedef {import('./protocol').DB_RPC} DBRpcMethods
  */
@@ -87,7 +98,11 @@ interface CallOptions {
  * @returns {Repository}
  */
 export function createRepository(
-  { worker, workerUrl }: { worker?: SharedWorker; workerUrl?: string | URL },
+  { worker, workerUrl, onWorkerRestart }: {
+    worker?: SharedWorker;
+    workerUrl?: string | URL;
+    onWorkerRestart?: () => void;
+  },
 ) {
   assertSupportedBrowser();
   if (!worker && workerUrl == null) {
@@ -95,7 +110,7 @@ export function createRepository(
   }
   worker ??= new SharedWorker(workerUrl!, { type: 'module', name: SHARED_WORKER_NAME });
   const channel = new BroadcastChannel(BROADCAST_CHANNEL);
-  const repo = new Repository(worker.port, channel);
+  const repo = new Repository(worker.port, channel, onWorkerRestart);
   worker.port.start();
   return repo;
 }
@@ -109,15 +124,19 @@ export class Repository {
     reject: (e: any) => void;
     onProgress?: (progress: any) => void;
     removeAbort?: () => void;
+    messageContentStartedAt?: number;
   }>;
   _listeners: Set<(tables: string[]) => void>;
+  _messageContentTimings: number[] = [];
+  _onWorkerRestart?: () => void;
 
-  constructor(port: MessagePort, channel: BroadcastChannel) {
+  constructor(port: MessagePort, channel: BroadcastChannel, onWorkerRestart?: () => void) {
     this._port = port;
     this._channel = channel;
     this._nextId = 1;
     this._pending = new Map();
     this._listeners = new Set();
+    this._onWorkerRestart = onWorkerRestart;
 
     port.addEventListener('message', (msg) => this._onMessage(msg));
     channel.addEventListener('message', (msg) => this._onBroadcast(msg));
@@ -166,6 +185,9 @@ export class Repository {
         resolve,
         reject,
         onProgress: options.onProgress,
+        messageContentStartedAt: method === DB_RPC.SYNC_MESSAGE_BODY_FOR_DISPLAY
+          ? performance.now()
+          : undefined,
         removeAbort: options.signal
           ? () => options.signal?.removeEventListener('abort', onAbort)
           : undefined,
@@ -181,6 +203,29 @@ export class Repository {
   }
 
   // Account ------------------------------------------------------------
+
+  getWorkerStatus(): Promise<WorkerStatus> {
+    return this.call(DB_RPC.WORKER_STATUS);
+  }
+
+  restartWorker(): Promise<void> {
+    return this.call(DB_RPC.WORKER_RESTART);
+  }
+
+  getMessageContentTimings(): MessageContentTimings {
+    const samples = this._messageContentTimings;
+    const pending = [...this._pending.values()]
+      .flatMap((request) => request.messageContentStartedAt == null
+        ? [] : [request.messageContentStartedAt]);
+    return {
+      count: samples.length,
+      lastMs: samples.at(-1) ?? null,
+      averageMs: samples.length ? samples.reduce((sum, ms) => sum + ms, 0) / samples.length : null,
+      slowestMs: samples.length ? Math.max(...samples) : null,
+      pending: pending.length,
+      oldestPendingMs: pending.length ? performance.now() - Math.min(...pending) : null,
+    };
+  }
 
   listAccounts() {
     return this.call(DB_RPC.ACCOUNT_LIST);
@@ -788,6 +833,10 @@ export class Repository {
     }
     this._pending.delete(data.id);
     pending.removeAbort?.();
+    if (pending.messageContentStartedAt != null) {
+      this._messageContentTimings.push(performance.now() - pending.messageContentStartedAt);
+      if (this._messageContentTimings.length > 20) this._messageContentTimings.shift();
+    }
     if (data.error) {
       pending.reject(deserializeRpcError(data.error));
       return;
@@ -798,6 +847,11 @@ export class Repository {
   _onBroadcast(msg) {
     const data = msg.data;
     if (!data) return;
+
+    if (data.type === WORKER_RESTARTED) {
+      this._onWorkerRestart?.();
+      return;
+    }
 
     if (data.type === WORKER_LOG) {
       // Mirror SharedWorker logs onto the main-thread console so they

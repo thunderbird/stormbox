@@ -149,6 +149,55 @@ afterEach(async () => {
 });
 
 describe('OutboxRunner auto-drain', () => {
+  it.each([
+    ['row read', 'setKeywords'],
+    ['row read', 'send'],
+    ['backoff update', 'setKeywords'],
+    ['backoff update', 'send'],
+  ])('settles a %s interrupted by stop for %s without registering a late awaiter', async (phase, mutationType) => {
+    const mutationId = await insertTargetlessWrite(mutationType);
+    const row = await loadRow(mutationId);
+    const entered = deferred();
+    const resume = deferred();
+    const processRow = vi.fn();
+    const runner = new OutboxRunner({
+      accountId, handlers, processRow, options: { unsafeToReplayTypes: ['send'] },
+    });
+    const originalQuery = handlers[DB_RPC.QUERY];
+    if (phase === 'row read') {
+      vi.spyOn(runner, '_loadRow').mockImplementationOnce(async () => {
+        entered.resolve();
+        await resume.promise;
+        return row;
+      });
+    } else {
+      handlers[DB_RPC.QUERY] = async (input) => {
+        if (input.sql.includes('SET not_before = NULL')) {
+          entered.resolve();
+          await resume.promise;
+        }
+        return originalQuery(input);
+      };
+    }
+    try {
+      const pending = runner.runMutation(mutationId);
+      await entered.promise;
+      await runner.stop();
+      resume.resolve();
+      await expect(pending).resolves.toEqual({
+        attempted: 1, succeeded: 0, failed: 1,
+        errorType: mutationType === 'send' ? 'outcomeUnknown' : 'stopped',
+      });
+      expect(runner._awaiters.size).toBe(0);
+      expect(processRow).not.toHaveBeenCalled();
+      expect((await loadRow(mutationId)).local_status).toBe('pending');
+    } finally {
+      resume.resolve();
+      handlers[DB_RPC.QUERY] = originalQuery;
+      await runner.stop();
+    }
+  });
+
   it('drains a single setKeywords row on a notify() with no caller-side pump', async () => {
     // The point of the new architecture: stores call
     // insertPendingMutation and stop. The worker (via the
