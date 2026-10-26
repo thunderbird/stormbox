@@ -19,8 +19,14 @@ const probe = (page, type) => page.evaluate(type => new Promise(resolve => {
   port.postMessage({ type });
 }), type);
 
-test('large contact transactions commit and roll back after journal reuse', async ({ page }) => {
+test('large contact transactions commit and roll back after journal reuse', async ({ page, browserName }) => {
   await open(page, 'large-journal');
+  const firefox = browserName === 'firefox';
+  expect((await sql(page, 'PRAGMA main.locking_mode'))[0].locking_mode)
+    .toBe(firefox ? 'exclusive' : 'normal');
+  expect((await sql(page, 'PRAGMA main.journal_size_limit'))[0].journal_size_limit)
+    .toBe(firefox ? 0 : -1);
+  await exec(page, 'PRAGMA cache_size = 64');
   await exec(page, "INSERT INTO accounts (id, server_origin, remote_account_id, created_at, updated_at) VALUES (1, 'fixture', '1', 0, 0)");
   for (const count of [100, 10_000]) {
     await page.evaluate(async count => {
@@ -40,6 +46,28 @@ test('large contact transactions commit and roll back after journal reuse', asyn
   await exec(page, "BEGIN; UPDATE contacts SET display_name = 'rolled back'; ROLLBACK;");
   expect(await sql(page, "SELECT COUNT(*) AS count FROM contacts WHERE display_name = 'committed'"))
     .toEqual([{ count: 10_000 }]);
+  await exec(page, "UPDATE contacts SET display_name = 'after rollback'");
+  expect(await sql(page, "SELECT COUNT(*) AS count FROM contacts WHERE display_name = 'after rollback'"))
+    .toEqual([{ count: 10_000 }]);
+  if (firefox) {
+    const journal = await page.evaluate(async () => {
+      const db = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('idb-stormbox');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        return await new Promise((resolve, reject) => {
+          const request = db.transaction('metadata').objectStore('metadata').get('/stormbox.sqlite-journal');
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      } finally {
+        db.close();
+      }
+    });
+    expect(journal).toMatchObject({ fileSize: 0 });
+  }
   expect(await sql(page, 'PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }]);
 });
 

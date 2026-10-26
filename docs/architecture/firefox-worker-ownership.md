@@ -8,9 +8,9 @@ keep the existing NORMAL mode. The VFS's separate `lockPolicy: 'exclusive'`
 option remains unchanged. No on-disk schema or format change is required.
 
 The connection also sets `PRAGMA main.journal_size_limit = 0`. Exclusive mode
-retains the rollback journal; IDBBatchAtomicVFS cannot safely overwrite its
-blocks with differently sized writes when a later transaction spills the page
-cache. Truncating the completed journal prevents that reuse while preserving
+retains the rollback journal after a page-cache spill. IDBBatchAtomicVFS cannot
+safely overwrite its blocks across their original boundaries in a later
+transaction. Truncating the completed journal prevents that reuse while preserving
 journaled rollback and the lifetime database lock.
 
 ## Refresh and handoff

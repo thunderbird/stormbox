@@ -80,8 +80,8 @@ export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.ver
  * @returns {Promise<Engine>}
  *
  * Note: we used to also try `PRAGMA journal_mode=WAL` here. With
- * IDBBatchAtomicVFS that pragma is meaningless (the VFS substitutes
- * IndexedDB transactions for SQLite's external journal file); with
+ * IDBBatchAtomicVFS that mode is unsupported (it uses batch-atomic
+ * IndexedDB writes, with a rollback journal when the page cache spills); with
  * the other VFSes we can run in a SharedWorker WAL is not actually
  * supported either. Setting it was silently failing for the entire
  * life of the project, so we removed the call rather than leave a
@@ -93,7 +93,7 @@ export async function openEngine({ sqlite3, db, relaxedDurability = true, upTo =
   const engine = new Engine(sqlite3, db);
   if (exclusive) {
     await engine.exec('PRAGMA main.locking_mode = EXCLUSIVE');
-    // IDBBatchAtomicVFS cannot reuse spilled journal blocks with different write sizes.
+    // IDBBatchAtomicVFS cannot safely overwrite retained journal blocks across boundaries.
     await engine.exec('PRAGMA main.journal_size_limit = 0');
   }
   await engine.exec('PRAGMA foreign_keys = ON');

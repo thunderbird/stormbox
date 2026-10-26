@@ -36,6 +36,14 @@ async function readTagView(page, keyword) {
   }, keyword);
 }
 
+async function expectTagCount(page, keyword = PERSONAL) {
+  await expect.poll(async () => {
+    const count = (await readTagView(page, keyword)).length;
+    const badges = await tagNode(page, keyword).locator('.tag-view-node__count').allTextContents();
+    return count > 0 ? badges.length === 1 && badges[0] === String(count) : badges.length === 0;
+  }, { message: 'The tag badge should match the current cache count' }).toBe(true);
+}
+
 function rowFor(page, subject) {
   return page.locator('.msg-list__items > li').filter({ hasText: subject }).first();
 }
@@ -117,8 +125,7 @@ test.describe('Tag view e2e', () => {
         await expect.poll(async () => (await readTagView(page, keyword))
           .map((row) => row.remoteId).filter((id) => Object.values(ids).includes(id)).sort())
           .toEqual([ids.inbox, ids.sent].sort());
-        const count = (await readTagView(page, keyword)).length;
-        await expect(tagNode(page, keyword).locator('.tag-view-node__count')).toHaveText(String(count));
+        await expectTagCount(page, keyword);
       }
       await openTag(page);
       const header = await page.locator('.selectable-list-header').elementHandle();
@@ -223,15 +230,10 @@ test.describe('Tag view e2e', () => {
               await expect(rowFor(page, subjects[i])).toHaveCount(0);
             }
           }
-          await expect.poll(async () => {
-            const rows = await readTagView(page, PERSONAL);
-            const counter = tagNode(page).locator('.tag-view-node__count');
-            const badgeCount = await counter.count() > 0 ? Number(await counter.textContent()) : 0;
-            return {
-              fixtureIds: rows.filter((row) => ids.includes(row.remoteId)).map((row) => row.remoteId).sort(),
-              badgeMatchesCache: badgeCount === rows.length,
-            };
-          }).toEqual({ fixtureIds: role === 'junk' ? [...ids].sort() : [], badgeMatchesCache: true });
+          await expect.poll(async () => (await readTagView(page, PERSONAL))
+            .filter((row) => ids.includes(row.remoteId)).map((row) => row.remoteId).sort())
+            .toEqual(role === 'junk' ? [...ids].sort() : []);
+          await expectTagCount(page);
           await expect(page.locator('.msg-list__check input:checked')).toHaveCount(0);
         } finally {
           await attachConsoleTail(testInfo, consoleLinesFor(page));
