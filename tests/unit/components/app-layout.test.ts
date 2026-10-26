@@ -16,6 +16,8 @@ import App from '../../../src/App.vue';
 import AppSpaces from '../../../src/components/AppSpaces.vue';
 import ContactsView from '../../../src/components/ContactsView.vue';
 import { AUTH_STATE } from '../../../src/constants/states';
+import { DatabaseUnavailableError } from '../../../src/db/availability';
+import * as authService from '../../../src/services/auth';
 import {
   ACCOUNTS_URL,
   APPOINTMENT_URL,
@@ -355,6 +357,73 @@ afterEach(() => {
 });
 
 describe('App mail layout', () => {
+  it('does not start OIDC when the settings database connection fails', async () => {
+    const initialize = vi.spyOn(authService, 'initOidc');
+    const attach = vi.spyOn(useSettingsStore(), 'attach').mockRejectedValue(new DatabaseUnavailableError());
+    const authStore = useAuthStore();
+    authStore.status = AUTH_STATE.IDLE;
+    try {
+      mountApp();
+      await flushPromises();
+      expect(authStore.databaseUnavailable).toBe(true);
+      expect(initialize).not.toHaveBeenCalled();
+      expect(authStore.status).toBe(AUTH_STATE.FAILED);
+      expect(authStore.error).toContain('Close all Stormbox tabs and windows');
+      expect(attach).toHaveBeenCalledOnce();
+    } finally {
+      initialize.mockRestore();
+      attach.mockRestore();
+    }
+  });
+
+  it('waits for the settings database before starting OIDC', async () => {
+    let resume!: () => void;
+    const attach = vi.spyOn(useSettingsStore(), 'attach').mockReturnValue(new Promise(resolve => { resume = resolve; }));
+    const initialize = vi.spyOn(authService, 'initOidc');
+    useAuthStore().status = AUTH_STATE.IDLE;
+    try {
+      mountApp();
+      await flushPromises();
+      expect(initialize).not.toHaveBeenCalled();
+      resume();
+      await flushPromises();
+      expect(initialize).toHaveBeenCalledOnce();
+    } finally {
+      attach.mockRestore();
+      initialize.mockRestore();
+    }
+  });
+
+  it('does not start OIDC if unmounted while waiting for the database', async () => {
+    let resume!: () => void;
+    const attach = vi.spyOn(useSettingsStore(), 'attach').mockReturnValue(new Promise(resolve => { resume = resolve; }));
+    const initialize = vi.spyOn(authService, 'initOidc');
+    useAuthStore().status = AUTH_STATE.IDLE;
+    try {
+      const wrapper = mountApp();
+      wrapper.unmount();
+      resume();
+      await flushPromises();
+      expect(initialize).not.toHaveBeenCalled();
+    } finally {
+      attach.mockRestore();
+      initialize.mockRestore();
+    }
+  });
+
+  it('shows database recovery when initial store attachment fails', async () => {
+    const attach = vi.spyOn(useMailStore(), 'attach').mockRejectedValue(new DatabaseUnavailableError());
+    try {
+      mountApp();
+      await flushPromises();
+      expect(useAuthStore().status).toBe(AUTH_STATE.FAILED);
+      expect(useAuthStore().error).toContain('Close all Stormbox tabs and windows');
+      expect(useAuthStore().databaseUnavailable).toBe(true);
+    } finally {
+      attach.mockRestore();
+    }
+  });
+
   it('shows the welcome modal on first login and persists dismissal', async () => {
     seedOnboarding(null);
 

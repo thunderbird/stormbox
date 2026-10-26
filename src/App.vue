@@ -280,16 +280,22 @@ onMounted(async () => {
   clampColumnWidths();
   window.addEventListener('resize', onWindowResize);
 
-  void settingsStore.attach().catch((error) => {
+  await settingsStore.attach().catch((error) => {
     console.warn('[app] settings attach failed', error);
+    authStore.reportDatabaseError(error);
   });
+  if (!appMounted || authStore.databaseUnavailable) return;
   await authStore.initialize();
-  if (!appMounted) return;
-  await mailStore.attach();
-  if (!appMounted) return;
-  await contactsStore.attach();
-  if (!appMounted) return;
-  await composeStore.attach();
+  if (!appMounted || authStore.databaseUnavailable) return;
+  try {
+    await mailStore.attach();
+    if (!appMounted) return;
+    await contactsStore.attach();
+    if (!appMounted) return;
+    await composeStore.attach();
+  } catch (error) {
+    if (!authStore.reportDatabaseError(error)) throw error;
+  }
 });
 
 onBeforeUnmount(() => {

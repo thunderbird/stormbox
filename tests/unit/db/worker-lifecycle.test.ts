@@ -13,6 +13,24 @@ function deferred() {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('shared worker lifecycle', () => {
+  it('bounds a handoff requested before database initialization finishes', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(wlog, 'warn').mockImplementation(() => {});
+    const boot = deferred();
+    const beforeRestart = vi.fn();
+    const restart = vi.fn();
+    const lifecycle = createWorkerLifecycle({ restart, beforeRestart, ready: () => boot.promise });
+    const shutdown = lifecycle.requestRestart();
+    expect(beforeRestart).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5000);
+    await shutdown;
+    await vi.runOnlyPendingTimersAsync();
+    expect(restart).toHaveBeenCalledOnce();
+    boot.resolve();
+    await vi.runAllTimersAsync();
+    expect(restart).toHaveBeenCalledOnce();
+  });
+
   it('reports the worker lifetime without waiting behind a database request', async () => {
     const waiting = deferred();
     const lifecycle = createWorkerLifecycle({

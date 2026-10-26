@@ -9,6 +9,7 @@ vi.mock('../../../src/services/auth', () => ({ initOidc: async () => null, getOi
 import LoginGate from '../../../src/components/LoginGate.vue';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { AUTH_STATE } from '../../../src/constants/states';
+import { DatabaseUnavailableError } from '../../../src/db/availability';
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 
@@ -32,6 +33,16 @@ afterEach(() => {
 });
 
 describe('LoginGate', () => {
+  it('uses the existing retry view for database failure in app-password mode', () => {
+    window.history.replaceState(null, '', '/?app-password');
+    const store = useAuthStore();
+    store.reportDatabaseError(new DatabaseUnavailableError());
+    const wrapper = mountGate();
+    expect(wrapper.get('[role="alert"]').text()).toContain('Close all Stormbox tabs and windows');
+    expect(wrapper.get('button').text()).toBe('Try again');
+    expect(wrapper.find('form').exists()).toBe(false);
+  });
+
   it('shows only a transient connection status during OIDC startup', () => {
     const wrapper = mountGate();
     expect(wrapper.find('[role="status"]').text()).toContain('Connecting');

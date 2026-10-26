@@ -6,17 +6,18 @@
  * SharedWorker file is bundled correctly under both dev and prod.
  */
 
-import DbSharedWorker from '../db/shared-worker.ts?sharedworker';
-import { SHARED_WORKER_NAME } from '../db/protocol';
-import { createRepository } from '../db/repository';
+import workerUrl from '../db/shared-worker.ts?sharedworker&url';
+import { assertSupportedBrowser } from '../db/availability';
+import { connectRepository } from '../db/repository';
 
 let repoPromise = null;
 
 export function getRepositoryAsync() {
   if (!repoPromise) {
     repoPromise = (async () => {
-      const repo = await createRepository({
-        worker: new DbSharedWorker({ name: SHARED_WORKER_NAME }),
+      assertSupportedBrowser();
+      const repo = await connectRepository({
+        workerUrl,
         onWorkerRestart: () => window.location.reload(),
       });
       // Expose on window in dev/test builds so Playwright (and you in
@@ -26,7 +27,10 @@ export function getRepositoryAsync() {
         globalThis.__repo = repo;
       }
       return repo;
-    })();
+    })().catch((error) => {
+      repoPromise = null;
+      throw error;
+    });
   }
   return repoPromise;
 }

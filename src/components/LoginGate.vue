@@ -49,7 +49,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
 
 <template>
   <div class="login-gate">
-    <div v-if="authStore.appPasswordMode" class="login-stack">
+    <div v-if="authStore.appPasswordMode && !authStore.databaseUnavailable" class="login-stack">
       <p class="login-warning" role="note">
         <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
         <span>Webmail is in early alpha and subject to frequent changes and instability</span>

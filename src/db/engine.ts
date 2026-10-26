@@ -89,8 +89,9 @@ export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.ver
  * + DedicatedWorker, the bootstrap there will own the
  * locking_mode=EXCLUSIVE + journal_mode=WAL handshake.
  */
-export async function openEngine({ sqlite3, db, relaxedDurability = true, upTo = undefined }) {
+export async function openEngine({ sqlite3, db, relaxedDurability = true, upTo = undefined, exclusive = false }) {
   const engine = new Engine(sqlite3, db);
+  if (exclusive) await engine.exec('PRAGMA main.locking_mode = EXCLUSIVE');
   await engine.exec('PRAGMA foreign_keys = ON');
   if (relaxedDurability) {
     await engine.exec('PRAGMA synchronous = NORMAL').catch(() => {});

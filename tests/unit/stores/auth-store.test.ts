@@ -42,6 +42,7 @@ import {
 } from '../../../src/composables/useRepository';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { AUTH_STATE } from '../../../src/constants/states';
+import { DatabaseUnavailableError } from '../../../src/db/availability';
 
 function makeRepo() {
   return {
@@ -82,6 +83,56 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('auth-store', () => {
+  it.each(['initialization', 'token read'])('keeps database recovery visible after delayed OIDC %s', async (phase) => {
+    let resume!: (value: any) => void;
+    const pending = new Promise(resolve => { resume = resolve; });
+    const oidc = {
+      isUserLoggedIn: true,
+      getTokens: vi.fn().mockResolvedValue(oidcTokens('initial-token', 1_000)),
+      subscribeToTokensChange: vi.fn(() => ({ unsubscribeFromTokensChange: vi.fn() })),
+    };
+    authService.getOidc.mockReturnValue(oidc);
+    authService.initOidc.mockResolvedValue(oidc);
+    if (phase === 'initialization') authService.initOidc.mockReturnValue(pending);
+    else oidc.getTokens.mockReturnValue(pending);
+    const repo = makeRepo();
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    const initialized = authStore.initialize();
+    await Promise.resolve();
+    authStore.reportDatabaseError(new DatabaseUnavailableError());
+    resume(phase === 'initialization' ? oidc : oidcTokens('late-token', 2_000));
+    await initialized;
+    expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.databaseUnavailable).toBe(true);
+    expect(repo.startSyncAccount).not.toHaveBeenCalled();
+    await authStore.retryOidc();
+    expect(navigation.reloadLocation).toHaveBeenCalledOnce();
+    authStore.$reset();
+  });
+
+  it('reloads all app initialization when retrying a database connection failure', async () => {
+    const oidc = {
+      isUserLoggedIn: true,
+      getTokens: vi.fn().mockResolvedValue(oidcTokens('initial-token', 1_000)),
+      subscribeToTokensChange: vi.fn(() => ({ unsubscribeFromTokensChange: vi.fn() })),
+    };
+    authService.getOidc.mockReturnValue(oidc);
+    const repo = makeRepo();
+    repo.startSyncAccount.mockRejectedValue(new DatabaseUnavailableError());
+    __setRepositoryForTests(repo);
+    const authStore = useAuthStore();
+    try {
+      await expect(authStore.connectViaOidc()).resolves.toBe(false);
+      expect(authStore.databaseUnavailable).toBe(true);
+      await authStore.retryOidc();
+      expect(navigation.reloadLocation).toHaveBeenCalledOnce();
+      expect(repo.startSyncAccount).toHaveBeenCalledOnce();
+    } finally {
+      authStore.$reset();
+    }
+  });
+
   it('redirects an unauthenticated OIDC startup once and shows a connection state', async () => {
     const oidc = { isUserLoggedIn: false, login: vi.fn(() => new Promise(() => {})) };
     authService.initOidc.mockResolvedValue(oidc);
