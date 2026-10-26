@@ -172,7 +172,6 @@ test.describe('Tag view e2e', () => {
           }
           await openTag(page);
           for (const subject of subjects) await expect(rowFor(page, subject)).toBeVisible();
-          const initialCount = (await readTagView(page, PERSONAL)).length;
           if (surface === 'bulk') {
             for (const subject of subjects) await rowFor(page, subject).locator('.msg-list__check input').click();
             await page.locator(`.msg-list__bulk-actions [aria-label="${label}"]`).click();
@@ -224,13 +223,15 @@ test.describe('Tag view e2e', () => {
               await expect(rowFor(page, subjects[i])).toHaveCount(0);
             }
           }
-          const expectedCount = role === 'junk' ? initialCount : initialCount - ids.length;
-          await expect.poll(async () => (await readTagView(page, PERSONAL)).length).toBe(expectedCount);
-          if (expectedCount > 0) {
-            await expect(tagNode(page).locator('.tag-view-node__count')).toHaveText(String(expectedCount));
-          } else {
-            await expect(tagNode(page).locator('.tag-view-node__count')).toHaveCount(0);
-          }
+          await expect.poll(async () => {
+            const rows = await readTagView(page, PERSONAL);
+            const counter = tagNode(page).locator('.tag-view-node__count');
+            const badgeCount = await counter.count() > 0 ? Number(await counter.textContent()) : 0;
+            return {
+              fixtureIds: rows.filter((row) => ids.includes(row.remoteId)).map((row) => row.remoteId).sort(),
+              badgeMatchesCache: badgeCount === rows.length,
+            };
+          }).toEqual({ fixtureIds: role === 'junk' ? [...ids].sort() : [], badgeMatchesCache: true });
           await expect(page.locator('.msg-list__check input:checked')).toHaveCount(0);
         } finally {
           await attachConsoleTail(testInfo, consoleLinesFor(page));

@@ -91,7 +91,11 @@ export const MIGRATION_VERSIONS: readonly number[] = MIGRATIONS.map((m) => m.ver
  */
 export async function openEngine({ sqlite3, db, relaxedDurability = true, upTo = undefined, exclusive = false }) {
   const engine = new Engine(sqlite3, db);
-  if (exclusive) await engine.exec('PRAGMA main.locking_mode = EXCLUSIVE');
+  if (exclusive) {
+    await engine.exec('PRAGMA main.locking_mode = EXCLUSIVE');
+    // IDBBatchAtomicVFS cannot reuse spilled journal blocks with different write sizes.
+    await engine.exec('PRAGMA main.journal_size_limit = 0');
+  }
   await engine.exec('PRAGMA foreign_keys = ON');
   if (relaxedDurability) {
     await engine.exec('PRAGMA synchronous = NORMAL').catch(() => {});

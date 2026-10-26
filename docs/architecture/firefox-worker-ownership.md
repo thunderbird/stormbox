@@ -7,6 +7,12 @@ Web Locks, avoiding the Firefox worker callback-retention issue reproduced in
 keep the existing NORMAL mode. The VFS's separate `lockPolicy: 'exclusive'`
 option remains unchanged. No on-disk schema or format change is required.
 
+The connection also sets `PRAGMA main.journal_size_limit = 0`. Exclusive mode
+retains the rollback journal; IDBBatchAtomicVFS cannot safely overwrite its
+blocks with differently sized writes when a later transaction spills the page
+cache. Truncating the completed journal prevents that reuse while preserving
+journaled rollback and the lifetime database lock.
+
 ## Refresh and handoff
 
 Firefox workers acquire one `stormbox.database-owner` Web Lock before opening
@@ -71,5 +77,6 @@ startup deadline, notification targeting, and shutdown sequencing.
 References:
 
 - https://www.sqlite.org/pragma.html#pragma_locking_mode
+- https://www.sqlite.org/pragma.html#pragma_journal_size_limit
 - https://www.w3.org/TR/web-locks/#termination
 - https://github.com/rhashimoto/wa-sqlite/discussions/86

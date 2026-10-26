@@ -65,8 +65,10 @@ export async function recipientAddresses(page, label) {
   const labels = await composeRow(page, label)
     .locator('.pill:not(.pill--invalid) .pill__remove')
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label') ?? ''));
+  // A display name can itself contain an address; the mailbox is last.
   return labels
-    .flatMap((text) => text.match(/[^\s<>,"']+@[^\s<>,"']+/g) ?? [])
+    .map((text) => (text.match(/[^\s<>,"']+@[^\s<>,"']+/g) ?? []).at(-1))
+    .filter(Boolean)
     .map((address) => address.toLowerCase());
 }
 

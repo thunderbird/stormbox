@@ -19,6 +19,30 @@ const probe = (page, type) => page.evaluate(type => new Promise(resolve => {
   port.postMessage({ type });
 }), type);
 
+test('large contact transactions commit and roll back after journal reuse', async ({ page }) => {
+  await open(page, 'large-journal');
+  await exec(page, "INSERT INTO accounts (id, server_origin, remote_account_id, created_at, updated_at) VALUES (1, 'fixture', '1', 0, 0)");
+  for (const count of [100, 10_000]) {
+    await page.evaluate(async count => {
+      const contacts = Array.from({ length: count }, (_, index) => ({
+        remoteId: `fixture-${index}`,
+        uid: `urn:uuid:fixture-${index}`,
+        displayName: `Journal fixture ${index}`,
+        fullName: `Journal fixture ${index}`,
+        emails: [], phones: [], links: [], anniversaries: [],
+        notes: [], organizations: [], titles: [],
+      }));
+      await window.testRepo.upsertContacts(1, contacts);
+    }, count);
+    expect(await sql(page, 'SELECT COUNT(*) AS count FROM contacts')).toEqual([{ count }]);
+  }
+  await exec(page, "BEGIN; UPDATE contacts SET display_name = 'committed'; COMMIT;");
+  await exec(page, "BEGIN; UPDATE contacts SET display_name = 'rolled back'; ROLLBACK;");
+  expect(await sql(page, "SELECT COUNT(*) AS count FROM contacts WHERE display_name = 'committed'"))
+    .toEqual([{ count: 10_000 }]);
+  expect(await sql(page, 'PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+});
+
 async function blockIndexedDB(page) {
   await page.evaluate(async () => {
     const db = await new Promise((resolve, reject) => {

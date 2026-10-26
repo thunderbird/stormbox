@@ -194,6 +194,7 @@ test.describe('Compose draft lifecycle', () => {
         .locator('input');
       await subjectInput.fill(secondSubject);
       await page.locator('.compose-dialog--expanded #compose-to').fill('unfinished recipient');
+      await subjectInput.focus();
       await page.keyboard.press('Escape');
       const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
       await expect(prompt).toBeVisible();
