@@ -131,6 +131,11 @@ async function expectRecovered(exclusive, expected = expectedRows) {
   const { engine } = await open(exclusive);
   expect(await rows(engine)).toEqual(expected);
   expect(await engine.all('PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+  const { metadata, blocks } = await storedRecords();
+  const main = metadata.find(file => file.name === databasePath);
+  expect(main.pendingVersion).toBeUndefined();
+  expect(blocks.some(block => block.path === databasePath && block.version < main.version)).toBe(false);
+  expect(metadata.find(file => file.name === `${databasePath}-journal`)?.fileSize ?? 0).toBe(0);
   await engine.run('INSERT INTO entries VALUES (?, ?)', [999, 'after recovery']);
   expect(await engine.get('SELECT value FROM entries WHERE id = 999')).toEqual({ value: 'after recovery' });
 }
@@ -145,6 +150,10 @@ for (const exclusive of [false, true]) {
       await engine.transaction(async tx => {
         await tx.exec("UPDATE entries SET value = 'committed:' || value");
       });
+      if (exclusive) {
+        const { metadata } = await storedRecords();
+        expect(metadata.find(file => file.name === `${databasePath}-journal`).fileSize).toBe(0);
+      }
       await expect(engine.transaction(async tx => {
         await tx.exec("UPDATE entries SET value = 'rolled back:' || value");
         await expectSpill();
@@ -153,11 +162,10 @@ for (const exclusive of [false, true]) {
       const committed = expectedRows.map(row => ({ ...row, value: `committed:${row.value}` }));
       expect(await rows(engine)).toEqual(committed);
       await engine.close();
-      engines[0].abandoned = true;
       await expectRecovered(exclusive, committed);
     });
 
-    it('recovers a spilled transaction after the connection disappears without rollback', async () => {
+    it('recovers a spilled transaction from a persisted checkpoint without rollback', async () => {
       const database = await open(exclusive);
       await seed(database.engine);
       await database.engine.exec("BEGIN IMMEDIATE; UPDATE entries SET value = 'unfinished:' || value");
@@ -166,7 +174,7 @@ for (const exclusive of [false, true]) {
       await expectRecovered(exclusive);
     });
 
-    it('preserves an acknowledged commit when the connection disappears', async () => {
+    it('preserves a committed transaction in a persisted checkpoint', async () => {
       const database = await open(exclusive);
       await seed(database.engine);
       await database.engine.exec("UPDATE entries SET value = 'committed:' || value");
@@ -174,7 +182,7 @@ for (const exclusive of [false, true]) {
       await expectRecovered(exclusive, expectedRows.map(row => ({ ...row, value: `committed:${row.value}` })));
     });
 
-    it.each([SQLite.SQLITE_IOERR_WRITE, SQLite.SQLITE_FULL])('rolls back a partial write when the VFS returns %i', async code => {
+    it.each([SQLite.SQLITE_IOERR_WRITE, SQLite.SQLITE_FULL])('rolls back a spill-write fault when the VFS returns %i', async code => {
       const database = await open(exclusive);
       await seed(database.engine);
       const write = database.vfs.jWrite;
@@ -192,11 +200,14 @@ for (const exclusive of [false, true]) {
         .rejects.toMatchObject({ code: code & 0xff });
       expect(injected).toBe(1);
       fault.mockRestore();
+      expect(await rows(database.engine)).toEqual(expectedRows);
+      expect(await database.engine.all('PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }]);
+      await database.engine.run('INSERT INTO entries VALUES (?, ?)', [1000, 'live recovery']);
       await abandon(database);
-      await expectRecovered(exclusive);
+      await expectRecovered(exclusive, [...expectedRows, { id: 1000, value: 'live recovery' }]);
     });
 
-    it('recovers spilled writes when the handoff cleanup deadline expires', async () => {
+    it('recovers a persisted checkpoint when the handoff cleanup deadline expires', async () => {
       const database = await open(exclusive);
       await seed(database.engine);
       let reached;
@@ -214,10 +225,11 @@ for (const exclusive of [false, true]) {
       }) }, { stopSync: async () => {}, closeStorage });
       void handlers.write();
       await spilled;
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await lifecycle.requestRestart();
       await restarted;
       expect(closeStorage).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith('[shared-worker]', expect.stringContaining('Worker cleanup exceeded five seconds.'));
       await abandon(database);
       await expectRecovered(exclusive);
     }, 15_000);
