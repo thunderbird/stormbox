@@ -74,6 +74,15 @@ and an owner frozen with an unfinished transaction. The recovery state renders
 the actual LoginGate component. Unit coverage exercises the browser policy,
 startup deadline, notification targeting, and shutdown sequencing.
 
+`tests/unit/db/engine-idb.test.js` compares both locking modes with the real
+async SQLite build and IDBBatchAtomicVFS over fake-indexeddb. It checks large
+commit/rollback, reopened data and integrity, persisted unfinished transactions,
+SQLite I/O/full errors after partial writes, and the handoff cleanup deadline.
+The shutdown model drains queued storage work before discarding the connection;
+it tests persisted-checkpoint recovery, not browser termination during an active
+IndexedDB transaction or physical durability. I/O/full errors are injected at the
+VFS boundary, so these cases do not establish browser quota/abort handling.
+
 References:
 
 - https://www.sqlite.org/pragma.html#pragma_locking_mode
