@@ -229,7 +229,7 @@ export async function waitForPendingMutations(page, { timeout = WAIT_MS } = {}) 
       const rows = await globalThis.__repo.call('db.query', {
         sql: `SELECT COUNT(*) AS c
                 FROM pending_mutations
-               WHERE local_status IN ('pending', 'retry')`,
+               WHERE local_status IN ('pending', 'retry', 'in_flight')`,
         params: [],
       });
       return Number(rows?.[0]?.c ?? 0);

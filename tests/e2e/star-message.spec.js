@@ -173,6 +173,9 @@ test.describe('Star message e2e', () => {
       await rowFor(page, subjects.bulkA).locator('.msg-list__check input').click();
       await page.keyboard.press('s');
       await page.locator('.msg-list__bulk-actions [title="Clear selection"]').click();
+      // Optimistic paint precedes outbox insertion; wait for the server change.
+      await expectServerFlagged(jmap, ids.bulkA, false);
+      await waitForPendingMutations(page);
       // The unstarred row leaves the Starred filter once it is no longer sticky.
       await expect(rowFor(page, subjects.bulkA)).toHaveCount(0);
       await starredFilter.click();
@@ -183,7 +186,6 @@ test.describe('Star message e2e', () => {
       const after = await readFlaggedFlags(page, [ids.bulkA, ids.bulkB]);
       expect(after[ids.bulkA]).toBe(0);
       expect(after[ids.bulkB]).toBe(1);
-      await expectServerFlagged(jmap, ids.bulkA, false);
       await expectServerFlagged(jmap, ids.bulkB, true);
     } finally {
       await attachConsoleTail(testInfo, consoleLinesFor(page));
