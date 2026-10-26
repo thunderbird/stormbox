@@ -224,13 +224,16 @@ for (const exclusive of [false, true]) {
         await never;
       }) }, { stopSync: async () => {}, closeStorage });
       void handlers.write();
-      await spilled;
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      await lifecycle.requestRestart();
-      await restarted;
-      expect(closeStorage).not.toHaveBeenCalled();
-      expect(warning).toHaveBeenCalledWith('[shared-worker]', expect.stringContaining('Worker cleanup exceeded five seconds.'));
-      await abandon(database);
+      try {
+        await spilled;
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await lifecycle.requestRestart();
+        await restarted;
+        expect(closeStorage).not.toHaveBeenCalled();
+        expect(warning).toHaveBeenCalledWith('[shared-worker]', expect.stringContaining('Worker cleanup exceeded five seconds.'));
+      } finally {
+        await abandon(database);
+      }
       await expectRecovered(exclusive);
     }, 15_000);
   });
