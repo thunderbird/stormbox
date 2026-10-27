@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IDBFactory, IDBKeyRange, IDBRequest, forceCloseDatabase,
 } from 'fake-indexeddb';
-import SQLiteAsyncFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs';
+import SQLiteAsyncFactory from '@journeyapps/wa-sqlite/dist/mc-wa-sqlite-async.mjs';
 import * as SQLite from '@journeyapps/wa-sqlite';
 import { IDBBatchAtomicVFS, IDBContext } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS';
 
@@ -11,7 +11,7 @@ import { openEngine } from '../../../src/db/engine';
 import { createWorkerLifecycle } from '../../../src/db/worker-lifecycle';
 
 const wasmBinary = readFileSync(new URL(
-  '../../../node_modules/@journeyapps/wa-sqlite/dist/wa-sqlite-async.wasm', import.meta.url,
+  '../../../node_modules/@journeyapps/wa-sqlite/dist/mc-wa-sqlite-async.wasm', import.meta.url,
 ));
 const databasePath = '/recovery.sqlite';
 const expectedRows = Array.from({ length: 64 }, (_, id) => ({ id, value: `${id}:${'x'.repeat(4096)}` }));
