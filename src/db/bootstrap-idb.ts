@@ -26,10 +26,11 @@
  * SharedWorker setup; it avoids per-call lock churn on the underlying
  * `navigator.locks` mutex.
  *
- * Pairs with the asyncify build of wa-sqlite (`wa-sqlite-async.mjs`).
+ * Pairs with the Multi Ciphers Asyncify build (`mc-wa-sqlite-async.mjs`).
+ * The ordinary 2.0.9 async artifact requires JSPI.
  */
 
-import SQLiteAsyncESMFactory from '@journeyapps/wa-sqlite/dist/wa-sqlite-async.mjs';
+import SQLiteAsyncESMFactory from '@journeyapps/wa-sqlite/dist/mc-wa-sqlite-async.mjs';
 import * as SQLite from '@journeyapps/wa-sqlite';
 import { IDBBatchAtomicVFS } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS';
 
