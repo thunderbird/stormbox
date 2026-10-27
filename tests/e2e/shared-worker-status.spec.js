@@ -21,7 +21,7 @@ test.beforeEach(async () => {
   await sweepOrphanTestMessages(await connectJmap(), { subjectPrefix });
 });
 
-test('staff diagnostics measure content replies and reset the shared worker across tabs', async ({ page, context }) => {
+test('staff diagnostics measure content replies without a manual reset control', async ({ page, context }) => {
   const jmap = await connectJmap();
   const mailboxes = await listMailboxes(jmap);
   const inbox = mailboxByRole(mailboxes, 'inbox');
@@ -61,7 +61,8 @@ test('staff diagnostics measure content replies and reset the shared worker acro
 
     await page.evaluate(() => { window.__beforeWorkerReset = true; });
     await other.evaluate(() => { window.__beforeWorkerReset = true; });
-    await status.locator('[data-reset-worker]').click();
+    await expect(status.locator('[data-reset-worker]')).toHaveCount(0);
+    await page.evaluate(() => window.__repo.restartWorker());
     for (const tab of [page, other]) {
       await tab.waitForFunction(() => !window.__beforeWorkerReset && !!window.__repo, { timeout: 30_000 });
       await expect(tab.locator('.shell')).toBeVisible({ timeout: 30_000 });

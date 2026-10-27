@@ -11,6 +11,15 @@
 
 const SUPPORTED_BROWSERS = 'Use Chrome 109+, Edge 109+, Firefox 116+, or Safari 16+.';
 
+export const DATABASE_UNAVAILABLE_MESSAGE = 'Stormbox couldn’t connect to its local database. Close all Stormbox tabs and windows, wait a few seconds, then reopen Stormbox. If this happens again, restart Firefox.';
+
+export class DatabaseUnavailableError extends Error {
+  constructor(cause?: unknown) {
+    super(DATABASE_UNAVAILABLE_MESSAGE, { cause });
+    this.name = 'DatabaseUnavailableError';
+  }
+}
+
 export class UnsupportedBrowserError extends Error {
   missing: string[];
 

@@ -6,14 +6,14 @@ import { RPC_RESPONSE, WORKER_RESTARTED } from '../../../src/db/rpc-dispatch';
 
 function harness() {
   const port = { addEventListener: vi.fn(), postMessage: vi.fn() };
-  const channel = { addEventListener: vi.fn() };
+  const channel = { addEventListener: vi.fn(), close: vi.fn() };
   const restart = vi.fn();
   const repo = new Repository(port as any, channel as any, restart);
   const respond = (result: any = {}, error?: any) => {
     const request = port.postMessage.mock.calls.at(-1)![0];
     repo._onMessage({ data: { type: RPC_RESPONSE, id: request.id, result, error } });
   };
-  return { repo, port, respond, restart };
+  return { repo, port, channel, respond, restart };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -59,7 +59,7 @@ describe('worker diagnostics', () => {
   });
 
   it('uses worker control RPCs and reloads only on the worker restart notification', async () => {
-    const { repo, port, respond, restart } = harness();
+    const { repo, port, channel, respond, restart } = harness();
     const status = repo.getWorkerStatus();
     expect(port.postMessage.mock.calls.at(-1)![0].method).toBe(DB_RPC.WORKER_STATUS);
     respond({ instanceId: 'worker-1' });
@@ -69,7 +69,9 @@ describe('worker diagnostics', () => {
     respond();
     await reset;
     expect(restart).not.toHaveBeenCalled();
+    expect(channel.close).not.toHaveBeenCalled();
     repo._onBroadcast({ data: { type: WORKER_RESTARTED } });
+    expect(channel.close).toHaveBeenCalledOnce();
     expect(restart).toHaveBeenCalledOnce();
   });
 });

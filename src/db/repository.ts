@@ -19,7 +19,8 @@ import type {
   MessageRow,
 } from '../types/db';
 import type { ServerClockReferenceLike } from '../utils/schedule-time';
-import { assertSupportedBrowser } from './availability';
+import { assertSupportedBrowser, DatabaseUnavailableError } from './availability';
+import { needsFirefoxLockWorkaround } from './worker-ownership';
 import {
   BROADCAST_CHANNEL,
   DB_RPC,
@@ -83,6 +84,26 @@ export interface MessageContentTimings {
   oldestPendingMs: number | null;
 }
 
+export async function connectRepository(options: Parameters<typeof createRepository>[0], timeoutMs = 15_000) {
+  const repo = createRepository(options);
+  if (!needsFirefoxLockWorkaround()) return repo;
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    await Promise.race([
+      repo.getWorkerStatus(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new DatabaseUnavailableError()), timeoutMs);
+      }),
+    ]);
+    return repo;
+  } catch (error) {
+    repo.close(error, { keepRestartListener: true });
+    throw error instanceof DatabaseUnavailableError ? error : new DatabaseUnavailableError(error);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 /**
  * @typedef {import('./protocol').DB_RPC} DBRpcMethods
  */
@@ -110,7 +131,8 @@ export function createRepository(
   }
   worker ??= new SharedWorker(workerUrl!, { type: 'module', name: SHARED_WORKER_NAME });
   const channel = new BroadcastChannel(BROADCAST_CHANNEL);
-  const repo = new Repository(worker.port, channel, onWorkerRestart);
+  const repo = new Repository(worker.port, channel, onWorkerRestart,
+    workerUrl == null ? undefined : new URL(workerUrl, globalThis.location?.href).href);
   worker.port.start();
   return repo;
 }
@@ -129,17 +151,31 @@ export class Repository {
   _listeners: Set<(tables: string[]) => void>;
   _messageContentTimings: number[] = [];
   _onWorkerRestart?: () => void;
+  _workerUrl?: string;
 
-  constructor(port: MessagePort, channel: BroadcastChannel, onWorkerRestart?: () => void) {
+  constructor(port: MessagePort, channel: BroadcastChannel, onWorkerRestart?: () => void, workerUrl?: string) {
     this._port = port;
     this._channel = channel;
     this._nextId = 1;
     this._pending = new Map();
     this._listeners = new Set();
     this._onWorkerRestart = onWorkerRestart;
+    this._workerUrl = workerUrl;
 
     port.addEventListener('message', (msg) => this._onMessage(msg));
     channel.addEventListener('message', (msg) => this._onBroadcast(msg));
+  }
+
+  close(reason: unknown = new Error('Database connection closed.'), { keepRestartListener = false } = {}) {
+    for (const pending of this._pending.values()) {
+      pending.removeAbort?.();
+      pending.reject(reason);
+    }
+    this._pending.clear();
+    this._listeners.clear();
+    this._port.close();
+    // Failed startup can precede the retiring worker's reload notification.
+    if (!keepRestartListener || !this._onWorkerRestart) this._channel.close();
   }
 
   /**
@@ -849,6 +885,10 @@ export class Repository {
     if (!data) return;
 
     if (data.type === WORKER_RESTARTED) {
+      if (this._workerUrl && (data.replacementWorkerUrl === this._workerUrl
+        || (!data.workerUrl && data.replacementWorkerUrl)
+        || (data.workerUrl && data.workerUrl !== this._workerUrl))) return;
+      this._channel.close();
       this._onWorkerRestart?.();
       return;
     }

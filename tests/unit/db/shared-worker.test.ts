@@ -33,7 +33,7 @@ describe('shared worker restart wiring', () => {
     closeStorage.mockImplementation(async () => { if (failure === 'cleanup') throw new Error('Close failed'); });
     stopSync.mockResolvedValue(undefined);
     const events: string[] = [];
-    const worker = { addEventListener: vi.fn(), close: vi.fn(() => events.push('close')) };
+    const worker = { location: { href: 'https://stormbox.test/worker.js' }, addEventListener: vi.fn(), close: vi.fn(() => events.push('close')) };
     vi.stubGlobal('self', worker);
     vi.stubGlobal('BroadcastChannel', class {
       postMessage(message) {

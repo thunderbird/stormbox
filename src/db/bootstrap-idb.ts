@@ -35,6 +35,7 @@ import * as SQLite from '@journeyapps/wa-sqlite';
 import { IDBBatchAtomicVFS } from '@journeyapps/wa-sqlite/src/examples/IDBBatchAtomicVFS';
 
 import { openEngine } from './engine';
+import { needsFirefoxLockWorkaround } from './worker-ownership';
 
 const DB_NAME = 'stormbox.sqlite';
 const VFS_NAME = 'idb-stormbox';
@@ -85,7 +86,7 @@ async function doBoot() {
   }
 
   const db = await sqlite3.open_v2(DB_NAME, undefined, VFS_NAME);
-  return openEngine({ sqlite3, db });
+  return openEngine({ sqlite3, db, exclusive: needsFirefoxLockWorkaround() });
 }
 
 async function cleanupLegacyOpfsDb() {

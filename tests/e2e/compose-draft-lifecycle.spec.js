@@ -193,8 +193,13 @@ test.describe('Compose draft lifecycle', () => {
         .filter({ hasText: /^Subject$/ })
         .locator('input');
       await subjectInput.fill(secondSubject);
-      await page.locator('.compose-dialog--expanded #compose-to').fill('unfinished recipient');
-      await page.keyboard.press('Escape');
+      const toInput = page.locator('.compose-dialog--expanded #compose-to');
+      await toInput.fill('unfinished recipient');
+      await expect(toInput).toHaveAttribute('aria-expanded', 'true');
+      await toInput.press('Escape');
+      await expect(toInput).toHaveAttribute('aria-expanded', 'false');
+      await expect(toInput).toHaveValue('unfinished recipient');
+      await toInput.press('Escape');
       const prompt = page.getByRole('alertdialog', { name: 'Save this draft?' });
       await expect(prompt).toBeVisible();
       await prompt.getByRole('button', { name: "Don't Save" }).click();

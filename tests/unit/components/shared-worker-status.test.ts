@@ -37,7 +37,7 @@ describe('staff worker status', () => {
     expect(wrapper.get('[data-worker-response]').text()).toBe('0 ms round trip');
     expect(wrapper.get('[data-message-latest]').text()).toBe('125 ms');
     expect(wrapper.text()).toContain('210 ms / 1.50 s');
-    expect(wrapper.text()).toContain('Save draft edits first');
+    expect(wrapper.find('[data-reset-worker]').exists()).toBe(false);
     vi.mocked(performance.now).mockReturnValue(6000);
     await vi.advanceTimersByTimeAsync(1000);
     expect(repo.getWorkerStatus).toHaveBeenCalledTimes(2);
@@ -46,7 +46,7 @@ describe('staff worker status', () => {
     expect(repo.getWorkerStatus).toHaveBeenCalledTimes(2);
   });
 
-  it('shows a slow check without stacking requests and keeps reset available', async () => {
+  it('shows a slow check without stacking requests', async () => {
     repo.getWorkerStatus.mockReturnValue(new Promise(() => {}));
     repo.getMessageContentTimings.mockReturnValue({ count: 0, pending: 1, oldestPendingMs: 2400 });
     wrapper = mount(SharedWorkerStatus);
@@ -56,21 +56,6 @@ describe('staff worker status', () => {
     expect(wrapper.get('[data-worker-response]').text()).toBe('Waiting… 10.00 s');
     expect(wrapper.text()).toContain('1 pending · 2.40 s');
     expect(repo.getWorkerStatus).toHaveBeenCalledOnce();
-    await wrapper.get('[data-reset-worker]').trigger('click');
-    await flushPromises();
-    expect(repo.restartWorker).toHaveBeenCalledOnce();
-    expect(wrapper.get('[data-reset-worker]').text()).toBe('Resetting…');
-    expect(wrapper.get('[data-reset-worker]').attributes('disabled')).toBeDefined();
-  });
-
-  it('displays reset errors and permits another attempt', async () => {
-    repo.restartWorker.mockRejectedValueOnce(new Error('Close failed'));
-    wrapper = mount(SharedWorkerStatus);
-    await flushPromises();
-    await wrapper.get('[data-reset-worker]').trigger('click');
-    await flushPromises();
-    expect(wrapper.get('[role="alert"]').text()).toBe('Close failed');
-    expect(wrapper.get('[data-reset-worker]').attributes('disabled')).toBeUndefined();
   });
 
   it('spaces failed probes five seconds apart, clears stale timing, and keeps uptime advancing', async () => {
@@ -94,14 +79,4 @@ describe('staff worker status', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false);
   });
 
-  it('enables reset after the repository becomes available even if the status probe is pending', async () => {
-    let ready!: (value: typeof repo) => void;
-    getRepositoryAsync.mockReturnValueOnce(new Promise((resolve) => { ready = resolve; }));
-    repo.getWorkerStatus.mockReturnValue(new Promise(() => {}));
-    wrapper = mount(SharedWorkerStatus);
-    expect(wrapper.get('[data-reset-worker]').attributes('disabled')).toBeDefined();
-    ready(repo);
-    await flushPromises();
-    expect(wrapper.get('[data-reset-worker]').attributes('disabled')).toBeUndefined();
-  });
 });

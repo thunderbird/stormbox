@@ -9,7 +9,6 @@ const worker = ref<WorkerStatus | null>(null);
 const responseMs = ref<number | null>(null);
 const messageTimings = ref<MessageContentTimings | null>(null);
 const failure = ref<string | null>(null);
-const resetting = ref(false);
 const clock = ref(performance.now());
 const checkedAt = ref(clock.value);
 const checkingSince = ref<number | null>(null);
@@ -45,7 +44,7 @@ const response = computed(() => {
 });
 
 async function checkWorker() {
-  if (!repo.value || stopped || resetting.value || checkingSince.value != null) return;
+  if (!repo.value || stopped || checkingSince.value != null) return;
   checkingSince.value = performance.now();
   try {
     const status = await repo.value.getWorkerStatus();
@@ -64,20 +63,6 @@ async function checkWorker() {
   } finally {
     lastAttemptAt = performance.now();
     checkingSince.value = null;
-  }
-}
-
-async function resetWorker() {
-  if (!repo.value || resetting.value) return;
-  resetting.value = true;
-  failure.value = null;
-  try {
-    await repo.value.restartWorker();
-  } catch (error) {
-    if (!stopped) {
-      failure.value = error instanceof Error ? error.message : 'The worker could not be reset.';
-      resetting.value = false;
-    }
   }
 }
 
@@ -107,14 +92,6 @@ onBeforeUnmount(() => {
   <section class="worker-status" aria-labelledby="worker-status-title" data-worker-status>
     <div class="settings-dialog__row">
       <span id="worker-status-title" class="settings-dialog__row-title">Shared worker</span>
-      <button
-        type="button"
-        class="settings-dialog__btn"
-        :disabled="!repo || resetting"
-        :aria-busy="resetting"
-        data-reset-worker
-        @click="resetWorker"
-      >{{ resetting ? 'Resetting…' : 'Reset shared worker' }}</button>
     </div>
     <dl class="worker-status__stats">
       <div><dt>Running for</dt><dd data-worker-uptime>{{ uptime }}</dd></div>
@@ -126,9 +103,6 @@ onBeforeUnmount(() => {
         <dd>{{ messageTimings.pending }} pending · {{ duration(messageTimings.oldestPendingMs) }}</dd>
       </div>
     </dl>
-    <p class="settings-dialog__row-hint worker-status__hint">
-      Reset reloads every open Stormbox tab and may interrupt pending changes. Save draft edits first.
-    </p>
     <p v-if="failure" class="settings-dialog__error" role="alert">{{ failure }}</p>
   </section>
 </template>
@@ -156,8 +130,5 @@ onBeforeUnmount(() => {
 .worker-status__stats dd {
   margin: 0;
   font-variant-numeric: tabular-nums;
-}
-.worker-status__hint {
-  margin: 0;
 }
 </style>

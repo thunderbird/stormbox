@@ -18,6 +18,7 @@ import type { AuthState } from '../constants/states';
 import { isStaffEmail } from '../constants/staff';
 import { staffRedirectUrl } from '../utils/staff-redirect';
 import { getRepositoryAsync } from '../composables/useRepository';
+import { DatabaseUnavailableError } from '../db/availability';
 
 interface BasicAuth { kind: 'basic'; username: string; password: string }
 interface BearerAuth {
@@ -106,6 +107,7 @@ export const useAuthStore = defineStore('auth', () => {
   /** OIDC ID-token `recovery_email` claim; null when unavailable. */
   const recoveryEmail = ref<string | null>(null);
   const error = ref<string | null>(null);
+  const databaseUnavailable = ref(false);
 
   /**
    * Global staff flag: gates staff-only UI. The same claim decides the
@@ -185,6 +187,7 @@ export const useAuthStore = defineStore('auth', () => {
       reportOidcInitializationError(err);
       return;
     }
+    if (databaseUnavailable.value) return;
     if (oidc && !oidc.isUserLoggedIn && oidc.initializationError) {
       reportOidcInitializationError(oidc.initializationError);
       return;
@@ -199,6 +202,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function reportOidcInitializationError(err: unknown): void {
+    if (databaseUnavailable.value) return;
     console.error('Could not initialize OIDC sign-in', err);
     const serviceUnavailable = typeof err === 'object' && err != null
       && 'isAuthServerLikelyDown' in err && err.isAuthServerLikelyDown;
@@ -214,6 +218,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function connectWithPassword(
     { username: u, password }: { username: string; password: string },
   ): Promise<boolean> {
+    if (databaseUnavailable.value) return false;
     if (!u || !password) {
       error.value = 'Username and password are required.';
       status.value = AUTH_STATE.FAILED;
@@ -228,13 +233,14 @@ export const useAuthStore = defineStore('auth', () => {
    * them to the IdP; on return, initialize() will pick the session up.
    */
   async function connectViaOidc(): Promise<boolean> {
-    if (status.value === AUTH_STATE.CONNECTING) return false;
+    if (databaseUnavailable.value || status.value === AUTH_STATE.CONNECTING) return false;
     status.value = AUTH_STATE.CONNECTING;
     error.value = null;
     try {
       return await _connectViaOidc();
     } catch (err: any) {
       stopTokenSync();
+      if (databaseUnavailable.value || reportDatabaseError(err)) return false;
       status.value = AUTH_STATE.FAILED;
       error.value = err?.message ?? String(err);
       return false;
@@ -266,6 +272,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (generation === tokenSyncGeneration) stopTokenSync();
       throw err;
     }
+    if (databaseUnavailable.value) return false;
     handleOidcTokens(generation, oidc, tokens);
     const initialAuth = latestBearerAuth;
     if (!initialAuth) {
@@ -310,6 +317,7 @@ export const useAuthStore = defineStore('auth', () => {
         email.value = null;
         recoveryEmail.value = null;
         clearStorageQuota();
+        if (databaseUnavailable.value) return false;
         status.value = AUTH_STATE.FAILED;
         error.value = 'Could not initialize renewable JMAP authentication.';
         return false;
@@ -328,11 +336,20 @@ export const useAuthStore = defineStore('auth', () => {
     if (status.value !== AUTH_STATE.FAILED) return;
     setOidcRedirectPending(false);
     const oidc = getOidc();
-    if (!oidc || (!oidc.isUserLoggedIn && oidc.initializationError)) {
+    if (databaseUnavailable.value || !oidc || (!oidc.isUserLoggedIn && oidc.initializationError)) {
       reloadLocation();
       return;
     }
     await connectViaOidc();
+  }
+
+  function reportDatabaseError(cause: unknown): boolean {
+    if (!(cause instanceof DatabaseUnavailableError)) return false;
+    stopTokenSync();
+    databaseUnavailable.value = true;
+    status.value = AUTH_STATE.FAILED;
+    error.value = cause.message;
+    return true;
   }
 
   function stopTokenSync(): void {
@@ -492,16 +509,19 @@ export const useAuthStore = defineStore('auth', () => {
     emailClaim: string | null = null,
     recoveryEmailClaim: string | null = null,
   ): Promise<boolean> {
+    if (databaseUnavailable.value) return false;
     status.value = AUTH_STATE.CONNECTING;
     error.value = null;
     try {
       const repo = await getRepositoryAsync();
+      if (databaseUnavailable.value) return false;
       const result = await repo.startSyncAccount({
         sessionUrl: `${JMAP_SERVER_URL.replace(/\/$/, '')}/.well-known/jmap`,
         serverOrigin: serverOrigin.value,
         auth,
         wsProxyUrl: JMAP_WS_PROXY_URL || null,
       });
+      if (databaseUnavailable.value) return false;
       accountId.value = result.accountId;
       username.value = displayName;
       email.value = emailClaim;
@@ -510,6 +530,7 @@ export const useAuthStore = defineStore('auth', () => {
       refreshStorageQuota().catch(() => {});
       return true;
     } catch (err: any) {
+      if (databaseUnavailable.value || reportDatabaseError(err)) return false;
       status.value = AUTH_STATE.FAILED;
       error.value = err?.message ?? String(err);
       return false;
@@ -529,6 +550,7 @@ export const useAuthStore = defineStore('auth', () => {
     email.value = null;
     recoveryEmail.value = null;
     error.value = null;
+    databaseUnavailable.value = false;
     status.value = AUTH_STATE.IDLE;
     clearStorageQuota();
   }
@@ -560,6 +582,8 @@ export const useAuthStore = defineStore('auth', () => {
     recoveryEmail,
     isStaff,
     error,
+    databaseUnavailable,
+    reportDatabaseError,
     serverOrigin,
     serverHostname,
     isOidcReady,

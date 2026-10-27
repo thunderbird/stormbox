@@ -250,6 +250,19 @@ test.describe('Recipient control', () => {
     }
   });
 
+  test('reads one address per pill when display names contain addresses', async ({ sharedPage: page }) => {
+    try {
+      await openCompose(page);
+      const field = recipientInput(page, 'To');
+      await field.fill('"label@example.org" <actual@example.org>, "second@example.org" <second@example.org>');
+      await field.press('Enter');
+      await expect(recipientPills(page, 'To')).toHaveCount(2);
+      expect(await recipientAddresses(page, 'To')).toEqual(['actual@example.org', 'second@example.org']);
+    } finally {
+      await closeCompose(page);
+    }
+  });
+
   test('addresses a message from the keyboard alone', async ({ sharedPage: page }) => {
     try {
       await openCompose(page);

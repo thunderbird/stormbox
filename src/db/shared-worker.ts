@@ -18,16 +18,22 @@ import {
 import { BROADCAST_CHANNEL } from './protocol';
 import { attachWorkerLogger, wlog } from './worker-log';
 import { createWorkerLifecycle } from './worker-lifecycle';
+import { claimDatabaseOwnership, needsFirefoxLockWorkaround } from './worker-ownership';
 import { makeSyncRpcHandlers } from '../sync/sync-host';
 
 const channel = new BroadcastChannel(BROADCAST_CHANNEL);
 const broadcaster = makeBroadcaster(channel);
 attachWorkerLogger(channel);
 
+let handlersPromise = null;
+let ownership: ReturnType<typeof claimDatabaseOwnership> | undefined;
+let replacementWorkerUrl: string | undefined;
 const lifecycle = createWorkerLifecycle({
+  beforeRestart: () => ownership?.stop(),
+  ready: async () => { await handlersPromise; },
   restart: () => {
     try {
-      channel.postMessage({ type: WORKER_RESTARTED });
+      channel.postMessage({ type: WORKER_RESTARTED, workerUrl: self.location.href, replacementWorkerUrl });
     } finally {
       self.close();
     }
@@ -41,13 +47,21 @@ self.addEventListener('unhandledrejection', (event) => {
   wlog.error('shared-worker', 'unhandled rejection', event.reason);
 });
 
-let handlersPromise = null;
-
 function getHandlers() {
   if (handlersPromise) {
     return handlersPromise;
   }
   handlersPromise = (async () => {
+    if (needsFirefoxLockWorkaround()) {
+      ownership = claimDatabaseOwnership({
+        channel,
+        superseded: (url) => {
+          replacementWorkerUrl = url;
+          void lifecycle.requestRestart();
+        },
+      });
+      await ownership.ready;
+    }
     wlog.info('shared-worker', 'booting OPFS engine');
     const engine = await bootProductionEngine();
     wlog.info('shared-worker', 'engine ready');
