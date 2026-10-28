@@ -836,9 +836,9 @@ function closeMessageView() {
           :disabled="whitelisting"
           @click="whitelistSender"
           title="Whitelist sender and move to Inbox"
-          aria-label="Not junk — whitelist sender and move to Inbox"
+          aria-label="Not Junk — whitelist sender and move to Inbox"
         >
-          <span class="message-view__whitelist-label">Not junk</span>
+          <span class="message-view__whitelist-label">Not Junk</span>
         </button>
         <!-- A pending scheduled message is read-only: the toolbar keeps
              only Back and the view-mode toggle, and the banner below
@@ -1073,7 +1073,7 @@ function closeMessageView() {
    (A container can only be queried from its descendants, hence the
    rule targets the buttons, not the header.) */
 @container (max-width: 279px) {
-  .message-view__header .message-view__action {
+  .message-view__header .message-view__action:where(:not(.message-view__action--whitelist)) {
     width: 28px;
     flex-basis: 28px;
     margin-left: -4px;
@@ -1187,12 +1187,15 @@ function closeMessageView() {
   align-items: center;
   justify-content: center;
   width: auto;
+  height: 34px;
+  flex: 0 0 auto;
   padding: 0 12px;
   margin-inline-end: 10px;
   background: var(--accent);
   color: #fff;
   border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
   border-radius: 6px;
+  font-family: inherit;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.25;

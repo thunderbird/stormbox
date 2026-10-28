@@ -87,9 +87,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     if (input.canWhitelist.value) {
       items.push({
         id: 'whitelist',
-        label: 'Not junk',
+        label: 'Not Junk',
         title: 'Whitelist senders and move to Inbox',
-        ariaLabel: 'Not junk — whitelist senders and move the selected messages to Inbox',
+        ariaLabel: 'Not Junk — whitelist senders and move the selected messages to Inbox',
         icon: null,
         variant: 'whitelist',
         disabled: input.whitelisting.value,
