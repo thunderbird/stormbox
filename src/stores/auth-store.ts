@@ -1,4 +1,4 @@
-import { t, LocalizedError, sourceText } from '../i18n/messages';
+import { t, LocalizedError } from '../i18n/messages';
 /**
  * Auth + connection lifecycle. Holds the OIDC handle, the active local
  * account id, and an enum-typed status that the UI maps to its

@@ -29,8 +29,10 @@ const props = withDefaults(defineProps<{
   definitions: ReadonlyArray<MessageTagDefinition>;
   label?: string;
 }>(), {
-  get label() { return t('tagPickerPanel.tags'); },
+  label: undefined,
 });
+
+const resolvedLabel = computed(() => props.label ?? t('tagPickerPanel.tags'));
 
 const emit = defineEmits<{
   /** Add (`on`) or remove the keyword on every target. */
@@ -136,7 +138,7 @@ defineExpose({ focusFirst });
     ref="rootEl"
     class="tag-picker"
     role="menu"
-    :aria-label="label"
+    :aria-label="resolvedLabel"
     @keydown="onKeydown"
   >
     <template v-if="showsClear">

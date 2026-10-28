@@ -145,7 +145,9 @@ async function runCancelScheduledSend({
         error: {
           type: 'scheduleStateUnknown',
           terminal: true,
-          description: t('cancelScheduledSend.theScheduledTimeHasPassedAndTheServerNoCombined', {  }),
+          description: t('cancelScheduledSend.theScheduledTimeHasPassedAndTheServerNoCombined'),
+          descriptionKey: 'cancelScheduledSend.theScheduledTimeHasPassedAndTheServerNoCombined',
+          descriptionParams: {},
         },
       };
     }

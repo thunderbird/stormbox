@@ -750,12 +750,10 @@ function manageTags() {
  * "No unread starred messages in Inbox."
  */
 const filteredEmptyText = computed(() => {
-  const qualifiers = [
-    unreadOnly.value ? 'unread' : null,
-    flaggedOnly.value ? 'starred' : null,
-  ].filter((part): part is string => part !== null);
-  const prefix = qualifiers.length > 0 ? `${qualifiers.join(' ')} ` : '';
-  return t('messageList.noMessagesIn', { value1: prefix, value2: folderName.value });
+  const key = unreadOnly.value
+    ? (flaggedOnly.value ? 'messageList.noUnreadStarredMessages' : 'messageList.noUnreadMessages')
+    : (flaggedOnly.value ? 'messageList.noStarredMessages' : 'messageList.noMessages');
+  return t(key, { folder: folderName.value });
 });
 
 async function bulkMarkUnread() {

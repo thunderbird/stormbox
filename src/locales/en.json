@@ -335,7 +335,11 @@
     "isEmpty": "{value1} is empty.",
     "selectAFolderToViewItsMessages": "Select a folder to view its messages.",
     "chooseAFolderAboveToShowItsMessagesHere": "Choose a folder above to show its messages here.",
-    "messagesColumn": "{value1} messages, column {value2}"
+    "messagesColumn": "{value1} messages, column {value2}",
+    "noMessages": "No messages in {folder}.",
+    "noUnreadMessages": "No unread messages in {folder}.",
+    "noStarredMessages": "No starred messages in {folder}.",
+    "noUnreadStarredMessages": "No unread starred messages in {folder}."
   },
   "messageListHeaderTitle": {
     "mail": "Mail",
@@ -442,7 +446,6 @@
     "alignCenter": "Align center",
     "alignRight": "Align right",
     "alignJustify": "Align justify",
-    "b": "B",
     "font": "Font",
     "size": "Size",
     "enterAnHTTPHTTPSOrMailtoURL": "Enter an HTTP, HTTPS, or mailto URL.",
@@ -451,7 +454,6 @@
     "chooseAPNGJPEGGIFOrWebPImage": "Choose a PNG, JPEG, GIF, or WebP image.",
     "chooseAnImageNoLargerThan10MiB": "Choose an image no larger than 10 MiB.",
     "thisImageCouldNotBeRead": "This image could not be read.",
-    "resizeObserver": "ResizeObserver",
     "richTextFormatting": "Rich text formatting",
     "bold": "Bold",
     "boldB": "Bold ({value1}+B)",
@@ -1393,8 +1395,7 @@
     "theServerAcceptsDelayedSendsUpToSeconds": "The server accepts delayed sends up to {value1} seconds."
   },
   "senderAvatar": {
-    "noSender": "(no sender)",
-    "hsl4242": "hsl({value1} 42% 42%)"
+    "noSender": "(no sender)"
   },
   "engine": {
     "migrationFileDoesNotMatchTheRequiredNNNName": "Migration file {value1} does not match the required NNN_name.sql pattern",

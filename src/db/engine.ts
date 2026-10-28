@@ -1,4 +1,4 @@
-import { t, LocalizedError } from '../i18n/messages';
+import { LocalizedError } from '../i18n/messages';
 /**
  * wa-sqlite engine wrapper. Pure SQLite plumbing: small, promise-friendly
  * query API and a migration runner. Does not know about VFSes; callers

@@ -79,7 +79,7 @@ const props = withDefaults(
     maxSerializedUtf8Bytes?: number | null;
   }>(),
   {
-    get accessibleLabel() { return t('richTextEditor.richTextEditor'); },
+    accessibleLabel: undefined,
     ariaDescribedby: undefined,
     ariaInvalid: false,
     contentKey: 'default',
@@ -87,6 +87,8 @@ const props = withDefaults(
     maxSerializedUtf8Bytes: null,
   },
 );
+
+const resolvedAccessibleLabel = computed(() => props.accessibleLabel ?? t('richTextEditor.richTextEditor'));
 
 const emit = defineEmits<{
   update: [EditorContent];
@@ -510,7 +512,7 @@ function updateToolbarState(pathOverride: string | null = null) {
   const blockFormatting = selectedBlockFormatting(range);
   toolbarState.value = {
     ...toolbarState.value,
-    bold: stateForFormat(t('richTextEditor.b'), path, range),
+    bold: stateForFormat('B', path, range),
     italic: stateForFormat('I', path, range),
     underline: stateForFormat('U', path, range),
     strikethrough: stateForFormat('S', path, range),
@@ -946,7 +948,7 @@ function registerKeyboardShortcuts() {
   if (!squire) return;
   ["Ctrl-b", "Ctrl-B", "Meta-b", "Meta-B"].forEach((key) => registerKeyboardShortcut(
     key,
-    (editor, range) => toggleFormatInRange(editor, t('richTextEditor.b'), null, range),
+    (editor, range) => toggleFormatInRange(editor, 'B', null, range),
   ));
   ["Ctrl-i", "Ctrl-I", "Meta-i", "Meta-I"].forEach((key) => registerKeyboardShortcut(
     key,
@@ -1078,7 +1080,7 @@ function onToolbarKeydown(event: KeyboardEvent) {
 function observeToolbarSize() {
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
-  if (t('richTextEditor.resizeObserver') in window && toolbarEl.value) {
+  if ('ResizeObserver' in window && toolbarEl.value) {
     toolbarResizeObserver = new window.ResizeObserver(scheduleToolbarOverflowUpdate);
     toolbarResizeObserver.observe(toolbarEl.value);
   }
@@ -1274,7 +1276,7 @@ defineExpose({
           :aria-keyshortcuts="`${ariaShortcutModifier}+B`"
           :title="t('richTextEditor.boldB', { value1: shortcutModifier })"
           @mousedown.prevent
-          @click="toggleFormat(t('richTextEditor.b'))"
+          @click="toggleFormat('B')"
         >
           <Bold :size="15" />
         </button>
@@ -1832,7 +1834,7 @@ defineExpose({
         class="editor"
         contenteditable="true"
         role="textbox"
-        :aria-label="accessibleLabel"
+        :aria-label="resolvedAccessibleLabel"
         :aria-describedby="ariaDescribedby"
         :aria-invalid="ariaInvalid ? 'true' : undefined"
         aria-multiline="true"

@@ -1,4 +1,4 @@
-import { t, LocalizedError } from '../../../i18n/messages';
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * Email/query + Email/get + Email/queryChanges + Email/changes -> the
  * messages, threads, folder_messages, message_addresses, message_keywords

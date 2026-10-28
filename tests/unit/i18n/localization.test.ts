@@ -7,6 +7,10 @@ import { errorMessage, formatDate, formatNumber, LocalizedError, sourceText, t }
 import { pluralRule } from '../../../src/i18n/plurals';
 import { serializeRpcError } from '../../../src/db/rpc-dispatch';
 import { FEATURE_CARDS } from '../../../src/constants/feature-tour';
+import RichTextEditor from '../../../src/components/RichTextEditor.vue';
+import TagPickerPanel from '../../../src/components/TagPickerPanel.vue';
+import { contactDisplayNameForRead } from '../../../src/utils/contact-card-normalization';
+import { senderAvatarStyle } from '../../../src/utils/sender-avatar';
 import { nextCopyName } from '../../../src/utils/copy-name';
 import { formatScheduleTarget, wallTimeToUtc } from '../../../src/utils/schedule-time';
 
@@ -16,6 +20,9 @@ function addGerman() {
     common: { language: 'Sprache', copyName: '{name} (Kopie {number})', copyMarker: 'Kopie' },
     counts: { messages: '{count} Nachricht | {count} Nachrichten' },
     featureTour: { composeWithConfidence: 'Sicher schreiben' },
+    senderAvatar: { hsl4242: 'INVALID CSS' },
+    tagPickerPanel: { tags: 'Schlagwörter' },
+    richTextEditor: { richTextEditor: 'Nachrichtentext', bold: 'Fett', b: 'INVALID', resizeObserver: 'INVALID' },
     fixture: { parameter: 'Nachricht von {sender}' },
     repository: { databaseConnectionClosed: 'Datenbankverbindung geschlossen.' },
   });
@@ -31,6 +38,8 @@ describe('localization', () => {
   it('negotiates supported languages without losing regional formatting', () => {
     expect(resolveLocale(['zz-ZZ', 'de-AT', 'en'], ['en', 'de'])).toBe('de-AT');
     expect(resolveLocale(['en-GB'], ['en'])).toBe('en-GB');
+    expect(resolveLocale(['zh-Hant-TW'], ['en', 'zh-Hant'])).toBe('zh-Hant-TW');
+    expect(resolveLocale(['en-GB-x-private'], ['en', 'en-GB'])).toBe('en-GB-x-private');
     expect(resolveLocale(['invalid_locale'], ['en'])).toBe('en');
     expect(localeDirection('az-Arab')).toBe('rtl');
     expect(localeDirection('ku-Latn')).toBe('ltr');
@@ -87,6 +96,38 @@ describe('localization', () => {
     expect(errorMessage(wire)).toBe('Datenbankverbindung geschlossen.');
     expect(sourceText('repository.databaseConnectionClosed')).toBe('Database connection closed.');
     wrapper.unmount();
+  });
+
+  it('updates mounted accessibility defaults and keeps editor DOM tags independent of translations', async () => {
+    addGerman();
+    setLocalePreference('en');
+    const tags = mount(TagPickerPanel, { props: { targets: [], definitions: [] } });
+    const editor = mount(RichTextEditor, { attachTo: document.body, props: { initialHtml: '<div>hello</div>', contentKey: 'localization' } });
+    try {
+      expect(tags.attributes('aria-label')).toBe('Tags');
+      setLocalePreference('de');
+      await nextTick();
+      expect(tags.attributes('aria-label')).toBe('Schlagwörter');
+      const body = editor.get('[contenteditable="true"]');
+      expect(body.attributes('aria-label')).toBe('Nachrichtentext');
+      const range = document.createRange();
+      range.selectNodeContents(body.element);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      body.element.dispatchEvent(new Event('mouseup', { bubbles: true }));
+      await editor.get('[aria-label="Fett"]').trigger('click');
+      expect(body.element.querySelector('b, strong')).not.toBeNull();
+      expect(body.element.querySelector('invalid')).toBeNull();
+    } finally { tags.unmount(); editor.unmount(); }
+  });
+
+  it('keeps CSS numeric tokens and authored contact names independent of locale', () => {
+    addGerman();
+    setLocalePreference('de');
+    expect(senderAvatarStyle('Ada').background).toMatch(/^hsl\(\d+ 42% 42%\)$/);
+    expect(contactDisplayNameForRead('(no name)', { notes: {} })).toBe('');
+    expect(contactDisplayNameForRead('(no name)', { name: { full: '(no name)' } })).toBe('(no name)');
+    expect(contactDisplayNameForRead('(no name)', null)).toBe('(no name)');
   });
 
   it('keeps schedule instants stable and recognizes earlier English copy names', () => {

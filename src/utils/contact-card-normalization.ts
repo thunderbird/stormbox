@@ -128,11 +128,7 @@ export function normalizeCard(card: any): NormalizedCard | null {
         ? stringOrNull(card.name.surname) ?? stringOrNull(card.name.surnames)
         : null
     );
-  const display = fullName
-    ?? combineNameComponents(card.name)
-    ?? emails[0]?.email
-    ?? organizations.find((organization) => organization.name)?.name
-    ?? phones[0]?.value
+  const display = sourceContactDisplayName(card, { fullName, emails, organizations, phones })
     ?? sourceText('common.noName');
 
   return {
@@ -155,6 +151,34 @@ export function normalizeCard(card: any): NormalizedCard | null {
     media,
     raw: card,
   };
+}
+
+function sourceContactDisplayName(
+  card: any,
+  fields = {
+    fullName: normalizeFullName(card),
+    emails: normalizeEmails(card?.emails),
+    organizations: normalizeOrganizations(card),
+    phones: normalizePhones(card?.phones),
+  },
+): string | null {
+  return fields.fullName
+    ?? combineNameComponents(card?.name)
+    ?? fields.emails[0]?.email
+    ?? fields.organizations.find((organization) => organization.name)?.name
+    ?? fields.phones[0]?.value
+    ?? null;
+}
+
+/** Clear a generated storage placeholder only when the original card proves it was unnamed. */
+export function contactDisplayNameForRead(displayName: string | null, source: unknown): string | null {
+  if (displayName !== sourceText('common.noName') || source == null) return displayName;
+  let card: unknown = source;
+  if (typeof source === 'string') {
+    try { card = JSON.parse(source); } catch { return displayName; }
+  }
+  if (!isPlainObject(card)) return displayName;
+  return sourceContactDisplayName(card) === null ? '' : displayName;
 }
 
 /** The card's `fullName`, else `name.full` for the RFC 9553 shape. */

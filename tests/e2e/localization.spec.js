@@ -35,6 +35,7 @@ test('switches a running interface, preserves the preference, and falls back per
 
   await dialog.locator('.language-picker summary').focus();
   await page.keyboard.press('Enter');
+  await expect(dialog.getByRole('menuitemradio', { name: 'Deutsch', exact: true })).toBeFocused();
   await page.keyboard.press('Home');
   await page.keyboard.press('ArrowDown');
   await expect(dialog.getByRole('menuitemradio', { name: 'English', exact: true })).toBeFocused();
