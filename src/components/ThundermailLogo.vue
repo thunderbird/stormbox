@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 defineProps({
   size: { type: Number, default: 56 },
 });
@@ -9,7 +10,7 @@ defineProps({
     src="/logo.png"
     :width="size"
     :height="size"
-    alt="Thundermail"
+    :alt="t('thundermailLogo.thundermail')"
     class="thundermail-logo"
     draggable="false"
   />

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed, nextTick, onBeforeUnmount, ref, watch,
 } from 'vue';
@@ -38,11 +39,13 @@ const props = withDefaults(defineProps<{
   /** Which edge of the anchor the panel shares: `end` for controls at a row's end, `start` for one at the left. */
   align?: 'start' | 'end';
 }>(), {
-  label: 'Tags',
+  label: undefined,
   trigger: null,
   returnFocus: null,
   align: 'end',
 });
+
+const resolvedLabel = computed(() => props.label ?? t('tagPickerPopover.tags'));
 
 const emit = defineEmits<{
   close: [];
@@ -180,7 +183,7 @@ onBeforeUnmount(unlisten);
       class="app-dropdown__menu tag-picker-popover"
       :style="style"
       role="dialog"
-      :aria-label="label"
+      :aria-label="resolvedLabel"
       data-tag-picker-popover
       @keydown="onKeydown"
     >
@@ -188,7 +191,7 @@ onBeforeUnmount(unlisten);
         ref="panelEl"
         :targets="targets"
         :definitions="definitions"
-        :label="label"
+        :label="resolvedLabel"
         @toggle="(keyword, on) => emit('toggle', keyword, on)"
         @clear="emit('clear')"
         @manage="emit('manage')"

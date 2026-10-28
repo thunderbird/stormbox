@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -34,7 +35,7 @@ const headingEl = ref<HTMLHeadingElement | null>(null);
 const title = computed(() =>
   props.detail.full_name?.trim()
     || props.detail.display_name?.trim()
-    || '(no name)');
+    || t('contactDetailsView.noName'));
 const preferredEmail = computed(() =>
   props.detail.emails.find((email) => email.isPreferred)?.value
     ?? props.detail.emails[0]?.value
@@ -96,24 +97,24 @@ defineExpose({ focusHeading });
       {{ title }}
     </h2>
     <p v-if="expiryLabel" class="contact-detail__expiry">
-      Available until {{ expiryLabel }}
+      {{ t('contactDetailsView.availableUntil', { value1: expiryLabel }) }}
     </p>
 
     <section v-if="detail.emails.length > 0">
-      <h3>Email addresses</h3>
+      <h3>{{ t('contactDetailsView.emailAddresses') }}</h3>
       <dl>
         <template v-for="email in detail.emails" :key="email.mapKey ?? email.position">
           <dt>{{ labelFor('email', email) }}</dt>
           <dd>
             <a :href="`mailto:${email.value}`">{{ email.value }}</a>
-            <span v-if="email.isPreferred" class="contact-detail__primary">Primary</span>
+            <span v-if="email.isPreferred" class="contact-detail__primary">{{ t('contactDetailsView.primary') }}</span>
           </dd>
         </template>
       </dl>
     </section>
 
     <section v-if="detail.phones.length > 0">
-      <h3>Phone numbers</h3>
+      <h3>{{ t('contactDetailsView.phoneNumbers') }}</h3>
       <dl>
         <template v-for="phone in detail.phones" :key="phone.mapKey ?? phone.position">
           <dt>{{ labelFor('phone', phone) }}</dt>
@@ -123,7 +124,7 @@ defineExpose({ focusHeading });
     </section>
 
     <section v-if="detail.links.length > 0">
-      <h3>Websites</h3>
+      <h3>{{ t('contactDetailsView.websites') }}</h3>
       <dl>
         <template v-for="link in detail.links" :key="link.mapKey ?? link.position">
           <dt>{{ labelFor('website', link) }}</dt>
@@ -141,7 +142,7 @@ defineExpose({ focusHeading });
     </section>
 
     <section v-if="detail.anniversaries.length > 0">
-      <h3>Dates</h3>
+      <h3>{{ t('contactDetailsView.dates') }}</h3>
       <dl>
         <template
           v-for="anniversary in detail.anniversaries"
@@ -154,7 +155,7 @@ defineExpose({ focusHeading });
     </section>
 
     <section v-if="detail.notes.length > 0">
-      <h3>Notes</h3>
+      <h3>{{ t('contactDetailsView.notes') }}</h3>
       <p
         v-for="note in detail.notes"
         :key="note.mapKey ?? note.position"
@@ -165,13 +166,13 @@ defineExpose({ focusHeading });
     </section>
 
     <section v-if="detail.organizations.length > 0 || unlinkedTitles.length > 0">
-      <h3>Work affiliations</h3>
+      <h3>{{ t('contactDetailsView.workAffiliations') }}</h3>
       <div
         v-for="organization in detail.organizations"
         :key="organization.mapKey ?? organization.position"
         class="contact-detail__affiliation"
       >
-        <strong>{{ organization.name || 'Work' }}</strong>
+        <strong>{{ organization.name || t('contactDetailsView.work') }}</strong>
         <p v-if="organization.units.length > 0">
           {{ organization.units.map((unit) => unit.value).join(' · ') }}
         </p>
@@ -179,7 +180,7 @@ defineExpose({ focusHeading });
           v-for="title in titlesForOrganization(organization.mapKey)"
           :key="title.mapKey ?? title.position"
         >
-          {{ title.kind === 'title' ? 'Title' : 'Role' }}: {{ title.value }}
+          {{ title.kind === 'title' ? t('contactDetailsView.title') : t('contactDetailsView.role') }}: {{ title.value }}
         </p>
       </div>
       <p
@@ -187,13 +188,13 @@ defineExpose({ focusHeading });
         :key="title.mapKey ?? title.position"
         class="contact-detail__affiliation"
       >
-        {{ title.kind === 'title' ? 'Title' : 'Role' }}: {{ title.value }}
+        {{ title.kind === 'title' ? t('contactDetailsView.title') : t('contactDetailsView.role') }}: {{ title.value }}
       </p>
     </section>
 
     <section>
-      <h3>Address books</h3>
-      <p>{{ addressbookNames.length > 0 ? addressbookNames.join(', ') : 'None' }}</p>
+      <h3>{{ t('contactDetailsView.addressBooks') }}</h3>
+      <p>{{ addressbookNames.length > 0 ? addressbookNames.join(', ') : t('contactDetailsView.none') }}</p>
     </section>
 
     <p
@@ -208,7 +209,7 @@ defineExpose({ focusHeading });
       "
       class="contact-detail__empty"
     >
-      No additional contact details.
+      {{ t('contactDetailsView.noAdditionalContactDetails') }}
     </p>
   </div>
 </template>

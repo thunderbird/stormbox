@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import {
   ABSOLUTE_TIMESTAMP_PATTERN,
   parseAbsoluteTimestamp,
@@ -19,11 +20,14 @@ export interface HoldForResult {
   clock: ScheduleClockWindow;
 }
 
-function scheduleError(type: string, description: string): Error {
-  const error: any = new Error(description);
+function scheduleError(type: string, description: string | Error): Error {
+  const error: any = description instanceof Error ? description : new Error(description);
   error.type = type;
   error.terminal = true;
-  error.description = description;
+  error.description = error.message;
+  if (error instanceof LocalizedError) {
+    Object.assign(error, { descriptionKey: error.messageKey, descriptionParams: error.messageParams });
+  }
   return error;
 }
 
@@ -41,12 +45,12 @@ export function parseAbsoluteTarget(targetAt: unknown): { targetAt: string; targ
   if (typeof targetAt !== 'string' || !ABSOLUTE_TIMESTAMP_PATTERN.test(targetAt)) {
     throw scheduleError(
       'invalidScheduleTarget',
-      'The scheduled time must be an absolute timestamp.',
+      new LocalizedError('scheduleTime.theScheduledTimeMustBeAnAbsoluteTimestamp'),
     );
   }
   const parsed = parseAbsoluteTimestamp(targetAt);
   if (!parsed) {
-    throw scheduleError('invalidScheduleTarget', 'The scheduled time is invalid.');
+    throw scheduleError('invalidScheduleTarget', new LocalizedError('scheduleTime.theScheduledTimeIsInvalid'));
   }
   return parsed;
 }
@@ -81,7 +85,7 @@ export function computeHoldFor({
   if (!Number.isSafeInteger(maxDelayedSend) || maxDelayedSend < 1) {
     throw scheduleError(
       'scheduleCapabilityUnavailable',
-      'The server does not advertise a valid delayed-send limit.',
+      new LocalizedError('scheduleTime.theServerDoesNotAdvertiseAValidDelayedSend'),
     );
   }
   const validation = validateScheduleTarget({
@@ -93,21 +97,21 @@ export function computeHoldFor({
   if ('reason' in validation) {
     switch (validation.reason) {
       case 'invalidTarget':
-        throw scheduleError('invalidScheduleTarget', 'The scheduled time is invalid.');
+        throw scheduleError('invalidScheduleTarget', new LocalizedError('scheduleTime.theScheduledTimeIsInvalid'));
       case 'capabilityUnavailable':
         throw scheduleError(
           'scheduleCapabilityUnavailable',
-          'The server does not advertise a valid delayed-send limit.',
+          new LocalizedError('scheduleTime.theServerDoesNotAdvertiseAValidDelayedSend'),
         );
       case 'expired':
         throw scheduleError(
           'scheduleExpired',
-          'The scheduled time passed before the message could be submitted.',
+          new LocalizedError('scheduleTime.theScheduledTimePassedBeforeTheMessageCouldBe'),
         );
       case 'tooFar':
         throw scheduleError(
           'scheduleTooFar',
-          `The server accepts delayed sends up to ${maxDelayedSend} seconds.`,
+          new LocalizedError('scheduleTime.theServerAcceptsDelayedSendsUpToSeconds', { value1: maxDelayedSend }),
         );
       default: {
         const exhaustive: never = validation.reason;

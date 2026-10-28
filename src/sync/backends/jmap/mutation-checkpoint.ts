@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { DB_RPC } from '../../../db/protocol';
 
 export const CACHE_REPAIR_MAX_ATTEMPTS = 3;
@@ -40,7 +41,7 @@ export async function saveMutationCheckpoint<T>({
   resetAttempts?: boolean;
 }): Promise<T | null> {
   if (rowId == null) {
-    throw new Error('saveMutationCheckpoint requires a mutation row id');
+    throw new LocalizedError('mutationCheckpoint.saveMutationCheckpointRequiresAMutationRowId');
   }
   await handlers[DB_RPC.QUERY]({
     sql: `UPDATE pending_mutations

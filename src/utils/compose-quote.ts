@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 /**
  * Subject prefixing and body quoting for reply and forward prefills.
  *
@@ -10,13 +11,13 @@
 export function makeReplySubject(subject?: string | null): string {
   const s = (subject ?? '').trim();
   if (/^re:/i.test(s)) return s;
-  return s ? `Re: ${s}` : 'Re: (no subject)';
+  return s ? `Re: ${s}` : `Re: ${t('common.noSubject')}`;
 }
 
 export function makeForwardSubject(subject?: string | null): string {
   const s = (subject ?? '').trim();
   if (/^fwd:/i.test(s)) return s;
-  return s ? `Fwd: ${s}` : 'Fwd: (no subject)';
+  return s ? `Fwd: ${s}` : `Fwd: ${t('common.noSubject')}`;
 }
 
 export function formatQuotedHeader({
@@ -32,9 +33,9 @@ export function formatQuotedHeader({
     ? new Date(Number(date)).toLocaleString()
     : '';
   const lines = [
-    from ? `From: ${from}` : null,
-    when ? `Date: ${when}` : null,
-    subject ? `Subject: ${subject}` : null,
+    from ? t('common.fromHeader', { value: from }) : null,
+    when ? t('common.dateHeader', { value: when }) : null,
+    subject ? t('common.subjectHeader', { value: subject }) : null,
   ].filter(Boolean);
   return lines.join('\n');
 }

@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 /**
  * Keyboard helpers shared by Thunderbird-style shortcut handlers.
  */
@@ -7,8 +8,8 @@ export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
 }
 
-export function shortcutModifierLabel(): '⌘' | 'Ctrl' {
-  return isMacPlatform() ? '⌘' : 'Ctrl';
+export function shortcutModifierLabel(): string {
+  return isMacPlatform() ? '⌘' : t('keyboard.ctrl');
 }
 
 export function shortcutModifierAria(): 'Meta' | 'Control' {

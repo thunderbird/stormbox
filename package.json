@@ -23,7 +23,8 @@
     "stack:configure": "node tests/fixtures/configure-keycloak.mjs && node tests/fixtures/configure-stalwart.mjs",
     "stack:seed": "npm run stack:configure && node tests/fixtures/seed-mail.mjs",
     "stack:seed-dev": "node tests/fixtures/seed-dev-mail.mjs",
-    "stack:ws-proxy": "node tests/fixtures/ws-proxy/server.mjs"
+    "stack:ws-proxy": "node tests/fixtures/ws-proxy/server.mjs",
+    "check:locales": "node scripts/check-locales.mjs"
   },
   "dependencies": {
     "@floating-ui/dom": "1.8.0",
@@ -40,10 +41,13 @@
     "pinia": "3.0.4",
     "squire-rte": "2.4.6",
     "vue": "3.5.35",
+    "vue-i18n": "11.4.16",
     "vue-router": "^5.0.7"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@intlify/eslint-plugin-vue-i18n": "4.5.1",
+    "@intlify/message-compiler": "11.4.16",
     "@playwright/test": "1.60.0",
     "@types/node": "25.9.1",
     "@vitejs/plugin-basic-ssl": "2.3.0",

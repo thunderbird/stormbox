@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { JMAP_CAPS, type ServerClockReference } from './transport';
 
 export interface ScheduleCapability {
@@ -96,9 +97,7 @@ export async function requireScheduleCapability(
   if (capability.supported) {
     return { maxDelayedSend: capability.maxDelayedSend };
   }
-  const error: any = new Error(
-    'This account does not advertise FUTURERELEASE with a valid delayed-send limit.',
-  );
+  const error: any = new LocalizedError('scheduleCapability.thisAccountDoesNotAdvertiseFUTURERELEASEWithAValid');
   error.type = 'scheduleCapabilityUnavailable';
   error.terminal = true;
   error.description = error.message;

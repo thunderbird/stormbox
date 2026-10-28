@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { DRAFT_PHASE, type DraftPhase } from '../../../constants/states';
 import { makeMessageId, makeOperationId } from '../../../utils/message-id';
 import {
@@ -150,10 +151,10 @@ export async function saveDraftCheckpoint(
   checkpoint: DraftCheckpoint,
   phase: DraftPhase,
 ): Promise<DraftCheckpoint> {
-  if (rowId == null) throw new Error('saveDraftCheckpoint requires a mutation row id');
+  if (rowId == null) throw new LocalizedError('draftCheckpoint.saveDraftCheckpointRequiresAMutationRowId');
   const reason = draftCheckpointConflictReason(checkpoint, phase);
   if (reason) {
-    throw new Error(`Invalid draft checkpoint for ${phase}: ${reason}`);
+    throw new LocalizedError('draftCheckpoint.invalidDraftCheckpointFor', { value1: phase, value2: reason });
   }
   await saveMutationCheckpoint({
     handlers,

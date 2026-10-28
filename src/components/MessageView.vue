@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed,
   nextTick,
@@ -196,9 +197,9 @@ watch(compactHeader, (compact) => {
   }
 });
 const senderText = computed(() => metadataExpanded.value
-  ? message.value?.from_text || '(no sender)'
+  ? message.value?.from_text || t('messageView.noSender')
   : shortFrom(message.value?.from_text));
-const headerDetailsLabel = computed(() => headerExpanded.value ? 'Hide message details' : 'Show message details');
+const headerDetailsLabel = computed(() => headerExpanded.value ? t('messageView.hideMessageDetails') : t('messageView.showMessageDetails'));
 watch(selectedMessageId, () => {
   headerExpanded.value = false;
   if (metadataEl.value) metadataEl.value.scrollTop = 0;
@@ -226,7 +227,7 @@ const tagMenuButton = ref<InstanceType<typeof AppIconButton> | null>(null);
 const tagMenuTrigger = computed<HTMLElement | null>(() => (tagMenuButton.value?.$el as HTMLElement | undefined) ?? null);
 const tagMenuAnchor = ref<PopoverAnchor | null>(null);
 const tagStackLabel = computed(() => (
-  messageTags.value.length === 0 ? 'Tag' : `Tags: ${messageTags.value.map((tag) => tag.name).join(', ')}`
+  messageTags.value.length === 0 ? t('messageView.tag') : t('messageView.tags2', { value1: messageTags.value.map((tag) => tag.name).join(', ') })
 ));
 function toggleTagMenu() {
   if (tagMenuAnchor.value) {
@@ -761,12 +762,12 @@ const scheduledBannerText = computed(() => {
   switch (scheduledStatus.value) {
     case 'pending': {
       const relative = describeTimeUntil(sendAt);
-      return `Scheduled to send ${fmtDate(sendAt)}${relative ? ` (${relative})` : ''}.`;
+      return t('messageView.scheduledToSend', { value1: fmtDate(sendAt), value2: relative ? ` (${relative})` : '' });
     }
     case 'final':
-      return 'This message was sent and is moving to your Sent folder.';
+      return t('messageView.thisMessageWasSentAndIsMovingToYour');
     case 'canceled':
-      return 'Sending was canceled; this message is moving back to Drafts.';
+      return t('messageView.sendingWasCanceledThisMessageIsMovingBackTo');
     default:
       return '';
   }
@@ -814,16 +815,16 @@ function closeMessageView() {
       '--message-banner-height': `${scheduledBannerHeight}px`,
       '--message-attachment-bar-height': `${attachmentBarHeight}px`,
     }"
-    aria-label="Message detail"
+    :aria-label="t('messageView.messageDetail')"
     tabindex="-1"
     @keydown="onReadingKeyDown"
   >
     <div v-if="!message" class="message-view__empty">
-      <p>Select a message to read it.</p>
+      <p>{{ t('messageView.selectAMessageToReadIt') }}</p>
     </div>
     <article v-else class="message-view__article">
       <header ref="toolbarEl" class="message-view__header">
-        <AppIconButton class="message-view__action message-view__action--back" @click="closeMessageView" title="Back" aria-label="Back">
+        <AppIconButton class="message-view__action message-view__action--back" @click="closeMessageView" :title="t('messageView.back')" :aria-label="t('messageView.back')">
           <ArrowLeft class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
         </AppIconButton>
         <!-- Contextual: only in the Junk folder. Labeled and set apart at
@@ -835,31 +836,31 @@ function closeMessageView() {
           type="button"
           :disabled="whitelisting"
           @click="whitelistSender"
-          title="Whitelist sender and move to Inbox"
-          aria-label="Not junk — whitelist sender and move to Inbox"
+          :title="t('messageView.whitelistSenderAndMoveToInbox')"
+          :aria-label="t('messageView.notJunkWhitelistSenderAndMoveToInbox')"
         >
-          <span class="message-view__whitelist-label">Not junk</span>
+          <span class="message-view__whitelist-label">{{ t('messageView.notJunk') }}</span>
         </button>
         <!-- A pending scheduled message is read-only: the toolbar keeps
              only Back and the view-mode toggle, and the banner below
              owns Cancel Send. -->
         <template v-if="!isPendingScheduled">
-          <AppIconButton v-if="!isInArchiveFolder" class="message-view__action" @click="archive" :title="actionTitle('Archive', 'archive')" aria-label="Archive">
+          <AppIconButton v-if="!isInArchiveFolder" class="message-view__action" @click="archive" :title="actionTitle(t('messageView.archive'), 'archive')" :aria-label="t('messageView.archive')">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="archiveIcon" />
           </AppIconButton>
-          <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" title="Junk" aria-label="Mark as junk">
+          <AppIconButton v-if="!isInJunkFolder" class="message-view__action" @click="junk" :title="t('messageView.junk')" :aria-label="t('messageView.markAsJunk')">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--folder" aria-hidden="true" v-html="junkIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" danger @click="destroy" :title="actionTitle('Delete', 'delete')" aria-label="Delete">
+          <AppIconButton class="message-view__action" danger @click="destroy" :title="actionTitle(t('messageView.delete'), 'delete')" :aria-label="t('messageView.delete')">
             <Trash2 class="message-view__toolbar-icon" :size="18" :stroke-width="1.65" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" @click="reply" :title="actionTitle('Reply', 'reply')" aria-label="Reply">
+          <AppIconButton class="message-view__action" @click="reply" :title="actionTitle(t('messageView.reply'), 'reply')" :aria-label="t('messageView.reply')">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" @click="replyAll" :title="actionTitle('Reply All', 'replyAll')" aria-label="Reply All">
+          <AppIconButton class="message-view__action" @click="replyAll" :title="actionTitle(t('messageView.replyAll'), 'replyAll')" :aria-label="t('messageView.replyAll')">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="replyAllIcon" />
           </AppIconButton>
-          <AppIconButton class="message-view__action" @click="forward" :title="actionTitle('Forward', 'forward')" aria-label="Forward">
+          <AppIconButton class="message-view__action" @click="forward" :title="actionTitle(t('messageView.forward'), 'forward')" :aria-label="t('messageView.forward')">
             <span class="message-view__toolbar-icon message-view__toolbar-icon--shape" aria-hidden="true" v-html="forwardIcon" />
           </AppIconButton>
           <!-- The message's tag stack (MK-6.5); opens the tag menu. -->
@@ -882,7 +883,7 @@ function closeMessageView() {
           :targets="messageTagTargets"
           :definitions="tagDefinitions"
           :trigger="tagMenuTrigger"
-          label="Tags"
+          :label="t('messageView.tags')"
           @close="closeTagMenu"
           @toggle="setMessageTag"
           @clear="clearMessageTags"
@@ -893,8 +894,8 @@ function closeMessageView() {
           v-if="canForceLightBody"
           class="message-view__action message-view__action--view-mode"
           :aria-pressed="forceLightBody"
-          :title="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
-          :aria-label="forceLightBody ? 'View this message in dark mode' : 'View this message in light mode'"
+          :title="forceLightBody ? t('messageView.viewThisMessageInDarkMode') : t('messageView.viewThisMessageInLightMode')"
+          :aria-label="forceLightBody ? t('messageView.viewThisMessageInDarkMode') : t('messageView.viewThisMessageInLightMode')"
           @click="toggleBodyLightMode"
         >
           <Moon v-if="forceLightBody" :size="16" :stroke-width="1.75" />
@@ -918,10 +919,10 @@ function closeMessageView() {
           :disabled="cancelingScheduled"
           @click="cancelScheduledSend"
         >
-          {{ cancelingScheduled ? 'Canceling…' : 'Cancel send' }}
+          {{ cancelingScheduled ? t('messageView.canceling') : t('messageView.cancelSend') }}
         </button>
       </div>
-      <section class="message-view__details" :class="{ 'message-view__details--expanded': headerExpanded }" aria-label="Message header">
+      <section class="message-view__details" :class="{ 'message-view__details--expanded': headerExpanded }" :aria-label="t('messageView.messageHeader')">
         <AppIconButton
           v-show="compactHeader"
           class="message-view__details-toggle"
@@ -938,30 +939,30 @@ function closeMessageView() {
           ref="metadataEl"
           class="message-view__metadata"
           :tabindex="compactHeader ? 0 : undefined"
-          :aria-label="compactHeader ? 'Message details' : undefined"
+          :aria-label="compactHeader ? t('messageView.messageDetails') : undefined"
         >
           <div class="message-view__metadata-row">
-            <dt>From</dt>
+            <dt>{{ t('messageView.from') }}</dt>
             <dd>{{ senderText }}</dd>
           </div>
           <div v-if="message.to_text" v-show="metadataExpanded" class="message-view__metadata-row">
-            <dt>To</dt>
+            <dt>{{ t('messageView.to') }}</dt>
             <dd>{{ message.to_text }}</dd>
           </div>
           <div v-if="ccText" v-show="metadataExpanded" class="message-view__metadata-row">
-            <dt>Cc</dt>
+            <dt>{{ t('messageView.cc') }}</dt>
             <dd>{{ ccText }}</dd>
           </div>
           <div v-if="bccText" v-show="metadataExpanded" class="message-view__metadata-row">
-            <dt>Bcc</dt>
+            <dt>{{ t('messageView.bcc') }}</dt>
             <dd>{{ bccText }}</dd>
           </div>
           <div class="message-view__metadata-row message-view__title">
-            <dt>Subject</dt>
-            <dd><h2>{{ message.subject || '(no subject)' }}</h2></dd>
+            <dt>{{ t('messageView.subject') }}</dt>
+            <dd><h2>{{ message.subject || t('messageView.noSubject') }}</h2></dd>
           </div>
           <div v-show="metadataExpanded" class="message-view__metadata-row">
-            <dt>{{ hasScheduledBanner ? 'Send at' : 'Date' }}</dt>
+            <dt>{{ hasScheduledBanner ? t('messageView.sendAt') : t('messageView.date') }}</dt>
             <dd class="message-view__date">
               {{ fmtDate(hasScheduledBanner ? (message.sent_at ?? message.received_at) : message.received_at) }}
             </dd>
@@ -971,7 +972,7 @@ function closeMessageView() {
             v-show="metadataExpanded"
             class="message-view__metadata-row message-view__tags-row"
           >
-            <dt>Tags</dt>
+            <dt>{{ t('messageView.tags') }}</dt>
             <dd class="message-view__tags" data-message-tags>
               <MessageTagChip
                 v-for="tag in messageTags"
@@ -984,7 +985,7 @@ function closeMessageView() {
           </div>
         </dl>
       </section>
-      <div ref="bodyScrollEl" class="message-view__body" tabindex="0" aria-label="Message body">
+      <div ref="bodyScrollEl" class="message-view__body" tabindex="0" :aria-label="t('messageView.messageBody')">
         <div
           v-if="iframeSrcDoc"
           ref="htmlShellRef"
@@ -999,12 +1000,12 @@ function closeMessageView() {
               height: `${iframeHeight}px`,
               backgroundColor: iframeBackground,
             }"
-            title="Message body"
+            :title="t('messageView.messageBody')"
             @load="onIframeLoad"
           />
         </div>
         <div v-else-if="textHtml" class="message-view__text" v-html="textHtml" />
-        <p v-else-if="!bodyLoaded" class="message-view__placeholder">Loading message…</p>
+        <p v-else-if="!bodyLoaded" class="message-view__placeholder">{{ t('messageView.loadingMessage') }}</p>
         <MessageAttachmentPreviews
           :rows="attachmentRows"
           @preview="previewAttachment"

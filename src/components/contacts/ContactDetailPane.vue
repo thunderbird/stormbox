@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -166,7 +167,7 @@ async function onPhotoSelected(event: Event): Promise<void> {
     if (generation !== photoReadGeneration) return;
     reportFailure(
       'validation-error',
-      error?.message ?? 'Could not read the selected image.',
+      error?.message ?? t('contactDetailPane.couldNotReadTheSelectedImage'),
     );
   } finally {
     if (generation === photoReadGeneration) {
@@ -230,7 +231,7 @@ async function save(): Promise<boolean> {
     if (!initialFields.value) {
       reportFailure(
         'save-error',
-        'Contact details changed. Close and reopen the editor before saving.',
+        t('contactDetailPane.contactDetailsChangedCloseAndReopenTheEditorBefore'),
       );
       return false;
     }
@@ -246,7 +247,7 @@ async function save(): Promise<boolean> {
   }
   if (!ok) {
     reportFailure(
-      contactsStore.error?.startsWith('Enter ')
+      [t('contactsStore.enterAValidEmailAddress'), t('contactsStore.enterAPhoneNumber'), t('contactsStore.enterAValidContactDate'), t('contactsStore.enterAValidNote'), t('contactsStore.enterAnOrganizationOrDepartment'), t('contactsStore.enterAValidTitleOrRole'), t('contactsStore.enterAnAbsoluteHTTPOrHTTPSWebsite'), t('contactsStore.enterAtLeastOneContactDetail'), t('contactsStore.enterValidContactDetails')].includes(contactsStore.error ?? '')
         ? 'validation-error'
         : 'save-error',
     );
@@ -277,8 +278,8 @@ defineExpose({ focusDetail, save });
       <AppIconButton
         class="contact-detail__action--back"
         :disabled="deleting || contactsStore.saving || photoReading"
-        title="Back"
-        aria-label="Back"
+        :title="t('contactDetailPane.back')"
+        :aria-label="t('contactDetailPane.back')"
         @click="emit('back')"
       >
         <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -289,16 +290,16 @@ defineExpose({ focusDetail, save });
       <template v-if="(mode === 'view' || mode === 'loading') && detail">
         <AppIconButton
           :disabled="deleting || mode === 'loading'"
-          title="Edit"
-          aria-label="Edit"
+          :title="t('contactDetailPane.edit')"
+          :aria-label="t('contactDetailPane.edit')"
           @click="emit('edit')"
         >
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
         <AppIconButton
           :disabled="deleting || contactsStore.saving || mode === 'loading'"
-          title="Duplicate contact"
-          aria-label="Duplicate contact"
+          :title="t('contactDetailPane.duplicateContact')"
+          :aria-label="t('contactDetailPane.duplicateContact')"
           @click="emit('duplicate')"
         >
           <Copy :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -307,8 +308,8 @@ defineExpose({ focusDetail, save });
           class="contact-detail__delete"
           danger
           :disabled="deleting || mode === 'loading'"
-          title="Delete"
-          aria-label="Delete"
+          :title="t('contactDetailPane.delete')"
+          :aria-label="t('contactDetailPane.delete')"
           @click="emit('requestDelete')"
         >
           <Trash2 :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -321,7 +322,7 @@ defineExpose({ focusDetail, save });
       class="contact-detail__loading"
       role="status"
     >
-      <p>Loading contact…</p>
+      <p>{{ t('contactDetailPane.loadingContact') }}</p>
     </div>
 
     <form
@@ -362,7 +363,7 @@ defineExpose({ focusDetail, save });
             :disabled="photoReading"
             @click="choosePhoto"
           >
-            {{ photoReading ? 'Reading photo…' : (model.photo ? 'Replace photo' : 'Upload photo') }}
+            {{ photoReading ? t('contactDetailPane.readingPhoto') : (model.photo ? t('contactDetailPane.replacePhoto') : t('contactDetailPane.uploadPhoto')) }}
           </AppButton>
           <AppButton
             v-if="model.photo"
@@ -370,20 +371,20 @@ defineExpose({ focusDetail, save });
             :disabled="photoReading"
             @click="removePhoto"
           >
-            Remove
+            {{ t('contactDetailPane.remove') }}
           </AppButton>
         </div>
       </div>
 
       <label class="contact-detail__field">
-        <span>Full or display name</span>
+        <span>{{ t('contactDetailPane.fullOrDisplayName') }}</span>
         <input
           ref="fullNameEl"
           v-model="model.fullName"
           class="contact-editor__input"
           type="text"
           autocomplete="name"
-          placeholder="Optional"
+          :placeholder="t('contactDetailPane.optional')"
         />
       </label>
 
@@ -414,7 +415,7 @@ defineExpose({ focusDetail, save });
 
       <footer class="contact-detail__footer">
         <span v-if="mode === 'create'" class="contact-detail__hint">
-          Email is optional.
+          {{ t('contactDetailPane.emailIsOptional') }}
         </span>
         <span v-else />
         <div class="contact-detail__footer-actions">
@@ -423,13 +424,13 @@ defineExpose({ focusDetail, save });
             :disabled="contactsStore.saving || photoReading"
             @click="emit('cancel')"
           >
-            Cancel
+            {{ t('contactDetailPane.cancel') }}
           </AppButton>
           <AppButton
             form-action="submit"
             :disabled="contactsStore.saving || photoReading"
           >
-            {{ contactsStore.saving ? 'Saving…' : 'Save contact' }}
+            {{ contactsStore.saving ? t('contactDetailPane.saving') : t('contactDetailPane.saveContact') }}
           </AppButton>
         </div>
       </footer>

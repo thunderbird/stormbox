@@ -1,3 +1,4 @@
+import { sourceText } from '../i18n/messages';
 /**
  * Drives the compose editor for the Attachments and clipboard spotlight
  * through the same DOM the user acts on: text is written into the document
@@ -17,8 +18,8 @@ export const TOUR_EDITOR_TARGETS = {
   image: `${EDITOR_SELECTOR} img`,
 } as const;
 
-export const TOUR_BODY_TEXT = 'Details are on the Thunderbird site.';
-export const TOUR_LINK_TEXT = 'Thunderbird site';
+export const TOUR_BODY_TEXT = sourceText('spotlightEditorDemo.detailsAreOnTheThunderbirdSite');
+export const TOUR_LINK_TEXT = sourceText('spotlightEditorDemo.thunderbirdSite');
 export const TOUR_LINK_URL = 'https://www.thunderbird.net/';
 
 const TOUR_IMAGE_WIDTH = 280;

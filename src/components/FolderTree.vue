@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref } from 'vue';
 import { Settings2 } from '@lucide/vue';
 
@@ -91,7 +92,7 @@ const userFolders = computed(() => tree.value.filter((f) => !isMainFolder(f)));
 // sidebar; the subscriptions dialog manages the full set.
 const sharedTrees = computed(() => mailStore.sharedFolderGroups.map((group) => ({
   account: group.account,
-  label: group.account.display_name ?? group.account.primary_email ?? 'Shared',
+  label: group.account.display_name ?? group.account.primary_email ?? t('folderTree.shared'),
   tree: buildTree(group.folders),
 })));
 
@@ -191,7 +192,7 @@ const STARRED_KEYWORD = '$flagged';
 
 const tagRows = computed(() => [
   {
-    keyword: STARRED_KEYWORD, name: 'Starred', color: null as string | null,
+    keyword: STARRED_KEYWORD, get name() { return t('folderTree.starred'); }, color: null as string | null,
   },
   ...tagDefinitions.value.map((definition) => ({
     keyword: definition.keyword.toLowerCase(),
@@ -260,7 +261,7 @@ function manageTags() {
 </script>
 
 <template>
-  <nav class="folder-tree" aria-label="Mailboxes">
+  <nav class="folder-tree" :aria-label="t('folderTree.mailboxes')">
     <FolderNode
       v-for="folder in mainFolders"
       :key="folder.id"
@@ -280,14 +281,14 @@ function manageTags() {
       manage button stays reachable without scrolling past the tree.
     -->
     <div class="folder-tree__heading-row">
-      <h3 class="folder-tree__heading">Folders</h3>
+      <h3 class="folder-tree__heading">{{ t('folderTree.folders') }}</h3>
       <span class="folder-tree__heading-actions">
         <button
           type="button"
           class="folder-tree__manage"
           data-manage-folders
-          title="Manage Folders"
-          aria-label="Manage Folders"
+          :title="t('folderTree.manageFolders')"
+          :aria-label="t('folderTree.manageFolders')"
           @click="showSubscriptionsDialog = true"
         >
           <Settings2 :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -330,14 +331,14 @@ function manageTags() {
     />
 
     <div class="folder-tree__heading-row" data-tag-views>
-      <h3 class="folder-tree__heading">Tags</h3>
+      <h3 class="folder-tree__heading">{{ t('folderTree.tags') }}</h3>
       <span class="folder-tree__heading-actions">
         <button
           type="button"
           class="folder-tree__manage"
           data-manage-tags
-          title="Manage Tags"
-          aria-label="Manage Tags"
+          :title="t('folderTree.manageTags')"
+          :aria-label="t('folderTree.manageTags')"
           @click="manageTags"
         >
           <Settings2 :size="16" :stroke-width="1.75" aria-hidden="true" />

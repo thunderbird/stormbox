@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import {
@@ -42,7 +43,7 @@ function onOpenSettings() {
 
 <template>
   <details ref="detailsEl" class="top-nav-menu" @keydown.escape="close">
-    <summary class="quick-filter__action top-nav-menu__button" aria-label="Open menu" title="Menu">
+    <summary class="quick-filter__action top-nav-menu__button" :aria-label="t('topNavMenu.openMenu')" :title="t('topNavMenu.menu')">
       <Menu :size="18" :stroke-width="1.75" aria-hidden="true" />
     </summary>
     <div class="top-nav-menu__popover" role="menu">
@@ -55,7 +56,7 @@ function onOpenSettings() {
         @click="close"
       >
         <Bug :size="18" :stroke-width="1.75" aria-hidden="true" />
-        <span>Report a bug</span>
+        <span>{{ t('topNavMenu.reportABug') }}</span>
       </a>
       <a
         class="top-nav-menu__item"
@@ -66,7 +67,7 @@ function onOpenSettings() {
         @click="close"
       >
         <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
-        <span>Give feedback</span>
+        <span>{{ t('topNavMenu.giveFeedback') }}</span>
       </a>
       <button
         class="top-nav-menu__item"
@@ -76,7 +77,7 @@ function onOpenSettings() {
         @click="onOpenSettings"
       >
         <Settings :size="18" :stroke-width="1.75" aria-hidden="true" />
-        <span>Settings</span>
+        <span>{{ t('topNavMenu.settings') }}</span>
       </button>
       <button
         v-if="showThemeToggle"

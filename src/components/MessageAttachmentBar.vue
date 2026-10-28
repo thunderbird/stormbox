@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref, shallowRef, useId, watch } from 'vue';
 import { useElementSize, useResizeObserver } from '@vueuse/core';
 import {
@@ -89,11 +90,11 @@ const emit = defineEmits<{
 function filename(row: MessageAttachmentRow): string {
   return row.part.name
     ? sanitizeAttachmentFilename(row.part.name)
-    : '(unnamed attachment)';
+    : t('messageAttachmentBar.unnamedAttachment');
 }
 
 function metadata(row: MessageAttachmentRow): string {
-  const type = row.part.mime_type || 'Unknown type';
+  const type = row.part.mime_type || t('messageAttachmentBar.unknownType');
   if (row.part.size == null) return type;
   const bytes = Number(row.part.size);
   if (!Number.isFinite(bytes) || bytes < 0) return type;
@@ -112,23 +113,23 @@ function pendingLabel(row: MessageAttachmentRow): string {
   const progress = percent == null ? '' : ` ${percent}%`;
   if (row.progress?.phase === 'complete') {
     const completedAction = row.pending === 'download'
-      ? 'Download complete'
+      ? t('messageAttachmentBar.downloadComplete')
       : row.previewKind === 'pdf-browser'
-        ? 'PDF ready'
-        : 'Preview ready';
+        ? t('messageAttachmentBar.pDFReady')
+        : t('messageAttachmentBar.previewReady');
     return `${completedAction}${progress}`;
   }
   const action = row.pending === 'download'
-    ? 'Downloading'
+    ? t('messageAttachmentBar.downloading')
     : row.previewKind === 'pdf-browser'
-      ? 'Opening'
-      : 'Preparing preview';
+      ? t('messageAttachmentBar.opening')
+      : t('messageAttachmentBar.preparingPreview');
   return `${action}${progress}`;
 }
 
 function previewLabel(row: MessageAttachmentRow): string {
-  if (row.previewKind === 'pdf-browser') return `Open PDF ${filename(row)} in a new tab`;
-  return `${row.showPreview ? 'Hide' : 'Show'} preview of ${filename(row)}`;
+  if (row.previewKind === 'pdf-browser') return t('messageAttachmentBar.openPDFInANewTab', { value1: filename(row) });
+  return t(row.showPreview ? 'messageAttachmentBar.hidePreviewOf' : 'messageAttachmentBar.showPreviewOf', { name: filename(row) });
 }
 
 function pdfViewerHref(row: MessageAttachmentRow): string {
@@ -145,11 +146,11 @@ function openPdf(event: MouseEvent, row: MessageAttachmentRow): void {
 
 function retryLabel(row: MessageAttachmentRow): string {
   const action = row.failedAction === 'download'
-    ? 'download'
+    ? 'messageAttachmentBar.retryDownload'
     : row.previewKind === 'pdf-browser'
-      ? 'open'
-      : 'preview';
-  return `Retry ${action} for ${filename(row)}`;
+      ? 'messageAttachmentBar.retryOpen'
+      : 'messageAttachmentBar.retryPreview';
+  return t(action, { name: filename(row) });
 }
 </script>
 
@@ -163,11 +164,11 @@ function retryLabel(row: MessageAttachmentRow): string {
       '--attachment-heading-height': `${headingHeight}px`,
       '--attachment-first-row-height': `${firstRowHeight}px`,
     }"
-    aria-label="Attachments"
+    :aria-label="t('messageAttachmentBar.attachments')"
     tabindex="-1"
   >
     <div ref="headingEl" class="message-attachment-bar__heading">
-      <h3>Attachments <span aria-hidden="true">({{ rows.length }})</span></h3>
+      <h3>{{ t('messageAttachmentBar.attachments') }} <span aria-hidden="true">({{ rows.length }})</span></h3>
       <button
         v-show="hasOverflow"
         ref="toggleEl"
@@ -175,12 +176,12 @@ function retryLabel(row: MessageAttachmentRow): string {
         type="button"
         :aria-expanded="expanded"
         :aria-controls="listId"
-        :aria-label="`${expanded ? 'Collapse' : 'Expand'} attachment list`"
+        :aria-label="t(expanded ? 'messageAttachmentBar.collapseList' : 'messageAttachmentBar.expandList')"
         @click="toggleExpanded"
       >
         <ChevronUp v-if="expanded" :size="14" :stroke-width="1.75" aria-hidden="true" />
         <ChevronDown v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
-        {{ expanded ? 'Collapse' : 'Expand' }}
+        {{ expanded ? t('messageAttachmentBar.collapse') : t('messageAttachmentBar.expand') }}
       </button>
     </div>
     <ul :id="listId" ref="listEl" class="message-attachment-bar__list">
@@ -223,7 +224,7 @@ function retryLabel(row: MessageAttachmentRow): string {
             v-else-if="row.rasterUnavailable"
             class="message-attachment-row__status"
           >
-            Preview unavailable
+            {{ t('messageAttachmentBar.previewUnavailable') }}
           </span>
         </div>
         <div class="message-attachment-row__actions">
@@ -248,7 +249,7 @@ function retryLabel(row: MessageAttachmentRow): string {
               aria-hidden="true"
             />
             <ExternalLink v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Open PDF
+            {{ t('messageAttachmentBar.openPDF') }}
           </a>
           <AppIconButton
             v-else-if="row.previewKind !== 'download-only' && !row.rasterUnavailable"
@@ -267,12 +268,12 @@ function retryLabel(row: MessageAttachmentRow): string {
             />
             <EyeOff v-else-if="row.showPreview" :size="16" :stroke-width="1.75" aria-hidden="true" />
             <Eye v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
-            <span>{{ row.showPreview ? 'Hide preview' : 'Show preview' }}</span>
+            <span>{{ row.showPreview ? t('messageAttachmentBar.hidePreview') : t('messageAttachmentBar.showPreview') }}</span>
           </AppIconButton>
           <AppIconButton
             :disabled="row.pending !== null || !row.part.blob_id"
-            :title="`Download ${filename(row)}`"
-            :aria-label="`Download ${filename(row)}`"
+            :title="t('messageAttachmentBar.download', { value1: filename(row) })"
+            :aria-label="t('messageAttachmentBar.download', { value1: filename(row) })"
             @click="emit('download', row.key)"
           >
             <LoaderCircle

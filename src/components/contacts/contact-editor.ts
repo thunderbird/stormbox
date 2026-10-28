@@ -1,3 +1,4 @@
+import { t } from '../../i18n/messages';
 import type {
   ContactAnniversaryDate,
   ContactAnniversaryKind,
@@ -100,26 +101,26 @@ const PHONE_LABEL_FEATURES = new Set<ContactPhoneFeature>([
 
 const LABEL_OPTIONS: Record<ContactResourceKind, readonly ContactLabelOption[]> = {
   email: [
-    { value: 'home', label: 'Home' },
-    { value: 'work', label: 'Work' },
-    { value: 'other', label: 'Other' },
-    { value: 'custom', label: 'Custom' },
+    { value: 'home', get label() { return t('contactEditor.home'); } },
+    { value: 'work', get label() { return t('contactEditor.work'); } },
+    { value: 'other', get label() { return t('contactEditor.other'); } },
+    { value: 'custom', get label() { return t('contactEditor.custom'); } },
   ],
   phone: [
-    { value: 'home', label: 'Home' },
-    { value: 'work', label: 'Work' },
-    { value: 'mobile', label: 'Mobile' },
-    { value: 'main', label: 'Main' },
-    { value: 'fax', label: 'Fax' },
-    { value: 'pager', label: 'Pager' },
-    { value: 'other', label: 'Other' },
-    { value: 'custom', label: 'Custom' },
+    { value: 'home', get label() { return t('contactEditor.home'); } },
+    { value: 'work', get label() { return t('contactEditor.work'); } },
+    { value: 'mobile', get label() { return t('contactEditor.mobile'); } },
+    { value: 'main', get label() { return t('contactEditor.main'); } },
+    { value: 'fax', get label() { return t('contactEditor.fax'); } },
+    { value: 'pager', get label() { return t('contactEditor.pager'); } },
+    { value: 'other', get label() { return t('contactEditor.other'); } },
+    { value: 'custom', get label() { return t('contactEditor.custom'); } },
   ],
   website: [
-    { value: 'personal', label: 'Personal' },
-    { value: 'work', label: 'Work' },
-    { value: 'other', label: 'Other' },
-    { value: 'custom', label: 'Custom' },
+    { value: 'personal', get label() { return t('contactEditor.personal'); } },
+    { value: 'work', get label() { return t('contactEditor.work'); } },
+    { value: 'other', get label() { return t('contactEditor.other'); } },
+    { value: 'custom', get label() { return t('contactEditor.custom'); } },
   ],
 };
 
@@ -555,32 +556,32 @@ export function contactEditorFieldErrors(
   const errors: Record<string, string> = {};
   for (const email of model.emails) {
     if (!email.isPlaceholder && !email.value.trim()) {
-      errors[email.formKey] = 'Enter an email address or remove this email row.';
+      errors[email.formKey] = t('contactEditor.enterAnEmailAddressOrRemoveThisEmailRow');
     } else if (email.value.trim() && !isValidEmailAddress(email.value)) {
-      errors[email.formKey] = 'Enter a valid email address.';
+      errors[email.formKey] = t('contactEditor.enterAValidEmailAddress');
     }
   }
   for (const phone of model.phones) {
     if (!phone.value.trim()) {
-      errors[phone.formKey] = 'Enter a phone number or remove this phone row.';
+      errors[phone.formKey] = t('contactEditor.enterAPhoneNumberOrRemoveThisPhoneRow');
     }
   }
   for (const link of model.links) {
     if (!link.value.trim()) {
-      errors[link.formKey] = 'Enter a website or remove this website row.';
+      errors[link.formKey] = t('contactEditor.enterAWebsiteOrRemoveThisWebsiteRow');
     } else if (
       (link.isNew || link.value !== link.originalValue)
       && !isHttpContactWebsite(link.value)
     ) {
-      errors[link.formKey] = 'Enter an absolute HTTP or HTTPS website.';
+      errors[link.formKey] = t('contactEditor.enterAnAbsoluteHTTPOrHTTPSWebsite');
     }
   }
   for (const anniversary of model.anniversaries) {
     if (!anniversary.dateText.trim()) {
-      errors[anniversary.formKey] = 'Enter a date or remove this date row.';
+      errors[anniversary.formKey] = t('contactEditor.enterADateOrRemoveThisDateRow');
     } else if (!contactDateFromInput(anniversary.dateText)) {
       errors[anniversary.formKey] =
-        'Use YYYY, YYYY-MM, YYYY-MM-DD, --MM, --MM-DD, or a UTC timestamp.';
+        t('contactEditor.useYYYYYYYYMMYYYYMMDDMMMM');
     }
   }
   return errors;
@@ -637,11 +638,11 @@ export function contactAnniversaryKindLabel(
 ): string {
   switch (kind) {
     case 'birth':
-      return 'Birthday';
+      return t('contactEditor.birthday');
     case 'wedding':
-      return 'Wedding';
+      return t('contactEditor.wedding');
     case 'death':
-      return 'Death';
+      return t('contactEditor.death');
     default: {
       const exhaustive: never = kind;
       return exhaustive;
@@ -654,9 +655,9 @@ export function contactResourceLabel(
   resource: ContactEditorResource,
 ): string {
   const choice = contactLabelChoice(kind, resource);
-  if (choice === 'custom') return resource.label?.trim() || 'Custom';
+  if (choice === 'custom') return resource.label?.trim() || t('contactEditor.custom');
   return contactLabelOptions(kind)
-    .find((option) => option.value === choice)?.label ?? 'Other';
+    .find((option) => option.value === choice)?.label ?? t('contactEditor.other');
 }
 
 export function formatContactDate(
@@ -703,7 +704,7 @@ export function organizationAdditionalDetails(
   const details = organization.units.slice(1)
     .map((unit) => unit.value.trim())
     .filter(Boolean)
-    .map((unit) => `Department: ${unit}`);
+    .map((unit) => t('contactEditor.department', { value1: unit }));
   const linked = titles.filter((title) => (
     title.organizationFormId === organization.formId
     || (organization.mapKey != null
@@ -716,7 +717,7 @@ export function organizationAdditionalDetails(
       continue;
     }
     if (title.value.trim()) {
-      details.push(`${title.kind === 'title' ? 'Title' : 'Role'}: ${title.value.trim()}`);
+      details.push(`${title.kind === 'title' ? t('contactEditor.title') : t('contactEditor.role')}: ${title.value.trim()}`);
     }
   }
   return details;

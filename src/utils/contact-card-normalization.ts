@@ -1,3 +1,4 @@
+import { sourceText } from '../i18n/messages';
 /**
  * JSContact (RFC 9553) card normalization, protocol-free.
  *
@@ -132,7 +133,7 @@ export function normalizeCard(card: any): NormalizedCard | null {
     ?? emails[0]?.email
     ?? organizations.find((organization) => organization.name)?.name
     ?? phones[0]?.value
-    ?? '(no name)';
+    ?? sourceText('common.noName');
 
   return {
     id: card.id,

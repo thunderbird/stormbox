@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import type { Component, Ref } from 'vue';
 import {
@@ -87,9 +88,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     if (input.canWhitelist.value) {
       items.push({
         id: 'whitelist',
-        label: 'Not junk',
-        title: 'Whitelist senders and move to Inbox',
-        ariaLabel: 'Not junk — whitelist senders and move the selected messages to Inbox',
+        get label() { return t('useBulkActionItems.notJunk'); },
+        get title() { return t('useBulkActionItems.whitelistSendersAndMoveToInbox'); },
+        get ariaLabel() { return t('useBulkActionItems.notJunkWhitelistSendersAndMoveTheSelectedMessages'); },
         icon: null,
         variant: 'whitelist',
         disabled: input.whitelisting.value,
@@ -101,9 +102,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     if (!scheduled && role !== 'archive') {
       items.push({
         id: 'archive',
-        label: 'Archive',
-        title: 'Archive',
-        ariaLabel: 'Archive',
+        get label() { return t('useBulkActionItems.archive'); },
+        get title() { return t('useBulkActionItems.archive'); },
+        get ariaLabel() { return t('useBulkActionItems.archive'); },
         icon: null,
         rawIcon: archiveIcon,
         variant: 'default',
@@ -115,9 +116,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     if (!scheduled && role !== 'junk') {
       items.push({
         id: 'junk',
-        label: 'Mark as junk',
-        title: 'Junk',
-        ariaLabel: 'Mark as junk',
+        get label() { return t('useBulkActionItems.markAsJunk'); },
+        get title() { return t('useBulkActionItems.junk'); },
+        get ariaLabel() { return t('useBulkActionItems.markAsJunk'); },
         icon: null,
         rawIcon: junkIcon,
         variant: 'default',
@@ -129,9 +130,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     if (scheduled) {
       items.push({
         id: 'cancel-send',
-        label: 'Cancel send',
-        title: 'Cancel send',
-        ariaLabel: 'Cancel send — return the selected messages to Drafts',
+        get label() { return t('useBulkActionItems.cancelSend'); },
+        get title() { return t('useBulkActionItems.cancelSend'); },
+        get ariaLabel() { return t('useBulkActionItems.cancelSendReturnTheSelectedMessagesToDrafts'); },
         icon: Trash2,
         variant: 'danger',
         slots: 1,
@@ -141,9 +142,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     } else {
       items.push({
         id: 'delete',
-        label: 'Delete',
-        title: 'Delete',
-        ariaLabel: 'Delete',
+        get label() { return t('useBulkActionItems.delete'); },
+        get title() { return t('useBulkActionItems.delete'); },
+        get ariaLabel() { return t('useBulkActionItems.delete'); },
         icon: Trash2,
         variant: 'danger',
         slots: 1,
@@ -155,9 +156,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
       const starred = input.anyStarred.value;
       items.push({
         id: 'toggle-star',
-        label: starred ? 'Unstar' : 'Star',
-        title: starred ? 'Unstar' : 'Star',
-        ariaLabel: starred ? 'Unstar' : 'Star',
+        label: starred ? t('useBulkActionItems.unstar') : t('useBulkActionItems.star'),
+        title: starred ? t('useBulkActionItems.unstar') : t('useBulkActionItems.star'),
+        ariaLabel: starred ? t('useBulkActionItems.unstar') : t('useBulkActionItems.star'),
         icon: Star,
         variant: 'star',
         pressed: starred,
@@ -167,9 +168,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
       });
       items.push({
         id: 'tag',
-        label: 'Tag…',
-        title: 'Tag',
-        ariaLabel: 'Tag selected messages',
+        get label() { return t('useBulkActionItems.tag'); },
+        get title() { return t('useBulkActionItems.tag2'); },
+        get ariaLabel() { return t('useBulkActionItems.tagSelectedMessages'); },
         icon: Tag,
         variant: 'tag',
         slots: 1,
@@ -179,9 +180,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     }
     items.push({
       id: 'mark-read',
-      label: 'Mark as read',
-      title: 'Mark as read',
-      ariaLabel: 'Mark as read',
+      get label() { return t('useBulkActionItems.markAsRead'); },
+      get title() { return t('useBulkActionItems.markAsRead'); },
+      get ariaLabel() { return t('useBulkActionItems.markAsRead'); },
       icon: MailOpen,
       variant: 'default',
       slots: 1,
@@ -190,9 +191,9 @@ export function useBulkActionItems(input: UseBulkActionItemsInput) {
     });
     items.push({
       id: 'mark-unread',
-      label: 'Mark as unread',
-      title: 'Mark as unread',
-      ariaLabel: 'Mark as unread',
+      get label() { return t('useBulkActionItems.markAsUnread'); },
+      get title() { return t('useBulkActionItems.markAsUnread'); },
+      get ariaLabel() { return t('useBulkActionItems.markAsUnread'); },
       icon: Mail,
       variant: 'default',
       slots: 1,

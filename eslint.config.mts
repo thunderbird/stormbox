@@ -3,6 +3,7 @@ import tsLint from 'typescript-eslint';
 import vueLint from 'eslint-plugin-vue';
 import importXPlugin from 'eslint-plugin-import-x';
 import globals from 'globals';
+import vueI18n from '@intlify/eslint-plugin-vue-i18n';
 import { defineConfigWithVueTs, vueTsConfigs } from '@vue/eslint-config-typescript';
 
 export default defineConfigWithVueTs(
@@ -109,6 +110,17 @@ export default defineConfigWithVueTs(
         { name: 'document', message: 'Stores must not touch the DOM. Move this to a component or composable.' },
         { name: 'window', message: 'Stores must not touch the DOM. Move this to a component or composable.' },
       ],
+    },
+  },
+  {
+    files: ['src/**/*.vue'],
+    plugins: { '@intlify/vue-i18n': vueI18n },
+    rules: {
+      '@intlify/vue-i18n/no-raw-text': ['error', {
+        attributes: { '/.+/': ['title', 'aria-label', 'aria-description', 'placeholder', 'alt', 'label'] },
+        ignorePattern: '^[\\s\\d\\p{P}\\p{S}]*$',
+        ignoreText: ['Thundermail', 'Thunderbird', 'Arial', 'Georgia', 'Verdana', 'Tahoma', 'Courier New', 'Times New Roman'],
+      }],
     },
   },
   {

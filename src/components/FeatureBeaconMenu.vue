@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { Sparkles } from '@lucide/vue';
@@ -22,9 +23,9 @@ const detailsEl = ref<HTMLDetailsElement | null>(null);
 const pillEl = ref<HTMLElement | null>(null);
 
 const visible = computed(() => store.enabled && store.count > 0);
-const label = computed(() => `${store.count} new`);
+const label = computed(() => t('featureBeaconMenu.new', { value1: store.count }));
 const ariaLabel = computed(() =>
-  `${store.count} new ${store.count === 1 ? 'feature' : 'features'}, open the list`);
+  t('featureBeaconMenu.newOpenTheListPlural', { arg1: store.count, arg2: store.count }, store.count));
 
 onClickOutside(detailsEl, () => {
   if (detailsEl.value?.open) detailsEl.value.open = false;
@@ -68,9 +69,9 @@ function onKeydown(event: KeyboardEvent): void {
       <Sparkles :size="14" :stroke-width="2" aria-hidden="true" />
       <span class="beacon-menu__count">{{ label }}</span>
     </summary>
-    <div class="beacon-menu__popover" role="group" aria-label="New features">
+    <div class="beacon-menu__popover" role="group" :aria-label="t('featureBeaconMenu.newFeatures')">
       <p class="beacon-menu__intro">
-        New since your last visit. Pick one to see where it lives.
+        {{ t('featureBeaconMenu.newSinceYourLastVisitPickOneToSee') }}
       </p>
       <ul class="beacon-menu__list">
         <li v-for="beacon in store.unseen" :key="beacon.id">
@@ -92,7 +93,7 @@ function onKeydown(event: KeyboardEvent): void {
       </ul>
       <div class="beacon-menu__footer">
         <button class="beacon-menu__dismiss" type="button" @click="onDismissAll">
-          Dismiss all
+          {{ t('featureBeaconMenu.dismissAll') }}
         </button>
       </div>
     </div>

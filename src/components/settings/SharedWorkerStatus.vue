@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 
 import { getRepositoryAsync } from '../../composables/useRepository';
@@ -18,7 +19,7 @@ let stopped = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const uptime = computed(() => {
-  if (!worker.value) return 'Checking…';
+  if (!worker.value) return t('sharedWorkerStatus.checking');
   let seconds = Math.floor((worker.value.uptimeMs + clock.value - checkedAt.value) / 1000);
   const days = Math.floor(seconds / 86400);
   seconds %= 86400;
@@ -32,15 +33,15 @@ const uptime = computed(() => {
 
 function duration(ms: number | null | undefined): string {
   if (ms == null) return '—';
-  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
+  return ms < 1000 ? t('sharedWorkerStatus.ms', { value1: Math.round(ms) }) : `${(ms / 1000).toFixed(2)} s`;
 }
 
 const response = computed(() => {
   if (checkingSince.value != null && clock.value - checkingSince.value >= 1000) {
-    return `Waiting… ${duration(clock.value - checkingSince.value)}`;
+    return t('sharedWorkerStatus.waiting', { value1: duration(clock.value - checkingSince.value) });
   }
-  if (responseMs.value != null) return `${duration(responseMs.value)} round trip`;
-  return failure.value ? 'Unavailable' : 'Checking…';
+  if (responseMs.value != null) return t('sharedWorkerStatus.roundTrip', { value1: duration(responseMs.value) });
+  return failure.value ? t('sharedWorkerStatus.unavailable') : t('sharedWorkerStatus.checking');
 });
 
 async function checkWorker() {
@@ -58,7 +59,7 @@ async function checkWorker() {
   } catch (error) {
     if (!stopped) {
       responseMs.value = null;
-      failure.value = error instanceof Error ? error.message : 'Worker status is unavailable.';
+      failure.value = error instanceof Error ? error.message : t('sharedWorkerStatus.workerStatusIsUnavailable');
     }
   } finally {
     lastAttemptAt = performance.now();
@@ -78,7 +79,7 @@ onMounted(async () => {
       if (clock.value - lastAttemptAt >= 5000) void checkWorker();
     }, 1000);
   } catch (error) {
-    if (!stopped) failure.value = error instanceof Error ? error.message : 'Worker status is unavailable.';
+    if (!stopped) failure.value = error instanceof Error ? error.message : t('sharedWorkerStatus.workerStatusIsUnavailable');
   }
 });
 
@@ -91,16 +92,16 @@ onBeforeUnmount(() => {
 <template>
   <section class="worker-status" aria-labelledby="worker-status-title" data-worker-status>
     <div class="settings-dialog__row">
-      <span id="worker-status-title" class="settings-dialog__row-title">Shared worker</span>
+      <span id="worker-status-title" class="settings-dialog__row-title">{{ t('sharedWorkerStatus.sharedWorker') }}</span>
     </div>
     <dl class="worker-status__stats">
-      <div><dt>Running for</dt><dd data-worker-uptime>{{ uptime }}</dd></div>
-      <div><dt>Responsiveness</dt><dd data-worker-response>{{ response }}</dd></div>
-      <div><dt>Message content · latest</dt><dd data-message-latest>{{ duration(messageTimings?.lastMs) }}</dd></div>
-      <div><dt>Average / slowest</dt><dd>{{ duration(messageTimings?.averageMs) }} / {{ duration(messageTimings?.slowestMs) }}</dd></div>
+      <div><dt>{{ t('sharedWorkerStatus.runningFor') }}</dt><dd data-worker-uptime>{{ uptime }}</dd></div>
+      <div><dt>{{ t('sharedWorkerStatus.responsiveness') }}</dt><dd data-worker-response>{{ response }}</dd></div>
+      <div><dt>{{ t('sharedWorkerStatus.messageContentLatest') }}</dt><dd data-message-latest>{{ duration(messageTimings?.lastMs) }}</dd></div>
+      <div><dt>{{ t('sharedWorkerStatus.averageSlowest') }}</dt><dd>{{ duration(messageTimings?.averageMs) }} / {{ duration(messageTimings?.slowestMs) }}</dd></div>
       <div v-if="messageTimings?.pending">
-        <dt>Loading message content</dt>
-        <dd>{{ messageTimings.pending }} pending · {{ duration(messageTimings.oldestPendingMs) }}</dd>
+        <dt>{{ t('sharedWorkerStatus.loadingMessageContent') }}</dt>
+        <dd>{{ t('sharedWorkerStatus.pending', { value1: messageTimings.pending, value2: duration(messageTimings.oldestPendingMs) }) }}</dd>
       </div>
     </dl>
     <p v-if="failure" class="settings-dialog__error" role="alert">{{ failure }}</p>

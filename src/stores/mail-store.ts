@@ -1,3 +1,4 @@
+import { t, errorDescription } from '../i18n/messages';
 /**
  * Mail data store. Reads folder + message metadata exclusively from the
  * Repository (SQLite via SharedWorker RPC). The sync layer pushes
@@ -550,7 +551,7 @@ export const useMailStore = defineStore('mail', () => {
     const keyword = tagViewKeyword(folderId);
     if (keyword == null) return null;
     const name = keyword === '$flagged'
-      ? 'Starred'
+      ? t('mailStore.starred')
       : resolveTag(keyword, settingsStore.get('messageTags')).name;
     return {
       id: folderId,
@@ -653,7 +654,7 @@ export const useMailStore = defineStore('mail', () => {
   /** Generic folder transfers require a real source folder. */
   function rejectTagViewSource(sourceFolderId: number | null | undefined, verb: string): boolean {
     if (!isTagViewId(sourceFolderId)) return false;
-    error.value = `Open the message's folder to ${verb} it.`;
+    error.value = t(verb === 'copy' ? 'mailStore.openFolderToCopy' : 'mailStore.openFolderToMove');
     return true;
   }
 
@@ -2164,16 +2165,16 @@ export const useMailStore = defineStore('mail', () => {
       folder.account_id === accountId && folder.role === role
     ));
     if (!destination) {
-      error.value = `No ${role} folder is configured for this account.`;
+      error.value = t(({ trash: 'mailStore.noTrashFolder', archive: 'mailStore.noArchiveFolder', junk: 'mailStore.noJunkFolder' })[role]);
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     if (!folderCapabilities(destination, authStore.accountId).mayAddItems) {
-      error.value = `You do not have permission to move messages to this account’s ${destination.name} folder.`;
+      error.value = t('mailStore.youDoNotHavePermissionToMoveMessagesTo', { value1: destination.name });
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     const mutable = await filterMutableMessageIds(messageIds, destination.account_id);
     if (mutable.blockedScheduled) {
-      error.value = 'Scheduled messages can’t be filed. Cancel the send instead.';
+      error.value = t('mailStore.scheduledMessagesCanTBeFiledCancelTheSend');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     if (authStore.accountId !== accountId || repo !== actionRepo) {
@@ -2214,7 +2215,7 @@ export const useMailStore = defineStore('mail', () => {
       succeeded = await runBulkMutation({
         liveIds,
         kind: 'move',
-        label: `Moving messages to ${destination.name}`,
+        get label() { return t('mailStore.movingMessagesTo', { value1: destination.name }); },
         buildMutation: (chunkIds) => ({
           accountId: destination.account_id,
           mutationType: MUTATION_TYPE.MOVE_TO_FOLDERS,
@@ -2234,9 +2235,7 @@ export const useMailStore = defineStore('mail', () => {
     await finalize(succeeded);
     if (role === 'junk' && succeeded.length > 0
       && authStore.accountId === accountId && repo === actionRepo) {
-      setNotice(succeeded.length === 1
-        ? 'Marked as junk'
-        : `Marked ${succeeded.length} messages as junk`);
+      setNotice(t('mailStore.markedAsJunkPlural', { arg1: succeeded.length }, succeeded.length));
     }
     return { succeeded: succeeded.length, failed: 0, skipped: messageIds.length - liveIds.length };
   }
@@ -2248,14 +2247,14 @@ export const useMailStore = defineStore('mail', () => {
     }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
-      error.value = 'Cannot archive messages because the current folder is no longer available.';
+      error.value = t('mailStore.cannotArchiveMessagesBecauseTheCurrentFolderIsNo');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     const archive = folders.value.find(
       (folder) => folder.account_id === source.account_id && folder.role === 'archive',
     );
     if (!archive?.id) {
-      error.value = 'No archive folder is configured.';
+      error.value = t('mailStore.noArchiveFolderIsConfigured');
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
     return moveMessages(ids, archive.id, { sourceFolderId: source.id });
@@ -2278,14 +2277,14 @@ export const useMailStore = defineStore('mail', () => {
     }
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
-      error.value = 'Cannot mark messages as junk because the current folder is no longer available.';
+      error.value = t('mailStore.cannotMarkMessagesAsJunkBecauseTheCurrentFolder');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     const junk = folders.value.find(
       (folder) => folder.account_id === source.account_id && folder.role === 'junk',
     );
     if (!junk?.id) {
-      error.value = 'No junk folder is configured.';
+      error.value = t('mailStore.noJunkFolderIsConfigured');
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
     try {
@@ -2295,7 +2294,7 @@ export const useMailStore = defineStore('mail', () => {
     }
     const mutable = await filterMutableMessageIds(messageIds, source.account_id);
     if (mutable.blockedScheduled) {
-      error.value = 'Scheduled messages can’t be marked as junk. Cancel the send instead.';
+      error.value = t('mailStore.scheduledMessagesCanTBeMarkedAsJunkCancel');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
 
@@ -2310,9 +2309,7 @@ export const useMailStore = defineStore('mail', () => {
 
     const result = await moveMessages(junkIds, junk.id, { sourceFolderId: source.id });
     if (result.succeeded > 0) {
-      setNotice(result.succeeded === 1
-        ? 'Marked as junk'
-        : `Marked ${result.succeeded} messages as junk`);
+      setNotice(t('mailStore.markedAsJunkPlural', { arg1: result.succeeded }, result.succeeded));
     }
     return result;
   }
@@ -2360,18 +2357,18 @@ export const useMailStore = defineStore('mail', () => {
     if (messageIds.length === 0) return { succeeded: 0, failed: 0, skipped: 0 };
     const source = resolveSourceFolder(options.sourceFolderId);
     if (!source) {
-      error.value = 'Cannot move these messages because the current folder is no longer available.';
+      error.value = t('mailStore.cannotMoveTheseMessagesBecauseTheCurrentFolderIs');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     if (source.account_id !== authStore.accountId) {
-      error.value = 'Not junk is available only for your primary account.';
+      error.value = t('mailStore.notJunkIsAvailableOnlyForYourPrimaryAccount');
       return { succeeded: 0, failed: messageIds.length, skipped: 0 };
     }
     const target = folders.value.find(
       (folder) => folder.account_id === source.account_id && folder.role === 'inbox',
     );
     if (!target?.id) {
-      error.value = 'No Inbox folder is configured.';
+      error.value = t('mailStore.noInboxFolderIsConfigured');
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
     try {
@@ -2429,26 +2426,22 @@ export const useMailStore = defineStore('mail', () => {
     // 2b) Move them all out of Junk into the Inbox (the visible effect).
     const result = await moveMessages(rescueIds, target.id, { sourceFolderId: source.id });
     if (result.succeeded > 0) {
-      const movedPhrase = result.succeeded === 1
-        ? 'moved to Inbox'
-        : `moved ${result.succeeded} messages to Inbox`;
+      const movedPhrase = t('mailStore.movedToInboxPlural', { arg1: result.succeeded }, result.succeeded);
       if (senders.length === 0) {
-        setNotice(`Moved ${result.succeeded} ${result.succeeded === 1 ? 'message' : 'messages'} to Inbox`);
+        setNotice(t('mailStore.movedToInbox2Plural', { arg1: result.succeeded, arg2: result.succeeded }, result.succeeded));
       } else if (trusted) {
         const who = senders.length === 1
           ? (senders[0].name ?? senders[0].email)
-          : `${senders.length} senders`;
-        setNotice(`Whitelisted ${who} — ${movedPhrase}`);
+          : t('mailStore.senders', { value1: senders.length });
+        setNotice(t('mailStore.whitelisted', { value1: who, value2: movedPhrase }));
       } else {
         // Messages moved, but the trust write did not apply — don't claim
         // the senders were whitelisted.
-        const what = result.succeeded === 1
-          ? 'Moved to Inbox'
-          : `Moved ${result.succeeded} messages to Inbox`;
+        const what = t('mailStore.movedToInbox3Plural', { arg1: result.succeeded }, result.succeeded);
         const who = senders.length === 1
           ? (senders[0].name ?? senders[0].email)
-          : 'the senders';
-        error.value = `${what}, but ${who} could not be added to your trusted contacts — future mail from them may still be treated as junk.`;
+          : t('mailStore.theSenders');
+        error.value = t('mailStore.butCouldNotBeAddedToYourTrustedContacts', { value1: what, value2: who });
       }
     }
     return result;
@@ -2469,7 +2462,7 @@ export const useMailStore = defineStore('mail', () => {
     const row = findLoadedRow(messageId, options.sourceFolderId);
     if (!row) return { succeeded: 0, failed: 0, skipped: 0 };
     if (!parseSender(row.from_text)) {
-      error.value = 'Could not determine the sender to whitelist.';
+      error.value = t('mailStore.couldNotDetermineTheSenderToWhitelist');
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
     return whitelistSenders([messageId], options);
@@ -2504,12 +2497,12 @@ export const useMailStore = defineStore('mail', () => {
     if (!Array.isArray(ids) || ids.length === 0) return;
     const source = resolveSourceFolder(sourceFolderId);
     if (!source) {
-      error.value = 'Cannot delete messages because the current folder is no longer available.';
+      error.value = t('mailStore.cannotDeleteMessagesBecauseTheCurrentFolderIsNo');
       return;
     }
     const sourceCapabilities = folderCapabilities(source, authStore.accountId);
     if (!sourceCapabilities.mayRemoveItems) {
-      error.value = 'You do not have permission to remove messages from this folder.';
+      error.value = t('mailStore.youDoNotHavePermissionToRemoveMessagesFrom');
       return;
     }
     // Drop ids that no longer exist in messages (e.g. a previous
@@ -2524,7 +2517,7 @@ export const useMailStore = defineStore('mail', () => {
     // instead. Everything else in the Scheduled folder is ordinary mail.
     const mutable = await filterMutableMessageIds(ids, source.account_id);
     if (mutable.blockedScheduled) {
-      error.value = 'Scheduled messages can’t be deleted. Cancel the send instead.';
+      error.value = t('mailStore.scheduledMessagesCanTBeDeletedCancelTheSend');
       return;
     }
     const liveIds = mutable.ids;
@@ -2538,7 +2531,7 @@ export const useMailStore = defineStore('mail', () => {
         (folder) => folder.account_id === source.account_id && folder.role === 'trash',
       ) ?? null;
     if (!permanent && source.role !== 'trash' && !trashTarget) {
-      error.value = 'No Trash folder is configured for this account.';
+      error.value = t('mailStore.noTrashFolderIsConfiguredForThisAccount');
       return;
     }
     if (
@@ -2546,12 +2539,12 @@ export const useMailStore = defineStore('mail', () => {
       && trashTarget.id !== source.id
       && !folderCapabilities(trashTarget, authStore.accountId).mayAddItems
     ) {
-      error.value = 'You do not have permission to move messages to this account’s Trash folder.';
+      error.value = t('mailStore.youDoNotHavePermissionToMoveMessagesTo2');
       return;
     }
     const overlayLabel = permanent
-      ? 'Deleting messages permanently'
-      : (trashTarget?.name ? `Moving messages to ${trashTarget.name}` : 'Deleting messages');
+      ? t('mailStore.deletingMessagesPermanently')
+      : (trashTarget?.name ? t('mailStore.movingMessagesTo', { value1: trashTarget.name }) : t('mailStore.deletingMessages'));
     const finalize = (succeeded: number[]) => (
       finalizeMovedMessages(succeeded, source.id, trashTarget?.id ?? null));
     let succeededIds: number[];
@@ -2764,11 +2757,11 @@ export const useMailStore = defineStore('mail', () => {
     }
     const outcome = await runCancelScheduledSendMutation(id);
     if (outcome.ok) {
-      setNotice('Sending canceled. The message is back in Drafts.');
+      setNotice(t('mailStore.sendingCanceledTheMessageIsBackInDrafts'));
       return true;
     }
     error.value = outcome.description
-      ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
+      ?? t('mailStore.couldNotCancelTheScheduledSendYetItWill');
     return false;
   }
 
@@ -2801,15 +2794,12 @@ export const useMailStore = defineStore('mail', () => {
       }
     }
     if (summary.failed === 0) {
-      setNotice(summary.succeeded === 1
-        ? 'Sending canceled. The message is back in Drafts.'
-        : `Sending canceled for ${summary.succeeded} messages. They are back in Drafts.`);
+      setNotice(t('mailStore.sendingCanceledTheMessageIsBackInDraftsPlural', { arg1: summary.succeeded }, summary.succeeded));
     } else if (numeric.length === 1) {
       error.value = firstDescription
-        ?? 'Could not cancel the scheduled send yet; it will keep retrying in the background.';
+        ?? t('mailStore.couldNotCancelTheScheduledSendYetItWill');
     } else {
-      error.value = `Could not cancel ${summary.failed} of ${numeric.length} scheduled sends yet; `
-        + 'they will keep retrying in the background.';
+      error.value = t('mailStore.couldNotCancelOfScheduledSendsYetCombined', { arg1: summary.failed, arg2: numeric.length });
     }
     return summary;
   }
@@ -2837,7 +2827,7 @@ export const useMailStore = defineStore('mail', () => {
       try {
         const failed = await repo.getPendingMutationError(mutation.id);
         const parsed = failed?.error_json ? JSON.parse(failed.error_json) : null;
-        if (typeof parsed?.description === 'string') description = parsed.description;
+        description = errorDescription(parsed);
       } catch {
         // Fall through to the generic line.
       }
@@ -2886,7 +2876,7 @@ export const useMailStore = defineStore('mail', () => {
 
     const mutable = await filterMutableMessageIds(messageIds, source.account_id);
     if (mutable.blockedScheduled) {
-      throwMoveError('Scheduled messages can’t be moved or copied. Cancel the send instead.');
+      throwMoveError(t('mailStore.scheduledMessagesCanTBeMovedOrCopiedCancel'));
     }
     const liveIds = mutable.ids;
     if (liveIds.length === 0) {
@@ -2901,8 +2891,8 @@ export const useMailStore = defineStore('mail', () => {
         liveIds,
         kind: mode,
         label: target.name
-          ? `${mode === 'copy' ? 'Copying' : 'Moving'} messages to ${target.name}`
-          : `${mode === 'copy' ? 'Copying' : 'Moving'} messages`,
+          ? t(mode === 'copy' ? 'mailStore.copyingTo' : 'mailStore.movingTo', { name: target.name })
+          : t(mode === 'copy' ? 'mailStore.copyingMessages' : 'mailStore.movingMessages'),
         buildMutation: (chunkIds) => buildMoveMutation(chunkIds, target.id, source.id),
         failureAction: mode,
       });
@@ -3133,27 +3123,30 @@ export const useMailStore = defineStore('mail', () => {
     const base = describeMutationFailure(result, detail, action);
     if (succeeded <= 0) return base;
     const trimmed = base.endsWith('.') ? base.slice(0, -1) : base;
-    return `${trimmed} (${succeeded} of ${total} succeeded).`;
+    return t('mailStore.ofSucceeded', { value1: trimmed, value2: succeeded, value3: total });
   }
 
   function describeMutationFailure(
     result: MutationOutcome | null | undefined,
     detail: { error_json?: string | null } | null | undefined,
     action: string = 'delete',
+    object: 'message' | 'folder' = 'message',
   ): string {
+    const keys: Record<string, { message: string; folder: string }> = {
+      delete: { message: 'mailStore.deleteMessageFailed', folder: 'mailStore.deleteFolderFailed' },
+      move: { message: 'mailStore.moveMessageFailed', folder: 'mailStore.moveFolderFailed' },
+      copy: { message: 'mailStore.copyMessageFailed', folder: 'mailStore.copyFolderFailed' },
+      create: { message: 'mailStore.createMessageFailed', folder: 'mailStore.createFolderFailed' },
+      rename: { message: 'mailStore.renameMessageFailed', folder: 'mailStore.renameFolderFailed' },
+      subscribe: { message: 'mailStore.subscribeMessageFailed', folder: 'mailStore.subscribeFolderFailed' },
+      unsubscribe: { message: 'mailStore.unsubscribeMessageFailed', folder: 'mailStore.unsubscribeFolderFailed' },
+    };
+    let reason = '';
     if (detail?.error_json) {
-      try {
-        const parsed = JSON.parse(detail.error_json);
-        const errType = parsed?.type ?? 'error';
-        return `Could not ${action} message (${errType}).`;
-      } catch {
-        // fall through
-      }
+      try { reason = JSON.parse(detail.error_json)?.type ?? 'error'; } catch { /* No structured server error. */ }
     }
-    if ((result?.attempted ?? 0) === 0) {
-      return `Could not ${action} message (no sync backend available).`;
-    }
-    return `Could not ${action} message.`;
+    if (!reason && (result?.attempted ?? 0) === 0) reason = t('mailStore.noBackend');
+    return t((keys[action] ?? keys.delete)[object], { detail: reason ? ` (${reason})` : '' });
   }
 
   /**
@@ -3249,10 +3242,10 @@ export const useMailStore = defineStore('mail', () => {
 
   function assertCanMoveToFolder(source: FolderRow | null | undefined, target: FolderRow | null): asserts source is FolderRow {
     if (!source?.id) {
-      throwMoveError('Cannot move message without a source folder.');
+      throwMoveError(t('mailStore.cannotMoveMessageWithoutASourceFolder'));
     }
     if (!target || Number(target.is_deleted) === 1) {
-      throwMoveError('Cannot move message to that folder.');
+      throwMoveError(t('mailStore.cannotMoveMessageToThatFolder'));
     }
     if (Number(source.id) === Number(target.id)) {
       return;
@@ -3260,13 +3253,13 @@ export const useMailStore = defineStore('mail', () => {
     const sourceCapabilities = folderCapabilities(source, authStore.accountId);
     const targetCapabilities = folderCapabilities(target, authStore.accountId);
     if (source.account_id === target.account_id && !sourceCapabilities.mayMoveMessages) {
-      throwMoveError('Cannot move messages out of this folder.');
+      throwMoveError(t('mailStore.cannotMoveMessagesOutOfThisFolder'));
     }
     if (source.account_id !== target.account_id && !sourceCapabilities.mayReadItems) {
-      throwMoveError('Cannot copy messages from this folder.');
+      throwMoveError(t('mailStore.cannotCopyMessagesFromThisFolder'));
     }
     if (!targetCapabilities.mayAddItems) {
-      throwMoveError(`Cannot ${source.account_id === target.account_id ? 'move' : 'copy'} messages into that folder.`);
+      throwMoveError(t(source.account_id === target.account_id ? 'mailStore.cannotMoveIntoFolder' : 'mailStore.cannotCopyIntoFolder'));
     }
   }
 
@@ -3521,14 +3514,15 @@ export const useMailStore = defineStore('mail', () => {
       const allOk = omittedPendingIds.length === 0 && succeeded.size === ids.length;
       if (!allOk) {
         if (omittedPendingIds.length > 0 && succeeded.size === ids.length) {
-          error.value = 'Some folders already have a subscription change in progress.';
+          error.value = t('mailStore.someFoldersAlreadyHaveASubscriptionChangeInProgress');
         } else {
           const detail = mutation?.id != null ? await loadMutationError(mutation.id) : null;
           error.value = describeMutationFailure(
             result,
             detail,
-            isSubscribed ? 'subscribe to' : 'unsubscribe from',
-          ).replace('message', 'folder');
+            isSubscribed ? 'subscribe' : 'unsubscribe',
+            'folder',
+          );
         }
       }
       return allOk;
@@ -3650,7 +3644,7 @@ export const useMailStore = defineStore('mail', () => {
     if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
       const detail = mutation?.id != null ? await loadMutationError(mutation.id) : null;
       const failure = folderOpFailure(detail, 'serverFail');
-      error.value = describeMutationFailure(result, detail, action).replace('message', 'folder');
+      error.value = describeMutationFailure(result, detail, action, 'folder');
       return {
         ...failure,
         succeededIds: result.result?.succeededIds ?? [],
@@ -3694,7 +3688,7 @@ export const useMailStore = defineStore('mail', () => {
     }
     const targetAccountId = parent?.account_id ?? authStore.accountId;
     if (targetAccountId != null && siblingNameTaken(targetAccountId, parent?.id ?? null, trimmed)) {
-      error.value = `A folder named “${trimmed}” already exists here.`;
+      error.value = t('mailStore.aFolderNamedAlreadyExistsHere', { value1: trimmed });
       return { ok: false, reason: 'duplicateName' };
     }
     folderCreatePending.value = true;
@@ -3762,7 +3756,7 @@ export const useMailStore = defineStore('mail', () => {
       ? (request.parentFolderId as number | null)
       : (folder.parent_id ?? null);
     if (siblingNameTaken(folder.account_id, finalParent, finalName, id)) {
-      error.value = `A folder named “${finalName}” already exists here.`;
+      error.value = t('mailStore.aFolderNamedAlreadyExistsHere', { value1: finalName });
       return { ok: false, reason: 'duplicateName' };
     }
 
@@ -3829,7 +3823,7 @@ export const useMailStore = defineStore('mail', () => {
           && Number(candidate.is_deleted) !== 1
           && !selected.has(candidate.id),
       )) {
-        error.value = 'Move or delete its subfolders first.';
+        error.value = t('mailStore.moveOrDeleteItsSubfoldersFirst');
         return { ok: false, reason: 'mailboxHasChild' };
       }
     }
@@ -3953,7 +3947,7 @@ export const useMailStore = defineStore('mail', () => {
         && actionableReasons.every((value) => value === 'mailboxHasEmail');
       error.value = escalationOnly
         ? null
-        : `Could not delete folder (${reason}).`;
+        : t('mailStore.couldNotDeleteFolder', { value1: reason });
       return { ok: false, reason, succeededIds, errors };
     } catch (err) {
       error.value = err?.message ?? String(err);

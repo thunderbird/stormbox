@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import type { Component } from 'vue';
 import {
   BookUser,
@@ -32,38 +33,38 @@ export interface FeatureCard {
 export const FEATURE_CARDS: readonly FeatureCard[] = [
   {
     icon: PenLine,
-    title: 'Compose with confidence',
-    description: 'Work on several drafts at once, minimize and restore them.',
+    get title() { return t('featureTour.composeWithConfidence'); },
+    get description() { return t('featureTour.workOnSeveralDraftsAtOnceMinimizeAndRestore'); },
     spotlight: 'composeDrafts',
   },
   {
     icon: CalendarClock,
-    title: 'Send on your schedule',
-    description: 'Pick a delivery time for a message and cancel it from the Scheduled folder while it waits.',
+    get title() { return t('featureTour.sendOnYourSchedule'); },
+    get description() { return t('featureTour.pickADeliveryTimeForAMessageAndCancel'); },
     spotlight: 'sendLater',
   },
   {
     icon: Paperclip,
-    title: 'Attachments and clipboard',
-    description: 'Attach files, paste images, and paste links over selected text in a message.',
+    get title() { return t('featureTour.attachmentsAndClipboard'); },
+    get description() { return t('featureTour.attachFilesPasteImagesAndPasteLinksOverSelected'); },
     spotlight: 'attachments',
   },
   {
     icon: FolderTree,
-    title: 'Organize your mail',
-    description: 'Create, favorite, and subscribe to folders and act on many messages at once.',
+    get title() { return t('featureTour.organizeYourMail'); },
+    get description() { return t('featureTour.createFavoriteAndSubscribeToFoldersAndActOn'); },
     spotlight: 'folders',
   },
   {
     icon: BookUser,
-    title: 'Contacts and identities',
-    description: 'Manage address books and sending identities, including signatures.',
+    get title() { return t('featureTour.contactsAndIdentities'); },
+    get description() { return t('featureTour.manageAddressBooksAndSendingIdentitiesIncludingSignatures'); },
     spotlight: 'contacts',
   },
   {
     icon: UsersRound,
-    title: 'Smarter recipients',
-    description: 'Autocomplete from your contacts and add CC and BCC automatically via identities.',
+    get title() { return t('featureTour.smarterRecipients'); },
+    get description() { return t('featureTour.autocompleteFromYourContactsAndAddCCAndBCC'); },
     spotlight: 'recipients',
   },
 ];

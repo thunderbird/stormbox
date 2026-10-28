@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref } from 'vue';
 import {
   Check, Minus, Settings2, X,
@@ -28,8 +29,10 @@ const props = withDefaults(defineProps<{
   definitions: ReadonlyArray<MessageTagDefinition>;
   label?: string;
 }>(), {
-  label: 'Tags',
+  label: undefined,
 });
+
+const resolvedLabel = computed(() => props.label ?? t('tagPickerPanel.tags'));
 
 const emit = defineEmits<{
   /** Add (`on`) or remove the keyword on every target. */
@@ -135,7 +138,7 @@ defineExpose({ focusFirst });
     ref="rootEl"
     class="tag-picker"
     role="menu"
-    :aria-label="label"
+    :aria-label="resolvedLabel"
     @keydown="onKeydown"
   >
     <template v-if="showsClear">
@@ -151,12 +154,12 @@ defineExpose({ focusFirst });
         <span class="tag-picker__check" aria-hidden="true">
           <X :size="14" :stroke-width="2" />
         </span>
-        <span class="tag-picker__name">Remove All Tags</span>
+        <span class="tag-picker__name">{{ t('tagPickerPanel.removeAllTags') }}</span>
         <kbd class="tag-picker__digit" aria-hidden="true">0</kbd>
       </button>
       <div class="tag-picker__separator" role="separator" />
     </template>
-    <div v-if="definedRows.length > 0" role="group" aria-label="Tags">
+    <div v-if="definedRows.length > 0" role="group" :aria-label="t('tagPickerPanel.tags')">
       <button
         v-for="row in definedRows"
         :key="row.keyword"
@@ -181,8 +184,8 @@ defineExpose({ focusFirst });
     </div>
     <template v-if="otherRows.length > 0">
       <div v-if="definedRows.length > 0" class="tag-picker__separator" role="separator" />
-      <div role="group" aria-label="Other keywords">
-        <div class="app-dropdown__heading tag-picker__heading" aria-hidden="true">Other keywords</div>
+      <div role="group" :aria-label="t('tagPickerPanel.otherKeywords')">
+        <div class="app-dropdown__heading tag-picker__heading" aria-hidden="true">{{ t('tagPickerPanel.otherKeywords') }}</div>
         <button
           v-for="row in otherRows"
           :key="row.keyword"
@@ -192,7 +195,7 @@ defineExpose({ focusFirst });
           tabindex="-1"
           :aria-checked="row.presence === 'all' ? 'true' : row.presence === 'some' ? 'mixed' : 'false'"
           :data-tag-keyword="row.keyword"
-          :title="`${row.keyword} has no tag definition`"
+          :title="t('tagPickerPanel.hasNoTagDefinition', { value1: row.keyword })"
           @click="toggle(row)"
         >
           <span class="tag-picker__check" aria-hidden="true">
@@ -204,7 +207,7 @@ defineExpose({ focusFirst });
         </button>
       </div>
     </template>
-    <p v-if="isEmpty" class="tag-picker__empty" role="none">No tags defined yet.</p>
+    <p v-if="isEmpty" class="tag-picker__empty" role="none">{{ t('tagPickerPanel.noTagsDefinedYet') }}</p>
     <div class="tag-picker__separator" role="separator" />
     <button
       class="app-dropdown__item tag-picker__item tag-picker__manage"
@@ -217,7 +220,7 @@ defineExpose({ focusFirst });
       <span class="tag-picker__check" aria-hidden="true">
         <Settings2 :size="14" :stroke-width="1.75" />
       </span>
-      <span class="tag-picker__name">Manage Tags…</span>
+      <span class="tag-picker__name">{{ t('tagPickerPanel.manageTags') }}</span>
     </button>
   </div>
 </template>

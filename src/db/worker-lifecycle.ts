@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 import { DB_RPC, type WorkerStatus } from './protocol';
 import { wlog } from './worker-log';
 
@@ -45,7 +46,7 @@ export function createWorkerLifecycle({
       };
       let deadline: ReturnType<typeof setTimeout>;
       const timeout = new Promise<never>((_, reject) => {
-        deadline = setTimeout(() => reject(new Error('Worker cleanup exceeded five seconds.')), 5000);
+        deadline = setTimeout(() => reject(new LocalizedError('workerLifecycle.workerCleanupExceededFiveSeconds')), 5000);
       });
       try {
         await Promise.race([cleanup(), timeout]);
@@ -65,7 +66,7 @@ export function createWorkerLifecycle({
     return Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [
       name,
       (...args: any[]) => {
-        if (closed()) return Promise.reject(new Error('The shared worker is restarting.'));
+        if (closed()) return Promise.reject(new LocalizedError('workerLifecycle.theSharedWorkerIsRestarting'));
         const task = Promise.resolve().then(() => handler(...args));
         pending.add(task);
         if (pending === requests && name === DB_RPC.SYNC_START_ACCOUNT) starting.add(task);

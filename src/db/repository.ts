@@ -1,3 +1,4 @@
+import { t, LocalizedError, errorMessage } from '../i18n/messages';
 /**
  * Main-thread repository client. Pinia stores call this; it speaks
  * MessagePort RPC to the SharedWorker. Stores never import wa-sqlite or
@@ -127,7 +128,7 @@ export function createRepository(
 ) {
   assertSupportedBrowser();
   if (!worker && workerUrl == null) {
-    throw new Error('createRepository requires a SharedWorker or workerUrl.');
+    throw new LocalizedError('repository.createRepositoryRequiresASharedWorkerOrWorkerUrl');
   }
   worker ??= new SharedWorker(workerUrl!, { type: 'module', name: SHARED_WORKER_NAME });
   const channel = new BroadcastChannel(BROADCAST_CHANNEL);
@@ -166,7 +167,7 @@ export class Repository {
     channel.addEventListener('message', (msg) => this._onBroadcast(msg));
   }
 
-  close(reason: unknown = new Error('Database connection closed.'), { keepRestartListener = false } = {}) {
+  close(reason: unknown = new LocalizedError('repository.databaseConnectionClosed'), { keepRestartListener = false } = {}) {
     for (const pending of this._pending.values()) {
       pending.removeAbort?.();
       pending.reject(reason);
@@ -914,7 +915,7 @@ export class Repository {
 }
 
 function cancelledRpcError() {
-  const error: any = new Error('RPC request was cancelled');
+  const error: any = new LocalizedError('repository.rPCRequestWasCancelled');
   error.name = 'AbortError';
   error.type = 'cancelled';
   return error;
@@ -922,10 +923,13 @@ function cancelledRpcError() {
 
 function deserializeRpcError(serialized: any) {
   if (typeof serialized === 'string') return new Error(serialized);
-  const error: any = new Error(serialized?.message ?? 'Worker RPC failed');
+  const error: any = new Error(serialized?.message ?? t('repository.workerRpcFailed'));
   error.name = serialized?.name ?? 'Error';
   for (const [key, value] of Object.entries(serialized ?? {})) {
     if (key !== 'name' && key !== 'message') error[key] = value;
+  }
+  if (typeof serialized?.messageKey === 'string') {
+    Object.defineProperty(error, 'message', { get: () => errorMessage(serialized), configurable: true });
   }
   return error;
 }

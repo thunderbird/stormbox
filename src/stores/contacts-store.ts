@@ -1,3 +1,4 @@
+import { t, sourceText } from '../i18n/messages';
 /**
  * Contacts store. Backs both recipient autocomplete in compose and the
  * read-only contacts view. The store is the only path components and
@@ -274,7 +275,7 @@ export type ContactTrashActionResult = ContactTrashMutationResult & {
 };
 
 export const CONTACT_MISSING_MESSAGE =
-  'This contact no longer exists. Discard these changes or create a new contact.';
+  sourceText('contactsStore.thisContactNoLongerExistsDiscardTheseChangesOr');
 
 function failedContactCreate(uid: string | null = null): ContactCreateResult {
   return {
@@ -301,31 +302,31 @@ function contactValidationMessage(issue: ContactFieldValidationIssue): string {
   switch (issue) {
     case 'invalid-email':
     case 'empty-email':
-      return 'Enter a valid email address.';
+      return t('contactsStore.enterAValidEmailAddress');
     case 'empty-phone':
-      return 'Enter a phone number.';
+      return t('contactsStore.enterAPhoneNumber');
     case 'invalid-anniversary':
-      return 'Enter a valid contact date.';
+      return t('contactsStore.enterAValidContactDate');
     case 'invalid-note':
-      return 'Enter a valid note.';
+      return t('contactsStore.enterAValidNote');
     case 'invalid-organization-reference':
-      return 'Choose a valid organization for each title.';
+      return t('contactsStore.chooseAValidOrganizationForEachTitle');
     case 'invalid-photo':
-      return 'Choose a PNG, JPEG, GIF, or WebP image no larger than 1 MiB.';
+      return t('contactsStore.chooseAPNGJPEGGIFOrWebPImageNo');
     case 'empty-organization':
-      return 'Enter an organization or department.';
+      return t('contactsStore.enterAnOrganizationOrDepartment');
     case 'invalid-title':
-      return 'Enter a valid title or role.';
+      return t('contactsStore.enterAValidTitleOrRole');
     case 'invalid-website':
     case 'empty-website':
-      return 'Enter an absolute HTTP or HTTPS website.';
+      return t('contactsStore.enterAnAbsoluteHTTPOrHTTPSWebsite');
     case 'empty-contact':
-      return 'Enter at least one contact detail.';
+      return t('contactsStore.enterAtLeastOneContactDetail');
     case 'duplicate-map-key':
     case 'invalid-collection':
     case 'invalid-fields':
     case 'invalid-map-key':
-      return 'Enter valid contact details.';
+      return t('contactsStore.enterValidContactDetails');
     default: {
       const exhaustive: never = issue;
       return exhaustive;
@@ -965,7 +966,7 @@ export const useContactsStore = defineStore('contacts', () => {
     error.value = null;
     const retryUid = normalizeContactUid(input.uid);
     if (!repo || authStore.accountId == null) {
-      error.value = 'Not connected.';
+      error.value = t('contactsStore.notConnected');
       return failedContactCreate(retryUid);
     }
     let fields: ContactMutationFields;
@@ -984,7 +985,7 @@ export const useContactsStore = defineStore('contacts', () => {
       return failedContactCreate(retryUid);
     }
     if (contactFieldsAreEmpty(fields)) {
-      error.value = 'Enter at least one contact detail.';
+      error.value = t('contactsStore.enterAtLeastOneContactDetail');
       return failedContactCreate(retryUid);
     }
     const uid = retryUid ?? createContactUid();
@@ -1003,7 +1004,7 @@ export const useContactsStore = defineStore('contacts', () => {
         requestJson: JSON.stringify(request),
       });
       if (!mutation.ok) {
-        error.value = 'Could not add the contact. Please try again.';
+        error.value = t('contactsStore.couldNotAddTheContactPleaseTryAgain');
         return failedContactCreate(uid);
       }
       await refreshContacts();
@@ -1067,19 +1068,19 @@ export const useContactsStore = defineStore('contacts', () => {
   ): Promise<boolean> {
     error.value = null;
     if (!repo || authStore.accountId == null) {
-      error.value = 'Not connected.';
+      error.value = t('contactsStore.notConnected');
       return false;
     }
     const contactId = 'contactId' in input
       ? input.contactId
       : contacts.value.find((contact) => contact.remote_id === input.remoteId)?.id;
     if (contactId == null) {
-      error.value = 'This contact cannot be edited yet — try again in a moment.';
+      error.value = t('contactsStore.thisContactCannotBeEditedYetTryAgainIn');
       return false;
     }
     const detail = await repo.getContact(authStore.accountId, contactId);
     if (!detail) {
-      error.value = CONTACT_MISSING_MESSAGE;
+      error.value = t('contactsStore.thisContactNoLongerExistsDiscardTheseChangesOr');
       return false;
     }
     let baseline: ContactMutationFields;
@@ -1115,8 +1116,8 @@ export const useContactsStore = defineStore('contacts', () => {
       });
       if (!mutation.ok) {
         error.value = mutation.errorType === 'notFound'
-          ? CONTACT_MISSING_MESSAGE
-          : 'Could not save the contact. Please try again.';
+          ? t('contactsStore.thisContactNoLongerExistsDiscardTheseChangesOr')
+          : t('contactsStore.couldNotSaveTheContactPleaseTryAgain');
         return false;
       }
       await refreshContacts();
@@ -1141,11 +1142,11 @@ export const useContactsStore = defineStore('contacts', () => {
   function contactBatchValidationError(
     request: ContactBatchMutationRequest,
   ): string | null {
-    if (request.contactIds.length === 0) return 'Select at least one contact.';
+    if (request.contactIds.length === 0) return t('contactsStore.selectAtLeastOneContact');
     const selected = request.contactIds.map((id) =>
       contacts.value.find((contact) => contact.id === id) ?? null);
     if (selected.some((contact) => !contact?.remote_id)) {
-      return 'One or more contacts are not available for this action.';
+      return t('contactsStore.oneOrMoreContactsAreNotAvailableForThis');
     }
 
     switch (request.operation) {
@@ -1155,22 +1156,22 @@ export const useContactsStore = defineStore('contacts', () => {
           || !writableContactBook(request.sourceAddressbookId)
           || !writableContactBook(request.targetAddressbookId)
         ) {
-          return 'Choose a different writable address book.';
+          return t('contactsStore.chooseADifferentWritableAddressBook');
         }
         if (selected.some((contact) =>
           !contact!.addressbook_ids.includes(request.sourceAddressbookId))) {
-          return 'One or more contacts are no longer in this address book.';
+          return t('contactsStore.oneOrMoreContactsAreNoLongerInThis');
         }
         return null;
       }
       case 'scoped-delete': {
         if (request.sourceAddressbookId != null) {
           if (!writableContactBook(request.sourceAddressbookId)) {
-            return 'This address book is read-only.';
+            return t('contactsStore.thisAddressBookIsReadOnly');
           }
           if (selected.some((contact) =>
             !contact!.addressbook_ids.includes(request.sourceAddressbookId!))) {
-            return 'One or more contacts are no longer in this address book.';
+            return t('contactsStore.oneOrMoreContactsAreNoLongerInThis');
           }
           return null;
         }
@@ -1182,7 +1183,7 @@ export const useContactsStore = defineStore('contacts', () => {
         if (selected.some((contact) =>
           contact!.addressbook_ids.length === 0
           || contact!.addressbook_ids.some((id) => !knownWritableIds.has(id)))) {
-          return 'One or more contacts are in a read-only address book.';
+          return t('contactsStore.oneOrMoreContactsAreInAReadOnly');
         }
         return null;
       }
@@ -1242,7 +1243,7 @@ export const useContactsStore = defineStore('contacts', () => {
       ? { ...input, contactIds }
       : { ...input, contactIds };
     if (!repo || authStore.accountId == null) {
-      error.value = 'Not connected.';
+      error.value = t('contactsStore.notConnected');
       return failedContactBatch(contactIds, 'notConnected', error.value);
     }
     const validationError = contactBatchValidationError(request);
@@ -1267,8 +1268,8 @@ export const useContactsStore = defineStore('contacts', () => {
       const result = mutation.contactBatch;
       if (!result) {
         const message = moving
-          ? 'Could not move the selected contacts. Please try again.'
-          : 'Could not delete the selected contacts. Please try again.';
+          ? t('contactsStore.couldNotMoveTheSelectedContactsPleaseTryAgain')
+          : t('contactsStore.couldNotDeleteTheSelectedContactsPleaseTryAgain');
         error.value = message;
         return failedContactBatch(contactIds, mutation.errorType ?? 'unknown', message);
       }
@@ -1290,8 +1291,8 @@ export const useContactsStore = defineStore('contacts', () => {
         const succeeded = complete.succeededContactIds.length;
         const failed = complete.failures.length;
         error.value = succeeded > 0
-          ? `${succeeded} contact${succeeded === 1 ? '' : 's'} updated; ${failed} could not be updated.`
-          : `Could not update ${failed === 1 ? 'the contact' : 'the selected contacts'}.`;
+          ? t('contactsStore.contactUpdatedCouldNotBeUpdatedPlural', { arg1: succeeded, arg2: failed, arg3: succeeded, arg4: failed }, succeeded)
+          : t('contactsStore.couldNotUpdate', { value1: t('contactsStore.theContactPlural', {  }, failed) });
       }
       return {
         ...complete,
@@ -1345,7 +1346,7 @@ export const useContactsStore = defineStore('contacts', () => {
     const trashIds = uniqueContactIds(trashIdsInput);
     error.value = null;
     if (!repo || authStore.accountId == null) {
-      error.value = 'Not connected.';
+      error.value = t('contactsStore.notConnected');
       return failedContactTrash(trashIds, 'notConnected', error.value);
     }
     if (
@@ -1353,7 +1354,7 @@ export const useContactsStore = defineStore('contacts', () => {
       && destinationAddressbookId != null
       && !writableContactBook(destinationAddressbookId)
     ) {
-      error.value = 'Choose a writable address book.';
+      error.value = t('contactsStore.chooseAWritableAddressBook');
       return failedContactTrash(trashIds, 'permissionDenied', error.value);
     }
     const pending = operation === 'restore' ? restoringTrashIds : deletingTrashIds;
@@ -1375,16 +1376,14 @@ export const useContactsStore = defineStore('contacts', () => {
       await Promise.all([refreshTrash(), refreshContacts()]);
       if (!mutation.contactTrash) {
         const message = operation === 'restore'
-          ? 'Could not restore the selected contacts. Please try again.'
-          : 'Could not delete the selected contacts forever. Please try again.';
+          ? t('contactsStore.couldNotRestoreTheSelectedContactsPleaseTryAgain')
+          : t('contactsStore.couldNotDeleteTheSelectedContactsForeverPleaseTry');
         error.value = message;
         return failedContactTrash(trashIds, mutation.errorType ?? 'unknown', message);
       }
       const complete = mutation.contactTrash;
       if (complete.failures.length > 0) {
-        error.value = `${complete.failures.length} contact${
-          complete.failures.length === 1 ? '' : 's'
-        } could not be updated.`;
+        error.value = t('contactsStore.contactCouldNotBeUpdatedPlural', { arg1: complete.failures.length, arg2: complete.failures.length }, complete.failures.length);
       }
       return {
         ...complete,

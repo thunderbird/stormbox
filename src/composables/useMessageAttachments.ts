@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import {
   computed,
   onScopeDispose,
@@ -61,13 +62,13 @@ function attachmentKey(part: BodyAttachmentRow): string {
 function operationError(error: any, action: AttachmentOperation): string {
   if (error?.type === 'tooLarge') {
     return action === 'preview'
-      ? 'This file is too large to preview safely.'
-      : 'This file exceeds the download limit.';
+      ? t('useMessageAttachments.thisFileIsTooLargeToPreviewSafely')
+      : t('useMessageAttachments.thisFileExceedsTheDownloadLimit');
   }
   if (error?.type === 'cancelled' || error?.name === 'AbortError') return '';
   return action === 'preview'
-    ? 'Preview failed. Try again or download the file.'
-    : 'Download failed. Try again.';
+    ? t('useMessageAttachments.previewFailedTryAgainOrDownloadTheFile')
+    : t('useMessageAttachments.downloadFailedTryAgain');
 }
 
 export function useMessageAttachments(
@@ -291,7 +292,7 @@ export function useMessageAttachments(
         return;
       }
       if (typeof URL.createObjectURL !== 'function') {
-        state.error = 'Preview is unavailable in this browser.';
+        state.error = t('useMessageAttachments.previewIsUnavailableInThisBrowser');
         state.failedAction = null;
         state.rasterUnavailable = true;
         return;
@@ -361,7 +362,7 @@ export function useMessageAttachments(
       const ready = await viewerReady;
       if (!ready) {
         if (states.get(state.key) === state) {
-          state.error = 'The PDF viewer did not open. Try again or download the file.';
+          state.error = t('useMessageAttachments.thePDFViewerDidNotOpenTryAgainOr');
           state.failedAction = null;
         }
         return;
@@ -369,10 +370,10 @@ export function useMessageAttachments(
       if (!result || 'error' in result) {
         channel.postMessage({
           type: 'error',
-          message: 'The PDF could not be loaded. Close this tab and try again.',
+          get message() { return t('useMessageAttachments.thePDFCouldNotBeLoadedCloseThisTab'); },
         });
         if (states.get(state.key) === state) {
-          state.error = 'The PDF could not be opened. Try again or download the file.';
+          state.error = t('useMessageAttachments.thePDFCouldNotBeOpenedTryAgainOr');
           state.failedAction = null;
         }
         return;
@@ -380,7 +381,7 @@ export function useMessageAttachments(
       if (!isCurrent(result.context) || states.get(state.key) !== state) {
         channel.postMessage({
           type: 'error',
-          message: 'PDF opening was cancelled.',
+          get message() { return t('useMessageAttachments.pDFOpeningWasCancelled'); },
         });
         return;
       }

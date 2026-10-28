@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 /**
  * Pure presentation helpers for a message-list row. Shared by every
  * surface that renders MessageListRow so the row reads the same in the
@@ -43,7 +44,7 @@ export function correspondentLabel(
 ): string {
   const text = rowCorrespondent(row, showsRecipients);
   if (!text) {
-    return showsRecipients ? '(no recipient)' : '(no sender)';
+    return showsRecipients ? t('messageRowPresentation.noRecipient') : t('messageRowPresentation.noSender');
   }
   return shortFrom(text);
 }
