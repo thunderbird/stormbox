@@ -690,7 +690,7 @@ onBeforeUnmount(endContactDrag);
             <input
               type="checkbox"
               :checked="isContactSelected(entry)"
-              :aria-label="t('directoryList.select', { value1: entry.name || entry.email || t('directoryList.contact') })"
+              :aria-label="t('directoryList.select', { value1: entry.name || entry.email || t('directoryList.contactItem') })"
               @click="toggleContactAt(virtualRow.index, $event)"
             />
           </label>
