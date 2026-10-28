@@ -21,6 +21,26 @@ async function setup() {
 }
 
 describe('contact detail handlers', () => {
+  it('clears proven generated display placeholders without renaming stored or user-authored names', async () => {
+    const { engine, handlers } = await setup();
+    try {
+      await handlers[DB_RPC.CONTACT_UPSERT_MANY]({
+        accountId: 1,
+        contacts: [
+          { remoteId: 'unnamed', displayName: '(no name)', addressbookIds: [10], rawJson: JSON.stringify({ id: 'unnamed', notes: { n: { note: 'A note' } } }) },
+          { remoteId: 'named', displayName: '(no name)', fullName: '(no name)', addressbookIds: [10], rawJson: JSON.stringify({ id: 'named', name: { full: '(no name)' } }) },
+        ],
+      });
+      const rows = await handlers[DB_RPC.CONTACT_LIST]({ accountId: 1 });
+      expect(rows.find((row: any) => row.remote_id === 'unnamed').display_name).toBe('');
+      expect(rows.find((row: any) => row.remote_id === 'named').display_name).toBe('(no name)');
+      const unnamed = rows.find((row: any) => row.remote_id === 'unnamed');
+      const detail = await handlers[DB_RPC.CONTACT_GET]({ accountId: 1, contactId: unnamed.id });
+      expect(detail.display_name).toBe('');
+      expect(await engine.get('SELECT display_name FROM contacts WHERE id = ?', [unnamed.id])).toMatchObject({ display_name: '(no name)' });
+    } finally { await engine.close(); }
+  });
+
   it('round-trips keyed details and keeps organization evidence out of list rows', async () => {
     const { engine, handlers } = await setup();
     await handlers[DB_RPC.CONTACT_UPSERT_MANY]({

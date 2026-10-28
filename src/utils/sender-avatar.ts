@@ -1,4 +1,3 @@
-import { t } from '../i18n/messages';
 export interface SenderAvatar {
   domain: string;
   imageUrl: string;
@@ -89,7 +88,7 @@ export function senderAvatarStyle(text: string | null | undefined): Record<strin
   const seed = extractEmail(text) || shortFrom(text);
   const hue = hashText(seed) % 360;
   return {
-    get background() { return t('senderAvatar.hsl4242', { value1: hue }); },
+    background: `hsl(${hue} 42% 42%)`,
   };
 }
 

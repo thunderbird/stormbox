@@ -3,9 +3,7 @@ import { nextTick } from 'vue';
 
 import type { useComposeStore } from '../stores/compose-store';
 import {
-  TOUR_BODY_TEXT,
   TOUR_EDITOR_TARGETS,
-  TOUR_LINK_TEXT,
   TOUR_LINK_URL,
   pasteTourImage,
   pasteTourUrl,

@@ -1,4 +1,4 @@
-import { t, LocalizedError } from '../../../i18n/messages';
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * JmapBackend ties the JMAP transport, the SQLite handlers, and every
  * per-method sync function into a single object that satisfies the

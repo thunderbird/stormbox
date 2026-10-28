@@ -1,4 +1,5 @@
-import { t, LocalizedError } from '../i18n/messages';
+import { contactDisplayNameForRead } from '../utils/contact-card-normalization';
+import { LocalizedError } from '../i18n/messages';
 /**
  * Repository handlers. These are the worker-side implementations of the
  * RPC methods listed in protocol.js.
@@ -893,7 +894,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       id: Number(row.id),
       uid: entry.uid,
       prior_remote_id: entry.remoteId,
-      display_name: entry.displayName,
+      display_name: contactDisplayNameForRead(entry.displayName, entry.snapshot) ?? '',
       primary_email: entry.primaryEmail,
       trashed_at: entry.trashedAt,
       expires_at: entry.expiresAt,
@@ -3817,6 +3818,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
                 c.remote_id,
                 c.uid,
                 c.display_name,
+                CASE WHEN c.display_name = '(no name)' THEN c.raw_json END AS name_source,
                 (SELECT email FROM contact_emails ce
                   WHERE ce.contact_id = c.id
                   ORDER BY is_preferred DESC, position
@@ -3854,6 +3856,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       );
       return rows.map((row) => {
         const {
+          name_source: nameSource,
           photo_map_key: photoMapKey,
           photo_uri: photoUri,
           photo_blob_id: photoBlobId,
@@ -3863,6 +3866,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         } = row;
         return {
           ...contact,
+          display_name: contactDisplayNameForRead(contact.display_name, nameSource),
           addressbook_ids: splitIds(row.addressbook_ids),
           photo: photoMapKey
             ? {
@@ -3882,7 +3886,8 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      */
     [DB_RPC.CONTACT_GET]: async ({ accountId, contactId }) => {
       const row = await engine.get(
-        `SELECT id, remote_id, display_name, full_name
+        `SELECT id, remote_id, display_name, full_name,
+                CASE WHEN display_name = '(no name)' THEN raw_json END AS name_source
            FROM contacts
           WHERE id = ? AND account_id = ? AND is_deleted = 0`,
         [contactId, accountId],
@@ -4003,8 +4008,10 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         kind: title.kind,
         organizationMapKey: title.organization_map_key ?? null,
       }));
+      const { name_source: nameSource, ...contact } = row;
       return {
-        ...row,
+        ...contact,
+        display_name: contactDisplayNameForRead(contact.display_name, nameSource),
         emails,
         phones,
         links,
@@ -4408,15 +4415,21 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     [DB_RPC.CONTACT_AUTOCOMPLETE]: async (params) =>
       autocompleteRecipients(engine, params),
 
-    [DB_RPC.CONTACT_TRASH_LIST]: async ({ accountId }) =>
-      engine.all(
+    [DB_RPC.CONTACT_TRASH_LIST]: async ({ accountId }) => {
+      const rows = await engine.all(
         `SELECT id, uid, prior_remote_id, display_name, primary_email,
+                CASE WHEN display_name = '(no name)' THEN snapshot_json END AS name_source,
                 trashed_at, expires_at, status
            FROM contacts_trash
           WHERE account_id = ? AND status = 'trashed'
           ORDER BY trashed_at DESC, id DESC`,
         [accountId],
-      ),
+      );
+      return rows.map(({ name_source: nameSource, ...row }) => ({
+        ...row,
+        display_name: contactDisplayNameForRead(row.display_name, nameSource),
+      }));
+    },
 
     [DB_RPC.CONTACT_TRASH_GET]: async ({ accountId, trashId }) => {
       const row = await engine.get(

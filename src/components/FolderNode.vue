@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { folderDisplayName } from '../utils/folder-presentation';
 import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { Star } from '@lucide/vue';
 
-import { folderBadgeCount } from '../utils/folder-presentation';
+import { folderDisplayName, folderBadgeCount } from '../utils/folder-presentation';
 
 const props = defineProps({
   folder: { type: Object, required: true },

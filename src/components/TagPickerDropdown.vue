@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from '../i18n/messages';
-import { nextTick, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { Tag } from '@lucide/vue';
 
 import { closeContainingDropdown } from '../utils/dropdown';
@@ -15,7 +15,7 @@ import TagPickerPanel from './TagPickerPanel.vue';
  * Opening focuses the first item; Escape and outside clicks close it
  * and toggles keep it open.
  */
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   targets: ReadonlyArray<MessageRowLike | null | undefined>;
   definitions: ReadonlyArray<MessageTagDefinition>;
   /** Accessible name of the trigger. */
@@ -28,12 +28,14 @@ withDefaults(defineProps<{
   /** Extra classes on the trigger, for the owner's hooks. */
   triggerClass?: string;
 }>(), {
-  get label() { return t('tagPickerDropdown.tag'); },
+  label: undefined,
   title: undefined,
   align: 'start',
   disabled: false,
   triggerClass: '',
 });
+
+const resolvedLabel = computed(() => props.label ?? t('tagPickerDropdown.tag'));
 
 const emit = defineEmits<{
   toggle: [keyword: string, on: boolean];
@@ -77,8 +79,8 @@ defineExpose({ focusTrigger });
       class="app-dropdown__summary tag-picker-dropdown__trigger"
       :class="triggerClass"
       aria-haspopup="menu"
-      :aria-label="label"
-      :title="title ?? label"
+      :aria-label="resolvedLabel"
+      :title="title ?? resolvedLabel"
       data-tag-picker-trigger
     >
       <slot name="trigger">

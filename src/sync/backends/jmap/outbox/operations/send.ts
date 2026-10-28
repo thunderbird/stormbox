@@ -412,7 +412,9 @@ async function runSend({
         error: {
           type: 'createProbeFailed',
           terminal: true,
-          description: t('send.couldNotCheckWhetherAnEarlierAttemptAlreadyCombined', {  }),
+          description: t('send.couldNotCheckWhetherAnEarlierAttemptAlreadyCombined'),
+          descriptionKey: 'send.couldNotCheckWhetherAnEarlierAttemptAlreadyCombined',
+          descriptionParams: {},
           detail: { reason: probe.reason, ...probe.detail },
         },
       };

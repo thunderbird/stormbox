@@ -18,10 +18,11 @@ export function resolveLocale(preferred: readonly string[], available = availabl
   for (const value of preferred) {
     const canonical = canonicalLocale(value);
     if (!canonical) continue;
-    const exact = available.find((item) => item.toLowerCase() === canonical.toLowerCase());
-    if (exact) return canonical;
-    const language = canonical.split('-')[0];
-    if (available.includes(language)) return canonical;
+    const parts = canonical.toLowerCase().split('-');
+    while (parts.length > 0) {
+      if (available.some((item) => item.toLowerCase() === parts.join('-'))) return canonical;
+      parts.pop();
+    }
   }
   return 'en';
 }

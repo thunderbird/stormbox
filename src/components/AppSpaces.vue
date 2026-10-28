@@ -9,11 +9,11 @@ const props = defineProps({
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
   // Names the sidebar the toggle controls in the active space (R-8.5).
-  sidebarLabel: { type: String, get default() { return t('appSpaces.folderList'); } },
+  sidebarLabel: { type: String, default: undefined },
 });
 const emit = defineEmits(['change', 'toggle-folder-list', 'open-settings']);
 const folderListToggleLabel = computed(() =>
-  t(props.folderListHidden ? 'appSpaces.showSidebar' : 'appSpaces.hideSidebar', { sidebar: props.sidebarLabel }),
+  t(props.folderListHidden ? 'appSpaces.showSidebar' : 'appSpaces.hideSidebar', { sidebar: props.sidebarLabel ?? t('appSpaces.folderList') }),
 );
 
 function pick(name) { emit('change', name); }
