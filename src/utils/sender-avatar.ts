@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 export interface SenderAvatar {
   domain: string;
   imageUrl: string;

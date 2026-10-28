@@ -230,10 +230,7 @@
     "delete3": "Delete",
     "folder": "folder",
     "itContains": "It contains",
-    "message": "{value1} {value2} message{value3}.",
     "itContainsMessagePlural": "It contains {arg1} message. | It contains {arg2} messages.",
-    "messagePlural": "{arg1} {arg2} message. | {arg3} {arg4} messages.",
-    "itContainsPlural": "It contains | They contain",
     "deleteFolders": "Delete {count} folder? | Delete {count} folders?",
     "permanentDeleteFolders": "{count} folder still contains mail. Deleting will {action} any message not filed in another folder. | {count} folders still contain mail. Deleting will {action} any message not filed in another folder.",
     "defaultFolders": "{value1} (default folders)",
@@ -318,7 +315,6 @@
     "showingTaggedMailFromTheFoldersIndexedSoFar": "Showing tagged mail from the folders indexed so far ({value1}%).",
     "showingTheNewestOfTaggedMessages": "Showing the newest {value1} of {value2} tagged messages.",
     "sharedFoldersAreNotIncluded": "Shared folders are not included.",
-    "noMessagesIn": "No {value1}messages in {value2}.",
     "messageFilters": "Message filters",
     "unread": "Unread",
     "starred": "Starred",
@@ -633,7 +629,6 @@
     "saveAddressBook": "Save address book",
     "personal": "Personal",
     "theMailServerDoesNotAllowThisAddressBook": "The mail server does not allow this address book to be edited.",
-    "editAddressBookPlural": "Edit address book | You don’t have permission to edit this address book.",
     "notSet": "(not set)",
     "editDenied": "You don’t have permission to edit this address book."
   },
@@ -805,7 +800,6 @@
     "deselect": "Deselect {value1}",
     "select": "Select {value1}",
     "primary": "Primary",
-    "editAddressBookPlural": "Edit address book | You don’t have permission to edit this address book.",
     "delete": "Delete",
     "editDenied": "You don’t have permission to edit this address book.",
     "selectContact": "Select contact",
@@ -861,11 +855,7 @@
   },
   "restoreContactDestinationDialog": {
     "chooseAnAddressBook": "Choose an address book",
-    "thisContactHas": "This contact has",
-    "noOriginalWritableAddressBookChooseWhereToRestore": "{value1} no original writable address book. Choose where to restore {value2}.",
     "cancel": "Cancel",
-    "noOriginalWritableAddressBookChooseWhereToRestorePlural": "{arg1} no original writable address book. Choose where to restore it. | {arg2} no original writable address book. Choose where to restore them.",
-    "thisContactHasPlural": "This contact has | These contacts have",
     "chooseDestination": "This contact has no original writable address book. Choose where to restore it. | These {count} contacts have no original writable address book. Choose where to restore them."
   },
   "contactEditor": {
