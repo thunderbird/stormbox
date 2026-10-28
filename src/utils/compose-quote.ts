@@ -1,4 +1,4 @@
-import { t, formatDate } from '../i18n/messages';
+import { t } from '../i18n/messages';
 /**
  * Subject prefixing and body quoting for reply and forward prefills.
  *
@@ -30,7 +30,7 @@ export function formatQuotedHeader({
   subject?: string | null;
 }): string {
   const when = date
-    ? formatDate(Number(date), { dateStyle: 'short', timeStyle: 'medium' })
+    ? new Date(Number(date)).toLocaleString()
     : '';
   const lines = [
     from ? t('common.fromHeader', { value: from }) : null,

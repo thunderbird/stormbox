@@ -1,4 +1,4 @@
-import { t, displayLocale } from '../../i18n/messages';
+import { t } from '../../i18n/messages';
 import type {
   ContactAnniversaryDate,
   ContactAnniversaryKind,
@@ -689,7 +689,7 @@ export function formatContactDate(
   const value = new Date(0);
   value.setUTCHours(12, 0, 0, 0);
   value.setUTCFullYear(year ?? 2000, month - 1, day ?? 1);
-  return new Intl.DateTimeFormat(locales ?? displayLocale(), {
+  return new Intl.DateTimeFormat(locales, {
     ...(day == null ? {} : { day: 'numeric' }),
     month: 'long',
     timeZone: 'UTC',

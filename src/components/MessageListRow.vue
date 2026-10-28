@@ -115,7 +115,7 @@ const rowLabel = computed(() => [
   dateText.value,
   isUnread.value ? t('messageListRow.unread') : '',
   isFlagged.value ? t('messageListRow.starred') : '',
-  props.message.has_attachment ? t('messageListRow.hasAttachments') : '',
+  Number(props.message.has_attachment) === 1 ? t('messageListRow.hasAttachments') : '',
   tags.value.length > 0 ? tagStackLabel.value : '',
 ].filter(Boolean).join(', '));
 </script>

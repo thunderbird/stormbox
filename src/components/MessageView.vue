@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t, displayLocale } from '../i18n/messages';
+import { t } from '../i18n/messages';
 import {
   computed,
   nextTick,
@@ -657,7 +657,7 @@ function onIframeLoad() {
 function fmtDate(ms) {
   if (!ms) return '';
   const d = new Date(Number(ms));
-  return Number.isNaN(d.valueOf()) ? '' : d.toLocaleString(displayLocale());
+  return Number.isNaN(d.valueOf()) ? '' : d.toLocaleString();
 }
 
 // The stored body HTML references inline images by cid:, which only
@@ -749,7 +749,7 @@ function describeTimeUntil(ms) {
   const target = Number(ms);
   if (!Number.isFinite(target)) return '';
   const diffMs = target - Date.now();
-  const rtf = new Intl.RelativeTimeFormat(displayLocale(), { numeric: 'auto' });
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
   const minutes = Math.round(diffMs / 60_000);
   if (Math.abs(minutes) < 60) return rtf.format(minutes, 'minute');
   const hours = Math.round(diffMs / 3_600_000);

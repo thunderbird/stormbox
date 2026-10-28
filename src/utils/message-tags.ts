@@ -289,10 +289,7 @@ export function resolveTag(
   const normalized = normalizeKeyword(keyword);
   const definition = definitions.find((d) => normalizeKeyword(d.keyword) === normalized);
   if (definition) {
-    const index = DEFAULT_MESSAGE_TAGS.findIndex((item) => item.keyword === normalized && item.name === definition.name);
-    const defaultKeys = ['important', 'work', 'personal', 'toDo', 'later'];
-    const name = index < 0 ? definition.name : t(`defaultTags.${defaultKeys[index]}`);
-    return { keyword: normalized, name, color: definition.color, defined: true };
+    return { keyword: normalized, name: definition.name, color: definition.color, defined: true };
   }
   return { keyword: normalized, name: normalized, color: null, defined: false };
 }

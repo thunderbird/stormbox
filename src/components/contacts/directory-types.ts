@@ -1,4 +1,3 @@
-import { isTrustedSendersBook } from '../../utils/address-book-policy';
 import { t } from '../../i18n/messages';
 import type {
   AddressbookRow,
@@ -87,7 +86,7 @@ export function identityMayDelete(identity: IdentityRow): boolean {
 }
 
 export function addressBookDisplayName(book: AddressbookRow): string {
-  return isTrustedSendersBook(book) ? t('common.trustedSenders') : (book.name?.trim() || t('directoryTypes.addressBook'));
+  return book.name?.trim() || t('directoryTypes.addressBook');
 }
 
 export function directoryOptionId(key: string): string {

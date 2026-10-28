@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { t } from '../i18n/messages';
-import { itemCount } from '../utils/item-count';
 import { computed, ref, toRef } from 'vue';
 
 import { useModalFocus } from '../composables/useModalFocus';
@@ -34,7 +33,7 @@ useModalFocus(overlayEl, { active: toRef(props, 'active') });
 const subText = computed(() => {
   const { total } = props;
   if (total <= 0) return '';
-  return itemCount(props.itemLabel, total);
+  return t('bulkOperationOverlay.itemCount', { count: total.toLocaleString(), item: total === 1 ? props.singularItemLabel : props.itemLabel });
 });
 </script>
 

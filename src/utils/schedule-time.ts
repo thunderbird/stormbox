@@ -1,4 +1,4 @@
-import { t, displayLocale } from '../i18n/messages';
+import { t } from '../i18n/messages';
 export const ABSOLUTE_TIMESTAMP_PATTERN = /(?:Z|[+-]\d{2}:\d{2})$/i;
 export const SERVER_CLOCK_MAX_AGE_MS = 10 * 60 * 1_000;
 export const SERVER_CLOCK_MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
@@ -616,7 +616,7 @@ function sameWallDate(
 export function formatScheduleTarget(
   targetAt: string | number | Date,
   timeZone: string,
-  locale = displayLocale(),
+  locale = 'en-US',
 ): string {
   const parsed = parseAbsoluteTimestamp(targetAt);
   if (!parsed) return '';
@@ -660,7 +660,7 @@ export function resolveSchedulePreset(
     maxDelayedSend,
     clockWindow,
     serverClockReference,
-    locale = displayLocale(),
+    locale = 'en-US',
   }: {
     now?: string | number | Date;
     timeZone: string;
@@ -719,7 +719,7 @@ export function resolveCustomSchedule({
   clockWindow,
   serverClockReference,
   localNowMs = Date.now(),
-  locale = displayLocale(),
+  locale = 'en-US',
 }: {
   wallTime: WallDateTime;
   timeZone: string;

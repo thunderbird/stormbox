@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t, formatNumber } from '../../i18n/messages';
+import { t } from '../../i18n/messages';
 import { computed, ref } from 'vue';
 
 import { useModalFocus } from '../../composables/useModalFocus';
@@ -69,13 +69,13 @@ function onKeydown(event: KeyboardEvent): void {
       </p>
       <ul id="address-book-delete-effects">
         <LocalizedText tag="li" keypath="addressBookDeleteDialog.exclusiveEffect" :plural="inventory.exclusiveCount">
-          <template #count><strong>{{ formatNumber(inventory.exclusiveCount) }}</strong></template>
+          <template #count><strong>{{ inventory.exclusiveCount }}</strong></template>
         </LocalizedText>
         <LocalizedText tag="li" keypath="addressBookDeleteDialog.sharedEffect" :plural="inventory.sharedCount">
-          <template #count><strong>{{ formatNumber(inventory.sharedCount) }}</strong></template>
+          <template #count><strong>{{ inventory.sharedCount }}</strong></template>
         </LocalizedText>
         <LocalizedText tag="li" keypath="addressBookDeleteDialog.mediaEffect" :plural="inventory.mediaBearingCount">
-          <template #count><strong>{{ formatNumber(inventory.mediaBearingCount) }}</strong></template>
+          <template #count><strong>{{ inventory.mediaBearingCount }}</strong></template>
         </LocalizedText>
       </ul>
       <p v-if="addressbook.is_default === 1" class="address-book-delete__default-note">

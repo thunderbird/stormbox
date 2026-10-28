@@ -18,7 +18,6 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useSettingsStore } from '../../stores/settings-store';
 import { isComposingKeyEvent } from '../../utils/keyboard';
 import ShortcutSchemePicker from './ShortcutSchemePicker.vue';
-import LanguagePicker from './LanguagePicker.vue';
 
 const StaffSettingsSection = defineAsyncComponent(
   () => import('./StaffSettingsSection.vue'),
@@ -104,13 +103,6 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="settings-dialog__section">
-          <div class="settings-dialog__row">
-            <div class="settings-dialog__row-text">
-              <span id="settings-language-label" class="settings-dialog__row-title">{{ t('common.language') }}</span>
-              <span class="settings-dialog__row-hint">{{ t('common.languageHint') }}</span>
-            </div>
-            <LanguagePicker />
-          </div>
           <div class="settings-dialog__row">
             <div class="settings-dialog__row-text">
               <span id="settings-shortcuts-label" class="settings-dialog__row-title">{{ t('settingsDialog.keyboardShortcuts') }}</span>

@@ -9,7 +9,7 @@ import { useMailStore } from '../stores/mail-store';
 import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
-import { flattenFolderTree, folderDisplayName } from '../utils/folder-presentation';
+import { flattenFolderTree } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 
 const props = withDefaults(
@@ -63,7 +63,7 @@ const parentOptions = computed<ParentOption[]>(() => {
     for (const entry of rows) {
       options.push({
         id: entry.folder.id,
-        label: `${'\u00a0'.repeat(entry.depth * 3)}${folderDisplayName(entry.folder)}`,
+        label: `${'\u00a0'.repeat(entry.depth * 3)}${entry.folder.name || t('common.unnamedFolder')}`,
         group,
       });
     }

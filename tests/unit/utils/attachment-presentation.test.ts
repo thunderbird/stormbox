@@ -16,15 +16,15 @@ describe('formatAttachmentSize', () => {
   it.each([
     [0, '0 B'],
     [900, '900 B'],
-    [1023, '1,023 B'],
+    [1023, '1023 B'],
     [1024, '1 KiB'],
     [1500, '2 KiB'],
-    [1024 * 1024 - 1, '1,024 KiB'],
+    [1024 * 1024 - 1, '1024 KiB'],
     [1024 * 1024, '1.0 MiB'],
     [1_101_005, '1.1 MiB'],
     [1.5 * 1024 * 1024, '1.5 MiB'],
     [2_034_237, '1.9 MiB'],
-    [1024 ** 3, '1,024.0 MiB'],
+    [1024 ** 3, '1024.0 MiB'],
   ])('labels %d bytes as %s', (bytes, label) => {
     expect(formatAttachmentSize(bytes)).toBe(label);
   });

@@ -4,63 +4,27 @@ import { localStackEnabled, skipLocalStackMessage } from './helpers/stack-env.js
 
 test.skip(!localStackEnabled, skipLocalStackMessage);
 
-test('switches a running interface, preserves the preference, and falls back per message', async ({ page }, info) => {
+test('preserves the English interface and renders an injected test catalog', async ({ page }) => {
   await loginViaOidc(page);
-  // The test supplies a partial catalog without publishing unreviewed translations.
-  await page.evaluate(async () => {
-    const { i18n, availableLocales } = await import('/src/i18n/index.ts');
-    i18n.global.setLocaleMessage('de', {
-      common: { language: 'Sprache', languageHint: 'Sprache der Benutzeroberfläche', followBrowserLanguage: 'Browsersprache verwenden' },
-      settingsDialog: { settings: 'Einstellungen' },
-      appSpaces: { settings: 'Einstellungen' },
-    });
-    availableLocales.push('de');
-  });
   await page.locator('.app-spaces__settings').click();
   const dialog = page.locator('[data-settings-dialog]');
-  await dialog.locator('.language-picker summary').click();
-  await dialog.getByRole('menuitemradio', { name: 'Deutsch', exact: true }).click();
-  await expect(dialog.getByRole('heading', { name: 'Einstellungen' })).toBeVisible();
-  await expect(dialog.locator('#settings-language-label')).toHaveText('Sprache');
-  await expect(dialog.getByRole('button', { name: 'Close settings', exact: true })).toBeVisible();
-  await expect(page.locator('html')).toHaveAttribute('lang', 'de');
-  expect(await page.evaluate(() => localStorage.getItem('stormbox.locale'))).toBe('de');
-
-  await page.screenshot({ path: info.outputPath('language-wide.png') });
-  await page.setViewportSize({ width: 360, height: 800 });
-  await expect(dialog).toBeVisible();
-  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await page.screenshot({ path: info.outputPath('language-narrow.png') });
-  await page.setViewportSize({ width: 1280, height: 800 });
-
-  await dialog.locator('.language-picker summary').focus();
-  await page.keyboard.press('Enter');
-  await expect(dialog.getByRole('menuitemradio', { name: 'Deutsch', exact: true })).toBeFocused();
-  await page.keyboard.press('Home');
-  await page.keyboard.press('ArrowDown');
-  await expect(dialog.getByRole('menuitemradio', { name: 'English', exact: true })).toBeFocused();
-  await page.keyboard.press('Enter');
   await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem('stormbox.locale'))).toBe('en');
-  await page.reload();
-  await expect(page.locator('.shell')).toBeVisible();
-  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-});
+  await expect(dialog.locator('.settings-dialog__row-title')).toHaveText([
+    'Keyboard shortcuts', 'Follow system theme', 'Welcome & shortcuts',
+  ]);
+  await expect(dialog.getByRole('button', { name: 'Close settings', exact: true })).toBeVisible();
 
-test('synchronizes regional language preferences across tabs', async ({ page }) => {
-  await loginViaOidc(page);
-  const other = await page.context().newPage();
-  await other.goto('/');
-  await expect(other.locator('.shell')).toBeVisible();
+  // Injected messages exercise Vue I18n without shipping another language or preference UI.
   await page.evaluate(async () => {
-    const { setLocalePreference } = await import('/src/i18n/index.ts');
-    setLocalePreference('en-GB');
+    const { i18n } = await import('/src/i18n/index.ts');
+    i18n.global.setLocaleMessage('de', { settingsDialog: { settings: 'Einstellungen' } });
+    i18n.global.locale.value = 'de';
   });
-  await expect(other.locator('html')).toHaveAttribute('lang', 'en-GB');
-  const date = await other.evaluate(async () => {
-    const { formatDate } = await import('/src/i18n/messages.ts');
-    return formatDate(Date.UTC(2026, 9, 28), { timeZone: 'UTC' });
+  await expect(dialog.getByRole('heading', { name: 'Einstellungen' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Close settings', exact: true })).toBeVisible();
+  await page.evaluate(async () => {
+    const { i18n } = await import('/src/i18n/index.ts');
+    i18n.global.locale.value = 'en';
   });
-  expect(date).toBe('28/10/2026');
-  await other.close();
+  await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
 });

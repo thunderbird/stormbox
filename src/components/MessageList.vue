@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { folderDisplayName } from '../utils/folder-presentation';
-import { t, displayLocale } from '../i18n/messages';
+import { t } from '../i18n/messages';
 import {
   computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
@@ -93,7 +92,7 @@ const folderId = computed<number | null>(() => (
   props.folderId === undefined ? mailStore.currentFolderId : props.folderId
 ));
 const folder = computed<FolderRow | null>(() => mailStore.folderById(folderId.value));
-const folderName = computed(() => folder.value ? folderDisplayName(folder.value) : t('messageList.mail'));
+const folderName = computed(() => folder.value?.name ?? t('messageList.mail'));
 const regionLabel = computed(() => (
   folder.value
     ? t('messageList.messagesColumn', { value1: folder.value.name, value2: props.columnIndex })
@@ -490,7 +489,7 @@ const tagViewNote = computed(() => {
   }
   const truncation = mailStore.tagViewTruncation;
   if (truncation) {
-    parts.push(t('messageList.showingTheNewestOfTaggedMessages', { value1: truncation.shown.toLocaleString(displayLocale()), value2: truncation.total.toLocaleString(displayLocale()) }));
+    parts.push(t('messageList.showingTheNewestOfTaggedMessages', { value1: truncation.shown.toLocaleString(), value2: truncation.total.toLocaleString() }));
   }
   // A tag view reads the signed-in account only (MK-3.4).
   if (mailStore.sharedAccounts.length > 0) {
@@ -952,10 +951,10 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       clear-class="msg-list__bulk-action msg-list__bulk-action--ghost"
       count-class="msg-list__count"
       :disabled="folderId == null"
-      item-label="messages"
+      :item-label="t('messageList.messages')"
       select-all-class="msg-list__select-all"
       selection-actions-class="msg-list__bulk-actions"
-      singular-item-label="message"
+      :singular-item-label="t('messageList.message')"
       :selected-count="selectionCount"
       :show-total-count="headerShowsCount"
       :total-count="rowCount"

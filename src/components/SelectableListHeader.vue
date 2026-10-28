@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { t } from '../i18n/messages';
-import { itemCount } from '../utils/item-count';
 import { X } from '@lucide/vue';
 import {
   ref,
@@ -107,7 +106,7 @@ watchPostEffect(() => {
         {{ t('selectableListHeader.selected', { value1: selectedCount }) }}
       </template>
       <template v-else-if="showTotalCount && totalCount > 0">
-        {{ itemCount(itemLabel, totalCount) }}
+        {{ t('selectableListHeader.itemCount', { count: totalCount, item: totalCount === 1 ? (singularItemLabel || itemLabel) : itemLabel }) }}
       </template>
     </span>
 

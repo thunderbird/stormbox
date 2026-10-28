@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t, displayLocale } from '../../i18n/messages';
+import { t } from '../../i18n/messages';
 import { CalendarDays, Plus, X } from '@lucide/vue';
 import {
   VueDatePicker,
@@ -10,7 +10,6 @@ import {
 } from '@vuepic/vue-datepicker';
 import { nextTick, ref } from 'vue';
 
-import { useDatePickerLocale } from '../../composables/useDatePickerLocale';
 import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import type { ContactAnniversaryKind } from '../../types';
 import { closeContainingDropdown } from '../../utils/dropdown';
@@ -45,12 +44,10 @@ const {
   update: (dates) => emit('update:modelValue', dates),
 });
 
-const { dateLocale, ariaLabels, actionRow } = useDatePickerLocale();
-
 const kinds: ContactAnniversaryKind[] = ['birth', 'wedding', 'death'];
 const datePickerTimeConfig = { enableTimePicker: false };
 const yearlessAriaLabels: Partial<AriaLabelsConfig> = {
-  day: ({ value }: CalendarDay) => value.toLocaleDateString(displayLocale(), {
+  day: ({ value }: CalendarDay) => value.toLocaleDateString(undefined, {
     day: 'numeric',
     month: 'long',
   }),
@@ -334,10 +331,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
           :ref="(handle) => setDatePickerHandle(date.formKey, handle)"
           class="contact-dates__datepicker"
           :model-value="calendarValue(date)"
-          :locale="dateLocale"
-          :action-row="actionRow"
-          :week-start="dateLocale.options?.weekStartsOn"
-          :aria-labels="isYearless(date) ? { ...ariaLabels, ...yearlessAriaLabels } : ariaLabels"
+          :aria-labels="isYearless(date) ? yearlessAriaLabels : undefined"
           arrow-navigation
           :auto-apply="true"
           :disable-year-select="isYearless(date)"
