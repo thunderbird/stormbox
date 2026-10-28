@@ -3,7 +3,7 @@ import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { Star } from '@lucide/vue';
 
-import { folderDisplayName, folderBadgeCount } from '../utils/folder-presentation';
+import { folderBadgeCount } from '../utils/folder-presentation';
 
 const props = defineProps({
   folder: { type: Object, required: true },
@@ -99,7 +99,7 @@ function toggle() {
           :aria-label="t('folderNode.starredFolder')"
         />
       </span>
-      <span class="folder-node__name">{{ folderDisplayName(folder) }}</span>
+      <span class="folder-node__name">{{ folder.name || t('common.unnamedFolder') }}</span>
       <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
       <span v-if="unread > 0" class="folder-node__count">{{ unread > 99999 ? '99999+' : unread }}</span>
     </button>

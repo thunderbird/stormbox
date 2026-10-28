@@ -1,31 +1,32 @@
 # Localizing Stormbox
 
-`src/locales/en.json` is the source catalog. The application uses Vue I18n 11 in Composition API mode. English is the only shipped language initially. Partial catalogs fall back to English per message.
+`src/locales/en.json` contains the extracted application strings. Vue I18n 11 runs in Composition API mode with English as the initial and fallback locale. No other production catalog, language setting, or browser-language negotiation is included.
 
-![Language selection in Settings](settings-language.png)
-
-## Add a language
-
-1. Add `src/locales/<BCP-47-tag>.json` (for example `de.json` or `pt-BR.json`). Keep the source keys, translate values, and retain all named parameters. An incomplete catalog is allowed; omit unfinished messages instead of leaving empty strings.
-2. Run `npm run check:locales`, `npm run lint`, and `npm test` **inside the dev container**, as described in `AGENTS.md`.
-3. Check the language in Settings, including keyboard menus, narrow layouts, contacts, composer, date picker, and accessibility labels. The language list discovers catalog files automatically. Do not add a language to the UI before its catalog is reviewed.
-
-The default follows `navigator.languages`. An explicit choice is stored under `stormbox.locale` in browser storage and is shared across tabs. It does not change account settings. Region subtags are retained for number and date formatting even when messages fall back to a base language. The root document and the standalone PDF viewer receive the selected `lang` and writing direction. Date-fns calendar locales are loaded on demand; unsupported calendar locales fall back to its English locale.
+This extraction preserves the existing English text, number/date formatting, calendar defaults, stored names, and component contracts. Locale selection and additional translations can be introduced separately.
 
 ## Write messages
 
-Use `t('component.descriptiveKey', { name })` from `src/i18n/messages.ts` for text in templates, helpers, and computed properties. Keep complete sentences in a single message; avoid translating a verb and joining it to an English noun. Module-level label registries need getters, not eagerly evaluated translations. Use `LocalizedText` with named slots when a sentence includes markup; never put HTML in a catalog or feed translated strings into `v-html`.
+Use `t('component.descriptiveKey', { name })` from `src/i18n/messages.ts` in templates, helpers, and computed properties. Keep complete sentences in a single message where the existing component contract permits it. Module-level label registries use getters so messages can be re-evaluated. Use `LocalizedText` with named slots when a sentence includes markup; never put HTML in a catalog or pass translations to `v-html`.
 
-Vue I18n uses `{name}` parameters and ` | ` between plural forms. Forms are in CLDR order: **zero, one, two, few, many, other**, including only the categories used by the language. English uses `one | other` (and can use `zero | one | other` when zero has special wording). Supply the numeric choice as the third argument to `t`; rendered numbers use the active regional locale. Literal `@`, `{`, `}`, and `|` use Vue I18n literal syntax, for example `{'@'}`. Catalog validation checks syntax, markup, parameter consistency, missing source references, and statically detectable missing interpolation arguments.
+Vue I18n uses `{name}` parameters and ` | ` between plural forms. Forms follow CLDR order: **zero, one, two, few, many, other**, including the categories used by the language. English uses `one | other` and may use `zero | one | other` for distinct zero wording. Supply the numeric choice as the third argument to `t`. Interpolation preserves the supplied value; existing callers retain their number and date formatting. Literal `@`, `{`, `}`, and `|` use Vue I18n literal syntax, for example `{'@'}`.
 
-Names entered by users, protocol tokens, CSS values, identifiers, and keyboard bindings are data. Preserve them. Default tag and folder names have display helpers; their stored/wire values remain stable. Standard English system-folder names are translated for display, while custom folder names remain verbatim. New generated reply/forward text uses the active language; existing messages and drafts are never rewritten.
+Names entered by users, protocol tokens, CSS values, identifiers, and keyboard bindings remain data. Stable defaults stored in server or cache records use the English `sourceText` helper. Translating displayed strings must not rename stored data or change lookup and parsing behavior.
 
 ## Errors and workers
 
-Workers import only the framework-free `src/i18n/messages.ts` bridge. They produce stable English diagnostics from the same source catalog. `LocalizedError` carries `messageKey` and `messageParams` across RPC, and outbox errors can carry `descriptionKey` and `descriptionParams`. The main thread renders those keys with Vue I18n. `errorDescription` resolves persisted outbox descriptions, and unknown server diagnostics remain available as supplied by the server.
+Workers import the framework-free `src/i18n/messages.ts` bridge. Their diagnostics use the English source catalog. `LocalizedError` carries `messageKey` and `messageParams` across RPC; outbox errors can carry `descriptionKey` and `descriptionParams`. The UI resolves those keys with Vue I18n while preserving unknown server descriptions and existing fallback behavior.
 
-Language changes do not affect SQLite, JMAP requests, scheduling arithmetic, or stored user content. Preserve this boundary when adding messages. Internal developer logs and structural assertions need not be translated.
+Both Vite and Node load the bridge, including during Playwright test discovery. JSON imports must retain `with { type: 'json' }`.
 
-The template lint rule rejects new raw UI text. `npm run check:locales` validates every catalog; unit tests exercise fallback, regional formatting, plural rules, safe interpolation, RPC error metadata, and locale changes. Browser tests switch the running UI using a test-only in-memory catalog; no unreviewed translation ships in production.
+## Checks
 
-References: [Vue I18n composition](https://vue-i18n.intlify.dev/guide/advanced/composition.html), [pluralization](https://vue-i18n.intlify.dev/guide/essentials/pluralization.html), [component interpolation](https://vue-i18n.intlify.dev/guide/advanced/component.html).
+Run commands inside the worktree's dev container, as described in `AGENTS.md`:
+
+- `npm run check:locales` validates syntax, references, and interpolation parameters.
+- `npm run typecheck` and source lint check the integration.
+- `npm run test:unit` checks existing behavior and translation handling.
+- Full Playwright discovery and the existing Chromium/Firefox suites cover Node-side imports and browser behavior.
+
+The template lint rule rejects new raw UI text. Localization tests inject a small in-memory catalog only to verify translation and English fallback; those messages are not a shipped language.
+
+References: [Vue I18n composition](https://vue-i18n.intlify.dev/guide/advanced/composition.html), [pluralization](https://vue-i18n.intlify.dev/guide/essentials/pluralization.html), [component interpolation](https://vue-i18n.intlify.dev/guide/advanced/component.html), [Node JSON imports](https://nodejs.org/docs/latest/api/esm.html#json-modules).

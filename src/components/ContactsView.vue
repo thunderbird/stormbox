@@ -1372,9 +1372,9 @@ defineExpose({
 
     <BulkOperationOverlay
       :active="contactBatchOverlay.active"
-      item-label="contacts"
+      :item-label="t('contactsView.contacts')"
       :label="contactBatchOverlay.label"
-      singular-item-label="contact"
+      :singular-item-label="t('contactsView.contact')"
       :total="contactBatchOverlay.total"
     />
 

@@ -1,4 +1,4 @@
-import { bindDocumentLocale } from './i18n';
+import './i18n';
 import { t } from './i18n/messages';
 import './pdf-viewer.css';
 
@@ -31,7 +31,6 @@ function viewerToken(): string | null {
   }
 }
 
-bindDocumentLocale();
 document.title = t('pdfViewer.attachment');
 if (status) status.textContent = t('pdfViewer.opening');
 if (frame) frame.title = t('pdfViewer.attachment');

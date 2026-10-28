@@ -1,18 +1,12 @@
-import english from '../locales/en.json';
+import english from '../locales/en.json' with { type: 'json' };
 
 export type MessageParams = Record<string, unknown>;
 type Translator = (key: string, params: MessageParams, count?: number) => string;
 let translate: Translator | undefined;
-let currentLocale = () => 'en';
 
 /** The UI installs Vue I18n; workers keep stable English diagnostics. */
-export function installTranslator(translator: Translator, locale: () => string): void {
+export function installTranslator(translator: Translator): void {
   translate = translator;
-  currentLocale = locale;
-}
-
-export function displayLocale(): string {
-  return currentLocale();
 }
 
 /** English-only diagnostic fallback, without a Vue dependency in workers. */
@@ -33,14 +27,6 @@ export function sourceText(key: string, params: MessageParams = {}, count?: numb
 
 export function t(key: string, params: MessageParams = {}, count?: number): string {
   return translate ? translate(key, params, count) : sourceText(key, params, count);
-}
-
-export function formatNumber(value: number, options?: Intl.NumberFormatOptions): string {
-  return new Intl.NumberFormat(displayLocale(), options).format(value);
-}
-
-export function formatDate(value: number | Date, options?: Intl.DateTimeFormatOptions): string {
-  return new Intl.DateTimeFormat(displayLocale(), options).format(value);
 }
 
 export class LocalizedError extends Error {
@@ -70,5 +56,5 @@ export function errorDescription(error: unknown): string | null {
     return t(error.descriptionKey, ('descriptionParams' in error ? error.descriptionParams : {}) as MessageParams);
   }
   if ('description' in error && typeof error.description === 'string') return error.description;
-  return 'message' in error ? errorMessage(error) : null;
+  return null;
 }

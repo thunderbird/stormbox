@@ -5,7 +5,7 @@ import { computed, ref } from 'vue';
 import { useMenuKeyboard } from '../composables/useMenuKeyboard';
 import { useMailStore } from '../stores/mail-store';
 import { closeContainingDropdown } from '../utils/dropdown';
-import { flattenFolderTree, folderPresentation, folderDisplayName } from '../utils/folder-presentation';
+import { flattenFolderTree, folderPresentation } from '../utils/folder-presentation';
 import type { FolderRow } from '../types';
 import AppDropdown from './AppDropdown.vue';
 
@@ -35,7 +35,7 @@ const emit = defineEmits<{
 
 const mailStore = useMailStore();
 
-const folderName = computed(() => props.folder ? folderDisplayName(props.folder) : t('messageListHeaderTitle.mail'));
+const folderName = computed(() => props.folder?.name ?? t('messageListHeaderTitle.mail'));
 const folderIcon = computed(() => (props.folder ? folderPresentation(props.folder).icon : ''));
 const folderTone = computed(() => (props.folder ? folderPresentation(props.folder).color : undefined));
 

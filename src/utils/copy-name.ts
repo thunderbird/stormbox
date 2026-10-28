@@ -1,13 +1,9 @@
 import { t } from '../i18n/messages';
-
-function copySuffix(): RegExp {
-  const marker = t('common.copyMarker').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^(.*?)\\s+\\((?:Copy|${marker})\\s+(\\d+)\\)$`, 'iu');
-}
+const COPY_SUFFIX = /^(.*?)\s+\(Copy\s+(\d+)\)$/iu;
 
 function copyBase(displayName: string): string {
   const trimmed = displayName.trim();
-  const match = copySuffix().exec(trimmed);
+  const match = COPY_SUFFIX.exec(trimmed);
   return match?.[1]?.trim() || trimmed;
 }
 
@@ -20,10 +16,10 @@ export function nextCopyName(
   let copyNumber = 0;
 
   for (const existingName of existingDisplayNames) {
-    const match = copySuffix().exec(existingName.trim());
+    const match = COPY_SUFFIX.exec(existingName.trim());
     if (!match || copyBase(existingName).toLocaleLowerCase() !== normalizedBase) continue;
     copyNumber = Math.max(copyNumber, Number(match[2]));
   }
 
-  return t('common.copyName', { name: base, number: String(copyNumber + 1) });
+  return t('common.copyName', { name: base, number: copyNumber + 1 });
 }

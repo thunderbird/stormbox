@@ -125,7 +125,9 @@
     "back": "Back",
     "thisDirectoryEntryCouldNotBeLoaded": "This directory entry could not be loaded.",
     "tryAgain": "Try again",
-    "isNowThePrimaryIdentity": "{value1} is now the Primary identity."
+    "isNowThePrimaryIdentity": "{value1} is now the Primary identity.",
+    "contacts": "contacts",
+    "contact": "contact"
   },
   "featureBeaconLayer": {
     "new": "New",
@@ -236,7 +238,7 @@
     "defaultFolders": "{value1} (default folders)",
     "deleteNamedFolder": "Delete “{name}”?",
     "deleteNamedNonemptyFolder": "“{name}” still contains mail. Deleting it will {action} any message not filed in another folder.",
-    "containedMessages": "Contains {count} message. | Contains {count} messages."
+    "theyContainMessages": "They contain {arg1} message. | They contain {arg2} messages."
   },
   "folderNode": {
     "expandFolder": "Expand folder",
@@ -324,7 +326,7 @@
     "removeColumn": "Remove column",
     "moreActionsForColumn": "More actions for column {value1}",
     "useUpAndDownArrowsToNavigateMessagesSpace": "Use Up and Down arrows to navigate messages, Space to select, and Enter to toggle the message preview. Press Right Arrow or F2 for message controls, then Left and Right arrows to move between them. Escape returns to message navigation. Tab leaves the message list.",
-    "messages": "Messages",
+    "messages": "messages",
     "loading": "Loading {value1}…",
     "noMessagesMatchingIn": "No messages matching \"{value1}\" in {value2}.",
     "noMessagesAreTagged": "No messages are tagged {value1}.",
@@ -335,7 +337,8 @@
     "noMessages": "No messages in {folder}.",
     "noUnreadMessages": "No unread messages in {folder}.",
     "noStarredMessages": "No starred messages in {folder}.",
-    "noUnreadStarredMessages": "No unread starred messages in {folder}."
+    "noUnreadStarredMessages": "No unread starred messages in {folder}.",
+    "message": "message"
   },
   "messageListHeaderTitle": {
     "mail": "Mail",
@@ -522,7 +525,8 @@
     "selectAll": "Select all {value1}",
     "selectionActions": "Selection actions",
     "clearSelection": "Clear selection",
-    "selected": "{value1} selected"
+    "selected": "{value1} selected",
+    "itemCount": "{count} {item}"
   },
   "spotlightOverlay": {
     "translatePxPx": "translate({value1}px, {value2}px)"
@@ -794,7 +798,7 @@
     "deleteSelectedContactsForever": "Delete selected contacts forever",
     "deleteSelectedContacts": "Delete selected contacts",
     "deleteForever": "Delete Forever",
-    "contact": "Contact",
+    "contact": "contact",
     "addressBook": "Address book",
     "loading": "Loading…",
     "deselect": "Deselect {value1}",
@@ -805,7 +809,12 @@
     "selectContact": "Select contact",
     "selectTrashedContact": "Select trashed contact",
     "deselectContact": "Deselect contact",
-    "deselectTrashedContact": "Deselect trashed contact"
+    "deselectTrashedContact": "Deselect trashed contact",
+    "contacts": "contacts",
+    "trashedContacts": "trashed contacts",
+    "trashedContact": "trashed contact",
+    "identities": "identities",
+    "identity": "identity"
   },
   "identityAddressRepeater": {
     "replyToAddresses": "Reply-To addresses",
@@ -856,7 +865,7 @@
   "restoreContactDestinationDialog": {
     "chooseAnAddressBook": "Choose an address book",
     "cancel": "Cancel",
-    "chooseDestination": "This contact has no original writable address book. Choose where to restore it. | These {count} contacts have no original writable address book. Choose where to restore them."
+    "chooseDestination": "This contact has no original writable address book. Choose where to restore it. | These contacts have no original writable address book. Choose where to restore them."
   },
   "contactEditor": {
     "work": "Work",
@@ -1708,24 +1717,13 @@
     "theSelectedFileIsNotAValidRasterImage": "The selected file is not a valid raster image."
   },
   "common": {
-    "language": "Language",
-    "followBrowserLanguage": "Follow browser language",
-    "languageHint": "Choose the display language for this browser.",
     "copyName": "{name} (Copy {number})",
-    "copyMarker": "Copy",
     "noSubject": "(no subject)",
     "fromHeader": "From: {value}",
     "dateHeader": "Date: {value}",
     "subjectHeader": "Subject: {value}",
     "numberAndUnit": "{number} {unit}",
     "bytes": "B",
-    "folderInbox": "Inbox",
-    "folderSent": "Sent",
-    "folderDrafts": "Drafts",
-    "folderScheduled": "Scheduled",
-    "folderArchive": "Archive",
-    "folderJunk": "Junk",
-    "folderTrash": "Trash",
     "reply": "reply",
     "archive": "archive",
     "kibibytes": "KiB",
@@ -1738,47 +1736,12 @@
   "storageUsageBar": {
     "of": "{value1}% of {value2}"
   },
-  "datePicker": {
-    "toggleOverlay": "Toggle overlay",
-    "menu": "Date picker menu",
-    "input": "Date picker input",
-    "openYearsOverlay": "Open years overlay",
-    "openMonthsOverlay": "Open months overlay",
-    "nextMonth": "Next month",
-    "prevMonth": "Previous month",
-    "nextYear": "Next year",
-    "prevYear": "Previous year",
-    "clearInput": "Clear value",
-    "calendarIcon": "Calendar icon",
-    "monthPicker": "Month picker",
-    "monthOverlay": "Month picker overlay",
-    "yearPicker": "Year picker",
-    "yearOverlay": "Year picker overlay",
-    "openTimePicker": "Open time picker",
-    "closeTimePicker": "Close time picker",
-    "amPmButton": "Switch AM/PM mode",
-    "timePicker": "Time picker",
-    "increment": "Increment {type}",
-    "decrement": "Decrement {type}",
-    "openTimeOverlay": "Open {type} overlay",
-    "timeOverlay": "{type} overlay",
-    "hours": "hours",
-    "minutes": "minutes",
-    "seconds": "seconds",
-    "select": "Select",
-    "cancel": "Cancel",
-    "now": "Now"
-  },
   "availability": {
     "databaseUnavailable": "Stormbox couldn’t connect to its local database. Close all Stormbox tabs and windows, wait a few seconds, then reopen Stormbox. If this happens again, restart Firefox.",
     "unsupportedBrowser": "Stormbox cannot run in this browser. Missing: {missing}. Use Chrome 109+, Edge 109+, Firefox 116+, or Safari 16+."
   },
   "counts": {
-    "contacts": "{count} contact | {count} contacts",
-    "messages": "{count} message | {count} messages",
-    "identities": "{count} identity | {count} identities",
-    "trashedContacts": "{count} trashed contact | {count} trashed contacts",
-    "items": "{count} item | {count} items"
+    "messages": "{count} message | {count} messages"
   },
   "defaultTags": {
     "important": "Important",
@@ -1805,5 +1768,11 @@
   "limits": {
     "jMAPSessionMissingValid": "JMAP Session missing valid {value1}",
     "jMAPAccountMissingValidMaxSizeAttachmentsPerEmail": "JMAP account {value1} missing valid maxSizeAttachmentsPerEmail"
+  },
+  "bulkOperationOverlay": {
+    "itemCount": "{count} {item}"
+  },
+  "useListDragDrop": {
+    "itemCount": "{count} {item}"
   }
 }

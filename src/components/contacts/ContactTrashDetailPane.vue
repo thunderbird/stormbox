@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t, displayLocale } from '../../i18n/messages';
+import { t } from '../../i18n/messages';
 import { ArrowLeft, RotateCcw, Trash2 } from '@lucide/vue';
 import { computed, nextTick, ref } from 'vue';
 
@@ -29,7 +29,7 @@ const emit = defineEmits<{
 const paneEl = ref<HTMLElement | null>(null);
 const expiresLabel = computed(() =>
   props.detail
-    ? new Intl.DateTimeFormat(displayLocale(), { dateStyle: 'medium' })
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
       .format(new Date(props.detail.expires_at))
     : '');
 const contactDetail = computed(() =>

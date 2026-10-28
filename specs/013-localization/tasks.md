@@ -1,7 +1,7 @@
 # Tasks
 
-- [x] Add locale initialization, preference, catalog discovery, formatting, and fallback.
+- [x] Initialize Vue I18n with English source messages and fallback.
 - [x] Extract UI, onboarding, accessibility, generated text, and error strings.
-- [x] Preserve worker and server semantics; localize structured error presentation.
-- [x] Add catalog checks and language-switch coverage; run validation.
-- [x] Review immutable implementation and address findings.
+- [x] Preserve English output, formatting, component contracts, data reads, and mutation semantics.
+- [ ] Validate catalog, Node test discovery, typecheck, lint, unit tests, build, and Chromium/Firefox E2E.
+- [ ] Review the reduced immutable implementation and address findings.

@@ -464,15 +464,15 @@ onBeforeUnmount(endContactDrag);
       :disabled="loading"
       :item-label="
         listKind === 'contacts'
-          ? 'contacts'
-          : (listKind === 'trash' ? 'trashed contacts' : 'identities')
+          ? t('directoryList.contacts')
+          : (listKind === 'trash' ? t('directoryList.trashedContacts') : t('directoryList.identities'))
       "
       :selectable="selectionEnabled"
       :selected-count="selection.selectionCount.value"
       :singular-item-label="
         listKind === 'contacts'
-          ? 'contact'
-          : (listKind === 'trash' ? 'trashed contact' : 'identity')
+          ? t('directoryList.contact')
+          : (listKind === 'trash' ? t('directoryList.trashedContact') : t('directoryList.identity'))
       "
       :total-count="entries.length"
       @clear-selection="selection.selectNone"

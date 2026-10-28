@@ -29,7 +29,6 @@ import { isComposingKeyEvent } from '../utils/keyboard';
 import {
   folderPresentation,
   folderSortKey,
-  folderDisplayName,
   type NamedFolderPresentation,
 } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
@@ -159,7 +158,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
         path,
         presentation: folderPresentation(folder),
       });
-      walk(folder.id, depth + 1, [...path, folderDisplayName(folder)]);
+      walk(folder.id, depth + 1, [...path, folder.name]);
     }
   }
   walk('ROOT', 0, []);
@@ -238,7 +237,7 @@ const items = computed<ManagerItem[]>(() => {
     // A search cuts across the tree, so it ignores collapse state —
     // a match must never be hidden by a collapsed ancestor.
     const rows = query
-      ? section.rows.filter((row) => folderDisplayName(row.folder).toLowerCase().includes(query))
+      ? section.rows.filter((row) => row.folder.name.toLowerCase().includes(query))
       : visibleRows(section.rows);
     if (rows.length === 0) continue;
     out.push({ kind: 'header', key: `h-${section.account.id}`, section });
@@ -497,7 +496,7 @@ function findSelectionGap(): string | null {
         const candidate = section.rows[j];
         if (candidate.depth <= row.depth) break;
         if (!selectedIds.value.has(candidate.folder.id)) {
-          return t('folderManagerDialog.canTBeDeletedWhileItsSubfolderIsKept', { value1: folderDisplayName(row.folder), value2: folderDisplayName(candidate.folder) });
+          return t('folderManagerDialog.canTBeDeletedWhileItsSubfolderIsKept', { value1: row.folder.name, value2: candidate.folder.name });
         }
       }
     }
@@ -793,7 +792,7 @@ const editorParentOptions = computed<ParentOption[]>(() => {
     if (!row.canCreateChild) continue;
     options.push({
       id: row.folder.id,
-      label: `${'\u00a0'.repeat(row.depth * 3)}${folderDisplayName(row.folder)}`,
+      label: `${'\u00a0'.repeat(row.depth * 3)}${row.folder.name}`,
     });
   }
   return options;
@@ -1082,8 +1081,8 @@ onBeforeUnmount(() => {
                   :class="{ 'is-collapsed': isRowCollapsed(item.row) }"
                   :aria-expanded="!isRowCollapsed(item.row)"
                   :aria-label="isRowCollapsed(item.row)
-                    ? t('folderManagerDialog.expand', { value1: folderDisplayName(item.row.folder) })
-                    : t('folderManagerDialog.collapse', { value1: folderDisplayName(item.row.folder) })"
+                    ? t('folderManagerDialog.expand', { value1: item.row.folder.name })
+                    : t('folderManagerDialog.collapse', { value1: item.row.folder.name })"
                   :data-folder-toggle="item.row.folder.name"
                   @click="toggleRowCollapsed(item.row)"
                 >
@@ -1100,7 +1099,7 @@ onBeforeUnmount(() => {
                     :checked="selectedIds.has(item.row.folder.id)"
                     :disabled="bulkBusy"
                     :data-folder-select="item.row.folder.name"
-                    :aria-label="t('folderManagerDialog.selectFolder', { value1: folderDisplayName(item.row.folder) })"
+                    :aria-label="t('folderManagerDialog.selectFolder', { value1: item.row.folder.name })"
                     @click="onSelectClick(item.section, item.row, $event)"
                   />
                   <span
@@ -1113,7 +1112,7 @@ onBeforeUnmount(() => {
                   <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
-                  >{{ folderDisplayName(item.row.folder) }}</span>
+                  >{{ item.row.folder.name || t('common.unnamedFolder') }}</span>
                   <span
                     v-if="searching && item.row.path.length"
                     class="folder-subs__path"
@@ -1132,7 +1131,7 @@ onBeforeUnmount(() => {
                   <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
-                  >{{ folderDisplayName(item.row.folder) }}</span>
+                  >{{ item.row.folder.name || t('common.unnamedFolder') }}</span>
                   <span
                     v-if="searching && item.row.path.length"
                     class="folder-subs__path"
@@ -1151,8 +1150,8 @@ onBeforeUnmount(() => {
                   :data-folder-star="item.row.folder.name"
                   :aria-pressed="item.row.starred"
                   :aria-label="item.row.starred
-                    ? t('folderManagerDialog.unstarFolder', { value1: folderDisplayName(item.row.folder) })
-                    : t('folderManagerDialog.starFolder', { value1: folderDisplayName(item.row.folder) })"
+                    ? t('folderManagerDialog.unstarFolder', { value1: item.row.folder.name })
+                    : t('folderManagerDialog.starFolder', { value1: item.row.folder.name })"
                   :title="item.row.starred
                     ? t('folderManagerDialog.starredClickToRemoveFromTheTopOfThe')
                     : t('folderManagerDialog.starPinToTheTopOfTheFolderList')"
@@ -1201,7 +1200,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="folder-subs__edit"
                   :data-folder-edit="item.row.folder.name"
-                  :aria-label="t('folderManagerDialog.editFolder', { value1: folderDisplayName(item.row.folder) })"
+                  :aria-label="t('folderManagerDialog.editFolder', { value1: item.row.folder.name })"
                   :title="t('folderManagerDialog.renameMoveOrDelete')"
                   @click="editingFolderId === item.row.folder.id ? closeEditor() : openEditor(item.row)"
                 >
@@ -1213,8 +1212,8 @@ onBeforeUnmount(() => {
                   type="button"
                   class="folder-subs__edit"
                   :data-folder-add="item.row.folder.name"
-                  :aria-label="t('folderManagerDialog.newFolderIn', { value1: folderDisplayName(item.row.folder) })"
-                  :title="t('folderManagerDialog.newFolderIn', { value1: folderDisplayName(item.row.folder) })"
+                  :aria-label="t('folderManagerDialog.newFolderIn', { value1: item.row.folder.name })"
+                  :title="t('folderManagerDialog.newFolderIn', { value1: item.row.folder.name })"
                   @click="openCreateDialog(item.row.folder.id)"
                 >
                   <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
@@ -1295,14 +1294,14 @@ onBeforeUnmount(() => {
                 <template v-else>
                   <p class="folder-subs__editor-confirm">
                     <template v-if="deleteStage === 'confirm'">
-                      {{ t('folderManagerDialog.deleteNamedFolder', { name: folderDisplayName(item.row.folder) }) }}
+                      {{ t('folderManagerDialog.deleteNamedFolder', { name: item.row.folder.name }) }}
                       <template v-if="editedMessageCount(item.row) > 0">
                         {{ t('folderManagerDialog.itContainsMessagePlural', { arg1: editedMessageCount(item.row), arg2: editedMessageCount(item.row) }, editedMessageCount(item.row)) }}
                       </template>
                     </template>
                     <template v-else>
                       <LocalizedText keypath="folderManagerDialog.deleteNamedNonemptyFolder">
-                        <template #name>{{ folderDisplayName(item.row.folder) }}</template>
+                        <template #name>{{ item.row.folder.name }}</template>
                         <template #action><strong>{{ t('folderManagerDialog.permanentlyDelete') }}</strong></template>
                       </LocalizedText>
                     </template>
@@ -1395,7 +1394,7 @@ onBeforeUnmount(() => {
           <p class="folder-subs__bulk-confirm">
             {{ t('folderManagerDialog.deleteFolders', { count: selectedCount }, selectedCount) }}
             <template v-if="selectedMessageCount > 0">
-              {{ t('folderManagerDialog.containedMessages', { count: selectedMessageCount }, selectedMessageCount) }}
+              {{ t(selectedCount === 1 ? 'folderManagerDialog.itContainsMessagePlural' : 'folderManagerDialog.theyContainMessages', { arg1: selectedMessageCount, arg2: selectedMessageCount }, selectedMessageCount) }}
             </template>
           </p>
           <span class="folder-subs__editor-spacer" />

@@ -1,4 +1,4 @@
-import { t, formatNumber } from '../i18n/messages';
+import { t } from '../i18n/messages';
 /**
  * Format a byte count for compact UI labels (e.g. "6 GB", "512 MB").
  */
@@ -7,7 +7,7 @@ export function formatBytes(bytes: number | null | undefined): string | null {
     return null;
   }
   if (bytes <= 0) {
-    return t('common.numberAndUnit', { number: formatNumber(0), unit: t('common.bytes') });
+    return t('common.numberAndUnit', { number: 0, unit: t('common.bytes') });
   }
 
   const units = [
@@ -19,9 +19,9 @@ export function formatBytes(bytes: number | null | undefined): string | null {
   for (const unit of units) {
     if (bytes >= unit.threshold) {
       const value = Math.floor(bytes / unit.divisor);
-      return t('common.numberAndUnit', { number: formatNumber(value), unit: unit.label });
+      return t('common.numberAndUnit', { number: value, unit: unit.label });
     }
   }
 
-  return t('common.numberAndUnit', { number: formatNumber(bytes), unit: t('common.bytes') });
+  return t('common.numberAndUnit', { number: bytes, unit: t('common.bytes') });
 }

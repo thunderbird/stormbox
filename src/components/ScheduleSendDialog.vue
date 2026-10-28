@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { t, displayLocale } from '../i18n/messages';
+import { t } from '../i18n/messages';
 import {
   VueDatePicker,
   type InternalModelValue,
@@ -13,7 +13,6 @@ import {
   ref,
 } from 'vue';
 
-import { useDatePickerLocale } from '../composables/useDatePickerLocale';
 import { useModalFocus } from '../composables/useModalFocus';
 import { useSettingsStore } from '../stores/settings-store';
 import { closeContainingDropdown } from '../utils/dropdown';
@@ -71,13 +70,12 @@ const internalPickerValue = ref<InternalModelValue>(null);
 const internalInvalidMessage = ref<string | null>(null);
 const currentTimeMs = ref(Date.now());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
-const { dateLocale, ariaLabels, actionRow } = useDatePickerLocale();
-const timeConfig = computed(() => ({
+const timeConfig = {
   enableTimePicker: true,
   enableSeconds: false,
-  is24: !['h11', 'h12'].includes(new Intl.DateTimeFormat(displayLocale(), { hour: 'numeric' }).resolvedOptions().hourCycle ?? 'h23'),
+  is24: false,
   minutesIncrement: 1,
-}));
+};
 
 function pickerValueAt(instantMs: number): string | null {
   const wall = instantToWallTime(instantMs, selectedTimeZone.value);
@@ -312,10 +310,6 @@ onBeforeUnmount(() => {
           {{ t('scheduleSendDialog.sendDateAndTime') }}
         </label>
         <VueDatePicker
-          :locale="dateLocale"
-          :aria-labels="ariaLabels"
-          :action-row="actionRow"
-          :week-start="dateLocale.options?.weekStartsOn"
           class="schedule-dialog__picker"
           :model-value="pickerValue"
           :input-id="`schedule-date-${sessionId}`"
