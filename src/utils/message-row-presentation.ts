@@ -1,3 +1,4 @@
+import { t, displayLocale } from '../i18n/messages';
 /**
  * Pure presentation helpers for a message-list row. Shared by every
  * surface that renders MessageListRow so the row reads the same in the
@@ -43,7 +44,7 @@ export function correspondentLabel(
 ): string {
   const text = rowCorrespondent(row, showsRecipients);
   if (!text) {
-    return showsRecipients ? '(no recipient)' : '(no sender)';
+    return showsRecipients ? t('messageRowPresentation.noRecipient') : t('messageRowPresentation.noSender');
   }
   return shortFrom(text);
 }
@@ -69,10 +70,10 @@ export function fmtDate(ms: number | string | null | undefined): string {
   const now = new Date();
   const sameDay = d.toDateString() === now.toDateString();
   if (sameDay) {
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString(displayLocale(), { hour: '2-digit', minute: '2-digit' });
   }
   const sameYear = d.getFullYear() === now.getFullYear();
-  return d.toLocaleDateString(undefined, sameYear
+  return d.toLocaleDateString(displayLocale(), sameYear
     ? { month: 'short', day: 'numeric' }
     : { year: 'numeric', month: 'short', day: 'numeric' });
 }

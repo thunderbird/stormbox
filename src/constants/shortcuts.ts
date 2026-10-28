@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 /**
  * Keyboard shortcut tables for the mail UI, one per `shortcutScheme`.
  *
@@ -145,7 +146,7 @@ export const SHORTCUT_SCHEMES: Record<ShortcutScheme, ShortcutTable> = {
 };
 
 export const SHORTCUT_SCHEME_LABELS: Record<ShortcutScheme, string> = {
-  web: 'Web',
+  get web() { return t('shortcuts.web'); },
   thunderbird: 'Thunderbird',
 };
 
@@ -180,9 +181,9 @@ export function resolveShortcut(
 }
 
 const KEY_HINTS: Record<string, string> = {
-  Delete: 'Del',
-  Escape: 'Esc',
-  ' ': 'Space',
+  get Delete() { return t('shortcuts.del'); },
+  get Escape() { return t('shortcuts.esc'); },
+  get ' '() { return t('shortcuts.space'); },
 };
 
 function keyHint(key: string): string {
@@ -230,7 +231,7 @@ function visibleBindings(
 export function shortcutHint(action: ShortcutAction, scheme: ShortcutScheme): string | null {
   const bindings = visibleBindings(action, scheme);
   if (bindings.length === 0) return null;
-  return bindings.map(bindingHint).join(' or ');
+  return bindings.map(bindingHint).join(t('shortcuts.or'));
 }
 
 /** `aria-keyshortcuts` value for the action, every key spelled out; null when the scheme has none. */

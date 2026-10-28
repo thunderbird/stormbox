@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 /**
  * JMAP-Contacts sync (read-only for MVP).
  *
@@ -175,10 +176,10 @@ export async function syncAddressBooks({
 
 function addressBookInventoryError(
   type: string,
-  message: string,
+  message: string | Error,
   detail?: unknown,
 ): Error {
-  const error: any = new Error(message);
+  const error: any = (message instanceof Error ? message : new Error(message));
   error.type = type;
   if (detail !== undefined) error.detail = detail;
   return error;
@@ -239,7 +240,7 @@ export async function inventoryAddressBook({
   if (!addressBookRemoteId) {
     throw addressBookInventoryError(
       ADDRESSBOOK_ERROR.MISSING,
-      'Address book is not available',
+      new LocalizedError('contacts.addressBookIsNotAvailable'),
     );
   }
   if (localId == null) {
@@ -306,21 +307,21 @@ export async function inventoryAddressBook({
           methodError?.type === 'stateMismatch'
             ? ADDRESSBOOK_ERROR.STATE_MISMATCH
             : ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-          'ContactCard/query did not return a complete inventory page',
+          new LocalizedError('contacts.contactCardQueryDidNotReturnACompleteInventoryPage'),
           methodError ?? undefined,
         );
       }
       if (typeof query.queryState !== 'string' || !query.queryState) {
         throw addressBookInventoryError(
           ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'ContactCard/query did not provide stable paging state',
+          new LocalizedError('contacts.contactCardQueryDidNotProvideStablePagingState'),
         );
       }
       const pageTotal = Number(query.total);
       if (!Number.isSafeInteger(pageTotal) || pageTotal < 0) {
         throw addressBookInventoryError(
           ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'Address book inventory total changed while paging',
+          new LocalizedError('contacts.addressBookInventoryTotalChangedWhilePaging'),
         );
       }
       const ids = query.ids as unknown[];
@@ -331,7 +332,7 @@ export async function inventoryAddressBook({
       ) {
         throw addressBookInventoryError(
           ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'Address book inventory page did not match its requested window',
+          new LocalizedError('contacts.addressBookInventoryPageDidNotMatchItsRequested'),
         );
       }
       const pageIds = new Set<string>();
@@ -344,14 +345,14 @@ export async function inventoryAddressBook({
       })) {
         throw addressBookInventoryError(
           ADDRESSBOOK_ERROR.STATE_MISMATCH,
-          'Address book inventory returned invalid or duplicate ids',
+          new LocalizedError('contacts.addressBookInventoryReturnedInvalidOrDuplicateIds'),
         );
       }
       const got = pickResponse(result, 'ContactCard/get');
       if (!got || !Array.isArray(got.list)) {
         throw addressBookInventoryError(
           ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-          'ContactCard/get did not return an inventory page',
+          new LocalizedError('contacts.contactCardGetDidNotReturnAnInventoryPage'),
           methodError ?? undefined,
         );
       }
@@ -370,7 +371,7 @@ export async function inventoryAddressBook({
         if (typeof card?.id !== 'string' || cards.has(card.id)) {
           throw addressBookInventoryError(
             ADDRESSBOOK_ERROR.STATE_MISMATCH,
-            'ContactCard/get returned invalid or duplicate cards',
+            new LocalizedError('contacts.contactCardGetReturnedInvalidOrDuplicateCards'),
           );
         }
         cards.set(card.id, card);
@@ -381,7 +382,7 @@ export async function inventoryAddressBook({
         if (!card || !addressBookIds?.includes(addressBookRemoteId)) {
           throw addressBookInventoryError(
             ADDRESSBOOK_ERROR.STATE_MISMATCH,
-            'Address book contents changed during inventory read',
+            new LocalizedError('contacts.addressBookContentsChangedDuringInventoryRead'),
           );
         }
         seen.add(id);
@@ -397,7 +398,7 @@ export async function inventoryAddressBook({
   if (paging.complete === false) {
     throw addressBookInventoryError(
       ADDRESSBOOK_ERROR.STATE_MISMATCH,
-      'Address book contents changed while inventory was being read',
+      new LocalizedError('contacts.addressBookContentsChangedWhileInventoryWasBeingRead'),
       { reason: paging.reason },
     );
   }
@@ -436,13 +437,13 @@ export async function inventoryAddressBook({
   ) {
     throw addressBookInventoryError(
       ADDRESSBOOK_ERROR.STATE_MISMATCH,
-      'Address book contents changed while inventory was being read',
+      new LocalizedError('contacts.addressBookContentsChangedWhileInventoryWasBeingRead'),
     );
   }
   if (total != null && contacts.length !== total) {
     throw addressBookInventoryError(
       ADDRESSBOOK_ERROR.STATE_MISMATCH,
-      'Address book inventory was incomplete',
+      new LocalizedError('contacts.addressBookInventoryWasIncomplete'),
     );
   }
 
@@ -579,11 +580,11 @@ async function pageAllContacts({
       // would hand an empty result to the sweep, which would then delete the
       // entire address book over one failed round trip.
       if (!query || !Array.isArray(query.ids)) {
-        throw new Error('ContactCard/query did not answer with a list of ids');
+        throw new LocalizedError('contacts.contactCardQueryDidNotAnswerWithAListOf');
       }
       const got = pickResponse(result, 'ContactCard/get');
       if (query.ids.length > 0 && (!got || !Array.isArray(got.list))) {
-        throw new Error('ContactCard/get did not answer for a page that had ids');
+        throw new LocalizedError('contacts.contactCardGetDidNotAnswerForAPageThat');
       }
       const pageTotal = Number(query.total);
       return {
@@ -818,12 +819,12 @@ async function fetchAndPersistContactCards({ transport, account, handlers, ids, 
     // An answered but empty list is a different thing: those ids are
     // genuinely gone, which no amount of retrying will change.
     if (!answer || !Array.isArray(answer.list)) {
-      throw new Error('ContactCard/get did not answer for the cards it was asked to read');
+      throw new LocalizedError('contacts.contactCardGetDidNotAnswerForTheCardsIt');
     }
     const requested = ids.slice(index, index + cap);
     const returned = new Set(answer.list.map((card) => card.id));
     if (requested.some((id) => !returned.has(id))) {
-      throw new Error('ContactCard/get omitted a card it was asked to read');
+      throw new LocalizedError('contacts.contactCardGetOmittedACardItWasAskedTo');
     }
     if (answer.list.length === 0) continue;
     const persisted = await persistContactCards({ account, cards: answer.list, handlers });
@@ -1040,7 +1041,7 @@ export async function createTrustedContactCards({
   }
   const unique = [...byEmail.values()];
   if (unique.length === 0) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'no sender email' } };
+    return { ok: false, error: { type: 'invalidArguments', message: t('contacts.noSenderEmail') } };
   }
 
   const recoveredIds = new Set<string>();
@@ -1155,7 +1156,7 @@ export async function createContactCard({
 }): Promise<ContactWriteResult> {
   const durableUid = uid == null ? createContactUid() : uid;
   if (!isContactUid(durableUid)) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'invalid contact uid' } };
+    return { ok: false, error: { type: 'invalidArguments', message: t('contacts.invalidContactUid') } };
   }
   const fields = withContactDetailKeys(
     contact ?? legacyCreateContactFields(name, emails),
@@ -1208,7 +1209,7 @@ export async function createContactCard({
       ok: false,
       error: {
         type: 'duplicateContacts',
-        message: 'The supplied addresses belong to more than one existing contact.',
+        message: t('contacts.theSuppliedAddressesBelongToMoreThanOneExisting'),
       },
     };
   }
@@ -1290,12 +1291,12 @@ export async function updateContactCard({
 }): Promise<ContactWriteResult> {
   const id = String(remoteId ?? '').trim();
   if (!id) {
-    return { ok: false, error: { type: 'invalidArguments', message: 'no remote id' } };
+    return { ok: false, error: { type: 'invalidArguments', message: t('contacts.noRemoteId') } };
   }
   if (contact && contactFieldsAreEmpty(contact)) {
     return {
       ok: false,
-      error: { type: 'invalidArguments', message: 'contact card is empty' },
+      error: { type: 'invalidArguments', message: t('contacts.contactCardIsEmpty') },
     };
   }
   const fresh = await fetchContactCard({ transport, account, id, useWebSocket });
@@ -1304,7 +1305,7 @@ export async function updateContactCard({
   if (!fresh.state) {
     return {
       ok: false,
-      error: { type: 'serverFail', message: 'ContactCard/get returned no state' },
+      error: { type: 'serverFail', message: t('contacts.contactCardGetReturnedNoState') },
     };
   }
   const normalizedCurrent = contactFieldsFromCard(fresh.card);
@@ -1368,37 +1369,37 @@ function contactFieldsFromCard(card: any): ContactMutationFields {
 function contactValidationError(issue: ContactFieldValidationIssue): string {
   switch (issue) {
     case 'duplicate-map-key':
-      return 'duplicate contact detail map key';
+      return t('contacts.duplicateContactDetailMapKey');
     case 'empty-contact':
-      return 'contact card is empty';
+      return t('contacts.contactCardIsEmpty');
     case 'empty-email':
-      return 'email address is empty';
+      return t('contacts.emailAddressIsEmpty');
     case 'empty-organization':
-      return 'organization is empty';
+      return t('contacts.organizationIsEmpty');
     case 'empty-phone':
-      return 'phone number is empty';
+      return t('contacts.phoneNumberIsEmpty');
     case 'empty-website':
-      return 'website is empty';
+      return t('contacts.websiteIsEmpty');
     case 'invalid-anniversary':
-      return 'invalid anniversary';
+      return t('contacts.invalidAnniversary');
     case 'invalid-collection':
-      return 'invalid contact detail collection';
+      return t('contacts.invalidContactDetailCollection');
     case 'invalid-email':
-      return 'invalid email address';
+      return t('contacts.invalidEmailAddress');
     case 'invalid-fields':
-      return 'invalid contact fields';
+      return t('contacts.invalidContactFields');
     case 'invalid-map-key':
-      return 'invalid contact detail map key';
+      return t('contacts.invalidContactDetailMapKey');
     case 'invalid-note':
-      return 'invalid note';
+      return t('contacts.invalidNote');
     case 'invalid-organization-reference':
-      return 'invalid title organization reference';
+      return t('contacts.invalidTitleOrganizationReference');
     case 'invalid-photo':
-      return 'invalid contact photo';
+      return t('contacts.invalidContactPhoto');
     case 'invalid-title':
-      return 'invalid title';
+      return t('contacts.invalidTitle');
     case 'invalid-website':
-      return 'website must be an absolute HTTP or HTTPS URL';
+      return t('contacts.websiteMustBeAnAbsoluteHTTPOrHTTPSURL');
     default: {
       const exhaustive: never = issue;
       return exhaustive;
@@ -1433,8 +1434,8 @@ async function findContactCardIdByUid({
       error: {
         type: 'uidProbeInconclusive',
         message: methodError?.type
-          ? `uid probe failed: ${methodError.type}`
-          : 'ContactCard/query did not answer the uid probe',
+          ? t('contacts.uidProbeFailed', { value1: methodError.type })
+          : t('contacts.contactCardQueryDidNotAnswerTheUidProbe'),
         detail: methodError ?? undefined,
       },
     };
@@ -1444,7 +1445,7 @@ async function findContactCardIdByUid({
   if (ids.length !== response.ids.length) {
     return {
       id: null,
-      error: { type: 'uidProbeInconclusive', message: 'uid probe returned invalid ids' },
+      error: { type: 'uidProbeInconclusive', message: t('contacts.uidProbeReturnedInvalidIds') },
     };
   }
   const got = await callJmap(transport, {
@@ -1464,7 +1465,7 @@ async function findContactCardIdByUid({
   if (!answer || !Array.isArray(answer.list)) {
     return {
       id: null,
-      error: { type: 'uidProbeInconclusive', message: 'uid probe cards could not be verified' },
+      error: { type: 'uidProbeInconclusive', message: t('contacts.uidProbeCardsCouldNotBeVerified') },
     };
   }
   const exact = answer.list.filter((card) => card?.uid === uid && ids.includes(card?.id));
@@ -1474,8 +1475,8 @@ async function findContactCardIdByUid({
     error: {
       type: 'uidProbeInconclusive',
       message: exact.length > 1
-        ? 'more than one card has the requested uid'
-        : 'the server ignored the uid filter',
+        ? t('contacts.moreThanOneCardHasTheRequestedUid')
+        : t('contacts.theServerIgnoredTheUidFilter'),
     },
   };
 }
@@ -1504,7 +1505,7 @@ async function fetchContactCard({
     return {
       card: null,
       state: null,
-      error: { type: 'serverFail', message: 'ContactCard/get did not answer' },
+      error: { type: 'serverFail', message: t('contacts.contactCardGetDidNotAnswer') },
     };
   }
   return {
@@ -1749,14 +1750,14 @@ function applySparsePhotoPatch(
   if (baseline && desired && samePhoto(baseline, desired)) return null;
   if (!baseline && !desired) return null;
   if (currentValue != null && !isPlainObject(currentValue)) {
-    return { type: 'invalidProperties', message: 'media is not a keyed map' };
+    return { type: 'invalidProperties', message: t('contacts.mediaIsNotAKeyedMap') };
   }
   const current = isPlainObject(currentValue) ? currentValue : {};
   if (!baseline && desired) {
     if (hasOwn(current, desired.mapKey)) {
       return rawMatchesPhoto(current[desired.mapKey], desired)
         ? null
-        : { type: 'stateMismatch', message: 'media map key is already in use' };
+        : { type: 'stateMismatch', message: t('contacts.mediaMapKeyIsAlreadyInUse') };
     }
     if (currentValue == null) {
       patch.media = { [desired.mapKey]: buildPhoto(desired) };
@@ -1770,12 +1771,12 @@ function applySparsePhotoPatch(
   if (currentPhoto == null) {
     return desired == null
       ? null
-      : { type: 'stateMismatch', message: 'contact photo changed on the server' };
+      : { type: 'stateMismatch', message: t('contacts.contactPhotoChangedOnTheServer') };
   }
   if (!rawMatchesPhoto(currentPhoto, baseline)) {
     return desired && rawMatchesPhoto(currentPhoto, desired)
       ? null
-      : { type: 'stateMismatch', message: 'contact photo changed on the server' };
+      : { type: 'stateMismatch', message: t('contacts.contactPhotoChangedOnTheServer') };
   }
   if (!desired) {
     patch[`media/${jmapPatchSegment(baseline.mapKey)}`] = null;
@@ -1783,7 +1784,7 @@ function applySparsePhotoPatch(
   }
   if (desired.mapKey !== baseline.mapKey) {
     if (hasOwn(current, desired.mapKey)) {
-      return { type: 'stateMismatch', message: 'media map key is already in use' };
+      return { type: 'stateMismatch', message: t('contacts.mediaMapKeyIsAlreadyInUse') };
     }
     patch[`media/${jmapPatchSegment(baseline.mapKey)}`] = null;
     patch[`media/${jmapPatchSegment(desired.mapKey)}`] = buildPhoto(desired);
@@ -1821,7 +1822,7 @@ function applySparseMapPatch<T extends KeyedContactDetail>(
   if (parentPresent && !isPlainObject(config.currentValue)) {
     return {
       type: 'invalidProperties',
-      message: `${config.property} is not a keyed map`,
+      message: t('contacts.isNotAKeyedMap', { value1: config.property }),
     };
   }
   const current = isPlainObject(config.currentValue) ? config.currentValue : {};
@@ -1835,7 +1836,7 @@ function applySparseMapPatch<T extends KeyedContactDetail>(
   if (!resolvedBaseline.ok) {
     return {
       type: 'contactNeedsSync',
-      message: `${config.property} legacy keys could not be resolved uniquely`,
+      message: t('contacts.legacyKeysCouldNotBeResolvedUniquely', { value1: config.property }),
       terminal: true,
     };
   }
@@ -1848,7 +1849,7 @@ function applySparseMapPatch<T extends KeyedContactDetail>(
   if (!resolvedDesired.ok) {
     return {
       type: 'contactNeedsSync',
-      message: `${config.property} legacy edit could not be resolved uniquely`,
+      message: t('contacts.legacyEditCouldNotBeResolvedUniquely', { value1: config.property }),
       terminal: true,
     };
   }
@@ -1885,7 +1886,7 @@ function applySparseMapPatch<T extends KeyedContactDetail>(
       if (!config.matches(current[key], after)) {
         return {
           type: 'stateMismatch',
-          message: `${config.property} map key is already in use`,
+          message: t('contacts.mapKeyIsAlreadyInUse', { value1: config.property }),
         };
       }
       continue;
@@ -2861,7 +2862,7 @@ async function fetchRawContactCards({
     });
     const answer = pickResponse(result, 'ContactCard/get');
     if (!answer || !Array.isArray(answer.list)) {
-      throw new Error('ContactCard/get did not answer batch cache repair');
+      throw new LocalizedError('contacts.contactCardGetDidNotAnswerBatchCacheRepair');
     }
     cards.push(...answer.list);
     const returned = new Set<string>(
@@ -2900,7 +2901,7 @@ export async function reconcileContactCardBatch({
     broadcast: false,
   });
   if (!books.complete) {
-    throw new Error('AddressBook/get did not answer batch cache repair');
+    throw new LocalizedError('contacts.addressBookGetDidNotAnswerBatchCacheRepair');
   }
 
   let contacts: any[] = [];
@@ -2918,7 +2919,7 @@ export async function reconcileContactCardBatch({
       handlers,
     });
     if (prepared.skipped > 0) {
-      throw new Error(`${prepared.skipped} card(s) read back but not filed`);
+      throw new LocalizedError('contacts.cardSReadBackButNotFiled', { value1: prepared.skipped });
     }
     contacts = prepared.contacts;
   }
@@ -2968,7 +2969,7 @@ export async function reconcileContactCards({
   // happen. `syncAddressBooks` ran above, so an unresolved book here is not
   // merely a book this pass had not heard of yet.
   if (skipped > 0) {
-    throw new Error(`${skipped} card(s) read back but not filed`);
+    throw new LocalizedError('contacts.cardSReadBackButNotFiled', { value1: skipped });
   }
   return { fetched };
 }
@@ -3011,14 +3012,14 @@ function duplicateCheckPagingError(reason: CompleteQueryFailureReason): Error {
   switch (reason) {
     case 'queryStateChanged':
     case 'queryTotalChanged':
-      return new Error('ContactCard/query changed during the duplicate check');
+      return new LocalizedError('contacts.contactCardQueryChangedDuringTheDuplicateCheck');
     case 'queryStateMissing':
-      return new Error('ContactCard/query did not provide stable paging state');
+      return new LocalizedError('contacts.contactCardQueryDidNotProvideStablePagingState');
     case 'cursorStalled':
     case 'positionPastTotal':
     case 'truncated':
     case 'pageLimitReached':
-      return new Error('ContactCard/query did not complete the duplicate check');
+      return new LocalizedError('contacts.contactCardQueryDidNotCompleteTheDuplicateCheck');
     default: {
       const exhaustive: never = reason;
       return exhaustive;
@@ -3069,7 +3070,7 @@ async function visitContactCardsForEmails({
       });
       const query = pickResponse(found, 'ContactCard/query');
       if (!query || !Array.isArray(query.ids)) {
-        throw new Error('ContactCard/query did not answer the duplicate check');
+        throw new LocalizedError('contacts.contactCardQueryDidNotAnswerTheDuplicateCheck');
       }
       const total = Number(query.total);
       return {
@@ -3098,11 +3099,11 @@ async function visitContactCardsForEmails({
         });
         const answer = pickResponse(got, 'ContactCard/get');
         if (!answer || !Array.isArray(answer.list)) {
-          throw new Error('ContactCard/get did not answer the duplicate check');
+          throw new LocalizedError('contacts.contactCardGetDidNotAnswerTheDuplicateCheck');
         }
         const returned = new Set(answer.list.map((card) => card.id));
         if (requested.some((id) => !returned.has(id))) {
-          throw new Error('ContactCard/get omitted a duplicate-check card');
+          throw new LocalizedError('contacts.contactCardGetOmittedADuplicateCheckCard');
         }
         for (const card of answer.list) visitCard(card);
       }

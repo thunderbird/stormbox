@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 import {
   CONTACTS_TRASH_LEGACY_FILE_NAME,
   CONTACTS_TRASH_DOCUMENT_OWNER,
@@ -112,7 +113,7 @@ function invalidRemoteDocument(): ContactsTrashSyncResult {
     ok: false,
     error: {
       type: 'invalidDocument',
-      message: 'Contacts trash document contains a malformed entry',
+      message: t('contactsTrash.contactsTrashDocumentContainsAMalformedEntry'),
       terminal: true,
     },
   };
@@ -173,7 +174,7 @@ async function mergeDuplicateTrashShard({
         ok: false,
         error: {
           type: 'invalidDocument',
-          message: 'Contacts trash document contains a malformed entry',
+          message: t('contactsTrash.contactsTrashDocumentContainsAMalformedEntry'),
           terminal: true,
         },
       };
@@ -191,7 +192,7 @@ async function mergeDuplicateTrashShard({
         ok: false,
         error: {
           type: 'tooLarge',
-          message: `Duplicate contacts trash shard ${fileName} cannot be merged safely`,
+          message: t('contactsTrash.duplicateContactsTrashShardCannotBeMergedSafely', { value1: fileName }),
           terminal: true,
         },
       };
@@ -282,7 +283,7 @@ async function prepareContactsTrashFolder({
           ok: false,
           error: {
             type: 'invalidDocument',
-            message: 'Contacts trash FileNode disappeared during relocation',
+            message: t('contactsTrash.contactsTrashFileNodeDisappearedDuringRelocation'),
             terminal: true,
           },
         };
@@ -295,7 +296,7 @@ async function prepareContactsTrashFolder({
           ok: false,
           error: {
             type: 'invalidDocument',
-            message: 'Contacts trash document contains a malformed entry',
+            message: t('contactsTrash.contactsTrashDocumentContainsAMalformedEntry'),
             terminal: true,
           },
         };
@@ -310,7 +311,7 @@ async function prepareContactsTrashFolder({
           ok: false,
           error: {
             type: 'alreadyExists',
-            message: 'The legacy contacts trash document exists in both locations',
+            message: t('contactsTrash.theLegacyContactsTrashDocumentExistsInBothLocations'),
             terminal: true,
           },
         };
@@ -495,7 +496,7 @@ export async function pushContactsTrash({
       ok: false,
       error: {
         type: 'unsupported',
-        message: 'Contact deletion requires FileNode-backed trash',
+        message: t('contactsTrash.contactDeletionRequiresFileNodeBackedTrash'),
         terminal: true,
       },
     };
@@ -570,7 +571,7 @@ export async function pushContactsTrash({
           ok: false,
           error: {
             type: 'tooLarge',
-            message: 'Contacts trash shard exceeds its hard limits',
+            message: t('contactsTrash.contactsTrashShardExceedsItsHardLimits'),
             terminal: true,
           },
         };
@@ -650,8 +651,8 @@ interface ContactMediaReference {
   mediaType: string;
 }
 
-function invalidTrashSnapshot(message: string): Error & { type: 'invalidTrashSnapshot' } {
-  return Object.assign(new Error(message), { type: 'invalidTrashSnapshot' as const });
+function invalidTrashSnapshot(message: string | Error): Error & { type: 'invalidTrashSnapshot' } {
+  return Object.assign((message instanceof Error ? message : new Error(message)), { type: 'invalidTrashSnapshot' as const });
 }
 
 function contactMediaReferences(snapshot: unknown): ContactMediaReference[] {
@@ -669,7 +670,7 @@ function contactMediaReferences(snapshot: unknown): ContactMediaReference[] {
       continue;
     }
     if (current.depth > 64 || nodes >= 10_000) {
-      throw invalidTrashSnapshot('Contact media structure exceeds safe preservation limits');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaStructureExceedsSafePreservationLimits'));
     }
     nodes += 1;
     seen.add(current.value);
@@ -684,11 +685,11 @@ function contactMediaReferences(snapshot: unknown): ContactMediaReference[] {
       const blobId = typeof object.blobId === 'string' ? object.blobId.trim() : '';
       const mediaType = typeof object.mediaType === 'string' ? object.mediaType.trim() : '';
       if (!blobId || !mediaType) {
-        throw invalidTrashSnapshot('Contact Media blob references require blobId and mediaType');
+        throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaBlobReferencesRequireBlobIdAndMediaType'));
       }
       references.push({ object, blobId, mediaType });
       if (references.length > CONTACTS_TRASH_MAX_MEDIA_ITEMS) {
-        throw invalidTrashSnapshot('Contact has too many media blobs to preserve');
+        throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactHasTooManyMediaBlobsToPreserve'));
       }
     }
     for (const value of Object.values(object)) {
@@ -739,14 +740,14 @@ async function preserveContactMedia({
       maxBytes: CONTACTS_TRASH_MAX_MEDIA_BYTES,
     });
     if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
-      throw invalidTrashSnapshot('Contact media download returned no bytes');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaDownloadReturnedNoBytes'));
     }
     if (bytes.byteLength > CONTACTS_TRASH_MAX_MEDIA_BYTES) {
-      throw invalidTrashSnapshot('Contact media blob exceeds the preservation size limit');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaBlobExceedsThePreservationSizeLimit'));
     }
     totalBytes += bytes.byteLength;
     if (totalBytes > CONTACTS_TRASH_MAX_TOTAL_MEDIA_BYTES) {
-      throw invalidTrashSnapshot('Contact media exceeds the total preservation size limit');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaExceedsTheTotalPreservationSizeLimit'));
     }
     media.push({
       blobId: reference.blobId,
@@ -778,19 +779,19 @@ async function restoreContactMedia({
     if (uploaded.has(key)) continue;
     const durable = preserved.get(key);
     if (!durable) {
-      throw invalidTrashSnapshot('Contact media snapshot has no durable blob copy');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaSnapshotHasNoDurableBlobCopy'));
     }
     let bytes: Uint8Array;
     try {
       bytes = base64ToBytes(durable.base64);
     } catch {
-      throw invalidTrashSnapshot('Contact media snapshot is not valid base64');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaSnapshotIsNotValidBase64'));
     }
     if (
       bytes.byteLength === 0
       || bytes.byteLength > CONTACTS_TRASH_MAX_MEDIA_BYTES
     ) {
-      throw invalidTrashSnapshot('Contact media snapshot exceeds safe restore limits');
+      throw invalidTrashSnapshot(new LocalizedError('contactsTrash.contactMediaSnapshotExceedsSafeRestoreLimits'));
     }
     const upload = await transport.upload({
       accountId: account.remote_account_id,
@@ -798,7 +799,7 @@ async function restoreContactMedia({
       body: bytes,
     });
     if (typeof upload?.blobId !== 'string' || !upload.blobId) {
-      throw new Error('Contact media upload returned no blob id');
+      throw new LocalizedError('contactsTrash.contactMediaUploadReturnedNoBlobId');
     }
     uploaded.set(key, upload.blobId);
   }
@@ -1046,7 +1047,7 @@ async function checkpointTrashEntries({
       ok: false,
       error: {
         type: 'trashConflict',
-        message: 'A newer trash lifecycle state prevented deletion',
+        message: t('contactsTrash.aNewerTrashLifecycleStatePreventedDeletion'),
         terminal: true,
       },
     };
@@ -1227,7 +1228,7 @@ export async function deleteContactCardsWithTrash({
             result.failures.push(failure(
               target.contactId,
               'trashSnapshotTooLarge',
-              { message: 'Contact snapshot exceeds the configured trash shard size limit' },
+              { message: t('contactsTrash.contactSnapshotExceedsTheConfiguredTrashShardSizeLimit') },
             ));
             continue;
           }
@@ -1459,7 +1460,7 @@ async function writableAddressBooks({
     useWebSocket,
   });
   const answer = pickResponse(response, 'AddressBook/get');
-  if (!answer || !Array.isArray(answer.list)) throw new Error('AddressBook/get failed');
+  if (!answer || !Array.isArray(answer.list)) throw new LocalizedError('contactsTrash.addressBookGetFailed');
   return new Map(answer.list.flatMap((book: any) =>
     typeof book?.id === 'string'
       ? [[book.id, book.myRights?.mayWrite === true]]
@@ -1522,11 +1523,7 @@ async function resolveCardsByUid({
       || answer.total !== answer.ids.length
     ) {
       const methodError = pickResponseById(response, 'error', queryCallId);
-      throw new Error(
-        `ContactCard/query did not answer uid recovery${
-          methodError?.type ? ` (${methodError.type})` : ''
-        }`,
-      );
+      throw new LocalizedError('contactsTrash.contactCardQueryDidNotAnswerUidRecovery', { value1: methodError?.type ? ` (${methodError.type})` : '' });
     }
     const cardsByUid = new Map<string, Array<{ id: string; uid: string }>>();
     for (let getOffset = 0; getOffset < answer.ids.length; getOffset += getCap) {
@@ -1549,7 +1546,7 @@ async function resolveCardsByUid({
         || typeof getAnswer.state !== 'string'
         || getAnswer.notFound.length !== 0
       ) {
-        throw new Error('ContactCard/get did not confirm uid recovery');
+        throw new LocalizedError('contactsTrash.contactCardGetDidNotConfirmUidRecovery');
       }
       const selectedIds = new Set(ids);
       const seenIds = new Set<string>();
@@ -1561,7 +1558,7 @@ async function resolveCardsByUid({
           || !uids.includes(card.uid)
           || seenIds.has(card.id)
         ) {
-          throw new Error('ContactCard/get returned malformed uid recovery data');
+          throw new LocalizedError('contactsTrash.contactCardGetReturnedMalformedUidRecoveryData');
         }
         seenIds.add(card.id);
         const matches = cardsByUid.get(card.uid) ?? [];
@@ -1569,7 +1566,7 @@ async function resolveCardsByUid({
         cardsByUid.set(card.uid, matches);
       }
       if (seenIds.size !== ids.length) {
-        throw new Error('ContactCard/get omitted uid recovery data');
+        throw new LocalizedError('contactsTrash.contactCardGetOmittedUidRecoveryData');
       }
     }
     for (const detail of chunk) {
@@ -1620,7 +1617,7 @@ export async function restoreContactTrash({
         break;
       default: {
         const exhaustive: never = lookup;
-        throw new Error(`Unsupported contacts trash lookup: ${String(exhaustive)}`);
+        throw new LocalizedError('contactsTrash.unsupportedContactsTrashLookup', { value1: String(exhaustive) });
       }
     }
   }
@@ -1639,7 +1636,7 @@ export async function restoreContactTrash({
   const createDetails = new Map<string, ContactTrashDetail>();
   for (const detail of details) {
     const resolution = resolutions.get(detail.uid);
-    if (!resolution) throw new Error('ContactCard uid recovery omitted a selected entry');
+    if (!resolution) throw new LocalizedError('contactsTrash.contactCardUidRecoveryOmittedASelectedEntry');
     switch (resolution.status) {
       case 'existing':
         result.succeededTrashIds.push(detail.id);
@@ -1655,7 +1652,7 @@ export async function restoreContactTrash({
         break;
       default: {
         const exhaustive: never = resolution;
-        throw new Error(`Unsupported uid resolution: ${String(exhaustive)}`);
+        throw new LocalizedError('contactsTrash.unsupportedUidResolution', { value1: String(exhaustive) });
       }
     }
     const destinations = detail.original_addressbook_ids.filter((id) => rights.get(id) === true);
@@ -1707,7 +1704,7 @@ export async function restoreContactTrash({
       useWebSocket,
     });
     const set = pickResponse(response, 'ContactCard/set');
-    if (!set) throw new Error('ContactCard/set did not answer restore');
+    if (!set) throw new LocalizedError('contactsTrash.contactCardSetDidNotAnswerRestore');
     for (const key of chunkKeys) {
       const detail = createDetails.get(key)!;
       const remoteId = set.created?.[key]?.id;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed, nextTick, onBeforeUnmount, ref, watch,
 } from 'vue';
@@ -38,7 +39,7 @@ const props = withDefaults(defineProps<{
   /** Which edge of the anchor the panel shares: `end` for controls at a row's end, `start` for one at the left. */
   align?: 'start' | 'end';
 }>(), {
-  label: 'Tags',
+  get label() { return t('tagPickerPopover.tags'); },
   trigger: null,
   returnFocus: null,
   align: 'end',

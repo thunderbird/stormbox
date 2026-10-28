@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import {
   computed, onScopeDispose, ref, type Ref,
 } from 'vue';
@@ -72,14 +73,14 @@ export function useRecipientSuggestions({
       return foundNothing.value ?? '';
     }
     const count = suggestions.value.length;
-    if (browsing.value) return `Showing ${count} contacts`;
-    return count === 1 ? '1 suggestion available' : `${count} suggestions available`;
+    if (browsing.value) return t('useRecipientSuggestions.showingContacts', { value1: count });
+    return t('useRecipientSuggestions.suggestionsAvailablePlural', { arg1: count }, count);
   });
 
   const countLabel = computed(() => {
     const count = suggestions.value.length;
-    if (browsing.value) return count === 1 ? '1 contact' : `${count} contacts`;
-    return count === 1 ? '1 suggestion' : `${count} suggestions`;
+    if (browsing.value) return t('useRecipientSuggestions.contactsPlural', { arg1: count }, count);
+    return t('useRecipientSuggestions.suggestionsPlural', { arg1: count }, count);
   });
 
   onScopeDispose(closeList);
@@ -139,7 +140,7 @@ export function useRecipientSuggestions({
     noMatches.value = null;
     foundNothing.value = suggestions.value.length > 0
       ? null
-      : (answered ? 'No contacts to show' : 'Contacts are unavailable');
+      : (answered ? t('useRecipientSuggestions.noContactsToShow') : t('useRecipientSuggestions.contactsAreUnavailable'));
     expanded.value = suggestions.value.length > 0;
     return true;
   }
@@ -165,7 +166,7 @@ export function useRecipientSuggestions({
     expanded.value = suggestions.value.length > 0;
     foundNothing.value = suggestions.value.length > 0
       ? null
-      : (answered ? `No suggestions for ${prefix}` : 'Suggestions are unavailable');
+      : (answered ? t('useRecipientSuggestions.noSuggestionsFor', { value1: prefix }) : t('useRecipientSuggestions.suggestionsAreUnavailable'));
   }
 
   function hasQueryPrefix(prefix: string): boolean {

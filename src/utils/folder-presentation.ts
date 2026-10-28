@@ -1,3 +1,4 @@
+import { t, sourceText } from '../i18n/messages';
 /**
  * Pure mapping from folder rows to the icons, accent colour, and
  * display order the FolderTree uses. Keeps presentation off the
@@ -180,4 +181,18 @@ export function flattenFolderTree<T extends FolderTreeNodeInput>(
   }
   walk('ROOT', 0);
   return out;
+}
+
+
+/** Standard English server names are presented locally; custom names stay verbatim. */
+export function folderDisplayName(folder: FolderPresentationInput | null | undefined): string {
+  const keys: Partial<Record<MailboxRole, string>> = {
+    inbox: 'common.folderInbox', sent: 'common.folderSent', drafts: 'common.folderDrafts',
+    scheduled: 'common.folderScheduled', archive: 'common.folderArchive',
+    junk: 'common.folderJunk', trash: 'common.folderTrash',
+  };
+  const key = folder?.role ? keys[folder.role] : undefined;
+  const name = folder?.name?.trim();
+  if (key && name?.toLowerCase() === sourceText(key).toLowerCase()) return t(key);
+  return name || t('common.unnamedFolder');
 }

@@ -1,3 +1,4 @@
+import { t, sourceText } from '../i18n/messages';
 /**
  * Tag model over JMAP keywords (specs/011-message-keywords/spec.md §6).
  *
@@ -104,11 +105,11 @@ export const SYSTEM_KEYWORDS: ReadonlySet<string> = new Set([
 
 /** Thunderbird's default tags: keywords, names and colors (MK-6.1). */
 export const DEFAULT_MESSAGE_TAGS: ReadonlyArray<MessageTagDefinition> = [
-  { keyword: '$label1', name: 'Important', color: '#FF0000', order: 0 },
-  { keyword: '$label2', name: 'Work', color: '#FF9900', order: 1 },
-  { keyword: '$label3', name: 'Personal', color: '#009900', order: 2 },
-  { keyword: '$label4', name: 'To Do', color: '#3333FF', order: 3 },
-  { keyword: '$label5', name: 'Later', color: '#993399', order: 4 },
+  { keyword: '$label1', name: sourceText('defaultTags.important'), color: '#FF0000', order: 0 },
+  { keyword: '$label2', name: sourceText('defaultTags.work'), color: '#FF9900', order: 1 },
+  { keyword: '$label3', name: sourceText('defaultTags.personal'), color: '#009900', order: 2 },
+  { keyword: '$label4', name: sourceText('defaultTags.toDo'), color: '#3333FF', order: 3 },
+  { keyword: '$label5', name: sourceText('defaultTags.later'), color: '#993399', order: 4 },
 ];
 
 /**
@@ -136,9 +137,9 @@ export const MAX_TAG_DEFINITIONS = 64;
 export const MAX_TAG_NAME_LENGTH = 100;
 
 export function tagNameError(name: string): string | null {
-  if (name.trim().length === 0) return 'Enter a tag name.';
-  if (/[\p{Cc}\p{Cs}\u2028\u2029]/u.test(name)) return 'Tag names cannot contain control characters or line breaks.';
-  if ([...name.trim()].length > MAX_TAG_NAME_LENGTH) return `Use ${MAX_TAG_NAME_LENGTH} characters or fewer.`;
+  if (name.trim().length === 0) return t('messageTags.enterATagName');
+  if (/[\p{Cc}\p{Cs}\u2028\u2029]/u.test(name)) return t('messageTags.tagNamesCannotContainControlCharactersOrLineBreaks');
+  if ([...name.trim()].length > MAX_TAG_NAME_LENGTH) return t('messageTags.useCharactersOrFewer', { value1: MAX_TAG_NAME_LENGTH });
   return null;
 }
 
@@ -288,7 +289,10 @@ export function resolveTag(
   const normalized = normalizeKeyword(keyword);
   const definition = definitions.find((d) => normalizeKeyword(d.keyword) === normalized);
   if (definition) {
-    return { keyword: normalized, name: definition.name, color: definition.color, defined: true };
+    const index = DEFAULT_MESSAGE_TAGS.findIndex((item) => item.keyword === normalized && item.name === definition.name);
+    const defaultKeys = ['important', 'work', 'personal', 'toDo', 'later'];
+    const name = index < 0 ? definition.name : t(`defaultTags.${defaultKeys[index]}`);
+    return { keyword: normalized, name, color: definition.color, defined: true };
   }
   return { keyword: normalized, name: normalized, color: null, defined: false };
 }

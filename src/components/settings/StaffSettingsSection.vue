@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 /**
  * Staff-only rows of the settings dialog: a "Bolt colors" palette switch,
  * a "Refresh beacons" button that restarts the current announcement round
@@ -42,7 +43,7 @@ function refreshBeacons() {
 function submitCode() {
   if (!canSubmit.value) return;
   if (featureForCode(code.value) == null) {
-    failure.value = 'Unknown feature code.';
+    failure.value = t('staffSettingsSection.unknownFeatureCode');
     return;
   }
   failure.value = null;
@@ -54,8 +55,8 @@ function submitCode() {
   <div class="settings-dialog__section" data-staff-settings>
     <div class="settings-dialog__row">
       <div class="settings-dialog__row-text">
-        <span id="palette-toggle-label" class="settings-dialog__row-title">Bolt colors</span>
-        <span class="settings-dialog__row-hint">Cyan accent, Bolt surfaces and a taller nav bar. Off restores the previous blue palette and nav bar height.</span>
+        <span id="palette-toggle-label" class="settings-dialog__row-title">{{ t('staffSettingsSection.boltColors') }}</span>
+        <span class="settings-dialog__row-hint">{{ t('staffSettingsSection.cyanAccentBoltSurfacesAndATallerNavBar') }}</span>
       </div>
       <button
         type="button"
@@ -72,8 +73,8 @@ function submitCode() {
 
     <div class="settings-dialog__row">
       <div class="settings-dialog__row-text">
-        <span class="settings-dialog__row-title">Feature beacons</span>
-        <span class="settings-dialog__row-hint">Bring back this round's new-feature dots and the New pill as if you had never seen them.</span>
+        <span class="settings-dialog__row-title">{{ t('staffSettingsSection.featureBeacons') }}</span>
+        <span class="settings-dialog__row-hint">{{ t('staffSettingsSection.bringBackThisRoundSNewFeatureDotsAnd') }}</span>
       </div>
       <button
         type="button"
@@ -81,7 +82,7 @@ function submitCode() {
         data-refresh-beacons
         @click="refreshBeacons"
       >
-        Refresh beacons
+        {{ t('staffSettingsSection.refreshBeacons') }}
       </button>
     </div>
 
@@ -89,14 +90,14 @@ function submitCode() {
 
     <form class="settings-dialog__section settings-dialog__section--flush" @submit.prevent="submitCode">
       <label class="settings-dialog__field">
-        <span>Feature code</span>
+        <span>{{ t('staffSettingsSection.featureCode') }}</span>
         <input
           v-model="code"
           type="text"
           class="settings-dialog__input"
           autocomplete="off"
           spellcheck="false"
-          placeholder="Enter a feature code"
+          :placeholder="t('staffSettingsSection.enterAFeatureCode')"
           :aria-invalid="failure ? 'true' : undefined"
           :aria-describedby="failure ? 'feature-code-error' : undefined"
           data-feature-code
@@ -114,7 +115,7 @@ function submitCode() {
           class="settings-dialog__btn settings-dialog__btn--primary"
           :disabled="!canSubmit"
           data-feature-code-submit
-        >Activate</button>
+        >{{ t('staffSettingsSection.activate') }}</button>
       </div>
     </form>
   </div>

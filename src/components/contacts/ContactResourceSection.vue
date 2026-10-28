@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import { computed } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
@@ -45,11 +46,11 @@ const {
 const heading = computed(() => {
   switch (props.kind) {
     case 'email':
-      return 'Email addresses';
+      return t('contactResourceSection.emailAddresses');
     case 'phone':
-      return 'Phone numbers';
+      return t('contactResourceSection.phoneNumbers');
     case 'website':
-      return 'Websites';
+      return t('contactResourceSection.websites');
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -90,11 +91,11 @@ const placeholder = computed(() => {
 const addLabel = computed(() => {
   switch (props.kind) {
     case 'email':
-      return 'Add email';
+      return t('contactResourceSection.addEmail');
     case 'phone':
-      return 'Add phone';
+      return t('contactResourceSection.addPhone');
     case 'website':
-      return 'Add website';
+      return t('contactResourceSection.addWebsite');
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -139,7 +140,7 @@ function errorFor(formKey: string): string | null {
         :type="inputType"
         :value="resource.value"
         :placeholder="placeholder"
-        :aria-label="`${heading} value`"
+        :aria-label="t('contactResourceSection.value', { value1: heading })"
         :aria-describedby="errorFor(resource.formKey) ? errorId(resource.formKey) : undefined"
         :aria-invalid="errorFor(resource.formKey) ? 'true' : undefined"
         autocomplete="off"
@@ -154,15 +155,15 @@ function errorFor(formKey: string): string | null {
         type="button"
         :aria-pressed="(resource as ContactEditorEmail).isPreferred"
         :title="(resource as ContactEditorEmail).isPreferred
-          ? 'Primary email'
-          : 'Make primary email'"
+          ? t('contactResourceSection.primaryEmail')
+          : t('contactResourceSection.makePrimaryEmail')"
         @click="makePrimary(resource.formKey)"
       >
-        Primary
+        {{ t('contactResourceSection.primary') }}
       </button>
       <AppIconButton
         class="contact-editor__remove"
-        :aria-label="`Remove ${kind}`"
+        :aria-label="t('contactResourceSection.remove', { value1: kind })"
         @click="removeResource(resource.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />

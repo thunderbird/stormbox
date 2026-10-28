@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { Keyboard, X } from '@lucide/vue';
 import {
   computed,
@@ -43,8 +44,8 @@ const settingsStore = useSettingsStore();
 const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
 
 const SCHEME_HINTS: Record<ShortcutScheme, string> = {
-  web: 'Web shortcuts avoid conflicting with the browser. You can change shortcut style later in Settings.',
-  thunderbird: 'Thunderbird shortcuts are the same as desktop, but may conflict with the browser in some cases.',
+  get web() { return t('welcomeModal.webShortcutsAvoidConflictingWithTheBrowserYouCan'); },
+  get thunderbird() { return t('welcomeModal.thunderbirdShortcutsAreTheSameAsDesktopButMay'); },
 };
 const schemeHint = computed(() => SCHEME_HINTS[shortcutScheme.value]);
 
@@ -56,48 +57,48 @@ const SHORTCUT_GROUPS: ReadonlyArray<{
   shortcuts: ReadonlyArray<{ action: ShortcutAction; label: string }>;
 }> = [
   {
-    title: 'Find and compose',
+    get title() { return t('welcomeModal.findAndCompose'); },
     area: 'compose',
     shortcuts: [
-      { action: 'compose', label: 'New message' },
-      { action: 'reply', label: 'Reply' },
-      { action: 'replyAll', label: 'Reply all' },
-      { action: 'forward', label: 'Forward' },
-      { action: 'quickFilter', label: 'Focus Quick Filter' },
+      { action: 'compose', get label() { return t('welcomeModal.newMessage'); } },
+      { action: 'reply', get label() { return t('welcomeModal.reply'); } },
+      { action: 'replyAll', get label() { return t('welcomeModal.replyAll'); } },
+      { action: 'forward', get label() { return t('welcomeModal.forward'); } },
+      { action: 'quickFilter', get label() { return t('welcomeModal.focusQuickFilter'); } },
     ],
   },
   {
-    title: 'Navigate',
+    get title() { return t('welcomeModal.navigate'); },
     area: 'navigate',
     shortcuts: [
-      { action: 'next', label: 'Next message' },
-      { action: 'previous', label: 'Previous message' },
-      { action: 'nextUnread', label: 'Next unread' },
-      { action: 'previousUnread', label: 'Previous unread' },
-      { action: 'first', label: 'First message' },
-      { action: 'last', label: 'Last message' },
+      { action: 'next', get label() { return t('welcomeModal.nextMessage'); } },
+      { action: 'previous', get label() { return t('welcomeModal.previousMessage'); } },
+      { action: 'nextUnread', get label() { return t('welcomeModal.nextUnread'); } },
+      { action: 'previousUnread', get label() { return t('welcomeModal.previousUnread'); } },
+      { action: 'first', get label() { return t('welcomeModal.firstMessage'); } },
+      { action: 'last', get label() { return t('welcomeModal.lastMessage'); } },
     ],
   },
   {
-    title: 'Tag actions',
+    get title() { return t('welcomeModal.tagActions'); },
     area: 'tags',
     shortcuts: [
-      { action: 'toggleTag', label: 'Toggle the nth tag' },
-      { action: 'clearTags', label: 'Remove all tags' },
-      { action: 'openTagMenu', label: 'Open the tag menu' },
+      { action: 'toggleTag', get label() { return t('welcomeModal.toggleTheNthTag'); } },
+      { action: 'clearTags', get label() { return t('welcomeModal.removeAllTags'); } },
+      { action: 'openTagMenu', get label() { return t('welcomeModal.openTheTagMenu'); } },
     ],
   },
   {
-    title: 'Message actions',
+    get title() { return t('welcomeModal.messageActions'); },
     area: 'actions',
     shortcuts: [
-      { action: 'archive', label: 'Archive' },
-      { action: 'delete', label: 'Delete' },
-      { action: 'deleteForever', label: 'Delete permanently' },
-      { action: 'toggleRead', label: 'Mark read or unread' },
-      { action: 'toggleStar', label: 'Star or unstar' },
-      { action: 'selectAll', label: 'Select all' },
-      { action: 'clearSelection', label: 'Clear selection' },
+      { action: 'archive', get label() { return t('welcomeModal.archive'); } },
+      { action: 'delete', get label() { return t('welcomeModal.delete'); } },
+      { action: 'deleteForever', get label() { return t('welcomeModal.deletePermanently'); } },
+      { action: 'toggleRead', get label() { return t('welcomeModal.markReadOrUnread'); } },
+      { action: 'toggleStar', get label() { return t('welcomeModal.starOrUnstar'); } },
+      { action: 'selectAll', get label() { return t('welcomeModal.selectAll'); } },
+      { action: 'clearSelection', get label() { return t('welcomeModal.clearSelection'); } },
     ],
   },
 ];
@@ -154,7 +155,7 @@ onBeforeUnmount(() => {
       <button
         class="welcome__close"
         type="button"
-        aria-label="Close welcome"
+        :aria-label="t('welcomeModal.closeWelcome')"
         @click="dismiss"
       >
         <X :size="18" :stroke-width="2" aria-hidden="true" />
@@ -167,9 +168,9 @@ onBeforeUnmount(() => {
               <ThundermailLogo :size="90" class="welcome__logo" />
             </div>
             <div class="welcome__hero-text">
-              <h1 id="welcome-title">Welcome to Thundermail</h1>
+              <h1 id="welcome-title">{{ t('welcomeModal.welcomeToThundermail') }}</h1>
               <p id="welcome-summary" class="welcome__summary">
-                Compose with confidence, keep your contacts close and organize mail the Thunderbird way.
+                {{ t('welcomeModal.composeWithConfidenceKeepYourContactsCloseAndOrganize') }}
               </p>
             </div>
           </div>
@@ -178,7 +179,7 @@ onBeforeUnmount(() => {
 
       <div class="welcome__body">
         <section class="welcome__section-block" aria-labelledby="welcome-features">
-          <h2 id="welcome-features">Features</h2>
+          <h2 id="welcome-features">{{ t('welcomeModal.features') }}</h2>
           <FeatureCardGrid
             :cards="FEATURE_CARDS"
             :active-spotlight="activeSpotlight"
@@ -196,9 +197,9 @@ onBeforeUnmount(() => {
         >
           <div class="welcome__section-heading welcome__section-heading--shortcuts">
             <Keyboard :size="18" :stroke-width="2" aria-hidden="true" />
-            <h2 id="welcome-shortcuts">Keyboard Shortcuts</h2>
+            <h2 id="welcome-shortcuts">{{ t('welcomeModal.keyboardShortcuts') }}</h2>
             <div class="welcome__scheme">
-              <span id="welcome-scheme-label" class="welcome__scheme-label">Style</span>
+              <span id="welcome-scheme-label" class="welcome__scheme-label">{{ t('welcomeModal.style') }}</span>
               <ShortcutSchemePicker labelled-by="welcome-scheme-label" />
             </div>
           </div>
@@ -225,7 +226,7 @@ onBeforeUnmount(() => {
 
       <footer class="welcome__footer">
         <AppButton size="default" class="welcome__primary" @click="dismiss">
-          Get Started
+          {{ t('welcomeModal.getStarted') }}
         </AppButton>
       </footer>
     </section>

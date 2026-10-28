@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
+import { itemCount } from '../utils/item-count';
 import { computed, ref, toRef } from 'vue';
 
 import { useModalFocus } from '../composables/useModalFocus';
@@ -32,9 +34,7 @@ useModalFocus(overlayEl, { active: toRef(props, 'active') });
 const subText = computed(() => {
   const { total } = props;
   if (total <= 0) return '';
-  return `${total.toLocaleString()} ${total === 1
-    ? props.singularItemLabel
-    : props.itemLabel}`;
+  return itemCount(props.itemLabel, total);
 });
 </script>
 
@@ -51,7 +51,7 @@ const subText = computed(() => {
       tabindex="-1"
     >
       <div class="bulk-overlay__card">
-        <div class="bulk-overlay__title">{{ label }}…</div>
+        <div class="bulk-overlay__title">{{ t('common.progressTitle', { label }) }}</div>
         <div
           class="bulk-overlay__progress"
           role="progressbar"

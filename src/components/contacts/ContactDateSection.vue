@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, displayLocale } from '../../i18n/messages';
 import { CalendarDays, Plus, X } from '@lucide/vue';
 import {
   VueDatePicker,
@@ -9,6 +10,7 @@ import {
 } from '@vuepic/vue-datepicker';
 import { nextTick, ref } from 'vue';
 
+import { useDatePickerLocale } from '../../composables/useDatePickerLocale';
 import { useRepeaterRows } from '../../composables/useRepeaterRows';
 import type { ContactAnniversaryKind } from '../../types';
 import { closeContainingDropdown } from '../../utils/dropdown';
@@ -43,10 +45,12 @@ const {
   update: (dates) => emit('update:modelValue', dates),
 });
 
+const { dateLocale, ariaLabels, actionRow } = useDatePickerLocale();
+
 const kinds: ContactAnniversaryKind[] = ['birth', 'wedding', 'death'];
 const datePickerTimeConfig = { enableTimePicker: false };
 const yearlessAriaLabels: Partial<AriaLabelsConfig> = {
-  day: ({ value }: CalendarDay) => value.toLocaleDateString(undefined, {
+  day: ({ value }: CalendarDay) => value.toLocaleDateString(displayLocale(), {
     day: 'numeric',
     month: 'long',
   }),
@@ -275,13 +279,13 @@ function toggleYear(date: ContactEditorAnniversary, event: Event): void {
 }
 
 function calendarYearLabel(date: ContactEditorAnniversary, value: number): string | number {
-  return isYearless(date) ? 'No year' : value;
+  return isYearless(date) ? t('contactDateSection.noYear') : value;
 }
 </script>
 
 <template>
   <fieldset class="contact-dates">
-    <legend>Dates</legend>
+    <legend>{{ t('contactDateSection.dates') }}</legend>
     <div
       v-for="date in modelValue"
       :key="date.formKey"
@@ -291,7 +295,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
       <AppDropdown group="contact-date-kinds">
         <summary
           class="app-dropdown__summary app-dropdown__summary--control contact-dates__summary"
-          :aria-label="`Choose date kind; current kind ${contactAnniversaryKindLabel(date.kind)}`"
+          :aria-label="t('contactDateSection.chooseDateKindCurrentKind', { value1: contactAnniversaryKindLabel(date.kind) })"
         >
           {{ contactAnniversaryKindLabel(date.kind) }}
         </summary>
@@ -316,8 +320,8 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
           type="text"
           inputmode="numeric"
           :value="date.dateText"
-          placeholder="YYYY-MM-DD or --MM-DD"
-          aria-label="Contact date"
+          :placeholder="t('contactDateSection.yYYYMMDDOrMMDD')"
+          :aria-label="t('contactDateSection.contactDate')"
           :aria-describedby="errorFor(date.formKey) ? errorId(date.formKey) : undefined"
           :aria-invalid="errorFor(date.formKey) ? 'true' : undefined"
           autocomplete="off"
@@ -330,7 +334,10 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
           :ref="(handle) => setDatePickerHandle(date.formKey, handle)"
           class="contact-dates__datepicker"
           :model-value="calendarValue(date)"
-          :aria-labels="isYearless(date) ? yearlessAriaLabels : undefined"
+          :locale="dateLocale"
+          :action-row="actionRow"
+          :week-start="dateLocale.options?.weekStartsOn"
+          :aria-labels="isYearless(date) ? { ...ariaLabels, ...yearlessAriaLabels } : ariaLabels"
           arrow-navigation
           :auto-apply="true"
           :disable-year-select="isYearless(date)"
@@ -347,8 +354,8 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
             <button
               class="contact-dates__calendar"
               type="button"
-              aria-label="Choose contact date from calendar"
-              title="Choose date from calendar"
+              :aria-label="t('contactDateSection.chooseContactDateFromCalendar')"
+              :title="t('contactDateSection.chooseDateFromCalendar')"
             >
               <CalendarDays :size="16" :stroke-width="1.8" aria-hidden="true" />
             </button>
@@ -362,7 +369,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
                   :checked="!isYearless(date)"
                   @change="toggleYear(date, $event)"
                 />
-                <span>Include year</span>
+                <span>{{ t('contactDateSection.includeYear') }}</span>
               </label>
             </div>
           </template>
@@ -373,7 +380,7 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
       </div>
       <AppIconButton
         class="contact-editor__remove"
-        aria-label="Remove date"
+        :aria-label="t('contactDateSection.removeDate')"
         @click="removeDate(date.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />
@@ -388,11 +395,11 @@ function calendarYearLabel(date: ContactEditorAnniversary, value: number): strin
       </p>
     </div>
     <p class="contact-dates__hint">
-      YYYY-MM-DD or --M-DD for month and day only.
+      {{ t('contactDateSection.yYYYMMDDOrMDDForMonthAnd') }}
     </p>
     <button class="contact-editor__add" type="button" @click="addDate">
       <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-      <span>Add date</span>
+      <span>{{ t('contactDateSection.addDate') }}</span>
     </button>
   </fieldset>
 </template>

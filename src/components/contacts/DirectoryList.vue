@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -247,7 +248,7 @@ function addressbookLabel(entry: Extract<DirectoryEntry, { kind: 'contact' }>): 
   const names = entry.contact.addressbook_ids
     .map((id) => addressbookLabels.value.get(id))
     .filter((name): name is string => name != null);
-  return names.length > 0 ? names.join(', ') : 'No address book';
+  return names.length > 0 ? names.join(', ') : t('directoryList.noAddressBook');
 }
 
 function toggleContactAt(
@@ -488,14 +489,12 @@ onBeforeUnmount(endContactDrag);
             v-if="concreteAddressBook"
             class="directory-list__addressbook-actions"
             role="group"
-            aria-label="Address book actions"
+            :aria-label="t('directoryList.addressBookActions')"
           >
             <AppIconButton
               :disabled="concreteAddressBook.may_write !== 1"
-              :title="concreteAddressBook.may_write === 1
-                ? 'Edit address book'
-                : 'You don’t have permission to edit this address book.'"
-              aria-label="Edit address book"
+              :title="concreteAddressBook.may_write === 1 ? t('directoryList.editAddressBook') : t('directoryList.editDenied')"
+              :aria-label="t('directoryList.editAddressBook')"
               @click="emit('editAddressBook', concreteAddressBook)"
             >
               <Pencil :size="17" :stroke-width="1.75" aria-hidden="true" />
@@ -503,8 +502,8 @@ onBeforeUnmount(endContactDrag);
             <AppIconButton
               danger
               :disabled="addressBookDeleteReason !== null"
-              :title="addressBookDeleteReason || 'Delete address book'"
-              aria-label="Delete address book"
+              :title="addressBookDeleteReason || t('directoryList.deleteAddressBook')"
+              :aria-label="t('directoryList.deleteAddressBook')"
               @click="emit('deleteAddressBook', concreteAddressBook)"
             >
               <Trash2 :size="17" :stroke-width="1.75" aria-hidden="true" />
@@ -532,7 +531,7 @@ onBeforeUnmount(endContactDrag);
           @click="emit('restoreSelection')"
         >
           <RotateCcw :size="16" :stroke-width="1.9" aria-hidden="true" />
-          <span>Restore</span>
+          <span>{{ t('directoryList.restore') }}</span>
         </button>
         <div v-if="listKind === 'contacts'" ref="moveMenuEl" class="directory-list__move">
           <button
@@ -541,18 +540,18 @@ onBeforeUnmount(endContactDrag);
             :disabled="moveTargets.length === 0"
             :aria-expanded="moveMenuOpen"
             aria-haspopup="menu"
-            title="Move to address book"
+            :title="t('directoryList.moveToAddressBook')"
             @click="moveMenuOpen = !moveMenuOpen"
           >
             <MoveRight :size="16" :stroke-width="1.9" aria-hidden="true" />
-            <span>Move</span>
+            <span>{{ t('directoryList.move') }}</span>
             <ChevronDown :size="13" :stroke-width="1.9" aria-hidden="true" />
           </button>
           <div
             v-if="moveMenuOpen"
             class="directory-list__move-menu"
             role="menu"
-            aria-label="Move to address book"
+            :aria-label="t('directoryList.moveToAddressBook')"
           >
             <button
               v-for="target in moveTargets"
@@ -573,8 +572,8 @@ onBeforeUnmount(endContactDrag);
             canDeleteSelection
               ? (
                 listKind === 'trash'
-                  ? 'Delete selected contacts forever'
-                  : 'Delete selected contacts'
+                  ? t('directoryList.deleteSelectedContactsForever')
+                  : t('directoryList.deleteSelectedContacts')
               )
               : deleteDisabledReason
           "
@@ -585,7 +584,7 @@ onBeforeUnmount(endContactDrag);
           "
         >
           <Trash2 :size="16" :stroke-width="1.9" aria-hidden="true" />
-          <span>{{ listKind === 'trash' ? 'Delete Forever' : 'Delete' }}</span>
+          <span>{{ listKind === 'trash' ? t('directoryList.deleteForever') : t('directoryList.delete') }}</span>
         </button>
       </template>
     </SelectableListHeader>
@@ -601,8 +600,8 @@ onBeforeUnmount(endContactDrag);
     >
       <span />
       <span />
-      <span>Contact</span>
-      <span>Address book</span>
+      <span>{{ t('directoryList.contact') }}</span>
+      <span>{{ t('directoryList.addressBook') }}</span>
     </div>
 
     <div
@@ -618,7 +617,7 @@ onBeforeUnmount(endContactDrag);
       @keydown="onKeydown"
     >
       <p v-if="loading" class="contacts__empty" role="status">
-        Loading…
+        {{ t('directoryList.loading') }}
       </p>
       <p v-else-if="error" class="contacts__empty contacts__empty--error" role="alert">
         {{ error }}
@@ -683,15 +682,15 @@ onBeforeUnmount(endContactDrag);
             class="directory-list__checkbox"
             :title="
               isContactSelected(entry)
-                ? `Deselect ${entry.kind === 'trash' ? 'trashed contact' : 'contact'}`
-                : `Select ${entry.kind === 'trash' ? 'trashed contact' : 'contact'}`
+                ? t(entry.kind === 'trash' ? 'directoryList.deselectTrashedContact' : 'directoryList.deselectContact')
+                : t(entry.kind === 'trash' ? 'directoryList.selectTrashedContact' : 'directoryList.selectContact')
             "
             @click.stop
           >
             <input
               type="checkbox"
               :checked="isContactSelected(entry)"
-              :aria-label="`Select ${entry.name || entry.email || 'contact'}`"
+              :aria-label="t('directoryList.select', { value1: entry.name || entry.email || t('directoryList.contact') })"
               @click="toggleContactAt(virtualRow.index, $event)"
             />
           </label>
@@ -705,7 +704,7 @@ onBeforeUnmount(endContactDrag);
             v-if="entry.kind === 'identity' && entry.identity.id === primaryIdentityId"
             class="directory-list__primary-badge"
           >
-            Primary
+            {{ t('directoryList.primary') }}
           </span>
           <span class="directory-list__row-content">
             <span class="name">{{ entry.name }}</span>

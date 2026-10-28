@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import {
   Check,
@@ -90,8 +91,8 @@ const dialogTitleId = computed(() =>
   isExpanded.value ? 'compose-title' : `compose-${session.value?.id}-title`);
 const closeTriggerLabel = computed(() =>
   session.value && composeStore.isSessionMeaningfullyNonEmpty(session.value.id)
-    ? 'Close options'
-    : 'Close');
+    ? t('composeDialog.closeOptions')
+    : t('composeDialog.close'));
 
 const dialogEl = ref<HTMLElement | null>(null);
 const closePromptEl = ref<HTMLElement | null>(null);
@@ -115,7 +116,7 @@ const schedulePresets = ref<SchedulePresetResolution[]>(
     targetAt: null,
     resolvedLabel: null,
     reason: 'capabilityUnavailable',
-    message: 'Checking whether scheduled sending is available.',
+    get message() { return t('composeDialog.checkingWhetherScheduledSendingIsAvailable'); },
   })),
 );
 let scheduleActionGeneration = 0;
@@ -151,31 +152,30 @@ const sendDisabled = computed(() =>
   || attachmentBusy.value
   || Boolean(stagedSchedule.value && scheduleChoiceDisabled.value));
 const sendButtonText = computed(() => {
-  if (isScheduling.value) return 'Scheduling…';
-  if (isSending.value) return 'Sending…';
-  return 'Send';
+  if (isScheduling.value) return t('composeDialog.scheduling');
+  if (isSending.value) return t('composeDialog.sending');
+  return t('composeDialog.send');
 });
 const scheduleTriggerLabel = computed(() => stagedSchedule.value
-  ? `Schedule send: ${stagedSchedule.value.optionLabel}`
-  : 'Schedule send');
+  ? t('composeDialog.scheduleSend', { value1: stagedSchedule.value.optionLabel })
+  : t('composeDialog.scheduleSend2'));
 const scheduleTriggerTitle = computed(() => stagedSchedule.value
   ? `${stagedSchedule.value.optionLabel} — ${stagedSchedule.value.resolvedLabel}`
-  : 'Schedule send');
+  : t('composeDialog.scheduleSend2'));
 const scheduleDescriptionId = computed(() =>
   `compose-${session.value?.id ?? 'inactive'}-schedule-description`);
 const scheduleAvailabilityMessage = computed(() => {
-  if (isScheduling.value) return 'Scheduling this message.';
+  if (isScheduling.value) return t('composeDialog.schedulingThisMessage');
   if (stagedSchedule.value) {
-    return `Selected ${stagedSchedule.value.resolvedLabel}. `
-      + 'Click Send to schedule this message.';
+    return t('composeDialog.selectedCombined', { arg1: stagedSchedule.value.resolvedLabel });
   }
   if (!composeStore.scheduleCapabilityKnown) {
-    return 'Checking whether scheduled sending is available.';
+    return t('composeDialog.checkingWhetherScheduledSendingIsAvailable');
   }
   if (!composeStore.canScheduleSend) {
-    return 'Scheduled sending is not supported by this account. Immediate Send is still available.';
+    return t('composeDialog.scheduledSendingIsNotSupportedByThisAccountImmediate');
   }
-  return `Scheduled sending uses ${selectedTimeZone.value}.`;
+  return t('composeDialog.scheduledSendingUses', { value1: selectedTimeZone.value });
 });
 const richTextEditorEl = ref<{
   focus: () => void;
@@ -304,7 +304,7 @@ function pickSchedulePreset(id: SchedulePresetId): void {
     serverClockReference: composeStore.scheduleCapability.serverClockReference,
   });
   if (!current.available || !current.targetAt) {
-    scheduleUiError.value = current.message ?? 'Choose another scheduled time.';
+    scheduleUiError.value = current.message ?? t('composeDialog.chooseAnotherScheduledTime');
     refreshResolvedPresets();
     return;
   }
@@ -312,7 +312,7 @@ function pickSchedulePreset(id: SchedulePresetId): void {
 }
 
 function stageCustomScheduleTarget(targetAt: string, timeZone: string): void {
-  stageScheduleTarget(targetAt, timeZone, 'Custom');
+  stageScheduleTarget(targetAt, timeZone, t('composeDialog.custom'));
 }
 
 function openCustomSchedule(event: Event): void {
@@ -446,7 +446,7 @@ const recipientEntries = reactive<Record<RecipientField, RecipientEntry[]>>({
 const showCc = ref(false);
 const showBcc = ref(false);
 
-const RECIPIENT_LABELS: Record<RecipientField, string> = { to: 'To', cc: 'Cc', bcc: 'Bcc' };
+const RECIPIENT_LABELS: Record<RecipientField, string> = { get to() { return t('composeDialog.to'); }, get cc() { return t('composeDialog.cc'); }, get bcc() { return t('composeDialog.bcc'); } };
 
 const visibleRecipientFields = computed<RecipientField[]>(() => [
   'to',
@@ -563,7 +563,7 @@ async function send() {
       && !scheduled
     ) {
       scheduleUiError.value = sessionError.value
-        ?? 'Could not schedule this message. Try another time.';
+        ?? t('composeDialog.couldNotScheduleThisMessageTryAnotherTime');
     }
   } finally {
     if (actionGeneration === scheduleActionGeneration) {
@@ -611,13 +611,13 @@ function identityInitials(id: IdentityRow): string {
     >
     <div class="compose-dialog__card">
       <header>
-        <h2 :id="dialogTitleId" :title="draft.subject || 'New Message'">{{ draft.subject || 'New Message' }}</h2>
+        <h2 :id="dialogTitleId" :title="draft.subject || t('composeDialog.newMessage')">{{ draft.subject || t('composeDialog.newMessage') }}</h2>
         <div class="compose-dialog__window-actions">
           <AppIconButton
             class="icon--minimize"
             :disabled="session.isSaving || session.isDiscarding"
-            title="Minimize"
-            aria-label="Minimize"
+            :title="t('composeDialog.minimize')"
+            :aria-label="t('composeDialog.minimize')"
             @click="composeStore.minimize(session.id)"
           >
             <Minus :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -637,8 +637,8 @@ function identityInitials(id: IdentityRow): string {
               role="button"
               aria-haspopup="menu"
               :title="isScheduling
-                ? 'Scheduling — please wait'
-                : (isSending ? 'Sending — please wait' : closeTriggerLabel)"
+                ? t('composeDialog.schedulingPleaseWait')
+                : (isSending ? t('composeDialog.sendingPleaseWait') : closeTriggerLabel)"
               :aria-label="closeTriggerLabel"
               :aria-disabled="scheduleBusy || session.isDiscarding
                 ? 'true'
@@ -651,7 +651,7 @@ function identityInitials(id: IdentityRow): string {
             <div
               class="app-dropdown__menu compose-close-menu__menu"
               role="menu"
-              aria-label="Close options"
+              :aria-label="t('composeDialog.closeOptions')"
             >
               <button
                 type="button"
@@ -661,7 +661,7 @@ function identityInitials(id: IdentityRow): string {
                 @click="discardFromCloseMenu"
               >
                 <Trash2 :size="15" aria-hidden="true" />
-                <span>Discard</span>
+                <span>{{ t('composeDialog.discard') }}</span>
               </button>
               <button
                 type="button"
@@ -671,7 +671,7 @@ function identityInitials(id: IdentityRow): string {
                 @click="saveFromCloseMenu"
               >
                 <Save :size="15" aria-hidden="true" />
-                <span>Save Draft</span>
+                <span>{{ t('composeDialog.saveDraft') }}</span>
               </button>
             </div>
           </AppDropdown>
@@ -683,7 +683,7 @@ function identityInitials(id: IdentityRow): string {
            (CS-1.15). display: contents keeps the card's own flex layout. -->
       <div class="compose-dialog__body" :inert="isSending">
       <div class="row">
-        <label :id="fromLabelId">From</label>
+        <label :id="fromLabelId">{{ t('composeDialog.from') }}</label>
         <!-- An identity is a person with an address, so its rows wear the
              same avatar-and-two-lines dress the suggestion list and the
              message list use: one look for one kind of thing. -->
@@ -700,11 +700,11 @@ function identityInitials(id: IdentityRow): string {
             >{{ identityInitials(fromIdentity) }}</span>
             <span class="from-picker__summary-text">
               {{ session.unresolvedFrom
-                ? `Unavailable identity: ${session.unresolvedFrom.email}`
+                ? t('composeDialog.unavailableIdentity', { value1: session.unresolvedFrom.email })
                 : identityLabel(fromIdentity) }}
             </span>
           </summary>
-          <div class="app-dropdown__menu from-picker__menu" role="menu" aria-label="From identity">
+          <div class="app-dropdown__menu from-picker__menu" role="menu" :aria-label="t('composeDialog.fromIdentity')">
             <button
               v-for="(id, idx) in composeStore.identities"
               :key="id.id"
@@ -762,18 +762,18 @@ function identityInitials(id: IdentityRow): string {
             type="button"
             class="recipient-toggle"
             @click="revealField('cc')"
-          >Cc</button>
+          >{{ t('composeDialog.cc') }}</button>
           <button
             v-if="!showBcc"
             type="button"
             class="recipient-toggle"
             @click="revealField('bcc')"
-          >Bcc</button>
+          >{{ t('composeDialog.bcc') }}</button>
         </div>
       </div>
 
       <div class="row">
-        <label :for="subjectInputId">Subject</label>
+        <label :for="subjectInputId">{{ t('composeDialog.subject') }}</label>
         <input
           :id="subjectInputId"
           type="text"
@@ -795,7 +795,7 @@ function identityInitials(id: IdentityRow): string {
       <section
         v-if="attachments.length > 0"
         class="compose-attachments"
-        aria-label="Attachments"
+        :aria-label="t('composeDialog.attachments')"
       >
         <article
           v-for="{ attachment, progress } in attachments"
@@ -808,7 +808,7 @@ function identityInitials(id: IdentityRow): string {
             </strong>
             <span class="compose-attachment__meta">
               {{ attachmentSize(attachment.size) }}
-              <template v-if="progress.state === 'failed'"> · Upload failed</template>
+              <template v-if="progress.state === 'failed'"> {{ t('composeDialog.uploadFailed') }}</template>
             </span>
             <div
               v-if="progress.state === 'uploading'"
@@ -817,7 +817,7 @@ function identityInitials(id: IdentityRow): string {
               <progress
                 :value="progress.progress"
                 max="100"
-                :aria-label="`Uploading ${attachmentDisplayName(attachment.name)}: ${progress.progress}%`"
+                :aria-label="t('composeDialog.uploading', { value1: attachmentDisplayName(attachment.name), value2: progress.progress })"
               />
               <span>{{ progress.progress }}%</span>
             </div>
@@ -831,8 +831,8 @@ function identityInitials(id: IdentityRow): string {
             <AppIconButton
               v-if="progress.state === 'failed'"
               class="compose-attachment__action"
-              :aria-label="`Retry ${attachmentDisplayName(attachment.name)}`"
-              :title="`Retry ${attachmentDisplayName(attachment.name)}`"
+              :aria-label="t('composeDialog.retry', { value1: attachmentDisplayName(attachment.name) })"
+              :title="t('composeDialog.retry', { value1: attachmentDisplayName(attachment.name) })"
               @click="composeStore.retryAttachment(attachment.clientId, session.id)"
             >
               <RotateCw :size="15" aria-hidden="true" />
@@ -840,16 +840,16 @@ function identityInitials(id: IdentityRow): string {
             <AppIconButton
               v-if="attachment.status === 'uploading'"
               class="compose-attachment__action"
-              :aria-label="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
-              :title="`Cancel upload of ${attachmentDisplayName(attachment.name)}`"
+              :aria-label="t('composeDialog.cancelUploadOf', { value1: attachmentDisplayName(attachment.name) })"
+              :title="t('composeDialog.cancelUploadOf', { value1: attachmentDisplayName(attachment.name) })"
               @click="composeStore.cancelAttachment(attachment.clientId, session.id)"
             >
               <X :size="15" aria-hidden="true" />
             </AppIconButton>
             <AppIconButton
               class="compose-attachment__action"
-              :aria-label="`Remove ${attachmentDisplayName(attachment.name)}`"
-              :title="`Remove ${attachmentDisplayName(attachment.name)}`"
+              :aria-label="t('composeDialog.remove', { value1: attachmentDisplayName(attachment.name) })"
+              :title="t('composeDialog.remove', { value1: attachmentDisplayName(attachment.name) })"
               @click="composeStore.removeAttachment(attachment.clientId, session.id)"
             >
               <Trash2 :size="15" aria-hidden="true" />
@@ -869,14 +869,14 @@ function identityInitials(id: IdentityRow): string {
         <AppButton
           variant="outline"
           :disabled="scheduleBusy || session.isDiscarding"
-          aria-label="Attach files"
-          title="Attach files"
+          :aria-label="t('composeDialog.attachFiles')" data-attach-files
+          :title="t('composeDialog.attachFiles')"
           @click="openAttachmentPicker"
         >
           <template #iconLeft>
             <Paperclip :size="17" aria-hidden="true" />
           </template>
-          Attach
+          {{ t('composeDialog.attach') }}
         </AppButton>
         <div class="compose-send-split">
           <AppButton
@@ -920,7 +920,7 @@ function identityInitials(id: IdentityRow): string {
             <div
               class="app-dropdown__menu compose-schedule-menu__menu"
               role="menu"
-              aria-label="Schedule send"
+              :aria-label="t('composeDialog.scheduleSend2')"
             >
               <button
                 v-if="stagedSchedule"
@@ -930,8 +930,8 @@ function identityInitials(id: IdentityRow): string {
                 :disabled="scheduleBusy"
                 @click="clearStagedSchedule"
               >
-                <span class="compose-schedule-menu__label">Send now</span>
-                <span class="compose-schedule-menu__secondary">Immediately</span>
+                <span class="compose-schedule-menu__label">{{ t('composeDialog.sendNow') }}</span>
+                <span class="compose-schedule-menu__secondary">{{ t('composeDialog.immediately') }}</span>
               </button>
               <div
                 v-if="stagedSchedule"
@@ -963,7 +963,7 @@ function identityInitials(id: IdentityRow): string {
                 :disabled="scheduleChoiceDisabled"
                 @click="openCustomSchedule"
               >
-                <span class="compose-schedule-menu__label">Choose a date and time</span>
+                <span class="compose-schedule-menu__label">{{ t('composeDialog.chooseADateAndTime') }}</span>
               </button>
             </div>
           </AppDropdown>
@@ -1030,26 +1030,25 @@ function identityInitials(id: IdentityRow): string {
         >
           <h3
             id="compose-close-title"
-          >Save this draft?</h3>
+          >{{ t('composeDialog.saveThisDraft') }}</h3>
           <p id="compose-close-description">
             {{ unfinishedAttachmentCount > 0
-              ? 'Some attachments have not finished uploading. Keep this window open to finish '
-                + 'or retry them, or close without saving those attachments.'
-              : 'Save your latest changes before closing this compose window.' }}
+              ? t('composeDialog.someAttachmentsHaveNotFinishedUploadingKeepThisWindowCombined', {  })
+              : t('composeDialog.saveYourLatestChangesBeforeClosingThisComposeWindow') }}
           </p>
           <div class="compose-confirm__actions">
             <AppButton
               variant="outline"
               @click="composeStore.cancelClose(session.id)"
-            >Cancel</AppButton>
+            >{{ t('composeDialog.cancel') }}</AppButton>
             <AppButton
               variant="outline"
               @click="composeStore.closeWithoutSaving(session.id)"
-            >Don't Save</AppButton>
+            >{{ t('composeDialog.donTSave') }}</AppButton>
             <AppButton
               :disabled="session.isSaving"
               @click="composeStore.saveAndClose(session.id)"
-            >Save draft</AppButton>
+            >{{ t('composeDialog.saveDraft2') }}</AppButton>
           </div>
         </section>
       </div>

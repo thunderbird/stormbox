@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 /**
  * The gear dialog. Every user gets the shortcut scheme picker, the
  * "follow system theme" switch and a button that reopens Welcome (OB-1.7).
@@ -17,6 +18,7 @@ import { useAuthStore } from '../../stores/auth-store';
 import { useSettingsStore } from '../../stores/settings-store';
 import { isComposingKeyEvent } from '../../utils/keyboard';
 import ShortcutSchemePicker from './ShortcutSchemePicker.vue';
+import LanguagePicker from './LanguagePicker.vue';
 
 const StaffSettingsSection = defineAsyncComponent(
   () => import('./StaffSettingsSection.vue'),
@@ -43,10 +45,10 @@ const followSystemTheme = computed(() => settingsStore.get('theme') === 'system'
 const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
 
 const SAMPLE_ACTIONS: ReadonlyArray<{ action: ShortcutAction; label: string }> = [
-  { action: 'compose', label: 'new message' },
-  { action: 'reply', label: 'reply' },
-  { action: 'archive', label: 'archive' },
-  { action: 'quickFilter', label: 'Quick Filter' },
+  { action: 'compose', get label() { return t('settingsDialog.newMessage'); } },
+  { action: 'reply', get label() { return t('common.reply'); } },
+  { action: 'archive', get label() { return t('common.archive'); } },
+  { action: 'quickFilter', get label() { return t('settingsDialog.quickFilter'); } },
 ];
 
 const schemeHint = computed(() => SAMPLE_ACTIONS
@@ -90,11 +92,11 @@ onBeforeUnmount(() => {
         data-settings-dialog
       >
         <header class="settings-dialog__header">
-          <h2 id="settings-dialog-title">Settings</h2>
+          <h2 id="settings-dialog-title">{{ t('settingsDialog.settings') }}</h2>
           <button
             type="button"
             class="settings-dialog__close"
-            aria-label="Close settings"
+            :aria-label="t('settingsDialog.closeSettings')"
             @click="emit('close')"
           >
             <X :size="18" :stroke-width="2" aria-hidden="true" />
@@ -104,7 +106,14 @@ onBeforeUnmount(() => {
         <div class="settings-dialog__section">
           <div class="settings-dialog__row">
             <div class="settings-dialog__row-text">
-              <span id="settings-shortcuts-label" class="settings-dialog__row-title">Keyboard shortcuts</span>
+              <span id="settings-language-label" class="settings-dialog__row-title">{{ t('common.language') }}</span>
+              <span class="settings-dialog__row-hint">{{ t('common.languageHint') }}</span>
+            </div>
+            <LanguagePicker />
+          </div>
+          <div class="settings-dialog__row">
+            <div class="settings-dialog__row-text">
+              <span id="settings-shortcuts-label" class="settings-dialog__row-title">{{ t('settingsDialog.keyboardShortcuts') }}</span>
               <span class="settings-dialog__row-hint">{{ schemeHint }}</span>
             </div>
             <ShortcutSchemePicker labelled-by="settings-shortcuts-label" />
@@ -112,8 +121,8 @@ onBeforeUnmount(() => {
 
           <div class="settings-dialog__row">
             <div class="settings-dialog__row-text">
-              <span id="settings-system-theme-label" class="settings-dialog__row-title">Follow system theme</span>
-              <span class="settings-dialog__row-hint">Match your device's light or dark setting. Off adds a light/dark button to the top bar.</span>
+              <span id="settings-system-theme-label" class="settings-dialog__row-title">{{ t('settingsDialog.followSystemTheme') }}</span>
+              <span class="settings-dialog__row-hint">{{ t('settingsDialog.matchYourDeviceSLightOrDarkSettingOff') }}</span>
             </div>
             <button
               type="button"
@@ -130,8 +139,8 @@ onBeforeUnmount(() => {
 
           <div class="settings-dialog__row">
             <div class="settings-dialog__row-text">
-              <span class="settings-dialog__row-title">Welcome &amp; shortcuts</span>
-              <span class="settings-dialog__row-hint">See the feature tour and the full shortcut list again.</span>
+              <span class="settings-dialog__row-title">{{ t('settingsDialog.welcomeShortcuts') }}</span>
+              <span class="settings-dialog__row-hint">{{ t('settingsDialog.seeTheFeatureTourAndTheFullShortcutList') }}</span>
             </div>
             <button
               type="button"
@@ -139,14 +148,14 @@ onBeforeUnmount(() => {
               data-show-welcome
               @click="emit('show-welcome')"
             >
-              Show welcome
+              {{ t('settingsDialog.showWelcome') }}
             </button>
           </div>
         </div>
 
         <template v-if="authStore.isStaff">
           <hr class="settings-dialog__rule">
-          <h3 class="settings-dialog__subtitle">Staff settings</h3>
+          <h3 class="settings-dialog__subtitle">{{ t('settingsDialog.staffSettings') }}</h3>
           <StaffSettingsSection @close="emit('close')" />
         </template>
       </section>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed,
   nextTick,
@@ -201,8 +202,8 @@ const deleteDisabledReason = computed(() => {
   if (selectedContactIds.value.size === 0) return '';
   if (canDeleteSelection.value) return '';
   return selectedBookId.value == null
-    ? 'One or more contacts belongs to an address book that cannot be changed'
-    : 'This address book cannot be changed';
+    ? t('contactsView.oneOrMoreContactsBelongsToAnAddressBook')
+    : t('contactsView.thisAddressBookCannotBeChanged');
 });
 
 const availableEntries = computed<DirectoryEntry[]>(() => {
@@ -251,22 +252,22 @@ const selectedIdentityIsPrimary = computed(() =>
   selectedIdentity.value != null && selectedIdentity.value.id === primaryIdentityId.value);
 
 const listTitle = computed(() => {
-  if (kind.value === 'identities') return 'Identities';
-  if (kind.value === 'trash') return 'Trash';
+  if (kind.value === 'identities') return t('contactsView.identities');
+  if (kind.value === 'trash') return t('contactsView.trash');
   return selectedBook.value
     ? addressBookDisplayName(selectedBook.value)
-    : 'All contacts';
+    : t('contactsView.allContacts');
 });
 
 const addLabel = computed(() =>
-  kind.value === 'identities' ? 'Add identity' : 'Add contact');
+  kind.value === 'identities' ? t('contactsView.addIdentity') : t('contactsView.addContact'));
 
 const emptyMessage = computed(() => {
-  if (props.filterQuery.trim()) return 'No matches.';
-  if (kind.value === 'identities') return 'No identities yet.';
-  if (kind.value === 'trash') return 'Trash is empty.';
-  if (selectedBookId.value != null) return 'No contacts in this address book.';
-  return 'No contacts yet.';
+  if (props.filterQuery.trim()) return t('contactsView.noMatches');
+  if (kind.value === 'identities') return t('contactsView.noIdentitiesYet');
+  if (kind.value === 'trash') return t('contactsView.trashIsEmpty');
+  if (selectedBookId.value != null) return t('contactsView.noContactsInThisAddressBook');
+  return t('contactsView.noContactsYet');
 });
 const listError = computed(() => directoryError.value);
 
@@ -525,7 +526,7 @@ async function loadContact(entry: Extract<DirectoryEntry, { kind: 'contact' }>):
     if (token !== detailReadToken || selectedKey.value !== entry.key) return;
     if (!detail) {
       detailState.value = 'error';
-      detailError.value = 'This contact is no longer available.';
+      detailError.value = t('contactsView.thisContactIsNoLongerAvailable');
       return;
     }
     contactDetail.value = detail;
@@ -550,7 +551,7 @@ async function loadTrash(entry: Extract<DirectoryEntry, { kind: 'trash' }>): Pro
     if (token !== detailReadToken || selectedKey.value !== entry.key) return;
     if (!detail) {
       detailState.value = 'error';
-      detailError.value = 'This trashed contact is no longer available.';
+      detailError.value = t('contactsView.thisTrashedContactIsNoLongerAvailable');
       return;
     }
     trashDetail.value = detail;
@@ -844,7 +845,7 @@ async function onContactSaved(payload: ContactSavedPayload): Promise<void> {
   if (!key) {
     clearSelection();
     detailState.value = 'error';
-    detailError.value = 'The contact was saved, but its cached detail is unavailable.';
+    detailError.value = t('contactsView.theContactWasSavedButItsCachedDetailIs');
     return;
   }
   selectedKey.value = key;
@@ -863,7 +864,7 @@ async function onContactSaved(payload: ContactSavedPayload): Promise<void> {
     return;
   }
   detailState.value = 'error';
-  detailError.value = 'The contact was saved, but its cached detail is unavailable.';
+  detailError.value = t('contactsView.theContactWasSavedButItsCachedDetailIs');
 }
 
 function onIdentitySaved(key: string | null): void {
@@ -872,14 +873,14 @@ function onIdentitySaved(key: string | null): void {
   if (!key) {
     clearSelection();
     detailState.value = 'error';
-    detailError.value = 'The identity was saved, but its cached detail is unavailable.';
+    detailError.value = t('contactsView.theIdentityWasSavedButItsCachedDetailIs');
     return;
   }
   const entry = availableEntries.value.find((candidate) => candidate.key === key);
   if (!entry || entry.kind !== 'identity') {
     clearSelection();
     detailState.value = 'error';
-    detailError.value = 'The identity was saved, but its cached detail is unavailable.';
+    detailError.value = t('contactsView.theIdentityWasSavedButItsCachedDetailIs');
     return;
   }
   selectedKey.value = key;
@@ -913,7 +914,7 @@ async function duplicateSelectedContact(): Promise<void> {
   if (!source || detailState.value !== 'view' || contactsStore.saving) return;
   const sourceKey = selectedKey.value;
   const sourceName =
-    source.full_name?.trim() || source.display_name?.trim() || 'Unnamed contact';
+    source.full_name?.trim() || source.display_name?.trim() || t('contactsView.unnamedContact');
   const contact = {
     ...contactMutationFieldsFromDetail(source),
     fullName: nextCopyName(
@@ -928,11 +929,11 @@ async function duplicateSelectedContact(): Promise<void> {
     allowDuplicate: true,
   });
   if (!result.ok) {
-    operationNotice.value = contactsStore.error || 'The contact could not be duplicated.';
+    operationNotice.value = contactsStore.error || t('contactsView.theContactCouldNotBeDuplicated');
     return;
   }
   if (kind.value !== 'contacts' || selectedKey.value !== sourceKey) {
-    operationNotice.value = 'Contact duplicated.';
+    operationNotice.value = t('contactsView.contactDuplicated');
     return;
   }
   operationNotice.value = '';
@@ -960,11 +961,11 @@ async function duplicateSelectedIdentity(): Promise<void> {
     htmlSignature: source.html_signature,
   });
   if (!result.ok) {
-    operationNotice.value = contactsStore.error || 'The identity could not be duplicated.';
+    operationNotice.value = contactsStore.error || t('contactsView.theIdentityCouldNotBeDuplicated');
     return;
   }
   if (kind.value !== 'identities' || selectedKey.value !== sourceKey) {
-    operationNotice.value = 'Identity duplicated.';
+    operationNotice.value = t('contactsView.identityDuplicated');
     return;
   }
   operationNotice.value = '';
@@ -979,11 +980,11 @@ async function setSelectedIdentityPrimary(): Promise<void> {
   settingPrimaryIdentityId.value = identity.id;
   try {
     await settingsStore.update({ primaryIdentityRemoteId: identity.remote_id });
-    operationNotice.value = `${identity.name.trim() || identity.email} is now the Primary identity.`;
+    operationNotice.value = t('contactsView.isNowThePrimaryIdentity', { value1: identity.name.trim() || identity.email });
   } catch (error) {
     operationNotice.value = error instanceof Error
       ? error.message
-      : 'The Primary identity could not be updated.';
+      : t('contactsView.thePrimaryIdentityCouldNotBeUpdated');
   } finally {
     settingPrimaryIdentityId.value = null;
   }
@@ -1064,7 +1065,7 @@ watch(
     ) {
       selectedBookId.value = null;
       resetSequence.value += 1;
-      operationNotice.value = 'The selected address book no longer exists.';
+      operationNotice.value = t('contactsView.theSelectedAddressBookNoLongerExists');
       if (
         detailSubject.value === 'entry'
         && selectedKey.value
@@ -1187,7 +1188,7 @@ defineExpose({
           class="column-resizer contacts__column-resizer contacts__column-resizer--list"
           :class="{ 'is-active': activeResizePane === 'list' }"
           role="separator"
-          aria-label="Resize contact list"
+          :aria-label="t('contactsView.resizeContactList')"
           aria-orientation="vertical"
           :aria-valuemin="DIRECTORY_COLUMN_MIN_WIDTHS.list"
           :aria-valuemax="maxListWidth()"
@@ -1330,7 +1331,7 @@ defineExpose({
             :busy="selectedIsDeleting || detailState === 'deleting'"
             :detail="trashDetail"
             :error="detailState === 'error'
-              ? (detailError || 'This trashed contact could not be loaded.')
+              ? (detailError || t('contactsView.thisTrashedContactCouldNotBeLoaded'))
               : null"
             :loading="detailState === 'loading'"
             @back="closeDetail"
@@ -1346,14 +1347,14 @@ defineExpose({
           >
             <header class="contacts__detail-status-bar">
               <AppIconButton
-                title="Back"
-                aria-label="Back"
+                :title="t('contactsView.back')"
+                :aria-label="t('contactsView.back')"
                 @click="closeDetail"
               >
                 <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
               </AppIconButton>
             </header>
-            <p>{{ detailError || 'This directory entry could not be loaded.' }}</p>
+            <p>{{ detailError || t('contactsView.thisDirectoryEntryCouldNotBeLoaded') }}</p>
             <button
               v-if="
                 selectedEntry?.kind === 'contact'
@@ -1362,7 +1363,7 @@ defineExpose({
               type="button"
               @click="retryDetail"
             >
-              Try again
+              {{ t('contactsView.tryAgain') }}
             </button>
           </div>
           </div>

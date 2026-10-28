@@ -1211,7 +1211,7 @@ describe('ComposeDialog scheduled send control', () => {
     expect(items[2].get('.compose-schedule-menu__label').text()).toBe('Tomorrow');
     expect(items[2].attributes('disabled')).toBeDefined();
     expect(items[2].get('.compose-schedule-menu__secondary').text())
-      .toBe('Choose a time within 3600 seconds.');
+      .toBe('Choose a time within 3,600 seconds.');
   });
 
   it('shows the selected preset in the dropdown until Send is clicked', async () => {
@@ -1380,7 +1380,7 @@ describe('ComposeDialog scheduled send control', () => {
     {
       label: 'out-of-cap',
       value: '2026-04-15T12:00:00.000Z',
-      error: 'Choose a time within 2592000 seconds.',
+      error: 'Choose a time within 2,592,000 seconds.',
     },
     {
       label: 'nonexistent DST',

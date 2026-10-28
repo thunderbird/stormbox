@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Check, X } from '@lucide/vue';
 
@@ -8,7 +9,7 @@ import { useMailStore } from '../stores/mail-store';
 import { closeContainingDropdown } from '../utils/dropdown';
 import { folderCapabilities } from '../utils/folder-capabilities';
 import { isComposingKeyEvent } from '../utils/keyboard';
-import { flattenFolderTree } from '../utils/folder-presentation';
+import { flattenFolderTree, folderDisplayName } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
 
 const props = withDefaults(
@@ -50,19 +51,19 @@ const parentOptions = computed<ParentOption[]>(() => {
   for (const account of mailStore.accounts) {
     const isOwn = account.id === authStore.accountId;
     const group = isOwn
-      ? account.display_name ?? account.primary_email ?? 'My account'
-      : `${account.display_name ?? account.primary_email ?? 'Shared account'} (shared)`;
+      ? account.display_name ?? account.primary_email ?? t('folderCreateDialog.myAccount')
+      : t('folderCreateDialog.shared', { value1: account.display_name ?? account.primary_email ?? t('folderCreateDialog.sharedAccount') });
     const rows = flattenFolderTree(
       mailStore.folders.filter((f) => f.account_id === account.id),
     ).filter((entry) =>
       folderCapabilities(entry.folder, authStore.accountId).mayCreateChild);
     if (isOwn) {
-      options.push({ id: null, label: 'Top Level', group });
+      options.push({ id: null, get label() { return t('folderCreateDialog.topLevel'); }, group });
     }
     for (const entry of rows) {
       options.push({
         id: entry.folder.id,
-        label: `${'\u00a0'.repeat(entry.depth * 3)}${entry.folder.name || '(unnamed)'}`,
+        label: `${'\u00a0'.repeat(entry.depth * 3)}${folderDisplayName(entry.folder)}`,
         group,
       });
     }
@@ -82,7 +83,7 @@ const groups = computed(() => {
 /** The closed control shows the choice without its tree indentation. */
 const selectedParentLabel = computed(() => {
   const chosen = parentOptions.value.find((option) => option.id === parentFolderId.value);
-  return (chosen?.label ?? 'Top Level').replace(/^\u00a0+/, '');
+  return (chosen?.label ?? t('folderCreateDialog.topLevel')).replace(/^\u00a0+/, '');
 });
 
 function pickParent(id: number | null, event: Event) {
@@ -105,19 +106,19 @@ async function submit() {
   }
   switch (result.reason) {
     case 'duplicateName':
-      failure.value = 'A folder with that name already exists here.';
+      failure.value = t('folderCreateDialog.aFolderWithThatNameAlreadyExistsHere');
       break;
     case 'forbidden':
-      failure.value = 'You do not have permission to create a folder here.';
+      failure.value = t('folderCreateDialog.youDoNotHavePermissionToCreateAFolder');
       break;
     case 'overQuota':
-      failure.value = 'This account has reached its folder limit. Delete some folders to make room.';
+      failure.value = t('folderCreateDialog.thisAccountHasReachedItsFolderLimitDeleteSome');
       break;
     case 'tooDeep':
-      failure.value = 'Folders cannot be nested this deeply. Choose a parent closer to the top level.';
+      failure.value = t('folderCreateDialog.foldersCannotBeNestedThisDeeplyChooseAParent');
       break;
     default:
-      failure.value = `Could not create the folder${result.reason ? ` (${result.reason})` : ''}.`;
+      failure.value = t('folderCreateDialog.couldNotCreateTheFolder', { value1: result.reason ? ` (${result.reason})` : '' });
   }
 }
 
@@ -151,11 +152,11 @@ onBeforeUnmount(() => {
       tabindex="-1"
     >
       <header class="folder-create__header">
-        <h2 id="folder-create-title">New folder</h2>
+        <h2 id="folder-create-title">{{ t('folderCreateDialog.newFolder') }}</h2>
         <button
           type="button"
           class="folder-create__close"
-          aria-label="Close new folder"
+          :aria-label="t('folderCreateDialog.closeNewFolder')"
           @click="emit('close')"
         >
           <X :size="18" :stroke-width="2" aria-hidden="true" />
@@ -163,24 +164,24 @@ onBeforeUnmount(() => {
       </header>
       <form class="folder-create__form" @submit.prevent="submit">
         <label class="folder-create__field">
-          <span>Name</span>
+          <span>{{ t('folderCreateDialog.name') }}</span>
           <input
             ref="nameEl"
             v-model="name"
             type="text"
             class="folder-create__input"
-            placeholder="Folder name"
+            :placeholder="t('folderCreateDialog.folderName')"
             data-folder-create-name
           />
         </label>
         <div class="folder-create__field">
-          <span id="folder-create-parent-label">Parent</span>
+          <span id="folder-create-parent-label">{{ t('folderCreateDialog.parent') }}</span>
           <AppDropdown class="folder-create__parent" data-folder-create-parent>
             <summary
               class="app-dropdown__summary folder-create__parent-summary"
               aria-labelledby="folder-create-parent-label"
             >{{ selectedParentLabel }}</summary>
-            <div class="app-dropdown__menu folder-create__parent-menu" role="menu" aria-label="Parent folder">
+            <div class="app-dropdown__menu folder-create__parent-menu" role="menu" :aria-label="t('folderCreateDialog.parentFolder')">
               <template v-for="group in groups" :key="group.label">
                 <span class="app-dropdown__heading" aria-hidden="true">{{ group.label }}</span>
                 <button
@@ -207,13 +208,13 @@ onBeforeUnmount(() => {
             type="button"
             class="folder-create__btn"
             @click="emit('close')"
-          >Cancel</button>
+          >{{ t('folderCreateDialog.cancel') }}</button>
           <button
             type="submit"
             class="folder-create__btn folder-create__btn--primary"
             :disabled="!canSubmit"
             data-folder-create-submit
-          >{{ mailStore.folderCreatePending ? 'Creating…' : 'Create' }}</button>
+          >{{ mailStore.folderCreatePending ? t('folderCreateDialog.creating') : t('folderCreateDialog.create') }}</button>
         </div>
       </form>
     </section>

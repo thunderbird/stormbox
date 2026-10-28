@@ -1,3 +1,4 @@
+import { t } from '../../../../../i18n/messages';
 /**
  * Cancel a scheduled send: revoke the held EmailSubmission and return
  * the message to Drafts as an editable draft.
@@ -54,7 +55,7 @@ async function resolveClearedCancel(
       error: {
         type: 'scheduleAlreadySent',
         terminal: true,
-        description: 'This message was already sent and can no longer be canceled.',
+        description: t('cancelScheduledSend.thisMessageWasAlreadySentAndCanNoLonger'), descriptionKey: 'cancelScheduledSend.thisMessageWasAlreadySentAndCanNoLonger', descriptionParams: {},
       },
     };
   }
@@ -69,7 +70,7 @@ async function resolveClearedCancel(
     error: {
       type: 'scheduleStateUnknown',
       terminal: true,
-      description: 'The message no longer has enough scheduling state to confirm cancellation.',
+      description: t('cancelScheduledSend.theMessageNoLongerHasEnoughSchedulingStateTo'), descriptionKey: 'cancelScheduledSend.theMessageNoLongerHasEnoughSchedulingStateTo', descriptionParams: {},
     },
   };
 }
@@ -126,7 +127,7 @@ async function runCancelScheduledSend({
       error: {
         type: 'scheduleAlreadySent',
         terminal: true,
-        description: 'This message was already sent and can no longer be canceled.',
+        description: t('cancelScheduledSend.thisMessageWasAlreadySentAndCanNoLonger'), descriptionKey: 'cancelScheduledSend.thisMessageWasAlreadySentAndCanNoLonger', descriptionParams: {},
       },
     };
   }
@@ -144,8 +145,7 @@ async function runCancelScheduledSend({
         error: {
           type: 'scheduleStateUnknown',
           terminal: true,
-          description: 'The scheduled time has passed and the server no longer '
-            + 'reports this message. It may already have been sent.',
+          description: t('cancelScheduledSend.theScheduledTimeHasPassedAndTheServerNoCombined', {  }),
         },
       };
     }
@@ -155,7 +155,7 @@ async function runCancelScheduledSend({
       ok: false,
       error: {
         type: 'submissionMissing',
-        message: 'The scheduled submission is not visible on the server yet.',
+        message: t('cancelScheduledSend.theScheduledSubmissionIsNotVisibleOnTheServer'),
       },
     };
   }
@@ -198,7 +198,7 @@ async function runCancelScheduledSend({
         ok: false,
         error: {
           type: 'cancelRejected',
-          message: failure.description ?? failure.type ?? 'cancel was rejected',
+          message: failure.description ?? failure.type ?? t('cancelScheduledSend.cancelWasRejected'),
           detail: failure,
         },
       };
@@ -280,7 +280,7 @@ async function runCancelScheduledSend({
     // resolution.
     return {
       ok: false,
-      error: { type: 'cacheReconcileFailed', message: reconciled.detail ?? 'Email/get failed' },
+      error: { type: 'cacheReconcileFailed', message: reconciled.detail ?? t('cancelScheduledSend.emailGetFailed') },
     };
   }
   if (!reconciled.gone) {

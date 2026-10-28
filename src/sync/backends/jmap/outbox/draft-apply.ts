@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../../i18n/messages';
 import { DB_RPC } from '../../../../db/protocol';
 import { fetchAndCheckpointComposeBody } from '../compose-body-checkpoint';
 import type { ComposeRegularAttachmentSource } from '../compose-email';
@@ -247,7 +248,7 @@ export async function persistDraftSuccessor({
       || email.id !== successorId
       || email.mailboxIds?.[draftsRemoteId] !== true
       || email.keywords?.$draft !== true) {
-    throw new Error('Created draft could not be confirmed in Drafts');
+    throw new LocalizedError('draftApply.createdDraftCouldNotBeConfirmedInDrafts');
   }
   await persistEmails({ account, emails: [email], handlers });
   const body = await fetchAndCheckpointComposeBody({

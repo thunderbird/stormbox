@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import LocalizedText from './LocalizedText.vue';
+import { t } from '../i18n/messages';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useVirtualizer } from '@tanstack/vue-virtual';
 import {
@@ -27,6 +29,7 @@ import { isComposingKeyEvent } from '../utils/keyboard';
 import {
   folderPresentation,
   folderSortKey,
+  folderDisplayName,
   type NamedFolderPresentation,
 } from '../utils/folder-presentation';
 import AppDropdown from './AppDropdown.vue';
@@ -156,7 +159,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
         path,
         presentation: folderPresentation(folder),
       });
-      walk(folder.id, depth + 1, [...path, folder.name || '(unnamed)']);
+      walk(folder.id, depth + 1, [...path, folderDisplayName(folder)]);
     }
   }
   walk('ROOT', 0, []);
@@ -169,8 +172,8 @@ const sections = computed<DialogAccountSection[]>(() => mailStore.accounts.map((
     account,
     isOwn,
     label: isOwn
-      ? `${account.display_name ?? account.primary_email ?? 'My account'} (default folders)`
-      : account.display_name ?? account.primary_email ?? 'Shared account',
+      ? t('folderManagerDialog.defaultFolders', { value1: account.display_name ?? account.primary_email ?? t('folderManagerDialog.myAccount') })
+      : account.display_name ?? account.primary_email ?? t('folderManagerDialog.sharedAccount'),
     rows: flattenFolders(
       mailStore.folders.filter((f) => f.account_id === account.id),
       isOwn,
@@ -235,7 +238,7 @@ const items = computed<ManagerItem[]>(() => {
     // A search cuts across the tree, so it ignores collapse state —
     // a match must never be hidden by a collapsed ancestor.
     const rows = query
-      ? section.rows.filter((row) => (row.folder.name ?? '').toLowerCase().includes(query))
+      ? section.rows.filter((row) => folderDisplayName(row.folder).toLowerCase().includes(query))
       : visibleRows(section.rows);
     if (rows.length === 0) continue;
     out.push({ kind: 'header', key: `h-${section.account.id}`, section });
@@ -494,7 +497,7 @@ function findSelectionGap(): string | null {
         const candidate = section.rows[j];
         if (candidate.depth <= row.depth) break;
         if (!selectedIds.value.has(candidate.folder.id)) {
-          return `“${row.folder.name}” can’t be deleted while its subfolder “${candidate.folder.name}” is kept. Select the whole subtree or move the subfolder first.`;
+          return t('folderManagerDialog.canTBeDeletedWhileItsSubfolderIsKept', { value1: folderDisplayName(row.folder), value2: folderDisplayName(candidate.folder) });
         }
       }
     }
@@ -504,7 +507,7 @@ function findSelectionGap(): string | null {
 
 function requestBulkDelete() {
   if (!selectedRows().every((row) => row.canDelete)) {
-    bulkError.value = 'Every selected folder must allow deletion.';
+    bulkError.value = t('folderManagerDialog.everySelectedFolderMustAllowDeletion');
     bulkStage.value = null;
     return;
   }
@@ -784,13 +787,13 @@ const editorParentOptions = computed<ParentOption[]>(() => {
     const parentId = row.folder.parent_id;
     if (parentId != null && excluded.has(parentId)) excluded.add(row.folder.id);
   }
-  const options: ParentOption[] = section.isOwn ? [{ id: null, label: 'Top Level' }] : [];
+  const options: ParentOption[] = section.isOwn ? [{ id: null, get label() { return t('folderManagerDialog.topLevel'); } }] : [];
   for (const row of section.rows) {
     if (excluded.has(row.folder.id)) continue;
     if (!row.canCreateChild) continue;
     options.push({
       id: row.folder.id,
-      label: `${'\u00a0'.repeat(row.depth * 3)}${row.folder.name || '(unnamed)'}`,
+      label: `${'\u00a0'.repeat(row.depth * 3)}${folderDisplayName(row.folder)}`,
     });
   }
   return options;
@@ -800,7 +803,7 @@ const editorParentOptions = computed<ParentOption[]>(() => {
 const editorParentLabel = computed(() => {
   const chosen = editorParentOptions.value
     .find((option) => option.id === (editorParentId.value ?? null));
-  return (chosen?.label ?? 'Top Level').replace(/^\u00a0+/, '');
+  return (chosen?.label ?? t('folderManagerDialog.topLevel')).replace(/^\u00a0+/, '');
 });
 
 function pickEditorParent(id: number | null, event: Event) {
@@ -872,19 +875,19 @@ async function requestDelete(row: DialogFolderRow) {
 function describeFolderOpFailure(reason?: string): string {
   switch (reason) {
     case 'duplicateName':
-      return 'A folder with that name already exists here.';
+      return t('folderManagerDialog.aFolderWithThatNameAlreadyExistsHere');
     case 'mailboxHasChild':
-      return 'Move or delete its subfolders first.';
+      return t('folderManagerDialog.moveOrDeleteItsSubfoldersFirst');
     case 'forbidden':
-      return 'You do not have permission to do that.';
+      return t('folderManagerDialog.youDoNotHavePermissionToDoThat');
     case 'parentLoop':
-      return 'A folder cannot be moved into itself.';
+      return t('folderManagerDialog.aFolderCannotBeMovedIntoItself');
     case 'overQuota':
-      return 'This account has reached its folder limit. Delete some folders to make room.';
+      return t('folderManagerDialog.thisAccountHasReachedItsFolderLimitDeleteSome');
     case 'tooDeep':
-      return 'Folders cannot be nested this deeply. Choose a parent closer to the top level.';
+      return t('folderManagerDialog.foldersCannotBeNestedThisDeeplyChooseAParent');
     default:
-      return `Could not update the folder${reason ? ` (${reason})` : ''}.`;
+      return t('folderManagerDialog.couldNotUpdateTheFolder', { value1: reason ? ` (${reason})` : '' });
   }
 }
 
@@ -956,26 +959,26 @@ onBeforeUnmount(() => {
       tabindex="-1"
     >
       <header class="folder-subs__header">
-        <h2 id="folder-subs-title">Manage Folders</h2>
+        <h2 id="folder-subs-title">{{ t('folderManagerDialog.manageFolders') }}</h2>
         <button
           type="button"
           class="folder-subs__close"
-          aria-label="Close manage folders"
+          :aria-label="t('folderManagerDialog.closeManageFolders')"
           @click="emit('close')"
         >
           <X :size="18" :stroke-width="2" aria-hidden="true" />
         </button>
       </header>
       <p class="folder-subs__hint">
-        Drag a folder to move it, or select several to delete them.
+        {{ t('folderManagerDialog.dragAFolderToMoveItOrSelectSeveral') }}
       </p>
       <div class="folder-subs__search">
         <input
           v-model="searchText"
           type="search"
           class="folder-subs__search-input"
-          placeholder="Search folders"
-          aria-label="Search folders"
+          :placeholder="t('folderManagerDialog.searchFolders')"
+          :aria-label="t('folderManagerDialog.searchFolders')"
         />
       </div>
       <div ref="scrollEl" class="folder-subs__body">
@@ -1011,15 +1014,15 @@ onBeforeUnmount(() => {
                 :class="{ 'is-collapsed': !isSystemBlockExpanded(item.section) }"
                 :aria-expanded="isSystemBlockExpanded(item.section)"
                 :aria-label="isSystemBlockExpanded(item.section)
-                  ? 'Collapse default folders'
-                  : 'Expand default folders'"
+                  ? t('folderManagerDialog.collapseDefaultFolders')
+                  : t('folderManagerDialog.expandDefaultFolders')"
                 data-account-toggle
                 @click="toggleSystemBlock(item.section)"
               >
                 <ChevronRight :size="14" :stroke-width="2" aria-hidden="true" />
               </button>
               {{ item.section.label }}
-              <span v-if="!item.section.isOwn" class="folder-subs__badge">shared</span>
+              <span v-if="!item.section.isOwn" class="folder-subs__badge">{{ t('folderManagerDialog.shared') }}</span>
             </h3>
             <div
               v-else-if="item.kind === 'root'"
@@ -1034,17 +1037,17 @@ onBeforeUnmount(() => {
               @drop.prevent="onSectionDrop(item.section)"
             >
               <FolderRoot :size="15" :stroke-width="1.75" aria-hidden="true" />
-              <span class="folder-subs__root-label">Top Level</span>
+              <span class="folder-subs__root-label">{{ t('folderManagerDialog.topLevel') }}</span>
               <span
                 v-if="dragFolderId != null && canDropOnSection(item.section)"
                 class="folder-subs__drop-hint"
-              >drop here to move to top level</span>
+              >{{ t('folderManagerDialog.dropHereToMoveToTopLevel') }}</span>
               <button
                 type="button"
                 class="folder-subs__root-add"
                 data-folder-new
-                aria-label="New folder"
-                title="New folder"
+                :aria-label="t('folderManagerDialog.newFolder')"
+                :title="t('folderManagerDialog.newFolder')"
                 @click="openCreateDialog(null)"
               >
                 <Plus :size="15" :stroke-width="2" aria-hidden="true" />
@@ -1079,8 +1082,8 @@ onBeforeUnmount(() => {
                   :class="{ 'is-collapsed': isRowCollapsed(item.row) }"
                   :aria-expanded="!isRowCollapsed(item.row)"
                   :aria-label="isRowCollapsed(item.row)
-                    ? `Expand ${item.row.folder.name}`
-                    : `Collapse ${item.row.folder.name}`"
+                    ? t('folderManagerDialog.expand', { value1: folderDisplayName(item.row.folder) })
+                    : t('folderManagerDialog.collapse', { value1: folderDisplayName(item.row.folder) })"
                   :data-folder-toggle="item.row.folder.name"
                   @click="toggleRowCollapsed(item.row)"
                 >
@@ -1097,7 +1100,7 @@ onBeforeUnmount(() => {
                     :checked="selectedIds.has(item.row.folder.id)"
                     :disabled="bulkBusy"
                     :data-folder-select="item.row.folder.name"
-                    :aria-label="`Select folder ${item.row.folder.name}`"
+                    :aria-label="t('folderManagerDialog.selectFolder', { value1: folderDisplayName(item.row.folder) })"
                     @click="onSelectClick(item.section, item.row, $event)"
                   />
                   <span
@@ -1110,11 +1113,11 @@ onBeforeUnmount(() => {
                   <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
-                  >{{ item.row.folder.name || '(unnamed)' }}</span>
+                  >{{ folderDisplayName(item.row.folder) }}</span>
                   <span
                     v-if="searching && item.row.path.length"
                     class="folder-subs__path"
-                    :title="`In ${item.row.path.join(' / ')}`"
+                    :title="t('folderManagerDialog.in', { value1: item.row.path.join(' / ') })"
                   >{{ item.row.path.join(' / ') }}</span>
                 </label>
                 <span v-else class="folder-subs__label is-disabled">
@@ -1129,11 +1132,11 @@ onBeforeUnmount(() => {
                   <span
                     class="folder-subs__name"
                     :class="{ 'is-hidden': !item.row.subscribed }"
-                  >{{ item.row.folder.name || '(unnamed)' }}</span>
+                  >{{ folderDisplayName(item.row.folder) }}</span>
                   <span
                     v-if="searching && item.row.path.length"
                     class="folder-subs__path"
-                    :title="`In ${item.row.path.join(' / ')}`"
+                    :title="t('folderManagerDialog.in', { value1: item.row.path.join(' / ') })"
                   >{{ item.row.path.join(' / ') }}</span>
                 </span>
                 <!-- Star: client-local priority pin, no server call.
@@ -1148,27 +1151,27 @@ onBeforeUnmount(() => {
                   :data-folder-star="item.row.folder.name"
                   :aria-pressed="item.row.starred"
                   :aria-label="item.row.starred
-                    ? `Unstar folder ${item.row.folder.name}`
-                    : `Star folder ${item.row.folder.name}`"
+                    ? t('folderManagerDialog.unstarFolder', { value1: folderDisplayName(item.row.folder) })
+                    : t('folderManagerDialog.starFolder', { value1: folderDisplayName(item.row.folder) })"
                   :title="item.row.starred
-                    ? 'Starred — click to remove from the top of the folder list'
-                    : 'Star — pin to the top of the folder list'"
+                    ? t('folderManagerDialog.starredClickToRemoveFromTheTopOfThe')
+                    : t('folderManagerDialog.starPinToTheTopOfTheFolderList')"
                   @click="mailStore.setFolderStarred(item.row.folder.id, !item.row.starred)"
                 >
                   <Star :size="14" :stroke-width="1.75" aria-hidden="true" />
                 </button>
                 <span class="folder-subs__row-spacer" aria-hidden="true" />
-                <span v-if="item.row.pending" class="folder-subs__pending">saving…</span>
+                <span v-if="item.row.pending" class="folder-subs__pending">{{ t('folderManagerDialog.saving') }}</span>
                 <span
                   v-else-if="item.row.isSystem"
                   class="folder-subs__pending"
-                  title="System folders are always shown in the sidebar."
-                >always shown</span>
+                  :title="t('folderManagerDialog.systemFoldersAreAlwaysShownInTheSidebar')"
+                >{{ t('folderManagerDialog.alwaysShown') }}</span>
                 <span
                   v-else-if="!item.row.editable"
                   class="folder-subs__pending"
-                  title="You do not have permission to change the subscription for this folder."
-                >read-only</span>
+                  :title="t('folderManagerDialog.youDoNotHavePermissionToChangeTheSubscription')"
+                >{{ t('folderManagerDialog.readOnly') }}</span>
                 <!--
                   services-ui switch, used controlled: state comes from
                   the store and the update event enqueues the mutation.
@@ -1180,7 +1183,7 @@ onBeforeUnmount(() => {
                   v-if="!item.row.isSystem"
                   class="folder-subs__switch-label"
                   aria-hidden="true"
-                >{{ item.row.subscribed ? 'Subscribed' : 'Subscribe' }}</span>
+                >{{ item.row.subscribed ? t('folderManagerDialog.subscribed') : t('folderManagerDialog.subscribe') }}</span>
                 <SwitchToggle
                   v-if="!item.row.isSystem"
                   class="folder-subs__switch"
@@ -1189,8 +1192,8 @@ onBeforeUnmount(() => {
                   :disabled="item.row.pending || !item.row.editable"
                   :data-folder-name="item.row.folder.name"
                   :title="item.row.subscribed
-                    ? 'Subscribed — click to unsubscribe and hide it in your mail apps'
-                    : 'Unsubscribed — click to subscribe and show it in your mail apps'"
+                    ? t('folderManagerDialog.subscribedClickToUnsubscribeAndHideItInYour')
+                    : t('folderManagerDialog.unsubscribedClickToSubscribeAndShowItInYour')"
                   @update:model-value="toggleSubscription(item.section, item.row)"
                 />
                 <button
@@ -1198,8 +1201,8 @@ onBeforeUnmount(() => {
                   type="button"
                   class="folder-subs__edit"
                   :data-folder-edit="item.row.folder.name"
-                  :aria-label="`Edit folder ${item.row.folder.name}`"
-                  title="Rename, move, or delete"
+                  :aria-label="t('folderManagerDialog.editFolder', { value1: folderDisplayName(item.row.folder) })"
+                  :title="t('folderManagerDialog.renameMoveOrDelete')"
                   @click="editingFolderId === item.row.folder.id ? closeEditor() : openEditor(item.row)"
                 >
                   <Pencil :size="13" :stroke-width="1.75" aria-hidden="true" />
@@ -1210,8 +1213,8 @@ onBeforeUnmount(() => {
                   type="button"
                   class="folder-subs__edit"
                   :data-folder-add="item.row.folder.name"
-                  :aria-label="`New folder in ${item.row.folder.name}`"
-                  :title="`New folder in ${item.row.folder.name}`"
+                  :aria-label="t('folderManagerDialog.newFolderIn', { value1: folderDisplayName(item.row.folder) })"
+                  :title="t('folderManagerDialog.newFolderIn', { value1: folderDisplayName(item.row.folder) })"
                   @click="openCreateDialog(item.row.folder.id)"
                 >
                   <Plus :size="14" :stroke-width="1.75" aria-hidden="true" />
@@ -1224,7 +1227,7 @@ onBeforeUnmount(() => {
               >
                 <template v-if="deleteStage == null">
                   <label class="folder-subs__editor-field">
-                    <span>Name</span>
+                    <span>{{ t('folderManagerDialog.name') }}</span>
                     <input
                       v-model="editorName"
                       type="text"
@@ -1235,7 +1238,7 @@ onBeforeUnmount(() => {
                     />
                   </label>
                   <div class="folder-subs__editor-field">
-                    <span :id="`folder-move-label-${item.row.folder.id}`">Parent</span>
+                    <span :id="`folder-move-label-${item.row.folder.id}`">{{ t('folderManagerDialog.parent') }}</span>
                     <AppDropdown
                       class="folder-subs__parent"
                       :disabled="!item.row.canRename || editorBusy"
@@ -1245,7 +1248,7 @@ onBeforeUnmount(() => {
                         class="app-dropdown__summary folder-subs__parent-summary"
                         :aria-labelledby="`folder-move-label-${item.row.folder.id}`"
                       >{{ editorParentLabel }}</summary>
-                      <div class="app-dropdown__menu folder-subs__parent-menu" role="menu" aria-label="Move to parent">
+                      <div class="app-dropdown__menu folder-subs__parent-menu" role="menu" :aria-label="t('folderManagerDialog.moveToParent')">
                         <button
                           v-for="option in editorParentOptions"
                           :key="option.id ?? 'root'"
@@ -1272,36 +1275,36 @@ onBeforeUnmount(() => {
                       :disabled="editorBusy"
                       data-folder-delete
                       @click="requestDelete(item.row)"
-                    >Delete…</button>
+                    >{{ t('folderManagerDialog.delete') }}</button>
                     <span class="folder-subs__editor-spacer" />
                     <button
                       type="button"
                       class="folder-subs__btn"
                       :disabled="editorBusy"
                       @click="closeEditor()"
-                    >Cancel</button>
+                    >{{ t('folderManagerDialog.cancel') }}</button>
                     <button
                       type="button"
                       class="folder-subs__btn folder-subs__btn--primary"
                       :disabled="!item.row.canRename || editorBusy"
                       data-folder-save
                       @click="saveEditor(item.row)"
-                    >Save</button>
+                    >{{ t('folderManagerDialog.save') }}</button>
                   </div>
                 </template>
                 <template v-else>
                   <p class="folder-subs__editor-confirm">
                     <template v-if="deleteStage === 'confirm'">
-                      Delete “{{ item.row.folder.name }}”?
+                      {{ t('folderManagerDialog.deleteNamedFolder', { name: folderDisplayName(item.row.folder) }) }}
                       <template v-if="editedMessageCount(item.row) > 0">
-                        It contains {{ editedMessageCount(item.row) }}
-                        message{{ editedMessageCount(item.row) === 1 ? '' : 's' }}.
+                        {{ t('folderManagerDialog.itContainsMessagePlural', { arg1: editedMessageCount(item.row), arg2: editedMessageCount(item.row) }, editedMessageCount(item.row)) }}
                       </template>
                     </template>
                     <template v-else>
-                      “{{ item.row.folder.name }}” still contains mail.
-                      Deleting it will <strong>permanently delete</strong> any message
-                      not filed in another folder.
+                      <LocalizedText keypath="folderManagerDialog.deleteNamedNonemptyFolder">
+                        <template #name>{{ folderDisplayName(item.row.folder) }}</template>
+                        <template #action><strong>{{ t('folderManagerDialog.permanentlyDelete') }}</strong></template>
+                      </LocalizedText>
                     </template>
                   </p>
                   <p v-if="editorError" class="folder-subs__editor-error">{{ editorError }}</p>
@@ -1312,14 +1315,14 @@ onBeforeUnmount(() => {
                       class="folder-subs__btn"
                       :disabled="editorBusy"
                       @click="deleteStage = null"
-                    >Cancel</button>
+                    >{{ t('folderManagerDialog.cancel') }}</button>
                     <button
                       type="button"
                       class="folder-subs__btn folder-subs__btn--danger"
                       :disabled="editorBusy"
                       data-folder-delete-confirm
                       @click="requestDelete(item.row)"
-                    >{{ deleteStage === 'escalate' ? 'Delete permanently' : 'Delete' }}</button>
+                    >{{ deleteStage === 'escalate' ? t('folderManagerDialog.deletePermanently') : t('folderManagerDialog.delete3') }}</button>
                   </div>
                 </template>
               </div>
@@ -1327,7 +1330,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p v-if="items.length === 0" class="folder-subs__hint">
-          {{ searchText.trim() ? 'No folders match your search.' : 'No folders yet.' }}
+          {{ searchText.trim() ? t('folderManagerDialog.noFoldersMatchYourSearch') : t('folderManagerDialog.noFoldersYet') }}
         </p>
       </div>
       <footer
@@ -1336,7 +1339,7 @@ onBeforeUnmount(() => {
         data-folder-bulkbar
       >
         <template v-if="bulkStage == null">
-          <span class="folder-subs__bulk-count">{{ selectedCount }} selected</span>
+          <span class="folder-subs__bulk-count">{{ t('folderManagerDialog.selected', { value1: selectedCount }) }}</span>
           <p v-if="bulkError" class="folder-subs__editor-error">{{ bulkError }}</p>
           <span class="folder-subs__editor-spacer" />
           <button
@@ -1344,8 +1347,8 @@ onBeforeUnmount(() => {
             class="folder-subs__edit"
             :disabled="bulkBusy || bulkStarDisabled"
             data-bulk-star
-            :aria-label="bulkStarAction ? 'Star selected folders' : 'Unstar selected folders'"
-            :title="bulkStarAction ? 'Star selected folders' : 'Unstar selected folders'"
+            :aria-label="bulkStarAction ? t('folderManagerDialog.starSelectedFolders') : t('folderManagerDialog.unstarSelectedFolders')"
+            :title="bulkStarAction ? t('folderManagerDialog.starSelectedFolders') : t('folderManagerDialog.unstarSelectedFolders')"
             @click="bulkToggleStarred()"
           >
             <Star v-if="bulkStarAction" :size="14" :stroke-width="1.75" aria-hidden="true" />
@@ -1361,8 +1364,8 @@ onBeforeUnmount(() => {
             :disabled="bulkBusy || !selectedRows().some((row) => row.editable)"
             data-bulk-subscribe
             :title="bulkSubscribeAction
-              ? 'Subscribe to selected folders'
-              : 'Unsubscribe from selected folders'"
+              ? t('folderManagerDialog.subscribeToSelectedFolders')
+              : t('folderManagerDialog.unsubscribeFromSelectedFolders')"
             @update:model-value="bulkToggleSubscription()"
           />
           <button
@@ -1370,8 +1373,8 @@ onBeforeUnmount(() => {
             class="folder-subs__edit folder-subs__edit--danger"
             :disabled="bulkBusy || bulkDeleteDisabled"
             data-folder-bulk-delete
-            aria-label="Delete selected folders"
-            title="Delete selected folders"
+            :aria-label="t('folderManagerDialog.deleteSelectedFolders')"
+            :title="t('folderManagerDialog.deleteSelectedFolders')"
             @click="requestBulkDelete()"
           >
             <Trash2 :size="14" :stroke-width="1.75" aria-hidden="true" />
@@ -1381,8 +1384,8 @@ onBeforeUnmount(() => {
             class="folder-subs__edit"
             :disabled="bulkBusy"
             data-folder-bulk-clear
-            aria-label="Clear selection"
-            title="Clear selection"
+            :aria-label="t('folderManagerDialog.clearSelection')"
+            :title="t('folderManagerDialog.clearSelection')"
             @click="clearSelection()"
           >
             <X :size="14" :stroke-width="1.75" aria-hidden="true" />
@@ -1390,11 +1393,9 @@ onBeforeUnmount(() => {
         </template>
         <template v-else-if="bulkStage === 'confirm'">
           <p class="folder-subs__bulk-confirm">
-            Delete {{ selectedCount }} folder{{ selectedCount === 1 ? '' : 's' }}?
+            {{ t('folderManagerDialog.deleteFolders', { count: selectedCount }, selectedCount) }}
             <template v-if="selectedMessageCount > 0">
-              {{ selectedCount === 1 ? 'It contains' : 'They contain' }}
-              {{ selectedMessageCount }}
-              message{{ selectedMessageCount === 1 ? '' : 's' }}.
+              {{ t('folderManagerDialog.containedMessages', { count: selectedMessageCount }, selectedMessageCount) }}
             </template>
           </p>
           <span class="folder-subs__editor-spacer" />
@@ -1403,35 +1404,34 @@ onBeforeUnmount(() => {
             class="folder-subs__btn"
             :disabled="bulkBusy"
             @click="bulkStage = null"
-          >Cancel</button>
+          >{{ t('folderManagerDialog.cancel') }}</button>
           <button
             type="button"
             class="folder-subs__btn folder-subs__btn--danger"
             :disabled="bulkBusy"
             data-folder-bulk-confirm
             @click="runBulkDelete(false)"
-          >Delete</button>
+          >{{ t('folderManagerDialog.delete3') }}</button>
         </template>
         <template v-else>
-          <p class="folder-subs__bulk-confirm">
-            {{ selectedCount }} folder{{ selectedCount === 1 ? ' still contains' : 's still contain' }}
-            mail. Deleting will <strong>permanently delete</strong> any message
-            not filed in another folder.
-          </p>
+          <LocalizedText tag="p" class="folder-subs__bulk-confirm" keypath="folderManagerDialog.permanentDeleteFolders" :plural="selectedCount">
+            <template #count>{{ selectedCount }}</template>
+            <template #action><strong>{{ t('folderManagerDialog.permanentlyDelete') }}</strong></template>
+          </LocalizedText>
           <span class="folder-subs__editor-spacer" />
           <button
             type="button"
             class="folder-subs__btn"
             :disabled="bulkBusy"
             @click="bulkStage = null"
-          >Cancel</button>
+          >{{ t('folderManagerDialog.cancel') }}</button>
           <button
             type="button"
             class="folder-subs__btn folder-subs__btn--danger"
             :disabled="bulkBusy"
             data-folder-bulk-confirm
             @click="runBulkDelete(true)"
-          >Delete permanently</button>
+          >{{ t('folderManagerDialog.deletePermanently') }}</button>
         </template>
       </footer>
     </section>

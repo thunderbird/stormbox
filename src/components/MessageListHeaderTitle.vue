@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref } from 'vue';
 
 import { useMenuKeyboard } from '../composables/useMenuKeyboard';
 import { useMailStore } from '../stores/mail-store';
 import { closeContainingDropdown } from '../utils/dropdown';
-import { flattenFolderTree, folderPresentation } from '../utils/folder-presentation';
+import { flattenFolderTree, folderPresentation, folderDisplayName } from '../utils/folder-presentation';
 import type { FolderRow } from '../types';
 import AppDropdown from './AppDropdown.vue';
 
@@ -34,7 +35,7 @@ const emit = defineEmits<{
 
 const mailStore = useMailStore();
 
-const folderName = computed(() => props.folder?.name ?? 'Mail');
+const folderName = computed(() => props.folder ? folderDisplayName(props.folder) : t('messageListHeaderTitle.mail'));
 const folderIcon = computed(() => (props.folder ? folderPresentation(props.folder).icon : ''));
 const folderTone = computed(() => (props.folder ? folderPresentation(props.folder).color : undefined));
 
@@ -64,7 +65,7 @@ const folderOptionGroups = computed<FolderOptionGroup[]>(() => {
   const groups: FolderOptionGroup[] = [{
     key: 'primary',
     // The own account is named only when another account's folders follow.
-    label: shared.length > 0 ? (own?.display_name ?? own?.primary_email ?? 'My account') : null,
+    label: shared.length > 0 ? (own?.display_name ?? own?.primary_email ?? t('messageListHeaderTitle.myAccount')) : null,
     options: optionsFor(mailStore.sidebarPrimaryFolders),
   }];
   for (const group of shared) {
@@ -72,7 +73,7 @@ const folderOptionGroups = computed<FolderOptionGroup[]>(() => {
     if (options.length === 0) continue;
     groups.push({
       key: `account-${group.account.id}`,
-      label: group.account.display_name ?? group.account.primary_email ?? 'Shared',
+      label: group.account.display_name ?? group.account.primary_email ?? t('messageListHeaderTitle.shared'),
       options,
     });
   }
@@ -112,7 +113,7 @@ defineExpose({ focusTrigger });
       aria-hidden="true"
       v-html="folderIcon"
     />
-    <span class="msg-list__title-name">{{ folder ? folderName : 'Messages' }}</span>
+    <span class="msg-list__title-name">{{ folder ? folderName : t('messageListHeaderTitle.messages') }}</span>
   </h2>
   <AppDropdown v-else class="msg-list__folder-picker" group="message-columns" @toggle="onToggle">
     <summary
@@ -123,8 +124,8 @@ defineExpose({ focusTrigger });
         'msg-list__folder-trigger--compact': compact,
       }"
       aria-haspopup="listbox"
-      :aria-label="folder ? `Folder for column ${columnIndex}: ${folderName}` : `Choose a folder for column ${columnIndex}`"
-      :title="folder ? folderName : 'Choose a folder'"
+      :aria-label="folder ? t('messageListHeaderTitle.folderForColumn', { value1: columnIndex, value2: folderName }) : t('messageListHeaderTitle.chooseAFolderForColumn', { value1: columnIndex })"
+      :title="folder ? folderName : t('messageListHeaderTitle.chooseAFolder')"
     >
       <span
         v-if="folderIcon && !compact"
@@ -133,13 +134,13 @@ defineExpose({ focusTrigger });
         aria-hidden="true"
         v-html="folderIcon"
       />
-      <span class="msg-list__title-name">{{ folder ? folderName : 'Choose a folder…' }}</span>
+      <span class="msg-list__title-name">{{ folder ? folderName : t('messageListHeaderTitle.chooseAFolder2') }}</span>
     </summary>
     <div
       ref="menuEl"
       class="app-dropdown__menu msg-list__folder-menu"
       role="listbox"
-      :aria-label="`Folders for column ${columnIndex}`"
+      :aria-label="t('messageListHeaderTitle.foldersForColumn', { value1: columnIndex })"
       @keydown="onKeydown"
     >
       <div

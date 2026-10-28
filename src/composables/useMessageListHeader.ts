@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import type { Ref } from 'vue';
 import { Plus, RefreshCw, X } from '@lucide/vue';
@@ -79,22 +80,22 @@ export function useMessageListHeader(input: UseMessageListHeaderInput) {
 
   const addColumnTitle = computed(() => (
     input.canAddColumn.value
-      ? 'Add a message list column'
-      : `Up to ${MAX_MESSAGE_COLUMNS} columns can be shown`
+      ? t('useMessageListHeader.addAMessageListColumn')
+      : t('useMessageListHeader.upToColumnsCanBeShown', { value1: MAX_MESSAGE_COLUMNS })
   ));
-  const removeColumnTitle = computed(() => `Remove column ${input.columnIndex.value}`);
+  const removeColumnTitle = computed(() => t('useMessageListHeader.removeColumn', { value1: input.columnIndex.value }));
 
   const columnControlItem = computed<MoreMenuItem>(() => (input.primary.value
     ? {
       id: 'add-column',
-      label: 'Add column',
+      get label() { return t('useMessageListHeader.addColumn'); },
       icon: Plus,
       disabled: !input.canAddColumn.value,
       run: input.addColumn,
     }
     : {
       id: 'remove-column',
-      label: 'Remove column',
+      get label() { return t('useMessageListHeader.removeColumn2'); },
       icon: X,
       run: input.removeColumn,
     }));
@@ -125,7 +126,7 @@ export function useMessageListHeader(input: UseMessageListHeaderInput) {
         items: [
           {
             id: 'refresh',
-            label: 'Refresh',
+            get label() { return t('useMessageListHeader.refresh'); },
             icon: RefreshCw,
             disabled: input.isLoading.value,
             run: input.refresh,

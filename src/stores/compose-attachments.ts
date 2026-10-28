@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../i18n/messages';
 /**
  * Attachment state and upload orchestration for compose sessions: the
  * captured files, per-attempt abort controllers, blob-failure marks, and
@@ -143,21 +144,19 @@ export function createComposeAttachmentController(
   ): string | null {
     if (![limits.maxSizeUpload, limits.maxSizeAttachmentsPerEmail, limits.maxConcurrentUpload]
       .every((value) => Number.isSafeInteger(value) && value > 0)) {
-      return 'The server did not provide valid attachment limits. Nothing was uploaded.';
+      return t('composeAttachments.theServerDidNotProvideValidAttachmentLimitsNothing');
     }
     const oversized = files.find((file) => file.size > limits.maxSizeUpload);
     if (oversized) {
-      return `"${oversized.name || 'attachment'}" is ${oversized.size} bytes; `
-        + `the server upload limit is ${limits.maxSizeUpload} bytes.`;
+      return t('composeAttachments.isBytesCombined', { arg1: oversized.name || 'attachment', arg2: oversized.size, arg3: limits.maxSizeUpload });
     }
     const selectedBytes = files.reduce((sum, file) => sum + file.size, 0);
     const totalBytes = existingBytes + selectedBytes;
     if (!Number.isSafeInteger(totalBytes)) {
-      return 'The selected attachments are too large to measure safely.';
+      return t('composeAttachments.theSelectedAttachmentsAreTooLargeToMeasureSafely');
     }
     if (totalBytes > limits.maxSizeAttachmentsPerEmail) {
-      return `These attachments total ${totalBytes} bytes; the server message limit is `
-        + `${limits.maxSizeAttachmentsPerEmail} bytes. Nothing was uploaded.`;
+      return t('composeAttachments.totalExceedsLimit', { total: totalBytes, limit: limits.maxSizeAttachmentsPerEmail });
     }
     return null;
   }
@@ -178,11 +177,11 @@ export function createComposeAttachmentController(
 
   function uploadErrorMessage(error: any, attachment: ComposeAttachment): string {
     if (error?.name === 'AbortError' || error?.type === 'cancelled') {
-      return 'Upload canceled.';
+      return t('composeAttachments.uploadCanceled');
     }
     return error?.message
-      ? `Upload failed: ${error.message}`
-      : `Could not upload "${sanitizeAttachmentFilename(attachment.name)}".`;
+      ? t('composeAttachments.uploadFailed', { value1: error.message })
+      : t('composeAttachments.couldNotUpload', { value1: sanitizeAttachmentFilename(attachment.name) });
   }
 
   function updateProgress(
@@ -220,7 +219,7 @@ export function createComposeAttachmentController(
       const repo = deps.repo();
       const accountId = deps.accountId();
       if (!repo || accountId == null) {
-        throw new Error('Not connected.');
+        throw new LocalizedError('composeAttachments.notConnected');
       }
       const result = await repo.uploadComposeAttachment(
         accountId,
@@ -299,8 +298,8 @@ export function createComposeAttachmentController(
       } catch (limitError: any) {
         if (deps.sessionById(session.id) === session && deps.accountId() === accountId) {
           session.error = limitError?.message
-            ? `Could not read attachment limits: ${limitError.message}`
-            : 'Could not read attachment limits.';
+            ? t('composeAttachments.couldNotReadAttachmentLimits', { value1: limitError.message })
+            : t('composeAttachments.couldNotReadAttachmentLimits2');
         }
         return false;
       }
@@ -356,11 +355,11 @@ export function createComposeAttachmentController(
     const accountId = deps.accountId();
     if (!session || !attachment || attachment.status !== 'failed') return false;
     if (!file) {
-      attachment.error = 'The original file is no longer available. Remove it and select it again.';
+      attachment.error = t('composeAttachments.theOriginalFileIsNoLongerAvailableRemoveIt');
       return false;
     }
     if (!repo || accountId == null) {
-      attachment.error = 'Could not retry while disconnected.';
+      attachment.error = t('composeAttachments.couldNotRetryWhileDisconnected');
       return false;
     }
     const preflightId = beginPreflight(session, accountId);
@@ -387,8 +386,8 @@ export function createComposeAttachmentController(
     } catch (limitError: any) {
       if (deps.sessionById(session.id) === session && deps.accountId() === accountId) {
         attachment.error = limitError?.message
-          ? `Could not read attachment limits: ${limitError.message}`
-          : 'Could not read attachment limits.';
+          ? t('composeAttachments.couldNotReadAttachmentLimits', { value1: limitError.message })
+          : t('composeAttachments.couldNotReadAttachmentLimits2');
       }
       return false;
     } finally {
@@ -411,7 +410,7 @@ export function createComposeAttachmentController(
       runtime.queue = runtime.queue.filter((queued) => queued.clientId !== clientId);
     }
     attachment.status = 'failed';
-    attachment.error = 'Upload canceled.';
+    attachment.error = t('composeAttachments.uploadCanceled');
     pumpUploads(session.id);
     return true;
   }
@@ -457,8 +456,8 @@ export function createComposeAttachmentController(
       attachment.status = 'failed';
       attachment.progress = 0;
       attachment.error = canRetry
-        ? 'The server no longer has this upload. Retry it.'
-        : 'The server no longer has this attachment. Remove it and select the file again.';
+        ? t('composeAttachments.theServerNoLongerHasThisUploadRetryIt')
+        : t('composeAttachments.theServerNoLongerHasThisAttachmentRemoveIt');
       attachmentBlobFailures.add(clientId);
       needsReselection ||= !canRetry;
     }

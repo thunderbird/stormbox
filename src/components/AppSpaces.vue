@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { Mail, Settings, Users } from '@lucide/vue';
 import AppToggleButton from './AppToggleButton.vue';
@@ -8,24 +9,24 @@ const props = defineProps({
   unreadCount: { type: Number, default: 0 },
   folderListHidden: { type: Boolean, default: false },
   // Names the sidebar the toggle controls in the active space (R-8.5).
-  sidebarLabel: { type: String, default: 'folder list' },
+  sidebarLabel: { type: String, get default() { return t('appSpaces.folderList'); } },
 });
 const emit = defineEmits(['change', 'toggle-folder-list', 'open-settings']);
 const folderListToggleLabel = computed(() =>
-  `${props.folderListHidden ? 'Show' : 'Hide'} ${props.sidebarLabel}`,
+  t(props.folderListHidden ? 'appSpaces.showSidebar' : 'appSpaces.hideSidebar', { sidebar: props.sidebarLabel }),
 );
 
 function pick(name) { emit('change', name); }
 </script>
 
 <template>
-  <nav class="app-spaces" aria-label="Spaces">
+  <nav class="app-spaces" :aria-label="t('appSpaces.spaces')">
     <AppToggleButton
       class="app-spaces__item"
       :active="props.active === 'mail'"
       @click="pick('mail')"
-      aria-label="Mail"
-      title="Mail"
+      :aria-label="t('appSpaces.mail')"
+      :title="t('appSpaces.mail')"
     >
       <Mail :size="20" :stroke-width="1.75" />
       <span v-if="props.unreadCount > 0" class="app-spaces__badge" aria-hidden="true">
@@ -36,8 +37,8 @@ function pick(name) { emit('change', name); }
       class="app-spaces__item"
       :active="props.active === 'contacts'"
       @click="pick('contacts')"
-      aria-label="Contacts"
-      title="Contacts"
+      :aria-label="t('appSpaces.contacts')"
+      :title="t('appSpaces.contacts')"
     >
       <Users :size="20" :stroke-width="1.75" />
     </AppToggleButton>
@@ -46,8 +47,8 @@ function pick(name) { emit('change', name); }
            opens the same one and this button is hidden. -->
       <AppToggleButton
         class="app-spaces__item app-spaces__settings"
-        aria-label="Settings"
-        title="Settings"
+        :aria-label="t('appSpaces.settings')"
+        :title="t('appSpaces.settings')"
         data-settings-gear
         @click="emit('open-settings')"
       >

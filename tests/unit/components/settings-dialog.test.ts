@@ -130,14 +130,14 @@ describe('settings gear and dialog', () => {
     expect(document.activeElement).toBe(panel);
   });
 
-  it('non-staff see exactly the shortcut picker, the follow-system switch and the Welcome button', async () => {
+  it('non-staff see language, shortcuts, theme and Welcome settings', async () => {
     const wrapper = mountApp();
     await flushPromises();
     const panel = await openSettings(wrapper);
 
     const titles = Array.from(panel.querySelectorAll('.settings-dialog__row-title'))
       .map((el) => el.textContent);
-    expect(titles).toEqual(['Keyboard shortcuts', 'Follow system theme', 'Welcome & shortcuts']);
+    expect(titles).toEqual(['Language', 'Keyboard shortcuts', 'Follow system theme', 'Welcome & shortcuts']);
     expect(panel.querySelector('[role="radiogroup"]')).not.toBeNull();
     expect(panel.querySelector('[data-system-theme-toggle]')).not.toBeNull();
     expect(panel.querySelector('[data-show-welcome]')!.textContent!.trim()).toBe('Show welcome');

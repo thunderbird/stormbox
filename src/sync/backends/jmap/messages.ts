@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 /**
  * Email/query + Email/get + Email/queryChanges + Email/changes -> the
  * messages, threads, folder_messages, message_addresses, message_keywords
@@ -109,12 +110,12 @@ export async function syncFolderWindow({
     : position;
   const got = pickResponse(result, 'Email/get');
   if (!got || !Array.isArray(got.list)) {
-    throw new Error('Email/get returned no payload for the query window');
+    throw new LocalizedError('messages.emailGetReturnedNoPayloadForTheQueryWindow');
   }
   const list = got.list;
   const returnedIds = new Set(list.map((email) => email.id));
   if (ids.some((id) => !returnedIds.has(id))) {
-    throw new Error('Email/get omitted a message from the query window');
+    throw new LocalizedError('messages.emailGetOmittedAMessageFromTheQueryWindow');
   }
   const dropOtherPositions = await reconcileCachedPositionsForPage({
     transport,

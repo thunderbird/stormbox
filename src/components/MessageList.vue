@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { folderDisplayName } from '../utils/folder-presentation';
+import { t, displayLocale } from '../i18n/messages';
 import {
   computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
 } from 'vue';
@@ -91,11 +93,11 @@ const folderId = computed<number | null>(() => (
   props.folderId === undefined ? mailStore.currentFolderId : props.folderId
 ));
 const folder = computed<FolderRow | null>(() => mailStore.folderById(folderId.value));
-const folderName = computed(() => folder.value?.name ?? 'Mail');
+const folderName = computed(() => folder.value ? folderDisplayName(folder.value) : t('messageList.mail'));
 const regionLabel = computed(() => (
   folder.value
-    ? `${folder.value.name} messages, column ${props.columnIndex}`
-    : `Column ${props.columnIndex}, no folder chosen`
+    ? t('messageList.messagesColumn', { value1: folder.value.name, value2: props.columnIndex })
+    : t('messageList.columnNoFolderChosen', { value1: props.columnIndex })
 ));
 const rowDomIdPrefix = computed(() => (props.listId ? `msg-row-${props.listId}-` : 'msg-row-'));
 const gridId = computed(() => (props.listId ? `msg-listbox-${props.listId}` : 'msg-listbox'));
@@ -484,15 +486,15 @@ const tagViewNote = computed(() => {
   const parts: string[] = [];
   const coverage = tagViewCoverage.value;
   if (coverage !== null && coverage < 100) {
-    parts.push(`Showing tagged mail from the folders indexed so far (${coverage}%).`);
+    parts.push(t('messageList.showingTaggedMailFromTheFoldersIndexedSoFar', { value1: coverage }));
   }
   const truncation = mailStore.tagViewTruncation;
   if (truncation) {
-    parts.push(`Showing the newest ${truncation.shown.toLocaleString()} of ${truncation.total.toLocaleString()} tagged messages.`);
+    parts.push(t('messageList.showingTheNewestOfTaggedMessages', { value1: truncation.shown.toLocaleString(displayLocale()), value2: truncation.total.toLocaleString(displayLocale()) }));
   }
   // A tag view reads the signed-in account only (MK-3.4).
   if (mailStore.sharedAccounts.length > 0) {
-    parts.push('Shared folders are not included.');
+    parts.push(t('messageList.sharedFoldersAreNotIncluded'));
   }
   return parts.join(' ');
 });
@@ -753,7 +755,7 @@ const filteredEmptyText = computed(() => {
     flaggedOnly.value ? 'starred' : null,
   ].filter((part): part is string => part !== null);
   const prefix = qualifiers.length > 0 ? `${qualifiers.join(' ')} ` : '';
-  return `No ${prefix}messages in ${folderName.value}.`;
+  return t('messageList.noMessagesIn', { value1: prefix, value2: folderName.value });
 });
 
 async function bulkMarkUnread() {
@@ -997,31 +999,31 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             'msg-list__filters--lead': !showsTitle,
           }"
           role="group"
-          aria-label="Message filters"
+          :aria-label="t('messageList.messageFilters')"
         >
           <button
             class="msg-list__filter"
             :class="{ 'is-active': unreadOnly }"
             type="button"
             :aria-pressed="unreadOnly"
-            aria-label="Unread"
-            title="Unread"
+            :aria-label="t('messageList.unread')"
+            :title="t('messageList.unread')"
             @click="toggleUnreadFilter"
           >
             <Circle v-if="!headerFilterLabels" :size="10" :stroke-width="2" fill="currentColor" aria-hidden="true" />
-            <template v-else>Unread</template>
+            <template v-else>{{ t('messageList.unread') }}</template>
           </button>
           <button
             class="msg-list__filter msg-list__filter--starred"
             :class="{ 'is-active': flaggedOnly }"
             type="button"
             :aria-pressed="flaggedOnly"
-            aria-label="Starred"
-            title="Starred"
+            :aria-label="t('messageList.starred')"
+            :title="t('messageList.starred')"
             @click="toggleFlaggedFilter"
           >
             <Star v-if="!headerFilterLabels" :size="16" :stroke-width="1.75" aria-hidden="true" />
-            <template v-else>Starred</template>
+            <template v-else>{{ t('messageList.starred') }}</template>
           </button>
         </div>
       </template>
@@ -1031,8 +1033,8 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             v-if="folderId != null"
             class="msg-list__refresh"
             type="button"
-            :aria-label="isLoading ? 'Refreshing' : 'Refresh'"
-            :title="isLoading ? 'Refreshing…' : 'Refresh'"
+            :aria-label="isLoading ? t('messageList.refreshing') : t('messageList.refresh')"
+            :title="isLoading ? t('messageList.refreshing2') : t('messageList.refresh')"
             @click="refresh"
           >
             <RefreshCw :size="16" :stroke-width="1.75" aria-hidden="true" :class="{ 'is-spinning': isLoading }" />
@@ -1054,7 +1056,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
             ref="removeColumnEl"
             class="msg-list__column-control msg-list__remove-column"
             type="button"
-            title="Remove column"
+            :title="t('messageList.removeColumn')"
             :aria-label="removeColumnTitle"
             @click="emit('remove-column')"
           >
@@ -1065,7 +1067,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
           v-if="showsMoreMenu"
           ref="moreMenuEl"
           :groups="moreMenuGroups"
-          :label="`More actions for column ${columnIndex}`"
+          :label="t('messageList.moreActionsForColumn', { value1: columnIndex })"
         />
       </template>
     </SelectableListHeader>
@@ -1083,9 +1085,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
     </p>
 
     <span :id="`${gridId}-instructions`" hidden>
-      Use Up and Down arrows to navigate messages, Space to select, and Enter to toggle the message preview.
-      Press Right Arrow or F2 for message controls, then Left and Right arrows to move between them.
-      Escape returns to message navigation. Tab leaves the message list.
+      {{ t('messageList.useUpAndDownArrowsToNavigateMessagesSpace') }}
     </span>
     <div
       v-if="rowCount > 0"
@@ -1099,7 +1099,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       :aria-busy="isLoading"
       aria-colcount="1"
       :aria-describedby="`${gridId}-instructions`"
-      aria-label="Messages"
+      :aria-label="t('messageList.messages')"
       :aria-activedescendant="activeRowDomId"
       @scroll="onScroll"
       @keydown="handleKeyDown"
@@ -1111,7 +1111,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
         class="msg-list__loader"
       >
         <RefreshCw :size="18" class="is-spinning" />
-        <p>Loading {{ folderName }}…</p>
+        <p>{{ t('messageList.loading', { value1: folderName }) }}</p>
       </div>
       <ol class="msg-list__items" role="presentation" :style="{ height: totalSize + 'px' }">
         <template v-for="v in virtualItems" :key="v.key">
@@ -1170,25 +1170,25 @@ defineExpose({ focusColumnControl, focusFolderPicker });
 
     <div v-else-if="isLoading" class="msg-list__placeholder">
       <RefreshCw :size="18" class="is-spinning" />
-      <p>Loading {{ folderName }}…</p>
+      <p>{{ t('messageList.loading', { value1: folderName }) }}</p>
     </div>
     <div v-else-if="quickFilterActive" class="msg-list__placeholder">
-      <p>No messages matching "{{ props.quickFilterQuery.trim() }}" in {{ folderName }}.</p>
+      <p>{{ t('messageList.noMessagesMatchingIn', { value1: props.quickFilterQuery.trim(), value2: folderName }) }}</p>
     </div>
     <div v-else-if="unreadOnly || flaggedOnly" class="msg-list__placeholder">
       <p>{{ filteredEmptyText }}</p>
     </div>
     <div v-else-if="isTagView" class="msg-list__placeholder">
-      <p>No messages are tagged {{ folderName }}.</p>
+      <p>{{ t('messageList.noMessagesAreTagged', { value1: folderName }) }}</p>
     </div>
     <div v-else-if="folderId != null" class="msg-list__placeholder">
-      <p>{{ folderName }} is empty.</p>
+      <p>{{ t('messageList.isEmpty', { value1: folderName }) }}</p>
     </div>
     <div v-else-if="primary" class="msg-list__placeholder">
-      <p>Select a folder to view its messages.</p>
+      <p>{{ t('messageList.selectAFolderToViewItsMessages') }}</p>
     </div>
     <div v-else class="msg-list__placeholder">
-      <p>Choose a folder above to show its messages here.</p>
+      <p>{{ t('messageList.chooseAFolderAboveToShowItsMessagesHere') }}</p>
     </div>
 
     <TagPickerPopover
