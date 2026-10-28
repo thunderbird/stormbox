@@ -2,6 +2,8 @@
 
 `src/locales/en.json` is the source catalog. The application uses Vue I18n 11 in Composition API mode. English is the only shipped language initially. Partial catalogs fall back to English per message.
 
+![Language selection in Settings](settings-language.png)
+
 ## Add a language
 
 1. Add `src/locales/<BCP-47-tag>.json` (for example `de.json` or `pt-BR.json`). Keep the source keys, translate values, and retain all named parameters. An incomplete catalog is allowed; omit unfinished messages instead of leaving empty strings.
