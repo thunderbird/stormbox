@@ -471,7 +471,7 @@ onBeforeUnmount(endContactDrag);
       :selected-count="selection.selectionCount.value"
       :singular-item-label="
         listKind === 'contacts'
-          ? t('directoryList.contact')
+          ? t('directoryList.contactItem')
           : (listKind === 'trash' ? t('directoryList.trashedContact') : t('directoryList.identity'))
       "
       :total-count="entries.length"
