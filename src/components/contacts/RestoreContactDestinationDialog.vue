@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import { ref } from 'vue';
 
 import { useModalFocus } from '../../composables/useModalFocus';
@@ -32,11 +33,9 @@ useModalFocus(dialogEl, { containTab: true });
       tabindex="-1"
       @keydown.esc.prevent="emit('cancel')"
     >
-      <h2 id="restore-destination-title">Choose an address book</h2>
+      <h2 id="restore-destination-title">{{ t('restoreContactDestinationDialog.chooseAnAddressBook') }}</h2>
       <p>
-        {{ count === 1 ? 'This contact has' : 'These contacts have' }}
-        no original writable address book. Choose where to restore
-        {{ count === 1 ? 'it' : 'them' }}.
+        {{ t('restoreContactDestinationDialog.chooseDestination', { count }, count) }}
       </p>
       <div class="restore-destination__books">
         <button
@@ -51,7 +50,7 @@ useModalFocus(dialogEl, { containTab: true });
       </div>
       <div class="restore-destination__actions">
         <AppButton variant="outline" :disabled="busy" @click="emit('cancel')">
-          Cancel
+          {{ t('restoreContactDestinationDialog.cancel') }}
         </AppButton>
       </div>
     </section>

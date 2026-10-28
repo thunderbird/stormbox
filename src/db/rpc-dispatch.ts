@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 /**
  * Pure RPC dispatcher used by the SharedWorker. Extracted from the worker
  * entry so it can be exercised in unit tests against a fake port + handler
@@ -48,6 +49,7 @@ const RPC_ERROR_FIELDS = [
   'elapsedMs',
   'requestId',
   'capability',
+  'messageKey',
 ] as const;
 
 function transferPercent(progress: any): number | null {
@@ -125,6 +127,10 @@ export function serializeRpcError(error: any): SerializedRpcError {
       if (value != null) serialized[field] = value;
     }
   }
+  if (error?.messageParams && typeof error.messageParams === 'object') {
+    serialized.messageParams = Object.fromEntries(Object.entries(error.messageParams)
+      .filter(([, value]) => value == null || ['string', 'number', 'boolean'].includes(typeof value)));
+  }
   return serialized;
 }
 
@@ -139,18 +145,18 @@ export async function dispatchRpc(
   context: RpcHandlerContext = {},
 ) {
   if (!message || message.type !== RPC_REQUEST) {
-    throw new Error(`Unexpected message type: ${message?.type}`);
+    throw new LocalizedError('rpcDispatch.unexpectedMessageType', { value1: message?.type });
   }
   const { id, method, params } = message;
   if (typeof id !== 'number' || typeof method !== 'string') {
-    throw new Error('Malformed RPC request');
+    throw new LocalizedError('rpcDispatch.malformedRPCRequest');
   }
   const handler = handlers[method];
   if (!handler) {
     return {
       type: RPC_RESPONSE,
       id,
-      error: serializeRpcError(new Error(`Unknown RPC method: ${method}`)),
+      error: serializeRpcError(new LocalizedError('rpcDispatch.unknownRPCMethod', { value1: method })),
     };
   }
   try {
@@ -208,9 +214,7 @@ export function serveRpcPort(
         response = {
           type: RPC_RESPONSE,
           id: message.id,
-          error: serializeRpcError(new Error(
-            `Database failed to initialise: ${error?.message ?? error}`,
-          )),
+          error: serializeRpcError(new LocalizedError('rpcDispatch.databaseFailedToInitialise', { value1: error?.message ?? error })),
         };
       } finally {
         if (inFlight.get(message.id) === controller) {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 /**
  * The tag manager: its own modal, reached from the sidebar's Tags heading
  * and from every tag menu's "Manage tags…" (specs/011 MK-6.7). Same
@@ -52,11 +53,11 @@ onBeforeUnmount(() => {
         data-tag-manager
       >
         <header class="tag-manager__header">
-          <h2 :id="TITLE_ID">Tags</h2>
+          <h2 :id="TITLE_ID">{{ t('tagManagerDialog.tags') }}</h2>
           <button
             type="button"
             class="tag-manager__close"
-            aria-label="Close tags"
+            :aria-label="t('tagManagerDialog.closeTags')"
             @click="emit('close')"
           >
             <X :size="18" :stroke-width="2" aria-hidden="true" />

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { X } from '@lucide/vue';
 
 import type { MessageAttachmentRow } from '../composables/useMessageAttachments';
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 function filename(row: MessageAttachmentRow): string {
   return row.part.name
     ? sanitizeAttachmentFilename(row.part.name)
-    : '(unnamed attachment)';
+    : t('messageAttachmentPreviews.unnamedAttachment');
 }
 </script>
 
@@ -24,7 +25,7 @@ function filename(row: MessageAttachmentRow): string {
   <section
     v-if="rows.some((row) => row.showPreview && (row.previewUrl || row.textPreview))"
     class="message-attachment-previews"
-    aria-label="Attachment previews"
+    :aria-label="t('messageAttachmentPreviews.attachmentPreviews')"
   >
     <template v-for="row in rows" :key="row.key">
       <figure
@@ -34,8 +35,8 @@ function filename(row: MessageAttachmentRow): string {
         <figcaption class="message-attachment-preview__header">
           <span>{{ filename(row) }}</span>
           <AppIconButton
-            :title="`Hide preview of ${filename(row)}`"
-            :aria-label="`Hide preview of ${filename(row)}`"
+            :title="t('messageAttachmentPreviews.hidePreviewOf', { value1: filename(row) })"
+            :aria-label="t('messageAttachmentPreviews.hidePreviewOf', { value1: filename(row) })"
             @click="emit('preview', row.key)"
           >
             <X :size="16" :stroke-width="1.75" />
@@ -46,13 +47,13 @@ function filename(row: MessageAttachmentRow): string {
       <section
         v-else-if="row.showPreview && row.textPreview"
         class="message-attachment-preview message-attachment-preview--text"
-        :aria-label="`Preview of ${filename(row)}`"
+        :aria-label="t('messageAttachmentPreviews.previewOf', { value1: filename(row) })"
       >
         <div class="message-attachment-preview__header">
           <h3>{{ filename(row) }}</h3>
           <AppIconButton
-            :title="`Hide preview of ${filename(row)}`"
-            :aria-label="`Hide preview of ${filename(row)}`"
+            :title="t('messageAttachmentPreviews.hidePreviewOf', { value1: filename(row) })"
+            :aria-label="t('messageAttachmentPreviews.hidePreviewOf', { value1: filename(row) })"
             @click="emit('preview', row.key)"
           >
             <X :size="16" :stroke-width="1.75" />
@@ -60,7 +61,7 @@ function filename(row: MessageAttachmentRow): string {
         </div>
         <pre>{{ row.textPreview.text }}</pre>
         <p v-if="row.textPreview.truncated" class="message-attachment-preview__notice">
-          Preview truncated at 256 KiB.
+          {{ t('messageAttachmentPreviews.previewTruncatedAt256KiB') }}
         </p>
       </section>
     </template>

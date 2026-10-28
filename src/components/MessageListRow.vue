@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 /**
  * One positioned message-list row. Owns the row's markup and styling so
  * every list surface renders the same row;
@@ -102,7 +103,7 @@ const isUnread = computed(() => Number(props.message.is_seen) === 0);
 const isFlagged = computed(() => Number(props.message.is_flagged) === 1);
 const tags = computed(() => resolveMessageTags(props.message.keywords_json, props.tagDefinitions));
 const tagStackLabel = computed(() => (
-  tags.value.length === 0 ? 'Tag' : `Tags: ${tags.value.map((tag) => tag.name).join(', ')}`
+  tags.value.length === 0 ? t('messageListRow.tag') : t('messageListRow.tags', { value1: tags.value.map((tag) => tag.name).join(', ') })
 ));
 const correspondent = computed(() => rowCorrespondent(props.message, props.showsRecipients));
 const avatar = computed(() => senderAvatar(correspondent.value));
@@ -110,11 +111,11 @@ const label = computed(() => correspondentLabel(props.message, props.showsRecipi
 const dateText = computed(() => fmtDate(rowTimestamp(props.message, props.sort)));
 const rowLabel = computed(() => [
   label.value,
-  props.message.subject || '(no subject)',
+  props.message.subject || t('messageListRow.noSubject'),
   dateText.value,
-  isUnread.value ? 'Unread' : '',
-  isFlagged.value ? 'Starred' : '',
-  Number(props.message.has_attachment) === 1 ? 'Has attachments' : '',
+  isUnread.value ? t('messageListRow.unread') : '',
+  isFlagged.value ? t('messageListRow.starred') : '',
+  props.message.has_attachment ? t('messageListRow.hasAttachments') : '',
   tags.value.length > 0 ? tagStackLabel.value : '',
 ].filter(Boolean).join(', '));
 </script>
@@ -158,7 +159,7 @@ const rowLabel = computed(() => [
         class="msg-list__open"
         data-message-control
         tabindex="-1"
-        :aria-label="`Open message: ${message.subject || '(no subject)'}, ${label}`"
+        :aria-label="t('messageListRow.openMessage', { value1: message.subject || t('messageListRow.noSubject'), value2: label })"
       />
       <div class="msg-list__state">
         <label v-if="selectable" class="msg-list__check" draggable="false" @click.stop>
@@ -166,7 +167,7 @@ const rowLabel = computed(() => [
             type="checkbox"
             data-message-control
             tabindex="-1"
-            :aria-label="`Select message: ${message.subject || '(no subject)'}, ${label}`"
+            :aria-label="t('messageListRow.selectMessage', { value1: message.subject || t('messageListRow.noSubject'), value2: label })"
             :checked="selected"
             @click="emit('checkbox-click', $event)"
           />
@@ -197,7 +198,7 @@ const rowLabel = computed(() => [
       <div class="msg-list__content">
         <div class="msg-list__summary">
           <span class="msg-list__from">{{ label }}</span>
-          <span class="msg-list__subject">{{ message.subject || '(no subject)' }}</span>
+          <span class="msg-list__subject">{{ message.subject || t('messageListRow.noSubject') }}</span>
           <span class="msg-list__icons">
             <Star v-if="isFlagged && !hoverActions" :size="13" :stroke-width="2" class="msg-list__star" />
             <Paperclip v-if="Number(message.has_attachment) === 1" :size="13" :stroke-width="1.75" class="msg-list__attach" />
@@ -239,8 +240,8 @@ const rowLabel = computed(() => [
               :class="{ 'msg-list__action--starred': isFlagged }"
               tabindex="-1"
               data-message-control
-              :title="isFlagged ? 'Unstar' : 'Star'"
-              :aria-label="isFlagged ? 'Unstar' : 'Star'"
+              :title="isFlagged ? t('messageListRow.unstar') : t('messageListRow.star')"
+              :aria-label="isFlagged ? t('messageListRow.unstar') : t('messageListRow.star')"
               :aria-pressed="isFlagged"
               @click="emit('star')"
             >
@@ -252,8 +253,8 @@ const rowLabel = computed(() => [
               class="msg-list__action"
               tabindex="-1"
               data-message-control
-              title="Archive"
-              aria-label="Archive"
+              :title="t('messageListRow.archive')"
+              :aria-label="t('messageListRow.archive')"
               @click="emit('archive')"
             >
               <span class="msg-list__action-icon--folder" aria-hidden="true" v-html="archiveIcon" />
@@ -264,8 +265,8 @@ const rowLabel = computed(() => [
               class="msg-list__action msg-list__action--danger"
               tabindex="-1"
               data-message-control
-              title="Delete"
-              aria-label="Delete"
+              :title="t('messageListRow.delete')"
+              :aria-label="t('messageListRow.delete')"
               @click="emit('delete')"
             >
               <Trash2 :size="18" :stroke-width="1.65" />

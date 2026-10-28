@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 /**
  * Worker-side outbox runner. One instance per account, owned by the
  * JmapBackend. Replaces the "callers must remember to call drainOutbox"
@@ -114,10 +115,10 @@ export class OutboxRunner {
     processRow: ProcessRow;
     options?: any;
   }) {
-    if (accountId == null) throw new Error('OutboxRunner requires accountId');
-    if (!handlers) throw new Error('OutboxRunner requires handlers');
+    if (accountId == null) throw new LocalizedError('outboxRunner.outboxRunnerRequiresAccountId');
+    if (!handlers) throw new LocalizedError('outboxRunner.outboxRunnerRequiresHandlers');
     if (typeof processRow !== 'function') {
-      throw new Error('OutboxRunner requires a processRow function');
+      throw new LocalizedError('outboxRunner.outboxRunnerRequiresAProcessRowFunction');
     }
     this._accountId = accountId;
     this._handlers = handlers;
@@ -266,7 +267,7 @@ export class OutboxRunner {
             type: 'outcomeUnknown',
             terminal: true,
             reason: 'interrupted',
-            description: 'Interrupted while sending; the outcome is unknown.',
+            description: t('outboxRunner.interruptedWhileSendingTheOutcomeIsUnknown'), descriptionKey: 'outboxRunner.interruptedWhileSendingTheOutcomeIsUnknown', descriptionParams: {},
           }),
           this._now(),
           this._accountId,

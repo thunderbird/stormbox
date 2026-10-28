@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { nextTick, ref } from 'vue';
 import { Tag } from '@lucide/vue';
 
@@ -27,7 +28,7 @@ withDefaults(defineProps<{
   /** Extra classes on the trigger, for the owner's hooks. */
   triggerClass?: string;
 }>(), {
-  label: 'Tag',
+  get label() { return t('tagPickerDropdown.tag'); },
   title: undefined,
   align: 'start',
   disabled: false,

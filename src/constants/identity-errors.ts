@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 export const IDENTITY_ERROR = {
   NAME_REQUIRED: 'identityNameRequired',
   INVALID_NAME: 'identityInvalidName',
@@ -33,42 +34,26 @@ export type IdentityActionResult =
   | { ok: false; error: IdentityError };
 
 export const IDENTITY_ERROR_MESSAGE: Record<IdentityError, string> = {
-  [IDENTITY_ERROR.NAME_REQUIRED]: 'Enter a name for the identity.',
-  [IDENTITY_ERROR.INVALID_NAME]: 'Enter a valid identity name.',
-  [IDENTITY_ERROR.INVALID_EMAIL]: 'Enter a valid email address.',
-  [IDENTITY_ERROR.INVALID_REPLY_TO]: 'Enter a valid mailbox in each Reply-To row.',
-  [IDENTITY_ERROR.INVALID_BCC]: 'Enter a valid mailbox in each automatic Bcc row.',
-  [IDENTITY_ERROR.SIGNATURE_TOO_LARGE]:
-    'Shorten the signature so both its HTML and plain text are under 2,048 bytes.',
-  [IDENTITY_ERROR.INVALID_SIGNATURE]:
-    'The signature is invalid. Use text, formatting, links, or a small raster image.',
-  [IDENTITY_ERROR.IMMUTABLE_FIELD]:
-    'The server does not allow that identity field to be changed.',
-  [IDENTITY_ERROR.ADDRESS_NOT_CONFIGURED]:
-    'You can’t send from this email address. Add it to your account before creating an identity.',
-  [IDENTITY_ERROR.OVER_QUOTA]:
-    'This account has reached its identity limit. Remove another identity or contact the administrator.',
-  [IDENTITY_ERROR.OBJECT_TOO_LARGE]:
-    'The identity is too large for the server. Shorten its fields or signature.',
-  [IDENTITY_ERROR.INVALID_PATCH]:
-    'The server rejected this identity update. Refresh it and try the change again.',
-  [IDENTITY_ERROR.WILL_DESTROY]:
-    'This change depends on another identity being removed and was not applied.',
-  [IDENTITY_ERROR.SINGLETON]:
-    'The server requires this identity to remain the only identity of its kind.',
-  [IDENTITY_ERROR.INVALID_ARGUMENTS]:
-    'The server rejected the identity request as invalid.',
-  [IDENTITY_ERROR.AMBIGUOUS_CREATE]:
-    'The server may have created this identity, but the result could not be identified safely. Refresh and retry recovery without creating another copy.',
-  [IDENTITY_ERROR.MISSING]:
-    'This identity no longer exists. Refresh the list and try again.',
-  [IDENTITY_ERROR.NOT_CONNECTED]: 'Not connected.',
-  [IDENTITY_ERROR.PERMISSION_DENIED]:
-    'You don’t have permission to manage identities for this account.',
-  [IDENTITY_ERROR.CACHE_REPAIR_FAILED]:
-    'The identity changed on the server, but the local list could not be refreshed. Please try again.',
-  [IDENTITY_ERROR.SERVER_UNAVAILABLE]:
-    'The identity service is temporarily unavailable. Please try again.',
-  [IDENTITY_ERROR.UNKNOWN]:
-    'The identity change could not be completed. Please try again.',
+  get [IDENTITY_ERROR.NAME_REQUIRED]() { return t('identityErrors.enterANameForTheIdentity'); },
+  get [IDENTITY_ERROR.INVALID_NAME]() { return t('identityErrors.enterAValidIdentityName'); },
+  get [IDENTITY_ERROR.INVALID_EMAIL]() { return t('identityErrors.enterAValidEmailAddress'); },
+  get [IDENTITY_ERROR.INVALID_REPLY_TO]() { return t('identityErrors.enterAValidMailboxInEachReplyToRow'); },
+  get [IDENTITY_ERROR.INVALID_BCC]() { return t('identityErrors.enterAValidMailboxInEachAutomaticBccRow'); },
+  get [IDENTITY_ERROR.SIGNATURE_TOO_LARGE]() { return t('identityErrors.shortenTheSignatureSoBothItsHTMLAndPlain'); },
+  get [IDENTITY_ERROR.INVALID_SIGNATURE]() { return t('identityErrors.theSignatureIsInvalidUseTextFormattingLinksOr'); },
+  get [IDENTITY_ERROR.IMMUTABLE_FIELD]() { return t('identityErrors.theServerDoesNotAllowThatIdentityFieldTo'); },
+  get [IDENTITY_ERROR.ADDRESS_NOT_CONFIGURED]() { return t('identityErrors.youCanTSendFromThisEmailAddressAdd'); },
+  get [IDENTITY_ERROR.OVER_QUOTA]() { return t('identityErrors.thisAccountHasReachedItsIdentityLimitRemoveAnother'); },
+  get [IDENTITY_ERROR.OBJECT_TOO_LARGE]() { return t('identityErrors.theIdentityIsTooLargeForTheServerShorten'); },
+  get [IDENTITY_ERROR.INVALID_PATCH]() { return t('identityErrors.theServerRejectedThisIdentityUpdateRefreshItAnd'); },
+  get [IDENTITY_ERROR.WILL_DESTROY]() { return t('identityErrors.thisChangeDependsOnAnotherIdentityBeingRemovedAnd'); },
+  get [IDENTITY_ERROR.SINGLETON]() { return t('identityErrors.theServerRequiresThisIdentityToRemainTheOnly'); },
+  get [IDENTITY_ERROR.INVALID_ARGUMENTS]() { return t('identityErrors.theServerRejectedTheIdentityRequestAsInvalid'); },
+  get [IDENTITY_ERROR.AMBIGUOUS_CREATE]() { return t('identityErrors.theServerMayHaveCreatedThisIdentityButThe'); },
+  get [IDENTITY_ERROR.MISSING]() { return t('identityErrors.thisIdentityNoLongerExistsRefreshTheListAnd'); },
+  get [IDENTITY_ERROR.NOT_CONNECTED]() { return t('identityErrors.notConnected'); },
+  get [IDENTITY_ERROR.PERMISSION_DENIED]() { return t('identityErrors.youDonTHavePermissionToManageIdentitiesFor'); },
+  get [IDENTITY_ERROR.CACHE_REPAIR_FAILED]() { return t('identityErrors.theIdentityChangedOnTheServerButTheLocal'); },
+  get [IDENTITY_ERROR.SERVER_UNAVAILABLE]() { return t('identityErrors.theIdentityServiceIsTemporarilyUnavailablePleaseTryAgain'); },
+  get [IDENTITY_ERROR.UNKNOWN]() { return t('identityErrors.theIdentityChangeCouldNotBeCompletedPleaseTry'); },
 };

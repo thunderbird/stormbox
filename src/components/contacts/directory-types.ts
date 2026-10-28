@@ -1,3 +1,5 @@
+import { isTrustedSendersBook } from '../../utils/address-book-policy';
+import { t } from '../../i18n/messages';
 import type {
   AddressbookRow,
   ContactListRow,
@@ -52,8 +54,8 @@ export function contactEntry(contact: ContactListRow): DirectoryEntry {
     key: `contact:${contact.id}`,
     kind: 'contact',
     id: contact.id,
-    name: contact.display_name?.trim() || '(no name)',
-    email: contact.email?.trim() || 'No email address',
+    name: contact.display_name?.trim() || t('directoryTypes.noName'),
+    email: contact.email?.trim() || t('directoryTypes.noEmailAddress'),
     contact,
   };
 }
@@ -63,7 +65,7 @@ export function identityEntry(identity: IdentityRow): DirectoryEntry {
     key: `identity:${identity.id}`,
     kind: 'identity',
     id: identity.id,
-    name: identity.name?.trim() || '(no name)',
+    name: identity.name?.trim() || t('directoryTypes.noName'),
     email: identity.email,
     identity,
   };
@@ -74,8 +76,8 @@ export function trashEntry(trash: ContactTrashListRow): DirectoryEntry {
     key: `trash:${trash.id}`,
     kind: 'trash',
     id: trash.id,
-    name: trash.display_name?.trim() || '(no name)',
-    email: trash.primary_email?.trim() || 'No email address',
+    name: trash.display_name?.trim() || t('directoryTypes.noName'),
+    email: trash.primary_email?.trim() || t('directoryTypes.noEmailAddress'),
     trash,
   };
 }
@@ -85,7 +87,7 @@ export function identityMayDelete(identity: IdentityRow): boolean {
 }
 
 export function addressBookDisplayName(book: AddressbookRow): string {
-  return book.name?.trim() || 'Address book';
+  return isTrustedSendersBook(book) ? t('common.trustedSenders') : (book.name?.trim() || t('directoryTypes.addressBook'));
 }
 
 export function directoryOptionId(key: string): string {

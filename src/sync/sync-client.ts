@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 /**
  * Protocol-neutral sync client. Pinia stores ask SyncClient to make sure
  * a piece of local data is fresh; SyncClient routes the request to the
@@ -59,7 +60,7 @@ export class SyncClient {
   getBackend(accountId, serviceKind) {
     const backend = this._backends.get(accountId)?.get(serviceKind);
     if (!backend) {
-      throw new Error(`No ${serviceKind} backend registered for account ${accountId}`);
+      throw new LocalizedError('syncClient.noBackendRegisteredForAccount', { value1: serviceKind, value2: accountId });
     }
     return backend;
   }

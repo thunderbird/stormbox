@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { ref } from 'vue';
 import type { Component } from 'vue';
 import { Ellipsis } from '@lucide/vue';
@@ -67,8 +68,8 @@ defineExpose({ focusTrigger });
       ref="triggerEl"
       class="app-dropdown__summary msg-list__more-trigger"
       aria-haspopup="menu"
-      :aria-label="label ?? 'More actions'"
-      :title="label ?? 'More actions'"
+      :aria-label="label ?? t('messageListMoreMenu.moreActions')"
+      :title="label ?? t('messageListMoreMenu.moreActions')"
       data-more-menu
     >
       <Ellipsis :size="18" :stroke-width="1.75" aria-hidden="true" />
@@ -77,7 +78,7 @@ defineExpose({ focusTrigger });
       ref="menuEl"
       class="app-dropdown__menu msg-list__more-menu"
       role="menu"
-      :aria-label="label ?? 'More actions'"
+      :aria-label="label ?? t('messageListMoreMenu.moreActions')"
       @keydown="onKeydown"
     >
       <template v-for="(group, index) in groups" :key="group.id">

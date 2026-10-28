@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { JMAP_CAPS } from './transport';
 
 type JmapCoreLimit =
@@ -11,13 +12,13 @@ function coreLimit(transport: any, property: JmapCoreLimit): number {
     transport?.session?.capabilities?.[JMAP_CAPS.CORE]?.[property],
   );
   if (!Number.isSafeInteger(raw) || raw <= 0) {
-    throw capabilityLimitError(`JMAP Session missing valid ${property}`, property);
+    throw capabilityLimitError(new LocalizedError('limits.jMAPSessionMissingValid', { value1: property }), property);
   }
   return Math.max(1, Math.floor(raw));
 }
 
-function capabilityLimitError(message: string, capability: string) {
-  const error: any = new Error(message);
+function capabilityLimitError(message: string | Error, capability: string) {
+  const error: any = (message instanceof Error ? message : new Error(message));
   error.type = 'capabilityUnavailable';
   error.capability = capability;
   return error;
@@ -48,7 +49,7 @@ export function maxSizeAttachmentsPerEmail(transport: any, account: any): number
   );
   if (!Number.isSafeInteger(raw) || raw <= 0) {
     throw capabilityLimitError(
-      `JMAP account ${remoteAccountId ?? '(unknown)'} missing valid maxSizeAttachmentsPerEmail`,
+      new LocalizedError('limits.jMAPAccountMissingValidMaxSizeAttachmentsPerEmail', { value1: remoteAccountId ?? '(unknown)' }),
       'maxSizeAttachmentsPerEmail',
     );
   }

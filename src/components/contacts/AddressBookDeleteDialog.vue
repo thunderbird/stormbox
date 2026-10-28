@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, formatNumber } from '../../i18n/messages';
 import { computed, ref } from 'vue';
 
 import { useModalFocus } from '../../composables/useModalFocus';
@@ -7,6 +8,7 @@ import type {
   AddressbookRow,
 } from '../../types';
 import AppButton from '../AppButton.vue';
+import LocalizedText from '../LocalizedText.vue';
 import { addressBookDisplayName } from './directory-types';
 
 const props = withDefaults(defineProps<{
@@ -28,7 +30,7 @@ const dialogEl = ref<HTMLElement | null>(null);
 useModalFocus(dialogEl, { containTab: true, onDefault: cancel });
 
 const title = computed(() =>
-  props.stale ? 'Address book contents changed' : 'Delete address book?');
+  props.stale ? t('addressBookDeleteDialog.addressBookContentsChanged') : t('addressBookDeleteDialog.deleteAddressBook'));
 
 function cancel(): void {
   if (!props.busy) emit('cancel');
@@ -60,37 +62,28 @@ function onKeydown(event: KeyboardEvent): void {
         class="address-book-delete__stale"
         role="status"
       >
-        The address book changed after your first review. Review these updated
-        counts and confirm again.
+        {{ t('addressBookDeleteDialog.theAddressBookChangedAfterYourFirstReviewReview') }}
       </p>
       <p id="address-book-delete-description">
-        “{{ addressBookDisplayName(addressbook) }}” will be deleted.
+        {{ t('addressBookDeleteDialog.willBeDeleted', { value1: addressBookDisplayName(addressbook) }) }}
       </p>
       <ul id="address-book-delete-effects">
-        <li>
-          <strong>{{ inventory.exclusiveCount }}</strong>
-          {{ inventory.exclusiveCount === 1 ? 'contact belongs' : 'contacts belong' }}
-          only to this address book and will be permanently destroyed.
-        </li>
-        <li>
-          <strong>{{ inventory.sharedCount }}</strong>
-          {{ inventory.sharedCount === 1 ? 'contact has' : 'contacts have' }}
-          other address-book memberships. Only
-          {{ inventory.sharedCount === 1 ? 'its membership' : 'their memberships' }}
-          in this address book will be removed.
-        </li>
-        <li>
-          <strong>{{ inventory.mediaBearingCount }}</strong>
-          {{ inventory.mediaBearingCount === 1 ? 'contact includes' : 'contacts include' }}
-          photos or other media.
-        </li>
+        <LocalizedText tag="li" keypath="addressBookDeleteDialog.exclusiveEffect" :plural="inventory.exclusiveCount">
+          <template #count><strong>{{ formatNumber(inventory.exclusiveCount) }}</strong></template>
+        </LocalizedText>
+        <LocalizedText tag="li" keypath="addressBookDeleteDialog.sharedEffect" :plural="inventory.sharedCount">
+          <template #count><strong>{{ formatNumber(inventory.sharedCount) }}</strong></template>
+        </LocalizedText>
+        <LocalizedText tag="li" keypath="addressBookDeleteDialog.mediaEffect" :plural="inventory.mediaBearingCount">
+          <template #count><strong>{{ formatNumber(inventory.mediaBearingCount) }}</strong></template>
+        </LocalizedText>
       </ul>
       <p v-if="addressbook.is_default === 1" class="address-book-delete__default-note">
-        This is the default address book. The server will choose a replacement default.
+        {{ t('addressBookDeleteDialog.thisIsTheDefaultAddressBookTheServerWill') }}
       </p>
       <div class="address-book-delete__actions">
         <AppButton variant="outline" :disabled="busy" @click="cancel">
-          Cancel
+          {{ t('addressBookDeleteDialog.cancel') }}
         </AppButton>
         <AppButton
           class="address-book-delete__danger"
@@ -99,8 +92,8 @@ function onKeydown(event: KeyboardEvent): void {
         >
           {{
             busy
-              ? 'Deleting…'
-              : (stale ? 'Confirm delete' : 'Delete address book')
+              ? t('addressBookDeleteDialog.deleting')
+              : (stale ? t('addressBookDeleteDialog.confirmDelete') : t('addressBookDeleteDialog.deleteAddressBook2'))
           }}
         </AppButton>
       </div>

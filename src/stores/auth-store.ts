@@ -1,3 +1,4 @@
+import { t, LocalizedError, sourceText } from '../i18n/messages';
 /**
  * Auth + connection lifecycle. Holds the OIDC handle, the active local
  * account id, and an enum-typed status that the UI maps to its
@@ -40,7 +41,6 @@ const TOKEN_RENEWAL_WINDOW_MS = 25_000;
 const TOKEN_RENEWAL_RETRY_MS = 5_000;
 const MIN_TOKEN_RENEWAL_DELAY_MS = 1_000;
 const OIDC_REDIRECT_PENDING_KEY = 'stormbox.oidcRedirectPending';
-const OIDC_SIGN_IN_INCOMPLETE = 'Sign-in did not complete. Try again to return to sign in.';
 
 function appPasswordRequested(): boolean {
   if (new URLSearchParams(globalThis.location?.search ?? '').has('app-password')) return true;
@@ -194,7 +194,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
     if (!oidc?.isUserLoggedIn && oidcRedirectPending()) {
       status.value = AUTH_STATE.FAILED;
-      error.value = OIDC_SIGN_IN_INCOMPLETE;
+      error.value = t('authStore.signInDidNotCompleteTryAgainToReturn');
       return;
     }
     status.value = AUTH_STATE.OIDC_READY;
@@ -208,8 +208,8 @@ export const useAuthStore = defineStore('auth', () => {
       && 'isAuthServerLikelyDown' in err && err.isAuthServerLikelyDown;
     status.value = AUTH_STATE.FAILED;
     error.value = serviceUnavailable
-      ? 'The sign-in service is unavailable. Please try again later.'
-      : 'Sign-in could not be initialized. Please try again later.';
+      ? t('authStore.theSignInServiceIsUnavailablePleaseTryAgain')
+      : t('authStore.signInCouldNotBeInitializedPleaseTryAgain');
   }
 
   /**
@@ -220,7 +220,7 @@ export const useAuthStore = defineStore('auth', () => {
   ): Promise<boolean> {
     if (databaseUnavailable.value) return false;
     if (!u || !password) {
-      error.value = 'Username and password are required.';
+      error.value = t('authStore.usernameAndPasswordAreRequired');
       status.value = AUTH_STATE.FAILED;
       return false;
     }
@@ -250,7 +250,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function _connectViaOidc(): Promise<boolean> {
     const oidc = getOidc();
     if (!oidc) {
-      error.value = 'OIDC is not available on this server.';
+      error.value = t('authStore.oIDCIsNotAvailableOnThisServer');
       status.value = AUTH_STATE.FAILED;
       return false;
     }
@@ -261,7 +261,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
       setOidcRedirectPending(true);
       await oidc.login();
-      throw new Error(OIDC_SIGN_IN_INCOMPLETE);
+      throw new Error(t('authStore.signInDidNotCompleteTryAgainToReturn'));
     }
     setOidcRedirectPending(false);
     const generation = startTokenSync(oidc);
@@ -277,7 +277,7 @@ export const useAuthStore = defineStore('auth', () => {
     const initialAuth = latestBearerAuth;
     if (!initialAuth) {
       stopTokenSync();
-      error.value = 'OIDC did not provide an access token.';
+      error.value = t('authStore.oIDCDidNotProvideAnAccessToken');
       status.value = AUTH_STATE.FAILED;
       return false;
     }
@@ -319,7 +319,7 @@ export const useAuthStore = defineStore('auth', () => {
         clearStorageQuota();
         if (databaseUnavailable.value) return false;
         status.value = AUTH_STATE.FAILED;
-        error.value = 'Could not initialize renewable JMAP authentication.';
+        error.value = t('authStore.couldNotInitializeRenewableJMAPAuthentication');
         return false;
       }
     }
@@ -329,7 +329,7 @@ export const useAuthStore = defineStore('auth', () => {
   function cancelOidcLogin(): void {
     if (status.value !== AUTH_STATE.CONNECTING || getOidc()?.isUserLoggedIn) return;
     status.value = AUTH_STATE.FAILED;
-    error.value = OIDC_SIGN_IN_INCOMPLETE;
+    error.value = t('authStore.signInDidNotCompleteTryAgainToReturn');
   }
 
   async function retryOidc(): Promise<void> {
@@ -435,7 +435,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (tokenSyncAccountId == null) return;
     const oidc = getOidc();
     if (!oidc?.isUserLoggedIn) {
-      throw new Error('Authentication is no longer available.');
+      throw new LocalizedError('authStore.authenticationIsNoLongerAvailable');
     }
     const connectedAccountId = tokenSyncAccountId;
     let tokens: Oidc.Tokens;
@@ -443,7 +443,7 @@ export const useAuthStore = defineStore('auth', () => {
       tokens = await oidc.getTokens();
     } catch {
       scheduleTokenUpdateRetry(generation);
-      throw new Error('Authentication could not be refreshed.');
+      throw new LocalizedError('authStore.authenticationCouldNotBeRefreshed');
     }
     handleOidcTokens(generation, oidc, tokens);
 
@@ -454,7 +454,7 @@ export const useAuthStore = defineStore('auth', () => {
           || accountId.value !== connectedAccountId
           || tokenSyncAccountId !== connectedAccountId
           || status.value !== AUTH_STATE.CONNECTED) {
-        throw new Error('Authentication changed before it could be synchronized.');
+        throw new LocalizedError('authStore.authenticationChangedBeforeItCouldBeSynchronized');
       }
       await queueTokenUpdate(generation, connectedAccountId, auth);
       if (latestBearerAuth === auth) return;
@@ -491,7 +491,7 @@ export const useAuthStore = defineStore('auth', () => {
           expiresAt: auth.expiresAt,
         });
         if (result?.updated !== true) {
-          throw new Error('The active JMAP worker rejected an OIDC token update.');
+          throw new LocalizedError('authStore.theActiveJMAPWorkerRejectedAnOIDCTokenUpdate');
         }
         if (tokenUpdateRetryTimer != null) clearTimeout(tokenUpdateRetryTimer);
         tokenUpdateRetryTimer = null;

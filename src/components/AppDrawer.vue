@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { Grip } from '@lucide/vue';
@@ -16,10 +17,10 @@ function close() {
 
 <template>
   <details ref="detailsEl" class="app-drawer" @keydown.escape="close">
-    <summary class="quick-filter__action app-drawer__button" aria-label="Open app drawer" title="Apps">
+    <summary class="quick-filter__action app-drawer__button" :aria-label="t('appDrawer.openAppDrawer')" :title="t('appDrawer.apps')">
       <Grip :size="18" :stroke-width="1.75" aria-hidden="true" />
     </summary>
-    <div class="app-drawer__popover" role="menu" aria-label="Thunderbird Pro apps">
+    <div class="app-drawer__popover" role="menu" :aria-label="t('appDrawer.thunderbirdProApps')">
       <button
         class="app-drawer__tile app-drawer__tile--current"
         type="button"
@@ -28,7 +29,7 @@ function close() {
         @click="close"
       >
         <span class="app-drawer__icon" aria-hidden="true" v-html="MAIL_APP_GLYPH" />
-        <span class="app-drawer__label">Mail</span>
+        <span class="app-drawer__label">{{ t('appDrawer.mail') }}</span>
       </button>
       <a
         v-for="app in OTHER_PRO_APPS"

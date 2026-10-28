@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, ref } from 'vue';
 import { onClickOutside } from '@vueuse/core';
 import { CircleUserRound, LogOut, Settings } from '@lucide/vue';
@@ -40,7 +41,7 @@ function onSettings() {
 
 <template>
   <details ref="detailsEl" class="account-menu">
-    <summary class="account-menu__button" aria-label="Open account menu">
+    <summary class="account-menu__button" :aria-label="t('accountAvatarMenu.openAccountMenu')">
       <span class="account-menu__avatar" :style="avatarStyle" aria-hidden="true">
         {{ initials }}
       </span>
@@ -54,19 +55,19 @@ function onSettings() {
       </div>
       <button class="account-menu__item" type="button" role="menuitem" @click="onSettings">
         <Settings :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span>Settings</span>
+        <span>{{ t('accountAvatarMenu.settings') }}</span>
       </button>
       <a class="account-menu__item" :href="ACCOUNTS_URL" role="menuitem">
         <CircleUserRound :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span>Account Settings</span>
+        <span>{{ t('accountAvatarMenu.accountSettings') }}</span>
       </a>
       <a class="account-menu__item" :href="SUPPORT_URL" role="menuitem">
         <span class="account-menu__support-icon" aria-hidden="true" v-html="supportIcon" />
-        <span>Contact Support</span>
+        <span>{{ t('accountAvatarMenu.contactSupport') }}</span>
       </a>
       <button class="account-menu__item" type="button" role="menuitem" @click="onLogout">
         <LogOut :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span>Log Out</span>
+        <span>{{ t('accountAvatarMenu.logOut') }}</span>
       </button>
     </div>
   </details>

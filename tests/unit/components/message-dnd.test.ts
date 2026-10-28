@@ -422,7 +422,7 @@ describe('MessageList row click viewing', () => {
 
     // Before clicking Unread the count reflects the canonical total
     // (with placeholders for unloaded positions).
-    expect(wrapper.get('.msg-list__count').text()).toBe('1500 messages');
+    expect(wrapper.get('.msg-list__count').text()).toBe('1,500 messages');
 
     await wrapper.find('.msg-list__filter').trigger('click');
     await Promise.resolve();
@@ -432,7 +432,7 @@ describe('MessageList row click viewing', () => {
     // The unread count is the real total of unread rows in the
     // folder, not the 83 that happened to be in the visible window.
     // 83 unread in the visible window + 1400 unread tail = 1483.
-    expect(wrapper.get('.msg-list__count').text()).toBe('1483 messages');
+    expect(wrapper.get('.msg-list__count').text()).toBe('1,483 messages');
     // The expanded buffer feeds the virtualized list with all
     // unread rows, including ones the user had not scrolled to.
     const renderedSubjects = wrapper.findAll('.msg-list__subject')

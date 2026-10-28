@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { folderDisplayName } from '../utils/folder-presentation';
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { Star } from '@lucide/vue';
 
@@ -75,7 +77,7 @@ function toggle() {
       class="folder-node__toggle"
       :class="{ 'is-collapsed': collapsed }"
       :aria-expanded="!collapsed"
-      :aria-label="collapsed ? 'Expand folder' : 'Collapse folder'"
+      :aria-label="collapsed ? t('folderNode.expandFolder') : t('folderNode.collapseFolder')"
       @click="toggle"
     >
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
@@ -95,10 +97,10 @@ function toggle() {
           class="folder-node__star"
           :size="10"
           :stroke-width="2"
-          aria-label="Starred folder"
+          :aria-label="t('folderNode.starredFolder')"
         />
       </span>
-      <span class="folder-node__name">{{ folder.name || '(unnamed)' }}</span>
+      <span class="folder-node__name">{{ folderDisplayName(folder) }}</span>
       <span v-if="showIndexProgress" class="folder-node__index">{{ indexPercent }}%</span>
       <span v-if="unread > 0" class="folder-node__count">{{ unread > 99999 ? '99999+' : unread }}</span>
     </button>

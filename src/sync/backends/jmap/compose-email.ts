@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { base64ToBytes, extractDataUriImages } from '../../../utils/inline-images';
 import { hasInternalProvenanceAttribute } from '../../../utils/compose-provenance';
 
@@ -42,7 +43,7 @@ function hasControlCharacter(value: string): boolean {
 }
 
 function attachmentInputError(index: number, field: string): Error {
-  const error: any = new Error(`Compose attachment ${index + 1} has an invalid ${field}`);
+  const error: any = new LocalizedError('composeEmail.composeAttachmentHasAnInvalid', { value1: index + 1, value2: field });
   error.type = 'invalidAttachment';
   error.attachmentIndex = index;
   return error;
@@ -168,7 +169,7 @@ async function uploadDataImages({ transport, account, images }): Promise<Prepare
       type: image.type,
       body: base64ToBytes(image.base64),
     });
-    if (!result?.blobId) throw new Error('JMAP upload returned no blobId');
+    if (!result?.blobId) throw new LocalizedError('composeEmail.jMAPUploadReturnedNoBlobId');
     attachments.push({
       blobId: result.blobId,
       type: image.type,
@@ -273,7 +274,7 @@ export async function prepareComposeEmail({
 }) {
   const sourceHtml = String(request.htmlBody ?? '');
   if (hasInternalProvenanceAttribute(sourceHtml)) {
-    throw new Error('Compose HTML contains an internal provenance attribute');
+    throw new LocalizedError('composeEmail.composeHTMLContainsAnInternalProvenanceAttribute');
   }
   const regularSources = regularAttachmentSources(request.attachments);
   const extracted = extractDataUriImages(sourceHtml);

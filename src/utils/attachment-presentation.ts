@@ -1,3 +1,4 @@
+import { t, formatNumber } from '../i18n/messages';
 import type { BodyAttachmentRow } from '../types';
 import {
   isInlineRasterType,
@@ -73,9 +74,9 @@ export function shouldSuppressResolvedCidPart(
  * a finite, non-negative count.
  */
 export function formatAttachmentSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes < 1024) return t('common.numberAndUnit', { number: formatNumber(bytes), unit: t('common.bytes') });
+  if (bytes < 1024 * 1024) return t('common.numberAndUnit', { number: formatNumber(Math.ceil(bytes / 1024)), unit: t('common.kibibytes') });
+  return t('common.numberAndUnit', { number: formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 }), unit: t('common.mebibytes') });
 }
 
 export function sanitizeAttachmentFilename(

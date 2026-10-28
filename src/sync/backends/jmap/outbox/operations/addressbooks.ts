@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../../../i18n/messages';
 import { ADDRESSBOOK_ERROR } from '../../../../../constants/addressbook-errors';
 import {
   ADDRESSBOOK_PHASE,
@@ -417,14 +418,14 @@ async function fetchAddressBooks({
     const methodError = pickResponse(result, 'error');
     throw new AddressBookOperationError(
       addressBookErrorType(methodError, 'noResponse', 'update'),
-      'AddressBook/get did not return a complete snapshot',
+      t('addressbooks.addressBookGetDidNotReturnACompleteSnapshot'),
       methodError ?? undefined,
     );
   }
   if (typeof response.state !== 'string' || !response.state) {
     throw new AddressBookOperationError(
       ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-      'AddressBook/get did not return a stable state',
+      t('addressbooks.addressBookGetDidNotReturnAStableState'),
     );
   }
   const ids = new Set<string>();
@@ -435,7 +436,7 @@ async function fetchAddressBooks({
   })) {
     throw new AddressBookOperationError(
       ADDRESSBOOK_ERROR.SERVER_UNAVAILABLE,
-      'AddressBook/get returned invalid or duplicate ids',
+      t('addressbooks.addressBookGetReturnedInvalidOrDuplicateIds'),
     );
   }
   return {
@@ -579,7 +580,7 @@ async function reconcileAcceptedWrite({
     }),
     cacheRepairErrorType: ADDRESSBOOK_ERROR.CACHE_REPAIR_FAILED,
     failureLog: (message) =>
-      `address book write applied but cache reconciliation failed: ${message}`,
+      t('addressbooks.addressBookWriteAppliedButCacheReconciliationFailed', { value1: message }),
     repair: async () => {
       const addressBooks = await syncAddressBooks({
         transport,
@@ -588,7 +589,7 @@ async function reconcileAcceptedWrite({
         useWebSocket,
       });
       if (!addressBooks.complete) {
-        throw new Error('AddressBook/get reconciliation was incomplete');
+        throw new LocalizedError('addressbooks.addressBookGetReconciliationWasIncomplete');
       }
       if (operation === 'destroy') {
         const contacts = await syncContacts({
@@ -598,7 +599,7 @@ async function reconcileAcceptedWrite({
           useWebSocket,
         });
         if (contacts.unstable || contacts.needsFullSync) {
-          throw new Error('ContactCard reconciliation was incomplete');
+          throw new LocalizedError('addressbooks.contactCardReconciliationWasIncomplete');
         }
       }
       const addressbooks = await handlers[DB_RPC.ADDRESSBOOK_LIST]({
@@ -610,8 +611,8 @@ async function reconcileAcceptedWrite({
       if (operation === 'destroy' ? addressbook !== null : addressbook === null) {
         throw new Error(
           operation === 'destroy'
-            ? 'Destroyed address book is still present after reconciliation'
-            : 'Address book is missing after reconciliation',
+            ? t('addressbooks.destroyedAddressBookIsStillPresentAfterReconciliation')
+            : t('addressbooks.addressBookIsMissingAfterReconciliation'),
         );
       }
       return { addressbooks, addressbook };

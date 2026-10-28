@@ -1,3 +1,4 @@
+import { t } from '../../../../../i18n/messages';
 import { DB_RPC } from '../../../../../db/protocol';
 import { callJmap, pickResponse } from '../../invoke';
 import { maxObjectsInGet, maxObjectsInSet } from '../../limits';
@@ -135,7 +136,7 @@ async function runMoveToFolders({ transport, handlers, row, request, useWebSocke
           if (next.size === 0) {
             errors[String(message.localId)] = {
               type: 'invalidProperties',
-              description: 'The move would leave the Email in no mailbox.',
+              description: t('moveToFolders.theMoveWouldLeaveTheEmailInNoMailbox'), descriptionKey: 'moveToFolders.theMoveWouldLeaveTheEmailInNoMailbox', descriptionParams: {},
               properties: ['mailboxIds'],
             };
             continue;

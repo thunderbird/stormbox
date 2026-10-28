@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, displayLocale } from '../../i18n/messages';
 import { ArrowLeft, RotateCcw, Trash2 } from '@lucide/vue';
 import { computed, nextTick, ref } from 'vue';
 
@@ -28,7 +29,7 @@ const emit = defineEmits<{
 const paneEl = ref<HTMLElement | null>(null);
 const expiresLabel = computed(() =>
   props.detail
-    ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' })
+    ? new Intl.DateTimeFormat(displayLocale(), { dateStyle: 'medium' })
       .format(new Date(props.detail.expires_at))
     : '');
 const contactDetail = computed(() =>
@@ -47,10 +48,10 @@ defineExpose({ focusDetail });
     ref="paneEl"
     class="trash-detail"
     tabindex="-1"
-    aria-label="Trashed contact details"
+    :aria-label="t('contactTrashDetailPane.trashedContactDetails')"
   >
     <header class="trash-detail__header">
-      <AppIconButton title="Back" aria-label="Back" @click="emit('back')">
+      <AppIconButton :title="t('contactTrashDetailPane.back')" :aria-label="t('contactTrashDetailPane.back')" @click="emit('back')">
         <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
       </AppIconButton>
       <div class="trash-detail__actions">
@@ -61,7 +62,7 @@ defineExpose({ focusDetail });
           <template #iconLeft>
             <RotateCcw :size="16" :stroke-width="1.9" aria-hidden="true" />
           </template>
-          Restore
+          {{ t('contactTrashDetailPane.restore') }}
         </AppButton>
         <AppButton
           class="trash-detail__delete"
@@ -72,7 +73,7 @@ defineExpose({ focusDetail });
           <template #iconLeft>
             <Trash2 :size="16" :stroke-width="1.9" aria-hidden="true" />
           </template>
-          Delete Forever
+          {{ t('contactTrashDetailPane.deleteForever') }}
         </AppButton>
       </div>
     </header>
@@ -81,7 +82,7 @@ defineExpose({ focusDetail });
       class="trash-detail__content trash-detail__loading"
       role="status"
     >
-      Loading trashed contact…
+      {{ t('contactTrashDetailPane.loadingTrashedContact') }}
     </div>
     <div
       v-else-if="error"
@@ -90,7 +91,7 @@ defineExpose({ focusDetail });
     >
       <p>{{ error }}</p>
       <AppButton variant="outline" @click="emit('retry')">
-        Try again
+        {{ t('contactTrashDetailPane.tryAgain') }}
       </AppButton>
     </div>
     <ContactDetailsView

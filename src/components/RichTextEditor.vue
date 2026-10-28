@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t, LocalizedError } from '../i18n/messages';
 import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue';
 import {
   Bold,
@@ -78,7 +79,7 @@ const props = withDefaults(
     maxSerializedUtf8Bytes?: number | null;
   }>(),
   {
-    accessibleLabel: 'Rich text editor',
+    get accessibleLabel() { return t('richTextEditor.richTextEditor'); },
     ariaDescribedby: undefined,
     ariaInvalid: false,
     contentKey: 'default',
@@ -155,12 +156,12 @@ const blockElementNames = new Set([
   'FIGURE',
   'FIGCAPTION',
   'FOOTER',
-  'H1',
-  'H2',
-  'H3',
-  'H4',
-  'H5',
-  'H6',
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
   'HEADER',
   'LI',
   'OL',
@@ -177,24 +178,24 @@ const blockElementNames = new Set([
   'UL',
 ]);
 const fontOptions = [
-  { label: 'Sans', value: 'Arial, sans-serif' },
-  { label: 'Serif', value: 'Georgia, serif' },
-  { label: 'Mono', value: '"Courier New", monospace' },
-  { label: 'Verdana', value: 'Verdana, sans-serif' },
-  { label: 'Times', value: '"Times New Roman", serif' },
+  { get label() { return t('richTextEditor.sans'); }, value: "Arial, sans-serif" },
+  { get label() { return t('richTextEditor.serif'); }, value: "Georgia, serif" },
+  { get label() { return t('richTextEditor.mono'); }, value: "\"Courier New\", monospace" },
+  { get label() { return t('richTextEditor.verdana'); }, value: "Verdana, sans-serif" },
+  { get label() { return t('richTextEditor.times'); }, value: "\"Times New Roman\", serif" },
 ];
 const fontSizeOptions = [
-  { label: 'Small', value: '12px' },
-  { label: 'Normal', value: normalFontSize },
-  { label: 'Large', value: '18px' },
-  { label: 'Huge', value: '24px' },
+  { get label() { return t('richTextEditor.small'); }, value: '12px' },
+  { get label() { return t('richTextEditor.normal'); }, value: normalFontSize },
+  { get label() { return t('richTextEditor.large'); }, value: '18px' },
+  { get label() { return t('richTextEditor.huge'); }, value: '24px' },
 ];
-const fontFamilyChoices = [{ label: 'Default', value: '' }, ...fontOptions];
+const fontFamilyChoices = [{ get label() { return t('richTextEditor.default'); }, value: '' }, ...fontOptions];
 const alignmentOptions = [
-  { label: 'Align left', value: 'left', icon: TextAlignStart },
-  { label: 'Align center', value: 'center', icon: TextAlignCenter },
-  { label: 'Align right', value: 'right', icon: TextAlignEnd },
-  { label: 'Align justify', value: 'justify', icon: TextAlignJustify },
+  { get label() { return t('richTextEditor.alignLeft'); }, value: 'left', icon: TextAlignStart },
+  { get label() { return t('richTextEditor.alignCenter'); }, value: 'center', icon: TextAlignCenter },
+  { get label() { return t('richTextEditor.alignRight'); }, value: 'right', icon: TextAlignEnd },
+  { get label() { return t('richTextEditor.alignJustify'); }, value: 'justify', icon: TextAlignJustify },
 ];
 
 const shortcutModifier = shortcutModifierLabel();
@@ -509,7 +510,7 @@ function updateToolbarState(pathOverride: string | null = null) {
   const blockFormatting = selectedBlockFormatting(range);
   toolbarState.value = {
     ...toolbarState.value,
-    bold: stateForFormat('B', path, range),
+    bold: stateForFormat(t('richTextEditor.b'), path, range),
     italic: stateForFormat('I', path, range),
     underline: stateForFormat('U', path, range),
     strikethrough: stateForFormat('S', path, range),
@@ -689,9 +690,9 @@ function applyFontSize(value: string) {
 }
 
 const fontFamilyLabel = computed(() =>
-  fontOptions.find((font) => font.value === toolbarState.value.fontFamily)?.label ?? 'Font');
+  fontOptions.find((font) => font.value === toolbarState.value.fontFamily)?.label ?? t('richTextEditor.font'));
 const fontSizeLabel = computed(() =>
-  fontSizeOptions.find((size) => size.value === toolbarState.value.fontSize)?.label ?? 'Size');
+  fontSizeOptions.find((size) => size.value === toolbarState.value.fontSize)?.label ?? t('richTextEditor.size'));
 
 function pickFontFace(value: string, event: Event) {
   closeContainingDropdown(event);
@@ -752,7 +753,7 @@ function validLinkUrl(value: string): boolean {
 function applyLink() {
   const trimmed = linkUrl.value.trim();
   if (!validLinkUrl(trimmed)) {
-    linkError.value = 'Enter an HTTP, HTTPS, or mailto URL.';
+    linkError.value = t('richTextEditor.enterAnHTTPHTTPSOrMailtoURL');
     void nextTick(() => linkInputEl.value?.focus());
     return;
   }
@@ -788,9 +789,9 @@ function readFileAsDataUrl(file: File): Promise<string> {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') resolve(reader.result);
-      else reject(new Error('Pasted file did not produce a data URL'));
+      else reject(new LocalizedError('richTextEditor.pastedFileDidNotProduceADataURL'));
     };
-    reader.onerror = () => reject(reader.error ?? new Error('Pasted file could not be read'));
+    reader.onerror = () => reject(reader.error ?? new LocalizedError('richTextEditor.pastedFileCouldNotBeRead'));
     reader.readAsDataURL(file);
   });
 }
@@ -819,18 +820,18 @@ async function insertPickedImage(event: Event): Promise<void> {
   input.value = '';
   if (!file) return;
   if (!PICKABLE_IMAGE_TYPES.has(file.type.trim().toLowerCase())) {
-    imageInsertError.value = 'Choose a PNG, JPEG, GIF, or WebP image.';
+    imageInsertError.value = t('richTextEditor.chooseAPNGJPEGGIFOrWebPImage');
     return;
   }
   if (file.size > MAX_INLINE_RASTER_BYTES) {
-    imageInsertError.value = 'Choose an image no larger than 10 MiB.';
+    imageInsertError.value = t('richTextEditor.chooseAnImageNoLargerThan10MiB');
     return;
   }
 
   try {
     const dataUrl = await readFileAsDataUrl(file);
     if (!await decodeRaster(file, dataUrl)) {
-      imageInsertError.value = 'This image could not be read.';
+      imageInsertError.value = t('richTextEditor.thisImageCouldNotBeRead');
       return;
     }
     runEditorCommand((editor) => {
@@ -842,7 +843,7 @@ async function insertPickedImage(event: Event): Promise<void> {
     });
     imageInsertError.value = null;
   } catch {
-    imageInsertError.value = 'This image could not be read.';
+    imageInsertError.value = t('richTextEditor.thisImageCouldNotBeRead');
   }
 }
 
@@ -943,22 +944,22 @@ function registerKeyboardShortcut(
 
 function registerKeyboardShortcuts() {
   if (!squire) return;
-  ['Ctrl-b', 'Ctrl-B', 'Meta-b', 'Meta-B'].forEach((key) => registerKeyboardShortcut(
+  ["Ctrl-b", "Ctrl-B", "Meta-b", "Meta-B"].forEach((key) => registerKeyboardShortcut(
     key,
-    (editor, range) => toggleFormatInRange(editor, 'B', null, range),
+    (editor, range) => toggleFormatInRange(editor, t('richTextEditor.b'), null, range),
   ));
-  ['Ctrl-i', 'Ctrl-I', 'Meta-i', 'Meta-I'].forEach((key) => registerKeyboardShortcut(
+  ["Ctrl-i", "Ctrl-I", "Meta-i", "Meta-I"].forEach((key) => registerKeyboardShortcut(
     key,
     (editor, range) => toggleFormatInRange(editor, 'I', null, range),
   ));
-  ['Ctrl-u', 'Ctrl-U', 'Meta-u', 'Meta-U'].forEach((key) => registerKeyboardShortcut(
+  ["Ctrl-u", "Ctrl-U", "Meta-u", "Meta-U"].forEach((key) => registerKeyboardShortcut(
     key,
     (editor, range) => toggleFormatInRange(editor, 'U', null, range),
   ));
-  ['Ctrl-z', 'Meta-z'].forEach((key) => registerKeyboardShortcut(key, (editor) => editor.undo()));
-  ['Ctrl-y', 'Meta-y', 'Ctrl-Shift-z', 'Ctrl-Shift-Z', 'Meta-Shift-z', 'Meta-Shift-Z']
+  ["Ctrl-z", "Meta-z"].forEach((key) => registerKeyboardShortcut(key, (editor) => editor.undo()));
+  ["Ctrl-y", "Meta-y", "Ctrl-Shift-z", "Ctrl-Shift-Z", "Meta-Shift-z", "Meta-Shift-Z"]
     .forEach((key) => registerKeyboardShortcut(key, (editor) => editor.redo()));
-  ['Ctrl-k', 'Meta-k'].forEach((key) => {
+  ["Ctrl-k", "Meta-k"].forEach((key) => {
     squire?.setKeyHandler(key, (_editor, event, range) => {
       event.preventDefault();
       lastSelection = range.cloneRange();
@@ -1025,7 +1026,7 @@ function scheduleToolbarOverflowUpdate() {
  * items inside the dropdowns are not toolbar stops; a <details> hides them
  * until its summary is activated.
  */
-const TOOLBAR_CONTROL_SELECTOR = 'button, summary, input, select';
+const TOOLBAR_CONTROL_SELECTOR = "button, summary, input, select";
 let toolbarTabStop: HTMLElement | null = null;
 
 function toolbarControls(): HTMLElement[] {
@@ -1077,7 +1078,7 @@ function onToolbarKeydown(event: KeyboardEvent) {
 function observeToolbarSize() {
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
-  if ('ResizeObserver' in window && toolbarEl.value) {
+  if (t('richTextEditor.resizeObserver') in window && toolbarEl.value) {
     toolbarResizeObserver = new window.ResizeObserver(scheduleToolbarOverflowUpdate);
     toolbarResizeObserver.observe(toolbarEl.value);
   }
@@ -1259,7 +1260,7 @@ defineExpose({
       ref="toolbarEl"
       class="compose-toolbar"
       role="toolbar"
-      aria-label="Rich text formatting"
+      :aria-label="t('richTextEditor.richTextFormatting')"
       @pointerdown.capture="rememberSelection"
       @focusin="onToolbarFocusIn"
       @keydown="onToolbarKeydown"
@@ -1269,11 +1270,11 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.bold }"
-          aria-label="Bold"
+          :aria-label="t('richTextEditor.bold')"
           :aria-keyshortcuts="`${ariaShortcutModifier}+B`"
-          :title="`Bold (${shortcutModifier}+B)`"
+          :title="t('richTextEditor.boldB', { value1: shortcutModifier })"
           @mousedown.prevent
-          @click="toggleFormat('B')"
+          @click="toggleFormat(t('richTextEditor.b'))"
         >
           <Bold :size="15" />
         </button>
@@ -1281,9 +1282,9 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.italic }"
-          aria-label="Italic"
+          :aria-label="t('richTextEditor.italic')"
           :aria-keyshortcuts="`${ariaShortcutModifier}+I`"
-          :title="`Italic (${shortcutModifier}+I)`"
+          :title="t('richTextEditor.italicI', { value1: shortcutModifier })"
           @mousedown.prevent
           @click="toggleFormat('I')"
         >
@@ -1293,9 +1294,9 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.underline }"
-          aria-label="Underline"
+          :aria-label="t('richTextEditor.underline')"
           :aria-keyshortcuts="`${ariaShortcutModifier}+U`"
-          :title="`Underline (${shortcutModifier}+U)`"
+          :title="t('richTextEditor.underlineU', { value1: shortcutModifier })"
           @mousedown.prevent
           @click="toggleFormat('U')"
         >
@@ -1305,8 +1306,8 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.strikethrough }"
-          aria-label="Strikethrough"
-          title="Strikethrough"
+          :aria-label="t('richTextEditor.strikethrough')"
+          :title="t('richTextEditor.strikethrough')"
           @mousedown.prevent
           @click="toggleFormat('S')"
         >
@@ -1318,14 +1319,14 @@ defineExpose({
         <AppDropdown class="toolbar-dropdown">
           <summary
             class="app-dropdown__summary toolbar-button toolbar-more__summary"
-            aria-label="Font family"
-            title="Font family"
+            :aria-label="t('richTextEditor.fontFamily')"
+            :title="t('richTextEditor.fontFamily')"
             @mousedown.prevent
           >{{ fontFamilyLabel }}</summary>
           <div
             class="app-dropdown__menu toolbar-more__menu"
             role="menu"
-            aria-label="Font family"
+            :aria-label="t('richTextEditor.fontFamily')"
           >
             <button
               v-for="font in fontFamilyChoices"
@@ -1346,14 +1347,14 @@ defineExpose({
         <AppDropdown class="toolbar-dropdown">
           <summary
             class="app-dropdown__summary toolbar-button toolbar-more__summary"
-            aria-label="Font size"
-            title="Font size"
+            :aria-label="t('richTextEditor.fontSize')"
+            :title="t('richTextEditor.fontSize')"
             @mousedown.prevent
           >{{ fontSizeLabel }}</summary>
           <div
             class="app-dropdown__menu toolbar-more__menu"
             role="menu"
-            aria-label="Font size"
+            :aria-label="t('richTextEditor.fontSize')"
           >
             <button
               v-for="size in fontSizeOptions"
@@ -1371,22 +1372,22 @@ defineExpose({
             </button>
           </div>
         </AppDropdown>
-        <label class="toolbar-color" title="Text color">
-          <span>A</span>
+        <label class="toolbar-color" :title="t('richTextEditor.textColor')">
+          <span>{{ t('richTextEditor.a') }}</span>
           <input
             type="color"
             :value="toolbarState.textColor"
-            aria-label="Text color"
+            :aria-label="t('richTextEditor.textColor')"
             @mousedown="rememberSelection"
             @input="applyTextColor(($event.target as HTMLInputElement).value)"
           />
         </label>
-        <label class="toolbar-color" title="Highlight color">
+        <label class="toolbar-color" :title="t('richTextEditor.highlightColor')">
           <Highlighter :size="15" />
           <input
             type="color"
             :value="toolbarState.highlightColor"
-            aria-label="Highlight color"
+            :aria-label="t('richTextEditor.highlightColor')"
             @mousedown="rememberSelection"
             @input="applyHighlightColor(($event.target as HTMLInputElement).value)"
           />
@@ -1402,8 +1403,8 @@ defineExpose({
         <button
           type="button"
           class="toolbar-button"
-          aria-label="Insert image"
-          title="Insert image"
+          :aria-label="t('richTextEditor.insertImage')"
+          :title="t('richTextEditor.insertImage')"
           @mousedown.prevent
           @click="chooseImage"
         >
@@ -1413,9 +1414,9 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.link }"
-          aria-label="Insert or remove link"
+          :aria-label="t('richTextEditor.insertOrRemoveLink')"
           :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
-          :title="`Insert or remove link (${shortcutModifier}+K)`"
+          :title="t('richTextEditor.insertOrRemoveLinkK', { value1: shortcutModifier })"
           @mousedown.prevent
           @click="openLinkEditor"
         >
@@ -1428,8 +1429,8 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.unorderedList }"
-          aria-label="Bulleted list"
-          title="Bulleted list"
+          :aria-label="t('richTextEditor.bulletedList')"
+          :title="t('richTextEditor.bulletedList')"
           @mousedown.prevent
           @click="toggleList('UL')"
         >
@@ -1439,8 +1440,8 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.orderedList }"
-          aria-label="Numbered list"
-          title="Numbered list"
+          :aria-label="t('richTextEditor.numberedList')"
+          :title="t('richTextEditor.numberedList')"
           @mousedown.prevent
           @click="toggleList('OL')"
         >
@@ -1450,8 +1451,8 @@ defineExpose({
           type="button"
           class="toolbar-button"
           :class="{ active: toolbarState.quote }"
-          aria-label="Quote"
-          title="Quote"
+          :aria-label="t('richTextEditor.quote')"
+          :title="t('richTextEditor.quote')"
           @mousedown.prevent
           @click="adjustQuote(1)"
         >
@@ -1460,8 +1461,8 @@ defineExpose({
         <button
           type="button"
           class="toolbar-button"
-          aria-label="Unquote"
-          title="Unquote"
+          :aria-label="t('richTextEditor.unquote')"
+          :title="t('richTextEditor.unquote')"
           @mousedown.prevent
           @click="adjustQuote(-1)"
         >
@@ -1493,23 +1494,23 @@ defineExpose({
           class="app-dropdown__summary toolbar-button toolbar-more__summary"
           @mousedown.prevent
         >
-          More
+          {{ t('richTextEditor.more') }}
         </summary>
         <div
           class="app-dropdown__menu toolbar-more__menu"
           role="menu"
-          aria-label="More formatting options"
+          :aria-label="t('richTextEditor.moreFormattingOptions')"
         >
           <div
             v-if="!isToolbarGroupVisible('font')"
             class="toolbar-menu-section"
             role="group"
-            aria-label="Font formatting"
+            :aria-label="t('richTextEditor.fontFormatting')"
           >
             <span
               class="app-dropdown__heading toolbar-menu-heading"
               aria-hidden="true"
-            >Font</span>
+            >{{ t('richTextEditor.font') }}</span>
             <button
               v-for="font in fontFamilyChoices"
               :key="`font-${font.value}`"
@@ -1517,7 +1518,7 @@ defineExpose({
               class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontFamily === font.value"
-              :aria-label="`Font: ${font.label}`"
+              :aria-label="t('richTextEditor.font2', { value1: font.label })"
               @mousedown.prevent
               @click="applyFontFace(font.value)"
             >
@@ -1528,7 +1529,7 @@ defineExpose({
             <span
               class="app-dropdown__heading toolbar-menu-heading"
               aria-hidden="true"
-            >Size</span>
+            >{{ t('richTextEditor.size') }}</span>
             <button
               v-for="size in fontSizeOptions"
               :key="`size-${size.value}`"
@@ -1536,7 +1537,7 @@ defineExpose({
               class="app-dropdown__item toolbar-menu-button"
               role="menuitemradio"
               :aria-checked="toolbarState.fontSize === size.value"
-              :aria-label="`Size: ${size.label}`"
+              :aria-label="t('richTextEditor.size2', { value1: size.label })"
               @mousedown.prevent
               @click="applyFontSize(size.value)"
             >
@@ -1545,21 +1546,21 @@ defineExpose({
               <span>{{ size.label }}</span>
             </button>
             <label class="toolbar-menu-field">
-              <span>Text color</span>
+              <span>{{ t('richTextEditor.textColor') }}</span>
               <input
                 type="color"
                 :value="toolbarState.textColor"
-                aria-label="Text color"
+                :aria-label="t('richTextEditor.textColor')"
                 @mousedown="rememberSelection"
                 @input="applyTextColor(($event.target as HTMLInputElement).value)"
               />
             </label>
             <label class="toolbar-menu-field">
-              <span>Highlight</span>
+              <span>{{ t('richTextEditor.highlight') }}</span>
               <input
                 type="color"
                 :value="toolbarState.highlightColor"
-                aria-label="Highlight color"
+                :aria-label="t('richTextEditor.highlightColor')"
                 @mousedown="rememberSelection"
                 @input="applyHighlightColor(($event.target as HTMLInputElement).value)"
               />
@@ -1570,7 +1571,7 @@ defineExpose({
             v-if="!isToolbarGroupVisible('insert')"
             class="toolbar-menu-section"
             role="group"
-            aria-label="Insert"
+            :aria-label="t('richTextEditor.insert')"
           >
             <button
               type="button"
@@ -1580,20 +1581,20 @@ defineExpose({
               @click="chooseImage"
             >
               <ImageIcon :size="15" />
-              <span>Insert image</span>
+              <span>{{ t('richTextEditor.insertImage') }}</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
               role="menuitem"
-              aria-label="Insert or remove link"
+              :aria-label="t('richTextEditor.insertOrRemoveLink')"
               :aria-keyshortcuts="`${ariaShortcutModifier}+K`"
-              :title="`Insert or remove link (${shortcutModifier}+K)`"
+              :title="t('richTextEditor.insertOrRemoveLinkK', { value1: shortcutModifier })"
               @mousedown.prevent
               @click="openLinkEditor"
             >
               <LinkIcon :size="15" />
-              <span>Link</span>
+              <span>{{ t('richTextEditor.link') }}</span>
             </button>
           </div>
 
@@ -1601,7 +1602,7 @@ defineExpose({
             v-if="!isToolbarGroupVisible('lists')"
             class="toolbar-menu-section"
             role="group"
-            aria-label="Lists and quoting"
+            :aria-label="t('richTextEditor.listsAndQuoting')"
           >
             <button
               type="button"
@@ -1613,7 +1614,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.unorderedList" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Bulleted list</span>
+              <span>{{ t('richTextEditor.bulletedList') }}</span>
             </button>
             <button
               type="button"
@@ -1625,7 +1626,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.orderedList" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Numbered list</span>
+              <span>{{ t('richTextEditor.numberedList') }}</span>
             </button>
             <button
               type="button"
@@ -1635,7 +1636,7 @@ defineExpose({
               @click="adjustQuote(1)"
             >
               <Quote :size="15" class="icon-mirrored" />
-              <span>Quote</span>
+              <span>{{ t('richTextEditor.quote') }}</span>
             </button>
             <button
               type="button"
@@ -1645,7 +1646,7 @@ defineExpose({
               @click="adjustQuote(-1)"
             >
               <Quote :size="15" />
-              <span>Unquote</span>
+              <span>{{ t('richTextEditor.unquote') }}</span>
             </button>
           </div>
 
@@ -1653,7 +1654,7 @@ defineExpose({
             v-if="!isToolbarGroupVisible('alignment')"
             class="toolbar-menu-section"
             role="group"
-            aria-label="Alignment"
+            :aria-label="t('richTextEditor.alignment')"
           >
             <button
               v-for="alignment in alignmentOptions"
@@ -1671,7 +1672,7 @@ defineExpose({
             </button>
           </div>
 
-          <div class="toolbar-menu-section" role="group" aria-label="More formatting">
+          <div class="toolbar-menu-section" role="group" :aria-label="t('richTextEditor.moreFormatting')">
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
@@ -1682,7 +1683,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.direction === 'ltr'" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Left-to-right</span>
+              <span>{{ t('richTextEditor.leftToRight') }}</span>
             </button>
             <button
               type="button"
@@ -1694,7 +1695,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.direction === 'rtl'" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Right-to-left</span>
+              <span>{{ t('richTextEditor.rightToLeft') }}</span>
             </button>
             <button
               type="button"
@@ -1706,7 +1707,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.subscript" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Subscript</span>
+              <span>{{ t('richTextEditor.subscript') }}</span>
             </button>
             <button
               type="button"
@@ -1718,7 +1719,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.superscript" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Superscript</span>
+              <span>{{ t('richTextEditor.superscript') }}</span>
             </button>
             <button
               type="button"
@@ -1730,7 +1731,7 @@ defineExpose({
             >
               <Check v-if="toolbarState.code" :size="15" aria-hidden="true" />
               <span v-else aria-hidden="true" />
-              <span>Code</span>
+              <span>{{ t('richTextEditor.code') }}</span>
             </button>
             <button
               type="button"
@@ -1740,35 +1741,35 @@ defineExpose({
               @click="runEditorCommand((editor) => editor.removeAllFormatting())"
             >
               <RemoveFormatting :size="15" />
-              <span>Clear formatting</span>
+              <span>{{ t('richTextEditor.clearFormatting') }}</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
               :disabled="!toolbarState.canUndo"
               role="menuitem"
-              aria-label="Undo"
+              :aria-label="t('richTextEditor.undo')"
               :aria-keyshortcuts="`${ariaShortcutModifier}+Z`"
-              :title="`Undo (${shortcutModifier}+Z)`"
+              :title="t('richTextEditor.undoZ', { value1: shortcutModifier })"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.undo())"
             >
               <Undo2 :size="15" />
-              <span>Undo</span>
+              <span>{{ t('richTextEditor.undo') }}</span>
             </button>
             <button
               type="button"
               class="app-dropdown__item toolbar-menu-button"
               :disabled="!toolbarState.canRedo"
               role="menuitem"
-              aria-label="Redo"
+              :aria-label="t('richTextEditor.redo')"
               :aria-keyshortcuts="`${ariaShortcutModifier}+Y ${ariaShortcutModifier}+Shift+Z`"
-              :title="`Redo (${shortcutModifier}+Y / ${shortcutModifier}+Shift+Z)`"
+              :title="t('richTextEditor.redoYShiftZ', { value1: shortcutModifier, value2: shortcutModifier })"
               @mousedown.prevent
               @click="runEditorCommand((editor) => editor.redo())"
             >
               <Redo2 :size="15" />
-              <span>Redo</span>
+              <span>{{ t('richTextEditor.redo') }}</span>
             </button>
           </div>
         </div>
@@ -1786,14 +1787,14 @@ defineExpose({
       @keydown.esc.prevent.stop="cancelLinkEditor"
     >
       <label class="editor-link-form__field">
-        <span>Link URL</span>
+        <span>{{ t('richTextEditor.linkURL') }}</span>
         <input
           ref="linkInputEl"
           v-model="linkUrl"
           type="url"
           inputmode="url"
           autocomplete="url"
-          placeholder="https://example.com"
+          :placeholder="t('richTextEditor.httpsExampleCom')"
           :aria-invalid="linkError ? 'true' : undefined"
           :aria-describedby="linkError ? 'editor-link-error' : undefined"
         >
@@ -1808,17 +1809,17 @@ defineExpose({
       </p>
       <div class="editor-link-form__actions">
         <AppButton variant="outline" @click="cancelLinkEditor">
-          Cancel
+          {{ t('richTextEditor.cancel') }}
         </AppButton>
         <AppButton
           v-if="linkEditorHasLink"
           variant="outline"
           @click="removeLink"
         >
-          Remove link
+          {{ t('richTextEditor.removeLink') }}
         </AppButton>
         <AppButton form-action="submit">
-          Apply link
+          {{ t('richTextEditor.applyLink') }}
         </AppButton>
       </div>
     </form>

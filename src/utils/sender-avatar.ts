@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 export interface SenderAvatar {
   domain: string;
   imageUrl: string;
@@ -63,7 +64,7 @@ export function extractEmail(fromText: string | null | undefined): string {
 }
 
 export function shortFrom(text: string | null | undefined): string {
-  if (!text) return '(no sender)';
+  if (!text) return t('senderAvatar.noSender');
   const m = String(text).match(/^(.+?)\s*<.+>$/);
   return m ? m[1].replace(/^"|"$/g, '') : String(text);
 }
@@ -88,7 +89,7 @@ export function senderAvatarStyle(text: string | null | undefined): Record<strin
   const seed = extractEmail(text) || shortFrom(text);
   const hue = hashText(seed) % 360;
   return {
-    background: `hsl(${hue} 42% 42%)`,
+    get background() { return t('senderAvatar.hsl4242', { value1: hue }); },
   };
 }
 
