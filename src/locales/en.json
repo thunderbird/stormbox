@@ -326,7 +326,7 @@
     "removeColumn": "Remove column",
     "moreActionsForColumn": "More actions for column {value1}",
     "useUpAndDownArrowsToNavigateMessagesSpace": "Use Up and Down arrows to navigate messages, Space to select, and Enter to toggle the message preview. Press Right Arrow or F2 for message controls, then Left and Right arrows to move between them. Escape returns to message navigation. Tab leaves the message list.",
-    "messages": "messages",
+    "messages": "Messages",
     "loading": "Loading {value1}…",
     "noMessagesMatchingIn": "No messages matching \"{value1}\" in {value2}.",
     "noMessagesAreTagged": "No messages are tagged {value1}.",
@@ -338,7 +338,8 @@
     "noUnreadMessages": "No unread messages in {folder}.",
     "noStarredMessages": "No starred messages in {folder}.",
     "noUnreadStarredMessages": "No unread starred messages in {folder}.",
-    "message": "message"
+    "message": "message",
+    "messageItems": "messages"
   },
   "messageListHeaderTitle": {
     "mail": "Mail",
@@ -798,7 +799,7 @@
     "deleteSelectedContactsForever": "Delete selected contacts forever",
     "deleteSelectedContacts": "Delete selected contacts",
     "deleteForever": "Delete Forever",
-    "contact": "contact",
+    "contact": "Contact",
     "addressBook": "Address book",
     "loading": "Loading…",
     "deselect": "Deselect {value1}",
@@ -814,7 +815,8 @@
     "trashedContacts": "trashed contacts",
     "trashedContact": "trashed contact",
     "identities": "identities",
-    "identity": "identity"
+    "identity": "identity",
+    "contactItem": "contact"
   },
   "identityAddressRepeater": {
     "replyToAddresses": "Reply-To addresses",

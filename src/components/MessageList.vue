@@ -951,7 +951,7 @@ defineExpose({ focusColumnControl, focusFolderPicker });
       clear-class="msg-list__bulk-action msg-list__bulk-action--ghost"
       count-class="msg-list__count"
       :disabled="folderId == null"
-      :item-label="t('messageList.messages')"
+      :item-label="t('messageList.messageItems')"
       select-all-class="msg-list__select-all"
       selection-actions-class="msg-list__bulk-actions"
       :singular-item-label="t('messageList.message')"

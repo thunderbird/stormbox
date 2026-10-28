@@ -158,7 +158,7 @@ function flattenFolders(accountFolders: FolderRow[], isOwn: boolean): DialogFold
         path,
         presentation: folderPresentation(folder),
       });
-      walk(folder.id, depth + 1, [...path, folder.name]);
+      walk(folder.id, depth + 1, [...path, folder.name || t('common.unnamedFolder')]);
     }
   }
   walk('ROOT', 0, []);
@@ -237,7 +237,7 @@ const items = computed<ManagerItem[]>(() => {
     // A search cuts across the tree, so it ignores collapse state —
     // a match must never be hidden by a collapsed ancestor.
     const rows = query
-      ? section.rows.filter((row) => row.folder.name.toLowerCase().includes(query))
+      ? section.rows.filter((row) => (row.folder.name ?? '').toLowerCase().includes(query))
       : visibleRows(section.rows);
     if (rows.length === 0) continue;
     out.push({ kind: 'header', key: `h-${section.account.id}`, section });
@@ -792,7 +792,7 @@ const editorParentOptions = computed<ParentOption[]>(() => {
     if (!row.canCreateChild) continue;
     options.push({
       id: row.folder.id,
-      label: `${'\u00a0'.repeat(row.depth * 3)}${row.folder.name}`,
+      label: `${'\u00a0'.repeat(row.depth * 3)}${row.folder.name || t('common.unnamedFolder')}`,
     });
   }
   return options;
