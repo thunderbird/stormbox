@@ -9,7 +9,7 @@ test('preserves the English interface and renders an injected test catalog', asy
   await page.locator('.app-spaces__settings').click();
   const dialog = page.locator('[data-settings-dialog]');
   await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await expect(dialog.locator('.settings-dialog__row-title')).toHaveText([
+  await expect(dialog.locator('.settings-dialog__section').first().locator('.settings-dialog__row-title')).toHaveText([
     'Keyboard shortcuts', 'Follow system theme', 'Welcome & shortcuts',
   ]);
   await expect(dialog.getByRole('button', { name: 'Close settings', exact: true })).toBeVisible();
