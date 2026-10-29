@@ -40,9 +40,9 @@ describe('staffAppUrlForHostname', () => {
 
 describe('accountsUrlForHostname', () => {
   it('uses Thunderbird Accounts stage for dev hosts', () => {
-    expect(accountsUrlForHostname('localhost')).toBe('https://accounts-stage.tb.pro');
-    expect(accountsUrlForHostname('127.0.0.1')).toBe('https://accounts-stage.tb.pro');
-    expect(accountsUrlForHostname('sancus.thunderbird.net')).toBe('https://accounts-stage.tb.pro');
+    expect(accountsUrlForHostname('localhost')).toBe('https://accounts.stage-thundermail.com');
+    expect(accountsUrlForHostname('127.0.0.1')).toBe('https://accounts.stage-thundermail.com');
+    expect(accountsUrlForHostname('sancus.thunderbird.net')).toBe('https://accounts.stage-thundermail.com');
   });
 
   it('uses Thunderbird Accounts production for the production webmail hosts', () => {
@@ -51,7 +51,7 @@ describe('accountsUrlForHostname', () => {
   });
 
   it('uses Thunderbird Accounts stage for hosted non-production webmail', () => {
-    expect(accountsUrlForHostname('webmail.stage-thundermail.com')).toBe('https://accounts-stage.tb.pro');
+    expect(accountsUrlForHostname('webmail.stage-thundermail.com')).toBe('https://accounts.stage-thundermail.com');
   });
 });
 

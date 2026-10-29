@@ -252,9 +252,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-stage' }}
       VITE_JMAP_SERVER_URL: https://jmap.stage-thundermail.com
-      VITE_OIDC_ISSUER: https://auth-stage.tb.pro/realms/tbpro
+      VITE_OIDC_ISSUER: https://auth.stage-thundermail.com/realms/tbpro
       VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
-      VITE_ACCOUNTS_URL: https://accounts-stage.tb.pro
+      VITE_ACCOUNTS_URL: https://accounts.stage-thundermail.com
       VITE_APPOINTMENT_URL: https://appointment-stage.tb.pro
       VITE_SEND_URL: https://send-stage.tb.pro
       VITE_SENDER_AVATAR_PROXY_URL: https://avatars.thunderbird.net

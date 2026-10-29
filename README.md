@@ -78,7 +78,7 @@ the current hostname:
   (WS)
 - hosted sender avatars -> [`https://avatars.thunderbird.net`](https://avatars.thunderbird.net)
   ([thunderbird/avatars](https://github.com/thunderbird/avatars))
-- dev/local product links -> stage services (`accounts-stage.tb.pro`,
+- dev/local product links -> stage services (`accounts.stage-thundermail.com`,
   `appointment-stage.tb.pro`, `send-stage.tb.pro`)
 - hosted stage product links -> stage services
 - hosted prod and alpha product links -> production services

@@ -40,7 +40,7 @@ export function accountsUrlForHostname(hostname = globalThis.location?.hostname)
   if (isProdWebmailHostname(hostname)) {
     return "https://accounts.tb.pro";
   }
-  return "https://accounts-stage.tb.pro";
+  return "https://accounts.stage-thundermail.com";
 }
 
 export function appointmentUrlForHostname(hostname = globalThis.location?.hostname): string {
@@ -102,7 +102,7 @@ export const STAFF_APP_URL =
   import.meta.env.VITE_STAFF_APP_URL ?? staffAppUrlForHostname();
 
 export const OIDC_ISSUER =
-  import.meta.env.VITE_OIDC_ISSUER || "https://auth-stage.tb.pro/realms/tbpro";
+  import.meta.env.VITE_OIDC_ISSUER || "https://auth.stage-thundermail.com/realms/tbpro";
 
 export const OIDC_CLIENT_ID =
   import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox-test";
