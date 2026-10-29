@@ -78,7 +78,7 @@ framework: playwright
 # and mobile browsers; and therefore must be the same in all of our browserstack-*.yml config files
 # for playwright ver we need one compatible with our desktop and mobile browsers, see:
 # https://www.browserstack.com/docs/automate/playwright/browsers-and-os?fw-lang=nodejs
-browserstack.playwrightVersion: 1.59.1 # must match ver in package.json
+browserstack.playwrightVersion: 1.64.1 # must match ver in package.json
 browserstack.playwrightLogs: false # disable playwright logs appearing on browserstack builds as may contain sensitive info like credentials
 # CUSTOM_TAG_<INT>: # <string> (Default: parent folder name of the test file) Custom tag for your test suite
 browserstack.maskBasicAuth: true # mask username and passwords from browserstack session logs
@@ -86,3 +86,5 @@ browserstack.maskCommands: sendType, sendPress, setHTTPCredentials, setStorageSt
 # Test Observability is an intelligent test reporting & debugging product. It collects data using the SDK. Read more about what data is collected at https://www.browserstack.com/docs/test-observability/references/terms-and-conditions
 # Visit observability.browserstack.com to see your test reports and insights. To disable test observability, specify `testObservability: false` in the key below.
 testObservability: false
+# default is 90 seconds; some tests need longer when waiting for contact delete etc.
+idleTimeout: 300
