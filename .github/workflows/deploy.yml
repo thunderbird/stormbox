@@ -17,9 +17,7 @@ on:
           - alpha
           - prod
 
-permissions:
-  actions: read
-  contents: read
+permissions: {}
 
 # Keep one CI/deploy workflow per ref. Superseded PR runs cancel, while main
 # and manually dispatched deploy runs finish.
@@ -31,6 +29,8 @@ jobs:
   unit-test:
     name: Unit tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
@@ -46,7 +46,7 @@ jobs:
             thunderbird-accounts/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run vitest
         run: npm run test:unit
@@ -54,6 +54,8 @@ jobs:
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
@@ -69,7 +71,7 @@ jobs:
             thunderbird-accounts/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run vue-tsc
         run: npm run typecheck
@@ -77,6 +79,8 @@ jobs:
   e2e-test:
     name: E2E tests (${{ matrix.browser }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     strategy:
       fail-fast: false
@@ -95,7 +99,7 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps ${{ matrix.browser }}
@@ -104,7 +108,7 @@ jobs:
         run: |
           mkdir -p thunderbird-accounts/mail/etc
           cp thunderbird-accounts/config.toml.example thunderbird-accounts/mail/etc/config.toml
-          npm ci --prefix thunderbird-accounts
+          npm ci --ignore-scripts --prefix thunderbird-accounts
           npm run --prefix thunderbird-accounts build-theme
 
       - name: Start local e2e stack
@@ -200,6 +204,8 @@ jobs:
   verify-main-ci:
     name: Verify main CI
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
     steps:
       - name: Require successful main push CI for this commit
@@ -237,6 +243,8 @@ jobs:
   deploy-stage:
     name: Deploy stage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [unit-test, typecheck, e2e-test]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -269,14 +277,14 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
         run: npm run build
 
       - name: Deploy to preconfigured Cloudflare Pages project
         run: >-
-          npx -y wrangler@3.99.0 pages deploy dist
+          npx --ignore-scripts -y wrangler@3.99.0 pages deploy dist
           --project-name "$CLOUDFLARE_PAGES_PROJECT"
           --branch main
 
@@ -287,6 +295,8 @@ jobs:
   deploy-alpha:
     name: Deploy alpha
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [unit-test, typecheck, e2e-test]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -319,20 +329,22 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
         run: npm run build
 
       - name: Deploy to preconfigured Cloudflare Pages project
         run: >-
-          npx -y wrangler@3.99.0 pages deploy dist
+          npx --ignore-scripts -y wrangler@3.99.0 pages deploy dist
           --project-name "$CLOUDFLARE_PAGES_PROJECT"
           --branch main
 
   deploy-prod:
     name: Deploy prod
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [verify-main-ci]
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
     environment:
@@ -364,13 +376,13 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Build
         run: npm run build
 
       - name: Deploy to preconfigured Cloudflare Pages project
         run: >-
-          npx -y wrangler@3.99.0 pages deploy dist
+          npx --ignore-scripts -y wrangler@3.99.0 pages deploy dist
           --project-name "$CLOUDFLARE_PAGES_PROJECT"
           --branch main
