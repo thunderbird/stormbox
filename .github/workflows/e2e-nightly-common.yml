@@ -39,7 +39,7 @@ permissions:
 jobs:
   browserstack-e2e:
     name: ${{ inputs.job_name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment:
       name: prod
       deployment: false

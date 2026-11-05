@@ -30,7 +30,7 @@ concurrency:
 jobs:
   unit-test:
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
@@ -53,7 +53,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     steps:
       - name: Checkout
@@ -76,7 +76,7 @@ jobs:
 
   e2e-test:
     name: E2E tests (${{ matrix.browser }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name != 'workflow_dispatch' || inputs.target != 'prod'
     strategy:
       fail-fast: false
@@ -199,7 +199,7 @@ jobs:
 
   verify-main-ci:
     name: Verify main CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
     steps:
       - name: Require successful main push CI for this commit
@@ -236,7 +236,7 @@ jobs:
   # project. Custom domains and DNS records are provisioned out-of-band.
   deploy-stage:
     name: Deploy stage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [unit-test, typecheck, e2e-test]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -286,7 +286,7 @@ jobs:
   # on prod are redirected here via VITE_STAFF_APP_URL.
   deploy-alpha:
     name: Deploy alpha
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [unit-test, typecheck, e2e-test]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -332,7 +332,7 @@ jobs:
 
   deploy-prod:
     name: Deploy prod
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [verify-main-ci]
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'prod'
     environment:
