@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 
 # Keep local E2E browser runtime dependencies in the image. Browser binaries
 # are installed in postCreateCommand so they match the checked-out lockfile.
-RUN npx -y playwright@1.60.0 install-deps chromium firefox \
+RUN npx -y playwright@1.64.1 install-deps chromium firefox \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
