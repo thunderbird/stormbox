@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed, nextTick, ref, watch,
 } from 'vue';
@@ -88,7 +89,7 @@ function entryLabel(entry: RecipientEntry): string {
  * invalid one has to say so in words as well as in colour (WCAG 1.4.1).
  */
 function entryDescription(entry: RecipientEntry): string {
-  if ('invalid' in entry) return `${entry.text} — not a valid address`;
+  if ('invalid' in entry) return t('recipientInput.notAValidAddress', { value1: entry.text });
   const name = entry.name?.trim();
   return name ? `${name} <${entry.email}>` : entry.email;
 }
@@ -142,14 +143,14 @@ function usageMeta(candidate: AutocompleteCandidate): string | null {
   const at = Number(candidate.last_sent_at);
   if (Number.isFinite(at) && at > 0) {
     const days = Math.floor((Date.now() - at) / 86_400_000);
-    if (days < 1) parts.push('today');
-    else if (days < 7) parts.push(`${days}d ago`);
-    else if (days < 30) parts.push(`${Math.floor(days / 7)}w ago`);
-    else if (days < 365) parts.push(`${Math.floor(days / 30)}mo ago`);
-    else parts.push(`${Math.floor(days / 365)}y ago`);
+    if (days < 1) parts.push(t('recipientInput.today'));
+    else if (days < 7) parts.push(t('recipientInput.dAgo', { value1: days }));
+    else if (days < 30) parts.push(t('recipientInput.wAgo', { value1: Math.floor(days / 7) }));
+    else if (days < 365) parts.push(t('recipientInput.moAgo', { value1: Math.floor(days / 30) }));
+    else parts.push(t('recipientInput.yAgo', { value1: Math.floor(days / 365) }));
   }
   const sends = Number(candidate.send_count);
-  if (Number.isFinite(sends) && sends > 1) parts.push(`${sends} sends`);
+  if (Number.isFinite(sends) && sends > 1) parts.push(t('recipientInput.sends', { value1: sends }));
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
@@ -462,7 +463,7 @@ function onPaste(event: ClipboardEvent): void {
             type="button"
             class="pill__label"
             :aria-invalid="isInvalid(entry) ? 'true' : undefined"
-            :aria-label="`${entryDescription(entry)}. Activate to edit.`"
+            :aria-label="t('recipientInput.activateToEdit', { value1: entryDescription(entry) })"
             :title="entryDescription(entry)"
             @click.stop="editEntry(idx)"
           >
@@ -478,7 +479,7 @@ function onPaste(event: ClipboardEvent): void {
           <button
             type="button"
             class="pill__remove"
-            :aria-label="`Remove ${entryDescription(entry)}`"
+            :aria-label="t('recipientInput.remove', { value1: entryDescription(entry) })"
             @click.stop="removeEntry(idx)"
           >&times;</button>
         </li>
@@ -510,7 +511,7 @@ function onPaste(event: ClipboardEvent): void {
         :id="listboxId"
         class="autocomplete__options"
         role="listbox"
-        :aria-label="`${label} suggestions`"
+        :aria-label="t('recipientInput.suggestions', { value1: label })"
       >
         <li
           v-for="(candidate, idx) in suggestions"
@@ -562,17 +563,17 @@ function onPaste(event: ClipboardEvent): void {
       <!-- Visible-only: the live region already says this in words, so the
            panel copy is decoration to a screen reader. -->
       <div v-if="noMatches !== null" class="autocomplete__empty" aria-hidden="true">
-        <span class="autocomplete__empty-text">No matches for “{{ noMatches }}”</span>
-        <span class="ac-key-hint"><kbd>↵</kbd> add it as typed</span>
+        <span class="autocomplete__empty-text">{{ t('recipientInput.noMatchesFor', { value1: noMatches }) }}</span>
+        <span class="ac-key-hint"><kbd>↵</kbd> {{ t('recipientInput.addItAsTyped') }}</span>
       </div>
       <p v-if="browseAll && !browsing" class="autocomplete__browse">
         <button type="button" @mousedown.prevent @click="browseContactsAndFocus()">
-          Browse all contacts
+          {{ t('recipientInput.browseAllContacts') }}
         </button>
       </p>
       <div v-if="suggestions.length > 0" class="autocomplete__keys" aria-hidden="true">
-        <span class="ac-key-hint"><kbd>↑↓</kbd> navigate</span>
-        <span class="ac-key-hint"><kbd>↵</kbd> add</span>
+        <span class="ac-key-hint"><kbd>↑↓</kbd> {{ t('recipientInput.navigate') }}</span>
+        <span class="ac-key-hint"><kbd>↵</kbd> {{ t('recipientInput.add') }}</span>
         <span class="autocomplete__count">{{ countLabel }}</span>
       </div>
     </div>

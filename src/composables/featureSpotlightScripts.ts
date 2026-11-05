@@ -1,10 +1,9 @@
+import { t, sourceText } from '../i18n/messages';
 import { nextTick } from 'vue';
 
 import type { useComposeStore } from '../stores/compose-store';
 import {
-  TOUR_BODY_TEXT,
   TOUR_EDITOR_TARGETS,
-  TOUR_LINK_TEXT,
   TOUR_LINK_URL,
   pasteTourImage,
   pasteTourUrl,
@@ -43,7 +42,7 @@ export const SPOTLIGHT_TARGETS = {
   composeHeader: `${COMPOSER} .compose-dialog__card > header`,
   recipientsTo: `${COMPOSER} .row--to .recipient-input__field`,
   recipientsCcBcc: `${COMPOSER} .recipient-cc-toggles`,
-  attachButton: `${COMPOSER} [aria-label="Attach files"]`,
+  attachButton: `${COMPOSER} [data-attach-files]`,
   imageTools: `${COMPOSER} [data-tour="image-tools"]`,
   scheduleMenu: `${COMPOSER} .compose-schedule-menu`,
   scheduleTrigger: `${COMPOSER} .compose-schedule-menu__trigger`,
@@ -70,7 +69,7 @@ export const SPOTLIGHT_TARGETS = {
 const SCHEDULE_MENU_DISABLED_CLASS = 'app-dropdown--disabled';
 
 /** Subject the drafts spotlight types so the dock tab and header show a draft naming itself. */
-export const TOUR_SUBJECT = 'Weekend plans';
+export const TOUR_SUBJECT = sourceText('featureSpotlightScripts.weekendPlans');
 export const TOUR_TYPING_MS_PER_CHAR = 55;
 
 interface TourComposer {
@@ -156,10 +155,10 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     typingGeneration += 1;
     const myGeneration = typingGeneration;
     const perChar = ctx.reducedMotion() ? 0 : TOUR_TYPING_MS_PER_CHAR;
-    for (let length = 1; length <= TOUR_SUBJECT.length; length += 1) {
+    for (let length = 1; length <= t('featureSpotlightScripts.weekendPlans').length; length += 1) {
       const session = ctx.composeStore.sessionById(composer.sessionId);
       if (!session || myGeneration !== typingGeneration) return;
-      session.draft.subject = TOUR_SUBJECT.slice(0, length);
+      session.draft.subject = t('featureSpotlightScripts.weekendPlans').slice(0, length);
       if (perChar > 0) await delay(perChar);
     }
   }
@@ -168,7 +167,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     typingGeneration += 1;
     if (!tourComposer) return;
     const session = ctx.composeStore.sessionById(tourComposer.sessionId);
-    if (session && session.draft.subject === TOUR_SUBJECT.slice(0, session.draft.subject.length)) {
+    if (session && session.draft.subject === t('featureSpotlightScripts.weekendPlans').slice(0, session.draft.subject.length)) {
       session.draft.subject = '';
     }
   }
@@ -240,7 +239,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
   return {
     composeDrafts: composerScript([
       composerStep({
-        caption: 'Drafts save themselves as you type, so you can step away from one at any time.',
+        get caption() { return t('featureSpotlightScripts.draftsSaveThemselvesAsYouTypeSoYouCan'); },
         // The composer opened by `ensureTourComposer` mounts on the next tick;
         // typing starts once it is on screen.
         prepare: async () => {
@@ -253,7 +252,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
         durationMs: 2600,
       }),
       composerStep({
-        caption: 'Minimize a draft and it waits in the dock, named by its subject, while you read or reply to other mail.',
+        get caption() { return t('featureSpotlightScripts.minimizeADraftAndItWaitsInTheDock'); },
         press: SPOTLIGHT_TARGETS.composeMinimize,
         // The store refuses to minimize mid-save, so an in-flight autosave is
         // waited out first.
@@ -271,7 +270,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
         durationMs: 3400,
       }),
       composerStep({
-        caption: 'Click it in the dock to pick up where you left off. Open as many drafts as you need.',
+        get caption() { return t('featureSpotlightScripts.clickItInTheDockToPickUpWhere'); },
         press: SPOTLIGHT_TARGETS.composeDock,
         prepare: () => {
           if (tourComposer) ctx.composeStore.restore(tourComposer.sessionId);
@@ -283,12 +282,12 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
 
     recipients: composerScript([
       composerStep({
-        caption: 'Start typing in To and matching contacts appear. Each address becomes a pill you can edit or remove.',
+        get caption() { return t('featureSpotlightScripts.startTypingInToAndMatchingContactsAppearEach'); },
         targets: [SPOTLIGHT_TARGETS.recipientsTo],
         durationMs: 3800,
       }),
       composerStep({
-        caption: 'Cc and Bcc are one click away, and invalid addresses are flagged before the message goes out.',
+        get caption() { return t('featureSpotlightScripts.ccAndBccAreOneClickAwayAndInvalid'); },
         targets: [SPOTLIGHT_TARGETS.recipientsCcBcc],
         durationMs: 3600,
       }),
@@ -297,12 +296,12 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     attachments: composerScript(
       [
         composerStep({
-          caption: 'Attach picks files from your computer. They upload while you keep writing.',
+          get caption() { return t('featureSpotlightScripts.attachPicksFilesFromYourComputerTheyUploadWhile'); },
           targets: [SPOTLIGHT_TARGETS.attachButton],
           durationMs: 3400,
         }),
         composerStep({
-          caption: 'Copy an image and paste it into the message. It lands inline, ready to resize and align.',
+          get caption() { return t('featureSpotlightScripts.copyAnImageAndPasteItIntoTheMessage'); },
           // Only a body the tour opened is written into; a borrowed draft
           // keeps its content and the toolbar is ringed instead.
           prepare: async () => {
@@ -315,12 +314,12 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
           durationMs: 3400,
         }),
         composerStep({
-          caption: 'Select some text and paste a URL over it. The text becomes a link, no dialog needed.',
+          get caption() { return t('featureSpotlightScripts.selectSomeTextAndPasteAURLOverIt'); },
           prepare: async () => {
             if (!tourComposer?.openedByTour) return;
             const perChar = ctx.reducedMotion() ? 0 : TOUR_TYPING_MS_PER_CHAR;
-            const textNode = await typeTourBody(TOUR_BODY_TEXT, perChar);
-            if (!textNode || !selectTourPhrase(textNode, TOUR_LINK_TEXT)) return;
+            const textNode = await typeTourBody(t('spotlightEditorDemo.detailsAreOnTheThunderbirdSite'), perChar);
+            if (!textNode || !selectTourPhrase(textNode, t('spotlightEditorDemo.thunderbirdSite'))) return;
             // The selection is shown on its own for a beat before the paste.
             await delay(motionMs(SPOTLIGHT_TIMING.settleMs));
             if (!pasteTourUrl(TOUR_LINK_URL)) return;
@@ -337,12 +336,12 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     sendLater: composerScript(
       [
         composerStep({
-          caption: 'Next to Send is a schedule menu.',
+          get caption() { return t('featureSpotlightScripts.nextToSendIsAScheduleMenu'); },
           targets: [SPOTLIGHT_TARGETS.scheduleMenu],
           durationMs: 2400,
         }),
         composerStep({
-          caption: 'Pick a preset or choose a date and time. Until it goes out, the message waits in Scheduled, where you can still cancel it.',
+          get caption() { return t('featureSpotlightScripts.pickAPresetOrChooseADateAndTime'); },
           press: SPOTLIGHT_TARGETS.scheduleTrigger,
           // Opening the presets menu shows what Send Later offers; a disabled
           // segment (server without the capability) stays closed and is only
@@ -369,12 +368,12 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
       dim: false,
       steps: [
         {
-          caption: 'Contacts have their own space in the toolbar on the left.',
+          get caption() { return t('featureSpotlightScripts.contactsHaveTheirOwnSpaceInTheToolbarOn'); },
           targets: [SPOTLIGHT_TARGETS.contactsSpace],
           durationMs: 2600,
         },
         {
-          caption: 'Address books sit on the left. Drag contacts between them, or add a new book from the header.',
+          get caption() { return t('featureSpotlightScripts.addressBooksSitOnTheLeftDragContactsBetween'); },
           press: SPOTLIGHT_TARGETS.contactsSpace,
           prepare: async () => {
             const before = ctx.currentSpace();
@@ -387,7 +386,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
           durationMs: 3600,
         },
         {
-          caption: 'Manage identities sets up each address you send from: display name, signature, Reply-To, and automatic Bcc.',
+          get caption() { return t('featureSpotlightScripts.manageIdentitiesSetsUpEachAddressYouSendFrom'); },
           press: SPOTLIGHT_TARGETS.contactsIdentitiesButton,
           // Opening the identities directory lists every address the user
           // can send from; the first identity is ringed once it has loaded.
@@ -417,13 +416,13 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
     folders: {
       steps: [
         {
-          caption: 'Manage Folders creates new folders and chooses which ones appear in this list.',
+          get caption() { return t('featureSpotlightScripts.manageFoldersCreatesNewFoldersAndChoosesWhichOnes'); },
           targets: [SPOTLIGHT_TARGETS.manageFolders],
           fallbackTargets: [SPOTLIGHT_TARGETS.folderTree],
           durationMs: 2600,
         },
         {
-          caption: 'Create folders, choose which ones to show, and star favorites so they float to the top of the list.',
+          get caption() { return t('featureSpotlightScripts.createFoldersChooseWhichOnesToShowAndStar'); },
           press: SPOTLIGHT_TARGETS.manageFolders,
           prepare: async () => {
             if (!clickFirst(SPOTLIGHT_TARGETS.manageFolders)) return;
@@ -437,7 +436,7 @@ export function createSpotlightScripts(ctx: SpotlightScriptContext): SpotlightSc
           durationMs: 4600,
         },
         {
-          caption: 'Favorites float to the top and shared accounts get their own section. Select several messages to move or delete them together.',
+          get caption() { return t('featureSpotlightScripts.favoritesFloatToTheTopAndSharedAccountsGet'); },
           press: SPOTLIGHT_TARGETS.folderManagerClose,
           prepare: () => {
             clickFirst(SPOTLIGHT_TARGETS.folderManagerClose);

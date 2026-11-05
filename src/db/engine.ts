@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 /**
  * wa-sqlite engine wrapper. Pure SQLite plumbing: small, promise-friendly
  * query API and a migration runner. Does not know about VFSes; callers
@@ -40,17 +41,13 @@ const MIGRATIONS: Migration[] = (() => {
     const basename = path.slice(path.lastIndexOf('/') + 1);
     const match = MIGRATION_FILENAME_RE.exec(basename);
     if (!match) {
-      throw new Error(
-        `Migration file ${path} does not match the required NNN_name.sql pattern`,
-      );
+      throw new LocalizedError('engine.migrationFileDoesNotMatchTheRequiredNNNName', { value1: path });
     }
     const version = Number.parseInt(match[1], 10);
     const name = basename.slice(0, -'.sql'.length);
     const prior = seenVersions.get(version);
     if (prior !== undefined) {
-      throw new Error(
-        `Duplicate migration version ${version}: ${prior} and ${name}`,
-      );
+      throw new LocalizedError('engine.duplicateMigrationVersionAnd', { value1: version, value2: prior, value3: name });
     }
     seenVersions.set(version, name);
     list.push({ version, name, sql });
@@ -269,9 +266,7 @@ export class Engine {
     // PRAGMA assignments cannot be parameterised, so we interpolate the
     // version directly. Guard against any non-integer slipping in.
     if (!Number.isInteger(migration.version)) {
-      throw new Error(
-        `Migration ${migration.name} has non-integer version: ${migration.version}`,
-      );
+      throw new LocalizedError('engine.migrationHasNonIntegerVersion', { value1: migration.name, value2: migration.version });
     }
     try {
       await this.transaction(async (tx) => {
@@ -279,9 +274,7 @@ export class Engine {
         await tx.exec(`PRAGMA user_version = ${migration.version}`);
       });
     } catch (error) {
-      const wrapped = new Error(
-        `Migration ${migration.name} (v${migration.version}) failed: ${error.message}`,
-      );
+      const wrapped = new LocalizedError('engine.migrationVFailed', { value1: migration.name, value2: migration.version, value3: error.message });
       wrapped.cause = error;
       throw wrapped;
     }
@@ -299,7 +292,7 @@ export class Engine {
     try {
       const next = await iter.next();
       if (next.done) {
-        throw new Error(`No statement compiled from SQL: ${sql}`);
+        throw new LocalizedError('engine.noStatementCompiledFromSQL', { value1: sql });
       }
       const stmt = next.value;
       executed = true;
@@ -307,7 +300,7 @@ export class Engine {
       // Tell the generator to finalize and check for trailing SQL.
       const tail = await iter.next();
       if (!tail.done) {
-        throw new Error(`Multi-statement SQL passed to single-statement helper: ${sql}`);
+        throw new LocalizedError('engine.multiStatementSQLPassedToSingleStatementHelper', { value1: sql });
       }
     } finally {
       if (executed) {

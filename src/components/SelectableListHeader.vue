@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { X } from '@lucide/vue';
 import {
   ref,
@@ -55,8 +56,8 @@ watchPostEffect(() => {
       ]"
       :title="
         disabled || totalCount === 0
-          ? `No ${itemLabel} to select`
-          : (allSelected ? `Deselect all ${itemLabel}` : `Select all ${itemLabel}`)
+          ? t('selectableListHeader.noToSelect', { value1: itemLabel })
+          : (allSelected ? t('selectableListHeader.deselectAll', { value1: itemLabel }) : t('selectableListHeader.selectAll', { value1: itemLabel }))
       "
     >
       <input
@@ -76,14 +77,14 @@ watchPostEffect(() => {
         selectionActionsClass,
       ]"
       role="group"
-      aria-label="Selection actions"
+      :aria-label="t('selectableListHeader.selectionActions')"
     >
       <slot name="selection-actions" />
       <button
         :class="['selectable-list-header__clear', clearClass]"
         type="button"
-        title="Clear selection"
-        aria-label="Clear selection"
+        :title="t('selectableListHeader.clearSelection')"
+        :aria-label="t('selectableListHeader.clearSelection')"
         @click="emit('clearSelection')"
       >
         <X :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -102,10 +103,10 @@ watchPostEffect(() => {
       aria-live="polite"
     >
       <template v-if="selectedCount > 0">
-        {{ selectedCount }} selected
+        {{ t('selectableListHeader.selected', { value1: selectedCount }) }}
       </template>
       <template v-else-if="showTotalCount && totalCount > 0">
-        {{ totalCount }} {{ totalCount === 1 ? (singularItemLabel || itemLabel) : itemLabel }}
+        {{ t('selectableListHeader.itemCount', { count: totalCount, item: totalCount === 1 ? (singularItemLabel || itemLabel) : itemLabel }) }}
       </template>
     </span>
 

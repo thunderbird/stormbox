@@ -1,8 +1,9 @@
+import { sourceText } from '../i18n/messages';
 import {
   ADDRESSBOOK_ERROR,
 } from '../constants/addressbook-errors';
 
-export const TRUSTED_SENDERS_BOOK_NAME = 'Trusted senders';
+export const TRUSTED_SENDERS_BOOK_NAME = sourceText('common.trustedSenders');
 
 export type AddressBookDeleteDisabledReason =
   | typeof ADDRESSBOOK_ERROR.LAST_ADDRESSBOOK

@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 import type { ContactPhoto } from '../types/db';
 
 export const CONTACT_PHOTO_MAX_BYTES = 1024 * 1024;
@@ -101,15 +102,15 @@ export async function readContactPhotoFile(file: File): Promise<{
   uri: string;
 }> {
   if (!CONTACT_PHOTO_ACCEPT.includes(file.type as ContactPhotoMediaType)) {
-    throw new Error('Choose a PNG, JPEG, GIF, or WebP image.');
+    throw new LocalizedError('contactPhoto.chooseAPNGJPEGGIFOrWebPImage');
   }
   if (file.size <= 0 || file.size > CONTACT_PHOTO_MAX_BYTES) {
-    throw new Error('Choose an image no larger than 1 MiB.');
+    throw new LocalizedError('contactPhoto.chooseAnImageNoLargerThan1MiB');
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
   const mediaType = file.type as ContactPhotoMediaType;
   if (!isRasterSignature(bytes, mediaType)) {
-    throw new Error('The selected file is not a valid raster image.');
+    throw new LocalizedError('contactPhoto.theSelectedFileIsNotAValidRasterImage');
   }
   return {
     mediaType,

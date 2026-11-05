@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 const COPY_SUFFIX = /^(.*?)\s+\(Copy\s+(\d+)\)$/iu;
 
 function copyBase(displayName: string): string {
@@ -20,5 +21,5 @@ export function nextCopyName(
     copyNumber = Math.max(copyNumber, Number(match[2]));
   }
 
-  return `${base} (Copy ${copyNumber + 1})`;
+  return t('common.copyName', { name: base, number: copyNumber + 1 });
 }

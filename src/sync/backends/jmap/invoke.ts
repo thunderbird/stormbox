@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * Shared JMAP invocation helpers. The per-feature sync modules
  * (mailboxes, messages, bodies, identities, contacts, quota, outbox)
@@ -71,7 +72,7 @@ export function requireResponse(result, methodName) {
   const detail = failure?.type
     ? `${failure.type}${failure.description ? `: ${failure.description}` : ''}`
     : 'noResponse';
-  throw new Error(`JMAP ${methodName} returned no payload (${detail})`);
+  throw new LocalizedError('invoke.jMAPReturnedNoPayload', { value1: methodName, value2: detail });
 }
 
 export function pickResponseById(result, methodName, callId) {

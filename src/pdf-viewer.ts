@@ -1,3 +1,5 @@
+import './i18n';
+import { t } from './i18n/messages';
 import './pdf-viewer.css';
 
 const PDF_VIEWER_CHANNEL_PREFIX = 'stormbox-pdf-viewer:';
@@ -29,14 +31,18 @@ function viewerToken(): string | null {
   }
 }
 
+document.title = t('pdfViewer.attachment');
+if (status) status.textContent = t('pdfViewer.opening');
+if (frame) frame.title = t('pdfViewer.attachment');
+
 const token = viewerToken();
 if (!token || !status || !frame) {
-  showError('This PDF viewer link is invalid. Close this tab and try again.');
+  showError(t('pdfViewer.thisPDFViewerLinkIsInvalidCloseThisTab'));
 } else {
   const channel = new BroadcastChannel(`${PDF_VIEWER_CHANNEL_PREFIX}${token}`);
   const timeout = window.setTimeout(() => {
     channel.close();
-    showError('The PDF did not arrive. Close this tab and try again.');
+    showError(t('pdfViewer.thePDFDidNotArriveCloseThisTabAnd'));
   }, PDF_VIEWER_LOAD_TIMEOUT_MS);
 
   channel.onmessage = (event: MessageEvent<PdfViewerMessage>) => {
@@ -44,7 +50,7 @@ if (!token || !status || !frame) {
     if (message?.type === 'error') {
       window.clearTimeout(timeout);
       channel.close();
-      showError(message.message || 'The PDF could not be opened.');
+      showError(message.message || t('pdfViewer.thePDFCouldNotBeOpened'));
       return;
     }
     if (
@@ -58,7 +64,7 @@ if (!token || !status || !frame) {
     window.clearTimeout(timeout);
     channel.close();
     const url = URL.createObjectURL(message.blob);
-    document.title = message.name || 'PDF attachment';
+    document.title = message.name || t('pdfViewer.pDFAttachment');
     frame.addEventListener('load', () => {
       status.hidden = true;
     }, { once: true });

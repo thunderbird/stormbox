@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 /**
  * The tag manager's body (specs/011 §6): the ordered list of tags with
  * color and name, a form to add one, and the keywords found on cached
@@ -14,6 +15,7 @@ import {
 } from '@lucide/vue';
 
 import AppButton from '../AppButton.vue';
+import LocalizedText from '../LocalizedText.vue';
 import { getRepositoryAsync } from '../../composables/useRepository';
 import { useMessageTags } from '../../composables/useMessageTags';
 import { useAuthStore } from '../../stores/auth-store';
@@ -83,13 +85,13 @@ async function commitName(keyword: string) {
     nameDrafts.value[keyword] = definition.name;
     return;
   }
-  const ok = await run(() => updateTag(keyword, { name }), 'Renaming the tag failed');
+  const ok = await run(() => updateTag(keyword, { name }), t('tagDefinitionsEditor.renamingTheTagFailed'));
   if (!ok) nameDrafts.value[keyword] = definition.name;
 }
 
 async function commitColor(keyword: string, event: Event) {
   const color = (event.target as HTMLInputElement).value;
-  await run(() => updateTag(keyword, { color }), 'Recoloring the tag failed');
+  await run(() => updateTag(keyword, { color }), t('tagDefinitionsEditor.recoloringTheTagFailed'));
 }
 
 // ----- add ----------------------------------------------------------------
@@ -110,7 +112,7 @@ async function add() {
   const name = newName.value;
   const color = newColor.value;
   const keyword = adoptedKeyword.value;
-  const ok = await run(() => keyword ? defineKeyword(keyword, name, color) : createTag(name, color), 'Adding the tag failed');
+  const ok = await run(() => keyword ? defineKeyword(keyword, name, color) : createTag(name, color), t('tagDefinitionsEditor.addingTheTagFailed'));
   if (!ok) return;
   newName.value = '';
   adoptedKeyword.value = null;
@@ -128,7 +130,7 @@ function rowButton(keyword: string, label: string): HTMLElement | null {
 async function move(keyword: string, direction: -1 | 1) {
   const definition = definitions.value.find((d) => d.keyword === keyword);
   if (!definition) return;
-  const ok = await run(() => moveTag(keyword, direction), 'Reordering the tags failed');
+  const ok = await run(() => moveTag(keyword, direction), t('tagDefinitionsEditor.reorderingTheTagsFailed'));
   if (!ok) return;
   await nextTick();
   const index = definitions.value.findIndex((d) => d.keyword === keyword);
@@ -136,7 +138,7 @@ async function move(keyword: string, direction: -1 | 1) {
   const atEdge = direction === -1 ? index === 0 : index === definitions.value.length - 1;
   // The activated button disables at the edge; hand focus to its sibling.
   (rowButton(keyword, atEdge ? (direction === -1 ? 'down' : 'up') : label))?.focus();
-  status.value = `${definition.name} moved ${label}, now ${index + 1} of ${definitions.value.length}.`;
+  status.value = t('tagDefinitionsEditor.movedNowOf', { value1: definition.name, value2: label, value3: index + 1, value4: definitions.value.length });
 }
 
 async function remove(keyword: string) {
@@ -144,12 +146,12 @@ async function remove(keyword: string) {
   const definition = definitions.value[index];
   if (!definition) return;
   const next = definitions.value[index + 1] ?? definitions.value[index - 1] ?? null;
-  const ok = await run(() => deleteTag(keyword), 'Deleting the tag failed');
+  const ok = await run(() => deleteTag(keyword), t('tagDefinitionsEditor.deletingTheTagFailed'));
   if (!ok) return;
   await nextTick();
   const target = next ? rowButton(next.keyword, 'delete') : rootEl.value?.querySelector<HTMLElement>('[data-tag-editor-name]');
   target?.focus();
-  status.value = `Tag ${definition.name} deleted. Messages keep the keyword ${definition.keyword}.`;
+  status.value = t('tagDefinitionsEditor.tagDeletedMessagesKeepTheKeyword', { value1: definition.name, value2: definition.keyword });
 }
 
 // ----- keywords already on cached messages --------------------------------
@@ -187,12 +189,12 @@ async function adopt(keyword: string) {
   if (tagNameError(keyword)) {
     adoptedKeyword.value = keyword;
     newName.value = keyword;
-    status.value = 'Choose a shorter display name. The keyword on your messages will stay unchanged.';
+    status.value = t('tagDefinitionsEditor.chooseAShorterDisplayNameTheKeywordOnYour');
     await nextTick();
     rootEl.value?.querySelector<HTMLInputElement>('[data-tag-editor-name]')?.focus();
     return;
   }
-  await run(() => defineKeyword(keyword), 'Adopting the keyword failed');
+  await run(() => defineKeyword(keyword), t('tagDefinitionsEditor.adoptingTheKeywordFailed'));
 }
 </script>
 
@@ -200,12 +202,10 @@ async function adopt(keyword: string) {
   <div ref="rootEl" class="tag-editor" data-tag-editor>
     <div class="tag-editor__intro">
       <p class="tag-editor__hint">
-        Tags are stored alongside your messages, so they follow them into
-        Thunderbird and other email clients. But the names and colors are defined
-        separately by each client.
+        {{ t('tagDefinitionsEditor.tagsAreStoredAlongsideYourMessagesSoTheyFollow') }}
       </p>
       <span class="tag-editor__count">
-        {{ definitions.length }} of {{ MAX_TAG_DEFINITIONS }}
+        {{ t('tagDefinitionsEditor.of', { value1: definitions.length, value2: MAX_TAG_DEFINITIONS }) }}
       </span>
     </div>
     <p class="tag-editor__status" role="status" aria-live="polite">{{ status }}</p>
@@ -215,14 +215,14 @@ async function adopt(keyword: string) {
         v-model="newColor"
         class="tag-editor__color"
         type="color"
-        aria-label="Color of the new tag"
+        :aria-label="t('tagDefinitionsEditor.colorOfTheNewTag')"
       >
       <input
         v-model="newName"
         class="tag-editor__name"
         type="text"
-        :placeholder="canCreate ? 'New tag name' : `Up to ${MAX_TAG_DEFINITIONS} tags`"
-        aria-label="Name of the new tag"
+        :placeholder="canCreate ? t('tagDefinitionsEditor.newTagName') : t('tagDefinitionsEditor.upToTags', { value1: MAX_TAG_DEFINITIONS })"
+        :aria-label="t('tagDefinitionsEditor.nameOfTheNewTag')"
         aria-describedby="tag-editor-new-keyword tag-editor-name-help"
         :aria-invalid="newNameError ? true : undefined"
         :disabled="!canCreate"
@@ -232,7 +232,10 @@ async function adopt(keyword: string) {
         @keydown.enter="!isComposingKeyEvent($event) && !composingName && !canAdd && $event.preventDefault()"
       >
       <code id="tag-editor-new-keyword" class="tag-editor__keyword" :title="newKeyword ?? undefined">
-        <span v-if="newKeyword" class="tag-editor__sr">Keyword </span>{{ newKeyword ?? '' }}
+        <LocalizedText v-if="newKeyword" keypath="tagDefinitionsEditor.keywordLabel">
+          <template #label><span class="tag-editor__sr">{{ t('tagDefinitionsEditor.keyword') }}</span></template>
+          <template #keyword>{{ newKeyword }}</template>
+        </LocalizedText>
       </code>
       <AppButton
         form-action="submit"
@@ -243,14 +246,14 @@ async function adopt(keyword: string) {
         <template #iconLeft>
           <Plus :size="15" :stroke-width="2" aria-hidden="true" />
         </template>
-        {{ adoptedKeyword ? 'Use as tag' : 'New Tag' }}
+        {{ adoptedKeyword ? t('tagDefinitionsEditor.useAsTag') : t('tagDefinitionsEditor.newTag') }}
       </AppButton>
     </form>
     <button v-if="adoptedKeyword" type="button" class="tag-editor__btn" data-tag-editor-cancel-adopt @click="adoptedKeyword = null; newName = ''; status = ''">
-      Cancel adoption
+      {{ t('tagDefinitionsEditor.cancelAdoption') }}
     </button>
     <p id="tag-editor-name-help" class="tag-editor__hint" role="status">
-      {{ newNameError ?? `Names can use any language, up to ${MAX_TAG_NAME_LENGTH} characters.` }}
+      {{ newNameError ?? t('tagDefinitionsEditor.namesCanUseAnyLanguageUpToCharacters', { value1: MAX_TAG_NAME_LENGTH }) }}
     </p>
 
     <ol class="tag-editor__list" :aria-labelledby="labelledBy">
@@ -264,24 +267,31 @@ async function adopt(keyword: string) {
           class="tag-editor__color"
           type="color"
           :value="definition.color"
-          :aria-label="`Color of ${definition.name}`"
+          :aria-label="t('tagDefinitionsEditor.colorOf', { value1: definition.name })"
           @change="commitColor(definition.keyword, $event)"
         >
         <input
           v-model="nameDrafts[definition.keyword]"
           class="tag-editor__name"
           type="text"
-          :aria-label="`Name of ${definition.name}`"
+          :aria-label="t('tagDefinitionsEditor.nameOf', { value1: definition.name })"
           :aria-invalid="tagNameError(nameDrafts[definition.keyword] ?? '') ? true : undefined"
           :aria-describedby="`tag-keyword-${index} tag-name-error-${index}`"
           @blur="commitName(definition.keyword)"
           @keydown.enter="!isComposingKeyEvent($event) && ($event.target as HTMLInputElement).blur()"
         >
         <code :id="`tag-keyword-${index}`" class="tag-editor__keyword" :title="definition.keyword">
-          <span class="tag-editor__sr">Keyword </span>{{ definition.keyword }}
+          <LocalizedText keypath="tagDefinitionsEditor.keywordLabel">
+            <template #label><span class="tag-editor__sr">{{ t('tagDefinitionsEditor.keyword') }}</span></template>
+            <template #keyword>{{ definition.keyword }}</template>
+          </LocalizedText>
         </code>
         <kbd v-if="index < 9" class="tag-editor__digit">
-          <span class="tag-editor__sr">Press </span>{{ index + 1 }}<span class="tag-editor__sr"> to toggle</span>
+          <LocalizedText keypath="tagDefinitionsEditor.shortcutHint">
+            <template #before><span class="tag-editor__sr">{{ t('tagDefinitionsEditor.press') }}</span></template>
+            <template #key>{{ index + 1 }}</template>
+            <template #after><span class="tag-editor__sr">{{ t('tagDefinitionsEditor.toToggle') }}</span></template>
+          </LocalizedText>
         </kbd>
         <span v-else class="tag-editor__digit tag-editor__digit--none" aria-hidden="true" />
         <button
@@ -289,8 +299,8 @@ async function adopt(keyword: string) {
           class="tag-editor__icon-btn"
           data-action="up"
           :disabled="index === 0"
-          :aria-label="`Move ${definition.name} up`"
-          :title="`Move ${definition.name} up`"
+          :aria-label="t('tagDefinitionsEditor.moveUp', { value1: definition.name })"
+          :title="t('tagDefinitionsEditor.moveUp', { value1: definition.name })"
           @click="move(definition.keyword, -1)"
         >
           <ArrowUp :size="15" :stroke-width="1.75" aria-hidden="true" />
@@ -300,8 +310,8 @@ async function adopt(keyword: string) {
           class="tag-editor__icon-btn"
           data-action="down"
           :disabled="index === definitions.length - 1"
-          :aria-label="`Move ${definition.name} down`"
-          :title="`Move ${definition.name} down`"
+          :aria-label="t('tagDefinitionsEditor.moveDown', { value1: definition.name })"
+          :title="t('tagDefinitionsEditor.moveDown', { value1: definition.name })"
           @click="move(definition.keyword, 1)"
         >
           <ArrowDown :size="15" :stroke-width="1.75" aria-hidden="true" />
@@ -310,8 +320,8 @@ async function adopt(keyword: string) {
           type="button"
           class="tag-editor__icon-btn tag-editor__icon-btn--danger"
           data-action="delete"
-          :aria-label="`Delete tag ${definition.name}`"
-          :title="`Delete tag ${definition.name}. Messages keep the keyword.`"
+          :aria-label="t('tagDefinitionsEditor.deleteTag', { value1: definition.name })"
+          :title="t('tagDefinitionsEditor.deleteTagMessagesKeepTheKeyword', { value1: definition.name })"
           @click="remove(definition.keyword)"
         >
           <Trash2 :size="15" :stroke-width="1.75" aria-hidden="true" />
@@ -322,9 +332,9 @@ async function adopt(keyword: string) {
 
 
     <div v-if="discoverable.length > 0" class="tag-editor__discovered" data-tag-editor-discovered>
-      <h3 class="tag-editor__subtitle">Keywords on your messages</h3>
+      <h3 class="tag-editor__subtitle">{{ t('tagDefinitionsEditor.keywordsOnYourMessages') }}</h3>
       <p class="tag-editor__hint">
-        Set by another client or a mail rule. Give one a name and color to use it as a tag.
+        {{ t('tagDefinitionsEditor.setByAnotherClientOrAMailRuleGive') }}
       </p>
       <ul class="tag-editor__discovered-list">
         <li
@@ -334,17 +344,17 @@ async function adopt(keyword: string) {
         >
           <code class="tag-editor__keyword">{{ entry.keyword }}</code>
           <span class="tag-editor__discovered-count">
-            {{ entry.count }} {{ entry.count === 1 ? 'message' : 'messages' }}
+            {{ t('counts.messages', { count: entry.count }, entry.count) }}
           </span>
           <button
             type="button"
             class="tag-editor__btn"
             :disabled="!canCreate"
-            :aria-label="`Use ${entry.keyword} as a tag`"
+            :aria-label="t('tagDefinitionsEditor.useAsATag', { value1: entry.keyword })"
             :data-tag-editor-adopt="entry.keyword"
             @click="adopt(entry.keyword)"
           >
-            Use as tag
+            {{ t('tagDefinitionsEditor.useAsTag') }}
           </button>
         </li>
       </ul>

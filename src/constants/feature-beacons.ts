@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import type { Component } from 'vue';
 import {
   BookUser,
@@ -84,8 +85,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 1,
     surface: 'mailSidebar',
     anchor: '.sidebar__compose',
-    title: 'A new composer',
-    body: 'Work on several drafts at once, autocomplete recipients as pills, paste images and links, attach files, and schedule a send. Open a message to see the new controls.',
+    get title() { return t('featureBeacons.aNewComposer'); },
+    get body() { return t('featureBeacons.workOnSeveralDraftsAtOnceAutocompleteRecipientsAs'); },
     icon: PenLine,
   },
   {
@@ -93,8 +94,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 2,
     surface: 'composer',
     anchor: SPOTLIGHT_TARGETS.composeMinimize,
-    title: 'Minimize a draft',
-    body: 'A minimized draft waits in the dock, named by its subject, while you read or reply to other mail.',
+    get title() { return t('featureBeacons.minimizeADraft'); },
+    get body() { return t('featureBeacons.aMinimizedDraftWaitsInTheDockNamedBy'); },
     icon: Minus,
   },
   {
@@ -102,8 +103,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 3,
     surface: 'composer',
     anchor: SPOTLIGHT_TARGETS.scheduleTrigger,
-    title: 'Send on your schedule',
-    body: 'Pick a delivery time next to Send. The message waits in Scheduled, where you can still cancel it.',
+    get title() { return t('featureBeacons.sendOnYourSchedule'); },
+    get body() { return t('featureBeacons.pickADeliveryTimeNextToSendTheMessage'); },
     icon: CalendarClock,
   },
   {
@@ -111,8 +112,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 4,
     surface: 'spacesRail',
     anchor: SPOTLIGHT_TARGETS.contactsSpace,
-    title: 'Contacts have their own space',
-    body: 'Manage address books and drag contacts between them from the toolbar on the left.',
+    get title() { return t('featureBeacons.contactsHaveTheirOwnSpace'); },
+    get body() { return t('featureBeacons.manageAddressBooksAndDragContactsBetweenThemFrom'); },
     icon: UsersRound,
   },
   {
@@ -120,8 +121,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 5,
     surface: 'contacts',
     anchor: SPOTLIGHT_TARGETS.contactsIdentitiesButton,
-    title: 'Manage identities',
-    body: 'Set up each address you send from: display name, signature, Reply-To, and automatic Bcc.',
+    get title() { return t('featureBeacons.manageIdentities'); },
+    get body() { return t('featureBeacons.setUpEachAddressYouSendFromDisplayName'); },
     icon: BookUser,
     dot: 'inline-start',
   },
@@ -130,8 +131,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 6,
     surface: 'mailSidebar',
     anchor: SPOTLIGHT_TARGETS.manageFolders,
-    title: 'Manage Folders',
-    body: 'Create folders, choose which ones to show, and star favorites so they float to the top of the list.',
+    get title() { return t('featureBeacons.manageFolders'); },
+    get body() { return t('featureBeacons.createFoldersChooseWhichOnesToShowAndStar'); },
     icon: FolderTree,
   },
   {
@@ -141,8 +142,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 7,
     surface: 'mailList',
     anchor: SPOTLIGHT_TARGETS.starredFilter,
-    title: 'Star a message',
-    body: 'Hover a message and click the star, or press S to star a message, and then use the Starred filter to view them.',
+    get title() { return t('featureBeacons.starAMessage'); },
+    get body() { return t('featureBeacons.hoverAMessageAndClickTheStarOrPress'); },
     icon: Star,
   },
   {
@@ -152,8 +153,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 8,
     surface: 'spacesRail',
     anchor: SPOTLIGHT_TARGETS.settingsGear,
-    title: 'Keyboard shortcuts',
-    body: 'Move through mail, archive, star, and reply without leaving the keyboard. Choose Web or Thunderbird-style keys in Settings, and see the full list under Show welcome.',
+    get title() { return t('featureBeacons.keyboardShortcuts'); },
+    get body() { return t('featureBeacons.moveThroughMailArchiveStarAndReplyWithoutLeaving'); },
     icon: Keyboard,
   },
   {
@@ -163,8 +164,8 @@ export const FEATURE_BEACONS: readonly FeatureBeacon[] = [
     seq: 9,
     surface: 'mailSidebar',
     anchor: SPOTLIGHT_TARGETS.manageTags,
-    title: 'Tag your messages',
-    body: 'Hover a message and click the tag, select several and tag them together, or press 1–9. Tags are keywords, so Thunderbird sees them too. Open a tag here to see everything carrying it, in any folder.',
+    get title() { return t('featureBeacons.tagYourMessages'); },
+    get body() { return t('featureBeacons.hoverAMessageAndClickTheTagSelectSeveral'); },
     icon: Tag,
   },
 ];

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useOnline } from '@vueuse/core';
 import { Loader2 } from '@lucide/vue';
@@ -25,12 +26,12 @@ const isBusy = computed(() =>
 );
 const isFailed = computed(() => authStore.status === AUTH_STATE.FAILED);
 const statusLabel = computed(() => {
-  if (!isOnline.value && !isFailed.value) return 'You are offline. Waiting for a connection…';
+  if (!isOnline.value && !isFailed.value) return t('loginGate.youAreOfflineWaitingForAConnection');
   switch (authStore.status) {
-    case AUTH_STATE.OIDC_LOADING: return 'Initialising…';
-    case AUTH_STATE.CONNECTING: return 'Connecting…';
-    case AUTH_STATE.FAILED: return 'Could not connect.';
-    default: return 'Connecting to your account…';
+    case AUTH_STATE.OIDC_LOADING: return t('loginGate.initialising');
+    case AUTH_STATE.CONNECTING: return t('loginGate.connecting');
+    case AUTH_STATE.FAILED: return t('loginGate.couldNotConnect');
+    default: return t('loginGate.connectingToYourAccount');
   }
 });
 
@@ -52,17 +53,17 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
     <div v-if="authStore.appPasswordMode && !authStore.databaseUnavailable" class="login-stack">
       <p class="login-warning" role="note">
         <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
-        <span>Webmail is in early alpha and subject to frequent changes and instability</span>
+        <span>{{ t('loginGate.webmailIsInEarlyAlphaAndSubjectToFrequent') }}</span>
       </p>
 
       <div class="login-card">
         <ThundermailLogo :size="56" class="login-card__logo" />
-        <h1 class="login-card__title">Thundermail</h1>
-        <p class="login-card__subtitle">Sign in with your app password.</p>
+        <h1 class="login-card__title">{{ t('loginGate.thundermail') }}</h1>
+        <p class="login-card__subtitle">{{ t('loginGate.signInWithYourAppPassword') }}</p>
 
         <form class="login-card__password" @submit="submitPassword">
           <label>
-            <span>Username</span>
+            <span>{{ t('loginGate.username') }}</span>
             <input
               v-model="username"
               type="text"
@@ -72,7 +73,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
             />
           </label>
           <label>
-            <span>App password</span>
+            <span>{{ t('loginGate.appPassword') }}</span>
             <input
               v-model="password"
               type="password"
@@ -82,7 +83,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
             />
           </label>
           <AppButton form-action="submit" :disabled="isBusy">
-            Sign in
+            {{ t('loginGate.signIn') }}
           </AppButton>
         </form>
         <div v-if="isBusy || isFailed" class="login-card__busy" role="status" aria-live="polite">
@@ -99,7 +100,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
       </div>
       <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
       <AppButton v-if="isFailed" class="login-card__retry" @click="authStore.retryOidc">
-        Try again
+        {{ t('loginGate.tryAgain') }}
       </AppButton>
     </div>
   </div>
