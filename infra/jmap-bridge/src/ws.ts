@@ -17,13 +17,17 @@
 import type { Route } from './routes';
 
 export async function handleWebSocketUpgrade(request: Request, route: Route): Promise<Response> {
-  const url = new URL(request.url);
-  if (url.pathname !== '/jmap/ws') {
-    return new Response('Not found', { status: 404 });
-  }
-
   if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
     return new Response(null, { status: 426 });
+  }
+
+  const url = new URL(request.url);
+
+  // Only `/jmap/*` is in scope. Anything else is almost certainly a
+  // misconfiguration; reject early rather than acting as an open
+  // bearer-injection proxy for the whole upstream.
+  if (!url.pathname.startsWith('/jmap/')) {
+    return new Response('Only /jmap/* upgrades are proxied', { status: 403 });
   }
 
   // Two supported credential carriers:

@@ -2,7 +2,7 @@
   "name": "stormbox-jmap-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Cloudflare Worker for Stormbox WebSocket authentication on jmap.*.",
+  "description": "Cloudflare Worker that fronts Stormbox JMAP HTTP and WebSocket auth on jmap.*.",
   "scripts": {
     "deploy": "wrangler deploy",
     "deploy:production": "wrangler deploy --env production",

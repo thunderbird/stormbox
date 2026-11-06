@@ -121,10 +121,8 @@ export const OIDC_CLIENT_ID =
 /**
  * The hosted mail servers use their jmap.* WebSocket auth bridges.
  * Local and custom servers default to /jmap/ws on the server origin.
- * An explicit override can select a separately hosted auth bridge.
  */
-export const JMAP_WS_PROXY_URL =
-  import.meta.env.VITE_JMAP_WS_PROXY_URL ?? jmapWsProxyUrlForServer(JMAP_SERVER_URL);
+export const JMAP_WS_PROXY_URL = jmapWsProxyUrlForServer(JMAP_SERVER_URL);
 
 /**
  * Optional same-origin/edge proxy for sender domain icons. An empty

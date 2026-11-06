@@ -12,8 +12,10 @@ account_id = "407a3cd7b36b3ec71bf765856c90ae8c"
 # explicitly with `wrangler deploy --env production`.
 workers_dev = true
 
-# Disable Workers observability. WebSocket upgrade URLs carry
-# credentials. Disabling observability keeps that material out of any
+# Disable Workers observability. Every request through this Worker
+# carries Authorization material — either as an `Authorization`
+# header (HTTP path) or as a credential on the WebSocket upgrade URL
+# (WS path). Disabling observability keeps that material out of any
 # Cloudflare log destination this Worker controls. The Worker itself
 # does not call any logging API.
 [observability]

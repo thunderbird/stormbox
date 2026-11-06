@@ -1,78 +1,216 @@
-# Stormbox WebSocket authentication bridge
+# stormbox-jmap-bridge
 
-This Cloudflare Worker handles only `/jmap/ws` upgrades on
-`jmap.stage-thundermail.com` and `jmap.thundermail.com`.
-Session discovery, JMAP HTTP requests, uploads, and downloads go directly
-to the corresponding `mail.*` Stalwart server, which supplies CORS headers.
+A single Cloudflare Worker that fronts both halves of Stormbox's
+JMAP transport on `jmap.*.thundermail.com`: the HTTP proxy with
+first-party CORS and the `/jmap/ws` WebSocket auth bridge.
 
-## Authentication
+## Why it exists
 
-Stalwart authenticates WebSocket upgrades through the `Authorization`
-header. Browsers cannot set that header on `new WebSocket(url, protocols)`.
-The client supplies exactly one credential on the upgrade URL:
+**WebSocket half.** Stalwart authenticates the `/jmap/ws` upgrade
+via the `Authorization` header. Browsers cannot set arbitrary
+headers on `new WebSocket(url, protocols)`. The client puts the
+credential on the upgrade URL; this Worker promotes it to a header
+on the upstream upgrade.
 
-- `?access_token=<jwt>` becomes `Authorization: Bearer <jwt>`.
-- `?basic=<base64>` becomes `Authorization: Basic <base64>`.
+**HTTP half.** Stalwart's CORS is binary: off, or fully permissive
+`*`. We cannot configure a list of allowed origins. We also cannot
+put `mail.thundermail.com` behind Cloudflare's HTTP proxy because
+that DNS name must keep serving IMAP / SMTP / POP / Submission on
+non-HTTP ports. Instead the Worker serves the JMAP HTTP surface
+from a dedicated hostname (`jmap.*.thundermail.com`) and handles
+CORS itself: it allowlists the SPA's webmail origins (plus
+`localhost:3000` on stage for vite dev), echoes back the request
+`Origin` only when it matches, and short-circuits preflights at the
+edge so Stalwart's CORS settings never reach the browser.
 
-The Worker removes both credential parameters and the `Cookie` header
-before forwarding the upgrade. Other query parameters and the `jmap`
-WebSocket subprotocol are preserved. Missing credentials return 401;
-conflicting credentials return 400. Paths other than `/jmap/ws` return
-404, and requests without a WebSocket upgrade return 426.
+```
+Browser ─ WS upgrade ───►  jmap.thundermail.com/jmap/ws?access_token=<jwt>
+                                        │
+                                        ▼  (this Worker, ws.ts)
+                          strip access_token / basic from URL
+                          set Authorization: Bearer/Basic
+                          delete Cookie
+                                        │
+                                        ▼
+                              mail.thundermail.com/jmap/ws
+                              (Stalwart, unchanged)
+```
 
-| Bridge hostname | Stalwart upstream |
+```
+SPA at webmail.* ─ HTTP ─►  jmap.thundermail.com/jmap/api
+                                        │
+                                        ▼  (this Worker, http.ts)
+                          on OPTIONS: short-circuit, return CORS
+                              preflight; never hits Stalwart
+                          on other methods:
+                            delete Cookie + CF meta headers
+                            forward preserving method/headers/body
+                            rewrite session-document URLs:
+                              apiUrl / uploadUrl / downloadUrl /
+                              eventSourceUrl → jmap.*
+                              urn:ietf:params:jmap:websocket
+                                capability url → jmap.*
+                            rewrite absolute Location headers
+                            merge Access-Control-Allow-Origin into
+                              the response
+                                        │
+                                        ▼
+                              mail.thundermail.com/jmap/api
+                              (Stalwart, unchanged)
+```
+
+## CORS contract
+
+The HTTP half is genuinely cross-origin: the SPA lives at
+`webmail.*.thundermail.com`, the bridge at `jmap.*.thundermail.com`.
+This is deliberate — it lets the SPA hosting (GitHub Pages,
+grey-cloud DNS) stay completely untouched. The Worker owns CORS:
+
+| Header | Value |
 |---|---|
-| `jmap.stage-thundermail.com` | `https://mail.stage-thundermail.com` |
-| `jmap.thundermail.com` | `https://mail.thundermail.com` |
-| `*.workers.dev` | Stage by default; production with `X-Jmap-Bridge-Test-Upstream: prod` |
+| `Access-Control-Allow-Origin` | echo of `Origin` when in allowlist; absent otherwise |
+| `Vary` | `Origin` |
+| `Access-Control-Allow-Methods` (preflight) | `GET, HEAD, POST, OPTIONS` |
+| `Access-Control-Allow-Headers` (preflight) | `Authorization, Content-Type, Accept` |
+| `Access-Control-Max-Age` (preflight) | `3600` |
+| `Access-Control-Allow-Credentials` | not set — JMAP auth is `Authorization`, not cookies |
 
-Unknown hostnames return 404. The upstream override header is ignored on
-production custom domains. Observability is disabled in `wrangler.toml`
-because upgrade URLs contain credentials; the Worker does not log requests.
+Allowlist per environment (defined in `routes.ts`):
 
-## Files
+- **Stage**: `https://webmail.stage-thundermail.com`, `https://localhost:3000`, `http://localhost:3000`
+- **Prod**: `https://webmail.thundermail.com`, `https://alpha-app.thundermail.com` (strict, no dev origin)
 
-- `src/index.ts`: selects the upstream and dispatches to the upgrade handler.
-- `src/routes.ts`: fixed stage/production upstreams and workers.dev routing.
-- `src/ws.ts`: WebSocket authentication and upgrade forwarding.
-- `wrangler.toml`: deployment bindings and disabled observability.
+Changing the allowlist only takes effect after `npm run deploy:production`
+republishes the Worker.
+
+Unknown origins receive no `Access-Control-*` headers; the browser
+will block the response from reaching the SPA, which is the desired
+behaviour. The Worker is never an open CORS oracle.
+
+## What the two halves share
+
+- Same upstream selection (`mail.*` stage/prod by hostname).
+- Same observability-off requirement; both flow `Authorization`.
+- Same `Cookie` strip before upstream — JMAP auth is
+  Authorization-only, SPA cookies have no business at the mail
+  server.
+- Same defensive 4xx for unknown paths and wrong protocol shape
+  per hostname.
+- Same trust boundary, same vendor, same TLS, same egress.
+
+## Dispatch model
+
+Dispatch is by **request shape** after hostname routing selects the
+environment. A WebSocket upgrade on `jmap.*` reaches `ws.ts`; every
+non-upgrade request reaches `http.ts`. The production hostnames never
+route by path-scoped Cloudflare rules.
+
+| Hostname           | Reaches    | Wrong-shape response |
+|--------------------|------------|----------------------|
+| `jmap.*`           | `http.ts` or `ws.ts` | Non-upgrade `/jmap/ws` gets 426 before proxying |
+| `*.workers.dev`    | `http.ts` or `ws.ts` | Same dispatch, plus test upstream header |
+| anything else      | none       | 404 |
+
+## File layout
+
+```
+infra/jmap-bridge/
+├── README.md           # this file
+├── package.json
+├── tsconfig.json
+├── wrangler.toml
+└── src/
+    ├── index.ts        # dispatcher (hostname + Upgrade → handler)
+    ├── routes.ts       # Route + CORS allowlist + selectRoute + classifyHost
+    ├── ws.ts           # WebSocket upgrade auth bridge
+    └── http.ts         # HTTP proxy + CORS + session-URL rewrite
+```
+
+## Deploy targets
+
+| Command                       | What it does                                              | When to use            |
+|-------------------------------|-----------------------------------------------------------|------------------------|
+| `npm run deploy`              | Publish to `*.workers.dev` only. No production hostname.  | Local smoke testing.   |
+| `npm run deploy:production`   | Publish under `[env.production]`, binding the two jmap.* custom domains. | Real production deploy.|
+
+The default `wrangler deploy` cannot accidentally claim a
+production hostname — those only fire under the production env.
+
+For `--env production` the `thundermail.com` and
+`stage-thundermail.com` zones must live in this Cloudflare account.
+Cloudflare manages the DNS records for the two custom domains
+automatically when the Worker is deployed against this config.
+**The SPA at `webmail.*.thundermail.com` does not need to be
+proxied through Cloudflare** — it stays on GitHub Pages with
+grey-cloud DNS, untouched.
 
 ## Deploy
 
-Run Node/npm commands inside the development container, from this directory:
-
 ```bash
-npm ci
-npm run deploy              # workers.dev smoke deployment
-npm run deploy:production   # stage and production custom domains
+cd stormbox/infra/jmap-bridge
+npm install                              # one time
+
+# Smoke test (default env, *.workers.dev only):
+CLOUDFLARE_API_TOKEN=<token> npm run deploy
+
+# Production (gated):
+CLOUDFLARE_API_TOKEN=<token> npm run deploy:production
 ```
 
-The deployment retains the `stormbox-jmap-bridge` Worker name and existing
-custom domains, so publishing replaces the existing Worker. The default
-deployment does not bind production hostnames. The production environment
-binds both `jmap.stage-thundermail.com` and `jmap.thundermail.com`.
+## Smoke test recipes
 
-Deploy the frontend configuration that sends HTTP directly to Stalwart
-before publishing this Worker: older frontends that still send HTTP to
-`jmap.*` will receive 404 after the Worker update.
-
-## Client configuration
-
-`src/defines.ts` defaults HTTP to `https://mail.*.thundermail.com` and
-WebSockets to `wss://jmap.*.thundermail.com/jmap/ws` for the hosted servers.
-`VITE_JMAP_SERVER_URL` overrides the HTTP server;
-`VITE_JMAP_WS_PROXY_URL` independently overrides the WebSocket auth bridge.
-Local and custom servers default to `/jmap/ws` on the configured HTTP
-server's origin. Session URLs are consumed as Stalwart advertises them.
-
-## Smoke checks
-
-Use a WebSocket client with the `jmap` subprotocol and a valid credential
-to check the upgrade. A workers.dev deployment supports the same URL path
-and credentials as the hosted bridge.
+After `npm run deploy`, the Worker is reachable at a
+`*.workers.dev` URL. From curl:
 
 ```bash
-wscat -c "wss://jmap.stage-thundermail.com/jmap/ws?access_token=$JMAP_ACCESS_TOKEN" -s jmap
-curl -i https://jmap.stage-thundermail.com/jmap/session  # 404
-curl -i https://jmap.stage-thundermail.com/jmap/ws       # 426
+BRIDGE=https://stormbox-jmap-bridge.<account>.workers.dev
+
+# Stage session via bridge (default upstream)
+curl -sS -u "sancus@stage-thundermail.com:$SANCUS_STAGE_THUNDERMAIL" \
+  $BRIDGE/jmap/session | jq .apiUrl
+
+# Prod session via bridge (header opts in to the prod upstream)
+curl -sS -H "X-Jmap-Bridge-Test-Upstream: prod" \
+  -H "Authorization: Bearer $JMAP_ACCESS_TOKEN" \
+  $BRIDGE/jmap/session | jq .apiUrl
+
+# Preflight from the stage webmail origin (should 204 with CORS headers)
+curl -i -X OPTIONS \
+  -H "Origin: https://webmail.stage-thundermail.com" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: Authorization, Content-Type" \
+  $BRIDGE/jmap/
+
+# Preflight from an unrecognised origin (should 403 with no CORS headers)
+curl -i -X OPTIONS \
+  -H "Origin: https://attacker.example" \
+  -H "Access-Control-Request-Method: POST" \
+  $BRIDGE/jmap/
+
+# Stage WebSocket upgrade through the same Worker (HTTP/1.1 needed so
+# Cloudflare doesn't strip the Upgrade header at the edge)
+basic=$(printf 'user:pass' | base64 -w0)
+wscat -c "$BRIDGE/jmap/ws?basic=$basic" -s jmap   # workers.dev test
+wscat -c "wss://jmap.stage-thundermail.com/jmap/ws?basic=$basic" -s jmap   # production
 ```
+
+Expected: HTTP responses carry `apiUrl` and friends pointing at the
+bridge host (`jmap.*`), not at `mail.*`. The WebSocket capability
+URL also points at `jmap.*`. Preflights from allowlisted origins
+return 204 with `Access-Control-Allow-Origin` echoing the request
+origin and `Access-Control-Max-Age: 3600`; preflights from
+unrecognised origins return 403 with no CORS headers (so the
+browser blocks the request).
+
+## Client wiring
+
+`stormbox/src/defines.ts` is the single source of truth:
+
+- `JMAP_SERVER_URL` resolves to `https://jmap.*.thundermail.com`
+  for hosted SPA builds, so the transport hits the bridge.
+- `JMAP_WS_PROXY_URL` is derived from `JMAP_SERVER_URL` as
+  `wss://jmap.*.thundermail.com/jmap/ws`.
+
+The transport reads `apiUrl`, `uploadUrl`, `downloadUrl`, and
+`eventSourceUrl` out of the session document, so the rewritten
+URLs flow through automatically after the first session fetch.

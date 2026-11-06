@@ -207,10 +207,9 @@ the credential from the forwarded URL, sets the upstream
 
 HTTP session discovery, JMAP requests, uploads, and downloads go directly
 to `mail.*.thundermail.com`. Stalwart supplies the CORS headers and session
-URLs. `VITE_JMAP_WS_PROXY_URL` can configure a separate WebSocket auth
-bridge; the hosted defaults use `jmap.*.thundermail.com/jmap/ws`.
-The Worker returns 404 for all other paths and 426 for `/jmap/ws`
-requests without a WebSocket upgrade.
+URLs. WebSocket traffic keeps using the existing
+`jmap.*.thundermail.com/jmap/ws` authentication bridge. The Worker's HTTP
+proxy remains deployed for older clients until a later cleanup.
 
 The sync host binds `fetch` to `globalThis` so Firefox SharedWorker
 does not throw `WorkerGlobalScope`. `WebSocket` is passed through as
@@ -399,4 +398,4 @@ WebSocket via the proxy described above.
 - `src/components/MessageList.vue`: virtualized list using
   `@tanstack/vue-virtual`.
 - `infra/jmap-bridge/`: Cloudflare WebSocket authentication Worker
-  at `jmap.*.thundermail.com/jmap/ws`.
+  at `jmap.*.thundermail.com/jmap/ws`, with its legacy HTTP proxy retained.
