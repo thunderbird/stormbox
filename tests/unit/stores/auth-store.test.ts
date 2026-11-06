@@ -25,12 +25,16 @@ vi.mock('../../../src/services/navigation', () => navigation);
 
 // STAFF_APP_URL is fixed at build time; expose it as a getter so each
 // test can pick the origin staff are sent to (empty disables the redirect).
-const definesOverrides = vi.hoisted(() => ({ STAFF_APP_URL: '' }));
+const definesOverrides = vi.hoisted(() => ({
+  STAFF_APP_URL: '',
+  JMAP_SERVER_URL: undefined as string | undefined,
+}));
 vi.mock('../../../src/defines', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/defines')>();
   return {
     ...actual,
     get STAFF_APP_URL() { return definesOverrides.STAFF_APP_URL; },
+    get JMAP_SERVER_URL() { return definesOverrides.JMAP_SERVER_URL ?? actual.JMAP_SERVER_URL; },
   };
 });
 
@@ -67,6 +71,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
   __resetRepositoryForTests();
   definesOverrides.STAFF_APP_URL = '';
+  definesOverrides.JMAP_SERVER_URL = undefined;
   navigation.currentHref.mockReset();
   navigation.currentHref.mockReturnValue('https://webmail.thundermail.com/');
   navigation.replaceLocation.mockReset();
@@ -83,6 +88,22 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('auth-store', () => {
+  it.each([
+    ['mail.thundermail.com', 'jmap.thundermail.com'],
+    ['mail.stage-thundermail.com', 'jmap.stage-thundermail.com'],
+  ])('connects directly to %s while reusing its cached account key', async (serverHost, accountHost) => {
+    definesOverrides.JMAP_SERVER_URL = `https://${serverHost}`;
+    const repo = makeRepo();
+    __setRepositoryForTests(repo);
+    const store = useAuthStore();
+    await store.connectWithPassword({ username: 'tester', password: 'secret' });
+    expect(repo.startSyncAccount).toHaveBeenCalledWith(expect.objectContaining({
+      sessionUrl: `https://${serverHost}/.well-known/jmap`,
+      serverOrigin: `https://${accountHost}`,
+    }));
+    expect(store.serverHostname).toBe(serverHost);
+  });
+
   it.each(['initialization', 'token read'])('keeps database recovery visible after delayed OIDC %s', async (phase) => {
     let resume!: (value: any) => void;
     const pending = new Promise(resolve => { resume = resolve; });

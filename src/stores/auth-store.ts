@@ -12,7 +12,9 @@ import { computed, ref } from 'vue';
 
 import { initOidc, getOidc } from '../services/auth';
 import { currentHref, reloadLocation, replaceLocation } from '../services/navigation';
-import { JMAP_SERVER_URL, JMAP_WS_PROXY_URL, STAFF_APP_URL } from '../defines';
+import {
+  JMAP_SERVER_URL, JMAP_WS_PROXY_URL, STAFF_APP_URL, jmapAccountOriginForServer,
+} from '../defines';
 import { AUTH_STATE } from '../constants/states';
 import type { AuthState } from '../constants/states';
 import { isStaffEmail } from '../constants/staff';
@@ -91,7 +93,7 @@ function stringClaim(value: unknown): string | null {
 function parseServerUrl(): { origin: string; hostname: string } {
   try {
     const url = new URL(JMAP_SERVER_URL);
-    return { origin: url.origin, hostname: url.hostname };
+    return { origin: jmapAccountOriginForServer(JMAP_SERVER_URL), hostname: url.hostname };
   } catch {
     return { origin: JMAP_SERVER_URL ?? '', hostname: JMAP_SERVER_URL ?? '' };
   }

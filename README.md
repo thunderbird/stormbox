@@ -88,6 +88,8 @@ in `.env.local`. The hosted Stalwart servers use their corresponding
 the same origin; set `VITE_JMAP_WS_PROXY_URL` for a separate auth bridge.
 An empty value bypasses the auth bridge and uses the server's advertised
 WebSocket URL, which requires browser-compatible authentication on that server.
+Hosted accounts retain their existing `jmap.*` local account keys so cached
+mail and queued mutations survive the switch to direct HTTP.
 To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 `VITE_SEND_URL`. To override sender logo lookup, set
 `VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.

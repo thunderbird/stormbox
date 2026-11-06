@@ -6,6 +6,7 @@ import {
   defaultJmapServerUrl,
   defaultJmapWsProxyUrl,
   isProdWebmailHostname,
+  jmapAccountOriginForServer,
   jmapWsProxyUrlForServer,
   sendUrlForHostname,
   senderAvatarProxyUrlForHostname,
@@ -123,6 +124,22 @@ describe('defaultJmapWsProxyUrl', () => {
   it('uses the stage WebSocket auth bridge for non-production hosts', () => {
     expect(defaultJmapWsProxyUrl('webmail.stage-thundermail.com')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
     expect(defaultJmapWsProxyUrl('localhost')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
+  });
+});
+
+describe('jmapAccountOriginForServer', () => {
+  it.each([
+    ['mail.thundermail.com', 'jmap.thundermail.com'],
+    ['mail.stage-thundermail.com', 'jmap.stage-thundermail.com'],
+  ])('preserves the existing account key for %s', (serverHost, accountHost) => {
+    expect(jmapAccountOriginForServer(`https://${serverHost}`)).toBe(
+      jmapAccountOriginForServer(`https://${accountHost}`),
+    );
+  });
+
+  it('keeps other server origins distinct', () => {
+    expect(jmapAccountOriginForServer('https://mail.example.org/jmap/')).toBe('https://mail.example.org');
+    expect(jmapAccountOriginForServer('http://localhost:3001/stalwart-jmap')).toBe('http://localhost:3001');
   });
 });
 

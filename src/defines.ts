@@ -25,13 +25,19 @@ export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname):
   return jmapWsProxyUrlForServer(defaultJmapServerUrl(hostname));
 }
 
-export function jmapWsProxyUrlForServer(serverUrl: string): string {
+/** Stable hosted account keys preserve cached mail and pending mutations. */
+export function jmapAccountOriginForServer(serverUrl: string): string {
   const url = new URL(serverUrl);
   if (url.origin === "https://mail.thundermail.com") {
     url.hostname = "jmap.thundermail.com";
   } else if (url.origin === "https://mail.stage-thundermail.com") {
     url.hostname = "jmap.stage-thundermail.com";
   }
+  return url.origin;
+}
+
+export function jmapWsProxyUrlForServer(serverUrl: string): string {
+  const url = new URL(jmapAccountOriginForServer(serverUrl));
   url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
   url.username = "";
   url.password = "";
