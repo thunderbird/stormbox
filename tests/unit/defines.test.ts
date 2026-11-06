@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   accountsUrlForHostname,
@@ -103,33 +103,36 @@ describe('senderAvatarProxyUrlForHostname', () => {
 });
 
 describe('defaultJmapServerUrl', () => {
-  it('points the production webmail hosts at the production JMAP HTTP bridge', () => {
-    expect(defaultJmapServerUrl('webmail.thundermail.com')).toBe('https://jmap.thundermail.com');
-    expect(defaultJmapServerUrl('alpha-app.thundermail.com')).toBe('https://jmap.thundermail.com');
+  it('points the production webmail hosts at the production Stalwart server', () => {
+    expect(defaultJmapServerUrl('webmail.thundermail.com')).toBe('https://mail.thundermail.com');
+    expect(defaultJmapServerUrl('alpha-app.thundermail.com')).toBe('https://mail.thundermail.com');
   });
 
-  it('points every non-production host at the stage JMAP HTTP bridge', () => {
-    expect(defaultJmapServerUrl('webmail.stage-thundermail.com')).toBe('https://jmap.stage-thundermail.com');
-    expect(defaultJmapServerUrl('localhost')).toBe('https://jmap.stage-thundermail.com');
+  it('points every non-production host at the stage Stalwart server', () => {
+    expect(defaultJmapServerUrl('webmail.stage-thundermail.com')).toBe('https://mail.stage-thundermail.com');
+    expect(defaultJmapServerUrl('localhost')).toBe('https://mail.stage-thundermail.com');
   });
 });
 
 describe('defaultJmapWsProxyUrl', () => {
-  it('derives the production WebSocket auth bridge from the production JMAP bridge', () => {
+  it('uses the production WebSocket auth bridge', () => {
     expect(defaultJmapWsProxyUrl('webmail.thundermail.com')).toBe('wss://jmap.thundermail.com/jmap/ws');
     expect(defaultJmapWsProxyUrl('alpha-app.thundermail.com')).toBe('wss://jmap.thundermail.com/jmap/ws');
   });
 
-  it('derives every non-production WebSocket auth bridge from the stage JMAP bridge', () => {
+  it('uses the stage WebSocket auth bridge for non-production hosts', () => {
     expect(defaultJmapWsProxyUrl('webmail.stage-thundermail.com')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
     expect(defaultJmapWsProxyUrl('localhost')).toBe('wss://jmap.stage-thundermail.com/jmap/ws');
   });
 });
 
 describe('jmapWsProxyUrlForServer', () => {
-  it('uses the same origin as the configured JMAP server', () => {
-    expect(jmapWsProxyUrlForServer('https://jmap.stage-thundermail.com')).toBe(
+  it('maps the hosted Stalwart servers to their WebSocket auth bridges', () => {
+    expect(jmapWsProxyUrlForServer('https://mail.stage-thundermail.com')).toBe(
       'wss://jmap.stage-thundermail.com/jmap/ws',
+    );
+    expect(jmapWsProxyUrlForServer('https://mail.thundermail.com')).toBe(
+      'wss://jmap.thundermail.com/jmap/ws',
     );
   });
 
@@ -137,5 +140,46 @@ describe('jmapWsProxyUrlForServer', () => {
     expect(jmapWsProxyUrlForServer('https://localhost:3000/stalwart-jmap')).toBe(
       'wss://localhost:3000/jmap/ws',
     );
+  });
+
+  it('retains a custom server origin and port', () => {
+    expect(jmapWsProxyUrlForServer('http://localhost:3001/stalwart-jmap')).toBe(
+      'ws://localhost:3001/jmap/ws',
+    );
+    expect(jmapWsProxyUrlForServer('https://mail.example.org:8443/jmap/')).toBe(
+      'wss://mail.example.org:8443/jmap/ws',
+    );
+  });
+});
+
+describe('JMAP endpoint configuration', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('uses the hosted WebSocket bridge with direct production HTTP', async () => {
+    vi.stubEnv('VITE_JMAP_SERVER_URL', 'https://mail.thundermail.com');
+    vi.stubEnv('VITE_JMAP_WS_PROXY_URL', undefined);
+    vi.resetModules();
+    const config = await import('../../src/defines');
+    expect(config.JMAP_SERVER_URL).toBe('https://mail.thundermail.com');
+    expect(config.JMAP_WS_PROXY_URL).toBe('wss://jmap.thundermail.com/jmap/ws');
+  });
+
+  it('allows the WebSocket auth bridge to be configured independently', async () => {
+    vi.stubEnv('VITE_JMAP_SERVER_URL', 'https://mail.example.org');
+    vi.stubEnv('VITE_JMAP_WS_PROXY_URL', 'wss://ws.example.org/jmap/ws');
+    vi.resetModules();
+    const config = await import('../../src/defines');
+    expect(config.JMAP_SERVER_URL).toBe('https://mail.example.org');
+    expect(config.JMAP_WS_PROXY_URL).toBe('wss://ws.example.org/jmap/ws');
+  });
+
+  it('preserves an explicitly disabled WebSocket auth bridge', async () => {
+    vi.stubEnv('VITE_JMAP_WS_PROXY_URL', '');
+    vi.resetModules();
+    const config = await import('../../src/defines');
+    expect(config.JMAP_WS_PROXY_URL).toBe('');
   });
 });

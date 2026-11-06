@@ -16,9 +16,9 @@ export function isProdWebmailHostname(hostname = globalThis.location?.hostname):
 
 export function defaultJmapServerUrl(hostname = globalThis.location?.hostname): string {
   if (isProdWebmailHostname(hostname)) {
-    return "https://jmap.thundermail.com";
+    return "https://mail.thundermail.com";
   }
-  return "https://jmap.stage-thundermail.com";
+  return "https://mail.stage-thundermail.com";
 }
 
 export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname): string {
@@ -27,6 +27,11 @@ export function defaultJmapWsProxyUrl(hostname = globalThis.location?.hostname):
 
 export function jmapWsProxyUrlForServer(serverUrl: string): string {
   const url = new URL(serverUrl);
+  if (url.origin === "https://mail.thundermail.com") {
+    url.hostname = "jmap.thundermail.com";
+  } else if (url.origin === "https://mail.stage-thundermail.com") {
+    url.hostname = "jmap.stage-thundermail.com";
+  }
   url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
   url.username = "";
   url.password = "";
@@ -108,12 +113,12 @@ export const OIDC_CLIENT_ID =
   import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox-test";
 
 /**
- * URL of the JMAP-over-WebSocket auth bridge. It is derived from the
- * same public bridge origin as JMAP HTTP, with /jmap/ws on the WS
- * scheme. The bridge reads the credential off the URL query string
- * and synthesises the Authorization header upstream.
+ * The hosted mail servers use their jmap.* WebSocket auth bridges.
+ * Local and custom servers default to /jmap/ws on the server origin.
+ * An explicit override can select a separately hosted auth bridge.
  */
-export const JMAP_WS_PROXY_URL = jmapWsProxyUrlForServer(JMAP_SERVER_URL);
+export const JMAP_WS_PROXY_URL =
+  import.meta.env.VITE_JMAP_WS_PROXY_URL ?? jmapWsProxyUrlForServer(JMAP_SERVER_URL);
 
 /**
  * Optional same-origin/edge proxy for sender domain icons. An empty

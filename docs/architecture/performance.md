@@ -195,7 +195,7 @@ partial count with the JMAP error type. This differs from R-3.14's
 still-outstanding requirement for one durable row per wire chunk and
 stopping after the first failed chunk.
 
-## JMAP edge bridge
+## JMAP WebSocket authentication bridge
 
 Browsers cannot set `Authorization` on `new WebSocket(url, protocols)`,
 and JMAP `/jmap/ws` (RFC 8887) authenticates only via that header.
@@ -205,16 +205,12 @@ The Cloudflare Worker at `infra/jmap-bridge/` accepts
 the credential from the forwarded URL, sets the upstream
 `Authorization` header, and proxies the WebSocket.
 
-The same Worker fronts `/.well-known/jmap` and `/jmap/*` over HTTP
-on the `jmap.*.thundermail.com` hostnames. The bridge owns CORS
-itself: it allowlists the webmail origins (plus localhost on stage
-for vite dev), short-circuits preflights, and echoes back
-`Access-Control-Allow-Origin` only when the request `Origin` is in
-the allowlist — so the SPA's JMAP calls work cross-origin without
-needing Stalwart's CORS to be touched. It rewrites session-document
-URLs from `mail.*` to `jmap.*` for both HTTP fields and the WebSocket
-capability so every URL the client subsequently dereferences stays
-inside the bridge.
+HTTP session discovery, JMAP requests, uploads, and downloads go directly
+to `mail.*.thundermail.com`. Stalwart supplies the CORS headers and session
+URLs. `VITE_JMAP_WS_PROXY_URL` can configure a separate WebSocket auth
+bridge; the hosted defaults use `jmap.*.thundermail.com/jmap/ws`.
+The Worker returns 404 for all other paths and 426 for `/jmap/ws`
+requests without a WebSocket upgrade.
 
 The sync host binds `fetch` to `globalThis` so Firefox SharedWorker
 does not throw `WorkerGlobalScope`. `WebSocket` is passed through as
@@ -402,6 +398,5 @@ WebSocket via the proxy described above.
   handling.
 - `src/components/MessageList.vue`: virtualized list using
   `@tanstack/vue-virtual`.
-- `infra/jmap-bridge/`: Cloudflare Worker fronting both halves of
-  the JMAP transport on `jmap.*`: the HTTP proxy with first-party
-  CORS and the WebSocket auth bridge at `/jmap/ws`.
+- `infra/jmap-bridge/`: Cloudflare WebSocket authentication Worker
+  at `jmap.*.thundermail.com/jmap/ws`.
