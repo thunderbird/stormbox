@@ -251,7 +251,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-stage' }}
-      VITE_JMAP_SERVER_URL: https://jmap.stage-thundermail.com
+      VITE_JMAP_SERVER_URL: https://mail.stage-thundermail.com
       VITE_OIDC_ISSUER: https://auth.stage-thundermail.com/realms/tbpro
       VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
       VITE_ACCOUNTS_URL: https://accounts.stage-thundermail.com
@@ -301,7 +301,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-alpha' }}
-      VITE_JMAP_SERVER_URL: https://jmap.thundermail.com
+      VITE_JMAP_SERVER_URL: https://mail.thundermail.com
       VITE_OIDC_ISSUER: https://auth.tb.pro/realms/tbpro
       VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox-alpha' }}
       VITE_ACCOUNTS_URL: https://accounts.tb.pro
@@ -345,7 +345,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT || 'stormbox-prod' }}
-      VITE_JMAP_SERVER_URL: https://jmap.thundermail.com
+      VITE_JMAP_SERVER_URL: https://mail.thundermail.com
       VITE_OIDC_ISSUER: https://auth.tb.pro/realms/tbpro
       VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID || 'thunderbird-stormbox' }}
       VITE_ACCOUNTS_URL: https://accounts.tb.pro

@@ -16,6 +16,7 @@ import { wlog } from '../db/worker-log';
 import { SyncClient } from './sync-client';
 import { JmapTransport } from './backends/jmap/transport';
 import { JmapBackend } from './backends/jmap/backend';
+import { jmapAccountOriginForServer } from '../defines';
 
 type ConnectAuth =
   | {
@@ -106,6 +107,7 @@ export function makeSyncRpcHandlers({
 
   return {
     [DB_RPC.SYNC_START_ACCOUNT]: async (input) => {
+      input = { ...input, serverOrigin: jmapAccountOriginForServer(input.serverOrigin) };
       let releaseBearerStart: (() => void) | null = null;
       if (input.auth?.kind === 'bearer') {
         for (;;) {
