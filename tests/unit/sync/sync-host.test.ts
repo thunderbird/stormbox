@@ -249,6 +249,47 @@ describe('worker shutdown', () => {
 });
 
 describe('SYNC_START_ACCOUNT', () => {
+  it.each([
+    ['mail.thundermail.com', 'jmap.thundermail.com'],
+    ['mail.stage-thundermail.com', 'jmap.stage-thundermail.com'],
+  ])('reuses cached accounts while fetching directly from %s', async (serverHost, accountHost) => {
+    const { row: cachedAccount } = await handlers[DB_RPC.ACCOUNT_UPSERT]({
+      serverOrigin: `https://${accountHost}`,
+      remoteAccountId: 'acct-1',
+      isPrimary: true,
+    });
+    const session = {
+      ...SESSION,
+      apiUrl: `https://${serverHost}/jmap`,
+      downloadUrl: `https://${serverHost}/jmap/download/{accountId}/{blobId}/{name}`,
+      uploadUrl: `https://${serverHost}/jmap/upload/{accountId}/`,
+    };
+    const apiFetch = makeFetch();
+    const fetchMock = vi.fn((url, init) => init?.method === 'POST'
+      ? apiFetch(url, init)
+      : Promise.resolve(jsonResponse(session)));
+    const syncHandlers = makeSyncRpcHandlers({
+      handlers,
+      fetch: fetchMock as any,
+      WebSocketImpl: FakeWebSocket as any,
+    });
+    const { accountId } = await syncHandlers[DB_RPC.SYNC_START_ACCOUNT]({
+      sessionUrl: `https://${serverHost}/.well-known/jmap`,
+      serverOrigin: `https://${serverHost}`,
+      auth: { kind: 'basic', username: 'tester', password: 'secret' },
+      useWebSocket: false,
+    });
+    try {
+      expect(accountId).toBe(cachedAccount.id);
+      expect(await handlers[DB_RPC.ACCOUNT_LIST]()).toHaveLength(1);
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+      expect(fetchMock.mock.calls[0][0]).toBe(`https://${serverHost}/.well-known/jmap`);
+      expect(fetchMock.mock.calls.every(([url]) => new URL(url).hostname === serverHost)).toBe(true);
+    } finally {
+      await syncHandlers[DB_RPC.SYNC_STOP_ACCOUNT]({ accountId });
+    }
+  });
+
   it('uses rotated bearer credentials without restarting the backend', async () => {
     const authHeaders = [];
     handlers = makeHandlers(engine);

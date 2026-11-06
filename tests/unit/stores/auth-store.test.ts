@@ -89,9 +89,9 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('auth-store', () => {
   it.each([
-    ['mail.thundermail.com', 'jmap.thundermail.com'],
-    ['mail.stage-thundermail.com', 'jmap.stage-thundermail.com'],
-  ])('connects directly to %s while reusing its cached account key', async (serverHost, accountHost) => {
+    'mail.thundermail.com',
+    'mail.stage-thundermail.com',
+  ])('connects directly to %s', async (serverHost) => {
     definesOverrides.JMAP_SERVER_URL = `https://${serverHost}`;
     const repo = makeRepo();
     __setRepositoryForTests(repo);
@@ -99,7 +99,7 @@ describe('auth-store', () => {
     await store.connectWithPassword({ username: 'tester', password: 'secret' });
     expect(repo.startSyncAccount).toHaveBeenCalledWith(expect.objectContaining({
       sessionUrl: `https://${serverHost}/.well-known/jmap`,
-      serverOrigin: `https://${accountHost}`,
+      serverOrigin: `https://${serverHost}`,
     }));
     expect(store.serverHostname).toBe(serverHost);
   });
