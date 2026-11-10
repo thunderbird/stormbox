@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed,
   nextTick,
@@ -464,7 +465,7 @@ onBeforeUnmount(() => {
       type="button"
       :style="dotStyle(dot)"
       :data-beacon="dot.id"
-      :aria-label="`New: ${beaconTitle(dot.id)}`"
+      :aria-label="t('featureBeaconLayer.new2', { value1: beaconTitle(dot.id) })"
       aria-haspopup="dialog"
       :aria-expanded="cardId === dot.id && cardVisible"
       @click="onDotClick(dot.id)"
@@ -494,7 +495,7 @@ onBeforeUnmount(() => {
           <component :is="cardBeacon.icon" :size="18" :stroke-width="1.75" />
         </span>
         <div class="feature-beacons__card-heading">
-          <span class="feature-beacons__card-kicker">New</span>
+          <span class="feature-beacons__card-kicker">{{ t('featureBeaconLayer.new') }}</span>
           <h3 :id="`feature-beacon-title-${cardBeacon.id}`" class="feature-beacons__card-title">
             {{ cardBeacon.title }}
           </h3>
@@ -505,7 +506,7 @@ onBeforeUnmount(() => {
       </p>
       <footer class="feature-beacons__card-actions">
         <button class="feature-beacons__got-it" type="button" @click="onGotIt">
-          Got it
+          {{ t('featureBeaconLayer.gotIt') }}
         </button>
       </footer>
     </section>

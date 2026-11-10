@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, nextTick, ref, watch } from 'vue';
 
 import { FEATURE_CARDS, type FeatureCard, type SpotlightId } from '../constants/feature-tour';
@@ -81,11 +82,11 @@ watch(() => props.activeSpotlight, async (next, previous) => {
           :ref="(el) => setShowButton(card.spotlight, el)"
           type="button"
           class="feature-card__show"
-          :aria-label="`Show me: ${card.title}`"
+          :aria-label="t('featureCardGrid.showMe', { value1: card.title })"
           :disabled="activeSpotlight != null"
           @click="emit('spotlight', card.spotlight)"
         >
-          Show me
+          {{ t('featureCardGrid.showMe2') }}
         </button>
       </article>
     </div>
@@ -94,7 +95,7 @@ watch(() => props.activeSpotlight, async (next, previous) => {
       v-if="activeCard"
       class="feature-caption"
       role="group"
-      :aria-label="`Showing: ${activeCard.title}`"
+      :aria-label="t('featureCardGrid.showing', { value1: activeCard.title })"
       data-testid="feature-caption"
     >
       <component :is="activeCard.icon" :size="20" :stroke-width="2" aria-hidden="true" />
@@ -104,7 +105,7 @@ watch(() => props.activeSpotlight, async (next, previous) => {
           <ol
             v-if="stepCount > 1"
             class="feature-caption__steps"
-            :aria-label="`Step ${stepIndex + 1} of ${stepCount}`"
+            :aria-label="t('featureCardGrid.stepOf', { value1: stepIndex + 1, value2: stepCount })"
           >
             <li
               v-for="index in stepCount"
@@ -123,7 +124,7 @@ watch(() => props.activeSpotlight, async (next, previous) => {
         class="feature-caption__done"
         @click="emit('cancel')"
       >
-        Done
+        {{ t('featureCardGrid.done') }}
       </button>
     </div>
   </div>

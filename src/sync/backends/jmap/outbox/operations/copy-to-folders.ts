@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../../../i18n/messages';
 import { DB_RPC } from '../../../../../db/protocol';
 import { callJmap, pickResponse } from '../../invoke';
 import { maxObjectsInGet, maxObjectsInSet } from '../../limits';
@@ -527,11 +528,11 @@ async function refreshCopiedDestinationCounters({
     });
     const response = pickResponse(raw, 'Mailbox/get');
     if (!response) {
-      throw new Error('Mailbox/get failed while refreshing copy destination');
+      throw new LocalizedError('copyToFolders.mailboxGetFailedWhileRefreshingCopyDestination');
     }
     const returned = new Set((response.list ?? []).map((folder) => folder.id));
     if (ids.some((id) => !returned.has(id))) {
-      throw new Error('Mailbox/get omitted a copied destination folder');
+      throw new LocalizedError('copyToFolders.mailboxGetOmittedACopiedDestinationFolder');
     }
     await handlers[DB_RPC.FOLDER_UPDATE_COUNTS_MANY]({
       accountId: account.id,

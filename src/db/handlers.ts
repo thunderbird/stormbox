@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 /**
  * Repository handlers. These are the worker-side implementations of the
  * RPC methods listed in protocol.js.
@@ -515,21 +516,21 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
   function contactsTrashShardTooLarge(): Error & { type: 'tooLarge'; terminal: true } {
     return Object.assign(
-      new Error('Contact trash entry exceeds the configured shard size limit'),
+      new LocalizedError('handlers.contactTrashEntryExceedsTheConfiguredShardSizeLimit'),
       { type: 'tooLarge' as const, terminal: true as const },
     );
   }
 
   function contactsTrashGroupTooLarge(): Error & { type: 'trashGroupTooLarge' } {
     return Object.assign(
-      new Error('Contact trash checkpoint group does not fit one shard'),
+      new LocalizedError('handlers.contactTrashCheckpointGroupDoesNotFitOneShard'),
       { type: 'trashGroupTooLarge' as const },
     );
   }
 
   function ambiguousContactsTrashUid(): Error & { type: 'ambiguousUid' } {
     return Object.assign(
-      new Error('A different active contact already owns this trash UID'),
+      new LocalizedError('handlers.aDifferentActiveContactAlreadyOwnsThisTrashUID'),
       { type: 'ambiguousUid' as const },
     );
   }
@@ -852,7 +853,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
   function invalidTrashSnapshot(): Error & { type: 'invalidTrashSnapshot' } {
     return Object.assign(
-      new Error('invalidTrashSnapshot: saved contact data is unreadable'),
+      new LocalizedError('handlers.invalidTrashSnapshotSavedContactDataIsUnreadable'),
       { type: 'invalidTrashSnapshot' as const },
     );
   }
@@ -1423,7 +1424,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         (Array.isArray(remoteAccountIds) ? remoteAccountIds : []).filter(Boolean),
       )];
       if (!serverOrigin || remoteIds.length === 0) {
-        throw new Error('account.reconcileSession requires origin and Session accounts');
+        throw new LocalizedError('handlers.accountReconcileSessionRequiresOriginAndSessionAccounts');
       }
       const staleAccounts = await engine.all(
         `SELECT id FROM accounts
@@ -2074,7 +2075,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     }) => {
       const safeFolderId = Number(folderId);
       if (!Number.isFinite(safeFolderId)) {
-        throw new Error('folderWindow.persistBatch requires a numeric folderId');
+        throw new LocalizedError('handlers.folderWindowPersistBatchRequiresANumericFolderId');
       }
       const safePosition = Number(position);
       const remoteIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
@@ -2123,7 +2124,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         );
         viewId = Number(viewRow?.id);
         if (!Number.isFinite(viewId)) {
-          throw new Error('folderWindow.persistBatch failed to resolve query view id');
+          throw new LocalizedError('handlers.folderWindowPersistBatchFailedToResolveQueryViewId');
         }
 
         if (dropOtherPositions) {
@@ -2341,7 +2342,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     }) => {
       const safeFolderId = Number(folderId);
       if (!Number.isFinite(safeFolderId) || !queryState) {
-        throw new Error('folderWindow.applyChangesBatch requires folder and query state');
+        throw new LocalizedError('handlers.folderWindowApplyChangesBatchRequiresFolderAndQueryState');
       }
       const removedList = Array.isArray(removed)
         ? removed.filter((id) => id != null)
@@ -2374,7 +2375,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         );
         viewId = Number(view?.id);
         if (!Number.isFinite(viewId)) {
-          throw new Error('folderWindow.applyChangesBatch requires an existing query view');
+          throw new LocalizedError('handlers.folderWindowApplyChangesBatchRequiresAnExistingQueryView');
         }
 
         await persistMessageRecordsInTx(tx, accountId, records, ts);
@@ -2415,7 +2416,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     }) => {
       const safeViewId = Number(viewId);
       if (!Number.isFinite(safeViewId)) {
-        throw new Error('queryView.applyChanges requires a numeric viewId');
+        throw new LocalizedError('handlers.queryViewApplyChangesRequiresANumericViewId');
       }
       const removedList = Array.isArray(removed) ? removed.filter((id) => id != null) : [];
       const addedList = Array.isArray(added)
@@ -2527,7 +2528,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
     }) => {
       const statuses = new Set(['pending', 'final', 'canceled']);
       if (undoStatus != null && !statuses.has(undoStatus)) {
-        throw new Error(`message.setScheduled got an unknown undo status: ${undoStatus}`);
+        throw new LocalizedError('handlers.messageSetScheduledGotAnUnknownUndoStatus', { value1: undoStatus });
       }
       const result = undoStatus == null
         ? await engine.run(
@@ -3792,9 +3793,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         || !input.operationId
         || nextRequest?.operationId !== input.operationId
       ) {
-        throw new Error(
-          'addressbook.ensureMutation requires an AddressBook mutation operation',
-        );
+        throw new LocalizedError('handlers.addressbookEnsureMutationRequiresAnAddressBookMutationOperation');
       }
 
       const ts = now();
@@ -4342,7 +4341,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
      */
     [DB_RPC.CONTACT_SWEEP_STALE]: async ({ accountId, generation }) => {
       if (!Number.isFinite(generation) || generation <= 0) {
-        throw new Error('CONTACT_SWEEP_STALE requires the generation the sync stamped');
+        throw new LocalizedError('handlers.cONTACTSWEEPSTALERequiresTheGenerationTheSyncStamped');
       }
       const swept = await engine.transaction(async (tx) => {
         const result = await tx.run(
@@ -4543,7 +4542,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         let localNewer = false;
         for (const shard of shards ?? []) {
           const shardName = typeof shard?.shardName === 'string' ? shard.shardName : '';
-          if (!shardName) throw new Error('contactTrash.mergeRemoteShards requires a shard name');
+          if (!shardName) throw new LocalizedError('handlers.contactTrashMergeRemoteShardsRequiresAShardName');
           const existing = await tx.get(
             `SELECT doc_json, dirty, local_revision
                FROM contacts_trash_documents
@@ -4665,7 +4664,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         const incomingRemoteIds = new Map<string, string>();
         for (const value of entries ?? []) {
           const entry = normalizeContactTrashEntry(value);
-          if (!entry) throw new Error('contactTrash.putEntries received an invalid entry');
+          if (!entry) throw new LocalizedError('handlers.contactTrashPutEntriesReceivedAnInvalidEntry');
           const existing = current.document.entries[entry.uid];
           const incomingRemoteId = incomingRemoteIds.get(entry.uid);
           if (
@@ -4742,7 +4741,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       const staged = new Map<string, ContactTrashDocumentEntry>();
       for (const value of stagedEntries ?? []) {
         const entry = normalizeContactTrashEntry(value);
-        if (!entry) throw new Error('contactTrash.rollbackEntries received an invalid staged entry');
+        if (!entry) throw new LocalizedError('handlers.contactTrashRollbackEntriesReceivedAnInvalidStagedEntry');
         staged.set(entry.uid, entry);
       }
       const ts = now();
@@ -4785,7 +4784,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
       ensurePush = false,
     }) => {
       if (status !== 'restored' && status !== 'purged') {
-        throw new Error('contactTrash.setStatus requires a tombstone status');
+        throw new LocalizedError('handlers.contactTrashSetStatusRequiresATombstoneStatus');
       }
       const ids = numericUnique(trashIds ?? []);
       const ts = now();
@@ -4948,7 +4947,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
           [SEND_PHASE.SUBMITTED, JSON.stringify(saved), ts, rowId, accountId],
         );
         if ((updated?.changes ?? 0) !== 1) {
-          throw new Error('accepted send row was not found');
+          throw new LocalizedError('handlers.acceptedSendRowWasNotFound');
         }
       });
       broadcaster.touch(TABLE_FAMILIES.MUTATIONS);
@@ -4978,7 +4977,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
     [DB_RPC.SETTINGS_APPLY_PATCH]: async ({ accountId, patch }) => {
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-        throw new Error('settings.applyPatch requires an object patch');
+        throw new LocalizedError('handlers.settingsApplyPatchRequiresAnObjectPatch');
       }
       const serializedPatch = JSON.stringify(patch);
       const safePatch = JSON.parse(serializedPatch);
@@ -5097,7 +5096,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
         || typeof input.operationId !== 'string'
         || !input.operationId
       ) {
-        throw new Error('identity.ensureMutation requires an Identity mutation operation');
+        throw new LocalizedError('handlers.identityEnsureMutationRequiresAnIdentityMutationOperation');
       }
 
       const ts = now();

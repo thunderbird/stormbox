@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   ArrowLeft,
   Pencil,
@@ -63,11 +64,11 @@ const structuredError = ref<AddressBookError | null>(null);
 
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
 const title = computed(() => {
-  if (props.mode === 'create') return 'Create address book';
-  if (props.mode === 'edit') return 'Edit address book';
+  if (props.mode === 'create') return t('addressBookDetailPane.createAddressBook');
+  if (props.mode === 'edit') return t('addressBookDetailPane.editAddressBook');
   return props.addressbook
     ? addressBookDisplayName(props.addressbook)
-    : 'Address book';
+    : t('addressBookDetailPane.addressBook');
 });
 
 function formSnapshot(): string {
@@ -112,8 +113,8 @@ const {
 const nameError = computed(() => {
   if (!saveAttempted.value) return null;
   const trimmed = name.value.trim();
-  if (!trimmed) return 'Enter an address book name.';
-  if (/[\r\n]/u.test(name.value)) return 'Address book names cannot contain a line break.';
+  if (!trimmed) return t('addressBookDetailPane.enterAnAddressBookName');
+  if (/[\r\n]/u.test(name.value)) return t('addressBookDetailPane.addressBookNamesCannotContainALineBreak');
   return null;
 });
 
@@ -165,7 +166,7 @@ async function save(): Promise<boolean> {
       ...updateFields(),
     });
   } else {
-    reportFailure('save-error', 'This address book is no longer available.');
+    reportFailure('save-error', t('addressBookDetailPane.thisAddressBookIsNoLongerAvailable'));
     return false;
   }
 
@@ -203,8 +204,8 @@ defineExpose({ focusDetail, save });
       <AppIconButton
         class="address-book-detail__back"
         :disabled="deleting || contactsStore.saving"
-        title="Back"
-        aria-label="Back"
+        :title="t('addressBookDetailPane.back')"
+        :aria-label="t('addressBookDetailPane.back')"
         @click="emit('back')"
       >
         <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -212,10 +213,8 @@ defineExpose({ focusDetail, save });
       <template v-if="mode === 'view' && addressbook">
         <AppIconButton
           :disabled="deleting || addressbook.may_write !== 1"
-          :title="addressbook.may_write === 1
-            ? 'Edit address book'
-            : 'You don’t have permission to edit this address book.'"
-          aria-label="Edit address book"
+          :title="addressbook.may_write === 1 ? t('addressBookDetailPane.editAddressBook') : t('addressBookDetailPane.editDenied')"
+          :aria-label="t('addressBookDetailPane.editAddressBook')"
           @click="emit('edit')"
         >
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -223,8 +222,8 @@ defineExpose({ focusDetail, save });
         <AppIconButton
           danger
           :disabled="deleting || contactsStore.saving || deleteDisabledReason !== null"
-          :title="deleteDisabledReason || 'Delete address book'"
-          aria-label="Delete address book"
+          :title="deleteDisabledReason || t('addressBookDetailPane.deleteAddressBook')"
+          :aria-label="t('addressBookDetailPane.deleteAddressBook')"
           @click="emit('requestDelete')"
         >
           <Trash2 :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -240,7 +239,7 @@ defineExpose({ focusDetail, save });
     >
       <h2>{{ title }}</h2>
       <label class="address-book-detail__field">
-        <span>Name</span>
+        <span>{{ t('addressBookDetailPane.name') }}</span>
         <input
           ref="nameEl"
           v-model="name"
@@ -261,7 +260,7 @@ defineExpose({ focusDetail, save });
       </label>
 
       <label class="address-book-detail__field">
-        <span>Description <small>(optional)</small></span>
+        <span>{{ t('addressBookDetailPane.description') }} <small>{{ t('addressBookDetailPane.optional') }}</small></span>
         <textarea v-model="description" rows="4" />
       </label>
 
@@ -271,13 +270,13 @@ defineExpose({ focusDetail, save });
           type="checkbox"
           :disabled="addressbook?.is_default === 1"
         />
-        <span>Set as default</span>
+        <span>{{ t('addressBookDetailPane.setAsDefault') }}</span>
       </label>
       <small
         v-if="addressbook?.is_default === 1"
         class="address-book-detail__hint"
       >
-        This is already the default address book.
+        {{ t('addressBookDetailPane.thisIsAlreadyTheDefaultAddressBook') }}
       </small>
 
       <p v-if="displayError" class="address-book-detail__error" role="alert">
@@ -290,14 +289,14 @@ defineExpose({ focusDetail, save });
           :disabled="contactsStore.saving"
           @click="emit('cancel')"
         >
-          Cancel
+          {{ t('addressBookDetailPane.cancel') }}
         </AppButton>
         <AppButton
           class="address-book-detail__save"
           form-action="submit"
           :disabled="contactsStore.saving"
         >
-          {{ contactsStore.saving ? 'Saving…' : 'Save address book' }}
+          {{ contactsStore.saving ? t('addressBookDetailPane.saving') : t('addressBookDetailPane.saveAddressBook') }}
         </AppButton>
       </footer>
     </form>
@@ -312,15 +311,15 @@ defineExpose({ focusDetail, save });
       </h2>
       <div v-if="addressbook.is_default === 1" class="address-book-detail__statuses">
         <span class="address-book-detail__badge">
-          Personal
+          {{ t('addressBookDetailPane.personal') }}
         </span>
       </div>
       <section>
-        <h3>Description</h3>
-        <p>{{ addressbook.description || '(not set)' }}</p>
+        <h3>{{ t('addressBookDetailPane.description') }}</h3>
+        <p>{{ addressbook.description || t('addressBookDetailPane.notSet') }}</p>
       </section>
       <p v-if="addressbook.may_write !== 1" class="address-book-detail__protected">
-        The mail server does not allow this address book to be edited.
+        {{ t('addressBookDetailPane.theMailServerDoesNotAllowThisAddressBook') }}
       </p>
     </div>
   </article>

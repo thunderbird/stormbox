@@ -1,3 +1,4 @@
+import { t, LocalizedError, errorDescription, sourceText } from '../i18n/messages';
 /**
  * Compose state. Holds the in-flight draft and the identity picker.
  * Send is implemented as a pending_mutations row plus a drainOutbox
@@ -87,10 +88,15 @@ type PendingDiscardIntent = 'discard-all' | 'keep-confirmed';
 
 export const RECIPIENT_FIELDS: readonly RecipientField[] = ['to', 'cc', 'bcc'];
 export const INVALID_RECIPIENT_MESSAGE =
-  'Fix invalid recipients before saving or sending this message.';
+  sourceText('composeStore.fixInvalidRecipientsBeforeSavingOrSendingThisMessage');
 export const UNFINISHED_ATTACHMENT_MESSAGE =
-  'Some attachments have not finished uploading. Wait for them to finish, '
-  + 'or retry or remove the ones that failed.';
+  sourceText('composeStore.someAttachmentsHaveNotFinishedUploadingWaitForThemCombined');
+const invalidRecipientMessages = new Set([INVALID_RECIPIENT_MESSAGE]);
+function invalidRecipientMessage(): string {
+  const message = t('composeStore.fixInvalidRecipientsBeforeSavingOrSendingThisMessage');
+  invalidRecipientMessages.add(message);
+  return message;
+}
 /** Share of an attachment's progress bar covered by the byte upload; the draft save fills the rest. */
 const ATTACHMENT_UPLOAD_PROGRESS_SHARE = 90;
 
@@ -268,15 +274,15 @@ function hasInvalidRecipientPills(session: ComposeSession): boolean {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`Unhandled compose presentation: ${String(value)}`);
+  throw new LocalizedError('composeStore.unhandledComposePresentation', { value1: String(value) });
 }
 
 function assertNeverOpenOrigin(value: never): never {
-  throw new Error(`Unhandled compose open origin: ${String(value)}`);
+  throw new LocalizedError('composeStore.unhandledComposeOpenOrigin', { value1: String(value) });
 }
 
 function assertNeverAttachmentStatus(value: never): never {
-  throw new Error(`Unhandled attachment status: ${String(value)}`);
+  throw new LocalizedError('composeStore.unhandledAttachmentStatus', { value1: String(value) });
 }
 
 export function isExpandedPresentation(presentation: ComposePresentation): boolean {
@@ -296,7 +302,7 @@ export function sessionLabel(session: ComposeSession): string {
   const subject = session.draft.subject.trim();
   if (subject) return subject;
   const recipient = session.draft.to[0] ?? session.draft.cc[0] ?? session.draft.bcc[0];
-  return recipient?.name?.trim() || recipient?.email || 'New message';
+  return recipient?.name?.trim() || recipient?.email || t('composeStore.newMessage');
 }
 
 function makeSessionId(): string {
@@ -337,7 +343,7 @@ function composeAttachmentsFromBody(
       partId: attachment.part_id || null,
       error: attachment.blob_id
         ? null
-        : 'This attachment is missing its server data. Remove it or select the file again.',
+        : t('composeStore.thisAttachmentIsMissingItsServerDataRemoveIt'),
       progress: attachment.blob_id ? 100 : 0,
     }));
 }
@@ -1660,8 +1666,8 @@ export const useComposeStore = defineStore('compose', () => {
         .map((entry) => entry.text);
     }
     if (!hasInvalidRecipientPills(session)) {
-      if (session.saveError === INVALID_RECIPIENT_MESSAGE) session.saveError = null;
-      if (session.error === INVALID_RECIPIENT_MESSAGE) session.error = null;
+      if (invalidRecipientMessages.has(session.saveError)) session.saveError = null;
+      if (invalidRecipientMessages.has(session.error)) session.error = null;
     }
   }
 
@@ -1899,21 +1905,21 @@ export const useComposeStore = defineStore('compose', () => {
         && result?.errorType === 'blobNotFound') {
       const released = await releaseBlobFailedDraftMutation(session);
       if (!released) {
-        session.saveError = 'Draft could not be saved.';
+        session.saveError = t('composeStore.draftCouldNotBeSaved');
         return false;
       }
       const clientIds = attachmentIdsForBlobFailure(request, result);
       const needsReselection = attachmentController.markBlobsMissing(session, clientIds);
       session.saveError = needsReselection
-        ? 'An attachment is no longer available. Remove it and select the file again.'
+        ? t('composeStore.anAttachmentIsNoLongerAvailableRemoveItAnd')
         : clientIds.length > 0
-          ? 'An attachment upload expired. Retry the attachment.'
-          : 'Draft image data expired. Retry saving the draft.';
+          ? t('composeStore.anAttachmentUploadExpiredRetryTheAttachment')
+          : t('composeStore.draftImageDataExpiredRetrySavingTheDraft');
       return false;
     }
     if (!(result?.succeeded > 0 && result?.failed === 0)
         || typeof detail?.emailId !== 'string') {
-      session.saveError = 'Draft could not be saved.';
+      session.saveError = t('composeStore.draftCouldNotBeSaved');
       return false;
     }
     const current = sessionById(session.id);
@@ -1965,7 +1971,7 @@ export const useComposeStore = defineStore('compose', () => {
       }
     }
     current.seedJson = checkpointJson;
-    current.saveError = hasInvalidRecipientPills(current) ? INVALID_RECIPIENT_MESSAGE : null;
+    current.saveError = hasInvalidRecipientPills(current) ? invalidRecipientMessage() : null;
     current.failedSaveMutationId = null;
     current.failedSaveSeedJson = null;
     current.failedSaveRequest = null;
@@ -2004,7 +2010,7 @@ export const useComposeStore = defineStore('compose', () => {
           result,
         );
       } catch (retryError: any) {
-        session.saveError = retryError?.message ?? 'Draft could not be saved.';
+        session.saveError = retryError?.message ?? t('composeStore.draftCouldNotBeSaved');
         session.error = session.saveError;
         return false;
       }
@@ -2121,13 +2127,13 @@ export const useComposeStore = defineStore('compose', () => {
     if (!isSessionSaveableDirty(session.id) && !needsInitialExplicitSave) return true;
     if (!session.confirmedRevision && !isSessionMeaningfullyNonEmpty(session.id)) return true;
     if (!repo || authStore.accountId == null) {
-      session.saveError = 'Draft could not be saved while disconnected.';
+      session.saveError = t('composeStore.draftCouldNotBeSavedWhileDisconnected');
       if (explicit) session.error = session.saveError;
       return false;
     }
     const identity = identityForSession(session);
     if (!identity) {
-      session.saveError = 'Draft could not be saved without a From identity.';
+      session.saveError = t('composeStore.draftCouldNotBeSavedWithoutAFromIdentity');
       if (explicit) session.error = session.saveError;
       return false;
     }
@@ -2158,7 +2164,7 @@ export const useComposeStore = defineStore('compose', () => {
       } catch (saveError: any) {
         const current = sessionById(session.id);
         if (current) {
-          current.saveError = saveError?.message ?? 'Draft could not be saved.';
+          current.saveError = saveError?.message ?? t('composeStore.draftCouldNotBeSaved');
           if (explicit) current.error = current.saveError;
         }
         return false;
@@ -2187,8 +2193,8 @@ export const useComposeStore = defineStore('compose', () => {
     const current = sessionById(session.id);
     if (current?.attachments.some((attachment) => !attachment.canonicalBlobId)) {
       current.error = hasInvalidRecipientPills(current)
-        ? `${INVALID_RECIPIENT_MESSAGE} ${UNFINISHED_ATTACHMENT_MESSAGE}`
-        : UNFINISHED_ATTACHMENT_MESSAGE;
+        ? `${invalidRecipientMessage()} ${t('composeStore.someAttachmentsHaveNotFinishedUploadingWaitForThemCombined')}`
+        : t('composeStore.someAttachmentsHaveNotFinishedUploadingWaitForThemCombined');
       return false;
     }
     return close(session.id);
@@ -2212,16 +2218,16 @@ export const useComposeStore = defineStore('compose', () => {
           progress: Math.round(attachment.progress * ATTACHMENT_UPLOAD_PROGRESS_SHARE / 100),
         };
       case 'failed':
-        return { state: 'failed', error: attachment.error ?? 'Upload failed.' };
+        return { state: 'failed', error: attachment.error ?? t('composeStore.uploadFailed') };
       case 'ready': {
         if (attachment.canonicalBlobId) return { state: 'attached' };
         const session = sessionById(sessionId);
         const saveFailed = !!session
           && !session.isSaving
           && session.saveError != null
-          && session.saveError !== INVALID_RECIPIENT_MESSAGE;
+          && !invalidRecipientMessages.has(session.saveError);
         return saveFailed
-          ? { state: 'failed', error: 'Could not save it to the draft.' }
+          ? { state: 'failed', get error() { return t('composeStore.couldNotSaveItToTheDraft'); } }
           : { state: 'uploading', progress: ATTACHMENT_UPLOAD_PROGRESS_SHARE };
       }
       default:
@@ -2271,7 +2277,7 @@ export const useComposeStore = defineStore('compose', () => {
     if (!sessionById(session.id)) return true;
     const abandoned = await abandonFailedDraftSave(session, 'keep-confirmed');
     if (!abandoned.ok) {
-      session.error = 'Draft could not be abandoned safely.';
+      session.error = t('composeStore.draftCouldNotBeAbandonedSafely');
       runtime.blocked = false;
       return false;
     }
@@ -2296,7 +2302,7 @@ export const useComposeStore = defineStore('compose', () => {
       return close(current.id);
     }
     if (!repo || authStore.accountId == null) {
-      current.error = 'Draft could not be discarded while disconnected.';
+      current.error = t('composeStore.draftCouldNotBeDiscardedWhileDisconnected');
       runtime.blocked = false;
       return false;
     }
@@ -2309,8 +2315,8 @@ export const useComposeStore = defineStore('compose', () => {
         const abandoned = await abandonFailedDraftSave(current, 'discard-all');
         if (!abandoned.ok) {
           current.error = abandoned.parked
-            ? 'Draft copies conflict and could not be discarded safely.'
-            : 'Draft could not be discarded safely.';
+            ? t('composeStore.draftCopiesConflictAndCouldNotBeDiscardedSafely')
+            : t('composeStore.draftCouldNotBeDiscardedSafely');
           runtime.blocked = false;
           return false;
         }
@@ -2338,7 +2344,7 @@ export const useComposeStore = defineStore('compose', () => {
         ? await repo.runMutation(authStore.accountId, mutationId)
         : await repo.drainOutbox(authStore.accountId);
       if (!(result?.succeeded > 0 && result?.failed === 0)) {
-        current.error = 'Draft could not be discarded.';
+        current.error = t('composeStore.draftCouldNotBeDiscarded');
         runtime.blocked = false;
         return false;
       }
@@ -2347,7 +2353,7 @@ export const useComposeStore = defineStore('compose', () => {
       current.isDiscarding = false;
       return close(current.id);
     } catch (discardError: any) {
-      current.error = discardError?.message ?? 'Draft could not be discarded.';
+      current.error = discardError?.message ?? t('composeStore.draftCouldNotBeDiscarded');
       runtime.blocked = false;
       return false;
     } finally {
@@ -2603,14 +2609,14 @@ export const useComposeStore = defineStore('compose', () => {
       gesture === prefillGeneration && authStore.accountId === accountId;
     if (typeof repo.isEmailClaimedBySend === 'function'
         && await repo.isEmailClaimedBySend(accountId, message.remote_id)) {
-      setNotice('This draft belongs to a send whose outcome is still being resolved.');
+      setNotice(t('composeStore.thisDraftBelongsToASendWhoseOutcomeIs'));
       return null;
     }
     if (!stillCurrent()) return null;
     const completedBody = await completeDraftBody(body);
     if (!stillCurrent()) return null;
     if (!completedBody) {
-      setNotice('This draft body could not be loaded completely, so it was not opened for editing.');
+      setNotice(t('composeStore.thisDraftBodyCouldNotBeLoadedCompletelySo'));
       return null;
     }
     const addressRows = await repo.listMessageAddresses(message.id);
@@ -2702,22 +2708,20 @@ export const useComposeStore = defineStore('compose', () => {
 
   function attachmentSendError(session: ComposeSession): string | null {
     if (session.attachmentPreflights.length > 0) {
-      return 'Wait for attachment checks to finish before sending.';
+      return t('composeStore.waitForAttachmentChecksToFinishBeforeSending');
     }
     const uploading = session.attachments.find((attachment) => attachment.status === 'uploading');
     if (uploading) {
-      return `Wait for "${sanitizeAttachmentFilename(uploading.name)}" `
-        + 'to finish uploading before sending.';
+      return t('composeStore.waitForCombined', { arg1: sanitizeAttachmentFilename(uploading.name) });
     }
     const failed = session.attachments.find((attachment) => attachment.status === 'failed');
     if (failed) {
-      return `Retry or remove "${sanitizeAttachmentFilename(failed.name)}" before sending.`;
+      return t('composeStore.retryOrRemoveBeforeSending', { value1: sanitizeAttachmentFilename(failed.name) });
     }
     const missing = session.attachments.find((attachment) =>
       !(attachment.canonicalBlobId ?? attachment.uploadBlobId));
     if (missing) {
-      return `"${sanitizeAttachmentFilename(missing.name)}" has no uploaded data. `
-        + 'Retry or remove it before sending.';
+      return t('composeStore.hasNoUploadedDataCombined', { arg1: sanitizeAttachmentFilename(missing.name) });
     }
     return null;
   }
@@ -2801,11 +2805,11 @@ export const useComposeStore = defineStore('compose', () => {
     const initialAttachmentError = attachmentSendError(session);
     if (initialAttachmentError) return failSend(initialAttachmentError, session.id);
     if (runtimeFor(session.id).blocked && session.saveError) {
-      return failSend('Resolve the draft save failure before sending.', session.id);
+      return failSend(t('composeStore.resolveTheDraftSaveFailureBeforeSending'), session.id);
     }
-    if (!repo || authStore.accountId == null) return failSend('Not connected.', session.id);
+    if (!repo || authStore.accountId == null) return failSend(t('composeStore.notConnected'), session.id);
     const identity = identityForSession(session);
-    if (!identity) return failSend('No identities are configured.', session.id);
+    if (!identity) return failSend(t('composeStore.noIdentitiesAreConfigured'), session.id);
     commitPendingRecipientText(session);
     const sessionDraft = session.draft;
     // Report what could not be read before anything else: a fragment left
@@ -2814,12 +2818,12 @@ export const useComposeStore = defineStore('compose', () => {
     // for (CS-2.4).
     const rejected = RECIPIENT_FIELDS.flatMap((field) => session.rejectedRecipients[field]);
     if (rejected.length > 0) {
-      return failSend(INVALID_RECIPIENT_MESSAGE, session.id);
+      return failSend(invalidRecipientMessage(), session.id);
     }
     // Any of the three carries the message, so requiring To would refuse a
     // send the user has every right to make (CS-2.2).
     const sessionRecipientCount = userRecipientCount(session);
-    if (sessionRecipientCount === 0) return failSend('Add at least one recipient.', session.id);
+    if (sessionRecipientCount === 0) return failSend(t('composeStore.addAtLeastOneRecipient'), session.id);
 
     const folders = mailStore.folders as FolderRow[];
     const findByRole = (role: MailboxRole) => folders.find((f) => f.role === role);
@@ -2864,10 +2868,10 @@ export const useComposeStore = defineStore('compose', () => {
       session.status = COMPOSE_STATE.SENT;
       close(session.id);
       setNotice(scheduledAt
-        ? 'Message scheduled.'
+        ? t('composeStore.messageScheduled')
         : filed === false
-          ? 'Message sent. It will be visible in your Sent folder shortly.'
-          : 'Message sent.');
+          ? t('composeStore.messageSentItWillBeVisibleInYourSent')
+          : t('composeStore.messageSent'));
     };
     try {
       const captured = capturedAttachments(session);
@@ -2925,7 +2929,7 @@ export const useComposeStore = defineStore('compose', () => {
       if (accepted) {
         // Closed at acceptance; only the filing report is still of use.
         if (result.result?.filed === false && !scheduledAt) {
-          setNotice('Message sent. It will be visible in your Sent folder shortly.');
+          setNotice(t('composeStore.messageSentItWillBeVisibleInYourSent'));
         }
         return true;
       }
@@ -2955,10 +2959,8 @@ export const useComposeStore = defineStore('compose', () => {
           session.status = COMPOSE_STATE.IDLE;
           close(session.id);
           setNotice(scheduledAt
-            ? 'Could not confirm this schedule. If it was accepted it is in '
-              + 'your Scheduled folder; if not, the message is in Drafts.'
-            : 'Could not confirm this send. If it went out it is in your '
-              + 'Sent folder; if not, the message is in Drafts.');
+            ? t('composeStore.couldNotConfirmThisScheduleIfItWasAcceptedCombined', {  })
+            : t('composeStore.couldNotConfirmThisSendIfItWentOutCombined', {  }));
           return false;
         }
         if (unknown) {
@@ -2968,10 +2970,8 @@ export const useComposeStore = defineStore('compose', () => {
           // after checking Sent, sending again is the user's call (CS-1.9).
           return failSend(
             scheduledAt
-              ? 'Could not confirm whether this message was scheduled. Check '
-                + 'your Scheduled folder before scheduling it again.'
-              : 'Could not confirm whether this message was sent. Check your '
-                + 'Sent folder before sending it again.',
+              ? t('composeStore.couldNotConfirmWhetherThisMessageWasScheduledCheckCombined', {  })
+              : t('composeStore.couldNotConfirmWhetherThisMessageWasSentCheckCombined', {  }),
             session.id,
           );
         }
@@ -2980,10 +2980,10 @@ export const useComposeStore = defineStore('compose', () => {
           const needsReselection = attachmentController.markBlobsMissing(session, clientIds);
           const failed = failSend(
             needsReselection
-              ? 'An attachment is no longer available. Remove it and select the file again.'
+              ? t('composeStore.anAttachmentIsNoLongerAvailableRemoveItAnd')
               : clientIds.length > 0
-                ? 'An attachment upload expired. Retry the attachment.'
-                : 'Inline image data expired. Send again to retry it.',
+                ? t('composeStore.anAttachmentUploadExpiredRetryTheAttachment')
+                : t('composeStore.inlineImageDataExpiredSendAgainToRetryIt'),
             session.id,
           );
           runtimeFor(session.id).blocked = attachmentController.hasBlobFailure(session);
@@ -2996,11 +2996,11 @@ export const useComposeStore = defineStore('compose', () => {
           const description = await readMutationErrorDescription(mutation?.id);
           return failSend(
             description
-              ?? 'Could not schedule this message; the draft remains available.',
+              ?? t('composeStore.couldNotScheduleThisMessageTheDraftRemainsAvailable'),
             session.id,
           );
         }
-        return failSend('Send failed; the message stays in your outbox.', session.id);
+        return failSend(t('composeStore.sendFailedTheMessageStaysInYourOutbox'), session.id);
       }
       if (!stillCurrent()) return true;
       acceptSend(result.result?.filed);
@@ -3024,9 +3024,7 @@ export const useComposeStore = defineStore('compose', () => {
     try {
       const failed = await repo.getPendingMutationError(mutationId);
       const error = failed?.error_json ? JSON.parse(failed.error_json) : null;
-      return typeof error?.description === 'string'
-        ? error.description
-        : (typeof error?.message === 'string' ? error.message : null);
+      return errorDescription(error);
     } catch {
       return null;
     }
@@ -3051,13 +3049,13 @@ export const useComposeStore = defineStore('compose', () => {
     try {
       if (!canScheduleSend.value) {
         return failSend(
-          'Scheduled sending is not supported by this account.',
+          t('composeStore.scheduledSendingIsNotSupportedByThisAccount'),
           session.id,
         );
       }
       const selectedTimeZone = timeZone ?? settingsStore.get('timeZone');
       if (!isUsableTimeZone(selectedTimeZone)) {
-        return failSend('Choose a valid time zone.', session.id);
+        return failSend(t('composeStore.chooseAValidTimeZone'), session.id);
       }
       const target = validateScheduleTarget({
         targetAt,

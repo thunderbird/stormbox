@@ -1,3 +1,4 @@
+import { LocalizedError } from '../i18n/messages';
 /**
  * In-worker glue between the SyncClient interface and the SharedWorker
  * RPC dispatcher. Builds and holds the per-(account, transport) backends,
@@ -67,7 +68,7 @@ export function makeSyncRpcHandlers({
   registerShutdown?: (stop: () => Promise<void>) => void;
 } = {}) {
   if (!handlers) {
-    throw new Error('makeSyncRpcHandlers requires the repository handler map');
+    throw new LocalizedError('syncHost.makeSyncRpcHandlersRequiresTheRepositoryHandlerMap');
   }
   // Firefox enforces that fetch and WebSocket be invoked with their
   // global as the receiver. An unbound reference like `const f =
@@ -374,7 +375,7 @@ export function makeSyncRpcHandlers({
 }
 
 function accountUnavailableError(accountId: number) {
-  const error: any = new Error(`No JMAP backend registered for account ${accountId}`);
+  const error: any = new LocalizedError('syncHost.noJMAPBackendRegisteredForAccount', { value1: accountId });
   error.type = 'accountUnavailable';
   return error;
 }
@@ -419,7 +420,7 @@ function copyAuth(auth: any): ConnectAuth {
       && typeof auth.password === 'string') {
     return { kind: 'basic', username: auth.username, password: auth.password };
   }
-  throw new Error(`Unsupported auth kind: ${auth?.kind}`);
+  throw new LocalizedError('syncHost.unsupportedAuthKind', { value1: auth?.kind });
 }
 
 function applyBearerUpdate(holder: MutableAuth, next: ConnectAuth): boolean {

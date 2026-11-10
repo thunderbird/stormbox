@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * Session ingestion. Takes a JMAP session document (RFC 8620 §2) plus the
  * server's hostname-derived origin, and upserts the corresponding rows in
@@ -52,13 +53,13 @@ function serviceKindFor(capability) {
  */
 export async function ingestSession({ session, serverOrigin, handlers }) {
   if (!session) {
-    throw new Error('ingestSession requires a session document');
+    throw new LocalizedError('session.ingestSessionRequiresASessionDocument');
   }
   const primaryAccounts = session.primaryAccounts ?? {};
   const remoteAccountId = primaryAccounts[JMAP_CAPS.MAIL]
     ?? Object.keys(session.accounts ?? {})[0];
   if (!remoteAccountId) {
-    throw new Error('JMAP session has no primary mail account');
+    throw new LocalizedError('session.jMAPSessionHasNoPrimaryMailAccount');
   }
   const accountInfo = session.accounts?.[remoteAccountId] ?? {};
 

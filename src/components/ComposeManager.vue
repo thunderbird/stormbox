@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
 import { COMPOSE_STATE } from '../constants/states';
@@ -136,7 +137,7 @@ const flightStyle = computed(() => {
 function dockSendStatus(session: ComposeSession): string | null {
   switch (session.status) {
     case COMPOSE_STATE.FAILED:
-      return session.error ? 'Send failed' : null;
+      return session.error ? t('composeManager.sendFailed') : null;
     case COMPOSE_STATE.SENDING:
     case COMPOSE_STATE.IDLE:
     case COMPOSE_STATE.EDITING:
@@ -160,7 +161,7 @@ function dockSendStatus(session: ComposeSession): string | null {
   <div
     v-if="minimizedSessions.length"
     class="compose-dock"
-    aria-label="Minimized compose windows"
+    :aria-label="t('composeManager.minimizedComposeWindows')"
   >
     <div
       v-for="session in minimizedSessions"
@@ -171,7 +172,7 @@ function dockSendStatus(session: ComposeSession): string | null {
       <button
         type="button"
         class="compose-dock__restore"
-        :aria-label="`Restore ${sessionLabel(session)}`"
+        :aria-label="t('composeManager.restore', { value1: sessionLabel(session) })"
         @click="composeStore.restore(session.id)"
       >
         <span class="compose-dock__text">
@@ -188,14 +189,14 @@ function dockSendStatus(session: ComposeSession): string | null {
           v-if="session.saveError || (session.status === COMPOSE_STATE.FAILED && session.error)"
           class="compose-dock__error"
           :aria-label="session.status === COMPOSE_STATE.FAILED && session.error
-            ? 'Send failed'
-            : 'Draft save failed'"
+            ? t('composeManager.sendFailed')
+            : t('composeManager.draftSaveFailed')"
         >!</span>
       </button>
       <button
         type="button"
         class="compose-dock__close"
-        :aria-label="`Close ${sessionLabel(session)}`"
+        :aria-label="t('composeManager.close', { value1: sessionLabel(session) })"
         :disabled="session.isSaving || session.isDiscarding"
         @click="composeStore.requestClose(session.id)"
       >×</button>

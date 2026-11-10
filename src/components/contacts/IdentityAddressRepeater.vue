@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import { computed } from 'vue';
 import { Plus, X } from '@lucide/vue';
 
@@ -49,9 +50,9 @@ const {
 const label = computed(() => {
   switch (props.kind) {
     case 'replyTo':
-      return 'Reply-To addresses';
+      return t('identityAddressRepeater.replyToAddresses');
     case 'bcc':
-      return 'Automatic Bcc addresses';
+      return t('identityAddressRepeater.automaticBccAddresses');
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -59,7 +60,7 @@ const label = computed(() => {
   }
 });
 
-const shortLabel = computed(() => props.kind === 'replyTo' ? 'Reply-To' : 'Bcc');
+const shortLabel = computed(() => props.kind === 'replyTo' ? t('identityAddressRepeater.replyTo') : t('identityAddressRepeater.bcc'));
 
 function updateRow(
   formKey: string,
@@ -80,11 +81,11 @@ function updateRow(
       :data-form-key="row.formKey"
     >
       <label>
-        <span>Display name (optional)</span>
+        <span>{{ t('identityAddressRepeater.displayNameOptional') }}</span>
         <input
           class="identity-addresses__input"
           type="text"
-          :aria-label="`${shortLabel} display name ${index + 1}`"
+          :aria-label="t('identityAddressRepeater.displayName', { value1: shortLabel, value2: index + 1 })"
           :value="row.name"
           @input="updateRow(
             row.formKey,
@@ -94,13 +95,13 @@ function updateRow(
         />
       </label>
       <label>
-        <span>Email address</span>
+        <span>{{ t('identityAddressRepeater.emailAddress') }}</span>
         <input
           class="identity-addresses__input"
           type="email"
           :aria-describedby="errors[row.formKey] ? `${row.formKey}-error` : undefined"
           :aria-invalid="errors[row.formKey] ? 'true' : undefined"
-          :aria-label="`${shortLabel} email ${index + 1}`"
+          :aria-label="t('identityAddressRepeater.email', { value1: shortLabel, value2: index + 1 })"
           :value="row.email"
           @input="updateRow(
             row.formKey,
@@ -111,7 +112,7 @@ function updateRow(
       </label>
       <AppIconButton
         class="contact-editor__remove identity-addresses__remove"
-        :aria-label="`Remove ${shortLabel} address ${index + 1}`"
+        :aria-label="t('identityAddressRepeater.removeAddress', { value1: shortLabel, value2: index + 1 })"
         @click="removeRow(row.formKey)"
       >
         <X :size="16" aria-hidden="true" />
@@ -129,7 +130,7 @@ function updateRow(
       @click="addRow"
     >
       <Plus :size="15" aria-hidden="true" />
-      Add {{ shortLabel }} address
+      {{ t('identityAddressRepeater.addAddress', { kind: shortLabel }) }}
     </button>
   </fieldset>
 </template>

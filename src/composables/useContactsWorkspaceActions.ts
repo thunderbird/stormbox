@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 /**
  * The contacts workspace's actions: confirmations, dirty-editor navigation,
  * batch delete/move/restore, trash, address-book deletion, and the
@@ -269,11 +270,12 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
   ): string {
     const succeeded = result.succeededContactIds.length;
     const failed = result.failures.length;
-    const verb = action === 'move' ? 'moved' : 'deleted';
+    const successKey = action === 'move' ? 'useContactsWorkspaceActions.moveSuccess' : 'useContactsWorkspaceActions.deleteSuccess';
+    const partialKey = action === 'move' ? 'useContactsWorkspaceActions.movePartial' : 'useContactsWorkspaceActions.deletePartial';
     if (failed === 0) {
-      return `${succeeded} contact${succeeded === 1 ? '' : 's'} ${verb}.`;
+      return t(successKey, { count: succeeded }, succeeded);
     }
-    return `${succeeded} contact${succeeded === 1 ? '' : 's'} ${verb}; ${failed} failed and remain selected.`;
+    return t(partialKey, { count: succeeded, failed }, succeeded);
   }
 
   function retainFailedSelection(
@@ -300,7 +302,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     const rows = contacts.value.filter((contact) => contactIds.includes(contact.id));
     if (!contactsCanBeDeleted(rows)) {
       operationNotice.value = deleteDisabledReason.value
-        || 'These contacts cannot be changed.';
+        || t('useContactsWorkspaceActions.theseContactsCannotBeChanged');
       return;
     }
     const count = rows.length;
@@ -328,7 +330,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
       detailState.value = 'deleting';
     }
     const result = await withContactBatchOverlay(
-      'Deleting contacts',
+      t('useContactsWorkspaceActions.deletingContacts'),
       contactIds.length,
       () => contactsStore.deleteContacts(contactIds, selectedBookId.value),
     );
@@ -381,7 +383,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     const requested = [...new Set(trashIds)];
     if (requested.length === 0) return;
     const result = await withContactBatchOverlay(
-      'Restoring contacts',
+      t('useContactsWorkspaceActions.restoringContacts'),
       requested.length,
       () => contactsStore.restoreContactTrash(requested, destinationAddressbookId),
     );
@@ -392,13 +394,11 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     retainTrashSelection(requested, retained);
     if (result.destinationRequiredTrashIds.length > 0) {
       restoreDestinationIds.value = result.destinationRequiredTrashIds;
-      operationNotice.value = 'Choose a writable address book to finish restoring.';
+      operationNotice.value = t('useContactsWorkspaceActions.chooseAWritableAddressBookToFinishRestoring');
     } else if (result.failures.length > 0) {
-      operationNotice.value = `${result.succeededTrashIds.length} restored; ${result.failures.length} failed.`;
+      operationNotice.value = t('useContactsWorkspaceActions.restoredFailed', { value1: result.succeededTrashIds.length, value2: result.failures.length });
     } else {
-      operationNotice.value = `${result.succeededTrashIds.length} contact${
-        result.succeededTrashIds.length === 1 ? '' : 's'
-      } restored.`;
+      operationNotice.value = t('useContactsWorkspaceActions.contactRestoredPlural', { arg1: result.succeededTrashIds.length, arg2: result.succeededTrashIds.length }, result.succeededTrashIds.length);
     }
     if (
       selectedEntry.value?.kind === 'trash'
@@ -416,7 +416,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     });
     if (choice !== 'delete') return;
     const result = await withContactBatchOverlay(
-      'Deleting contacts forever',
+      t('useContactsWorkspaceActions.deletingContactsForever'),
       requested.length,
       () => contactsStore.deleteContactTrashForever(requested),
     );
@@ -425,10 +425,8 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
       result.failures.map((failure) => failure.trashId),
     );
     operationNotice.value = result.failures.length === 0
-      ? `${result.succeededTrashIds.length} contact${
-        result.succeededTrashIds.length === 1 ? '' : 's'
-      } deleted forever.`
-      : `${result.succeededTrashIds.length} deleted; ${result.failures.length} failed.`;
+      ? t('useContactsWorkspaceActions.contactDeletedForeverPlural', { arg1: result.succeededTrashIds.length, arg2: result.succeededTrashIds.length }, result.succeededTrashIds.length)
+      : t('useContactsWorkspaceActions.deletedFailed', { value1: result.succeededTrashIds.length, value2: result.failures.length });
     if (
       selectedEntry.value?.kind === 'trash'
       && result.succeededTrashIds.includes(selectedEntry.value.id)
@@ -479,7 +477,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
       return;
     }
     const result = await withContactBatchOverlay(
-      'Moving contacts',
+      t('useContactsWorkspaceActions.movingContacts'),
       contactIds.length,
       () => contactsStore.moveContacts(
         contactIds,
@@ -529,12 +527,12 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     const result = await contactsStore.inventoryAddressBook(book.id);
     addressBookDeleteBusy.value = false;
     if (!result.ok) {
-      operationNotice.value = contactsStore.error || 'The address book could not be reviewed.';
+      operationNotice.value = contactsStore.error || t('useContactsWorkspaceActions.theAddressBookCouldNotBeReviewed');
       return;
     }
     const current = addressbooks.value.find((candidate) => candidate.id === book.id);
     if (!current) {
-      operationNotice.value = 'This address book no longer exists.';
+      operationNotice.value = t('useContactsWorkspaceActions.thisAddressBookNoLongerExists');
       return;
     }
     addressBookDeleteTarget.value = current;
@@ -562,13 +560,13 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
         addressBookDeleteStale.value = true;
         return;
       }
-      operationNotice.value = contactsStore.error || 'The address book could not be reviewed again.';
+      operationNotice.value = contactsStore.error || t('useContactsWorkspaceActions.theAddressBookCouldNotBeReviewedAgain');
       closeAddressBookDeleteDialog();
       return;
     }
     addressBookDeleteBusy.value = false;
     if (!result.ok) {
-      operationNotice.value = contactsStore.error || 'The address book could not be deleted.';
+      operationNotice.value = contactsStore.error || t('useContactsWorkspaceActions.theAddressBookCouldNotBeDeleted');
       closeAddressBookDeleteDialog();
       return;
     }
@@ -576,7 +574,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
     addressBookDeleteTarget.value = null;
     addressBookDeleteInventory.value = null;
     addressBookDeleteStale.value = false;
-    operationNotice.value = `${addressBookDisplayName(book)} deleted.`;
+    operationNotice.value = t('useContactsWorkspaceActions.deleted', { value1: addressBookDisplayName(book) });
     kind.value = 'contacts';
     selectedBookId.value = null;
     addressBookDetail.value = null;
@@ -676,7 +674,7 @@ export function useContactsWorkspaceActions(context: ContactsWorkspaceActionsCon
       selectedBookId.value = null;
       resetSequence.value += 1;
     }
-    operationNotice.value = 'The selected address book no longer exists.';
+    operationNotice.value = t('useContactsWorkspaceActions.theSelectedAddressBookNoLongerExists');
     restoreEntryDetailFromAddressBook();
     if (detailState.value === 'empty') void restoreListFocus();
     else restoreDetailFocus();

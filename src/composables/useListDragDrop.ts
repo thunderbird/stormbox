@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 import {
   computed,
   shallowRef,
@@ -35,6 +36,8 @@ export interface ListDragStart<Id, SourceId> {
   sourceId?: SourceId | null;
 }
 
+
+
 function pluralLabel(label: string, count: number): string {
   return count === 1 ? label : `${label}s`;
 }
@@ -69,7 +72,7 @@ export function createListDragDrop<Id, SourceId>(
   }
 
   function dragLabel(count: number): string {
-    return `${count} ${pluralLabel(config.itemLabel, count)}`;
+    return t('useListDragDrop.itemCount', { count, item: pluralLabel(config.itemLabel, count) });
   }
 
   function setDragImage(transfer: ListDataTransfer, count: number): void {
