@@ -763,7 +763,7 @@ the tag views (`MESSAGE_LIST_FOR_KEYWORD` / `MESSAGE_COUNT_FOR_KEYWORD`,
 specs/011 MK-3.4): a `message_keywords JOIN messages` read matching the
 keyword with `LOWER()` — the cache keeps the server's spelling, which
 other clients may write in any case — scoped to the signed-in account,
-excluding messages with any Trash or Archive membership, newest first,
+excluding messages with any Trash or Junk membership, newest first,
 each row carrying one `source_folder_id` from `folder_messages`. It is a
 local smart view rather than a mailbox window — it has no server
 positions — so it pages by `LIMIT/OFFSET`, which the constitution's rule

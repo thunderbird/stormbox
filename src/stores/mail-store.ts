@@ -358,6 +358,14 @@ export const useMailStore = defineStore('mail', () => {
     }, 5000);
   }
 
+  function setFilingNotice(role: 'archive' | 'junk', count: number) {
+    if (count <= 0) return;
+    const getMessage = (count: number) => count === 1
+      ? { archive: 'Archived', junk: 'Marked as junk' }
+      : { archive: `Archived ${count} messages`, junk: `Marked ${count} messages as junk` }
+    setNotice(getMessage(count)[role]);
+  }
+
   // Bulk move/destroy state for the blocking, indeterminate overlay.
   // Reset when the semantic operation finishes or fails.
   const bulkOperation = ref<BulkOperationState>({
@@ -2182,14 +2190,17 @@ export const useMailStore = defineStore('mail', () => {
     const liveIds = mutable.ids;
     if (liveIds.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
     const beforeRows = [...(sourceState?.rows ?? [])];
+    // Archive stays in a tag view; Trash and Junk leave it (MK-3.4).
+    const removesFromTagView = role !== 'archive';
     if (role === 'junk') {
       await setKeywordsMany(liveIds, { add: ['$junk'], remove: ['$notjunk'] }, options);
     }
     const finalize = async (succeeded: number[]) => {
       if (succeeded.length === 0 || authStore.accountId !== accountId || repo !== actionRepo) return;
-      const nextPreviewId = role === 'junk' ? undefined
-        : nextPreviewIdAfterRemoval(succeeded, beforeRows, sourceId);
-      if (role !== 'junk' && sourceState && isLiveState(sourceState)) {
+      const nextPreviewId = removesFromTagView
+        ? nextPreviewIdAfterRemoval(succeeded, beforeRows, sourceId)
+        : undefined;
+      if (removesFromTagView && sourceState && isLiveState(sourceState)) {
         spliceMessagesOut(sourceState, succeeded);
       }
       if (selection.value.folderId === sourceId) {
@@ -2197,12 +2208,12 @@ export const useMailStore = defineStore('mail', () => {
         for (const id of succeeded) next.delete(id);
         setSelection(sourceId, next);
       }
-      if (role !== 'junk' && openMessageRef.value.folderId === sourceId
+      if (removesFromTagView && openMessageRef.value.folderId === sourceId
         && succeeded.includes(Number(openMessageRef.value.id))) {
         clearSelectionFor(succeeded);
       }
       applyPreviewAfterRemoval(nextPreviewId, sourceId);
-      if (role !== 'junk' && focusedRef.value.folderId === sourceId
+      if (removesFromTagView && focusedRef.value.folderId === sourceId
         && succeeded.includes(Number(focusedRef.value.id))) {
         focusedRef.value = { id: null, folderId: null };
       }
@@ -2232,11 +2243,9 @@ export const useMailStore = defineStore('mail', () => {
       throw err;
     }
     await finalize(succeeded);
-    if (role === 'junk' && succeeded.length > 0
+    if (succeeded.length > 0 && role !== 'trash'
       && authStore.accountId === accountId && repo === actionRepo) {
-      setNotice(succeeded.length === 1
-        ? 'Marked as junk'
-        : `Marked ${succeeded.length} messages as junk`);
+      setFilingNotice(role, succeeded.length);
     }
     return { succeeded: succeeded.length, failed: 0, skipped: messageIds.length - liveIds.length };
   }
@@ -2258,7 +2267,9 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'No archive folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
-    return moveMessages(ids, archive.id, { sourceFolderId: source.id });
+    const result = await moveMessages(ids, archive.id, { sourceFolderId: source.id });
+    if (result.succeeded > 0) setFilingNotice('archive', result.succeeded);
+    return result;
   }
 
   /**
@@ -2309,11 +2320,7 @@ export const useMailStore = defineStore('mail', () => {
     await setKeywordsMany(junkIds, { add: ['$junk'], remove: ['$notjunk'] }, { rows });
 
     const result = await moveMessages(junkIds, junk.id, { sourceFolderId: source.id });
-    if (result.succeeded > 0) {
-      setNotice(result.succeeded === 1
-        ? 'Marked as junk'
-        : `Marked ${result.succeeded} messages as junk`);
-    }
+    if (result.succeeded > 0) setFilingNotice('junk', result.succeeded);
     return result;
   }
 

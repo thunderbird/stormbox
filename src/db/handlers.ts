@@ -57,13 +57,13 @@ import {
 } from './batch-helpers';
 import { DB_RPC, TABLE_FAMILIES } from './protocol';
 
-// MK-3.4: any Trash or Archive membership excludes a message from tag views.
+// MK-3.4: any Trash or Junk membership excludes a message from tag views.
 const TAG_VIEW_ELIGIBLE_SQL = `NOT EXISTS (
   SELECT 1 FROM folder_messages excluded_membership
   JOIN folders excluded_folder ON excluded_folder.id = excluded_membership.folder_id
   WHERE excluded_membership.message_id = m.id
     AND excluded_folder.account_id = m.account_id
-    AND excluded_folder.role IN ('trash', 'archive')
+    AND excluded_folder.role IN ('trash', 'junk')
 )`;
 
 function identityRowFromDatabase(row: any) {
@@ -2701,7 +2701,7 @@ export function makeHandlers(engine: any, broadcaster: any = noopBroadcaster(), 
 
     /**
      * A tag view (specs/011 MK-3.4): every cached message of `accountIds`
-     * carrying `keyword`, newest first, outside Trash and Archive. A local
+     * carrying `keyword`, newest first, outside Trash and Junk. A local
      * smart view over the cache, not a mailbox window, so it pages by
      * offset. Each row names one folder it lives in as `source_folder_id`
      * so callers can resolve account and transfer rules.
