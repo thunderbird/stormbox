@@ -21,7 +21,7 @@ jobs:
       job_name: prod-mobile-nightly-android-galaxy
       browserstack_build_name: 'Nightly Webmail E2E Tests (Android Chrome): BUILD_INFO'
       test_step_name: Prod E2E Tests on Android Chrome
-      npm_script: --project=android-galaxy-tab
+      npm_script: e2e:browserstack:mobile:android:galaxy:tab
     secrets:
       E2E_ACCTS_OIDC_EMAIL: ${{ secrets.E2E_ACCTS_OIDC_EMAIL }}
       E2E_ACCTS_OIDC_PWORD: ${{ secrets.E2E_ACCTS_OIDC_PWORD }}
