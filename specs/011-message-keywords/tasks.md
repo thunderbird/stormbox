@@ -29,7 +29,7 @@ commands run inside `stormbox-compose`.
 **Purpose**: Confirm the amendment and scope before touching code.
 
 - [X] T001 [P] Confirm the feature context and scope in `specs/011-message-keywords/plan.md`: Archive included, Trash and Junk excluded, no child-folder inheritance, no schema change.
-- [X] T002 [P] Confirm `specs/011-message-keywords/spec.md` MK-3.4 and `docs/architecture/sqlite-storage.md` state a Trash or Junk exclusion; add one explicit sentence to MK-3.4 that Archive is included and that role folders do not pass their role to child folders.
+- [X] T002 [P] Confirm `specs/011-message-keywords/spec.md` MK-3.4 and `docs/architecture/sqlite-storage.md` state the Trash or Junk exclusion; MK-3.4 includes Archive by omission and leaves child-folder inheritance unspecified, so no additional requirement is added.
 
 ---
 
@@ -60,12 +60,12 @@ the cached query count.
 > current `role IN ('trash', 'archive')` predicate.
 
 - [X] T004 [P] [US1] Rewrite the tag view test in `tests/unit/db/handlers.test.ts`: Archive-only row included; Trash-only and Junk-only rows excluded; Inbox+Archive included; Inbox+Junk excluded; `message.listKeywords({ forTagView: true })` counts match.
-- [X] T005 [P] [US1] Rewrite the first case in `tests/e2e/tag-view.spec.js`: seed tagged mail in Inbox, Sent, Archive, Trash, and Junk; expect Archive, Inbox, and Sent visible, Trash and Junk absent, for both a defined tag and `$flagged`; assert cached `listMessagesForKeyword` rows and sidebar counts agree.
+- [X] T005 [P] [US1] Rewrite the first case in `tests/e2e/tag-view.spec.js`: seed tagged mail in Inbox, Sent, Archive, Trash, and Junk; expect Archive, Inbox, and Sent visible, Trash and Junk absent, for both a defined tag and `$flagged`; assert cached `listMessagesForKeyword` rows and sidebar counts agree. Update the filing cases so Archive filing keeps the row and Trash or Junk filing removes it.
 
 ### Implementation for User Story 1
 
 - [X] T006 [US1] Change `TAG_VIEW_ELIGIBLE_SQL` in `src/db/handlers.ts` from `role IN ('trash', 'archive')` to `role IN ('trash', 'junk')`, and update the two comments in that file that still say “outside Trash and Archive”.
-- [X] T007 [US1] Update MK-3.4 in `specs/011-message-keywords/spec.md` so the Archive-included rule is explicit and the child-folder non-goal is stated; update the tag view note in `docs/architecture/sqlite-storage.md` if any stale Trash/Archive wording remains; keep the Starred and sidebar-count sentence consistent.
+- [X] T007 [US1] Confirm MK-3.4 says `Successful Junk and Delete actions remove the rows and update tag counts`, matching the new filing behavior; update the tag view note in `docs/architecture/sqlite-storage.md` if any stale Trash/Archive wording remains; keep the Starred and sidebar-count sentence consistent.
 
 **Checkpoint**: US1 is independently testable and is the complete MVP for issue #237.
 
