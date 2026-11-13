@@ -358,6 +358,14 @@ export const useMailStore = defineStore('mail', () => {
     }, 5000);
   }
 
+  function setFilingNotice(role: 'archive' | 'junk', count: number) {
+    if (count <= 0) return;
+    const getMessage = (count: number) => count === 1
+      ? { archive: 'Archived', junk: 'Marked as junk' }
+      : { archive: `Archived ${count} messages`, junk: `Marked ${count} messages as junk` }
+    setNotice(getMessage(count)[role]);
+  }
+
   // Bulk move/destroy state for the blocking, indeterminate overlay.
   // Reset when the semantic operation finishes or fails.
   const bulkOperation = ref<BulkOperationState>({
@@ -2235,11 +2243,9 @@ export const useMailStore = defineStore('mail', () => {
       throw err;
     }
     await finalize(succeeded);
-    if (role === 'junk' && succeeded.length > 0
+    if (succeeded.length > 0 && role !== 'trash'
       && authStore.accountId === accountId && repo === actionRepo) {
-      setNotice(succeeded.length === 1
-        ? 'Marked as junk'
-        : `Marked ${succeeded.length} messages as junk`);
+      setFilingNotice(role, succeeded.length);
     }
     return { succeeded: succeeded.length, failed: 0, skipped: messageIds.length - liveIds.length };
   }
@@ -2261,7 +2267,9 @@ export const useMailStore = defineStore('mail', () => {
       error.value = 'No archive folder is configured.';
       return { succeeded: 0, failed: 0, skipped: 0 };
     }
-    return moveMessages(ids, archive.id, { sourceFolderId: source.id });
+    const result = await moveMessages(ids, archive.id, { sourceFolderId: source.id });
+    if (result.succeeded > 0) setFilingNotice('archive', result.succeeded);
+    return result;
   }
 
   /**
@@ -2312,11 +2320,7 @@ export const useMailStore = defineStore('mail', () => {
     await setKeywordsMany(junkIds, { add: ['$junk'], remove: ['$notjunk'] }, { rows });
 
     const result = await moveMessages(junkIds, junk.id, { sourceFolderId: source.id });
-    if (result.succeeded > 0) {
-      setNotice(result.succeeded === 1
-        ? 'Marked as junk'
-        : `Marked ${result.succeeded} messages as junk`);
-    }
+    if (result.succeeded > 0) setFilingNotice('junk', result.succeeded);
     return result;
   }
 

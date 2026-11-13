@@ -207,6 +207,14 @@ test.describe('Tag view e2e', () => {
             }
           }
           await waitForPendingMutations(page);
+          if (role === 'archive') {
+            await expect(page.locator('.store-error-toast__item--success .store-error-toast__message'))
+              .toHaveText(surface === 'bulk' ? 'Archived 2 messages' : 'Archived');
+          }
+          if (role === 'junk') {
+            await expect(page.locator('.store-error-toast__item--success .store-error-toast__message'))
+              .toHaveText(surface === 'bulk' ? 'Marked 2 messages as junk' : 'Marked as junk');
+          }
           for (const [i, id] of ids.entries()) {
             await expect.poll(async () => Object.keys(await getEmailMailboxIds(jmap, id) ?? {}))
               .toEqual([destination.id]);
@@ -254,4 +262,38 @@ test.describe('Tag view e2e', () => {
       });
     }
   }
+
+  test('row Archive action files a tagged message and shows the notice', async ({ sharedPage: page }, testInfo) => {
+    const jmap = await connectJmap();
+    const mailboxes = await listMailboxes(jmap);
+    const inbox = mailboxByRole(mailboxes, 'inbox');
+    const archive = mailboxByRole(mailboxes, 'archive');
+    const subject = `${SUBJECT_PREFIX} ${Date.now()} row archive`;
+    let id = null;
+    try {
+      id = await createFixture(jmap, inbox, subject, { $flagged: true });
+      await openFolder(page, inbox);
+      await expectRowSoon(page, subject);
+      await openTag(page);
+
+      const row = rowFor(page, subject);
+      await expect(row).toBeVisible();
+      await row.hover();
+      await row.locator('.msg-list__action[title="Archive"]').click();
+
+      await waitForPendingMutations(page);
+      await expect(page.locator('.store-error-toast__item--success .store-error-toast__message'))
+        .toHaveText('Archived');
+      await expect.poll(async () => Object.keys(await getEmailMailboxIds(jmap, id) ?? {}))
+        .toEqual([archive.id]);
+      await expectCachedMembership(page, id, archive.id);
+      await expect(rowFor(page, subject)).toBeVisible();
+      expect((await getEmailKeywords(jmap, id))[PERSONAL]).toBe(true);
+      expect((await readTagView(page, PERSONAL)).some((row) => row.remoteId === id)).toBe(true);
+      await expectTagCount(page);
+    } finally {
+      await attachConsoleTail(testInfo, consoleLinesFor(page));
+      if (id) await destroyEmails(jmap, [id]);
+    }
+  });
 });

@@ -1695,6 +1695,7 @@ describe('tag views (MK-3.4)', () => {
         .toEqual(role === 'archive' ? [1, 4] : []);
       expect(mailStore.tagCounts.get('$label2') ?? 0).toBe(role === 'archive' ? 2 : 0);
       expect(mailStore.selectedIds.size).toBe(0);
+      if (role === 'archive') expect(mailStore.notice).toBe('Archived 2 messages');
       if (role === 'junk') {
         expect(inserts.some((input) => input.mutationType === MUTATION_TYPE.SET_KEYWORDS
           && JSON.parse(input.requestJson).add.includes('$junk'))).toBe(true);
@@ -1794,6 +1795,7 @@ describe('tag views (MK-3.4)', () => {
     expect(mailStore.openMessageFolderId).toBe(tagId);
     expect(mailStore.focusedMessageId).toBe(4);
     expect(mailStore.selectedIds.size).toBe(0);
+    expect(mailStore.notice).toBe('Archived');
   });
 
   it('refuses a tag filing action without a destination or for scheduled messages', async () => {
@@ -2578,6 +2580,7 @@ describe('moveMessages', () => {
         messageIds: [9, 10], addFolderIds: [2], removeFolderIds: [3],
       });
       expect(mailStore.messages.map((row) => row?.id)).toEqual([7]);
+      expect(mailStore.notice).toBe('Archived 2 messages');
     });
 
     it('destroyMessages trashes from the named source rather than the open folder', async () => {
@@ -3501,6 +3504,7 @@ describe('shared accounts and folder subscriptions', () => {
       addFolderIds: [32],
       removeFolderIds: [30],
     });
+    expect(mailStore.notice).toBe('Archived');
   });
 });
 
