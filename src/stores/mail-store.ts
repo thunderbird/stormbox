@@ -2182,14 +2182,17 @@ export const useMailStore = defineStore('mail', () => {
     const liveIds = mutable.ids;
     if (liveIds.length === 0) return { succeeded: 0, failed: 0, skipped: messageIds.length };
     const beforeRows = [...(sourceState?.rows ?? [])];
+    // Archive stays in a tag view; Trash and Junk leave it (MK-3.4).
+    const removesFromTagView = role !== 'archive';
     if (role === 'junk') {
       await setKeywordsMany(liveIds, { add: ['$junk'], remove: ['$notjunk'] }, options);
     }
     const finalize = async (succeeded: number[]) => {
       if (succeeded.length === 0 || authStore.accountId !== accountId || repo !== actionRepo) return;
-      const nextPreviewId = role === 'junk' ? undefined
-        : nextPreviewIdAfterRemoval(succeeded, beforeRows, sourceId);
-      if (role !== 'junk' && sourceState && isLiveState(sourceState)) {
+      const nextPreviewId = removesFromTagView
+        ? nextPreviewIdAfterRemoval(succeeded, beforeRows, sourceId)
+        : undefined;
+      if (removesFromTagView && sourceState && isLiveState(sourceState)) {
         spliceMessagesOut(sourceState, succeeded);
       }
       if (selection.value.folderId === sourceId) {
@@ -2197,12 +2200,12 @@ export const useMailStore = defineStore('mail', () => {
         for (const id of succeeded) next.delete(id);
         setSelection(sourceId, next);
       }
-      if (role !== 'junk' && openMessageRef.value.folderId === sourceId
+      if (removesFromTagView && openMessageRef.value.folderId === sourceId
         && succeeded.includes(Number(openMessageRef.value.id))) {
         clearSelectionFor(succeeded);
       }
       applyPreviewAfterRemoval(nextPreviewId, sourceId);
-      if (role !== 'junk' && focusedRef.value.folderId === sourceId
+      if (removesFromTagView && focusedRef.value.folderId === sourceId
         && succeeded.includes(Number(focusedRef.value.id))) {
         focusedRef.value = { id: null, folderId: null };
       }

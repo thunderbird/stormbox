@@ -64,7 +64,7 @@ the cached query count.
 
 ### Implementation for User Story 1
 
-- [X] T006 [US1] Change `TAG_VIEW_ELIGIBLE_SQL` in `src/db/handlers.ts` from `role IN ('trash', 'archive')` to `role IN ('trash', 'junk')`, and update the two comments in that file that still say “outside Trash and Archive”.
+- [X] T006 [US1] Change `TAG_VIEW_ELIGIBLE_SQL` in `src/db/handlers.ts` from `role IN ('trash', 'archive')` to `role IN ('trash', 'junk')`, and update the two comments in that file that still say “outside Trash and Archive”. In `src/stores/mail-store.ts`, make `fileTagMessages` keep Archive rows, preview, and focus while Trash and Junk remove them.
 - [X] T007 [US1] Confirm MK-3.4 says `Successful Junk and Delete actions remove the rows and update tag counts`, matching the new filing behavior; update the tag view note in `docs/architecture/sqlite-storage.md` if any stale Trash/Archive wording remains; keep the Starred and sidebar-count sentence consistent.
 
 **Checkpoint**: US1 is independently testable and is the complete MVP for issue #237.
