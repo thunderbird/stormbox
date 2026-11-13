@@ -90,48 +90,58 @@ test.describe('Tag view e2e', () => {
     await sweepOrphanTestMessages(jmap, { subjectPrefix: SUBJECT_PREFIX });
   });
 
-  test('tag and Starred views exclude Trash and Archive, including multiple memberships', async ({ sharedPage: page }, testInfo) => {
+  test('tag and Starred views include Archive and exclude Trash and Junk, including multiple memberships', async ({ sharedPage: page }, testInfo) => {
     const jmap = await connectJmap();
     const mailboxes = await listMailboxes(jmap);
     const inbox = mailboxByRole(mailboxes, 'inbox');
     const sent = mailboxByRole(mailboxes, 'sent');
     const archive = mailboxByRole(mailboxes, 'archive');
     const trash = mailboxByRole(mailboxes, 'trash');
+    const junk = mailboxByRole(mailboxes, 'junk');
     const stamp = Date.now();
-    const subjects = Object.fromEntries(['inbox', 'sent', 'archive', 'trash', 'multiple']
+    const subjects = Object.fromEntries(['inbox', 'sent', 'archive', 'trash', 'junk', 'multiple', 'multiJunk']
       .map((key) => [key, `${SUBJECT_PREFIX} ${stamp} ${key}`]));
     const ids = {};
     try {
-      for (const [name, folder] of Object.entries({ inbox, sent, archive, trash, multiple: inbox })) {
+      for (const [name, folder] of Object.entries({
+        inbox, sent, archive, trash, junk, multiple: inbox, multiJunk: inbox,
+      })) {
         ids[name] = await createFixture(jmap, folder, subjects[name], { $flagged: true });
       }
       const response = await jmapRequest(jmap, [['Email/set', {
         accountId: jmap.accountId,
-        update: { [ids.multiple]: { mailboxIds: { [inbox.id]: true, [archive.id]: true } } },
+        update: {
+          [ids.multiple]: { mailboxIds: { [inbox.id]: true, [archive.id]: true } },
+          [ids.multiJunk]: { mailboxIds: { [inbox.id]: true, [junk.id]: true } },
+        },
       }, 'multi']]);
       expect(pickResponse(response, 'Email/set')?.updated).toHaveProperty(ids.multiple);
-      for (const [name, folder] of Object.entries({ inbox, sent, archive, trash })) {
+      expect(pickResponse(response, 'Email/set')?.updated).toHaveProperty(ids.multiJunk);
+      for (const [name, folder] of Object.entries({ inbox, sent, archive, trash, junk })) {
         await openFolder(page, folder);
         await expectRowSoon(page, subjects[name]);
       }
       await expectCachedMembership(page, ids.multiple, [inbox.id, archive.id]);
+      await expectCachedMembership(page, ids.multiJunk, [inbox.id, junk.id]);
       for (const keyword of [PERSONAL, '$flagged']) {
         await openTag(page, keyword);
-        await expect(rowFor(page, subjects.inbox)).toBeVisible();
-        await expect(rowFor(page, subjects.sent)).toBeVisible();
-        for (const name of ['archive', 'trash', 'multiple']) {
+        for (const name of ['inbox', 'sent', 'archive', 'multiple']) {
+          await expect(rowFor(page, subjects[name])).toBeVisible();
+        }
+        for (const name of ['trash', 'junk', 'multiJunk']) {
           await expect(rowFor(page, subjects[name])).toHaveCount(0);
         }
         await expect.poll(async () => (await readTagView(page, keyword))
           .map((row) => row.remoteId).filter((id) => Object.values(ids).includes(id)).sort())
-          .toEqual([ids.inbox, ids.sent].sort());
+          .toEqual([ids.inbox, ids.sent, ids.archive, ids.multiple].sort());
         await expectTagCount(page, keyword);
       }
       await openTag(page);
       const header = await page.locator('.selectable-list-header').elementHandle();
       await page.locator('.msg-list__select-all input').click();
-      await expect(rowFor(page, subjects.inbox)).toHaveClass(/is-selected/);
-      await expect(rowFor(page, subjects.sent)).toHaveClass(/is-selected/);
+      for (const name of ['inbox', 'sent', 'archive', 'multiple']) {
+        await expect(rowFor(page, subjects[name])).toHaveClass(/is-selected/);
+      }
       expect(await header.evaluate((element) => element.isConnected)).toBe(true);
       await page.locator('.msg-list__select-all input').click();
       await expect(rowFor(page, subjects.inbox)).not.toHaveClass(/is-selected/);
@@ -193,7 +203,7 @@ test.describe('Tag view e2e', () => {
               await waitForPendingMutations(page);
               await expect.poll(async () => Object.keys(await getEmailMailboxIds(jmap, ids[subjects.indexOf(subject)]) ?? {}))
                 .toEqual([destination.id]);
-              if (role !== 'junk') await expect(rowFor(page, subject)).toHaveCount(0);
+              if (role !== 'archive') await expect(rowFor(page, subject)).toHaveCount(0);
             }
           }
           await waitForPendingMutations(page);
@@ -225,6 +235,8 @@ test.describe('Tag view e2e', () => {
             if (role === 'junk') {
               expect(keywords.$junk).toBe(true);
               expect(keywords.$notjunk ?? false).toBe(false);
+            }
+            if (role === 'archive') {
               await expect(rowFor(page, subjects[i])).toBeVisible();
             } else {
               await expect(rowFor(page, subjects[i])).toHaveCount(0);
@@ -232,7 +244,7 @@ test.describe('Tag view e2e', () => {
           }
           await expect.poll(async () => (await readTagView(page, PERSONAL))
             .filter((row) => ids.includes(row.remoteId)).map((row) => row.remoteId).sort())
-            .toEqual(role === 'junk' ? [...ids].sort() : []);
+            .toEqual(role === 'archive' ? [...ids].sort() : []);
           await expectTagCount(page);
           await expect(page.locator('.msg-list__check input:checked')).toHaveCount(0);
         } finally {

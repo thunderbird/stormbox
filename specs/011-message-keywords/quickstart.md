@@ -61,7 +61,7 @@ Expected: no errors.
 
 ```bash
 docker exec stormbox-compose bash -c \
-  'cd /workspace && npm run test:e2e:local -- \
+  'cd /workspace && npm run test:e2e:local:full -- \
     tests/e2e/tag-view.spec.js \
     --project=chromium --project=firefox'
 ```

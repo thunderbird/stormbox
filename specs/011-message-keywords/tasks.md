@@ -28,8 +28,8 @@ commands run inside `stormbox-compose`.
 
 **Purpose**: Confirm the amendment and scope before touching code.
 
-- [ ] T001 [P] Confirm the feature context and scope in `specs/011-message-keywords/plan.md`: Archive included, Trash and Junk excluded, no child-folder inheritance, no schema change.
-- [ ] T002 [P] Confirm `specs/011-message-keywords/spec.md` MK-3.4 and `docs/architecture/sqlite-storage.md` state a Trash or Junk exclusion; add one explicit sentence to MK-3.4 that Archive is included and that role folders do not pass their role to child folders.
+- [X] T001 [P] Confirm the feature context and scope in `specs/011-message-keywords/plan.md`: Archive included, Trash and Junk excluded, no child-folder inheritance, no schema change.
+- [X] T002 [P] Confirm `specs/011-message-keywords/spec.md` MK-3.4 and `docs/architecture/sqlite-storage.md` state a Trash or Junk exclusion; add one explicit sentence to MK-3.4 that Archive is included and that role folders do not pass their role to child folders.
 
 ---
 
@@ -37,7 +37,7 @@ commands run inside `stormbox-compose`.
 
 **Purpose**: Confirm the change needs no database migration.
 
-- [ ] T003 Confirm no migration or index task is needed by reading `src/db/migrations/001_init.sql` and `src/db/migrations/017_message_keywords_lower.sql`; the existing `folders.role`, `folder_messages`, and `message_keywords_lower` structures support the unchanged query.
+- [X] T003 Confirm no migration or index task is needed by reading `src/db/migrations/001_init.sql` and `src/db/migrations/017_message_keywords_lower.sql`; the existing `folders.role`, `folder_messages`, and `message_keywords_lower` structures support the unchanged query.
 
 **Checkpoint**: The implementation is known to be a predicate and test change only.
 
@@ -59,13 +59,13 @@ the cached query count.
 > **NOTE**: Write these tests first and confirm they fail against the
 > current `role IN ('trash', 'archive')` predicate.
 
-- [ ] T004 [P] [US1] Rewrite the tag view test in `tests/unit/db/handlers.test.ts`: Archive-only row included; Trash-only and Junk-only rows excluded; Inbox+Archive included; Inbox+Junk excluded; `message.listKeywords({ forTagView: true })` counts match.
-- [ ] T005 [P] [US1] Rewrite the first case in `tests/e2e/tag-view.spec.js`: seed tagged mail in Inbox, Sent, Archive, Trash, and Junk; expect Archive, Inbox, and Sent visible, Trash and Junk absent, for both a defined tag and `$flagged`; assert cached `listMessagesForKeyword` rows and sidebar counts agree.
+- [X] T004 [P] [US1] Rewrite the tag view test in `tests/unit/db/handlers.test.ts`: Archive-only row included; Trash-only and Junk-only rows excluded; Inbox+Archive included; Inbox+Junk excluded; `message.listKeywords({ forTagView: true })` counts match.
+- [X] T005 [P] [US1] Rewrite the first case in `tests/e2e/tag-view.spec.js`: seed tagged mail in Inbox, Sent, Archive, Trash, and Junk; expect Archive, Inbox, and Sent visible, Trash and Junk absent, for both a defined tag and `$flagged`; assert cached `listMessagesForKeyword` rows and sidebar counts agree.
 
 ### Implementation for User Story 1
 
-- [ ] T006 [US1] Change `TAG_VIEW_ELIGIBLE_SQL` in `src/db/handlers.ts` from `role IN ('trash', 'archive')` to `role IN ('trash', 'junk')`, and update the two comments in that file that still say “outside Trash and Archive”.
-- [ ] T007 [US1] Update MK-3.4 in `specs/011-message-keywords/spec.md` so the Archive-included rule is explicit and the child-folder non-goal is stated; update the tag view note in `docs/architecture/sqlite-storage.md` if any stale Trash/Archive wording remains; keep the Starred and sidebar-count sentence consistent.
+- [X] T006 [US1] Change `TAG_VIEW_ELIGIBLE_SQL` in `src/db/handlers.ts` from `role IN ('trash', 'archive')` to `role IN ('trash', 'junk')`, and update the two comments in that file that still say “outside Trash and Archive”.
+- [X] T007 [US1] Update MK-3.4 in `specs/011-message-keywords/spec.md` so the Archive-included rule is explicit and the child-folder non-goal is stated; update the tag view note in `docs/architecture/sqlite-storage.md` if any stale Trash/Archive wording remains; keep the Starred and sidebar-count sentence consistent.
 
 **Checkpoint**: US1 is independently testable and is the complete MVP for issue #237.
 
@@ -75,11 +75,11 @@ the cached query count.
 
 **Purpose**: Verify the contract across layers and leave no stale wording.
 
-- [ ] T008 [P] Run the focused unit suite in the container: `npx vitest run tests/unit/db/handlers.test.ts tests/unit/stores/mail-store.test.ts`.
-- [ ] T009 [P] Run `npm run typecheck` in the container and fix any type errors.
-- [ ] T010 [P] Search for stale scope wording with `rg -n "Trash or Archive|Trash and Archive|exclude.*Archive|archive.*exclude" src tests docs specs/011-message-keywords`; update only comments and documentation, not historical research notes.
-- [ ] T011 Run the browser suite in the container: `npm run test:e2e:local -- tests/e2e/tag-view.spec.js --project=chromium --project=firefox`; investigate any failure before treating it as a product defect.
-- [ ] T012 Review the final diff for unrelated changes and commit with `Include archived messages in tag views and exclude junk messages. (Fixes #237)`.
+- [X] T008 [P] Run the focused unit suite in the container: `npx vitest run tests/unit/db/handlers.test.ts tests/unit/stores/mail-store.test.ts`.
+- [X] T009 [P] Run `npm run typecheck` in the container and fix any type errors.
+- [X] T010 [P] Search for stale scope wording with `rg -n "Trash or Archive|Trash and Archive|exclude.*Archive|archive.*exclude" src tests docs specs/011-message-keywords`; update only comments and documentation, not historical research notes.
+- [X] T011 Run the browser suite in the container: `npm run test:e2e:local:full -- tests/e2e/tag-view.spec.js --project=chromium --project=firefox`; investigate any failure before treating it as a product defect.
+- [X] T012 Review the final diff for unrelated changes and commit with `Include archived messages in tag views and exclude junk messages. (Fixes #237)`.
 
 ---
 
