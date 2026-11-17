@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../../../i18n/messages';
 import { MUTATION_TYPE, SEND_PHASE } from '../../../../../constants/states';
 import { DB_RPC, type SendMutationProgress } from '../../../../../db/protocol';
 import { wlog } from '../../../../../db/worker-log';
@@ -94,7 +95,7 @@ async function verifySendAttachmentSources({
   if (!attachments.some((attachment) => attachment.partId != null)) return;
   const ids = normalizedDraftEmailIds(draftEmailIds);
   if (!draftsRemoteId || ids.length === 0) {
-    const error: any = new Error('Canonical send attachment has no live draft owner');
+    const error: any = new LocalizedError('send.canonicalSendAttachmentHasNoLiveDraftOwner');
     error.type = 'blobNotFound';
     throw error;
   }
@@ -135,7 +136,7 @@ async function verifySendAttachmentSources({
       || new Set(returnedIds).size !== returnedIds.length
       || returnedIds.length !== chunk.length
     ) {
-      const error: any = new Error('Canonical send attachment owner could not be confirmed');
+      const error: any = new LocalizedError('send.canonicalSendAttachmentOwnerCouldNotBeConfirmed');
       error.type = 'blobNotFound';
       throw error;
     }
@@ -200,7 +201,7 @@ async function runSend({
         type: 'outcomeUnknown',
         terminal: true,
         reason: 'unrecognizedPhase',
-        description: 'This send recorded a phase this build cannot interpret.',
+        description: t('send.thisSendRecordedAPhaseThisBuildCannotInterpret'), descriptionKey: 'send.thisSendRecordedAPhaseThisBuildCannotInterpret', descriptionParams: {},
       },
     };
   }
@@ -213,7 +214,7 @@ async function runSend({
         type: 'outcomeUnknown',
         terminal: true,
         reason: 'alreadyParked',
-        description: 'A previous attempt left the outcome of this send unknown.',
+        description: t('send.aPreviousAttemptLeftTheOutcomeOfThisSend'), descriptionKey: 'send.aPreviousAttemptLeftTheOutcomeOfThisSend', descriptionParams: {},
       },
     };
   }
@@ -227,7 +228,7 @@ async function runSend({
         type: 'outcomeUnknown',
         terminal: true,
         reason: 'unreadableCheckpoint',
-        description: 'This send recorded progress but its checkpoint is unreadable.',
+        description: t('send.thisSendRecordedProgressButItsCheckpointIsUnreadable'), descriptionKey: 'send.thisSendRecordedProgressButItsCheckpointIsUnreadable', descriptionParams: {},
       },
     };
   }
@@ -266,7 +267,7 @@ async function runSend({
   if (rcptTo.length === 0 && resumePhase !== SEND_PHASE.SUBMITTING) {
     const detail = {
       type: 'noRecipients',
-      description: 'At least one To, Cc, or Bcc recipient is required.',
+      description: t('send.atLeastOneToCcOrBccRecipientIs'), descriptionKey: 'send.atLeastOneToCcOrBccRecipientIs', descriptionParams: {},
     };
     const error = submissionError('notSubmitted', detail);
     return rejectedSendOutcome(error, isRetryableSubmissionError(detail));
@@ -359,7 +360,7 @@ async function runSend({
           type: 'outcomeUnknown',
           terminal: true,
           reason: 'noEvidence',
-          description: 'Interrupted while submitting, and the server shows no evidence either way.',
+          description: t('send.interruptedWhileSubmittingAndTheServerShowsNoEvidence'), descriptionKey: 'send.interruptedWhileSubmittingAndTheServerShowsNoEvidence', descriptionParams: {},
         },
       };
     }
@@ -411,8 +412,9 @@ async function runSend({
         error: {
           type: 'createProbeFailed',
           terminal: true,
-          description: 'Could not check whether an earlier attempt already '
-            + 'created this message.',
+          description: t('send.couldNotCheckWhetherAnEarlierAttemptAlreadyCombined'),
+          descriptionKey: 'send.couldNotCheckWhetherAnEarlierAttemptAlreadyCombined',
+          descriptionParams: {},
           detail: { reason: probe.reason, ...probe.detail },
         },
       };
@@ -817,7 +819,7 @@ async function rewindDefinitiveSubmissionRejection({
         wlog.warn(
           'jmap-outbox',
           `terminally rejected Email not destroyed: ${
-            failure?.description ?? failure?.type ?? 'server did not confirm destroy'
+            failure?.description ?? failure?.type ?? t('send.serverDidNotConfirmDestroy')
           }`,
         );
       }
@@ -871,7 +873,7 @@ async function resumeCacheReconciliation({
         type: 'outcomeUnknown',
         terminal: true,
         reason: 'incompleteCheckpoint',
-        description: 'This send was submitted but its record of what was sent is incomplete.',
+        description: t('send.thisSendWasSubmittedButItsRecordOfWhat'), descriptionKey: 'send.thisSendWasSubmittedButItsRecordOfWhat', descriptionParams: {},
       },
     };
   }
@@ -1007,9 +1009,7 @@ async function reconcileSentLocally(args): Promise<SendOutcome> {
       },
     });
     if (cleanup.ok === false) {
-      const error: any = new Error(
-        `Sent draft cleanup was not confirmed for ${cleanup.remainingIds.length} draft(s)`,
-      );
+      const error: any = new LocalizedError('send.sentDraftCleanupWasNotConfirmedForDraftS', { value1: cleanup.remainingIds.length });
       error.type = 'draftCleanupFailed';
       error.detail = cleanup.error;
       throw error;

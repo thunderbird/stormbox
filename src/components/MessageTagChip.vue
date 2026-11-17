@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { X } from '@lucide/vue';
 
@@ -25,7 +26,7 @@ const style = computed(() => (
   props.tag.color ? { '--tag-color': props.tag.color } : undefined
 ));
 const title = computed(() => (
-  props.tag.defined ? props.tag.name : `${props.tag.name} (keyword without a tag definition)`
+  props.tag.defined ? props.tag.name : t('messageTagChip.keywordWithoutATagDefinition', { value1: props.tag.name })
 ));
 </script>
 
@@ -47,8 +48,8 @@ const title = computed(() => (
       v-if="removable"
       class="tag-chip__remove"
       type="button"
-      :title="`Remove tag ${tag.name}`"
-      :aria-label="`Remove tag ${tag.name}`"
+      :title="t('messageTagChip.removeTag', { value1: tag.name })"
+      :aria-label="t('messageTagChip.removeTag', { value1: tag.name })"
       @click.stop="emit('remove', tag)"
     >
       <X :size="11" :stroke-width="2.25" aria-hidden="true" />

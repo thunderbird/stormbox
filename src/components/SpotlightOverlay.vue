@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed,
   onBeforeUnmount,
@@ -337,7 +338,7 @@ onBeforeUnmount(stopLoop);
         'spotlight-overlay__pointer--visible': pointerVisible,
         'spotlight-overlay__pointer--pressing': pointer?.pressing,
       }"
-      :style="pointerPosition ? { transform: `translate(${pointerPosition.x}px, ${pointerPosition.y}px)` } : undefined"
+      :style="pointerPosition ? { transform: t('spotlightOverlay.translatePxPx', { value1: pointerPosition.x, value2: pointerPosition.y }) } : undefined"
     >
       <span class="spotlight-overlay__pointer-ripple" />
       <MousePointer2 class="spotlight-overlay__pointer-glyph" :size="24" :stroke-width="1.75" />

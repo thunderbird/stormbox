@@ -1,3 +1,4 @@
+import { t } from '../../../i18n/messages';
 /**
  * Reusable transport for owned JSON documents stored as JMAP FileNodes.
  */
@@ -117,7 +118,7 @@ function fileNodePagingError(reason: CompleteQueryFailureReason): FileNodeDocume
     case 'pageLimitReached':
       return {
         type: 'tooManyChanges',
-        message: 'FileNode collection pagination did not converge',
+        message: t('fileNode.fileNodeCollectionPaginationDidNotConverge'),
       };
     case 'queryStateChanged':
     case 'queryStateMissing':
@@ -127,7 +128,7 @@ function fileNodePagingError(reason: CompleteQueryFailureReason): FileNodeDocume
     case 'truncated':
       return {
         type: 'stateMismatch',
-        message: 'FileNode collection changed during discovery',
+        message: t('fileNode.fileNodeCollectionChangedDuringDiscovery'),
       };
     default: {
       const exhaustive: never = reason;
@@ -396,7 +397,7 @@ export async function findFileNodeFolder({
   ) {
     return {
       ok: false,
-      error: { type: 'serverFail', message: 'FileNode folder query was malformed' },
+      error: { type: 'serverFail', message: t('fileNode.fileNodeFolderQueryWasMalformed') },
     };
   }
   if (
@@ -406,7 +407,7 @@ export async function findFileNodeFolder({
   ) {
     return {
       ok: false,
-      error: { type: 'stateMismatch', message: 'FileNode folder collection changed' },
+      error: { type: 'stateMismatch', message: t('fileNode.fileNodeFolderCollectionChanged') },
     };
   }
   let state = get.state;
@@ -437,7 +438,7 @@ export async function findFileNodeFolder({
     ) {
       return {
         ok: false,
-        error: { type: 'serverFail', message: 'FileNode folder listing was malformed' },
+        error: { type: 'serverFail', message: t('fileNode.fileNodeFolderListingWasMalformed') },
       };
     }
     state = all.state;
@@ -452,7 +453,7 @@ export async function findFileNodeFolder({
       ok: false,
       error: {
         type: 'alreadyExists',
-        message: `Multiple FileNode folders are named ${name} under the same parent`,
+        message: t('fileNode.multipleFileNodeFoldersAreNamedUnderTheSameParent', { value1: name }),
         detail: matches.map((node: any) => node?.id),
         terminal: true,
       },
@@ -464,7 +465,7 @@ export async function findFileNodeFolder({
       ok: false,
       error: {
         type: 'invalidDocument',
-        message: `${name} is not a FileNode folder`,
+        message: t('fileNode.isNotAFileNodeFolder', { value1: name }),
         terminal: true,
       },
     };
@@ -563,7 +564,7 @@ export async function ensureFileNodeFolder({
         },
       };
     }
-    lastError = { type: 'serverFail', message: 'FileNode/set did not create the folder' };
+    lastError = { type: 'serverFail', message: t('fileNode.fileNodeSetDidNotCreateTheFolder') };
   }
   return { ok: false, error: lastError };
 }
@@ -700,7 +701,7 @@ export async function moveFileNodes({
       if (!set?.updated || !(node.id in set.updated)) {
         return {
           ok: false,
-          error: { type: 'serverFail', message: 'FileNode/set did not confirm the move' },
+          error: { type: 'serverFail', message: t('fileNode.fileNodeSetDidNotConfirmTheMove') },
         };
       }
     }
@@ -787,7 +788,7 @@ export async function discoverJsonFileNodes({
         ) {
           throw new FileNodeCollectionFailure({
             type: 'serverFail',
-            message: 'FileNode collection query was malformed',
+            message: t('fileNode.fileNodeCollectionQueryWasMalformed'),
           });
         }
         const pageTotal = Number(query.total);
@@ -813,7 +814,7 @@ export async function discoverJsonFileNodes({
         ) {
           throw new FileNodeCollectionFailure({
             type: 'stateMismatch',
-            message: 'FileNode collection changed during discovery',
+            message: t('fileNode.fileNodeCollectionChangedDuringDiscovery'),
           });
         }
         for (const id of pageIds as string[]) ids.add(id);
@@ -823,7 +824,7 @@ export async function discoverJsonFileNodes({
           if (names.has(name)) {
             throw new FileNodeCollectionFailure({
               type: 'alreadyExists',
-              message: `Multiple FileNodes are named ${name} under the same parent`,
+              message: t('fileNode.multipleFileNodesAreNamedUnderTheSameParent', { value1: name }),
               terminal: true,
             });
           }
@@ -872,7 +873,7 @@ export async function readJsonFileNodeFromNode<T>({
       ok: false,
       error: {
         type: 'invalidDocument',
-        message: 'FileNode is not in the expected folder',
+        message: t('fileNode.fileNodeIsNotInTheExpectedFolder'),
         terminal: true,
       },
     };
@@ -882,7 +883,7 @@ export async function readJsonFileNodeFromNode<T>({
       ok: false,
       error: {
         type: 'invalidDocument',
-        message: 'FileNode is not an application/json document',
+        message: t('fileNode.fileNodeIsNotAnApplicationJsonDocument'),
         terminal: true,
       },
     };
@@ -892,7 +893,7 @@ export async function readJsonFileNodeFromNode<T>({
       ok: false,
       error: {
         type: 'tooLarge',
-        message: `FileNode document is ${node.size} bytes, exceeding the ${maxBytes} byte limit`,
+        message: t('fileNode.fileNodeDocumentIsBytesExceedingTheByteLimit', { value1: node.size, value2: maxBytes }),
         terminal: true,
       },
     };
@@ -914,7 +915,7 @@ export async function readJsonFileNodeFromNode<T>({
       ok: false,
       error: {
         type: 'tooLarge',
-        message: `FileNode document is ${bytes.byteLength} bytes, exceeding the ${maxBytes} byte limit`,
+        message: t('fileNode.fileNodeDocumentIsBytesExceedingTheByteLimit', { value1: bytes.byteLength, value2: maxBytes }),
         terminal: true,
       },
     };
@@ -937,7 +938,7 @@ export async function readJsonFileNodeFromNode<T>({
       ok: false,
       error: {
         type: 'invalidDocument',
-        message: 'FileNode document ownership or version marker does not match',
+        message: t('fileNode.fileNodeDocumentOwnershipOrVersionMarkerDoesNotMatch'),
         terminal: true,
       },
     };
@@ -980,7 +981,7 @@ export async function readJsonFileNode<T>({
       ok: false,
       error: {
         type: 'alreadyExists',
-        message: `Multiple FileNodes are named ${fileName} under the same parent`,
+        message: t('fileNode.multipleFileNodesAreNamedUnderTheSameParent', { value1: fileName }),
         detail: resolved.nodes.map((node) => node.id),
         terminal: true,
       },
@@ -1025,7 +1026,7 @@ export async function writeJsonFileNode<T>({
   if (!markerMatches(document, marker)) {
     return {
       ok: false,
-      error: { type: 'invalidDocument', message: 'Document marker does not match', terminal: true },
+      error: { type: 'invalidDocument', message: t('fileNode.documentMarkerDoesNotMatch'), terminal: true },
     };
   }
   if (
@@ -1043,7 +1044,7 @@ export async function writeJsonFileNode<T>({
       ok: false,
       error: {
         type: 'invalidDocument',
-        message: 'FileNode is not in the expected folder',
+        message: t('fileNode.fileNodeIsNotInTheExpectedFolder'),
         terminal: true,
       },
     };
@@ -1063,7 +1064,7 @@ export async function writeJsonFileNode<T>({
     return { ok: false, error: transportError(error) };
   }
   if (!upload?.blobId) {
-    return { ok: false, error: { type: 'serverFail', message: 'Upload returned no blob id' } };
+    return { ok: false, error: { type: 'serverFail', message: t('fileNode.uploadReturnedNoBlobId') } };
   }
 
   const update = snapshot.status === 'found'
@@ -1104,7 +1105,7 @@ export async function writeJsonFileNode<T>({
   if (!response) {
     return {
       ok: false,
-      error: { type: 'serverFail', message: 'FileNode/set returned no response' },
+      error: { type: 'serverFail', message: t('fileNode.fileNodeSetReturnedNoResponse') },
     };
   }
 
@@ -1123,7 +1124,7 @@ export async function writeJsonFileNode<T>({
   if (!nodeId) {
     return {
       ok: false,
-      error: { type: 'serverFail', message: 'FileNode/set did not confirm the write' },
+      error: { type: 'serverFail', message: t('fileNode.fileNodeSetDidNotConfirmTheWrite') },
     };
   }
   for (const destroyedId of destroyNodeIds) {
@@ -1132,7 +1133,7 @@ export async function writeJsonFileNode<T>({
     if (!response.destroyed?.includes(destroyedId)) {
       return {
         ok: false,
-        error: { type: 'serverFail', message: 'FileNode/set did not confirm the relocation' },
+        error: { type: 'serverFail', message: t('fileNode.fileNodeSetDidNotConfirmTheRelocation') },
       };
     }
   }

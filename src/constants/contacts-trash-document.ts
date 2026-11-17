@@ -1,3 +1,4 @@
+import { sourceText } from '../i18n/messages';
 import { CONTACTS_TRASH_LIMITS } from '../config/contacts-trash-limits';
 
 export const CONTACTS_TRASH_DOCUMENT_OWNER = 'stormbox';
@@ -170,7 +171,7 @@ export function normalizeContactTrashEntry(
     emailKeys: stringArray(value.emailKeys),
     displayName: typeof value.displayName === 'string' && value.displayName.trim()
       ? value.displayName.trim()
-      : '(no name)',
+      : sourceText('common.noName'),
     primaryEmail: typeof value.primaryEmail === 'string' && value.primaryEmail.trim()
       ? value.primaryEmail.trim()
       : null,

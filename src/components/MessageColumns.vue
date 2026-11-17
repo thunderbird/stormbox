@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   computed, nextTick, onMounted, ref,
 } from 'vue';
@@ -146,7 +147,7 @@ defineExpose({ addColumn, removeColumn });
         class="column-resizer msg-columns__resizer"
         :class="{ 'is-active': activeResizePane === column.id }"
         role="separator"
-        :aria-label="index === 0 && columns.length === 1 ? 'Resize message list' : `Resize column ${index + 1}`"
+        :aria-label="index === 0 && columns.length === 1 ? t('messageColumns.resizeMessageList') : t('messageColumns.resizeColumn', { value1: index + 1 })"
         aria-orientation="vertical"
         :aria-valuemin="MESSAGE_COLUMN_MIN_WIDTH"
         :aria-valuemax="MESSAGE_COLUMN_MAX_WIDTH"

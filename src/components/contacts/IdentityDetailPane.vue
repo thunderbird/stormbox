@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -101,9 +102,9 @@ const operationId = ref(createIdentityOperationId());
 
 const editing = computed(() => props.mode === 'create' || props.mode === 'edit');
 const title = computed(() => {
-  if (props.mode === 'create') return 'New identity';
-  if (props.mode === 'edit') return 'Edit identity';
-  return props.identity?.name?.trim() || '(no name)';
+  if (props.mode === 'create') return t('identityDetailPane.newIdentity');
+  if (props.mode === 'edit') return t('identityDetailPane.editIdentity');
+  return props.identity?.name?.trim() || t('identityDetailPane.noName');
 });
 const mayDelete = computed(() =>
   props.identity != null && identityMayDelete(props.identity));
@@ -213,11 +214,11 @@ function rowErrors(
   const errors: Record<string, string> = {};
   for (const row of rows) {
     if (/[\r\n]/.test(row.name)) {
-      errors[row.formKey] = 'Display names cannot contain a line break.';
+      errors[row.formKey] = t('identityDetailPane.displayNamesCannotContainALineBreak');
     } else if (!row.email.trim()) {
-      errors[row.formKey] = 'Enter an email address or remove this row.';
+      errors[row.formKey] = t('identityDetailPane.enterAnEmailAddressOrRemoveThisRow');
     } else if (!parseIdentityMailbox(row.email)) {
-      errors[row.formKey] = 'Enter one mailbox address without a group or list.';
+      errors[row.formKey] = t('identityDetailPane.enterOneMailboxAddressWithoutAGroupOrList');
     }
   }
   return errors;
@@ -231,7 +232,7 @@ const emailError = computed(() => {
   if (props.mode !== 'create' || !saveAttempted.value) return null;
   return parseIdentityMailbox(email.value)
     ? null
-    : 'Enter a valid email address.';
+    : t('identityDetailPane.enterAValidEmailAddress');
 });
 const signatureIssue = computed(() => {
   if (!signatureTouched.value) return null;
@@ -239,13 +240,12 @@ const signatureIssue = computed(() => {
 });
 const signatureError = computed(() => {
   if (signatureIssue.value === 'invalid') {
-    return 'Use a small PNG, JPEG, GIF, or WebP data image in the signature.';
+    return t('identityDetailPane.useASmallPNGJPEGGIFOrWebPData');
   }
   if (signatureIssue.value !== 'too-large') return null;
   const htmlBytes = utf8ByteLength(signatureHtml.value);
   const textBytes = utf8ByteLength(signatureText.value);
-  return `Signature HTML is ${htmlBytes} bytes and plain text is ${textBytes} bytes. `
-    + 'Each must be under 2,048 UTF-8 bytes.';
+  return t('identityDetailPane.signatureHTMLIsBytesAndPlainTextIsBytesCombined', { arg1: htmlBytes, arg2: textBytes });
 });
 const hasValidationErrors = computed(() =>
   emailError.value !== null
@@ -328,7 +328,7 @@ async function save(): Promise<boolean> {
   if (hasValidationErrors.value) {
     reportFailure(
       'validation-error',
-      'Correct the highlighted identity fields.',
+      t('identityDetailPane.correctTheHighlightedIdentityFields'),
     );
     return false;
   }
@@ -350,7 +350,7 @@ async function save(): Promise<boolean> {
     };
     result = await contactsStore.updateIdentity(input);
   } else {
-    reportFailure('save-error', 'This identity is no longer available.');
+    reportFailure('save-error', t('identityDetailPane.thisIdentityIsNoLongerAvailable'));
     return false;
   }
   if (result.ok === false) {
@@ -384,8 +384,8 @@ defineExpose({ focusDetail, save });
       <AppIconButton
         class="identity-detail__action--back"
         :disabled="deleting || contactsStore.saving"
-        title="Back"
-        aria-label="Back"
+        :title="t('identityDetailPane.back')"
+        :aria-label="t('identityDetailPane.back')"
         @click="emit('back')"
       >
         <ArrowLeft :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -393,16 +393,16 @@ defineExpose({ focusDetail, save });
       <template v-if="mode === 'view' && identity">
         <AppIconButton
           :disabled="deleting"
-          title="Edit"
-          aria-label="Edit"
+          :title="t('identityDetailPane.edit')"
+          :aria-label="t('identityDetailPane.edit')"
           @click="emit('edit')"
         >
           <Pencil :size="18" :stroke-width="1.65" aria-hidden="true" />
         </AppIconButton>
         <AppIconButton
           :disabled="deleting || contactsStore.saving"
-          title="Duplicate identity"
-          aria-label="Duplicate identity"
+          :title="t('identityDetailPane.duplicateIdentity')"
+          :aria-label="t('identityDetailPane.duplicateIdentity')"
           @click="emit('duplicate')"
         >
           <Copy :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -412,8 +412,8 @@ defineExpose({ focusDetail, save });
           class="identity-detail__delete"
           danger
           :disabled="deleting"
-          title="Delete identity"
-          aria-label="Delete"
+          :title="t('identityDetailPane.deleteIdentity')"
+          :aria-label="t('identityDetailPane.delete')"
           @click="emit('requestDelete')"
         >
           <Trash2 :size="18" :stroke-width="1.65" aria-hidden="true" />
@@ -425,7 +425,7 @@ defineExpose({ focusDetail, save });
           :disabled="deleting || contactsStore.saving || primary || settingPrimary"
           @click="emit('setPrimary')"
         >
-          Set as Primary
+          {{ t('identityDetailPane.setAsPrimary') }}
         </AppButton>
       </template>
     </header>
@@ -437,7 +437,7 @@ defineExpose({ focusDetail, save });
       @submit.prevent="save"
     >
       <label class="identity-detail__field">
-        <span>Display name</span>
+        <span>{{ t('identityDetailPane.displayName') }}</span>
         <input
           ref="nameEl"
           v-model="name"
@@ -448,7 +448,7 @@ defineExpose({ focusDetail, save });
         />
       </label>
       <label class="identity-detail__field">
-        <span>{{ mode === 'edit' ? 'Email (cannot be changed)' : 'Email' }}</span>
+        <span>{{ mode === 'edit' ? t('identityDetailPane.emailCannotBeChanged') : t('identityDetailPane.email') }}</span>
         <input
           v-model="email"
           class="identity-detail__input"
@@ -485,9 +485,9 @@ defineExpose({ focusDetail, save });
 
       <section class="identity-detail__signature">
         <div class="identity-detail__section-heading">
-          <span>Signature</span>
+          <span>{{ t('identityDetailPane.signature') }}</span>
           <small id="identity-signature-help">
-            HTML and plain text must each be under 2,048 bytes.
+            {{ t('identityDetailPane.hTMLAndPlainTextMustEachBeUnder2') }}
           </small>
         </div>
         <RichTextEditor
@@ -525,13 +525,13 @@ defineExpose({ focusDetail, save });
           :disabled="contactsStore.saving"
           @click="emit('cancel')"
         >
-          Cancel
+          {{ t('identityDetailPane.cancel') }}
         </AppButton>
         <AppButton
           form-action="submit"
           :disabled="contactsStore.saving || hasValidationErrors"
         >
-          {{ contactsStore.saving ? 'Saving…' : 'Save identity' }}
+          {{ contactsStore.saving ? t('identityDetailPane.saving') : t('identityDetailPane.saveIdentity') }}
         </AppButton>
       </footer>
     </form>
@@ -546,12 +546,12 @@ defineExpose({ focusDetail, save });
       </h2>
 
       <section>
-        <h3>Email address</h3>
+        <h3>{{ t('identityDetailPane.emailAddress') }}</h3>
         <p><a :href="`mailto:${identity.email}`">{{ identity.email }}</a></p>
       </section>
       <section>
-        <h3>Reply-To addresses</h3>
-        <p v-if="displayReplyTo.length === 0">(not set)</p>
+        <h3>{{ t('identityDetailPane.replyToAddresses') }}</h3>
+        <p v-if="displayReplyTo.length === 0">{{ t('identityDetailPane.notSet') }}</p>
         <ul v-else class="identity-detail__addresses">
           <li v-for="(address, index) in displayReplyTo" :key="`reply-to:${index}`">
             <span v-if="address.name">{{ address.name }} · </span>
@@ -560,8 +560,8 @@ defineExpose({ focusDetail, save });
         </ul>
       </section>
       <section>
-        <h3>Automatic Bcc addresses</h3>
-        <p v-if="displayBcc.length === 0">(not set)</p>
+        <h3>{{ t('identityDetailPane.automaticBccAddresses') }}</h3>
+        <p v-if="displayBcc.length === 0">{{ t('identityDetailPane.notSet') }}</p>
         <ul v-else class="identity-detail__addresses">
           <li v-for="(address, index) in displayBcc" :key="`bcc:${index}`">
             <span v-if="address.name">{{ address.name }} · </span>
@@ -570,16 +570,16 @@ defineExpose({ focusDetail, save });
         </ul>
       </section>
       <section>
-        <h3>Signature</h3>
+        <h3>{{ t('identityDetailPane.signature') }}</h3>
         <div
           v-if="displaySignatureHtml"
           class="identity-detail__signature-preview"
           v-html="displaySignatureHtml"
         />
-        <p v-else>(not set)</p>
+        <p v-else>{{ t('identityDetailPane.notSet') }}</p>
       </section>
       <p v-if="!mayDelete" class="identity-detail__protected">
-        The mail server doesn't allow this identity to be deleted.
+        {{ t('identityDetailPane.theMailServerDoesnTAllowThisIdentityTo') }}
       </p>
     </div>
   </article>

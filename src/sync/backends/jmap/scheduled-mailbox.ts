@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 /**
  * The `Scheduled` mailbox that holds Send Later messages: the JMAP role
  * folder `scheduled` (RFC 9979 §8.2). It is an ordinary server mailbox
@@ -130,11 +131,11 @@ async function listByName(
       const query = requireResponse(payload, 'Mailbox/query');
       const got = requireResponse(payload, 'Mailbox/get');
       if (!Array.isArray(query.ids) || !Array.isArray(got.list)) {
-        throw new Error('Scheduled mailbox discovery returned a malformed page');
+        throw new LocalizedError('scheduledMailbox.scheduledMailboxDiscoveryReturnedAMalformedPage');
       }
       const returned = new Set(got.list.map((mailbox: any) => mailbox?.id));
       if (query.ids.some((id: unknown) => !returned.has(id))) {
-        throw new Error('Scheduled mailbox discovery omitted a queried mailbox');
+        throw new LocalizedError('scheduledMailbox.scheduledMailboxDiscoveryOmittedAQueriedMailbox');
       }
       return {
         ids: query.ids,
@@ -154,7 +155,7 @@ async function listByName(
     },
   });
   if (paging.complete === false) {
-    throw new Error(`Scheduled mailbox discovery did not complete (${paging.reason})`);
+    throw new LocalizedError('scheduledMailbox.scheduledMailboxDiscoveryDidNotComplete', { value1: paging.reason });
   }
   return candidates;
 }
@@ -175,8 +176,7 @@ async function adoptByName(args: ScheduledMailboxArgs): Promise<DiscoveredMailbo
   const roleless = topLevel.find((mailbox: any) => mailbox.role == null && mailbox.id);
   if (!roleless) {
     const error: any = new Error(
-      `A top-level mailbox named ${SCHEDULED_MAILBOX_NAME} exists but has a `
-      + 'different special role, so it cannot hold scheduled messages.',
+      t('scheduledMailbox.aTopLevelMailboxNamedExistsButHasACombined', { arg1: SCHEDULED_MAILBOX_NAME }),
     );
     error.type = 'scheduledMailboxConflict';
     error.terminal = true;
@@ -200,7 +200,7 @@ async function adoptByName(args: ScheduledMailboxArgs): Promise<DiscoveredMailbo
   }
   const failure = response?.notUpdated?.[roleless.id];
   throw new Error(
-    `Could not set the ${SCHEDULED_MAILBOX_ROLE} role on the ${SCHEDULED_MAILBOX_NAME} mailbox`
+    t('scheduledMailbox.couldNotSetTheRoleOnTheMailbox', { value1: SCHEDULED_MAILBOX_ROLE, value2: SCHEDULED_MAILBOX_NAME })
     + `${failure?.type ? ` (${failure.type})` : ''}`,
   );
 }
@@ -236,7 +236,7 @@ async function createMailbox(args: ScheduledMailboxArgs): Promise<DiscoveredMail
   if (discovered) return discovered;
   const failure = response?.notCreated?.[CREATION_ID];
   throw new Error(
-    `Could not create the ${SCHEDULED_MAILBOX_NAME} mailbox`
+    t('scheduledMailbox.couldNotCreateTheMailbox', { value1: SCHEDULED_MAILBOX_NAME })
     + `${failure?.type ? ` (${failure.type})` : ''}`,
   );
 }

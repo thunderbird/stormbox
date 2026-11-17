@@ -1,3 +1,4 @@
+import { t } from '../../../../i18n/messages';
 import { DB_RPC } from '../../../../db/protocol';
 import { callJmap, pickResponseById } from '../invoke';
 import { JMAP_CAPS } from '../transport';
@@ -105,7 +106,7 @@ export async function reconcileMailboxWindow({
       default: {
         const unhandledPolicy: never = requestFailurePolicy;
         throw new Error(
-          `Unhandled mailbox-window failure policy: ${unhandledPolicy}`,
+          t('mailboxWindowReconcile.unhandledMailboxWindowFailurePolicy', { value1: unhandledPolicy }),
           { cause: error },
         );
       }

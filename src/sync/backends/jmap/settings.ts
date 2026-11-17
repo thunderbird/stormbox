@@ -1,3 +1,4 @@
+import { t } from '../../../i18n/messages';
 import {
   SETTINGS_DOCUMENT_OWNER,
   SETTINGS_DOCUMENT_TYPE,
@@ -184,7 +185,7 @@ export async function pushSettings({
         ok: false as const,
         error: {
           type: 'serverFail' as const,
-          message: 'Settings folder was not created',
+          message: t('settings.settingsFolderWasNotCreated'),
         },
       };
     }

@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * JmapBackend ties the JMAP transport, the SQLite handlers, and every
  * per-method sync function into a single object that satisfies the
@@ -133,11 +134,11 @@ function contactsTrashReadinessError(error: any): any {
 }
 
 function transferTooLargeError(
-  message: string,
+  message: string | Error,
   maxBytes: number,
   actualBytes: number,
 ) {
-  const error: any = new Error(message);
+  const error: any = (message instanceof Error ? message : new Error(message));
   error.type = 'tooLarge';
   error.status = 413;
   error.maxBytes = maxBytes;
@@ -1361,7 +1362,7 @@ export class JmapBackend {
 
   async inventoryAddressbook(addressbookId: number) {
     if (!this._hasContactsService()) {
-      const error: any = new Error('Address book service is not available');
+      const error: any = new LocalizedError('backend.addressBookServiceIsNotAvailable');
       error.type = 'addressBookServerUnavailable';
       throw error;
     }
@@ -1396,7 +1397,7 @@ export class JmapBackend {
   importRecentRecipients(scanned: number) {
     const accountId = Number(this.account?.id);
     if (!Number.isFinite(accountId)) {
-      throw new Error('Recent recipient import requires a local account');
+      throw new LocalizedError('backend.recentRecipientImportRequiresALocalAccount');
     }
     let imports = RECIPIENT_IMPORT_INFLIGHT.get(this.handlers);
     if (!imports) {
@@ -1492,7 +1493,7 @@ export class JmapBackend {
       });
       const result = await this.runMutation(inserted.id);
       if ((result?.failed ?? 0) > 0 || (result?.succeeded ?? 0) === 0) {
-        throw new Error('Recent recipient import did not complete');
+        throw new LocalizedError('backend.recentRecipientImportDidNotComplete');
       }
     }
     await this.handlers[DB_RPC.SYNC_STATE_SET]({
@@ -1549,7 +1550,7 @@ export class JmapBackend {
     const limits = attachmentTransferLimits(this.transport, account);
     if (blob.size > limits.maxSizeUpload) {
       throw transferTooLargeError(
-        `Attachment is ${blob.size} bytes, exceeding the ${limits.maxSizeUpload} byte upload limit`,
+        new LocalizedError('backend.attachmentIsBytesExceedingTheByteUploadLimit', { value1: blob.size, value2: limits.maxSizeUpload }),
         limits.maxSizeUpload,
         blob.size,
       );
@@ -1568,7 +1569,7 @@ export class JmapBackend {
     }
     if (totalBytes > limits.maxSizeAttachmentsPerEmail) {
       throw transferTooLargeError(
-        `Attachments total ${totalBytes} bytes, exceeding the ${limits.maxSizeAttachmentsPerEmail} byte message limit`,
+        new LocalizedError('backend.attachmentsTotalBytesExceedingTheByteMessageLimit', { value1: totalBytes, value2: limits.maxSizeAttachmentsPerEmail }),
         limits.maxSizeAttachmentsPerEmail,
         totalBytes,
       );
@@ -1588,7 +1589,7 @@ export class JmapBackend {
       || !Number.isSafeInteger(result?.size)
       || result.size < 0
     ) {
-      const error: any = new Error('JMAP upload returned invalid metadata');
+      const error: any = new LocalizedError('backend.jMAPUploadReturnedInvalidMetadata');
       error.type = 'invalidUploadResponse';
       throw error;
     }
@@ -2162,7 +2163,7 @@ export class JmapBackend {
       visitPage: ({ value: page }) => {
         if (baselineEmailState == null) {
           if (!page.emailState) {
-            throw new Error('Sent snapshot did not include an Email object state');
+            throw new LocalizedError('backend.sentSnapshotDidNotIncludeAnEmailObjectState');
           }
           baselineEmailState = page.emailState;
         }
@@ -2172,7 +2173,7 @@ export class JmapBackend {
       paging.complete === false
       && (paging.reason === 'queryStateChanged' || paging.reason === 'queryTotalChanged')
     ) {
-      throw new Error('Sent query changed while rebuilding recipient usage');
+      throw new LocalizedError('backend.sentQueryChangedWhileRebuildingRecipientUsage');
     }
     if (
       (paging.complete === false && paging.reason === 'queryStateMissing')
@@ -2183,13 +2184,13 @@ export class JmapBackend {
         && !paging.queryState
       )
     ) {
-      throw new Error('Sent query did not provide stable paging state');
+      throw new LocalizedError('backend.sentQueryDidNotProvideStablePagingState');
     }
     if (paging.complete === false) {
       if (paging.reason === 'cursorStalled') {
-        throw new Error('Sent query changed while rebuilding recipient usage');
+        throw new LocalizedError('backend.sentQueryChangedWhileRebuildingRecipientUsage');
       }
-      throw new Error('Sent query did not complete while rebuilding recipient usage');
+      throw new LocalizedError('backend.sentQueryDidNotCompleteWhileRebuildingRecipientUsage');
     }
     const current = await this.handlers[DB_RPC.SYNC_STATE_GET]({
       accountId: this.account.id,
@@ -2209,7 +2210,7 @@ export class JmapBackend {
         useWebSocket: this._wsReady(),
       });
       if (catchup.needsFullSync) {
-        throw new Error('Sent snapshot changes catch-up was incomplete');
+        throw new LocalizedError('backend.sentSnapshotChangesCatchUpWasIncomplete');
       }
     }
     return this.handlers[DB_RPC.RECIPIENT_USAGE_REBUILD]({
@@ -2402,7 +2403,7 @@ export class JmapBackend {
     const mapped = this._accountsByLocalId.get(localAccountId);
     if (mapped) return mapped;
     if (Number(this.account?.id) === localAccountId) return this.account;
-    throw new Error(`Folder ${folder?.id ?? '(unknown)'} belongs to an unavailable account`);
+    throw new LocalizedError('backend.folderBelongsToAnUnavailableAccount', { value1: folder?.id ?? '(unknown)' });
   }
 
   _accountForLocalId(localAccountId: number) {
@@ -2410,9 +2411,7 @@ export class JmapBackend {
     const mapped = this._accountsByLocalId.get(normalized);
     if (mapped) return mapped;
     if (Number(this.account?.id) === normalized) return this.account;
-    const error: any = new Error(
-      `JMAP account ${localAccountId ?? '(unknown)'} is unavailable`,
-    );
+    const error: any = new LocalizedError('backend.jMAPAccountIsUnavailable', { value1: localAccountId ?? '(unknown)' });
     error.type = 'accountUnavailable';
     throw error;
   }
@@ -2427,7 +2426,7 @@ export class JmapBackend {
       params: [folderId],
     });
     if (rows.length === 0) {
-      throw new Error(`Folder ${folderId} not found`);
+      throw new LocalizedError('backend.folderNotFound', { value1: folderId });
     }
     return rows[0];
   }

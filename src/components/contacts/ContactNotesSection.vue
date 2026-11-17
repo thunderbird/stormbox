@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import { Plus, X } from '@lucide/vue';
 
 import { useRepeaterRows } from '../../composables/useRepeaterRows';
@@ -36,7 +37,7 @@ function updateNote(formKey: string, value: string): void {
 
 <template>
   <fieldset class="contact-notes">
-    <legend>Notes</legend>
+    <legend>{{ t('contactNotesSection.notes') }}</legend>
     <div
       v-for="note in modelValue"
       :key="note.formKey"
@@ -47,7 +48,7 @@ function updateNote(formKey: string, value: string): void {
         class="contact-editor__input contact-notes__input"
         :value="note.value"
         rows="3"
-        aria-label="Contact note"
+        :aria-label="t('contactNotesSection.contactNote')"
         @input="updateNote(
           note.formKey,
           ($event.target as HTMLTextAreaElement).value,
@@ -55,7 +56,7 @@ function updateNote(formKey: string, value: string): void {
       />
       <AppIconButton
         class="contact-editor__remove"
-        aria-label="Remove note"
+        :aria-label="t('contactNotesSection.removeNote')"
         @click="removeNote(note.formKey)"
       >
         <X :size="15" :stroke-width="2" aria-hidden="true" />
@@ -63,7 +64,7 @@ function updateNote(formKey: string, value: string): void {
     </div>
     <button class="contact-editor__add" type="button" @click="addNote">
       <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-      <span>Add note</span>
+      <span>{{ t('contactNotesSection.addNote') }}</span>
     </button>
   </fieldset>
 </template>

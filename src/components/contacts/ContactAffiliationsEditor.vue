@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -85,7 +86,7 @@ function affiliationLabel(
 ): string {
   return organization.name?.trim()
     || organization.units[0]?.value.trim()
-    || `Work ${index + 1}`;
+    || t('contactAffiliationsEditor.work', { value1: index + 1 });
 }
 
 function affiliationSummary(organization: ContactEditorOrganization): string {
@@ -94,7 +95,7 @@ function affiliationSummary(organization: ContactEditorOrganization): string {
     linkedTitles(organization, 'title')[0]?.value.trim(),
     linkedTitles(organization, 'role')[0]?.value.trim(),
   ].filter(Boolean);
-  return detail.join(' · ') || 'No details yet';
+  return detail.join(' · ') || t('contactAffiliationsEditor.noDetailsYet');
 }
 
 function chooseOrganization(formId: string, event: Event): void {
@@ -160,12 +161,12 @@ function removeSelectedOrganization(): void {
 
 <template>
   <fieldset class="contact-affiliations">
-    <legend>Work affiliations</legend>
+    <legend>{{ t('contactAffiliationsEditor.workAffiliations') }}</legend>
     <div class="contact-affiliations__toolbar">
       <AppDropdown v-if="organizations.length > 0" group="contact-affiliations">
         <summary
           class="app-dropdown__summary app-dropdown__summary--control contact-affiliations__summary"
-          aria-label="Choose work affiliation"
+          :aria-label="t('contactAffiliationsEditor.chooseWorkAffiliation')"
         >
           {{
             selectedOrganization
@@ -173,7 +174,7 @@ function removeSelectedOrganization(): void {
                 selectedOrganization,
                 organizations.findIndex((item) => item.formId === selectedOrganization?.formId),
               )
-              : 'Choose work'
+              : t('contactAffiliationsEditor.chooseWork')
           }}
         </summary>
         <div class="app-dropdown__menu contact-affiliations__menu" role="menu">
@@ -202,7 +203,7 @@ function removeSelectedOrganization(): void {
         @click="addOrganization"
       >
         <Plus :size="14" :stroke-width="2" aria-hidden="true" />
-        <span>Add work</span>
+        <span>{{ t('contactAffiliationsEditor.addWork') }}</span>
       </button>
     </div>
 
@@ -213,7 +214,7 @@ function removeSelectedOrganization(): void {
       :data-organization-form-id="selectedOrganization.formId"
     >
       <label>
-        <span>Organization</span>
+        <span>{{ t('contactAffiliationsEditor.organization') }}</span>
         <input
           ref="organizationNameEl"
           class="contact-editor__input"
@@ -226,7 +227,7 @@ function removeSelectedOrganization(): void {
         />
       </label>
       <label>
-        <span>Department</span>
+        <span>{{ t('contactAffiliationsEditor.department') }}</span>
         <input
           class="contact-editor__input"
           type="text"
@@ -236,7 +237,7 @@ function removeSelectedOrganization(): void {
         />
       </label>
       <label>
-        <span>Job title</span>
+        <span>{{ t('contactAffiliationsEditor.jobTitle') }}</span>
         <input
           class="contact-editor__input"
           type="text"
@@ -246,7 +247,7 @@ function removeSelectedOrganization(): void {
         />
       </label>
       <label>
-        <span>Role</span>
+        <span>{{ t('contactAffiliationsEditor.role') }}</span>
         <input
           class="contact-editor__input"
           type="text"
@@ -259,7 +260,7 @@ function removeSelectedOrganization(): void {
       <ul
         v-if="organizationAdditionalDetails(selectedOrganization, titles).length > 0"
         class="contact-affiliations__preserved"
-        aria-label="Additional preserved affiliation details"
+        :aria-label="t('contactAffiliationsEditor.additionalPreservedAffiliationDetails')"
       >
         <li
           v-for="detail in organizationAdditionalDetails(selectedOrganization, titles)"
@@ -275,15 +276,15 @@ function removeSelectedOrganization(): void {
         @click="removeSelectedOrganization"
       >
         <Trash2 :size="14" :stroke-width="1.8" aria-hidden="true" />
-        <span>Remove this work affiliation</span>
+        <span>{{ t('contactAffiliationsEditor.removeThisWorkAffiliation') }}</span>
       </button>
     </div>
 
     <div v-if="unlinkedTitles.length > 0" class="contact-affiliations__unlinked">
-      <strong>Other preserved titles</strong>
+      <strong>{{ t('contactAffiliationsEditor.otherPreservedTitles') }}</strong>
       <ul>
         <li v-for="title in unlinkedTitles" :key="title.formKey">
-          {{ title.kind === 'title' ? 'Title' : 'Role' }}: {{ title.value }}
+          {{ title.kind === 'title' ? t('contactAffiliationsEditor.title') : t('contactAffiliationsEditor.role') }}: {{ title.value }}
         </li>
       </ul>
     </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 
 import { useAuthStore } from '../stores/auth-store';
@@ -15,7 +16,7 @@ const label = computed(() => {
   if (!used || !total) {
     return null;
   }
-  return `${authStore.storagePercentUsed}% of ${total}`;
+  return t('storageUsageBar.of', { value1: authStore.storagePercentUsed, value2: total });
 });
 </script>
 

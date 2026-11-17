@@ -1,3 +1,4 @@
+import { t, LocalizedError } from '../../../i18n/messages';
 /**
  * JMAP transport over HTTP and WebSocket.
  *
@@ -45,20 +46,14 @@ function httpResponseError(
   response: { status: number; statusText: string },
   detail = '',
 ) {
-  const error: any = new Error(
-    `${label}: ${response.status} ${response.statusText}${detail ? `\n${detail}` : ''}`,
-  );
+  const error: any = new LocalizedError('transport.text', { value1: label, value2: response.status, value3: response.statusText, value4: detail ? `\n${detail}` : '' });
   error.type = 'httpError';
   error.status = response.status;
   return error;
 }
 
 function downloadTooLargeError(maxBytes: number, actualBytes?: number) {
-  const error: any = new Error(
-    actualBytes == null
-      ? `JMAP download exceeds the ${maxBytes} byte limit`
-      : `JMAP download is ${actualBytes} bytes, exceeding the ${maxBytes} byte limit`,
-  );
+  const error: any = new LocalizedError(actualBytes == null ? 'transport.downloadTooLarge' : 'transport.downloadKnownTooLarge', { maxBytes, actualBytes });
   error.type = 'tooLarge';
   error.status = 413;
   error.maxBytes = maxBytes;
@@ -216,9 +211,7 @@ async function readDownloadBody(response: any, {
   }
 
   if (truncateAtMaxBytes && maxBytes != null) {
-    const error: any = new Error(
-      'Bounded truncating download requires a readable response stream',
-    );
+    const error: any = new LocalizedError('transport.boundedTruncatingDownloadRequiresAReadableResponseStream');
     error.type = 'streamingUnavailable';
     await response.body?.cancel?.(error).catch(() => {});
     throw error;
@@ -328,14 +321,14 @@ export function isAuthenticationError(error: any): boolean {
  * mistaken for a server-side rejection.
  */
 function abortedError(label: string, elapsedMs: number) {
-  const err: any = new Error(`JMAP request ${label} was aborted`);
+  const err: any = new LocalizedError('transport.jMAPRequestWasAborted', { value1: label });
   err.type = 'transportAborted';
   err.elapsedMs = elapsedMs;
   return err;
 }
 
 function cancelledError(label: string, elapsedMs: number) {
-  const err: any = new Error(`JMAP transfer ${label} was cancelled`);
+  const err: any = new LocalizedError('transport.jMAPTransferWasCancelled', { value1: label });
   err.name = 'AbortError';
   err.type = 'cancelled';
   err.elapsedMs = elapsedMs;
@@ -343,9 +336,7 @@ function cancelledError(label: string, elapsedMs: number) {
 }
 
 function wsRequestTimeoutError(requestId: string, elapsedMs: number) {
-  const err: any = new Error(
-    `JMAP WebSocket request ${requestId} timed out after ${elapsedMs}ms`,
-  );
+  const err: any = new LocalizedError('transport.jMAPWebSocketRequestTimedOutAfterMs', { value1: requestId, value2: elapsedMs });
   err.type = 'wsRequestTimeout';
   err.requestId = requestId;
   err.elapsedMs = elapsedMs;
@@ -537,11 +528,7 @@ export class JmapTransport {
           'jmap-transport',
           `${label} ${idle ? 'idle ' : ''}timeout after ${elapsedMs}ms`,
         );
-        const timeoutErr: any = new Error(
-          idle
-            ? `JMAP HTTP transfer ${label} made no progress for ${timeoutMs}ms`
-            : `JMAP HTTP request ${label} timed out after ${elapsedMs}ms`,
-        );
+        const timeoutErr: any = new LocalizedError(idle ? 'transport.idleTimeout' : 'transport.requestTimeout', { label, timeoutMs, elapsedMs });
         timeoutErr.type = idle ? 'httpIdleTimeout' : 'httpRequestTimeout';
         timeoutErr.elapsedMs = elapsedMs;
         throw timeoutErr;
@@ -632,7 +619,7 @@ export class JmapTransport {
         });
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
-          throw httpResponseError('JMAP upload failed', response, detail);
+          throw httpResponseError(t('transport.jMAPUploadFailed2'), response, detail);
         }
         const result = await response.json();
         reportTransferProgress(onProgress, {
@@ -714,9 +701,7 @@ export class JmapTransport {
       const timeoutError = () => {
         const elapsedMs = Date.now() - started;
         wlog.warn('jmap-transport', `${label} idle timeout after ${elapsedMs}ms`);
-        const error: any = new Error(
-          `JMAP HTTP transfer ${label} made no progress for ${this._httpUploadIdleTimeoutMs}ms`,
-        );
+        const error: any = new LocalizedError('transport.jMAPHTTPTransferMadeNoProgressForMs', { value1: label, value2: this._httpUploadIdleTimeoutMs });
         error.type = 'httpIdleTimeout';
         error.elapsedMs = elapsedMs;
         return error;
@@ -781,13 +766,13 @@ export class JmapTransport {
         }
       };
       const onError = () => {
-        rejectOnce(new Error(`JMAP upload failed: ${request.statusText || 'network error'}`));
+        rejectOnce(new LocalizedError('transport.jMAPUploadFailed', { value1: request.statusText || 'network error' }));
       };
       const onLoad = () => {
         markUploadFinished();
         if (request.status < 200 || request.status >= 300) {
           rejectOnce(httpResponseError(
-            'JMAP upload failed',
+            t('transport.jMAPUploadFailed2'),
             request,
             request.responseText || '',
           ));
@@ -853,7 +838,7 @@ export class JmapTransport {
       label: 'session',
       consume: async (response) => {
         if (!response.ok) {
-          throw httpResponseError('JMAP session fetch failed', response);
+          throw httpResponseError(t('transport.jMAPSessionFetchFailed'), response);
         }
         return response.json();
       },
@@ -940,7 +925,7 @@ export class JmapTransport {
           wlog.info('jmap-transport', `httpResponse ${summary} status=${response.status}`);
           if (!response.ok) {
             const detail = await response.text().catch(() => '');
-            throw httpResponseError('JMAP request failed', response, detail);
+            throw httpResponseError(t('transport.jMAPRequestFailed'), response, detail);
           }
           return response.json();
         },
@@ -982,7 +967,7 @@ export class JmapTransport {
     }
     const template = this._session?.uploadUrl;
     if (!template) {
-      throw new Error('JMAP session does not advertise an uploadUrl');
+      throw new LocalizedError('transport.jMAPSessionDoesNotAdvertiseAnUploadUrl');
     }
     const url = template.replace('{accountId}', encodeURIComponent(accountId));
     const auth = await this._getAuthHeader();
@@ -1057,7 +1042,7 @@ export class JmapTransport {
     }
     const template = this._session?.downloadUrl;
     if (!template) {
-      throw new Error('JMAP session does not advertise a downloadUrl');
+      throw new LocalizedError('transport.jMAPSessionDoesNotAdvertiseADownloadUrl');
     }
     const url = template
       .replace('{accountId}', encodeURIComponent(accountId))
@@ -1078,7 +1063,7 @@ export class JmapTransport {
       consume: async (response, onActivity) => {
         if (!response.ok) {
           const detail = await response.text().catch(() => '');
-          throw httpResponseError('JMAP download failed', response, detail);
+          throw httpResponseError(t('transport.jMAPDownloadFailed'), response, detail);
         }
         return readDownloadBody(response, {
           maxBytes: byteLimit,
@@ -1115,7 +1100,7 @@ export class JmapTransport {
       }
       const wsCap = this._session.capabilities?.[JMAP_WEBSOCKET_CAP];
       if (!wsCap?.url) {
-        throw new Error('Server does not advertise urn:ietf:params:jmap:websocket');
+        throw new LocalizedError('transport.serverDoesNotAdvertiseUrnIetfParamsJmapWebsocket');
       }
       // If a proxy URL is configured, the credential rides on the
       // query string and the proxy converts it to an Authorization
@@ -1177,7 +1162,7 @@ export class JmapTransport {
       return Promise.reject(abortedError('wsRequest', 0));
     }
     if (!this._ws || this._ws.readyState !== this._ws.OPEN) {
-      return Promise.reject(new Error('WebSocket is not open'));
+      return Promise.reject(new LocalizedError('transport.webSocketIsNotOpen'));
     }
     const requestId = `r${this._nextWsId}`;
     this._nextWsId += 1;
@@ -1276,7 +1261,7 @@ export class JmapTransport {
     this._ws = null;
     this._wsReadyPromise = null;
     for (const pending of this._wsPending.values()) {
-      pending.reject(new Error('WebSocket closed'));
+      pending.reject(new LocalizedError('transport.webSocketClosed'));
     }
     this._wsPending.clear();
   }
@@ -1308,7 +1293,7 @@ export class JmapTransport {
         if (pending) {
           this._wsPending.delete(payload.requestId);
           const error: any = new Error(
-            payload.detail || payload.type || 'JMAP RequestError',
+            payload.detail || payload.type || t('transport.requestError'),
           );
           error.type = payload.type ?? 'jmapRequestError';
           if (Number.isFinite(payload.status)) {
@@ -1340,7 +1325,7 @@ export class JmapTransport {
 
   _onWsClose(event?: any) {
     for (const pending of this._wsPending.values()) {
-      pending.reject(new Error('WebSocket closed mid-request'));
+      pending.reject(new LocalizedError('transport.webSocketClosedMidRequest'));
     }
     this._wsPending.clear();
     this._ws = null;
@@ -1368,7 +1353,7 @@ function waitForOpen(ws: WebSocket, timeoutMs: number): Promise<void> {
     return Promise.resolve();
   }
   if (ws.readyState === ws.CLOSING || ws.readyState === ws.CLOSED) {
-    return Promise.reject(new Error('WebSocket closed before open'));
+    return Promise.reject(new LocalizedError('transport.webSocketClosedBeforeOpen'));
   }
   return new Promise<void>((resolve, reject) => {
     const started = Date.now();
@@ -1388,12 +1373,12 @@ function waitForOpen(ws: WebSocket, timeoutMs: number): Promise<void> {
     };
     const onError = (event: any) => {
       cleanup();
-      reject(new Error(event?.message ?? 'WebSocket open failed'));
+      reject(new Error(event?.message ?? t('transport.webSocketOpenFailed')));
     };
     const onClose = (event: any) => {
       cleanup();
       const suffix = event?.reason ? `: ${event.reason}` : '';
-      reject(new Error(`WebSocket closed before open${suffix}`));
+      reject(new LocalizedError('transport.webSocketClosedBeforeOpen2', { value1: suffix }));
     };
     ws.addEventListener('open', onOpen);
     ws.addEventListener('error', onError);

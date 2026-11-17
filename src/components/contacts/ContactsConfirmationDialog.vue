@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   ref,
@@ -58,21 +59,17 @@ const title = computed(() => {
   const count = Math.max(1, props.count);
   switch (props.kind) {
     case 'unsaved':
-      return 'Save your changes?';
+      return t('contactsConfirmationDialog.saveYourChanges');
     case 'external-change':
-      return 'Contact changed elsewhere';
+      return t('contactsConfirmationDialog.contactChangedElsewhere');
     case 'external-addressbook-change':
-      return 'Address book changed elsewhere';
+      return t('contactsConfirmationDialog.addressBookChangedElsewhere');
     case 'delete-contacts-scoped':
-      return count === 1
-        ? `Delete this contact from ${props.scopeLabel || 'this address book'}?`
-        : `Delete ${count} contacts from ${props.scopeLabel || 'this address book'}?`;
+      return t('contactsConfirmationDialog.deleteThisContactFromPlural', { arg1: props.scopeLabel || t('contactsConfirmationDialog.thisAddressBook'), arg2: count, arg3: props.scopeLabel || t('contactsConfirmationDialog.thisAddressBook') }, count);
     case 'delete-identity':
-      return 'Delete this identity?';
+      return t('contactsConfirmationDialog.deleteThisIdentity');
     case 'delete-contact-trash':
-      return count === 1
-        ? 'Delete this contact forever?'
-        : `Delete ${count} contacts forever?`;
+      return t('contactsConfirmationDialog.deleteThisContactForeverPlural', { arg1: count }, count);
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -82,32 +79,28 @@ const title = computed(() => {
 
 const description = computed(() => {
   const count = Math.max(1, props.count);
-  const contacts = count === 1 ? 'This contact' : `These ${count} contacts`;
+  const contacts = t('contactsConfirmationDialog.thisContactPlural', { arg1: count }, count);
   switch (props.kind) {
     case 'unsaved':
-      return 'Save before continuing, discard your edits, or cancel to keep editing.';
+      return t('contactsConfirmationDialog.saveBeforeContinuingDiscardYourEditsOrCancelTo');
     case 'external-change':
-      return 'This entry moved or was removed while you were editing. Save to try your draft, discard it, or cancel to keep editing.';
+      return t('contactsConfirmationDialog.thisEntryMovedOrWasRemovedWhileYouWere');
     case 'external-addressbook-change':
-      return 'This address book was removed while you were editing. Save to try your draft, discard it, or cancel to keep editing.';
+      return t('contactsConfirmationDialog.thisAddressBookWasRemovedWhileYouWereEditing');
     case 'delete-contacts-scoped': {
-      const scope = props.scopeLabel || 'this address book';
-      let knownConsequence = 'Based on the current contact data, none will move to Trash.';
+      const scope = props.scopeLabel || t('contactsConfirmationDialog.thisAddressBook');
+      let knownConsequence = t('contactsConfirmationDialog.basedOnTheCurrentContactDataNoneWillMove');
       if (props.permanentCount === 1 && count === 1) {
-        knownConsequence = 'This is currently the contact’s only address-book membership, so it will move to Trash and remain recoverable for 30 days.';
+        knownConsequence = t('contactsConfirmationDialog.thisIsCurrentlyTheContactSOnlyAddressBook');
       } else if (props.permanentCount > 0) {
-        knownConsequence = `${props.permanentCount} selected contact${
-          props.permanentCount === 1 ? '' : 's'
-        } currently ${
-          props.permanentCount === 1 ? 'has' : 'have'
-        } no other address-book membership and will move to Trash for 30 days.`;
+        knownConsequence = t('contactsConfirmationDialog.selectedContactCurrentlyNoOtherAddressBookMembershipAndPlural', { arg1: props.permanentCount, arg2: props.permanentCount }, props.permanentCount);
       }
-      return `${contacts} will be removed from ${scope}. Any contact whose final membership is removed will move to Trash. ${knownConsequence}`;
+      return t('contactsConfirmationDialog.willBeRemovedFromAnyContactWhoseFinalMembership', { value1: contacts, value2: scope, value3: knownConsequence });
     }
     case 'delete-contact-trash':
-      return `${contacts} will be removed from Trash immediately. This action cannot be undone.`;
+      return t('contactsConfirmationDialog.willBeRemovedFromTrashImmediatelyThisActionCannot', { value1: contacts });
     case 'delete-identity':
-      return `“${props.subject || 'This identity'}” will be removed.`;
+      return t('contactsConfirmationDialog.willBeRemoved', { value1: props.subject || t('contactsConfirmationDialog.thisIdentity') });
     default: {
       const exhaustive: never = props.kind;
       return exhaustive;
@@ -119,7 +112,7 @@ const showsSaveChoices = computed(() =>
   || props.kind === 'external-change'
   || props.kind === 'external-addressbook-change');
 const deleteLabel = computed(() =>
-  props.kind === 'delete-contact-trash' ? 'Delete forever' : 'Delete');
+  props.kind === 'delete-contact-trash' ? t('contactsConfirmationDialog.deleteForever') : t('contactsConfirmationDialog.delete'));
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
@@ -158,7 +151,7 @@ function cancelFromBackdrop(): void {
           :disabled="busy"
           @click="emit('choose', 'cancel')"
         >
-          Cancel
+          {{ t('contactsConfirmationDialog.cancel') }}
         </AppButton>
         <AppButton
           v-if="showsSaveChoices"
@@ -167,14 +160,14 @@ function cancelFromBackdrop(): void {
           :disabled="busy"
           @click="emit('choose', 'discard')"
         >
-          Discard
+          {{ t('contactsConfirmationDialog.discard') }}
         </AppButton>
         <AppButton
           v-if="showsSaveChoices"
           :disabled="busy"
           @click="emit('choose', 'save')"
         >
-          {{ busy ? 'Saving…' : 'Save' }}
+          {{ busy ? t('contactsConfirmationDialog.saving') : t('contactsConfirmationDialog.save') }}
         </AppButton>
         <AppButton
           v-else
@@ -182,7 +175,7 @@ function cancelFromBackdrop(): void {
           :disabled="busy"
           @click="emit('choose', 'delete')"
         >
-          {{ busy ? 'Deleting…' : deleteLabel }}
+          {{ busy ? t('contactsConfirmationDialog.deleting') : deleteLabel }}
         </AppButton>
       </div>
     </section>

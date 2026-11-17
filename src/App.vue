@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from './i18n/messages';
 import {
   computed,
   nextTick,
@@ -83,20 +84,20 @@ const contactsViewEl = ref<ContactsViewHandle | null>(null);
 const CONTACTS_SIDEBAR_ID = 'contacts-sidebar';
 const contactsDetailVisible = ref(false);
 const sidebarLabel = computed(() =>
-  space.value === 'contacts' ? 'address book list' : 'folder list');
+  space.value === 'contacts' ? t('app.addressBookList') : t('app.folderList'));
 const quickFilterQuery = ref('');
 const quickFilterPlaceholder = computed(() =>
-  space.value === 'contacts' ? 'Filter contacts or identities' : 'Filter messages',
+  space.value === 'contacts' ? t('app.filterContactsOrIdentities') : t('app.filterMessages'),
 );
 const quickFilterAriaLabel = computed(() =>
   space.value === 'contacts'
-    ? 'Filter contacts or identities by name or email address'
-    : 'Quick Filter messages by from, to, or subject',
+    ? t('app.filterContactsOrIdentitiesByNameOrEmailAddress')
+    : t('app.quickFilterMessagesByFromToOrSubject'),
 );
 const shortcutScheme = computed(() => settingsStore.get('shortcutScheme'));
 // The badge shows the scheme's first key; aria lists every binding.
 const quickFilterShortcutLabel = computed(() =>
-  shortcutHint('quickFilter', shortcutScheme.value)?.split(' or ')[0] ?? '');
+  shortcutHint('quickFilter', shortcutScheme.value)?.split(t('app.or'))[0] ?? '');
 const quickFilterAriaShortcut = computed(() =>
   shortcutAria('quickFilter', shortcutScheme.value) ?? undefined);
 
@@ -146,7 +147,7 @@ const palette = computed<Palette>(() => settingsStore.get('palette'));
 applyPalette(palette.value);
 watch(palette, (value) => applyPalette(value));
 const themeToggleLabel = computed(() =>
-  appliedTheme.value === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
+  appliedTheme.value === 'dark' ? t('app.switchToLightMode') : t('app.switchToDarkMode'));
 const folderListWidth = ref(DEFAULT_COLUMN_WIDTHS.folderList);
 const folderListHidden = ref(false);
 const showWelcomeModal = ref(false);
@@ -675,7 +676,7 @@ function unwatchSystemTheme() {
     <header class="quick-filter" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
       <div class="quick-filter__brand">
         <span class="quick-filter__glyph" aria-hidden="true" v-html="mailGlyph" />
-        <span class="quick-filter__wordmark">Mail</span>
+        <span class="quick-filter__wordmark">{{ t('app.mail') }}</span>
       </div>
 
       <div class="quick-filter__search" role="search">
@@ -701,8 +702,8 @@ function unwatchSystemTheme() {
           v-if="quickFilterQuery.length > 0"
           class="quick-filter__clear"
           type="button"
-          aria-label="Clear Quick Filter"
-          title="Clear Quick Filter"
+          :aria-label="t('app.clearQuickFilter')"
+          :title="t('app.clearQuickFilter')"
           @click="clearQuickFilterQuery"
         >
           <X :size="17" :stroke-width="2.25" aria-hidden="true" />
@@ -715,8 +716,8 @@ function unwatchSystemTheme() {
           :href="BUG_REPORT_URL"
           target="_blank"
           rel="noopener noreferrer"
-          aria-label="Report a bug"
-          title="Report a bug"
+          :aria-label="t('app.reportABug')"
+          :title="t('app.reportABug')"
         >
           <Bug :size="18" :stroke-width="1.75" aria-hidden="true" />
         </a>
@@ -725,8 +726,8 @@ function unwatchSystemTheme() {
           :href="FEEDBACK_URL"
           target="_blank"
           rel="noopener noreferrer"
-          aria-label="Give feedback"
-          title="Give feedback"
+          :aria-label="t('app.giveFeedback')"
+          :title="t('app.giveFeedback')"
         >
           <Lightbulb :size="18" :stroke-width="1.75" aria-hidden="true" />
         </a>
@@ -779,7 +780,7 @@ function unwatchSystemTheme() {
             <template #iconLeft>
               <Plus :size="16" :stroke-width="2" />
             </template>
-            New Message
+            {{ t('app.newMessage') }}
           </AppButton>
         </header>
 
@@ -807,7 +808,7 @@ function unwatchSystemTheme() {
         'column-resizer--hidden': folderListHidden,
       }"
       role="separator"
-      :aria-label="`Resize ${sidebarLabel}`"
+      :aria-label="t('app.resize', { value1: sidebarLabel })"
       aria-orientation="vertical"
       :aria-valuemin="MIN_COLUMN_WIDTHS.folderList"
       :aria-valuemax="maxFolderListWidth()"

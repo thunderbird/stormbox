@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 /**
  * Thin EmailSubmission synchronizer for Send Later.
  *
@@ -70,14 +71,14 @@ function submissionPagingError(reason: CompleteQueryFailureReason): Error {
   switch (reason) {
     case 'queryStateChanged':
     case 'queryTotalChanged':
-      return new Error('EmailSubmission query changed while paging');
+      return new LocalizedError('submissions.emailSubmissionQueryChangedWhilePaging');
     case 'truncated':
     case 'pageLimitReached':
-      return new Error('EmailSubmission query stopped before its reported total');
+      return new LocalizedError('submissions.emailSubmissionQueryStoppedBeforeItsReportedTotal');
     case 'queryStateMissing':
     case 'cursorStalled':
     case 'positionPastTotal':
-      return new Error('EmailSubmission paging returned a malformed response');
+      return new LocalizedError('submissions.emailSubmissionPagingReturnedAMalformedResponse');
     default: {
       const exhaustive: never = reason;
       return exhaustive;
@@ -165,7 +166,7 @@ export async function fetchSubmissionRecords({
         || !Array.isArray(got.list)
         || !Array.isArray(got.notFound)
       ) {
-        throw new Error('EmailSubmission paging returned a malformed response');
+        throw new LocalizedError('submissions.emailSubmissionPagingReturnedAMalformedResponse');
       }
       return {
         ids,
@@ -179,13 +180,13 @@ export async function fetchSubmissionRecords({
     visitPage: ({ ids, value: got }) => {
       const pageIds = ids as string[];
       if (got.notFound.length > 0 || got.list.length !== ids.length) {
-        throw new Error('EmailSubmission records changed while paging');
+        throw new LocalizedError('submissions.emailSubmissionRecordsChangedWhilePaging');
       }
       const byId = new Map(got.list.map((raw: any) => [raw?.id, raw]));
       for (const id of pageIds) {
         const record = toSubmissionRecord(byId.get(id));
         if (!record || seen.has(id)) {
-          throw new Error('EmailSubmission paging returned incomplete records');
+          throw new LocalizedError('submissions.emailSubmissionPagingReturnedIncompleteRecords');
         }
         seen.add(id);
         records.push(record);
@@ -221,11 +222,11 @@ async function fetchSubmissionRecordsById(
     });
     const got = requireResponse(payload, 'EmailSubmission/get');
     if (!Array.isArray(got.list)) {
-      throw new Error('EmailSubmission/get returned a malformed response');
+      throw new LocalizedError('submissions.emailSubmissionGetReturnedAMalformedResponse');
     }
     for (const raw of got.list) {
       const record = toSubmissionRecord(raw);
-      if (!record) throw new Error('EmailSubmission/get returned incomplete records');
+      if (!record) throw new LocalizedError('submissions.emailSubmissionGetReturnedIncompleteRecords');
       records.push(record);
     }
   }

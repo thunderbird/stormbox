@@ -1,3 +1,4 @@
+import { t } from '../i18n/messages';
 export const ABSOLUTE_TIMESTAMP_PATTERN = /(?:Z|[+-]\d{2}:\d{2})$/i;
 export const SERVER_CLOCK_MAX_AGE_MS = 10 * 60 * 1_000;
 export const SERVER_CLOCK_MAX_ABS_OFFSET_MS = 24 * 60 * 60 * 1_000;
@@ -6,11 +7,11 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const OFFSET_SAMPLE_STEP_MS = 6 * 60 * 60 * 1_000;
 
 export const SCHEDULE_PRESETS = [
-  { id: 'laterToday', label: 'Later today' },
-  { id: 'thisEvening', label: 'This evening' },
-  { id: 'tomorrow', label: 'Tomorrow' },
-  { id: 'thisWeekend', label: 'This weekend' },
-  { id: 'nextWeek', label: 'Next week' },
+  { id: 'laterToday', get label() { return t('scheduleTime.laterToday'); } },
+  { id: 'thisEvening', get label() { return t('scheduleTime.thisEvening'); } },
+  { id: 'tomorrow', get label() { return t('scheduleTime.tomorrow'); } },
+  { id: 'thisWeekend', get label() { return t('scheduleTime.thisWeekend'); } },
+  { id: 'nextWeek', get label() { return t('scheduleTime.nextWeek'); } },
 ] as const;
 
 export type SchedulePresetId = (typeof SCHEDULE_PRESETS)[number]['id'];
@@ -310,7 +311,7 @@ export function validateScheduleTarget({
     return {
       ok: false,
       reason: 'invalidTarget',
-      message: 'Choose a valid scheduled time.',
+      get message() { return t('scheduleTime.chooseAValidScheduledTime'); },
       clock,
     };
   }
@@ -318,7 +319,7 @@ export function validateScheduleTarget({
     return {
       ok: false,
       reason: 'capabilityUnavailable',
-      message: 'Scheduled sending is not supported by this account.',
+      get message() { return t('scheduleTime.scheduledSendingIsNotSupportedByThisAccount'); },
       clock,
     };
   }
@@ -326,7 +327,7 @@ export function validateScheduleTarget({
     return {
       ok: false,
       reason: 'expired',
-      message: 'Choose a scheduled time in the future.',
+      get message() { return t('scheduleTime.chooseAScheduledTimeInTheFuture'); },
       clock,
     };
   }
@@ -335,7 +336,7 @@ export function validateScheduleTarget({
     return {
       ok: false,
       reason: 'expired',
-      message: 'Choose a scheduled time in the future.',
+      get message() { return t('scheduleTime.chooseAScheduledTimeInTheFuture'); },
       clock,
     };
   }
@@ -343,7 +344,7 @@ export function validateScheduleTarget({
     return {
       ok: false,
       reason: 'tooFar',
-      message: `Choose a time within ${maxDelayedSend} seconds.`,
+      get message() { return t('scheduleTime.chooseATimeWithinSeconds', { value1: maxDelayedSend }); },
       clock,
     };
   }
@@ -484,7 +485,7 @@ export function wallTimeToUtc(
     return {
       ok: false,
       reason: 'invalidTimeZone',
-      message: 'Choose a valid time zone.',
+      get message() { return t('scheduleTime.chooseAValidTimeZone'); },
     };
   }
   const wall = normalizedWallTime(wallTime);
@@ -492,7 +493,7 @@ export function wallTimeToUtc(
     return {
       ok: false,
       reason: 'invalidWallTime',
-      message: 'Choose a valid date and time.',
+      get message() { return t('scheduleTime.chooseAValidDateAndTime'); },
     };
   }
   const naiveMs = wallEpochMs(wall);
@@ -517,7 +518,7 @@ export function wallTimeToUtc(
     return {
       ok: false,
       reason: 'nonexistentWallTime',
-      message: 'That local time does not exist because the clock changes then.',
+      get message() { return t('scheduleTime.thatLocalTimeDoesNotExistBecauseTheClock'); },
     };
   }
   const targetMs = uniqueCandidates[0];
@@ -674,12 +675,12 @@ export function resolveSchedulePreset(
     throw new TypeError(`Unknown schedule preset: ${id}`);
   }
   const parsedNow = parseAbsoluteTimestamp(now);
-  if (!parsedNow) return unavailablePreset(preset, 'invalidTarget', 'The current time is invalid.');
+  if (!parsedNow) return unavailablePreset(preset, 'invalidTarget', t('scheduleTime.theCurrentTimeIsInvalid'));
   const nowWall = wallTimeAt(parsedNow.targetMs, timeZone);
-  if (!nowWall) return unavailablePreset(preset, 'invalidTimeZone', 'Choose a valid time zone.');
+  if (!nowWall) return unavailablePreset(preset, 'invalidTimeZone', t('scheduleTime.chooseAValidTimeZone'));
   const presetWall = presetWallTime(id, nowWall);
   if (id === 'laterToday' && !sameWallDate(presetWall, nowWall)) {
-    return unavailablePreset(preset, 'expired', 'No later-today time remains.');
+    return unavailablePreset(preset, 'expired', t('scheduleTime.noLaterTodayTimeRemains'));
   }
   const converted = wallTimeToUtc(presetWall, timeZone);
   if ('reason' in converted) {

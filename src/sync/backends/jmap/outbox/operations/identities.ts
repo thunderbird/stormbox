@@ -1,3 +1,4 @@
+import { t } from '../../../../../i18n/messages';
 import {
   IDENTITY_PHASE,
   MUTATION_TYPE,
@@ -529,7 +530,7 @@ async function reconcileWrite({
     }),
     cacheRepairErrorType: IDENTITY_ERROR.CACHE_REPAIR_FAILED,
     failureLog: (message) =>
-      `identity write applied but the cache did not follow: ${message}`,
+      t('identities.identityWriteAppliedButTheCacheDidNotFollow', { value1: message }),
     repair: async () => {
       if (row.mutation_type === MUTATION_TYPE.DELETE_IDENTITY) {
         await handlers[DB_RPC.IDENTITY_DELETE_LOCAL]({

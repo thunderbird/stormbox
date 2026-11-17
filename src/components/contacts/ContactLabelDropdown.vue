@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   computed,
   nextTick,
@@ -22,6 +23,12 @@ const props = defineProps<{
   resource: ContactEditorResource;
 }>();
 
+const labelKeys = {
+  email: ['contactLabelDropdown.chooseEmail', 'contactLabelDropdown.customEmail'],
+  phone: ['contactLabelDropdown.choosePhone', 'contactLabelDropdown.customPhone'],
+  website: ['contactLabelDropdown.chooseWebsite', 'contactLabelDropdown.customWebsite'],
+};
+
 const emit = defineEmits<{
   update: [resource: ContactEditorResource];
 }>();
@@ -37,10 +44,10 @@ const selectedChoice = computed(() =>
 const options = computed(() => contactLabelOptions(props.kind));
 const summary = computed(() => {
   if (selectedChoice.value === 'custom') {
-    return props.resource.label?.trim() || 'Custom';
+    return props.resource.label?.trim() || t('contactLabelDropdown.custom');
   }
   return options.value.find((option) => option.value === selectedChoice.value)?.label
-    ?? 'Other';
+    ?? t('contactLabelDropdown.other');
 });
 
 async function choose(choice: ContactLabelChoice, event: Event): Promise<void> {
@@ -78,7 +85,7 @@ watch(
     <AppDropdown group="contact-labels">
       <summary
         class="app-dropdown__summary app-dropdown__summary--control contact-label__summary"
-        :aria-label="`Choose ${kind} label; current label ${summary}`"
+        :aria-label="t(labelKeys[kind][0], { label: summary })"
       >
         {{ summary }}
       </summary>
@@ -103,8 +110,8 @@ watch(
       class="contact-label__custom"
       type="text"
       :value="resource.label ?? ''"
-      :aria-label="`Custom ${kind} label`"
-      placeholder="Custom label"
+      :aria-label="t(labelKeys[kind][1])"
+      :placeholder="t('contactLabelDropdown.customLabel2')"
       autocomplete="off"
       @input="updateCustomLabel"
     />

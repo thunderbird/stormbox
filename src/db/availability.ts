@@ -1,3 +1,4 @@
+import { LocalizedError, sourceText } from '../i18n/messages';
 /**
  * Boot-time browser feature check. Stormbox hard-requires SharedWorker,
  * BroadcastChannel, and IndexedDB to function. We fail loudly with a
@@ -9,22 +10,22 @@
  * IDBBatchAtomicVFS dropped that dependency.
  */
 
-const SUPPORTED_BROWSERS = 'Use Chrome 109+, Edge 109+, Firefox 116+, or Safari 16+.';
 
-export const DATABASE_UNAVAILABLE_MESSAGE = 'Stormbox couldn’t connect to its local database. Close all Stormbox tabs and windows, wait a few seconds, then reopen Stormbox. If this happens again, restart Firefox.';
 
-export class DatabaseUnavailableError extends Error {
+export const DATABASE_UNAVAILABLE_MESSAGE = sourceText('availability.databaseUnavailable');
+
+export class DatabaseUnavailableError extends LocalizedError {
   constructor(cause?: unknown) {
-    super(DATABASE_UNAVAILABLE_MESSAGE, { cause });
+    super('availability.databaseUnavailable', {}, { cause });
     this.name = 'DatabaseUnavailableError';
   }
 }
 
-export class UnsupportedBrowserError extends Error {
+export class UnsupportedBrowserError extends LocalizedError {
   missing: string[];
 
   constructor(missing: string[]) {
-    super(`Stormbox cannot run in this browser. Missing: ${missing.join(', ')}. ${SUPPORTED_BROWSERS}`);
+    super('availability.unsupportedBrowser', { missing: missing.join(', ') });
     this.name = 'UnsupportedBrowserError';
     this.missing = missing;
   }

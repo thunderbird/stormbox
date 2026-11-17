@@ -1,3 +1,4 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { DB_RPC } from '../../../db/protocol';
 import type {
   IdentityAddress,
@@ -125,7 +126,7 @@ export async function syncIdentities({
   // snapshot would empty the From picker over a bad reply.
   if (!response || !Array.isArray(response.list)) {
     if (requireSnapshot) {
-      throw new Error('JMAP Identity/get returned an unreadable snapshot');
+      throw new LocalizedError('identities.jMAPIdentityGetReturnedAnUnreadableSnapshot');
     }
     return { count: 0, removed: 0 };
   }
@@ -147,7 +148,7 @@ export async function syncIdentities({
     identities,
   });
   if (requireSnapshot && !complete) {
-    throw new Error('JMAP Identity/get returned an incomplete snapshot');
+    throw new LocalizedError('identities.jMAPIdentityGetReturnedAnIncompleteSnapshot');
   }
   return {
     complete,
@@ -182,7 +183,7 @@ export async function syncIdentityById({
   });
   const response = requireResponse(result, 'Identity/get');
   if (!Array.isArray(response.list)) {
-    throw new Error('JMAP targeted Identity/get returned an unreadable response');
+    throw new LocalizedError('identities.jMAPTargetedIdentityGetReturnedAnUnreadableResponse');
   }
   const matches = response.list
     .map(normalizeIdentity)
@@ -190,7 +191,7 @@ export async function syncIdentityById({
       identity !== null && identity.identity.remoteId === remoteId)
     .map((entry) => entry.identity);
   if (matches.length !== 1) {
-    throw new Error(`JMAP targeted Identity/get did not return ${remoteId}`);
+    throw new LocalizedError('identities.jMAPTargetedIdentityGetDidNotReturn', { value1: remoteId });
   }
   await handlers[DB_RPC.IDENTITY_UPSERT_MANY]({
     accountId: account.id,
@@ -202,7 +203,7 @@ export async function syncIdentityById({
     remoteId,
   });
   if (!row) {
-    throw new Error(`Identity ${remoteId} was not available after cache repair`);
+    throw new LocalizedError('identities.identityWasNotAvailableAfterCacheRepair', { value1: remoteId });
   }
   return row;
 }

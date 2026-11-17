@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { computed } from 'vue';
 import { X } from '@lucide/vue';
 
@@ -35,7 +36,7 @@ interface ToastEntry {
 }
 
 function plainDismiss(run: () => void): ToastDismiss {
-  return { name: 'Dismiss', run };
+  return { get name() { return t('storeErrorToast.dismiss'); }, run };
 }
 
 const mailStore = useMailStore();
@@ -75,7 +76,7 @@ const entries = computed<ToastEntry[]>(() => {
         key: `compose-send:${session.id}`,
         sessionId: session.id,
         kind: 'progress',
-        message: `${session.sendingScheduledAt ? 'Scheduling' : 'Sending'} “${label}”…`,
+        message: `${session.sendingScheduledAt ? t('storeErrorToast.scheduling') : t('storeErrorToast.sending')} “${label}”…`,
         dismiss: null,
       });
     } else if (session.dockedSendFailure) {
@@ -83,14 +84,14 @@ const entries = computed<ToastEntry[]>(() => {
         key: `compose-send:${session.id}`,
         sessionId: session.id,
         kind: 'error',
-        message: `Couldn’t send “${label}”.`,
+        get message() { return t('storeErrorToast.couldnTSend', { value1: label }); },
         action: {
-          label: 'Open',
-          name: `Open “${label}”`,
+          get label() { return t('storeErrorToast.open'); },
+          get name() { return t('storeErrorToast.open2', { value1: label }); },
           run: () => { composeStore.restore(session.id); },
         },
         dismiss: {
-          name: `Dismiss the send failure of “${label}”`,
+          get name() { return t('storeErrorToast.dismissTheSendFailureOf', { value1: label }); },
           run: () => { composeStore.dismissSendFailureNotice(session.id); },
         },
       });
@@ -156,7 +157,7 @@ const entries = computed<ToastEntry[]>(() => {
         class="store-error-toast__dismiss"
         type="button"
         :aria-label="entry.dismiss.name"
-        title="Dismiss"
+        :title="t('storeErrorToast.dismiss')"
         @click="entry.dismiss.run()"
       >
         <X :size="14" :stroke-width="2" aria-hidden="true" />

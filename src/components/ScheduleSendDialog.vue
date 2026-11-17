@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import {
   VueDatePicker,
   type InternalModelValue,
@@ -112,7 +113,7 @@ const customResolution = computed(() => {
     return {
       ok: false as const,
       reason: 'invalidWallTime' as const,
-      message: 'Choose a valid date and time.',
+      get message() { return t('scheduleSendDialog.chooseAValidDateAndTime'); },
     };
   }
   return resolveCustomSchedule({
@@ -130,7 +131,7 @@ const provisionalResolution = computed(() => {
     return {
       ok: false as const,
       reason: 'invalidWallTime' as const,
-      message: 'Choose a valid date and time.',
+      get message() { return t('scheduleSendDialog.chooseAValidDateAndTime'); },
     };
   }
   return resolveCustomSchedule({
@@ -183,7 +184,7 @@ async function chooseTimeZone(timeZone: string, event: Event): Promise<void> {
   try {
     await settingsStore.update({ timeZone });
   } catch {
-    localError.value = 'The time zone could not be synced. Try again.';
+    localError.value = t('scheduleSendDialog.theTimeZoneCouldNotBeSyncedTryAgain');
   }
 }
 
@@ -193,7 +194,7 @@ function submit(): void {
   localError.value = null;
   const wallTime = pickerValueToWallTime(pickerValue.value);
   if (!wallTime) {
-    localError.value = 'Choose a valid date and time.';
+    localError.value = t('scheduleSendDialog.chooseAValidDateAndTime');
     return;
   }
   const resolution = resolveCustomSchedule({
@@ -246,7 +247,7 @@ function onInternalModelChange(value: InternalModelValue): void {
 function onInvalidDate(date: Date): void {
   const wallTime = pickerValueToWallTime(date);
   if (!wallTime) {
-    internalInvalidMessage.value = 'Choose a valid date and time.';
+    internalInvalidMessage.value = t('scheduleSendDialog.chooseAValidDateAndTime');
     return;
   }
   const resolution = resolveCustomSchedule({
@@ -260,7 +261,7 @@ function onInvalidDate(date: Date): void {
 }
 
 function onInvalidSelect(): void {
-  internalInvalidMessage.value = 'Choose a valid date and time.';
+  internalInvalidMessage.value = t('scheduleSendDialog.chooseAValidDateAndTime');
 }
 
 onMounted(() => {
@@ -290,23 +291,23 @@ onBeforeUnmount(() => {
       >
         <header>
           <div>
-            <h3 :id="`schedule-dialog-title-${sessionId}`">Choose a date and time</h3>
+            <h3 :id="`schedule-dialog-title-${sessionId}`">{{ t('scheduleSendDialog.chooseADateAndTime') }}</h3>
             <p :id="`schedule-dialog-zone-${sessionId}`">
-              Current time zone: <strong>{{ selectedTimeZone }}</strong>
+              {{ t('scheduleSendDialog.currentTimeZone') }} <strong>{{ selectedTimeZone }}</strong>
             </p>
           </div>
           <button
             type="button"
             class="schedule-dialog__close"
-            aria-label="Close schedule dialog"
-            title="Close"
+            :aria-label="t('scheduleSendDialog.closeScheduleDialog')"
+            :title="t('scheduleSendDialog.close')"
             :disabled="busy"
             @click="close"
           >×</button>
         </header>
 
         <label class="schedule-dialog__label" :for="`schedule-date-${sessionId}`">
-          Send date and time
+          {{ t('scheduleSendDialog.sendDateAndTime') }}
         </label>
         <VueDatePicker
           class="schedule-dialog__picker"
@@ -328,12 +329,12 @@ onBeforeUnmount(() => {
         />
 
         <div class="schedule-dialog__zone-field">
-          <span class="schedule-dialog__label">Time zone</span>
+          <span class="schedule-dialog__label">{{ t('scheduleSendDialog.timeZone') }}</span>
           <AppDropdown class="schedule-dialog__zone-dropdown" :disabled="busy">
             <summary
               class="app-dropdown__summary schedule-dialog__zone-summary"
               aria-haspopup="listbox"
-              :aria-label="`Time zone: ${selectedTimeZone}`"
+              :aria-label="t('scheduleSendDialog.timeZone2', { value1: selectedTimeZone })"
             >
               {{ selectedTimeZone }}
             </summary>
@@ -345,7 +346,7 @@ onBeforeUnmount(() => {
                 class="schedule-dialog__zone-search"
                 type="search"
                 role="combobox"
-                aria-label="Search time zones"
+                :aria-label="t('scheduleSendDialog.searchTimeZones')"
                 :aria-controls="`schedule-time-zone-options-${sessionId}`"
                 aria-expanded="true"
                 autocomplete="off"
@@ -354,7 +355,7 @@ onBeforeUnmount(() => {
                 :id="`schedule-time-zone-options-${sessionId}`"
                 class="schedule-dialog__zone-options"
                 role="listbox"
-                aria-label="IANA time zones"
+                :aria-label="t('scheduleSendDialog.iANATimeZones')"
               >
                 <button
                   v-for="option in zoneOptions"
@@ -368,7 +369,7 @@ onBeforeUnmount(() => {
                   {{ option.label }}
                 </button>
                 <p v-if="zoneOptions.length === 0" class="schedule-dialog__zone-empty">
-                  No matching IANA time zone
+                  {{ t('scheduleSendDialog.noMatchingIANATimeZone') }}
                 </p>
               </div>
             </div>
@@ -385,22 +386,22 @@ onBeforeUnmount(() => {
           class="schedule-dialog__resolved"
           role="status"
         >
-          Sends {{ resolvedStatus.resolvedLabel }}.
+          {{ t('scheduleSendDialog.sends') }} {{ resolvedStatus.resolvedLabel }}.
           <span v-if="resolvedStatus.ambiguous">
-            This time occurs twice; the earlier occurrence will be used.
+            {{ t('scheduleSendDialog.thisTimeOccursTwiceTheEarlierOccurrenceWillBe') }}
           </span>
         </p>
 
         <div class="schedule-dialog__actions">
           <AppButton variant="outline" :disabled="busy" @click="close">
-            Cancel
+            {{ t('scheduleSendDialog.cancel') }}
           </AppButton>
           <AppButton
             class="schedule-dialog__submit"
             :disabled="busy || !activeResolution.ok"
             @click="submit"
           >
-            {{ busy ? 'Setting…' : 'Set send time' }}
+            {{ busy ? t('scheduleSendDialog.setting') : t('scheduleSendDialog.setSendTime') }}
           </AppButton>
         </div>
       </section>

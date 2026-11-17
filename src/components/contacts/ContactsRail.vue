@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../../i18n/messages';
 import {
   AtSign,
   BookUser,
@@ -86,7 +87,7 @@ function onBookDragOver(book: AddressbookRow, event: DragEvent): void {
   setContactDropEffect(event, allowed ? 'move' : null);
   hoveredDropTarget.value = allowed ? book.id : null;
   if (allowed) {
-    dropAnnouncement.value = `Move contacts to ${addressBookDisplayName(book)}`;
+    dropAnnouncement.value = t('contactsRail.moveContactsTo', { value1: addressBookDisplayName(book) });
   }
 }
 
@@ -108,12 +109,10 @@ function onBookDrop(book: AddressbookRow, event: DragEvent): void {
   hoveredDropTarget.value = null;
   endContactDrag();
   if (!allowed || !payload || payload.sourceAddressbookId == null) {
-    dropAnnouncement.value = 'This address book cannot accept those contacts';
+    dropAnnouncement.value = t('contactsRail.thisAddressBookCannotAcceptThoseContacts');
     return;
   }
-  dropAnnouncement.value = `Moving ${payload.ids.length} contact${
-    payload.ids.length === 1 ? '' : 's'
-  } to ${addressBookDisplayName(book)}`;
+  dropAnnouncement.value = t('contactsRail.movingContactToPlural', { arg1: payload.ids.length, arg2: addressBookDisplayName(book), arg3: payload.ids.length, arg4: addressBookDisplayName(book) }, payload.ids.length);
   emit('moveContacts', {
     contactIds: payload.ids,
     sourceAddressbookId: payload.sourceAddressbookId,
@@ -129,19 +128,19 @@ function onInvalidDragOver(event: DragEvent): void {
 function onInvalidDrop(event: DragEvent): void {
   if (!readContactDrop(event)) return;
   hoveredDropTarget.value = null;
-  dropAnnouncement.value = 'Choose a different writable address book';
+  dropAnnouncement.value = t('contactsRail.chooseADifferentWritableAddressBook');
   endContactDrag();
 }
 </script>
 
 <template>
-  <nav class="contacts-rail" aria-label="Address books">
+  <nav class="contacts-rail" :aria-label="t('contactsRail.addressBooks')">
     <header class="contacts-rail__header">
       <AppButton
         class="contacts-rail__create-book"
         :disabled="!canCreateAddressBook"
-        title="Create address book"
-        aria-label="Create address book"
+        :title="t('contactsRail.createAddressBook')"
+        :aria-label="t('contactsRail.createAddressBook')"
         @click="emit('createAddressBook')"
       >
         <span class="contacts-rail__create-book-icon" aria-hidden="true">
@@ -161,7 +160,7 @@ function onInvalidDrop(event: DragEvent): void {
         <template #iconLeft>
           <Plus :size="16" :stroke-width="2" aria-hidden="true" />
         </template>
-        New Contact
+        {{ t('contactsRail.newContact') }}
       </AppButton>
     </header>
 
@@ -176,13 +175,13 @@ function onInvalidDrop(event: DragEvent): void {
         @drop.prevent="onInvalidDrop"
       >
         <Users :size="16" :stroke-width="1.75" aria-hidden="true" />
-        <span class="contacts-rail__name">All contacts</span>
+        <span class="contacts-rail__name">{{ t('contactsRail.allContacts') }}</span>
         <span class="contacts-rail__count">{{ contactCount }}</span>
       </button>
 
       <template v-for="(entry, index) in railEntries" :key="entryKey(entry)">
         <template v-if="index === ownBookCount">
-          <h3 class="contacts-rail__section-title">Manage</h3>
+          <h3 class="contacts-rail__section-title">{{ t('contactsRail.manage') }}</h3>
           <div class="contacts__identity-section">
             <button
               class="contacts-rail__book contacts__book"
@@ -194,7 +193,7 @@ function onInvalidDrop(event: DragEvent): void {
               @drop.prevent="onInvalidDrop"
             >
               <AtSign :size="16" :stroke-width="1.75" aria-hidden="true" />
-              <span class="contacts-rail__name">Identities</span>
+              <span class="contacts-rail__name">{{ t('contactsRail.identities') }}</span>
               <span class="contacts-rail__count">{{ identityCount }}</span>
             </button>
           </div>
@@ -211,7 +210,7 @@ function onInvalidDrop(event: DragEvent): void {
           @drop.prevent="onInvalidDrop"
         >
           <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
-          <span class="contacts-rail__name">Trash</span>
+          <span class="contacts-rail__name">{{ t('contactsRail.trash') }}</span>
           <span class="contacts-rail__count">{{ trashCount }}</span>
         </button>
 
@@ -246,11 +245,11 @@ function onInvalidDrop(event: DragEvent): void {
           <span class="contacts-rail__book-label">
             <span class="contacts-rail__name">{{ addressBookDisplayName(entry) }}</span>
             <span v-if="entry.is_default === 1" class="contacts-rail__badge">
-              Personal
+              {{ t('contactsRail.personal') }}
             </span>
           </span>
           <span v-if="hoveredDropTarget === entry.id" class="contacts-rail__drop-label">
-            Move here
+            {{ t('contactsRail.moveHere') }}
           </span>
           <span v-else class="contacts-rail__count">{{ bookCounts.get(entry.id) ?? 0 }}</span>
         </button>

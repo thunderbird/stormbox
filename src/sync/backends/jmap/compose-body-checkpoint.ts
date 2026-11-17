@@ -1,10 +1,11 @@
+import { LocalizedError } from '../../../i18n/messages';
 import { DB_RPC } from '../../../db/protocol';
 import type { BodyAttachmentRow } from '../../../types';
 import { fetchEmailBodies } from './bodies';
 import type { ComposeRegularAttachmentSource } from './compose-email';
 
-function checkpointError(message: string, type = 'composeBodyIncomplete'): Error {
-  const error: any = new Error(message);
+function checkpointError(message: string | Error, type = 'composeBodyIncomplete'): Error {
+  const error: any = (message instanceof Error ? message : new Error(message));
   error.type = type;
   return error;
 }
@@ -81,7 +82,7 @@ export function assertCanonicalAttachmentOwnership(
   const canonical = sources.filter((source) => source.partId != null);
   if (canonical.length === 0) return;
   if (!Array.isArray(emails) || emails.length === 0) {
-    throw checkpointError('Canonical attachment owner is missing', 'blobNotFound');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.canonicalAttachmentOwnerIsMissing'), 'blobNotFound');
   }
   const parts = emails.flatMap(candidateParts);
   for (const source of canonical) {
@@ -91,7 +92,7 @@ export function assertCanonicalAttachmentOwnership(
       && partMetadataMatches(part, source));
     if (!owned) {
       throw checkpointError(
-        `Canonical attachment ${source.index + 1} is not owned by a live predecessor`,
+        new LocalizedError('composeBodyCheckpoint.canonicalAttachmentIsNotOwnedByALivePredecessor', { value1: source.index + 1 }),
         'blobNotFound',
       );
     }
@@ -108,13 +109,13 @@ function compareSuccessorPart(
   if (!expected || typeof expected !== 'object' || Array.isArray(expected)
       || !actual || typeof actual !== 'object' || Array.isArray(actual)
       || normalizedType(actual.type) !== normalizedType(expected.type)) {
-    throw checkpointError(`Successor body part ${path} does not match the created MIME tree`);
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorBodyPartDoesNotMatchTheCreatedMIME', { value1: path }));
   }
   const expectedChildren = Array.isArray(expected.subParts) ? expected.subParts : [];
   const actualChildren = Array.isArray(actual.subParts) ? actual.subParts : [];
   if (expectedChildren.length > 0 || actualChildren.length > 0) {
     if (expectedChildren.length !== actualChildren.length) {
-      throw checkpointError(`Successor body part ${path} has incomplete children`);
+      throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorBodyPartHasIncompleteChildren', { value1: path }));
     }
     expectedChildren.forEach((child, index) => {
       compareSuccessorPart(
@@ -128,13 +129,13 @@ function compareSuccessorPart(
     return;
   }
   if (!isHandle(actual.partId) || !isHandle(actual.blobId)) {
-    throw checkpointError(`Successor body part ${path} has no canonical handles`);
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorBodyPartHasNoCanonicalHandles', { value1: path }));
   }
   if (isHandle(expected.blobId)) {
     if ((actual.name ?? null) !== (expected.name ?? null)
         || (actual.disposition ?? null) !== (expected.disposition ?? null)
         || normalizedCid(actual.cid) !== normalizedCid(expected.cid)) {
-      throw checkpointError(`Successor attachment part ${path} has different metadata`);
+      throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorAttachmentPartHasDifferentMetadata', { value1: path }));
     }
     return;
   }
@@ -144,7 +145,7 @@ function compareSuccessorPart(
       || value.isTruncated === true
       || value.isEncodingProblem === true
       || (typeof expectedValue?.value === 'string' && value.value !== expectedValue.value)) {
-    throw checkpointError(`Successor text part ${path} is incomplete`);
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorTextPartIsIncomplete', { value1: path }));
   }
 }
 
@@ -153,12 +154,12 @@ function validateRegularRows(
   sources: ComposeRegularAttachmentSource[],
 ): BodyAttachmentRow[] {
   if (!Array.isArray(rows)) {
-    throw checkpointError('Successor regular attachment rows are missing');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorRegularAttachmentRowsAreMissing'));
   }
   const regular = rows.filter((row) =>
     row?.disposition !== 'inline' && normalizedCid(row?.cid) === null);
   if (regular.length !== sources.length) {
-    throw checkpointError('Successor regular attachment count does not match the captured draft');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.successorRegularAttachmentCountDoesNotMatchTheCaptured'));
   }
   return regular.map((row, index) => {
     const source = sources[index];
@@ -166,7 +167,7 @@ function validateRegularRows(
         || !isHandle(row?.blob_id)
         || !partMetadataMatches(row, source)) {
       throw checkpointError(
-        `Successor regular attachment ${index + 1} has incomplete canonical metadata`,
+        new LocalizedError('composeBodyCheckpoint.successorRegularAttachmentHasIncompleteCanonicalMetadata', { value1: index + 1 }),
       );
     }
     return row as BodyAttachmentRow;
@@ -211,7 +212,7 @@ export async function fetchAndCheckpointComposeBody({
   }
   if (fetched.fetched !== 1 || fetched.emails?.length !== 1
       || fetched.emails[0]?.id !== remoteId) {
-    throw checkpointError('Created Email body could not be fetched completely');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.createdEmailBodyCouldNotBeFetchedCompletely'));
   }
   const email = fetched.emails[0];
   if (expectedBodyStructure != null) {
@@ -234,7 +235,7 @@ export async function fetchAndCheckpointComposeBody({
   }
   const localMessageId = Number(rows[0]?.id);
   if (!Number.isSafeInteger(localMessageId) || localMessageId <= 0) {
-    throw checkpointError('Created Email is missing from the local cache');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.createdEmailIsMissingFromTheLocalCache'));
   }
   let body;
   try {
@@ -243,7 +244,7 @@ export async function fetchAndCheckpointComposeBody({
     rethrowCheckpointError(error);
   }
   if (!body || body.isComplete !== true) {
-    throw checkpointError('Created Email body was not persisted completely');
+    throw checkpointError(new LocalizedError('composeBodyCheckpoint.createdEmailBodyWasNotPersistedCompletely'));
   }
   const regularAttachments = validateRegularRows(
     body.attachments,

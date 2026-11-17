@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from '../i18n/messages';
 import { Expand, Shrink } from '@lucide/vue';
 import AppIconButton from './AppIconButton.vue';
 
@@ -14,8 +15,8 @@ defineEmits<{
 
 <template>
   <AppIconButton
-    :aria-label="`${maximized ? 'Restore' : 'Maximize'} ${surface}`"
-    :title="`${maximized ? 'Restore' : 'Maximize'} ${surface}`"
+    :aria-label="`${maximized ? t('maximizeButton.restore') : t('maximizeButton.maximize')} ${surface}`"
+    :title="`${maximized ? t('maximizeButton.restore') : t('maximizeButton.maximize')} ${surface}`"
     @mousedown.prevent
     @click="$emit('toggle')"
   >
