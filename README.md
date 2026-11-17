@@ -65,16 +65,16 @@ The app defaults to the local stack during development through
 (`/stalwart-jmap`), the local WebSocket auth bridge (`/jmap/ws`), and sender
 avatar lookups through `http://localhost:3000`.
 
-Hosted stage/prod builds use a single Cloudflare Worker at `infra/jmap-bridge/`
-by default. That bridge fronts both halves of JMAP transport on
-`jmap.*.thundermail.com`: HTTP JMAP with first-party CORS, plus the
-`/jmap/ws` WebSocket auth bridge. The app links and transport defaults follow
-the current hostname:
+Hosted stage/prod builds send JMAP HTTP requests directly to Stalwart,
+which permits cross-origin requests. The Cloudflare Worker at
+`infra/jmap-bridge/` continues to provide `/jmap/ws` WebSocket authentication.
+Its HTTP proxy remains deployed for older clients until a later cleanup.
+The app links and transport defaults follow the current hostname:
 
-- `webmail.stage-thundermail.com` -> `https://jmap.stage-thundermail.com`
+- `webmail.stage-thundermail.com` -> `https://mail.stage-thundermail.com`
   (HTTP) and `wss://jmap.stage-thundermail.com/jmap/ws` (WS)
 - `webmail.thundermail.com` and `alpha-app.thundermail.com` ->
-  `https://jmap.thundermail.com` (HTTP) and `wss://jmap.thundermail.com/jmap/ws`
+  `https://mail.thundermail.com` (HTTP) and `wss://jmap.thundermail.com/jmap/ws`
   (WS)
 - hosted sender avatars -> [`https://avatars.thunderbird.net`](https://avatars.thunderbird.net)
   ([thunderbird/avatars](https://github.com/thunderbird/avatars))
@@ -83,9 +83,12 @@ the current hostname:
 - hosted stage product links -> stage services
 - hosted prod and alpha product links -> production services
 
-To point a local build at another JMAP server or bridge, set
-`VITE_JMAP_SERVER_URL` in `.env.local`. The WebSocket auth bridge URL is derived
-from the same origin with `/jmap/ws`.
+To point a local build at another JMAP server, set `VITE_JMAP_SERVER_URL`
+in `.env.local`. The hosted Stalwart servers use their corresponding
+`jmap.*` WebSocket auth bridges. Other servers default to `/jmap/ws` on
+the same origin.
+Hosted accounts retain their existing `jmap.*` local account keys so cached
+mail and queued mutations survive the switch to direct HTTP.
 To override product links, set `VITE_ACCOUNTS_URL`, `VITE_APPOINTMENT_URL`, or
 `VITE_SEND_URL`. To override sender logo lookup, set
 `VITE_SENDER_AVATAR_PROXY_URL`; an empty value keeps the initials-only fallback.
@@ -115,10 +118,8 @@ Recovery emails containing `mzlatest` (case-insensitive) are exempt from this
 forced redirect and connect on the current origin. This exception does not
 change staff-only feature access.
 
-Adding a hosted origin needs, besides the workflow job: the Cloudflare Pages
-project and custom domain, the origin in the bridge allowlist
-(`infra/jmap-bridge/src/routes.ts`, redeployed with `npm run deploy:production`),
-and a Keycloak client for the origin. The client mirrors
+Adding a hosted origin needs, besides the workflow job, the Cloudflare Pages
+project and custom domain, and a Keycloak client for the origin. The client mirrors
 `thunderbird-stormbox` (and what `tests/fixtures/configure-keycloak.mjs`
 builds locally): public client, standard flow, PKCE `S256`, root/home URL and
 `/*` redirect URIs and post-logout redirect URIs on the origin, the origin as
@@ -135,7 +136,7 @@ folder `thundermail/`; Contacts Trash shards are isolated further under
 `thundermail/contacts_trash/`.
 
 ```bash
-VITE_JMAP_SERVER_URL=https://your-jmap-bridge-or-server.com
+VITE_JMAP_SERVER_URL=https://your-jmap-server.com
 VITE_SENDER_AVATAR_PROXY_URL=https://your-avatar-proxy.com
 ```
 
@@ -211,7 +212,7 @@ stormbox/
 │   ├── integration/          # Serial Vitest coverage against live Stalwart
 │   └── unit/                 # Vitest tests (mirrors src layout)
 ├── infra/
-│   └── jmap-bridge/          # Unified Cloudflare Worker (HTTP JMAP + WS auth)
+│   └── jmap-bridge/          # Cloudflare WS auth and legacy HTTP proxy Worker
 ├── scripts/
 │   └── local-stack-up.sh     # Dev container + auth/mail stack bootstrap
 ├── docs/                     # Architecture notes and doc index
@@ -231,4 +232,3 @@ stormbox/
 - **wa-sqlite**: browser-local SQLite storage.
 - **Squire**: rich-text compose editor.
 - **@tanstack/vue-virtual**: virtualized message lists.
-
