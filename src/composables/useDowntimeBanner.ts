@@ -1,4 +1,4 @@
-// Reads the loginBanner realm message that the Keycloak login page shows (thunderbird-accounts#1491); the app never waits on it.
+// Reads the maintenanceNotice realm message that the Keycloak login page shows (thunderbird-accounts#1491); the app never waits on it.
 import { onMounted, ref, type Ref } from 'vue';
 
 const BANNER_TYPES = ['info', 'warning', 'critical'] as const;
@@ -16,9 +16,9 @@ function parseBanner(messages: unknown): Banner | null {
     return typeof value === 'string' ? value.trim() : '';
   };
   // The endpoint returns the MessageFormat pattern, where operators type '' for an apostrophe.
-  const message = text('loginBanner').replaceAll("''", "'");
+  const message = text('maintenanceNotice').replaceAll("''", "'");
   if (!message) return null;
-  const type = BANNER_TYPES.find((name) => name === text('loginBannerType')) ?? 'warning';
+  const type = BANNER_TYPES.find((name) => name === text('maintenanceNoticeType')) ?? 'warning';
   return { type, message };
 }
 

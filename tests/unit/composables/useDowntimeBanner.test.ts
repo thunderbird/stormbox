@@ -41,13 +41,13 @@ afterEach(() => {
 });
 
 describe('useDowntimeBanner', () => {
-  it('returns the loginBanner message with its type', async () => {
-    respond({ doLogIn: 'Sign in', loginBanner: ` We''re down. ${MESSAGE} `, loginBannerType: 'critical' });
+  it('returns the maintenanceNotice message with its type', async () => {
+    respond({ doLogIn: 'Sign in', maintenanceNotice: ` We''re down. ${MESSAGE} `, maintenanceNoticeType: 'critical' });
     expect(await loadBanner()).toEqual({ type: 'critical', message: `We're down. ${MESSAGE}` });
   });
 
-  it('shows nothing and stays silent when loginBanner is empty or missing', async () => {
-    respond({ loginBanner: '  ', loginBannerType: 'warning' });
+  it('shows nothing and stays silent when maintenanceNotice is empty or missing', async () => {
+    respond({ maintenanceNotice: '  ', maintenanceNoticeType: 'warning' });
     expect(await loadBanner()).toBeNull();
     respond({ doLogIn: 'Sign in' });
     expect(await loadBanner()).toBeNull();
@@ -55,13 +55,13 @@ describe('useDowntimeBanner', () => {
   });
 
   it('shows nothing and warns once when the endpoint fails', async () => {
-    respond({ loginBanner: MESSAGE }, 500);
+    respond({ maintenanceNotice: MESSAGE }, 500);
     expect(await loadBanner()).toBeNull();
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it('falls back to a warning for an unknown loginBannerType', async () => {
-    respond({ loginBanner: MESSAGE, loginBannerType: 'urgent' });
+  it('falls back to a warning for an unknown maintenanceNoticeType', async () => {
+    respond({ maintenanceNotice: MESSAGE, maintenanceNoticeType: 'urgent' });
     expect(await loadBanner()).toEqual({ type: 'warning', message: MESSAGE });
   });
 });
