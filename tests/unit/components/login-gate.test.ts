@@ -28,6 +28,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mounted.splice(0).forEach(wrapper => wrapper.unmount());
+  vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.innerHTML = '';
 });
@@ -52,6 +53,8 @@ describe('LoginGate', () => {
   });
 
   it('offers an explicit retry after an OIDC failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-20T02:00:00Z'));
     const store = useAuthStore();
     store.status = AUTH_STATE.FAILED;
     store.error = 'Identity provider unavailable';
@@ -63,6 +66,32 @@ describe('LoginGate', () => {
     expect(wrapper.find('.login-card__spinner').exists()).toBe(false);
     await wrapper.get('button').trigger('click');
     expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('shows the critical notice from one hour before maintenance to one hour after it ends', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date('2026-11-19T23:59:59Z'));
+    const store = useAuthStore();
+    store.status = AUTH_STATE.FAILED;
+    store.authServerUnavailable = true;
+    store.error = 'The sign-in service is unavailable. Please try again later.';
+    const wrapper = mountGate();
+    expect(wrapper.get('[role="alert"]').text()).toBe(store.error);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const banner = wrapper.get('[role="alert"]');
+    expect(banner.classes()).toContain('critical');
+    expect(banner.text()).toBe(
+      'Our services are currently undergoing planned maintenance until 05:00 UTC / 9PM PST, see status page for updates.',
+    );
+    expect(banner.get('a').attributes('href')).toBe('https://status.tb.pro/');
+    expect(wrapper.get('button').text()).toBe('Try again');
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1_000 - 1_000);
+    expect(wrapper.get('[role="alert"]').classes()).toContain('critical');
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(wrapper.get('[role="alert"]').text()).toBe(store.error);
   });
 
   it('explains an offline startup while waiting for connectivity', () => {

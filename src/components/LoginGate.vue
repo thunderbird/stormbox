@@ -2,9 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useOnline } from '@vueuse/core';
 import { Loader2 } from '@lucide/vue';
-import { NoticeWarningIcon } from '@thunderbirdops/services-ui';
+import { NoticeBar, NoticeBarTypes, NoticeWarningIcon } from '@thunderbirdops/services-ui';
 import AppButton from './AppButton.vue';
 
+import { THUNDERMAIL_STATUS_URL, useMaintenanceWindow } from '../composables/useMaintenanceWindow';
 import { useAuthStore } from '../stores/auth-store';
 import { AUTH_STATE } from '../constants/states';
 import { hasAutoLoginFlag, withoutAutoLoginFlag } from '../utils/staff-redirect';
@@ -14,6 +15,7 @@ const authStore = useAuthStore();
 const username = ref('');
 const password = ref('');
 const isOnline = useOnline();
+const maintenancePhase = useMaintenanceWindow({ paddingMs: 60 * 60 * 1_000 });
 
 if (typeof window !== 'undefined' && hasAutoLoginFlag(window.location.search)) {
   window.history.replaceState(window.history.state, '', withoutAutoLoginFlag(window.location.href));
@@ -24,6 +26,9 @@ const isBusy = computed(() =>
   || authStore.status === AUTH_STATE.CONNECTING,
 );
 const isFailed = computed(() => authStore.status === AUTH_STATE.FAILED);
+const showMaintenanceNotice = computed(() =>
+  maintenancePhase.value === 'ongoing' && isFailed.value && authStore.authServerUnavailable && isOnline.value,
+);
 const statusLabel = computed(() => {
   if (!isOnline.value && !isFailed.value) return 'You are offline. Waiting for a connection…';
   switch (authStore.status) {
@@ -92,12 +97,19 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
         <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
       </div>
     </div>
-    <div v-else class="login-progress">
-      <div class="login-card__busy" role="status" aria-live="polite">
-        <Loader2 v-if="!isFailed" :size="32" :stroke-width="2" class="login-card__spinner" aria-hidden="true" />
-        <p class="login-card__status">{{ statusLabel }}</p>
-      </div>
-      <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
+    <div v-else class="login-progress" :class="{ 'login-progress--maintenance': showMaintenanceNotice }">
+      <NoticeBar v-if="showMaintenanceNotice" :type="NoticeBarTypes.Critical" role="alert">
+        Our services are currently undergoing planned maintenance until 05:00 UTC / 9PM PST, see
+        <a :href="THUNDERMAIL_STATUS_URL" target="_blank" rel="noopener noreferrer">status page</a>
+        for updates.
+      </NoticeBar>
+      <template v-else>
+        <div class="login-card__busy" role="status" aria-live="polite">
+          <Loader2 v-if="!isFailed" :size="32" :stroke-width="2" class="login-card__spinner" aria-hidden="true" />
+          <p class="login-card__status">{{ statusLabel }}</p>
+        </div>
+        <p v-if="authStore.error" class="login-card__error" role="alert">{{ authStore.error }}</p>
+      </template>
       <AppButton v-if="isFailed" class="login-card__retry" @click="authStore.retryOidc">
         Try again
       </AppButton>
@@ -130,6 +142,10 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
   align-items: center;
   gap: 12px;
   max-width: 360px;
+}
+
+.login-progress--maintenance {
+  max-width: 520px;
 }
 
 /* Our own warning banner; only the warning glyph comes from services-ui.

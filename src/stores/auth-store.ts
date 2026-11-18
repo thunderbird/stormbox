@@ -107,6 +107,7 @@ export const useAuthStore = defineStore('auth', () => {
   /** OIDC ID-token `recovery_email` claim; null when unavailable. */
   const recoveryEmail = ref<string | null>(null);
   const error = ref<string | null>(null);
+  const authServerUnavailable = ref(false);
   const databaseUnavailable = ref(false);
 
   /**
@@ -204,10 +205,10 @@ export const useAuthStore = defineStore('auth', () => {
   function reportOidcInitializationError(err: unknown): void {
     if (databaseUnavailable.value) return;
     console.error('Could not initialize OIDC sign-in', err);
-    const serviceUnavailable = typeof err === 'object' && err != null
-      && 'isAuthServerLikelyDown' in err && err.isAuthServerLikelyDown;
+    authServerUnavailable.value = typeof err === 'object' && err != null
+      && 'isAuthServerLikelyDown' in err && err.isAuthServerLikelyDown === true;
     status.value = AUTH_STATE.FAILED;
-    error.value = serviceUnavailable
+    error.value = authServerUnavailable.value
       ? 'The sign-in service is unavailable. Please try again later.'
       : 'Sign-in could not be initialized. Please try again later.';
   }
@@ -235,6 +236,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function connectViaOidc(): Promise<boolean> {
     if (databaseUnavailable.value || status.value === AUTH_STATE.CONNECTING) return false;
     status.value = AUTH_STATE.CONNECTING;
+    authServerUnavailable.value = false;
     error.value = null;
     try {
       return await _connectViaOidc();
@@ -347,6 +349,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (!(cause instanceof DatabaseUnavailableError)) return false;
     stopTokenSync();
     databaseUnavailable.value = true;
+    authServerUnavailable.value = false;
     status.value = AUTH_STATE.FAILED;
     error.value = cause.message;
     return true;
@@ -550,6 +553,7 @@ export const useAuthStore = defineStore('auth', () => {
     email.value = null;
     recoveryEmail.value = null;
     error.value = null;
+    authServerUnavailable.value = false;
     databaseUnavailable.value = false;
     status.value = AUTH_STATE.IDLE;
     clearStorageQuota();
@@ -582,6 +586,7 @@ export const useAuthStore = defineStore('auth', () => {
     recoveryEmail,
     isStaff,
     error,
+    authServerUnavailable,
     databaseUnavailable,
     reportDatabaseError,
     serverOrigin,
