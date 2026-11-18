@@ -10,6 +10,10 @@ vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
+vi.mock('../../../src/composables/useDowntimeBanner', async () => {
+  const { ref } = await import('vue');
+  return { useDowntimeBanner: () => ({ banner: ref(null) }) };
+});
 
 // Records whether the staff section chunk was ever evaluated.
 const staffModules = vi.hoisted(() => ({ section: false }));

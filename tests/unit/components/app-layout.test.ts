@@ -11,6 +11,10 @@ vi.mock('../../../src/services/auth', () => ({
   initOidc: async () => null,
   getOidc: () => null,
 }));
+vi.mock('../../../src/composables/useDowntimeBanner', async () => {
+  const { ref } = await import('vue');
+  return { useDowntimeBanner: () => ({ banner: ref(null) }) };
+});
 
 import App from '../../../src/App.vue';
 import AppSpaces from '../../../src/components/AppSpaces.vue';
