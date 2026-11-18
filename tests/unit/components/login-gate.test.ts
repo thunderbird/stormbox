@@ -10,21 +10,17 @@ import LoginGate from '../../../src/components/LoginGate.vue';
 import { useAuthStore } from '../../../src/stores/auth-store';
 import { AUTH_STATE } from '../../../src/constants/states';
 import { DatabaseUnavailableError } from '../../../src/db/availability';
+import type { Banner } from '../../../src/composables/useDowntimeBanner';
 
 const mounted: Array<ReturnType<typeof mount>> = [];
 
-function mountGate() {
-  const wrapper = mount(LoginGate, { attachTo: document.body });
+function mountGate(banner: Banner | null = null) {
+  const wrapper = mount(LoginGate, { attachTo: document.body, props: { banner } });
   mounted.push(wrapper);
   return wrapper;
 }
 
-function respondWithBanner(body: unknown) {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
-}
-
 beforeEach(() => {
-  respondWithBanner({ enabled: false });
   setActivePinia(createPinia());
   localStorage.clear();
   sessionStorage.clear();
@@ -34,8 +30,6 @@ beforeEach(() => {
 afterEach(() => {
   mounted.splice(0).forEach(wrapper => wrapper.unmount());
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
   document.body.innerHTML = '';
 });
 
@@ -116,11 +110,8 @@ describe('LoginGate', () => {
       .toBe('/inbox?view=compact#message');
   });
 
-  it('shows an enabled downtime banner', async () => {
-    vi.stubEnv('VITE_BANNER_URL', 'https://accounts.example.org/api/v1/status/banner/');
-    respondWithBanner({ enabled: true, type: 'warning', message: 'Scheduled maintenance 14:00–16:00 UTC.', link: null });
-    const wrapper = mountGate();
-    await flushPromises();
+  it('shows the downtime banner', () => {
+    const wrapper = mountGate({ type: 'warning', message: 'Scheduled maintenance 14:00–16:00 UTC.', link: null });
     expect(wrapper.get('.downtime-banner').text()).toContain('Scheduled maintenance 14:00–16:00 UTC.');
   });
 

@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import { NoticeBar, NoticeBarTypes } from '@thunderbirdops/services-ui';
-import { useDowntimeBanner, type Banner } from '../composables/useDowntimeBanner';
+import type { Banner } from '../composables/useDowntimeBanner';
 
-const props = defineProps<{ url: string }>();
+defineProps<{ banner: Banner | null }>();
 
 const NOTICE_BAR_TYPES: Record<Banner['type'], NoticeBarTypes> = {
   info: NoticeBarTypes.Info,
   warning: NoticeBarTypes.Warning,
   critical: NoticeBarTypes.Critical,
 };
-
-const { banner } = useDowntimeBanner(props.url);
 </script>
 
 <template>

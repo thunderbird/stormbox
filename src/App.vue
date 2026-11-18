@@ -18,6 +18,7 @@ import {
   DIRECTORY_RESIZER_WIDTH,
 } from './composables/useDirectoryColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
+import { useDowntimeBanner } from './composables/useDowntimeBanner';
 import { APP_TITLE } from './app-config';
 import { BUG_REPORT_URL, FEEDBACK_URL, defaultBannerUrl } from './defines';
 
@@ -181,7 +182,8 @@ watch(activeSpotlight, (id) => {
 // With 'system' the OS decides, so a manual light/dark button would fight it.
 const showThemeToggle = computed(() => theme.value !== 'system');
 const messageViewMaximized = ref(false);
-const bannerUrl = defaultBannerUrl();
+// One load serves the login gate and the shell, so the banner stays put when the gate gives way.
+const { banner } = useDowntimeBanner(defaultBannerUrl());
 // Modal dialogs own the keyboard: a single-letter mail shortcut must not
 // archive or delete the selection behind them, or move focus out of them.
 // An open beacon card counts as one.
@@ -658,7 +660,7 @@ function unwatchSystemTheme() {
 </script>
 
 <template>
-  <LoginGate v-if="showLogin" />
+  <LoginGate v-if="showLogin" :banner="banner" />
   <div
     v-else
     ref="shellEl"
@@ -675,7 +677,7 @@ function unwatchSystemTheme() {
     :style="shellStyle"
   >
     <div class="shell__banner" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
-      <DowntimeBanner :url="bannerUrl" />
+      <DowntimeBanner :banner="banner" />
     </div>
     <header class="quick-filter" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
       <div class="quick-filter__brand">
