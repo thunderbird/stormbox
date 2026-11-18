@@ -4,9 +4,11 @@ import { useOnline } from '@vueuse/core';
 import { Loader2 } from '@lucide/vue';
 import { NoticeWarningIcon } from '@thunderbirdops/services-ui';
 import AppButton from './AppButton.vue';
+import DowntimeBanner from './DowntimeBanner.vue';
 
 import { useAuthStore } from '../stores/auth-store';
 import { AUTH_STATE } from '../constants/states';
+import { defaultBannerUrl } from '../defines';
 import { hasAutoLoginFlag, withoutAutoLoginFlag } from '../utils/staff-redirect';
 import ThundermailLogo from './ThundermailLogo.vue';
 
@@ -14,6 +16,7 @@ const authStore = useAuthStore();
 const username = ref('');
 const password = ref('');
 const isOnline = useOnline();
+const bannerUrl = defaultBannerUrl();
 
 if (typeof window !== 'undefined' && hasAutoLoginFlag(window.location.search)) {
   window.history.replaceState(window.history.state, '', withoutAutoLoginFlag(window.location.href));
@@ -50,6 +53,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
 <template>
   <div class="login-gate">
     <div v-if="authStore.appPasswordMode && !authStore.databaseUnavailable" class="login-stack">
+      <DowntimeBanner :url="bannerUrl" />
       <p class="login-warning" role="note">
         <NoticeWarningIcon class="login-warning__icon" aria-hidden="true" />
         <span>Webmail is in early alpha and subject to frequent changes and instability</span>
@@ -93,6 +97,7 @@ onBeforeUnmount(() => window.removeEventListener('pageshow', onPageShow));
       </div>
     </div>
     <div v-else class="login-progress">
+      <DowntimeBanner :url="bannerUrl" />
       <div class="login-card__busy" role="status" aria-live="polite">
         <Loader2 v-if="!isFailed" :size="32" :stroke-width="2" class="login-card__spinner" aria-hidden="true" />
         <p class="login-card__status">{{ statusLabel }}</p>
