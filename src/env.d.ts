@@ -20,7 +20,6 @@ interface ImportMetaEnv {
   readonly VITE_LOCAL_STACK?: string;
   readonly VITE_SENDER_AVATAR_PROXY_URL?: string;
   readonly VITE_STAFF_APP_URL?: string;
-  readonly VITE_BANNER_URL?: string;
 }
 
 interface ImportMeta {

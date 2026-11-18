@@ -54,13 +54,6 @@ export function accountsUrlForHostname(hostname = globalThis.location?.hostname)
   return "https://accounts.stage-thundermail.com";
 }
 
-export function defaultBannerUrl(hostname = globalThis.location?.hostname): string {
-  if (isProdWebmailHostname(hostname)) {
-    return "https://accounts.tb.pro/api/v1/status/banner/";
-  }
-  return import.meta.env.VITE_BANNER_URL ?? "";
-}
-
 export function appointmentUrlForHostname(hostname = globalThis.location?.hostname): string {
   if (isProdWebmailHostname(hostname)) {
     return "https://appointment.tb.pro";
@@ -121,6 +114,12 @@ export const STAFF_APP_URL =
 
 export const OIDC_ISSUER =
   import.meta.env.VITE_OIDC_ISSUER || "https://auth.stage-thundermail.com/realms/tbpro";
+
+/** Keycloak serves the realm's login theme messages, realm overrides included, beside the issuer. */
+export function loginMessagesUrl(locale = "en"): string {
+  const match = /^(.*)\/realms\/([^/]+)\/?$/.exec(OIDC_ISSUER);
+  return match ? `${match[1]}/resources/${match[2]}/login/${locale}` : "";
+}
 
 export const OIDC_CLIENT_ID =
   import.meta.env.VITE_OIDC_CLIENT_ID || "thunderbird-stormbox-test";

@@ -14,7 +14,6 @@ const NOTICE_BAR_TYPES: Record<Banner['type'], NoticeBarTypes> = {
 <template>
   <NoticeBar v-if="banner" :type="NOTICE_BAR_TYPES[banner.type]" role="status" class="downtime-banner">
     {{ banner.message }}
-    <a v-if="banner.link" :href="banner.link.href" target="_blank" rel="noopener">{{ banner.link.text }}</a>
   </NoticeBar>
 </template>
 

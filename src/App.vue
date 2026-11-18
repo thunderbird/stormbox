@@ -20,7 +20,7 @@ import {
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { useDowntimeBanner } from './composables/useDowntimeBanner';
 import { APP_TITLE } from './app-config';
-import { BUG_REPORT_URL, FEEDBACK_URL, defaultBannerUrl } from './defines';
+import { BUG_REPORT_URL, FEEDBACK_URL, loginMessagesUrl } from './defines';
 
 import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
@@ -183,7 +183,7 @@ watch(activeSpotlight, (id) => {
 const showThemeToggle = computed(() => theme.value !== 'system');
 const messageViewMaximized = ref(false);
 // One load serves the login gate and the shell, so the banner stays put when the gate gives way.
-const { banner } = useDowntimeBanner(defaultBannerUrl());
+const { banner } = useDowntimeBanner(loginMessagesUrl());
 // Modal dialogs own the keyboard: a single-letter mail shortcut must not
 // archive or delete the selection behind them, or move focus out of them.
 // An open beacon card counts as one.

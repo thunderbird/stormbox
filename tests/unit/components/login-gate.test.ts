@@ -111,7 +111,7 @@ describe('LoginGate', () => {
   });
 
   it('shows the downtime banner', () => {
-    const wrapper = mountGate({ type: 'warning', message: 'Scheduled maintenance 14:00–16:00 UTC.', link: null });
+    const wrapper = mountGate({ type: 'warning', message: 'Scheduled maintenance 14:00–16:00 UTC.' });
     expect(wrapper.get('.downtime-banner').text()).toContain('Scheduled maintenance 14:00–16:00 UTC.');
   });
 
