@@ -54,6 +54,13 @@ export function accountsUrlForHostname(hostname = globalThis.location?.hostname)
   return "https://accounts.stage-thundermail.com";
 }
 
+export function defaultBannerUrl(hostname = globalThis.location?.hostname): string {
+  if (isProdWebmailHostname(hostname)) {
+    return "https://accounts.tb.pro/api/v1/status/banner/";
+  }
+  return import.meta.env.VITE_BANNER_URL ?? "";
+}
+
 export function appointmentUrlForHostname(hostname = globalThis.location?.hostname): string {
   if (isProdWebmailHostname(hostname)) {
     return "https://appointment.tb.pro";
