@@ -19,7 +19,7 @@ import {
 } from './composables/useDirectoryColumnResize';
 import { useThunderbirdShortcuts } from './composables/useThunderbirdShortcuts';
 import { APP_TITLE } from './app-config';
-import { BUG_REPORT_URL, FEEDBACK_URL } from './defines';
+import { BUG_REPORT_URL, FEEDBACK_URL, defaultBannerUrl } from './defines';
 
 import { useAuthStore } from './stores/auth-store';
 import { useMailStore } from './stores/mail-store';
@@ -36,6 +36,7 @@ import type { Palette, Theme } from './constants/settings';
 import { shortcutAria, shortcutHint } from './constants/shortcuts';
 
 import AppSpaces from './components/AppSpaces.vue';
+import DowntimeBanner from './components/DowntimeBanner.vue';
 import LoginGate from './components/LoginGate.vue';
 import FolderTree from './components/FolderTree.vue';
 import MessageColumns from './components/MessageColumns.vue';
@@ -180,6 +181,7 @@ watch(activeSpotlight, (id) => {
 // With 'system' the OS decides, so a manual light/dark button would fight it.
 const showThemeToggle = computed(() => theme.value !== 'system');
 const messageViewMaximized = ref(false);
+const bannerUrl = defaultBannerUrl();
 // Modal dialogs own the keyboard: a single-letter mail shortcut must not
 // archive or delete the selection behind them, or move focus out of them.
 // An open beacon card counts as one.
@@ -672,6 +674,9 @@ function unwatchSystemTheme() {
     }"
     :style="shellStyle"
   >
+    <div class="shell__banner" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
+      <DowntimeBanner :url="bannerUrl" />
+    </div>
     <header class="quick-filter" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
       <div class="quick-filter__brand">
         <span class="quick-filter__glyph" aria-hidden="true" v-html="mailGlyph" />
@@ -938,7 +943,7 @@ html.light,
     var(--folder-resizer-width)
     minmax(var(--message-list-min-width, 280px), var(--message-columns-width, 360px))
     minmax(var(--message-view-min-width, 320px), 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: var(--app-viewport-height);
   background: var(--panel);
   color: var(--text);
@@ -1016,6 +1021,7 @@ body.spotlighting .folder-subs {
   height: var(--app-viewport-height);
 }
 .shell--message-view-maximized > :is(
+  .shell__banner,
   .quick-filter,
   .app-spaces,
   .sidebar-slot,
@@ -1028,6 +1034,15 @@ body.spotlighting .folder-subs {
   grid-column: 4 / -1;
 }
 .shell > .contacts { grid-column: 4 / -1; }
+
+/* Always rendered so the first row stays the banner's, at zero height when there is none. */
+.shell__banner {
+  grid-column: 1 / -1;
+  background: var(--top-nav-bg);
+}
+.shell__banner .downtime-banner {
+  margin: 8px 8px 0;
+}
 
 .quick-filter {
   grid-column: 1 / -1;
@@ -1264,19 +1279,21 @@ body.spotlighting .folder-subs {
   .shell--message-view-hidden,
   .shell--message-list-hidden {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) var(--spaces-bar-height);
+    grid-template-rows: auto auto minmax(0, 1fr) var(--spaces-bar-height);
   }
   .quick-filter {
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 2;
   }
   .shell > .app-spaces {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 4;
   }
+  /* The content row is the drawer's containing block, so it opens below the header and banner. */
   .shell .sidebar-slot {
-    top: var(--top-nav-height);
-    bottom: var(--spaces-bar-height);
+    grid-row: 3 / 4;
+    top: 0;
+    bottom: 0;
     left: 0;
     width: min(var(--folder-list-width, 240px), 100vw);
     max-width: 100vw;
@@ -1290,7 +1307,7 @@ body.spotlighting .folder-subs {
   .shell--message-view-hidden > .msg-columns,
   .shell--message-list-hidden > .message-view {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
   }
 }
 

@@ -1081,7 +1081,7 @@ describe('App mail layout', () => {
     await flushPromises();
 
     expect(wrapper.find('.quick-filter').exists()).toBe(true);
-    expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell').element.firstElementChild);
+    expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell__banner').element.nextElementSibling);
 
     await wrapper.get('.quick-filter__input').setValue('alice');
     await nextTick();
