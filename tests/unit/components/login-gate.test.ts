@@ -19,7 +19,12 @@ function mountGate() {
   return wrapper;
 }
 
+function respondWithBanner(body: unknown) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+}
+
 beforeEach(() => {
+  respondWithBanner({ enabled: false });
   setActivePinia(createPinia());
   localStorage.clear();
   sessionStorage.clear();
@@ -29,6 +34,8 @@ beforeEach(() => {
 afterEach(() => {
   mounted.splice(0).forEach(wrapper => wrapper.unmount());
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   document.body.innerHTML = '';
 });
 
@@ -107,6 +114,14 @@ describe('LoginGate', () => {
     mountGate();
     expect(window.location.pathname + window.location.search + window.location.hash)
       .toBe('/inbox?view=compact#message');
+  });
+
+  it('shows an enabled downtime banner', async () => {
+    vi.stubEnv('VITE_BANNER_URL', 'https://accounts.example.org/api/v1/status/banner/');
+    respondWithBanner({ enabled: true, type: 'warning', message: 'Scheduled maintenance 14:00–16:00 UTC.', link: null });
+    const wrapper = mountGate();
+    await flushPromises();
+    expect(wrapper.get('.downtime-banner').text()).toContain('Scheduled maintenance 14:00–16:00 UTC.');
   });
 
   it('leaves a canceled OIDC redirect retryable when restored from the back-forward cache', () => {
