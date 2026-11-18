@@ -37,6 +37,7 @@ import { shortcutAria, shortcutHint } from './constants/shortcuts';
 
 import AppSpaces from './components/AppSpaces.vue';
 import LoginGate from './components/LoginGate.vue';
+import PlannedMaintenanceNotice from './components/PlannedMaintenanceNotice.vue';
 import FolderTree from './components/FolderTree.vue';
 import MessageColumns from './components/MessageColumns.vue';
 import MessageView from './components/MessageView.vue';
@@ -672,6 +673,11 @@ function unwatchSystemTheme() {
     }"
     :style="shellStyle"
   >
+    <PlannedMaintenanceNotice
+      v-if="!messageViewMaximized && displayedMessageList"
+      class="shell__notice"
+      @dismiss="quickFilterInputEl?.focus()"
+    />
     <header class="quick-filter" :inert="messageViewMaximized" :aria-hidden="messageViewMaximized">
       <div class="quick-filter__brand">
         <span class="quick-filter__glyph" aria-hidden="true" v-html="mailGlyph" />
@@ -944,6 +950,9 @@ html.light,
   color: var(--text);
   overflow: hidden;
 }
+.shell:has(> .shell__notice) {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
 .shell--message-view-hidden {
   grid-template-columns:
     56px
@@ -1028,6 +1037,11 @@ body.spotlighting .folder-subs {
   grid-column: 4 / -1;
 }
 .shell > .contacts { grid-column: 4 / -1; }
+
+.shell__notice {
+  grid-column: 1 / -1;
+  background: var(--top-nav-bg);
+}
 
 .quick-filter {
   grid-column: 1 / -1;
@@ -1291,6 +1305,23 @@ body.spotlighting .folder-subs {
   .shell--message-list-hidden > .message-view {
     grid-column: 1;
     grid-row: 2;
+  }
+  .shell:has(> .shell__notice) {
+    grid-template-rows: auto auto minmax(0, 1fr) var(--spaces-bar-height);
+  }
+  .shell:has(> .shell__notice) > .quick-filter {
+    grid-row: 2;
+  }
+  .shell:has(> .shell__notice) > .app-spaces {
+    grid-row: 4;
+  }
+  .shell:has(> .shell__notice) > :is(.msg-columns, .message-view, .contacts) {
+    grid-row: 3;
+  }
+  .shell:has(> .shell__notice) > .sidebar-slot {
+    grid-row: 3 / 4;
+    top: 0;
+    bottom: 0;
   }
 }
 

@@ -241,6 +241,7 @@ describe('auth-store', () => {
 
     await authStore.initialize();
     expect(authStore.status).toBe(AUTH_STATE.FAILED);
+    expect(authStore.authServerUnavailable).toBe(true);
     expect(authStore.error).toBe('The sign-in service is unavailable. Please try again later.');
     expect(diagnostics).toHaveBeenCalledWith('Could not initialize OIDC sign-in', oidc.initializationError);
     expect(oidc.login).not.toHaveBeenCalled();
@@ -256,6 +257,7 @@ describe('auth-store', () => {
     const authStore = useAuthStore();
 
     await authStore.initialize();
+    expect(authStore.authServerUnavailable).toBe(false);
     expect(authStore.error).toBe('Sign-in could not be initialized. Please try again later.');
     expect(authStore.status).toBe(AUTH_STATE.FAILED);
     await authStore.retryOidc();

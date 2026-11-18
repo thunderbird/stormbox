@@ -338,6 +338,7 @@ beforeEach(() => {
   repoInstance = null;
   document.title = APP_TITLE;
   window.localStorage?.clear();
+  window.sessionStorage?.clear();
   setWindowWidth(1280);
   const authStore = useAuthStore();
   authStore.status = AUTH_STATE.CONNECTED;
@@ -357,6 +358,61 @@ afterEach(() => {
 });
 
 describe('App mail layout', () => {
+  it('places the planned maintenance notice above the toolbar and keeps it dismissed in the tab', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-19T22:00:00Z'));
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const notice = wrapper.get('.maintenance-notice');
+    expect(wrapper.get('.shell__notice').element.nextElementSibling).toBe(wrapper.get('.quick-filter').element);
+    expect(notice.text()).toBe(
+      'Planned maintenance between 01:00 UTC / 5 PM PST and 05:00 UTC / 9 PM PST, see status page for updates.',
+    );
+    expect(notice.get('a').attributes('href')).toBe('https://status.tb.pro/');
+
+    const dismiss = notice.get('button[aria-label="Dismiss maintenance notice"]');
+    expect(dismiss.text()).toBe('');
+    expect(dismiss.get('svg').attributes('aria-hidden')).toBe('true');
+    await dismiss.trigger('click');
+    expect(wrapper.find('.shell__notice').exists()).toBe(false);
+    expect(wrapper.get('.shell').element.firstElementChild).toBe(wrapper.get('.quick-filter').element);
+    expect(document.activeElement).toBe(wrapper.get('.quick-filter__input').element);
+    expect(mountApp().find('.shell__notice').exists()).toBe(false);
+  });
+
+  it('shows the maintenance notice on the single-column inbox and hides it while reading', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-19T22:00:00Z'));
+    setWindowWidth(320);
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const mailStore = useMailStore();
+    expect(wrapper.find('.maintenance-notice').exists()).toBe(true);
+
+    mailStore.selectedMessageId = 42;
+    await nextTick();
+    expect(wrapper.find('.shell__notice').exists()).toBe(false);
+
+    mailStore.selectedMessageId = null;
+    await nextTick();
+    expect(wrapper.find('.maintenance-notice').exists()).toBe(true);
+  });
+
+  it('expires the planned maintenance notice ten minutes after maintenance starts', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(new Date('2026-11-20T01:09:59Z'));
+    const wrapper = mountApp();
+    await flushPromises();
+
+    expect(wrapper.find('.maintenance-notice').exists()).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(wrapper.find('.shell__notice').exists()).toBe(false);
+    expect(wrapper.get('.shell').element.firstElementChild).toBe(wrapper.get('.quick-filter').element);
+    expect(mountApp().find('.shell__notice').exists()).toBe(false);
+  });
+
   it('does not start OIDC when the settings database connection fails', async () => {
     const initialize = vi.spyOn(authService, 'initOidc');
     const attach = vi.spyOn(useSettingsStore(), 'attach').mockRejectedValue(new DatabaseUnavailableError());
@@ -1081,7 +1137,6 @@ describe('App mail layout', () => {
     await flushPromises();
 
     expect(wrapper.find('.quick-filter').exists()).toBe(true);
-    expect(wrapper.find('.quick-filter').element).toBe(wrapper.find('.shell').element.firstElementChild);
 
     await wrapper.get('.quick-filter__input').setValue('alice');
     await nextTick();
