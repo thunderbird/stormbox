@@ -81,6 +81,11 @@ test.describe('Archive e2e', () => {
 
       await page.getByTitle('Archive (A)').click();
 
+      await expect(
+        page.locator('.store-error-toast__item--success')
+          .filter({ hasText: /archived/i }),
+      ).toBeVisible({ timeout: 30_000 });
+
       await expect.poll(
         async () => page.locator('.msg-list__item').filter({ hasText: subject }).count(),
         { timeout: 30_000, message: 'archived message should disappear from Inbox' },
