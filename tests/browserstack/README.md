@@ -1,6 +1,16 @@
 # Stormbox BrowserStack E2E Tests
 
-This package contains Playwright tests for deployed Stormbox stage and production. Test actions and assertions run through the public Stormbox UI on your local machine or in BrowserStack. The folder-management suite also uses direct JMAP access from the Node test runner solely to remove test folders left by earlier interrupted runs.
+This package contains Playwright tests for deployed Stormbox stage and production. Test actions and assertions run through the public Stormbox UI on your local machine or in BrowserStack. The folder-management and Contacts suites use direct JMAP access from the Node test runner solely to remove test data left by earlier interrupted runs.
+
+The Contacts suite sweeps its test-data prefixes once in `beforeAll` per worker, then verifies the Primary identity and purges prior Contacts Trash entries after the first sign-in. Each case still checks the signed-in UI account, uses unique names, and cleans only those names through the UI in `afterEach`. Playwright reruns `beforeAll` if a failure restarts the worker. Runs sharing the test account must not overlap.
+
+Desktop Contacts tests share one application browser context per project worker,
+with a fresh page for each case. The saved authentication state contains login
+information but omits Stormbox's IndexedDB cache. Sharing the context preserves
+that cache so later cases can skip unchanged Contacts Trash shard downloads.
+The context inherits the project's authentication and device options and closes
+after the suite. A worker restart creates a fresh context and repeats the initial
+cache population. Android retains the SDK's per-test page and UI sign-in flow.
 
 These tests are not for the local Stormbox stack. The local-stack integration tests live in `../e2e` and retain their own JMAP helper, database reads, local stack setup, and cache assertions. The BrowserStack JMAP helper connects only to a deployed stage or production Thundermail account using that dedicated test account's app password.
 
