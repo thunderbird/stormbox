@@ -31,6 +31,7 @@ import {
 } from '../../../constants/states';
 import { wlog } from '../../../db/worker-log';
 import { ingestSession } from './session';
+import { classifyAuthenticationOrAuthorizationError, JMAP_CAPS } from './transport';
 import { syncMailboxes, syncMailboxChanges } from './mailboxes';
 import {
   syncFolderWindow,
@@ -182,6 +183,11 @@ export class JmapBackend {
   _stateChangeRetryPending: { changed: Record<string, Record<string, string>>; pushState: string | null } | null;
   _stateChangeRetryTimer: any;
   _stateChangeRetryDelayMs: number;
+  _stateChangeRetryMaxDelayMs: number;
+  _stateChangeFailures: number;
+  _authRetryDelayMs: number;
+  _authRejected: boolean;
+  _authGeneration: number;
   _unsubClose: (() => void) | null;
   _reconnectTimer: any;
   _reconnectAttempts: number;
@@ -303,6 +309,15 @@ export class JmapBackend {
     this._stateChangeRetryPending = null;
     this._stateChangeRetryTimer = null;
     this._stateChangeRetryDelayMs = options.stateChangeRetryDelayMs ?? 1_000;
+    this._stateChangeRetryMaxDelayMs = options.stateChangeRetryMaxDelayMs ?? 30_000;
+    this._stateChangeFailures = 0;
+    // While the server rejects the current credentials, background
+    // retries wait this long. authenticationUpdated() ends the wait.
+    this._authRetryDelayMs = options.authRetryDelayMs ?? 300_000;
+    this._authRejected = false;
+    // Identifies the credentials a request started with, so a late 401
+    // is not held against their replacement.
+    this._authGeneration = 0;
     // Reconnect supervisor. The transport rejects pending requests
     // on close but does not reopen the socket itself; without this
     // a single network blip leaves push notifications dead until
@@ -631,11 +646,47 @@ export class JmapBackend {
   }
 
   authenticationUpdated() {
-    if (!this._started
-        || !this.useWebSocket
+    this._authGeneration += 1;
+    this._authRejected = false;
+    if (!this._started) return;
+    if (this._stateChangeRetryTimer) {
+      clearTimeout(this._stateChangeRetryTimer);
+      this._stateChangeFailures = 0;
+      this._runStateChangeRetry();
+    }
+    if (!this.useWebSocket
         || !this._unsubClose
         || this.transport.isWebSocketOpen()) return;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+    this._reconnectAttempts = 0;
     this._onTransportClose({});
+  }
+
+  /** Record a 401 unless the credentials changed after `generation`. */
+  _noteAuthRejection(error: any, generation: number) {
+    if (generation !== this._authGeneration) return;
+    if (classifyAuthenticationOrAuthorizationError(error)?.type !== 'authenticationFailed') return;
+    if (!this._authRejected) {
+      wlog.warn('jmap-backend', 'server rejected the credentials; slowing background retries');
+    }
+    this._authRejected = true;
+  }
+
+  /**
+   * Browsers do not expose the HTTP status of a failed WebSocket
+   * upgrade, so ask over HTTP whether the credentials are rejected.
+   */
+  async _probeAuth() {
+    const generation = this._authGeneration;
+    try {
+      await this.transport.request([JMAP_CAPS.CORE], [['Core/echo', {}, 'auth']]);
+      if (generation === this._authGeneration) this._authRejected = false;
+    } catch (err) {
+      this._noteAuthRejection(err, generation);
+    }
   }
 
   async stop() {
@@ -1676,10 +1727,12 @@ export class JmapBackend {
     if (!this._started) return;
     if (this._reconnectTimer) return;
     const attempt = this._reconnectAttempts;
-    const delay = Math.min(
-      this._reconnectBaseDelayMs * 2 ** attempt,
-      this._reconnectMaxDelayMs,
-    );
+    const delay = this._authRejected
+      ? this._authRetryDelayMs
+      : Math.min(
+        this._reconnectBaseDelayMs * 2 ** attempt,
+        this._reconnectMaxDelayMs,
+      );
     this._reconnectAttempts = attempt + 1;
     wlog.info(
       'jmap-backend',
@@ -1708,6 +1761,7 @@ export class JmapBackend {
       await this.transport.openWebSocket(this._subscribedTypes(), pushState);
     } catch (err) {
       wlog.warn('jmap-backend', `WebSocket reopen failed: ${(err as any)?.message ?? err}`);
+      if (this._started) await this._probeAuth();
       // openWebSocket may have failed before the underlying socket
       // ever emitted close, in which case our close listener never
       // fired. Schedule another attempt explicitly.
@@ -1719,6 +1773,7 @@ export class JmapBackend {
     if (!this._started) return;
     wlog.info('jmap-backend', 'WebSocket reopened');
     this._reconnectAttempts = 0;
+    this._authRejected = false;
     // An Identity push emitted while the socket was down is not replayed,
     // and there is no delta call for identities to fall back on, so a
     // reconnect is the only chance to notice an alias that changed while we
@@ -1932,6 +1987,7 @@ export class JmapBackend {
     // transport layer.
     this.outboxRunner?.notify();
 
+    const authGeneration = this._authGeneration;
     const failedChanged: Record<string, Record<string, string>> = {};
     for (const account of this._sessionAccounts()) {
       const types = changed?.[account.remote_account_id];
@@ -1941,6 +1997,7 @@ export class JmapBackend {
         failedTypes = await this._syncAccountStateChange(account, types);
       } catch (error) {
         failedTypes = { ...types };
+        this._noteAuthRejection(error, authGeneration);
         wlog.warn(
           'jmap-backend',
           `StateChange sync failed for ${account.remote_account_id}; continuing`,
@@ -1955,10 +2012,13 @@ export class JmapBackend {
       this._scheduleStateChangeRetry({ changed: failedChanged, pushState });
       return;
     }
+    this._stateChangeFailures = 0;
+    if (authGeneration === this._authGeneration) this._authRejected = false;
     if (pushState) await this._persistPushState(pushState);
   }
 
   async _syncAccountStateChange(account, types) {
+    const authGeneration = this._authGeneration;
     let needViewRefresh = false;
     let mailboxesChanged = false;
     const viewRefreshTypes: string[] = [];
@@ -2077,6 +2137,7 @@ export class JmapBackend {
         }
       } catch (error) {
         failedTypes[type] = types[type];
+        this._noteAuthRejection(error, authGeneration);
         wlog.warn(
           'jmap-backend',
           `StateChange ${type} sync failed for ${account.remote_account_id}`,
@@ -2089,6 +2150,7 @@ export class JmapBackend {
         await this._refreshActiveQueryViews(account);
       } catch (error) {
         for (const type of viewRefreshTypes) failedTypes[type] = types[type];
+        this._noteAuthRejection(error, authGeneration);
         wlog.warn(
           'jmap-backend',
           `StateChange view refresh failed for ${account.remote_account_id}`,
@@ -2117,12 +2179,21 @@ export class JmapBackend {
       change,
     );
     if (this._stateChangeRetryTimer != null || !this._started) return;
-    this._stateChangeRetryTimer = setTimeout(() => {
-      this._stateChangeRetryTimer = null;
-      const pending = this._stateChangeRetryPending;
-      this._stateChangeRetryPending = null;
-      if (pending && this._started) this._onStateChange(pending);
-    }, this._stateChangeRetryDelayMs);
+    const delay = this._authRejected
+      ? this._authRetryDelayMs
+      : Math.min(
+        this._stateChangeRetryDelayMs * 2 ** this._stateChangeFailures,
+        this._stateChangeRetryMaxDelayMs,
+      );
+    this._stateChangeFailures += 1;
+    this._stateChangeRetryTimer = setTimeout(() => this._runStateChangeRetry(), delay);
+  }
+
+  _runStateChangeRetry() {
+    this._stateChangeRetryTimer = null;
+    const pending = this._stateChangeRetryPending;
+    this._stateChangeRetryPending = null;
+    if (pending && this._started) this._onStateChange(pending);
   }
 
   /**
