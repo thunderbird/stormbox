@@ -1396,6 +1396,236 @@ describe('JmapBackend StateChange dispatch', () => {
     await backend.stop();
   });
 
+  describe('rejected credentials', () => {
+    const scenario: any = {
+      'Core/echo': () => ({}),
+      'Mailbox/get': () => ({ list: [], state: 'mb-1' }),
+      'Mailbox/changes': () => ({
+        created: [], updated: [], destroyed: [],
+        oldState: 'mb-1', newState: 'mb-2', hasMoreChanges: false,
+      }),
+      'Identity/get': () => ({ list: [], state: 'id' }),
+      'AddressBook/get': () => ({ list: [], state: 'ab' }),
+      'ContactCard/query': () => ({ ids: [], total: 0, state: 'cc' }),
+      'ContactCard/get': () => ({ list: [], state: 'cc' }),
+    };
+
+    async function connected(options: any = {}) {
+      const server = { status: 200, mailboxChanges: 0 };
+      const respond = makeJmapHandlers(scenario);
+      const fetchMock = vi.fn(async (url: any, init: any) => {
+        if (init?.method === 'POST') {
+          if (init.body.includes('"Mailbox/changes"')) server.mailboxChanges += 1;
+          if (server.status !== 200) {
+            return jsonResponse({}, { status: server.status, statusText: 'Rejected' });
+          }
+        }
+        return respond(url, init);
+      });
+      const transport = new JmapTransport({
+        sessionUrl: 'https://mail.example.com/.well-known/jmap',
+        getAuthHeader: async () => 'Bearer test',
+        fetch: fetchMock as any,
+        WebSocketImpl: FakeWebSocket as any,
+      });
+      const backend: any = new JmapBackend({
+        transport, serverOrigin: 'https://mail.example.com', handlers,
+        options: {
+          reconnectBaseDelayMs: 5,
+          reconnectMaxDelayMs: 10,
+          stateChangeRetryDelayMs: 5,
+          stateChangeRetryMaxDelayMs: 10,
+          authRetryDelayMs: 60_000,
+          ...options,
+        },
+      });
+      const startPromise = backend.start();
+      queueMicrotask(async () => {
+        const ws = await FakeWebSocket._waitForInstance();
+        autoRespondWebSocket(ws, scenario);
+        ws._open();
+      });
+      await startPromise;
+      await backend.bootstrapped();
+      return { backend, server };
+    }
+
+    const settle = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Fail every socket the backend opens from now on, as a rejected upgrade does. */
+    function rejectUpgrades() {
+      const seen = new Set(FakeWebSocket.instances);
+      const timer = setInterval(() => {
+        for (const ws of FakeWebSocket.instances) {
+          if (seen.has(ws)) continue;
+          seen.add(ws);
+          ws._emit('error', { message: 'upgrade rejected' });
+        }
+      }, 1);
+      return () => clearInterval(timer);
+    }
+
+    it('stops fast WebSocket retries while the server answers 401', async () => {
+      const { backend, server } = await connected();
+      const stopRejecting = rejectUpgrades();
+      server.status = 401;
+      FakeWebSocket.instances[0]._close(1006, 'abnormal');
+      await settle();
+      stopRejecting();
+
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      await backend.stop();
+    });
+
+    it('keeps fast WebSocket retries for failures other than 401', async () => {
+      const { backend, server } = await connected();
+      const stopRejecting = rejectUpgrades();
+      server.status = 503;
+      FakeWebSocket.instances[0]._close(1006, 'abnormal');
+      await settle();
+      stopRejecting();
+
+      expect(FakeWebSocket.instances.length).toBeGreaterThan(4);
+      await backend.stop();
+    });
+
+    it('reopens the WebSocket at once when authentication is updated', async () => {
+      const { backend, server } = await connected();
+      const stopRejecting = rejectUpgrades();
+      server.status = 401;
+      FakeWebSocket.instances[0]._close(1006, 'abnormal');
+      await settle();
+      stopRejecting();
+      expect(FakeWebSocket.instances).toHaveLength(2);
+
+      server.status = 200;
+      backend.authenticationUpdated();
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(3));
+      const ws = FakeWebSocket.instances[2];
+      autoRespondWebSocket(ws, scenario);
+      ws._open();
+      await vi.waitFor(() => expect(backend._wsReady()).toBe(true));
+      expect(backend._authRejected).toBe(false);
+      await backend.stop();
+    });
+
+    it('still retries the WebSocket after the authentication retry delay', async () => {
+      const { backend, server } = await connected({ authRetryDelayMs: 40 });
+      const stopRejecting = rejectUpgrades();
+      server.status = 401;
+      FakeWebSocket.instances[0]._close(1006, 'abnormal');
+      await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(2));
+      stopRejecting();
+      await backend.stop();
+    });
+
+    function failingStateChange(backend: any, status: number) {
+      backend.transport.closeWebSocket();
+      backend._syncAccountStateChange = vi.fn(async () => {
+        throw Object.assign(new Error('rejected'), { status });
+      });
+      backend._onStateChange({
+        changed: { 'acct-1': { Mailbox: 'mb-2' } }, pushState: 'push-2',
+      });
+      return backend._syncAccountStateChange;
+    }
+
+    it('stops fast StateChange retries while the server answers 401', async () => {
+      const { backend } = await connected({ useWebSocket: false });
+      const sync = failingStateChange(backend, 401);
+      await settle();
+
+      expect(sync).toHaveBeenCalledTimes(1);
+      await backend.stop();
+    });
+
+    it('detects a 401 from an individual StateChange type', async () => {
+      const { backend, server } = await connected({ useWebSocket: false });
+      server.status = 401;
+      backend._onStateChange({
+        changed: { 'acct-1': { Mailbox: 'mb-2' } }, pushState: 'push-2',
+      });
+      await settle();
+
+      expect(server.mailboxChanges).toBe(1);
+      await backend.stop();
+    });
+
+    it('backs StateChange retries off for failures other than 401', async () => {
+      const { backend } = await connected({
+        useWebSocket: false, stateChangeRetryDelayMs: 20, stateChangeRetryMaxDelayMs: 1_000,
+      });
+      const sync = failingStateChange(backend, 503);
+      await settle(200);
+
+      // Attempts start at about 0, 20, 60 and 140 ms.
+      expect(sync.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(sync.mock.calls.length).toBeLessThanOrEqual(4);
+      await backend.stop();
+    });
+
+    it('replays the pending StateChange when authentication is updated', async () => {
+      const { backend } = await connected({ useWebSocket: false });
+      failingStateChange(backend, 401);
+      await settle(50);
+      const sync = vi.fn(async (_account: any, _types: any) => ({}));
+      backend._syncAccountStateChange = sync;
+      backend._persistPushState = vi.fn(async () => {});
+
+      backend.authenticationUpdated();
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+      await backend._stateChangeIdle();
+      expect(sync.mock.calls[0][1]).toEqual({ Mailbox: 'mb-2' });
+      expect(backend._persistPushState).toHaveBeenCalledWith('push-2');
+      await backend.stop();
+    });
+
+    it('ignores a 401 earned by credentials that were replaced meanwhile', async () => {
+      const { backend } = await connected({ useWebSocket: false });
+      let reject: (error: any) => void = () => {};
+      const sync = vi.fn()
+        .mockImplementationOnce(() => new Promise((_resolve, rej) => { reject = rej; }))
+        .mockResolvedValue({});
+      backend._syncAccountStateChange = sync;
+      backend._onStateChange({
+        changed: { 'acct-1': { Mailbox: 'mb-2' } }, pushState: null,
+      });
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+
+      backend.authenticationUpdated();
+      reject(Object.assign(new Error('rejected'), { status: 401 }));
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+      expect(backend._authRejected).toBe(false);
+      await backend.stop();
+    });
+
+    it('returns to fast StateChange retries after a pass succeeds', async () => {
+      const { backend } = await connected({ useWebSocket: false });
+      failingStateChange(backend, 401);
+      await settle(50);
+      expect(backend._authRejected).toBe(true);
+
+      backend._syncAccountStateChange = vi.fn(async () => ({}));
+      backend._onStateChange({
+        changed: { 'acct-1': { Mailbox: 'mb-3' } }, pushState: null,
+      });
+      await backend._stateChangeIdle();
+      expect(backend._authRejected).toBe(false);
+      await backend.stop();
+    });
+
+    it('leaves no retry behind after stop()', async () => {
+      const { backend } = await connected({ useWebSocket: false });
+      const sync = failingStateChange(backend, 503);
+      await backend.stop();
+      const calls = sync.mock.calls.length;
+      backend.authenticationUpdated();
+      await settle(60);
+
+      expect(sync.mock.calls.length).toBe(calls);
+    });
+  });
+
   it('does not reopen the WebSocket after an explicit stop()', async () => {
     const scenario = {
       'Mailbox/get': () => ({ list: [], state: 'mb-1' }),
